@@ -1,0 +1,74 @@
+import type { Quote, Session } from "./types";
+
+const TOKEN_KEY = "pie_portal_session";
+
+export function loadSession(): Session | null {
+  const raw = localStorage.getItem(TOKEN_KEY);
+  return raw ? (JSON.parse(raw) as Session) : null;
+}
+export function saveSession(s: Session) {
+  localStorage.setItem(TOKEN_KEY, JSON.stringify(s));
+}
+export function clearSession() {
+  localStorage.removeItem(TOKEN_KEY);
+}
+
+async function req<T>(path: string, opts: RequestInit = {}, token?: string): Promise<T> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const res = await fetch(path, { ...opts, headers: { ...headers, ...(opts.headers || {}) } });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      detail = (await res.json()).detail || detail;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(detail);
+  }
+  return (await res.json()) as T;
+}
+
+export const api = {
+  login: (email: string, password: string) =>
+    req<Session>("/api/auth/login", { method: "POST", body: JSON.stringify({ email, password }) }),
+
+  createQuote: (t: string, customer: string) =>
+    req<Quote>("/api/quotes", { method: "POST", body: JSON.stringify({ customer }) }, t),
+
+  getQuote: (t: string, id: string) => req<Quote>(`/api/quotes/${id}`, {}, t),
+
+  intake: (t: string, id: string, text: string) =>
+    req<Quote>(`/api/quotes/${id}/intake`, { method: "POST", body: JSON.stringify({ text }) }, t),
+
+  selectSupply: (t: string, id: string, lineId: string, code: string, manual = false) =>
+    req<Quote>(
+      `/api/quotes/${id}/lines/${lineId}/supply`,
+      { method: "POST", body: JSON.stringify({ code, manual }) },
+      t,
+    ),
+
+  setPrice: (t: string, id: string, lineId: string, price: number | null) =>
+    req<Quote>(
+      `/api/quotes/${id}/lines/${lineId}/price`,
+      { method: "POST", body: JSON.stringify({ price }) },
+      t,
+    ),
+
+  discount: (t: string, id: string, lineIds: string[], percent: number) =>
+    req<Quote & { applied: number }>(
+      `/api/quotes/${id}/discount`,
+      { method: "POST", body: JSON.stringify({ lineIds, percent }) },
+      t,
+    ),
+
+  createItem: (t: string, id: string, lineId: string) =>
+    req<Quote>(`/api/quotes/${id}/lines/${lineId}/create-item`, { method: "POST" }, t),
+
+  createEstimate: (t: string, id: string) =>
+    req<{ ok: boolean; estimateNumber: string | null; lineCount: number | null; blockers: string[]; message: string }>(
+      `/api/quotes/${id}/estimate`,
+      { method: "POST" },
+      t,
+    ),
+};

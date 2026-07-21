@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# Generated PIE catalog (built from pie-parser corpus via scripts/build_catalog.py)
+backend/data/products.jsonl
+backend/data/*.jsonl
+
+# Node / frontend
+node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Env / editor
+.env
+.env.local
+.DS_Store
+
+# TS build info
+frontend/tsconfig.tsbuildinfo
+/pie-parser/

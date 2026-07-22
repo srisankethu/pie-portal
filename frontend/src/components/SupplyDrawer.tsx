@@ -15,6 +15,10 @@ export function SupplyDrawer({
   onRevert: () => void;
 }) {
   const exactSelected = line.supplyCode === line.reqCode;
+  const pricingDelta =
+    line.quoted !== null && line.economics?.recommended !== null && line.economics?.recommended !== undefined
+      ? line.quoted - line.economics.recommended
+      : null;
   return (
     <div className="overlay" onClick={onClose}>
       <div className="drawer" onClick={(e) => e.stopPropagation()}>
@@ -34,9 +38,50 @@ export function SupplyDrawer({
         </div>
         <div className="drawer-body">
           {line.substituted && (
-            <button className="btn btn-ghost btn-sm" onClick={onRevert} style={{ marginBottom: 8 }}>
+            <div className="drawer-alert">
+              Requested product remains visible. This line currently quotes an alternate supply product.
+            </div>
+          )}
+          {line.substituted && (
+            <button
+              className="btn btn-ghost btn-sm"
+              title="Revert this line to the originally requested product"
+              onClick={onRevert}
+              style={{ marginBottom: 12 }}
+            >
               ↩ Revert to exact / requested
             </button>
+          )}
+          {mgmt && line.economics && (
+            <div className="drawer-pricing-card">
+              <div className="drawer-pricing-header">Pricing context</div>
+              <div className="drawer-pricing-grid">
+                <div>
+                  <div className="drawer-pricing-label">Current quote</div>
+                  <div className="drawer-pricing-value">{inr(line.quoted)}</div>
+                </div>
+                <div>
+                  <div className="drawer-pricing-label">Recommended</div>
+                  <div className="drawer-pricing-value">{inr(line.economics.recommended)}</div>
+                </div>
+                <div>
+                  <div className="drawer-pricing-label">Cost</div>
+                  <div className="drawer-pricing-value">{inr(line.economics.cost)}</div>
+                </div>
+              </div>
+              {pricingDelta !== null && (
+                <div className="drawer-pricing-footnote">
+                  Current quoted rate is {pricingDelta > 0 ? "above" : "below"} recommendation by {inr(Math.abs(pricingDelta))}.
+                </div>
+              )}
+            </div>
+          )}
+          {!mgmt && line.quoted !== null && (
+            <div className="drawer-pricing-card">
+              <div className="drawer-pricing-header">Current line rate</div>
+              <div className="drawer-pricing-value">{inr(line.quoted)}</div>
+              <div className="drawer-pricing-footnote">Adjust the rate inline in the grid when you need to update this line.</div>
+            </div>
           )}
           {line.candidates.length === 0 && (
             <div className="empty">
@@ -68,7 +113,11 @@ export function SupplyDrawer({
                   )}
                   <span style={{ flex: 1 }} />
                   {!selected && (
-                    <button className="btn btn-primary btn-sm" onClick={() => onSelect(c.code, false)}>
+                    <button
+                      className="btn btn-primary btn-sm"
+                      title={`Select ${c.code} as the supply product`}
+                      onClick={() => onSelect(c.code, false)}
+                    >
                       Select
                     </button>
                   )}

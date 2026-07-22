@@ -95,6 +95,14 @@ def set_price(quote_id: str, line_id: str, body: SetPriceRequest,
     return q.to_dict(principal.is_mgmt)
 
 
+@router.delete("/{quote_id}/lines/{line_id}")
+def delete_line(quote_id: str, line_id: str,
+                principal: Principal = Depends(current_principal)):
+    q = _get_quote(quote_id)
+    store.delete_line(q, line_id)
+    return q.to_dict(principal.is_mgmt)
+
+
 @router.post("/{quote_id}/discount")
 def apply_discount(quote_id: str, body: DiscountRequest,
                    principal: Principal = Depends(current_principal)):

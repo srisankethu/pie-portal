@@ -322,6 +322,14 @@ class QuoteStore:
     def set_price(self, ln: Line, price: Optional[float]) -> None:
         ln.quoted = price
 
+    def delete_line(self, quote: Quote, line_id: str) -> Line:
+        with self._lock:
+            line = next((ln for ln in quote.lines if ln.id == line_id), None)
+            if line is None:
+                raise KeyError(line_id)
+            quote.lines.remove(line)
+            return line
+
     def apply_discount(self, lines: List[Line], pct: float) -> int:
         n = 0
         for ln in lines:

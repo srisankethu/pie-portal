@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, clearSession, loadSession, saveSession } from "./api";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { api, clearDraftQuote, clearSession, loadDraftQuote, loadSession, saveDraftQuote, saveSession } from "./api";
 import type { Line, Quote, Session } from "./types";
 import { SignIn } from "./components/SignIn";
 import { IntakeModal } from "./components/IntakeModal";
@@ -49,19 +49,27 @@ export default function App() {
   const [drawerLineId, setDrawerLineId] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [draftStatus, setDraftStatus] = useState<string | null>(null);
   const toastTimer = useRef<number | undefined>(undefined);
 
   const mgmt = session?.role === "mgmt";
 
-  const flash = useCallback((msg: string) => {
+  const flash = (msg: string) => {
     setToast(msg);
     window.clearTimeout(toastTimer.current);
     toastTimer.current = window.setTimeout(() => setToast(null), 2400);
-  }, []);
+  };
 
-  // Create a fresh quote on sign-in.
+  // Create a fresh quote on sign-in, or resume a locally saved draft.
   useEffect(() => {
     if (session && !quote) {
+      const draft = loadDraftQuote();
+      if (draft) {
+        setQuote(draft);
+        setDraftStatus("Resumed draft");
+        flash("Resumed your last draft");
+        return;
+      }
       api
         .createQuote(session.token, "Pitti Engineering Ltd")
         .then(setQuote)
@@ -69,15 +77,24 @@ export default function App() {
     }
   }, [session, quote, flash]);
 
+  useEffect(() => {
+    if (session && quote) {
+      saveDraftQuote(quote);
+      setDraftStatus(`Saved ${new Date().toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit" })}`);
+    }
+  }, [session, quote]);
+
   const onSignedIn = (s: Session) => {
     saveSession(s);
     setSession(s);
   };
   const signOut = () => {
     clearSession();
+    clearDraftQuote();
     setSession(null);
     setQuote(null);
     setSelected({});
+    setDraftStatus(null);
   };
 
   const visible = useMemo(() => {
@@ -90,6 +107,48 @@ export default function App() {
           [l.reqCode, l.reqDesc, l.supplyCode, l.raw].filter(Boolean).join(" ").toLowerCase().includes(q)),
     );
   }, [quote, filter, search]);
+
+  const saveDraft = () => {
+    if (!quote) return;
+    saveDraftQuote(quote);
+    setDraftStatus(`Saved ${new Date().toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit" })}`);
+    flash("Draft saved locally");
+  };
+
+  const selectVisible = () => {
+    if (!quote) return;
+    const next = visible.reduce<Record<string, boolean>>((acc, line) => {
+      acc[line.id] = true;
+      return acc;
+    }, {});
+    setSelected((prev) => ({ ...prev, ...next }));
+    flash(`${visible.length} visible line(s) selected`);
+  };
+
+  const clearSelection = () => {
+    setSelected({});
+    flash("Selection cleared");
+  };
+
+  const selectAllVisible = () => {
+    if (!quote) return;
+    const allVisibleSelected = visible.length > 0 && visible.every((line) => selected[line.id]);
+    if (allVisibleSelected) {
+      const next = visible.reduce<Record<string, boolean>>((acc, line) => {
+        acc[line.id] = false;
+        return acc;
+      }, {});
+      setSelected((prev) => ({ ...prev, ...next }));
+      flash("Selection cleared");
+      return;
+    }
+    const next = visible.reduce<Record<string, boolean>>((acc, line) => {
+      acc[line.id] = true;
+      return acc;
+    }, {});
+    setSelected((prev) => ({ ...prev, ...next }));
+    flash(`${visible.length} visible line(s) selected`);
+  };
 
   // Keyboard navigation (design: ↑↓ navigate, Enter open, Space select, / search).
   useEffect(() => {
@@ -105,6 +164,17 @@ export default function App() {
       if (e.key === "/" && !typing) {
         e.preventDefault();
         document.getElementById("qb-search")?.focus();
+        return;
+      }
+      const mod = e.ctrlKey || e.metaKey;
+      if (mod && e.key.toLowerCase() === "a") {
+        e.preventDefault();
+        selectAllVisible();
+        return;
+      }
+      if (mod && e.key.toLowerCase() === "d") {
+        e.preventDefault();
+        clearSelection();
         return;
       }
       if (typing || intakeOpen || drawerLineId) return;
@@ -177,6 +247,13 @@ export default function App() {
   const doSetPrice = (id: string, price: number | null) =>
     guard(async () => setQuote(await api.setPrice(t, quote!.id, id, price)));
 
+  const doDeleteLine = (id: string) =>
+    guard(async () => {
+      const q = await api.deleteLine(t, quote!.id, id);
+      setQuote(q);
+      flash("Line removed from quote");
+    });
+
   const doCreateItem = (id: string) =>
     guard(async () => {
       setQuote(await api.createItem(t, quote!.id, id));
@@ -201,6 +278,7 @@ export default function App() {
     });
 
   const selectedCount = Object.values(selected).filter(Boolean).length;
+  const hasLines = quote.lines.length > 0;
 
   return (
     <div className="app">
@@ -215,6 +293,7 @@ export default function App() {
           </span>
         </div>
         <div className="spacer" />
+        {draftStatus && <span className="status-pill">{draftStatus}</span>}
         <span className={"role-badge" + (mgmt ? " mgmt" : "")}>
           {mgmt ? "Management · full economics" : "Sales"} · {session.name}
         </span>
@@ -254,8 +333,18 @@ export default function App() {
           style={{ maxWidth: 220, minHeight: 30 }}
           placeholder="Search  ( / )"
           value={search}
+          aria-label="Search quote lines"
           onChange={(e) => setSearch(e.target.value)}
         />
+        <button className="btn btn-secondary btn-sm" onClick={saveDraft}>
+          Save draft
+        </button>
+        <button className="btn btn-secondary btn-sm" onClick={selectVisible} disabled={!visible.length}>
+          Select visible
+        </button>
+        <button className="btn btn-secondary btn-sm" onClick={clearSelection} disabled={!selectedCount}>
+          Clear
+        </button>
         <button className="btn btn-primary btn-sm" onClick={() => setIntakeOpen(true)}>
           Paste RFQ
         </button>
@@ -281,37 +370,89 @@ export default function App() {
         </div>
       )}
 
-      <div className="grid-wrap">
-        <LineGrid
-          lines={visible}
-          mgmt={mgmt}
-          selected={selected}
-          focusId={focusId}
-          onToggle={(id) => setSelected((s) => ({ ...s, [id]: !s[id] }))}
-          onOpen={(id) => {
-            setFocusId(id);
-            setDrawerLineId(id);
-          }}
-          onSetPrice={doSetPrice}
-          onCreateItem={doCreateItem}
-        />
-        <div className="kbd-hints" style={{ marginTop: "var(--space-4)" }}>
-          <span>
-            <span className="kbd">↑↓</span> navigate
-          </span>
-          <span>
-            <span className="kbd">Enter</span> supply options
-          </span>
-          <span>
-            <span className="kbd">Space</span> select
-          </span>
-          <span>
-            <span className="kbd">/</span> search
-          </span>
-          <span>
-            <span className="kbd">Esc</span> close
-          </span>
+      {selectedCount > 0 && (
+        <div className="bulk-actions">
+          <span>{selectedCount} selected</span>
+          <button className="btn btn-secondary btn-sm" onClick={() => doDiscount(10)}>
+            Apply 10% discount
+          </button>
+          <button className="btn btn-secondary btn-sm" onClick={selectAllVisible}>
+            Select all visible
+          </button>
+          <button className="btn btn-secondary btn-sm" onClick={clearSelection}>
+            Clear selection
+          </button>
         </div>
+      )}
+
+      <div className="grid-wrap">
+        {!hasLines ? (
+          <div className="empty-state-card">
+            <div className="empty-state-card__eyebrow">Start a quote</div>
+            <h3>Paste an RFQ and let the engine resolve it into a quote-ready grid.</h3>
+            <p>
+              Each line becomes a reviewed item with supplier options, availability, and the right
+              next action.
+            </p>
+            <div className="empty-state-actions">
+              <button className="btn btn-primary" onClick={() => setIntakeOpen(true)}>
+                Paste RFQ
+              </button>
+              <button className="btn btn-secondary" onClick={() => setIntakeOpen(true)}>
+                Load sample RFQ
+              </button>
+            </div>
+            <div className="inline-help">
+              <span>
+                Use <span className="kbd">/</span> to jump to search
+              </span>
+              <span>
+                Use <span className="kbd">↑↓</span> and <span className="kbd">Enter</span> to review
+                lines quickly
+              </span>
+            </div>
+          </div>
+        ) : visible.length === 0 ? (
+          <div className="empty-state-card compact">
+            <div className="empty-state-card__eyebrow">No matching lines</div>
+            <h3>Nothing matches the current filter or search.</h3>
+            <p>Try clearing the filter, changing the search term, or adding a fresh RFQ.</p>
+          </div>
+        ) : (
+          <>
+            <LineGrid
+              lines={visible}
+              mgmt={mgmt}
+              selected={selected}
+              focusId={focusId}
+              onToggle={(id) => setSelected((s) => ({ ...s, [id]: !s[id] }))}
+              onOpen={(id) => {
+                setFocusId(id);
+                setDrawerLineId(id);
+              }}
+              onSetPrice={doSetPrice}
+              onDeleteLine={doDeleteLine}
+              onCreateItem={doCreateItem}
+            />
+            <div className="kbd-hints" style={{ marginTop: "var(--space-4)" }}>
+              <span>
+                <span className="kbd">↑↓</span> navigate
+              </span>
+              <span>
+                <span className="kbd">Enter</span> supply options
+              </span>
+              <span>
+                <span className="kbd">Space</span> select
+              </span>
+              <span>
+                <span className="kbd">/</span> search
+              </span>
+              <span>
+                <span className="kbd">Esc</span> close
+              </span>
+            </div>
+          </>
+        )}
       </div>
 
       <SummaryBar

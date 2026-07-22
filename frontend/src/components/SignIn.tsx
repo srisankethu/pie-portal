@@ -29,36 +29,42 @@ export function SignIn({ onSignedIn }: { onSignedIn: (s: Session) => void }) {
   return (
     <div className="signin-wrap">
       <form className="signin" onSubmit={submit}>
-        <h6 className="text-muted">Sanketh</h6>
-        <h2>Quote Builder</h2>
-        <p className="text-muted" style={{ marginBottom: "var(--space-6)" }}>
-          Enter your credentials. Your account determines your view.
-        </p>
-        <div className="field" style={{ marginBottom: "var(--space-3)" }}>
-          <label>Email</label>
-          <input
-            className="input"
-            value={email}
-            autoFocus
-            onChange={(e) => setEmail(e.target.value)}
-          />
+        <div className="signin-card" role="presentation">
+          <h6 className="text-muted">Sanketh</h6>
+          <h2>Quote Builder</h2>
+          <p className="text-muted" style={{ marginBottom: "var(--space-6)" }}>
+            Sign in to review RFQs, pick supply options, and create estimates with confidence.
+          </p>
+          <div className="field" style={{ marginBottom: "var(--space-3)" }}>
+            <label htmlFor="email">Email</label>
+            <input
+              id="email"
+              className="input"
+              value={email}
+              autoComplete="email"
+              autoFocus
+              onChange={(e) => setEmail(e.target.value)}
+            />
+          </div>
+          <div className="field">
+            <label htmlFor="password">Password</label>
+            <input
+              id="password"
+              className="input"
+              type="password"
+              value={password}
+              autoComplete="current-password"
+              onChange={(e) => setPassword(e.target.value)}
+            />
+          </div>
+          {error && <div className="err">{error}</div>}
+          <button className="btn btn-primary" style={{ width: "100%", marginTop: "var(--space-4)" }} disabled={busy}>
+            {busy ? "Signing in…" : "Continue to quote builder"}
+          </button>
         </div>
-        <div className="field">
-          <label>Password</label>
-          <input
-            className="input"
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-          />
-        </div>
-        {error && <div className="err">{error}</div>}
-        <button className="btn btn-primary" style={{ width: "100%", marginTop: "var(--space-4)" }} disabled={busy}>
-          {busy ? "Signing in…" : "Sign in"}
-        </button>
         <div className="demo">
-          Demo accounts — <b>r.nair@sanketh.in</b> (salesperson) · <b>s.menon@sanketh.in</b>{" "}
-          (management). Any password.
+          Demo access — <b>r.nair@sanketh.in</b> (salesperson) · <b>s.menon@sanketh.in</b>{" "}
+          (management). Any password works.
         </div>
       </form>
     </div>

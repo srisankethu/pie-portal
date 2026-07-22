@@ -1,6 +1,7 @@
 import type { Quote, Session } from "./types";
 
 const TOKEN_KEY = "pie_portal_session";
+const DRAFT_KEY = "pie_portal_draft";
 
 export function loadSession(): Session | null {
   const raw = localStorage.getItem(TOKEN_KEY);
@@ -11,6 +12,23 @@ export function saveSession(s: Session) {
 }
 export function clearSession() {
   localStorage.removeItem(TOKEN_KEY);
+}
+
+export function loadDraftQuote(): Quote | null {
+  const raw = localStorage.getItem(DRAFT_KEY);
+  return raw ? (JSON.parse(raw) as Quote) : null;
+}
+
+export function saveDraftQuote(quote: Quote | null) {
+  if (!quote) {
+    localStorage.removeItem(DRAFT_KEY);
+    return;
+  }
+  localStorage.setItem(DRAFT_KEY, JSON.stringify(quote));
+}
+
+export function clearDraftQuote() {
+  localStorage.removeItem(DRAFT_KEY);
 }
 
 async function req<T>(path: string, opts: RequestInit = {}, token?: string): Promise<T> {
@@ -54,6 +72,9 @@ export const api = {
       { method: "POST", body: JSON.stringify({ price }) },
       t,
     ),
+
+  deleteLine: (t: string, id: string, lineId: string) =>
+    req<Quote>(`/api/quotes/${id}/lines/${lineId}`, { method: "DELETE" }, t),
 
   discount: (t: string, id: string, lineIds: string[], percent: number) =>
     req<Quote & { applied: number }>(

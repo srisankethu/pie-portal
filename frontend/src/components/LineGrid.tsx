@@ -9,6 +9,7 @@ export function LineGrid({
   onToggle,
   onOpen,
   onSetPrice,
+  onDeleteLine,
   onCreateItem,
 }: {
   lines: Line[];
@@ -18,6 +19,7 @@ export function LineGrid({
   onToggle: (id: string) => void;
   onOpen: (id: string) => void;
   onSetPrice: (id: string, price: number | null) => void;
+  onDeleteLine: (id: string) => void;
   onCreateItem: (id: string) => void;
 }) {
   if (lines.length === 0) {
@@ -43,12 +45,29 @@ export function LineGrid({
       </thead>
       <tbody>
         {lines.map((l, i) => {
+          const severityClass = l.flags.unresolved
+            ? "severity-high"
+            : l.substituted || l.flags.procurement
+              ? "severity-medium"
+              : l.flags.attention || l.flags.manualReview || l.flags.missingBooks
+                ? "severity-low"
+                : "";
           const rowClass = [
             focusId === l.id ? "focused" : "",
             l.status.kind === "technical" ? "tech" : l.flags.attention ? "attention" : "",
+            severityClass,
           ]
             .filter(Boolean)
             .join(" ");
+          const hintParts = [
+            l.flags.unresolved ? "unresolved" : "",
+            l.substituted ? "substitute active" : "",
+            l.flags.procurement ? "procurement watch" : "",
+            l.flags.missingBooks ? "missing Zoho item" : "",
+            l.flags.manualReview ? "manual review" : "",
+            l.shortage && l.shortage > 0 ? `shortage ${l.shortage}` : "",
+            l.availUnknown ? "availability pending" : "",
+          ].filter(Boolean);
           const econ = l.economics;
           return (
             <tr key={l.id} className={rowClass} onClick={() => onOpen(l.id)}>
@@ -56,6 +75,8 @@ export function LineGrid({
                 <input
                   type="checkbox"
                   checked={!!selected[l.id]}
+                  aria-label={`Select ${l.reqCode}`}
+                  title={`Select ${l.reqCode}`}
                   onChange={() => onToggle(l.id)}
                   style={{ accentColor: "var(--color-accent)" }}
                 />
@@ -64,6 +85,16 @@ export function LineGrid({
               <td>
                 <div className="mono">{l.reqCode}</div>
                 <div className="req-desc">{l.reqDesc}</div>
+                {hintParts.length > 0 && (
+                  <div className="row-hints" aria-label="Line alerts">
+                    {hintParts.map((hint) => (
+                      <span key={hint} className="row-hint-pill">
+                        {hint}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                {l.substituted && <div className="row-meta-pill">substituted</div>}
               </td>
               <td className="num">{l.reqQty}</td>
               <td>
@@ -71,6 +102,7 @@ export function LineGrid({
                   <>
                     <div className={"mono" + (l.substituted ? " subst" : "")}>{l.supplyCode}</div>
                     <div className="req-desc">{l.supplyDesc || ""}</div>
+                    {l.substituted && <div className="row-meta-pill accent">selected alternate</div>}
                     {(l.sel === "USER" || l.sel === "MANUAL") && (
                       <div style={{ fontSize: 10.5 }} className={l.sel === "MANUAL" ? "warn" : ""}>
                         {l.sel === "MANUAL" ? "manually selected" : "user selected"}
@@ -79,6 +111,7 @@ export function LineGrid({
                     {l.inBooks === false && (
                       <button
                         className="btn btn-ghost btn-sm"
+                        title={`Create ${l.reqCode} in Zoho Books`}
                         onClick={(e) => {
                           e.stopPropagation();
                           onCreateItem(l.id);
@@ -117,6 +150,7 @@ export function LineGrid({
                   defaultValue={l.quoted ?? ""}
                   key={`${l.id}-${l.quoted}`}
                   placeholder="—"
+                  title={`Set quoted rate for ${l.reqCode}`}
                   onBlur={(e) => {
                     const v = e.target.value.replace(/[^0-9.]/g, "");
                     onSetPrice(l.id, v === "" ? null : parseFloat(v));
@@ -136,12 +170,27 @@ export function LineGrid({
                 </td>
               )}
               <td>
-                <span
-                  className="chip"
-                  style={{ color: statusColor(l.status.kind), border: "1px solid currentColor" }}
-                >
-                  {l.status.label}
-                </span>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                  <span
+                    className="chip"
+                    style={{ color: statusColor(l.status.kind), border: "1px solid currentColor" }}
+                  >
+                    {l.status.label}
+                  </span>
+                  {selected[l.id] && (
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onDeleteLine(l.id);
+                      }}
+                      aria-label={`Delete ${l.reqCode}`}
+                      title={`Remove ${l.reqCode} from this quote`}
+                    >
+                      <span aria-hidden="true">🗑</span>
+                    </button>
+                  )}
+                </div>
               </td>
             </tr>
           );

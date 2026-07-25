@@ -14,6 +14,7 @@ from ..config import settings
 from ..db import get_session
 from ..ingestion.sync import SyncService, get_source
 from ..seed import ensure_org_and_users
+from ..signals.engine import run_detectors
 
 router = APIRouter(prefix="/api/v1/internal", tags=["internal"])
 
@@ -39,3 +40,13 @@ def sync_zoho(
     service = SyncService(session, get_source(), principal.organization_id)
     report = service.run()
     return report.to_dict()
+
+
+@router.post("/detectors/run")
+def detectors_run(
+    principal: Principal = Depends(require_manager_or_owner),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Run the deterministic Signal Engine over the org's read model (owner/manager
+    only). Emits immutable signals; no AI, no recommendations."""
+    return run_detectors(session, principal.organization_id)

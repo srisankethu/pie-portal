@@ -1,13 +1,21 @@
-.PHONY: help setup catalog backend frontend dev test
+.PHONY: help setup catalog migrate seed backend frontend dev test
 
 help:
-	@echo "pie-portal — Sanketh Quote Builder"
+	@echo "pie-portal — Sanketh Quote Builder + Commercial Decision Platform"
 	@echo "  make setup      install backend + frontend deps"
-	@echo "  make catalog    build the decoded PIE catalogue from the pie-parser submodule"
+	@echo "  make catalog    build the decoded PIE catalogue from the pie-parser clone"
+	@echo "  make migrate    apply database migrations (Decision Platform)"
+	@echo "  make seed       seed the default org + demo users"
 	@echo "  make backend    run the FastAPI backend on :8000"
 	@echo "  make frontend   run the Vite dev server on :5173 (proxies /api -> :8000)"
 	@echo "  make dev        run backend + frontend together"
 	@echo "  make test       run backend tests"
+
+migrate:
+	cd backend && python3 -m alembic upgrade head
+
+seed:
+	cd backend && python3 -m app.seed
 
 setup:
 	./scripts/setup_pie_parser.sh

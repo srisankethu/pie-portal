@@ -1,9 +1,17 @@
 fastapi>=0.111
 uvicorn[standard]>=0.30
 pydantic>=2.7
-# pie-parser (vendored as a git submodule at ../pie-parser) pulls these in:
+
+# Commercial Decision Platform — persistence (Phase 1 foundation)
+SQLAlchemy>=2.0
+alembic>=1.13
+# Postgres driver for production; dev/test default to SQLite (stdlib, no driver).
+psycopg[binary]>=3.1
+
+# pie-parser (the pinned clone at ../pie-parser) pulls these in:
 pyyaml>=6.0
 openpyxl>=3.1
+
 # tests
 pytest>=8.0
 httpx>=0.27

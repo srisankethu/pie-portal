@@ -73,6 +73,21 @@ class Settings:
     DETECTOR_VERSION: str = os.environ.get("DETECTOR_VERSION", "v0")
     THRESHOLD_CONFIG_VERSION: str = os.environ.get("THRESHOLD_CONFIG_VERSION", "v0")
 
+    # ── AI Decision Layer ────────────────────────────────────────────────────
+    # Provider is swappable; "mock" (deterministic, offline — dev/test default) or
+    # "anthropic" (live). A cheap, fast model suits small-bundle interpretation.
+    AI_PROVIDER: str = os.environ.get("AI_PROVIDER", "mock")
+    AI_MODEL: str = os.environ.get("AI_MODEL", "claude-haiku-4-5-20251001")
+    AI_MAX_TOKENS: int = int(os.environ.get("AI_MAX_TOKENS", "400"))   # bounded output
+    AI_TIMEOUT_SECONDS: float = float(os.environ.get("AI_TIMEOUT_SECONDS", "20"))
+    PROMPT_VERSION: str = os.environ.get("PROMPT_VERSION", "p1")
+    ANTHROPIC_API_KEY: str = os.environ.get("ANTHROPIC_API_KEY", "")
+    ANTHROPIC_API_BASE: str = os.environ.get("ANTHROPIC_API_BASE", "https://api.anthropic.com")
+    # Priority banding (deterministic base + bounded AI adjustment).
+    PRIORITY_HIGH_AT: int = int(os.environ.get("PRIORITY_HIGH_AT", "70"))
+    PRIORITY_MEDIUM_AT: int = int(os.environ.get("PRIORITY_MEDIUM_AT", "40"))
+    AI_PRIORITY_ADJUST_BOUND: int = int(os.environ.get("AI_PRIORITY_ADJUST_BOUND", "20"))
+
 
 settings = Settings()
 # Re-resolve PIE-derived paths in case PIE_PARSER_ROOT came from the env.

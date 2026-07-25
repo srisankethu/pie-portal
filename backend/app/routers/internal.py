@@ -50,3 +50,15 @@ def detectors_run(
     """Run the deterministic Signal Engine over the org's read model (owner/manager
     only). Emits immutable signals; no AI, no recommendations."""
     return run_detectors(session, principal.organization_id)
+
+
+@router.post("/decisions/generate")
+def decisions_generate(
+    principal: Principal = Depends(require_manager_or_owner),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Turn the org's latest signals into validated, persisted decisions via the
+    AI Decision Layer (owner/manager only). Deterministic signals are the floor;
+    AI failures degrade to templates, never suppress a real signal."""
+    from ..decisions.service import DecisionService
+    return DecisionService(session, principal.organization_id).generate()

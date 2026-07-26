@@ -35,6 +35,10 @@ def template(signal_type: str, metrics: dict[str, Any], subject_label: str) -> d
         title = f"Cost increase not passed through: {subject_label}"
         expl = (f"Purchase cost rose {_pct(m.get('cost_delta_pct'))} while the selling price "
                 f"moved {_pct(m.get('price_change_pct'))}.")
+    elif signal_type == "QUOTE_CONTEXT":
+        title = f"Commercial context: {subject_label}"
+        expl = ("The commercial facts for this customer and item are shown on the left. "
+                "The reading of them is unavailable; weigh the facts and price at your discretion.")
     else:
         title = f"Signal: {subject_label}"
         expl = "A deterministic signal was detected for this subject."

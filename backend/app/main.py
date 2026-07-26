@@ -14,7 +14,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .pie_service import pie_service
-from .routers import auth, decisions, internal, platform_auth, quote
+from .routers import auth, decisions, internal, platform_auth, quote, quote_support
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("pie_portal")
@@ -56,6 +56,7 @@ app.include_router(quote.router)
 app.include_router(platform_auth.router)
 app.include_router(internal.router)
 app.include_router(decisions.router)
+app.include_router(quote_support.router)
 
 
 @app.get("/api/health")

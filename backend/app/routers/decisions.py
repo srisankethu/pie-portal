@@ -18,7 +18,7 @@ from ..authz import Principal, can_view_decision, current_principal, decision_li
 from ..context.assembler import _is_restricted
 from ..db import get_session
 from ..domain import models
-from ..domain.enums import HumanAction, Role, SubjectEntityType
+from ..domain.enums import DecisionType, HumanAction, Role, SubjectEntityType
 from ..domain.schemas import ActionRequest, DecisionRead
 from ..repositories import DecisionRepository
 
@@ -128,6 +128,11 @@ def list_decisions(
 ) -> list[DecisionRead]:
     repo = DecisionRepository(session, principal.organization_id)
     scope = decision_list_scope(principal)
+    # QUOTE_CONTEXT is on-demand quote support, not a proactive attention item —
+    # keep it out of the queue unless explicitly requested by type.
+    if type != DecisionType.QUOTE_CONTEXT.value:
+        existing = tuple(scope.get("exclude_types", ()))
+        scope["exclude_types"] = existing + (DecisionType.QUOTE_CONTEXT.value,)
     rows = repo.list(decision_type=type, status=status_filter, **scope)
     return [_to_read(d) for d in rows]
 

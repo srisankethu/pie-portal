@@ -42,8 +42,16 @@ class Settings:
     # Max ranked alternatives returned per line.
     TOP_N: int = int(os.environ.get("PIE_TOP_N", "6"))
 
+    # Deployment environment. "production" turns on hard guards (real auth secret
+    # required, demo-seed disabled). Anything else is treated as dev/test.
+    APP_ENV: str = os.environ.get("APP_ENV", "development")
+
     # Demo auth secret (dev only). A real deployment injects this.
     AUTH_SECRET: str = os.environ.get("AUTH_SECRET", "dev-secret-change-me")
+
+    @property
+    def is_production(self) -> bool:
+        return self.APP_ENV.strip().lower() == "production"
 
     # ── Commercial Decision Platform (Phase 1 foundation) ────────────────────
     # Single primary database. Dev/test default to SQLite; production sets a
@@ -69,9 +77,9 @@ class Settings:
     # "fixture" (deterministic offline source) or "api" (live Zoho, deferred).
     ZOHO_SOURCE: str = os.environ.get("ZOHO_SOURCE", "fixture")
 
-    # Versioning stamped onto deterministic artifacts for provenance/reproducibility.
+    # Version stamped onto deterministic artifacts for provenance/reproducibility.
+    # (Threshold-config version is carried by SignalThresholds.version, not here.)
     DETECTOR_VERSION: str = os.environ.get("DETECTOR_VERSION", "v0")
-    THRESHOLD_CONFIG_VERSION: str = os.environ.get("THRESHOLD_CONFIG_VERSION", "v0")
 
     # ── AI Decision Layer ────────────────────────────────────────────────────
     # Provider is swappable; "mock" (deterministic, offline — dev/test default) or

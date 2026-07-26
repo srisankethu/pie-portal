@@ -108,10 +108,6 @@ def top_products_by_revenue_change(
 
 
 # ── cost aggregates ──────────────────────────────────────────────────────────
-def latest_cost(costs: list[CostRow]) -> Optional[CostRow]:
-    return costs[-1] if costs else None
-
-
 def prior_cost_basis(costs: list[CostRow]) -> Optional[CostRow]:
     """The most recent cost strictly before the latest cost record."""
     return costs[-2] if len(costs) >= 2 else None

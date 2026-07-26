@@ -161,3 +161,16 @@ def test_health(client_and_maker):
     client, _ = client_and_maker
     r = client.get("/api/v1/internal/health")
     assert r.status_code == 200 and r.json()["database"] is True
+
+
+def test_demo_seed_disabled_in_production(client_and_maker, monkeypatch):
+    """The demo-seed endpoint writes fabricated data; it must be refused in
+    production even for an owner (prevents polluting the real read model)."""
+    from app.config import settings
+    client, _ = client_and_maker
+    owner = _hdr(_login(client, "s.menon@sanketh.in"))
+    monkeypatch.setattr(settings, "APP_ENV", "production")
+    assert client.post("/api/v1/internal/demo-seed", headers=owner).status_code == 403
+    # allowed outside production
+    monkeypatch.setattr(settings, "APP_ENV", "development")
+    assert client.post("/api/v1/internal/demo-seed", headers=owner).status_code == 200

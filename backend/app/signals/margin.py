@@ -46,9 +46,12 @@ def detect(snapshot: Snapshot, th: SignalThresholds, as_of: date) -> list[Signal
         if recent_cost_row is None or prior_cost_row is None:
             continue  # no applicable cost basis in a period
 
-        # reliability of the cost we would compute margin from
+        # reliability of BOTH costs we compute the two margins from. A placeholder
+        # or zero prior cost would inflate the baseline margin toward 100% and
+        # manufacture a huge, false "deterioration"; withhold on either bad cost.
         anomalies = cost_anomalies(recent_cost_row.unit_cost, recent_price, th)
-        if not cost_is_reliable(anomalies):
+        prior_anomalies = cost_anomalies(prior_cost_row.unit_cost, prior_price, th)
+        if not cost_is_reliable(anomalies) or not cost_is_reliable(prior_anomalies):
             # withhold: do not assert a margin on bad cost; flag for verification
             continue
 

@@ -56,6 +56,14 @@ def test_grounded_number_from_fact_passes():
     assert out.recommended_action
 
 
+def test_money_value_x100_is_not_grounded():
+    """A currency fact (12000) must NOT ground a 100× inflated figure (1,200,000):
+    the ×100 percent form is only allowed for fractional ratios, not money."""
+    with pytest.raises(AIValidationError) as e:
+        validate_output(_out(recommended_action="Wire 1200000 to the vendor."), make_bundle())
+    assert e.value.code == "ungrounded_number"
+
+
 def test_priority_adjustment_clamped():
     out = validate_output(_out(priority_adjustment=999), make_bundle())
     assert out.priority_adjustment == 20

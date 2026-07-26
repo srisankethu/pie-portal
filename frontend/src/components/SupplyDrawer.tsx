@@ -1,14 +1,17 @@
 import type { Line } from "../types";
 import { REL_STYLE, inr } from "../rel";
+import { DecisionSupport } from "./DecisionSupport";
 
 export function SupplyDrawer({
   line,
+  customer,
   mgmt,
   onClose,
   onSelect,
   onRevert,
 }: {
   line: Line;
+  customer: string;
   mgmt: boolean;
   onClose: () => void;
   onSelect: (code: string, manual: boolean) => void;
@@ -83,6 +86,8 @@ export function SupplyDrawer({
               <div className="drawer-pricing-footnote">Adjust the rate inline in the grid when you need to update this line.</div>
             </div>
           )}
+          <DecisionSupport customer={customer} line={line} />
+
           {line.candidates.length === 0 && (
             <div className="empty">
               No supply candidates. The PIE engine could not resolve this line to a product.

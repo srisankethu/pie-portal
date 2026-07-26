@@ -111,6 +111,18 @@ def test_margin_cost_gt_price_withholds():
     assert margin.detect(snap(sales=sales, costs=costs), TH, AS_OF) == []
 
 
+def test_margin_placeholder_prior_cost_withholds():
+    """A zero/placeholder PRIOR cost would inflate the baseline margin toward 100%
+    and fabricate a huge false deterioration — it must be withheld, not asserted."""
+    costs = [cost("p_ph", "2026-01-15", 100, 0, bill="b-ph"),   # prior basis: placeholder 0
+             cost("p_ph", "2026-05-01", 100, 70, bill="b-ok")]  # recent basis: reliable
+    sales = ([sale("cA", "p_ph", d, 10, 100, invoice=f"i-b{i}")
+              for i, d in enumerate(["2026-02-01", "2026-03-01"])]
+             + [sale("cA", "p_ph", d, 10, 80, invoice=f"i-r{i}")
+                for i, d in enumerate(["2026-05-05", "2026-06-01"])])
+    assert margin.detect(snap(sales=sales, costs=costs), TH, AS_OF) == []
+
+
 def test_cost_anomaly_helpers():
     a = cost_anomalies(Decimal("200"), Decimal("100"), TH)
     assert {x["code"] for x in a} >= {Anomaly.COST_GT_PRICE, Anomaly.NEGATIVE_MARGIN}

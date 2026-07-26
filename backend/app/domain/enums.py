@@ -25,7 +25,6 @@ class CustomerStatus(str, Enum):
 class SubjectEntityType(str, Enum):
     CUSTOMER = "CUSTOMER"
     PRODUCT = "PRODUCT"
-    CUSTOMER_PRODUCT = "CUSTOMER_PRODUCT"
     QUOTE = "QUOTE"
 
 

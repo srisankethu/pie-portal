@@ -467,6 +467,7 @@ export default function App() {
       {drawerLine && (
         <SupplyDrawer
           line={drawerLine}
+          customer={quote.customer}
           mgmt={mgmt}
           onClose={() => setDrawerLineId(null)}
           onSelect={doSelect}

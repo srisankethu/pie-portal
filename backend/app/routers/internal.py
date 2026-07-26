@@ -62,3 +62,14 @@ def decisions_generate(
     AI failures degrade to templates, never suppress a real signal."""
     from ..decisions.service import DecisionService
     return DecisionService(session, principal.organization_id).generate()
+
+
+@router.post("/demo-seed")
+def demo_seed(
+    principal: Principal = Depends(require_manager_or_owner),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Seed a realistic multi-account dataset and run the full pipeline so the UI
+    has genuine, role-gated decisions to render (owner/manager only)."""
+    from ..demo import seed_demo
+    return seed_demo(session)

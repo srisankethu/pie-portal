@@ -15,6 +15,9 @@ class AnthropicProvider:
 
     def __init__(self) -> None:
         self.model = settings.AI_MODEL
+        # Token usage from the most recent call, read by the telemetry layer.
+        # Optional by contract: ``complete`` still returns plain text.
+        self.last_usage: dict | None = None
         if not settings.ANTHROPIC_API_KEY:
             raise ProviderUnavailable("ANTHROPIC_API_KEY is not set")
 
@@ -33,6 +36,7 @@ class AnthropicProvider:
             "system": system,
             "messages": [{"role": "user", "content": user}],
         }
+        self.last_usage = None
         try:
             resp = httpx.post(f"{settings.ANTHROPIC_API_BASE}/v1/messages",
                               headers=headers, json=payload,
@@ -45,6 +49,11 @@ class AnthropicProvider:
             raise ProviderUnavailable(f"HTTP {resp.status_code}")
         if resp.status_code != 200:
             raise ProviderError(f"HTTP {resp.status_code}")
-        blocks = resp.json().get("content", [])
+        body = resp.json()
+        usage = body.get("usage") or {}
+        if usage:
+            self.last_usage = {"input_tokens": usage.get("input_tokens"),
+                               "output_tokens": usage.get("output_tokens")}
+        blocks = body.get("content", [])
         text = "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
         return text.strip()

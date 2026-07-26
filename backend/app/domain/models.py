@@ -207,6 +207,40 @@ class Decision(Base):
                                                  onupdate=_now)
 
 
+# ── AI call telemetry (WS3) ──────────────────────────────────────────────────
+class AiCallLog(Base):
+    """One row per interpretation decision point — including cache hits and
+    up-front suppressions, which never reach the provider.
+
+    Operational/audit data only: it records how a call went (status, reason,
+    latency, tokens, estimated cost), never prompt or response content.
+    """
+
+    __tablename__ = "ai_call_logs"
+
+    ai_call_log_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    decision_type: Mapped[str] = mapped_column(String(48), index=True)
+    subject_entity_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    recipient_role: Mapped[Optional[str]] = mapped_column(String(32))
+    provider: Mapped[str] = mapped_column(String(32), default="")
+    model: Mapped[str] = mapped_column(String(64), default="")
+    prompt_version: Mapped[str] = mapped_column(String(32), default="")
+    context_hash: Mapped[str] = mapped_column(String(64), default="", index=True)
+    ai_status: Mapped[str] = mapped_column(String(16), index=True)
+    provider_called: Mapped[bool] = mapped_column(Boolean, default=False)
+    cache_hit: Mapped[bool] = mapped_column(Boolean, default=False)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    latency_ms: Mapped[Optional[int]] = mapped_column(Integer)
+    input_tokens: Mapped[Optional[int]] = mapped_column(Integer)
+    output_tokens: Mapped[Optional[int]] = mapped_column(Integer)
+    estimated_cost_usd: Mapped[Optional[Any]] = mapped_column(Numeric(18, 8))
+    failure_reason: Mapped[Optional[str]] = mapped_column(String(32), index=True)
+    corrections: Mapped[list[str]] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),
+                                                 default=_now, index=True)
+
+
 # ── Outcome (§8) ─────────────────────────────────────────────────────────────
 class Outcome(Base):
     __tablename__ = "outcomes"

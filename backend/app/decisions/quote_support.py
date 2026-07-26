@@ -23,11 +23,13 @@ from sqlalchemy.orm import Session
 
 from ..ai.interpret import interpret
 from ..ai.provider import AIProvider, select_provider
+from ..ai.telemetry import CallTelemetry
 from ..authz import Principal
 from ..context.quote_bundle import _label, build_quote_bundle
 from ..domain import models
 from ..domain.enums import DecisionStatus, PriorityBand, Role, SubjectEntityType
-from ..repositories import DecisionRepository
+from ..config import settings
+from ..repositories import AiTelemetryRepository, DecisionRepository
 from ..signals.aggregates import load_snapshot
 from ..signals.base import Snapshot
 from ..signals.config import SignalThresholds, load_thresholds
@@ -195,6 +197,7 @@ def quote_support(
     cached = (existing is not None and existing.status == DecisionStatus.OPEN.value
               and (existing.ai or {}).get("context_hash") == bundle.context_hash())
 
+    tel_repo = AiTelemetryRepository(session, org)
     decision_id = None
     if cached:
         ai = existing.ai or {}
@@ -204,9 +207,16 @@ def quote_support(
                   "should_surface": ai.get("should_surface", True), "model": ai.get("model")}
         conf = existing.confidence or {}
         decision_id = existing.decision_id
+        tel_repo.record(CallTelemetry(
+            decision_type="QUOTE_CONTEXT", ai_status=ai.get("status", "PENDING"),
+            provider=getattr(provider, "name", ""), model=getattr(provider, "model", ""),
+            prompt_version=settings.PROMPT_VERSION, context_hash=bundle.context_hash(),
+            subject_entity_id=customer.customer_id, recipient_role=principal.role.value,
+        ), cache_hit=True)
     else:
         result = interpret(bundle, provider, signal_type="QUOTE_CONTEXT",
                            metrics=_flat_metrics(assembled), subject_label=customer.name)
+        tel_repo.record(result.telemetry)
         interp = {"status": result.status.value, "title": result.concise_title,
                   "recommendation": result.recommended_action or None,
                   "explanation": result.explanation, "caveat": result.caveat,

@@ -27,7 +27,8 @@ from ..domain.enums import (
     Role,
     SubjectEntityType,
 )
-from ..repositories import DecisionRepository
+from ..ai.telemetry import CallTelemetry
+from ..repositories import AiTelemetryRepository, DecisionRepository
 from ..signals.config import SignalThresholds, load_thresholds
 
 
@@ -70,6 +71,7 @@ class DecisionService:
         self.provider = provider or select_provider()
         self.th = thresholds or load_thresholds()
         self.repo = DecisionRepository(session, organization_id)
+        self.telemetry = AiTelemetryRepository(session, organization_id)
 
     def _assigned_user(self, signal: models.Signal, role: Role) -> Optional[str]:
         if role is Role.SALESPERSON and signal.subject_entity_type == SubjectEntityType.CUSTOMER.value:
@@ -92,11 +94,23 @@ class DecisionService:
             if (existing is not None and existing.status == DecisionStatus.OPEN.value
                     and (existing.ai or {}).get("context_hash") == bundle.context_hash()):
                 skipped += 1
+                # a cache hit is still an AI-layer event worth counting (WS3)
+                self.telemetry.record(CallTelemetry(
+                    decision_type=dtype,
+                    ai_status=(existing.ai or {}).get("status", AiStatus.PENDING.value),
+                    provider=getattr(self.provider, "name", ""),
+                    model=getattr(self.provider, "model", ""),
+                    prompt_version=settings.PROMPT_VERSION,
+                    context_hash=bundle.context_hash(),
+                    subject_entity_id=signal.subject_entity_id,
+                    recipient_role=role.value,
+                ), cache_hit=True)
                 continue
 
             result = interpret(bundle, self.provider, signal_type=dtype,
                                metrics=signal.metrics or {},
                                subject_label=bundle.subject_ref.get("label", ""))
+            self.telemetry.record(result.telemetry)
             base = max(0, min(100, int(signal.severity_base)))
             adj = result.priority_adjustment if result.status is AiStatus.OK else 0
             final = max(0, min(100, base + adj))

@@ -209,6 +209,53 @@ class DecisionRepository:
         return decision
 
 
+class AiTelemetryRepository:
+    """AI call telemetry, scoped to one org (WS3).
+
+    Writing is best-effort by design: observability must never be able to fail a
+    decision. Reads power the owner-scoped ops metrics endpoint.
+    """
+
+    def __init__(self, session: Session, organization_id: str) -> None:
+        self.s = session
+        self.org = organization_id
+
+    def record(self, tel, *, cache_hit: bool = False) -> Optional[models.AiCallLog]:
+        """Persist one telemetry record. Returns None when disabled."""
+        from .config import settings
+
+        if not settings.AI_TELEMETRY_ENABLED or tel is None:
+            return None
+        row = models.AiCallLog(
+            organization_id=self.org,
+            decision_type=tel.decision_type or "",
+            subject_entity_id=tel.subject_entity_id,
+            recipient_role=tel.recipient_role,
+            provider=tel.provider or "", model=tel.model or "",
+            prompt_version=tel.prompt_version or "",
+            context_hash=tel.context_hash or "",
+            ai_status=tel.ai_status or "",
+            provider_called=bool(tel.provider_called),
+            cache_hit=bool(cache_hit or tel.cache_hit),
+            attempts=int(tel.attempts or 0),
+            latency_ms=tel.latency_ms,
+            input_tokens=tel.input_tokens, output_tokens=tel.output_tokens,
+            estimated_cost_usd=tel.estimated_cost_usd,
+            failure_reason=tel.failure_reason,
+            corrections=list(tel.corrections or []),
+        )
+        self.s.add(row)
+        return row
+
+    def since(self, cutoff: datetime) -> Sequence[models.AiCallLog]:
+        return self.s.scalars(
+            select(models.AiCallLog).where(
+                models.AiCallLog.organization_id == self.org,
+                models.AiCallLog.created_at >= cutoff,
+            )
+        ).all()
+
+
 class SignalRepository:
     """Write-once signal persistence, scoped to one org."""
 

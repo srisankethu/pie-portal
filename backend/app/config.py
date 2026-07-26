@@ -96,6 +96,20 @@ class Settings:
     PRIORITY_MEDIUM_AT: int = int(os.environ.get("PRIORITY_MEDIUM_AT", "40"))
     AI_PRIORITY_ADJUST_BOUND: int = int(os.environ.get("AI_PRIORITY_ADJUST_BOUND", "20"))
 
+    # ── AI observability (WS3) ───────────────────────────────────────────────
+    # Telemetry is purely additive: it writes an audit row and changes no
+    # decision, no API payload, and no existing behaviour. Off ⇒ no rows.
+    AI_TELEMETRY_ENABLED: bool = os.environ.get("AI_TELEMETRY_ENABLED", "1") != "0"
+    # Cost estimation rates (USD per million tokens). These MUST be set to the
+    # deployment's actual contracted rates; the defaults are indicative only.
+    AI_COST_PER_MTOK_INPUT: float = float(os.environ.get("AI_COST_PER_MTOK_INPUT", "1.0"))
+    AI_COST_PER_MTOK_OUTPUT: float = float(os.environ.get("AI_COST_PER_MTOK_OUTPUT", "5.0"))
+    # Two-sided health band on the DEGRADED rate. A gate that never rejects is
+    # as suspicious as one that rejects constantly.
+    AI_DEGRADED_RATE_MAX: float = float(os.environ.get("AI_DEGRADED_RATE_MAX", "0.25"))
+    AI_DEGRADED_RATE_MIN: float = float(os.environ.get("AI_DEGRADED_RATE_MIN", "0.005"))
+    AI_HEALTH_MIN_SAMPLE: int = int(os.environ.get("AI_HEALTH_MIN_SAMPLE", "20"))
+
 
 settings = Settings()
 # Re-resolve PIE-derived paths in case PIE_PARSER_ROOT came from the env.

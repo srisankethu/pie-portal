@@ -20,9 +20,14 @@ class MockProvider:
         self.mode = mode
         self.model = model
         self.calls = 0
+        # Deterministic synthetic usage, so the telemetry/cost path is
+        # exercisable offline. Derived from prompt size, never random.
+        self.last_usage: dict | None = None
 
     def complete(self, system: str, user: str) -> str:
         self.calls += 1
+        self.last_usage = {"input_tokens": (len(system) + len(user)) // 4,
+                           "output_tokens": 120}
         if self.mode == "timeout":
             raise ProviderTimeout("simulated timeout")
         if self.mode == "unavailable":

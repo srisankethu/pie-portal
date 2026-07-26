@@ -23,3 +23,6 @@ frontend/.vite/
 # TS build info
 frontend/tsconfig.tsbuildinfo
 /pie-parser/
+
+# Dev SQLite database (Decision Platform)
+backend/data/*.db

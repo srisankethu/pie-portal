@@ -14,7 +14,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .pie_service import pie_service
-from .routers import auth, quote
+from .routers import auth, decisions, internal, platform_auth, quote
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("pie_portal")
@@ -48,8 +48,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Legacy Quote Builder (preserved; not part of the V1 decision platform).
 app.include_router(auth.router)
 app.include_router(quote.router)
+
+# Commercial Decision Platform (Phase 1 foundation).
+app.include_router(platform_auth.router)
+app.include_router(internal.router)
+app.include_router(decisions.router)
 
 
 @app.get("/api/health")

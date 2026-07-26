@@ -77,9 +77,9 @@ class Settings:
     # "fixture" (deterministic offline source) or "api" (live Zoho, deferred).
     ZOHO_SOURCE: str = os.environ.get("ZOHO_SOURCE", "fixture")
 
-    # Versioning stamped onto deterministic artifacts for provenance/reproducibility.
+    # Version stamped onto deterministic artifacts for provenance/reproducibility.
+    # (Threshold-config version is carried by SignalThresholds.version, not here.)
     DETECTOR_VERSION: str = os.environ.get("DETECTOR_VERSION", "v0")
-    THRESHOLD_CONFIG_VERSION: str = os.environ.get("THRESHOLD_CONFIG_VERSION", "v0")
 
     # ── AI Decision Layer ────────────────────────────────────────────────────
     # Provider is swappable; "mock" (deterministic, offline — dev/test default) or

@@ -7,7 +7,6 @@ testable without a database, and byte-deterministic.
 """
 from __future__ import annotations
 
-import statistics
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
@@ -155,19 +154,3 @@ class SignalDraft:
 # ── numeric helpers (avoid false precision; deterministic) ───────────────────
 def clamp_severity(value: float) -> int:
     return max(0, min(100, int(round(value))))
-
-
-def pct(numer: Decimal, denom: Decimal) -> Optional[float]:
-    if denom == 0:
-        return None
-    return float(numer / denom)
-
-
-def median(values: list[Decimal]) -> Optional[Decimal]:
-    if not values:
-        return None
-    return Decimal(str(statistics.median([float(v) for v in values])))
-
-
-def months_between(a: date, b: date) -> float:
-    return abs((b - a).days) / 30.44

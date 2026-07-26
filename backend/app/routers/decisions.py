@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from ..authz import Principal, can_view_decision, current_principal, decision_list_scope
-from ..context.assembler import _is_restricted
+from ..context.assembler import _flatten, _is_restricted
 from ..db import get_session
 from ..domain import models
 from ..domain.enums import DecisionType, HumanAction, Role, SubjectEntityType
@@ -33,17 +33,6 @@ def _subject_label(session: Session, d: models.Decision) -> str:
         row = session.get(models.Product, d.subject_entity_id)
         return row.name if row else d.subject_entity_id
     return d.subject_entity_id
-
-
-def _flatten(prefix, value, out):
-    if isinstance(value, dict):
-        for k, v in value.items():
-            _flatten(f"{prefix}.{k}" if prefix else k, v, out)
-    elif isinstance(value, list):
-        for i, v in enumerate(value[:5]):
-            _flatten(f"{prefix}[{i}]", v, out)
-    else:
-        out.append((prefix, value))
 
 
 def _detail(session: Session, d: models.Decision, principal: Principal) -> dict:

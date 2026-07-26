@@ -251,6 +251,26 @@ def test_repeat_request_refreshes_same_decision(seeded):
     assert r1["decision_id"] == r2["decision_id"]
 
 
+def test_repeat_request_skips_second_ai_call_and_signal(seeded):
+    """Cost control: identical context reuses the stored interpretation — no second
+    model call and no duplicate signal row (unbounded AI spend + audit growth)."""
+    p = _manager(seeded)
+    prov = MockProvider("ok")
+    quote_support(seeded, p, customer_ref="Pitti Engineering Ltd",
+                  product_refs=["DNMG 150608-MP insert"], provider=prov, as_of=AS_OF)
+    calls_after_first = prov.calls
+    sigs_after_first = seeded.query(models.Signal).filter(
+        models.Signal.signal_type == "QUOTE_CONTEXT").count()
+
+    r2 = quote_support(seeded, p, customer_ref="Pitti Engineering Ltd",
+                       product_refs=["DNMG 150608-MP insert"], provider=prov, as_of=AS_OF)
+    assert prov.calls == calls_after_first            # no second inference
+    assert r2["interpretation"]["status"] == "OK"     # served from cache
+    sigs_after_second = seeded.query(models.Signal).filter(
+        models.Signal.signal_type == "QUOTE_CONTEXT").count()
+    assert sigs_after_second == sigs_after_first       # no duplicate signal
+
+
 def test_quote_context_excluded_from_proactive_list(seeded):
     """On-demand QUOTE_CONTEXT decisions do not clutter the proactive queue."""
     from app.routers.decisions import list_decisions

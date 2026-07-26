@@ -13,11 +13,21 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from .config import settings
 from .pie_service import pie_service
 from .routers import auth, decisions, internal, platform_auth, quote, quote_support
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("pie_portal")
+
+# Fail fast in production if the auth-signing secret was never overridden — the
+# default is public, so a stale default would let anyone forge a valid token for
+# any user/role (full cost/margin access). Refuse to boot rather than run open.
+if settings.is_production and settings.AUTH_SECRET == "dev-secret-change-me":
+    raise RuntimeError(
+        "AUTH_SECRET is still the development default in a production environment. "
+        "Set AUTH_SECRET to a strong, secret value before starting."
+    )
 
 
 @asynccontextmanager

@@ -5,7 +5,7 @@ audit endpoints are deferred to later phases.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -70,6 +70,13 @@ def demo_seed(
     session: Session = Depends(get_session),
 ) -> dict:
     """Seed a realistic multi-account dataset and run the full pipeline so the UI
-    has genuine, role-gated decisions to render (owner/manager only)."""
+    has genuine, role-gated decisions to render (owner/manager only).
+
+    Disabled in production: this writes fabricated customers/decisions into the
+    org's read model and must never touch real data.
+    """
+    if settings.is_production:
+        raise HTTPException(status.HTTP_403_FORBIDDEN,
+                            "Demo seeding is disabled in production.")
     from ..demo import seed_demo
     return seed_demo(session)

@@ -185,13 +185,37 @@ def quote_support(
         proposed_price=proposed_price,
         proposed_product_label=product_models[0].name if len(product_models) == 1 else None,
     )
-    result = interpret(bundle, provider, signal_type="QUOTE_CONTEXT",
-                       metrics=_flat_metrics(assembled), subject_label=customer.name)
+
+    # Cost control: if an OPEN decision for this exact (customer, items) already
+    # holds an interpretation of identical context, reuse it — no second model
+    # call, no duplicate signal row. Opening the same drawer repeatedly, or
+    # re-nudging the same price, must not spend AI budget or grow the audit log.
+    repo = DecisionRepository(session, org)
+    existing = repo.get_by_key(_decision_key(org, customer.customer_id, product_ids)) if persist else None
+    cached = (existing is not None and existing.status == DecisionStatus.OPEN.value
+              and (existing.ai or {}).get("context_hash") == bundle.context_hash())
 
     decision_id = None
-    if persist:
-        decision_id = _persist(session, principal, customer, product_ids, assembled,
-                               bundle, result, ref_date, th)
+    if cached:
+        ai = existing.ai or {}
+        interp = {"status": ai.get("status", "PENDING"), "title": ai.get("title"),
+                  "recommendation": ai.get("recommendation") or None,
+                  "explanation": ai.get("explanation"), "caveat": ai.get("caveat"),
+                  "should_surface": ai.get("should_surface", True), "model": ai.get("model")}
+        conf = existing.confidence or {}
+        decision_id = existing.decision_id
+    else:
+        result = interpret(bundle, provider, signal_type="QUOTE_CONTEXT",
+                           metrics=_flat_metrics(assembled), subject_label=customer.name)
+        interp = {"status": result.status.value, "title": result.concise_title,
+                  "recommendation": result.recommended_action or None,
+                  "explanation": result.explanation, "caveat": result.caveat,
+                  "should_surface": result.should_surface, "model": result.model}
+        conf = {"evidence_sufficiency": bundle.evidence_sufficiency.get("level"),
+                "reasons": bundle.evidence_sufficiency.get("reasons", [])}
+        if persist:
+            decision_id = _persist(session, principal, customer, product_ids, assembled,
+                                   bundle, result, ref_date, th)
 
     # facts split into the two clearly-separated regions the UI renders.
     is_sales = principal.role is Role.SALESPERSON
@@ -209,17 +233,8 @@ def quote_support(
         "customer_facts": customer_facts,
         "items": items_out,
         "unknowns": bundle.unknowns,
-        "interpretation": {
-            "status": result.status.value,
-            "title": result.concise_title,
-            "recommendation": result.recommended_action or None,
-            "explanation": result.explanation,
-            "caveat": result.caveat,
-            "should_surface": result.should_surface,
-            "model": result.model,
-        },
-        "confidence": {"evidence_sufficiency": bundle.evidence_sufficiency.get("level"),
-                       "reasons": bundle.evidence_sufficiency.get("reasons", [])},
+        "interpretation": interp,
+        "confidence": conf,
         "restricted_absent": is_sales and bool(bundle.redactions_applied),
         "decision_id": decision_id,
     }

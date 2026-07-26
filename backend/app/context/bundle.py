@@ -65,7 +65,10 @@ class ContextBundle:
 
     def allowed_numbers(self) -> set[float]:
         """Numeric values the AI may cite (from visible facts only, with common
-        representations: raw, ×100 for ratios, and 2-dp rounding)."""
+        representations: raw and 2-dp rounding, plus the ×100 percent form ONLY
+        for fractional ratios). The ×100 form is deliberately withheld for values
+        with magnitude > 1 (money, counts, days): otherwise a ₹430 fact would
+        also 'ground' a fabricated ₹43,000, inflating a monetary claim 100×."""
         out: set[float] = set()
         for f in self.facts:
             v = f.value
@@ -74,9 +77,9 @@ class ContextBundle:
             fv = float(v)
             # include the value and its magnitude (a -0.4 ratio may be shown as "40%")
             for base in (fv, abs(fv)):
-                for cand in (base, round(base, 2), round(base * 100, 2),
-                             round(base * 100, 1), float(round(base))):
-                    out.add(cand)
+                out.update({base, round(base, 2), float(round(base))})
+                if abs(base) <= 1:  # a ratio like 0.4 → "40%"
+                    out.update({round(base * 100, 2), round(base * 100, 1)})
         return out
 
     def context_hash(self) -> str:

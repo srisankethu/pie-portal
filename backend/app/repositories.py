@@ -206,6 +206,12 @@ class DecisionRepository:
             decision.override_reason = reason
         elif action is HumanAction.SNOOZE:
             pass  # snooze keeps status; scheduling deferred to the outcome phase
+        elif action is HumanAction.REOPEN:
+            # Undo: return the decision to the queue and clear the reason that
+            # closed it. The REOPEN itself stays in human_action, so the audit
+            # trail records that a human reversed the earlier call.
+            decision.status = DecisionStatus.OPEN.value
+            decision.override_reason = None
         return decision
 
 

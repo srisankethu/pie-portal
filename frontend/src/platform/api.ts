@@ -1,4 +1,4 @@
-import type { DecisionDetail, DecisionSummary, PlatformSession } from "./types";
+import type { Account, DecisionDetail, DecisionSummary, PlatformSession } from "./types";
 
 const KEY = "pie_platform_session";
 
@@ -56,8 +56,22 @@ export const papi = {
   act: (t: string, id: string, body: { action: string; note?: string; reason?: string }) =>
     req<DecisionSummary>(`/api/v1/decisions/${id}/action`, { method: "POST", body: JSON.stringify(body) }, t),
 
+  /** Undo a human action — returns the decision to the queue. The reopen is
+   *  itself recorded, so the audit trail keeps both the action and its reversal. */
+  reopen: (t: string, id: string) =>
+    req<DecisionSummary>(`/api/v1/decisions/${id}/action`,
+      { method: "POST", body: JSON.stringify({ action: "REOPEN", note: "Undone by the user" }) }, t),
+
+  listAccounts: (t: string, q = "") =>
+    req<Account[]>(`/api/v1/accounts${q ? `?q=${encodeURIComponent(q)}` : ""}`, {}, t),
+
   demoSeed: (t: string) => req<Record<string, unknown>>("/api/v1/internal/demo-seed", { method: "POST" }, t),
 };
+
+/** True when a request failed because the session is no longer valid. */
+export function isAuthError(e: unknown): boolean {
+  return (e as { status?: number })?.status === 401;
+}
 
 // Demo accounts for the three roles (any password).
 export const DEMO_ACCOUNTS: { role: PlatformSession["role"]; email: string; label: string }[] = [

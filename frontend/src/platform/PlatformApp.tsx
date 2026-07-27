@@ -2,15 +2,15 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   DEMO_ACCOUNTS,
   clearPlatformSession,
+  isAuthError,
   loadPlatformSession,
   papi,
   savePlatformSession,
 } from "./api";
-import type { DecisionDetail, DecisionSummary, PlatformSession, Role } from "./types";
+import type { Account, DecisionDetail, DecisionSummary, PlatformSession, Role } from "./types";
 import { aiState, factLabel, factValue, isPrimaryFact } from "./format";
 import { Bp, Conf, FactChip, Interpretation, Pri, typeLabel } from "./ui";
-
-type Screen = "home" | "list" | "detail" | "customer" | "quotes" | "states";
+import { navigate, parseHash, type Screen } from "./route";
 
 const ROLE_HOME: Record<Role, { title: string; sub: string; nav: string }> = {
   SALESPERSON: { title: "Today", sub: "Decisions that need you, most urgent first", nav: "Today" },
@@ -23,7 +23,7 @@ const ROLE_HOME: Record<Role, { title: string; sub: string; nav: string }> = {
 };
 
 // ── sign in ──────────────────────────────────────────────────────────────────
-function SignIn({ onIn }: { onIn: (s: PlatformSession) => void }) {
+function SignIn({ onIn, notice }: { onIn: (s: PlatformSession) => void; notice?: string | null }) {
   const [email, setEmail] = useState("r.nair@sanketh.in");
   const [password, setPassword] = useState("");
   const [err, setErr] = useState("");
@@ -51,13 +51,31 @@ function SignIn({ onIn }: { onIn: (s: PlatformSession) => void }) {
         <p className="text-muted" style={{ marginBottom: "var(--space-6)" }}>
           One product, three doors. Your account decides what you see first and what you may act on.
         </p>
+        {notice && <div className="signin-notice">{notice}</div>}
         <div className="field" style={{ marginBottom: "var(--space-3)" }}>
-          <label>Email</label>
-          <input className="input" value={email} autoFocus onChange={(e) => setEmail(e.target.value)} />
+          <label htmlFor="dp-email">Email</label>
+          <input
+            id="dp-email"
+            name="email"
+            type="email"
+            autoComplete="username"
+            className="input"
+            value={email}
+            autoFocus
+            onChange={(e) => setEmail(e.target.value)}
+          />
         </div>
         <div className="field">
-          <label>Password</label>
-          <input className="input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
+          <label htmlFor="dp-password">Password</label>
+          <input
+            id="dp-password"
+            name="password"
+            className="input"
+            type="password"
+            autoComplete="current-password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+          />
         </div>
         {err && <div className="err">{err}</div>}
         <button className="btn btn-primary" style={{ width: "100%", marginTop: "var(--space-4)" }} disabled={busy}>
@@ -84,18 +102,31 @@ function DecisionCard({
 }) {
   const state = aiState(d.interpretation.status);
   const chips = d.facts.filter((f) => !f.restricted && isPrimaryFact(f.label)).slice(0, 3);
+  const hasRecommendation = state === "ok" && !!d.interpretation.recommendation;
+  // On a degraded/failed card the panel below already carries the deterministic
+  // sentence; repeating it as the card's summary line printed it twice verbatim.
+  const showSummary = state === "ok" && !!d.interpretation.explanation;
+
   return (
-    <Bp className="dcard">
+    <Bp
+      className="dcard is-open"
+      role="button"
+      tabIndex={0}
+      aria-label={`Open ${typeLabel(d.decision_type)} for ${d.subject_label}`}
+      onClick={onOpen}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onOpen();
+        }
+      }}
+    >
       <div className="dcard-top">
         <span className="dcard-type">{typeLabel(d.decision_type)}</span>
         <Pri band={d.priority.band} />
-        <span className="dp-spacer" />
-        <button className="btn btn-ghost btn-sm" onClick={onOpen}>
-          Open evidence →
-        </button>
       </div>
       <div className="dcard-cust">{d.subject_label}</div>
-      {d.interpretation.explanation && <div className="dcard-reason">{d.interpretation.explanation}</div>}
+      {showSummary && <div className="dcard-reason">{d.interpretation.explanation}</div>}
       {chips.length > 0 && (
         <div className="dcard-chips">
           {chips.map((f) => (
@@ -103,35 +134,47 @@ function DecisionCard({
           ))}
         </div>
       )}
-      {state === "ok" || state === "degraded" ? (
+      {state === "ok" ? (
         <div className="interp" style={{ marginBottom: 12 }}>
-          <div className="interp-mark">AI recommendation{state === "degraded" ? " · degraded" : ""}</div>
+          <div className="interp-mark">AI recommendation</div>
           <p className="rec">{d.interpretation.recommendation || d.interpretation.explanation}</p>
         </div>
       ) : (
         <div className="state-panel" style={{ marginBottom: 12 }}>
-          <div className="state-mark">{state === "failed" ? "Interpretation unavailable" : "Recommendation withheld"}</div>
+          <div className="state-mark">
+            {state === "degraded"
+              ? "Deterministic reading · no AI recommendation"
+              : state === "failed"
+                ? "Interpretation unavailable"
+                : "Recommendation withheld"}
+          </div>
           <p style={{ margin: 0, fontSize: 13.5 }}>
-            {state === "failed"
-              ? "Facts are present; the reading is not. You can still act."
-              : "Shown, but no recommendation is offered on this evidence."}
+            {state === "degraded"
+              ? d.interpretation.explanation
+              : state === "failed"
+                ? "Facts are present; the reading is not. You can still act."
+                : "Shown, but no recommendation is offered on this evidence."}
           </p>
         </div>
       )}
-      <div className="dcard-actions">
-        {state === "ok" && (
+      {/* Actions live inside a clickable card, so each stops propagation. */}
+      <div className="dcard-actions" onClick={(e) => e.stopPropagation()}>
+        {hasRecommendation && (
           <button className="btn btn-primary btn-sm" onClick={() => onAct("accept")}>
             Accept recommendation
           </button>
         )}
         <button className="btn btn-secondary btn-sm" onClick={() => onAct("modify")}>
-          Do something different
+          {hasRecommendation ? "Do something different" : "Record what you did"}
         </button>
         <button className="btn btn-ghost btn-sm" onClick={() => onAct("dismiss")}>
           Dismiss
         </button>
+        <button className="btn btn-ghost btn-sm dcard-open" onClick={onOpen}>
+          Open evidence →
+        </button>
         <span className="dp-spacer" />
-        <Conf level={d.confidence?.evidence_sufficiency} />
+        <Conf level={d.confidence?.evidence_sufficiency} aiStatus={d.interpretation.status} />
       </div>
     </Bp>
   );
@@ -158,9 +201,21 @@ function ActionModal({
 }) {
   const meta = ACTION_META[kind];
   const [note, setNote] = useState("");
+
+  // Escape closes the dialog — the reflex everyone has, and the only exit for
+  // a keyboard user who opened it by mistake.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
   return (
     <div className="dp-modal-back" onClick={onClose}>
-      <Bp className="dp-modal" style={{ background: "var(--color-bg)" }}>
+      <Bp className="dp-modal" role="dialog" aria-modal="true" aria-label={meta.title}
+          style={{ background: "var(--color-bg)" }}>
         <div onClick={(e) => e.stopPropagation()}>
           <div className="kicker">{kind.toUpperCase()}</div>
           <h3>{meta.title}</h3>
@@ -199,22 +254,54 @@ function ActionModal({
 // ── main ─────────────────────────────────────────────────────────────────────
 export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void }) {
   const [session, setSession] = useState<PlatformSession | null>(loadPlatformSession());
-  const [screen, setScreen] = useState<Screen>("home");
+  // Screen lives in the URL hash so Back, reload and shareable links all work.
+  const [route, setRoute] = useState(() => parseHash(window.location.hash));
+  const screen: Screen = route.screen;
   const [summaries, setSummaries] = useState<DecisionSummary[] | null>(null);
   const [details, setDetails] = useState<Record<string, DecisionDetail>>({});
-  const [detailId, setDetailId] = useState<string | null>(null);
-  const [customerId, setCustomerId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [listType, setListType] = useState("");
-  const [toast, setToast] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ msg: string; undo?: () => void } | null>(null);
   const [modal, setModal] = useState<{ id: string; kind: string } | null>(null);
   const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
 
-  const flash = (m: string) => {
-    setToast(m);
-    setTimeout(() => setToast(null), 3500);
+  const detailId = route.screen === "detail" ? route.id ?? null : null;
+  const customerId = route.screen === "customer" ? route.id ?? null : null;
+
+  useEffect(() => {
+    const onHash = () => setRoute(parseHash(window.location.hash));
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+
+  const go = useCallback((s: Screen, id?: string) => {
+    navigate({ screen: s, id });
+    setRoute({ screen: s, id });
+  }, []);
+
+  const flash = (msg: string, undo?: () => void) => {
+    setToast({ msg, undo });
+    setTimeout(() => setToast(null), undo ? 9000 : 3500);
   };
+
+  const signOut = useCallback(() => {
+    clearPlatformSession();
+    setSession(null);
+    setSummaries(null);
+    setDetails({});
+    setError(null);
+  }, []);
+
+  /** A dead session must return the user to sign-in, not strand them inside
+   *  application chrome that looks live but can load nothing. */
+  const handleAuthLoss = useCallback(() => {
+    signOut();
+    // The toast lives inside the signed-in shell, which is about to unmount —
+    // the message has to survive onto the sign-in screen to be seen at all.
+    setNotice("Your session expired. Please sign in again.");
+  }, [signOut]);
 
   const load = useCallback(async () => {
     if (!session) return;
@@ -228,26 +315,24 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
       );
       setDetails(Object.fromEntries(entries));
     } catch (e) {
+      if (isAuthError(e)) return handleAuthLoss();
+      // Keep whatever we last knew, but never let a stale/empty list be
+      // presented as "nothing to do" — see the error branch in the render.
       setError((e as Error).message);
     } finally {
       setLoading(false);
     }
-  }, [session]);
+  }, [session, handleAuthLoss]);
 
   useEffect(() => {
     if (session) load();
   }, [session, load]);
 
   const signIn = (s: PlatformSession) => {
+    setNotice(null);
     savePlatformSession(s);
     setSession(s);
-    setScreen("home");
-  };
-  const signOut = () => {
-    clearPlatformSession();
-    setSession(null);
-    setSummaries(null);
-    setDetails({});
+    go("home");
   };
   const switchRole = async (email: string) => {
     try {
@@ -258,9 +343,27 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
     }
   };
 
-  const openDetail = (id: string) => {
-    setDetailId(id);
-    setScreen("detail");
+  const openDetail = (id: string) => go("detail", id);
+
+  const refresh = useCallback(async (id?: string) => {
+    if (!session) return;
+    if (id) {
+      const d = await papi.getDetail(session.token, id);
+      setDetails((m) => ({ ...m, [id]: d }));
+    }
+    setSummaries(await papi.listDecisions(session.token));
+  }, [session]);
+
+  const undoAction = async (id: string) => {
+    if (!session) return;
+    try {
+      await papi.reopen(session.token, id);
+      await refresh(id);
+      flash("Restored to your queue.");
+    } catch (e) {
+      if (isAuthError(e)) return handleAuthLoss();
+      flash((e as Error).message);
+    }
   };
 
   const doAction = async (id: string, kind: string, note: string) => {
@@ -270,12 +373,12 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
       const meta = ACTION_META[kind];
       await papi.act(session.token, id, { action: meta.api, note, reason: kind === "dismiss" ? note : undefined });
       setModal(null);
-      flash(`${meta.title} · logged`);
-      const d = await papi.getDetail(session.token, id);
-      setDetails((m) => ({ ...m, [id]: d }));
-      const list = await papi.listDecisions(session.token);
-      setSummaries(list);
+      await refresh(id);
+      // Every action here closes or changes a decision. Offer the way back:
+      // one misclick should never be unrecoverable.
+      flash(`${meta.title} · logged`, () => undoAction(id));
     } catch (e) {
+      if (isAuthError(e)) return handleAuthLoss();
       flash((e as Error).message);
     } finally {
       setBusy(false);
@@ -287,7 +390,7 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
     [summaries],
   );
 
-  if (!session) return <SignIn onIn={signIn} />;
+  if (!session) return <SignIn onIn={signIn} notice={notice} />;
 
   const rh = ROLE_HOME[session.role];
   const roleShort = session.role === "SALESPERSON" ? "Salesperson" : session.role === "SALES_MANAGER" ? "Manager" : "Owner";
@@ -308,7 +411,7 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
             <button
               key={key}
               className={screen === key || (key === "list" && screen === "detail") ? "on" : ""}
-              onClick={() => setScreen(key)}
+              onClick={() => go(key)}
             >
               {label}
               {count && <span className="n-count">{count}</span>}
@@ -316,13 +419,17 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
           ))}
         </div>
         <span className="dp-spacer" />
-        <div className="dp-role" role="group" aria-label="Switch role (demo)">
-          {DEMO_ACCOUNTS.map((a) => (
-            <button key={a.role} className={session.role === a.role ? "on" : ""} onClick={() => switchRole(a.email)}>
-              {a.label}
-            </button>
-          ))}
-        </div>
+        {/* Demo affordance only. In a real deployment a user has one role and a
+            role switcher in the product chrome would be confusing at best. */}
+        {import.meta.env.DEV && (
+          <div className="dp-role" role="group" aria-label="Switch role (demo only)">
+            {DEMO_ACCOUNTS.map((a) => (
+              <button key={a.role} className={session.role === a.role ? "on" : ""} onClick={() => switchRole(a.email)}>
+                {a.label}
+              </button>
+            ))}
+          </div>
+        )}
         <div className="dp-whoami">
           <b>{session.name}</b>
           <br />
@@ -334,8 +441,14 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
       </div>
 
       <div className="dp-main">
-        {error && <div className="dp-error">Could not load decisions: {error}</div>}
-
+        {/* An unreachable API must never be dressed as "nothing to do". The
+            error REPLACES the queue rather than sitting above a reassuring
+            empty state — the previous behaviour told a salesperson everything
+            was fine at exactly the moment the system knew nothing. */}
+        {error ? (
+          <LoadFailed error={error} onRetry={load} busy={loading} />
+        ) : (
+          <>
         {/* ── HOME (role-aware) ── */}
         {screen === "home" && (
           <>
@@ -395,18 +508,21 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
           <DetailScreen
             d={details[detailId]}
             loading={loading}
-            onBack={() => setScreen("list")}
+            onBack={() => go("list")}
             onAct={(kind) => setModal({ id: detailId, kind })}
-            onOpenAccount={(cid) => {
-              setCustomerId(cid);
-              setScreen("customer");
-            }}
+            onOpenAccount={(cid) => go("customer", cid)}
           />
         )}
 
-        {/* ── ACCOUNTS (customer intelligence, light) ── */}
+        {/* ── ACCOUNTS (customer intelligence) ── */}
         {screen === "customer" && (
-          <CustomerScreen details={details} customerId={customerId} setCustomerId={setCustomerId} onOpen={openDetail} />
+          <CustomerScreen
+            session={session}
+            details={details}
+            customerId={customerId}
+            setCustomerId={(id) => go("customer", id ?? undefined)}
+            onOpen={openDetail}
+          />
         )}
 
         {/* ── QUOTES (integration surface) ── */}
@@ -430,6 +546,8 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
 
         {/* ── DATA & AI STATES (reference) ── */}
         {screen === "states" && <StatesScreen />}
+          </>
+        )}
       </div>
 
       {modal && (
@@ -440,7 +558,50 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
           onConfirm={(note) => doAction(modal.id, modal.kind, note)}
         />
       )}
-      {toast && <div className="toast">{toast}</div>}
+      {toast && (
+        <div className="toast">
+          <span>{toast.msg}</span>
+          {toast.undo && (
+            <button
+              className="toast-undo"
+              onClick={() => {
+                const u = toast.undo!;
+                setToast(null);
+                u();
+              }}
+            >
+              Undo
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── load failure ─────────────────────────────────────────────────────────────
+/** Shown INSTEAD OF the queue when decisions could not be loaded.
+ *
+ * The distinction that matters: "we could not look" is not "there is nothing
+ * to see". This screen never implies the latter, and it always offers the way
+ * back rather than requiring a manual page reload. */
+function LoadFailed({ error, onRetry, busy }: { error: string; onRetry: () => void; busy: boolean }) {
+  return (
+    <div className="dp-head" style={{ maxWidth: 620 }}>
+      <h1>Decisions could not be loaded</h1>
+      <p>
+        This is a loading failure, not an empty queue — there may well be decisions waiting. Nothing
+        has been lost; your data is untouched.
+      </p>
+      <div className="state-panel" style={{ marginTop: 14 }}>
+        <div className="state-mark">What went wrong</div>
+        <p style={{ margin: 0, fontSize: 13.5 }}>{error}</p>
+      </div>
+      <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
+        <button className="btn btn-primary" onClick={onRetry} disabled={busy}>
+          {busy ? "Retrying…" : "Try again"}
+        </button>
+      </div>
     </div>
   );
 }
@@ -615,7 +776,7 @@ function DetailScreen({
         <div>
           <Interpretation d={d} />
           <div style={{ display: "flex", gap: 8, alignItems: "center", margin: "10px 0 4px" }}>
-            <Conf level={d.confidence?.evidence_sufficiency} />
+            <Conf level={d.confidence?.evidence_sufficiency} aiStatus={d.interpretation.status} />
             <span className="text-muted" style={{ fontSize: 11 }}>
               priority {d.priority.score}/100 · base {d.priority.deterministic_base}
               {d.priority.ai_adjustment ? ` · ai ${d.priority.ai_adjustment > 0 ? "+" : ""}${d.priority.ai_adjustment}` : ""}
@@ -666,51 +827,102 @@ function DetailScreen({
 
 // ── customer intelligence (light) ────────────────────────────────────────────
 function CustomerScreen({
+  session,
   details,
   customerId,
   setCustomerId,
   onOpen,
 }: {
+  session: PlatformSession;
   details: Record<string, DecisionDetail>;
   customerId: string | null;
   setCustomerId: (id: string | null) => void;
   onOpen: (id: string) => void;
 }) {
   const all = Object.values(details);
-  const accounts = useMemo(() => {
-    const m = new Map<string, string>();
-    all.forEach((d) => {
-      if (d.subject_entity_type === "CUSTOMER") m.set(d.subject_entity_id, d.subject_label);
-    });
-    return [...m.entries()];
-  }, [all]);
+  // The directory is every account in scope — not only those that happen to
+  // have an open decision. "What does this account look like before I call
+  // them?" is the question this screen exists to answer, and it cannot be
+  // answered for a quiet customer if quiet customers are invisible.
+  const [accounts, setAccounts] = useState<Account[] | null>(null);
+  const [q, setQ] = useState("");
+  const [accErr, setAccErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    papi
+      .listAccounts(session.token)
+      .then((a) => !cancelled && setAccounts(a))
+      .catch((e) => !cancelled && setAccErr((e as Error).message));
+    return () => {
+      cancelled = true;
+    };
+  }, [session.token]);
+
+  const openCountFor = (id: string) =>
+    all.filter((d) => d.subject_entity_id === id && (d.status === "OPEN" || d.status === "VIEWED")).length;
 
   if (!customerId) {
+    const needle = q.trim().toLowerCase();
+    const shown = (accounts || []).filter((a) => !needle || a.name.toLowerCase().includes(needle));
     return (
       <div>
         <div className="dp-head">
-          <h1>Account intelligence</h1>
-          <p>Pick an account to see its open decisions and the facts behind them.</p>
+          <h1>Accounts</h1>
+          <p>Every account you cover — search one to see what the data says before you call.</p>
         </div>
-        {accounts.length === 0 ? (
-          <div className="dp-empty">No customer-level decisions are visible at your permission level.</div>
-        ) : (
-          <div className="dp-cards">
-            {accounts.map(([id, name]) => (
-              <Bp className="dcard" key={id}>
-                <div className="dcard-cust">{name}</div>
-                <button className="btn btn-ghost btn-sm" onClick={() => setCustomerId(id)}>
-                  Open account →
-                </button>
-              </Bp>
-            ))}
+        <input
+          className="input"
+          style={{ maxWidth: 320, marginBottom: 14 }}
+          placeholder="Search accounts…"
+          aria-label="Search accounts"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+        />
+        {accErr ? (
+          <div className="state-panel">
+            <div className="state-mark">Accounts could not be loaded</div>
+            <p style={{ margin: 0, fontSize: 13.5 }}>{accErr}</p>
           </div>
+        ) : accounts === null ? (
+          <>
+            <div className="skeleton" style={{ height: 44 }} />
+            <div className="skeleton" style={{ height: 44 }} />
+          </>
+        ) : shown.length === 0 ? (
+          <div className="dp-empty">
+            {needle ? `No account matches “${q}”.` : "No accounts are assigned to you yet."}
+          </div>
+        ) : (
+          <Bp style={{ padding: 2 }}>
+            <table className="dp-table">
+              <thead>
+                <tr>
+                  <th>Account</th>
+                  <th>Open decisions</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {shown.map((a) => {
+                  const n = openCountFor(a.customer_id);
+                  return (
+                    <tr key={a.customer_id} data-open onClick={() => setCustomerId(a.customer_id)}>
+                      <td style={{ fontWeight: 600 }}>{a.name}</td>
+                      <td>{n > 0 ? `${n} open` : <span className="text-muted">none</span>}</td>
+                      <td style={{ fontSize: 12 }}>{a.status}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </Bp>
         )}
       </div>
     );
   }
   const decs = all.filter((d) => d.subject_entity_id === customerId);
-  const name = decs[0]?.subject_label || customerId;
+  const name = decs[0]?.subject_label || accounts?.find((a) => a.customer_id === customerId)?.name || customerId;
   return (
     <div>
       <button className="btn btn-ghost btn-sm" onClick={() => setCustomerId(null)} style={{ marginBottom: 10 }}>
@@ -720,7 +932,17 @@ function CustomerScreen({
         <h1>{name}</h1>
         <p>Trading facts and what we read from them.</p>
       </div>
-      <div className="dp-count">{decs.length} open {decs.length === 1 ? "decision" : "decisions"} on this account</div>
+      {decs.length === 0 ? (
+        <div className="dp-empty">
+          Nothing is flagged on this account right now. That is a fact about the data, not a
+          judgement about the relationship.
+        </div>
+      ) : (
+      <>
+      <div className="dp-count">
+        {decs.length} open {decs.length === 1 ? "decision" : "decisions"} on this account
+        {decs.length > 1 && " — the same account is flagged for more than one reason"}
+      </div>
       <div className="dp-cards">
         {decs.map((d) => (
           <Bp className="dcard" key={d.decision_id}>
@@ -741,6 +963,8 @@ function CustomerScreen({
           </Bp>
         ))}
       </div>
+      </>
+      )}
     </div>
   );
 }

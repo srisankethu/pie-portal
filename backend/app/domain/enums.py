@@ -75,6 +75,9 @@ class HumanAction(str, Enum):
     DISMISS = "DISMISS"
     SNOOZE = "SNOOZE"
     OVERRIDE = "OVERRIDE"
+    # Undo a human action taken by mistake. The reopen is itself recorded, so
+    # the audit trail shows both the original action and its reversal.
+    REOPEN = "REOPEN"
 
 
 class PriorityBand(str, Enum):

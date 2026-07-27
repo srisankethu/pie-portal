@@ -195,12 +195,29 @@ class PieService:
 
         # (3) Requirement with ranked suggestions -> best suggestion becomes the
         #     supply; its relationship comes from the equivalence score band.
+        #
+        #     Only when the ranking actually discriminates. If the engine did not
+        #     resolve the input, or every candidate carries the same score, the
+        #     "top" suggestion is an artefact of ordering, not a technical
+        #     equivalent — auto-selecting and pricing it would put a fabricated
+        #     match on a customer quote. Abstain and show the options instead.
         cands = self._candidates_from_suggestions(suggestions)
-        if cands:
+        if cands and self._is_discriminating(cands) and outcome != "UNRESOLVED":
             top = cands[0]
             desc = self._requirement_desc(text, top)
             return Resolution(text, text, desc, top.rel, top.code, cands,
                               outcome, semantics, notes)
+        if cands:
+            notes.append(
+                "The engine could not distinguish between these candidates for "
+                "this input — pick the intended product before quoting.")
+            return Resolution(
+                text, text, "Not resolved — choose the intended product",
+                "AMBIGUOUS", None,
+                [Candidate(code=c.code, desc=c.desc, rel="POSSIBLE", grade=c.grade,
+                           brand=c.brand, score=c.score, reason=c.reason,
+                           attributes=c.attributes) for c in cands],
+                outcome, semantics, notes)
 
         # (4) Nothing resolved -> UNRESOLVED (no PIE match).
         return Resolution(text, text, "No PIE match", "UNRESOLVED", None, [],
@@ -229,6 +246,20 @@ class PieService:
                 attributes=s.get("attributes", {}) or {},
             ))
         return out
+
+    @staticmethod
+    def _is_discriminating(cands: List[Candidate]) -> bool:
+        """Does the ranking actually separate the top candidate from the rest?
+
+        A set of candidates that all share one score (commonly every score at
+        1.0, which is what a vacuous match looks like) tells us nothing about
+        which product was meant. Treating the first of those as "the technical
+        equivalent" manufactures certainty the engine never expressed.
+        """
+        scores = [c.score for c in cands if c.score is not None]
+        if len(scores) < 2:
+            return True                      # nothing to compare against
+        return scores[0] > scores[1]
 
     @staticmethod
     def _rel_from_score(combined: Optional[float]) -> str:

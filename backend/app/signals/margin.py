@@ -94,7 +94,11 @@ def detect(snapshot: Snapshot, th: SignalThresholds, as_of: date) -> list[Signal
                     "comparison_period": {"start": prior_w[0].isoformat(), "end": prior_w[1].isoformat()},
                     "granularity": "period"},
             metrics=metrics,
-            severity_base=clamp_severity(drop * 200),
+            # A margin drop is scored so that the bands read the way a human
+            # reads them: ~5 points (the threshold) is LOW, ~13 points MEDIUM,
+            # ~20+ points HIGH. At the previous scale a 26%→13% collapse
+            # banded LOW, which no operator would accept as low priority.
+            severity_base=clamp_severity(drop * 400),
             evidence_refs=evidence,
             sufficiency=suff,
             detector_version="",

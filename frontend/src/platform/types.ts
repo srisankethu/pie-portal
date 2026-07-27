@@ -61,3 +61,10 @@ export interface DecisionDetail {
   human_action: DecisionSummary["human_action"];
   outcome: unknown | null;
 }
+
+export interface Account {
+  customer_id: string;
+  name: string;
+  status: string;
+  assigned_user_id: string | null;
+}

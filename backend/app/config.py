@@ -13,6 +13,33 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
+def _load_dotenv(path: Path) -> None:
+    """Load ``KEY=value`` pairs from a .env file into the environment.
+
+    Deliberately tiny and dependency-free. A real environment variable always
+    wins, so a shell export or a container's env overrides the file — the file
+    is a convenience for local development, never an override of the deployment.
+    """
+    try:
+        content = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+# Local development convenience: a .env at the repo root is applied before any
+# setting is read. Never committed (see .gitignore); never overrides real env.
+_load_dotenv(REPO_ROOT / ".env")
+
+
 def _path_env(name: str, default: Path) -> Path:
     raw = os.environ.get(name)
     return Path(raw).expanduser().resolve() if raw else default

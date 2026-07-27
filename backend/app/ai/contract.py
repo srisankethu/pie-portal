@@ -20,15 +20,28 @@ from pydantic import BaseModel, Field, ValidationError
 
 from ..config import settings
 from ..context.bundle import ContextBundle
+from ..domain.enums import AiFailureReason
 
 _NUMBER_RE = re.compile(r"-?\d[\d,]*(?:\.\d+)?")
 
+# Scale factors a model plausibly confuses (ratio<->percent, and the ×100 money
+# inflation the grounding set deliberately refuses to admit).
+_SCALE_FACTORS = (100.0, 0.01, 1000.0, 0.001)
+
 
 class AIValidationError(ValueError):
-    def __init__(self, code: str, detail: str) -> None:
+    """A gate rejection.
+
+    ``code`` is the stable legacy string (kept for backward compatibility);
+    ``reason`` is the WS3 taxonomy member used for telemetry and ops metrics.
+    """
+
+    def __init__(self, code: str, detail: str,
+                 reason: AiFailureReason = AiFailureReason.SCHEMA_INVALID) -> None:
         super().__init__(f"{code}: {detail}")
         self.code = code
         self.detail = detail
+        self.reason = reason
 
 
 class AIDecisionOutput(BaseModel):
@@ -61,28 +74,57 @@ def _grounded(value: float, allowed: set[float]) -> bool:
     return False
 
 
-def validate_output(raw: str, bundle: ContextBundle) -> AIDecisionOutput:
+def _is_scale_error(value: float, allowed: set[float]) -> bool:
+    """True when an ungrounded number is a supplied fact off by a scale factor.
+
+    Distinguishing this from an arbitrary fabrication matters operationally: a
+    scale error points at the prompt (units/percent framing), a fabrication
+    points at the model or a too-thin fact set. Either way it is still rejected.
+    """
+    for f in _SCALE_FACTORS:
+        if _grounded(value * f, allowed):
+            return True
+    return False
+
+
+def validate_output(raw: str, bundle: ContextBundle,
+                    corrections: list[AiFailureReason] | None = None) -> AIDecisionOutput:
+    """Validate a raw model response against the supplied context.
+
+    ``corrections`` (optional, mutated in place) collects the deterministic
+    repairs applied to an otherwise-usable output, so telemetry can report them.
+    """
+    noted = corrections if corrections is not None else []
+
     # 1) schema
     try:
         data = json.loads(raw)
         out = AIDecisionOutput.model_validate(data)
     except (json.JSONDecodeError, ValidationError, TypeError) as e:
-        raise AIValidationError("malformed_output", str(e)[:200])
+        raise AIValidationError("malformed_output", str(e)[:200],
+                                AiFailureReason.SCHEMA_INVALID)
 
-    # 5) clamp priority (never trust the model's bound)
+    # 5) clamp priority (never trust the model's bound) — repaired, and recorded
     bound = settings.AI_PRIORITY_ADJUST_BOUND
-    out.priority_adjustment = max(-bound, min(bound, int(out.priority_adjustment)))
+    raw_adj = int(out.priority_adjustment)
+    out.priority_adjustment = max(-bound, min(bound, raw_adj))
+    if out.priority_adjustment != raw_adj:
+        noted.append(AiFailureReason.PRIORITY_OUT_OF_RANGE)
 
     # 2) subset checks
     bad_facts = [c for c in out.cited_fact_labels if c not in bundle.fact_labels()]
     if bad_facts:
-        raise AIValidationError("cited_fact_not_in_context", f"{bad_facts}")
+        raise AIValidationError("cited_fact_not_in_context", f"{bad_facts}",
+                                AiFailureReason.UNKNOWN_FACT_LABEL)
     bad_sigs = [c for c in out.cited_signal_ids if c not in bundle.signal_ids()]
     if bad_sigs:
-        raise AIValidationError("cited_signal_not_in_context", f"{bad_sigs}")
+        raise AIValidationError("cited_signal_not_in_context", f"{bad_sigs}",
+                                AiFailureReason.UNKNOWN_SIGNAL_ID)
 
-    # 4) withheld ⇒ no asserted action/recommendation
+    # 4) withheld ⇒ no asserted action/recommendation — repaired, and recorded
     if out.cannot_recommend_reliably:
+        if out.recommended_action:
+            noted.append(AiFailureReason.ACTION_TEXT_ON_WITHHELD)
         out.recommended_action = ""
 
     # 3) fact-grounding — no fabricated numbers in user-facing text
@@ -91,6 +133,9 @@ def validate_output(raw: str, bundle: ContextBundle) -> AIDecisionOutput:
                                   out.recommended_action, out.caveat]))
     for n in _numbers_in(text):
         if not _grounded(n, allowed):
-            raise AIValidationError("ungrounded_number",
-                                    f"{n} not traceable to a supplied fact")
+            scale = _is_scale_error(n, allowed)
+            raise AIValidationError(
+                "ungrounded_number",
+                f"{n} {'is a supplied fact at the wrong scale' if scale else 'not traceable to a supplied fact'}",
+                AiFailureReason.SCALE_VIOLATION if scale else AiFailureReason.UNGROUNDED_NUMBER)
     return out

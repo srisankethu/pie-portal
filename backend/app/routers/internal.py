@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from ..authz import Principal, require_manager_or_owner
+from ..authz import Principal, require_manager_or_owner, require_owner
 from ..config import settings
 from ..db import get_session
 from ..ingestion.sync import SyncService, get_source
@@ -28,6 +28,22 @@ def health(session: Session = Depends(get_session)) -> dict:
         db_ok = False
     return {"ok": db_ok, "service": "decision-platform", "database": db_ok,
             "zoho_source": settings.ZOHO_SOURCE}
+
+
+@router.get("/ai-metrics")
+def ai_metrics(
+    principal: Principal = Depends(require_owner),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Rolling AI health and cost metrics for this organization (owner only).
+
+    Reports degraded/failed/suppressed rates, cache hit rate, cost per decision
+    and per day, and the failure-reason distribution, over 7- and 30-day windows.
+    """
+    from ..ai.metrics import report
+    from ..repositories import AiTelemetryRepository
+
+    return report(AiTelemetryRepository(session, principal.organization_id))
 
 
 @router.post("/sync/zoho")

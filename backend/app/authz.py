@@ -116,6 +116,13 @@ def require_manager_or_owner(principal: Principal = Depends(current_principal)) 
     return principal
 
 
+def require_owner(principal: Principal = Depends(current_principal)) -> Principal:
+    """Owner-only surface (AI cost/health metrics are an owner concern)."""
+    if principal.role is not Role.OWNER:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Owner role required")
+    return principal
+
+
 # ── scope resolution (used by the decision service/API) ──────────────────────
 def decision_list_scope(principal: Principal) -> dict:
     """Kwargs for ``DecisionRepository.list`` that enforce this principal's scope.

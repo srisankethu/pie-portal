@@ -99,6 +99,45 @@ class EvidenceSufficiency(str, Enum):
     INSUFFICIENT = "INSUFFICIENT"
 
 
+class AiFailureReason(str, Enum):
+    """Why an AI call did not yield a usable, grounded recommendation (WS3).
+
+    Split into two tiers so a prompt problem is distinguishable from a schema
+    problem, and both from an infrastructure problem:
+
+    - *Rejections* raise from the validation gate and degrade the decision:
+      SCHEMA_INVALID, UNKNOWN_FACT_LABEL, UNKNOWN_SIGNAL_ID, UNGROUNDED_NUMBER,
+      SCALE_VIOLATION.
+    - *Corrections* are repaired deterministically and recorded, not raised
+      (the output stays usable): PRIORITY_OUT_OF_RANGE, ACTION_TEXT_ON_WITHHELD.
+    - *Provider* failures never reach the gate at all.
+    """
+
+    # gate rejections
+    SCHEMA_INVALID = "SCHEMA_INVALID"
+    UNKNOWN_FACT_LABEL = "UNKNOWN_FACT_LABEL"
+    UNKNOWN_SIGNAL_ID = "UNKNOWN_SIGNAL_ID"
+    UNGROUNDED_NUMBER = "UNGROUNDED_NUMBER"
+    SCALE_VIOLATION = "SCALE_VIOLATION"
+    # deterministic corrections (recorded, not fatal)
+    PRIORITY_OUT_OF_RANGE = "PRIORITY_OUT_OF_RANGE"
+    ACTION_TEXT_ON_WITHHELD = "ACTION_TEXT_ON_WITHHELD"
+    # provider-side failures
+    PROVIDER_TIMEOUT = "PROVIDER_TIMEOUT"
+    PROVIDER_UNAVAILABLE = "PROVIDER_UNAVAILABLE"
+    PROVIDER_ERROR = "PROVIDER_ERROR"
+
+
+# Reasons that cause the gate to reject the model output (vs. repair it).
+GATE_REJECTION_REASONS = frozenset({
+    AiFailureReason.SCHEMA_INVALID,
+    AiFailureReason.UNKNOWN_FACT_LABEL,
+    AiFailureReason.UNKNOWN_SIGNAL_ID,
+    AiFailureReason.UNGROUNDED_NUMBER,
+    AiFailureReason.SCALE_VIOLATION,
+})
+
+
 class OutcomeStatus(str, Enum):
     PENDING = "PENDING"
     MEASURED = "MEASURED"

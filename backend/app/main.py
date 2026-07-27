@@ -32,11 +32,27 @@ if settings.is_production and settings.AUTH_SECRET == "dev-secret-change-me":
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    """Warm the pie-parser engine + catalogue so the first request is fast.
+    """Prepare the database, then warm the pie-parser engine.
 
-    Non-fatal: if warming fails (e.g. catalogue build unavailable in a
-    constrained env), the app still starts and each line degrades to PIE OFFLINE.
+    Bootstrapping first means a fresh clone can be started with nothing but
+    ``uvicorn app.main:app`` — no separate migrate/seed step, which is easy to
+    miss on Windows where the Makefile is unavailable and previously produced
+    ``no such table: users`` on the first login. It is skipped in production,
+    where migrations are a deliberate deploy step.
+
+    Both steps are non-fatal: the app starts either way, and says what is wrong.
     """
+    if settings.AUTO_BOOTSTRAP and not settings.is_production:
+        try:
+            from .bootstrap import bootstrap
+
+            summary = bootstrap()
+            log.info("database ready (schema via %s, org %s).",
+                     summary.get("schema"), summary.get("organization_id"))
+        except Exception:  # noqa: BLE001
+            log.exception("database bootstrap failed; sign-in will not work until "
+                          "'python -m app.bootstrap' is run successfully.")
+
     if os.environ.get("PIE_WARM", "1") != "0":
         try:
             pie_service.warm()

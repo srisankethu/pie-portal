@@ -7,7 +7,7 @@
  * gives back/forward, reload-in-place and shareable links without pulling in
  * a routing dependency.
  */
-export type Screen = "home" | "list" | "detail" | "customer" | "quotes" | "states";
+export type Screen = "home" | "list" | "detail" | "customer" | "quotes" | "states" | "data";
 
 export interface Route {
   screen: Screen;
@@ -21,6 +21,7 @@ const PATHS: Record<Screen, string> = {
   customer: "/accounts",
   quotes: "/quotes",
   states: "/states",
+  data: "/data",
 };
 
 export function toHash(r: Route): string {
@@ -48,6 +49,8 @@ export function parseHash(hash: string): Route {
       return { screen: "quotes" };
     case "states":
       return { screen: "states" };
+    case "data":
+      return { screen: "data" };
     default:
       return { screen: "home" };
   }

@@ -11,6 +11,7 @@ import type { Account, DecisionDetail, DecisionSummary, PlatformSession, Role } 
 import { aiState, factLabel, factValue, isPrimaryFact } from "./format";
 import { Bp, Conf, FactChip, Interpretation, Pri, typeLabel } from "./ui";
 import { navigate, parseHash, type Screen } from "./route";
+import { DataScreen } from "./DataScreen";
 
 const ROLE_HOME: Record<Role, { title: string; sub: string; nav: string }> = {
   SALESPERSON: { title: "Today", sub: "Decisions that need you, most urgent first", nav: "Today" },
@@ -399,7 +400,8 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
     ["list", "Decisions", summaries ? String(summaries.length) : ""],
     ["customer", "Accounts", ""],
     ["quotes", "Quotes", ""],
-    ["states", "Data & AI states", ""],
+    ["data", "Data & connection", ""],
+    ["states", "AI states", ""],
   ];
 
   return (
@@ -544,7 +546,10 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
           </div>
         )}
 
-        {/* ── DATA & AI STATES (reference) ── */}
+        {/* ── DATA & CONNECTION ── */}
+        {screen === "data" && <DataScreen session={session} onSynced={load} />}
+
+        {/* ── AI STATES (reference) ── */}
         {screen === "states" && <StatesScreen />}
           </>
         )}

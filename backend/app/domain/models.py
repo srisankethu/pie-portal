@@ -242,6 +242,34 @@ class AiCallLog(Base):
 
 
 # ── Outcome (§8) ─────────────────────────────────────────────────────────────
+class SyncRun(Base):
+    """One ingestion run — what was pulled, what was skipped, and whether it worked.
+
+    Persisted so the UI can answer "is Zoho connected, and when did data last
+    arrive?" without re-hitting the API. A failed run is recorded too: silence
+    about a failure is exactly what made the connection unreadable before.
+    """
+
+    __tablename__ = "sync_runs"
+
+    sync_run_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    source: Mapped[str] = mapped_column(String(16))           # "api" | "fixture"
+    status: Mapped[str] = mapped_column(String(16), index=True)  # OK | FAILED
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, index=True)
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    customers: Mapped[int] = mapped_column(Integer, default=0)
+    products: Mapped[int] = mapped_column(Integer, default=0)
+    sales_txns: Mapped[int] = mapped_column(Integer, default=0)
+    cost_records: Mapped[int] = mapped_column(Integer, default=0)
+    skipped_count: Mapped[int] = mapped_column(Integer, default=0)
+    skipped_sample: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    signals_emitted: Mapped[int] = mapped_column(Integer, default=0)
+    decisions_created: Mapped[int] = mapped_column(Integer, default=0)
+    error: Mapped[Optional[str]] = mapped_column(String(1024))
+    triggered_by: Mapped[Optional[str]] = mapped_column(String(64))
+
+
 class Outcome(Base):
     __tablename__ = "outcomes"
 

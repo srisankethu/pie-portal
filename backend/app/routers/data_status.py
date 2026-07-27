@@ -1,0 +1,179 @@
+"""Connection + ingestion status, and the one-click refresh behind it.
+
+"Is Zoho connected?" had no answer inside the product — the check existed only
+as a curl command, and a sync left no trace once its response scrolled past.
+This exposes the state the UI needs to answer it plainly, and a single action
+that runs the whole cycle (pull → detect → decide) so nobody has to remember
+three calls in the right order.
+"""
+from __future__ import annotations
+
+import logging
+from datetime import datetime, timezone
+from typing import Any, Optional
+
+from fastapi import APIRouter, Depends
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from ..authz import Principal, current_principal, require_manager_or_owner
+from ..config import settings
+from ..db import get_session
+from ..domain import models
+
+log = logging.getLogger("pie_portal.data")
+
+router = APIRouter(prefix="/api/v1/data", tags=["data"])
+
+
+def _last_run(session: Session, org: str) -> Optional[models.SyncRun]:
+    return session.scalar(
+        select(models.SyncRun)
+        .where(models.SyncRun.organization_id == org)
+        .order_by(models.SyncRun.started_at.desc())
+        .limit(1))
+
+
+def _run_dict(r: Optional[models.SyncRun]) -> Optional[dict[str, Any]]:
+    if r is None:
+        return None
+    return {
+        "status": r.status, "source": r.source,
+        "started_at": r.started_at.isoformat() if r.started_at else None,
+        "finished_at": r.finished_at.isoformat() if r.finished_at else None,
+        "customers": r.customers, "products": r.products,
+        "sales_txns": r.sales_txns, "cost_records": r.cost_records,
+        "skipped_count": r.skipped_count, "skipped_sample": r.skipped_sample or [],
+        "signals_emitted": r.signals_emitted, "decisions_created": r.decisions_created,
+        "error": r.error,
+    }
+
+
+def _connection(session: Session, org: str) -> dict[str, Any]:
+    """Live connection state, described so a non-engineer can act on it."""
+    if settings.ZOHO_SOURCE != "api":
+        return {
+            "state": "SAMPLE_DATA",
+            "headline": "Not connected to Zoho — showing sample data",
+            "detail": "ZOHO_SOURCE is not set to 'api', so the offline sample source is in "
+                      "use. Everything you see is demonstration data, not your books.",
+            "source": settings.ZOHO_SOURCE,
+        }
+
+    from ..ingestion.zoho_client import ZohoApiSource, ZohoError
+
+    try:
+        ping = ZohoApiSource().ping()
+    except ZohoError as e:
+        return {
+            "state": "ERROR",
+            "headline": "Zoho credentials were rejected",
+            "detail": str(e),
+            "source": "api",
+            "api_base": settings.ZOHO_API_BASE,
+            "accounts_base": settings.ZOHO_ACCOUNTS_BASE,
+        }
+    except Exception as e:  # noqa: BLE001 — network/DNS/proxy problems
+        return {
+            "state": "UNREACHABLE",
+            "headline": "Could not reach Zoho",
+            "detail": f"{type(e).__name__}: {e}. Check outbound network access to "
+                      f"{settings.ZOHO_API_BASE}.",
+            "source": "api",
+            "api_base": settings.ZOHO_API_BASE,
+        }
+
+    if not ping.get("organization_found"):
+        visible = ", ".join(
+            f"{o['name']} ({o['organization_id']})" for o in ping.get("visible_organizations", [])
+        ) or "none"
+        return {
+            "state": "WRONG_ORG",
+            "headline": "Signed in to Zoho, but the organization id does not match",
+            "detail": f"ZOHO_ORGANIZATION_ID is {settings.ZOHO_ORGANIZATION_ID}, which this "
+                      f"login cannot see. Visible: {visible}.",
+            "source": "api",
+            "organization_id": settings.ZOHO_ORGANIZATION_ID,
+            "visible_organizations": ping.get("visible_organizations", []),
+        }
+
+    return {
+        "state": "CONNECTED",
+        "headline": f"Connected to {ping.get('organization_name')}",
+        "detail": None,
+        "source": "api",
+        "organization_id": ping.get("organization_id"),
+        "organization_name": ping.get("organization_name"),
+        "currency": ping.get("currency"),
+        "api_base": settings.ZOHO_API_BASE,
+        "history_days": settings.ZOHO_HISTORY_DAYS,
+    }
+
+
+@router.get("/status")
+def data_status(
+    principal: Principal = Depends(current_principal),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Connection + last-ingestion state. Readable by any signed-in user; only
+    managers and owners can act on it."""
+    org = principal.organization_id
+    counts = {
+        "customers": session.query(models.Customer).filter_by(organization_id=org).count(),
+        "products": session.query(models.Product).filter_by(organization_id=org).count(),
+        "sales_txns": session.query(models.SalesTxn).filter_by(organization_id=org).count(),
+        "cost_records": session.query(models.CostRecord).filter_by(organization_id=org).count(),
+        "decisions": session.query(models.Decision).filter_by(organization_id=org).count(),
+    }
+    return {
+        "connection": _connection(session, org),
+        "last_sync": _run_dict(_last_run(session, org)),
+        "read_model": counts,
+        "can_sync": principal.is_manager_or_owner,
+    }
+
+
+@router.post("/sync")
+def run_sync(
+    principal: Principal = Depends(require_manager_or_owner),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Pull from Zoho, detect signals, generate decisions — the whole cycle.
+
+    Recorded either way: a failed pull leaves a FAILED run rather than silence.
+    """
+    from ..decisions.service import DecisionService
+    from ..ingestion.sync import SyncService, get_source
+    from ..seed import ensure_org_and_users
+    from ..signals.engine import run_detectors
+
+    org = principal.organization_id
+    run = models.SyncRun(organization_id=org, source=settings.ZOHO_SOURCE,
+                         status="OK", started_at=datetime.now(timezone.utc),
+                         triggered_by=principal.user_id)
+    session.add(run)
+    try:
+        ensure_org_and_users(session)
+        report = SyncService(session, get_source(), org).run()
+        session.flush()
+        run.customers = report.customers
+        run.products = report.products
+        run.sales_txns = report.sales_txns
+        run.cost_records = report.cost_records
+        run.skipped_count = len(report.skipped)
+        run.skipped_sample = report.skipped[:20]
+
+        detected = run_detectors(session, org)
+        run.signals_emitted = detected.get("signals_emitted", 0)
+        generated = DecisionService(session, org).generate()
+        run.decisions_created = generated.get("created", 0)
+        run.status = "OK"
+    except Exception as e:  # noqa: BLE001 — a failed sync must be visible, not silent
+        log.exception("sync failed")
+        run.status = "FAILED"
+        run.error = f"{type(e).__name__}: {e}"[:1000]
+    finally:
+        run.finished_at = datetime.now(timezone.utc)
+        session.flush()
+
+    return {"run": _run_dict(run), "connection": _connection(session, org)}

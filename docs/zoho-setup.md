@@ -68,9 +68,9 @@ response is short-lived and the backend fetches its own.
 ## 4. Find the organization id
 
 **https://books.zoho.in** → ⚙ **Settings → Organization Profile**, or read it
-from the URL. For 4U Precision this is expected to be `60036630487` — the
-`/zoho/check` endpoint below confirms it and lists what the login can actually
-see, so a wrong id is caught immediately.
+from the URL. The **Data & connection** screen confirms it and, if it is wrong, names the
+ids the login can actually see — so a wrong id is caught immediately rather
+than producing a confusing empty result.
 
 ---
 
@@ -98,7 +98,7 @@ Put these in `.env` (gitignored) or the deployment's environment:
 
 ```bash
 ZOHO_SOURCE=api                      # switches off the offline fixture source
-ZOHO_ORGANIZATION_ID=60036630487
+ZOHO_ORGANIZATION_ID=60036630626
 ZOHO_CLIENT_ID=1000.xxxxxxxx
 ZOHO_CLIENT_SECRET=xxxxxxxx
 ZOHO_REFRESH_TOKEN=1000.xxxxxxxx.xxxxxxxx
@@ -115,7 +115,24 @@ ZOHO_TIMEOUT_SECONDS=30
 **`ZOHO_SOURCE=api` is the switch.** Until it is set, the platform keeps using
 the offline fixture source no matter what other credentials are present.
 
-## 6. Verify before syncing
+## 6. Verify — from the app
+
+Sign in as the owner or a manager and open **Data & connection** in the nav.
+It states in words whether you are looking at your books or sample data:
+
+| Badge | Meaning | What to do |
+|---|---|---|
+| **CONNECTED** | Live, with the organization name, id, currency and history window | Press **Sync now** |
+| **SAMPLE DATA** | `ZOHO_SOURCE` is not `api` — everything on screen is demonstration data | Set `ZOHO_SOURCE=api` and restart |
+| **WRONG ORGANIZATION** | Credentials work, but the login cannot see the configured id | The panel lists the ids it *can* see — copy the right one |
+| **REJECTED** | Zoho refused the credentials | Usually the data centre; check `ZOHO_ACCOUNTS_BASE` |
+| **UNREACHABLE** | The network could not reach Zoho | Firewall/proxy on the host |
+
+**Sync now** runs the whole cycle — pull, detect signals, generate decisions —
+and records the result, so the page always shows when data last arrived, how
+many rows were skipped and why, and what is in the read model.
+
+## 6b. Or verify from the command line
 
 ```bash
 TOKEN=$(curl -s -X POST localhost:8000/api/v1/auth/login \

@@ -1,74 +1,34 @@
-# pie-portal — Sanketh Quote Builder
+# pie-portal — Commercial Decision Platform + Quote Builder
 
-A production B2B quote builder for cutting-tool distribution, implementing the
-*Sanketh · Quote Builder* design and wired to the
-[**pie-parser**](https://github.com/srisankethu/pie-parser) Product Intelligence
-Engine for product resolution.
+An AI-native commercial decision-support system for a B2B industrial
+cutting-tool distributor running on Zoho Books.
 
-A salesperson (or manager) pastes a messy RFQ — manufacturer codes, loose
-descriptions, quantities — and each line is resolved through pie-parser into a
-concrete **supply product** with a **relationship** (exact identity, technical
-equivalent, compatible, possible, ambiguous, unresolved) plus ranked
-alternatives. Lines are priced against Zoho Books, with a management-only margin
-engine and a margin-floor guardrail, and turned into a Zoho estimate.
+It reads the company's own sales and cost history, detects the handful of
+commercial situations that genuinely deserve a human decision, has an AI
+interpret those facts, and routes the result to the person who owns the call.
 
-```
-   RFQ text ──▶ pie-parser (identity-first resolution + equivalence)
-                     │  reqCode → supplyCode + relationship + ranked alternatives
-                     ▼
-   Zoho Books ──▶ availability · list price · landed cost · item creation · estimate
-                     │
-                     ▼
-   Pricing engine (management-only) ──▶ recommended price · margin · floor guardrail
-                     │
-                     ▼
-   Role-gated API ──▶ React quote grid (sales view has NO economics)
-```
+> **The rule that explains the design:** the AI never computes a number. Every
+> figure comes from deterministic backend arithmetic over source records. The AI
+> reads those figures and writes a short recommendation. A human accepts,
+> modifies, or rejects it — and that decision is captured.
 
-## Architecture
+---
 
-| Layer | Tech | Role |
-|-------|------|------|
-| `pie-parser/` | Python (pinned clone) | Deterministic nomenclature parser + identity resolver + equivalence engine, fetched at a pinned commit by `scripts/setup_pie_parser.sh`. **Nomenclature only — never price or stock.** |
-| `backend/` | FastAPI | Imports pie-parser **in-process** (no subprocess), maps its output to the quote model, gates economics by role, integrates Zoho. |
-| `frontend/` | React + Vite + TS | The quote-builder UI, ported from the design system in the source artifact. |
+## New here?
 
-### The pie-parser integration (`backend/app/pie_service.py`)
+**→ [docs/getting-started.md](docs/getting-started.md)** — complete setup from
+nothing, macOS/Linux and Windows, in about 15 minutes.
 
-The heart of the portal. It loads pie-parser once and reuses its identity-first
-`resolve_rfq.run()` orchestration, then maps the engine's verdict onto the
-design's relationship vocabulary:
+| Guide | What it covers |
+|---|---|
+| [Getting started](docs/getting-started.md) | Prerequisites, install, first run, troubleshooting |
+| [Architecture](docs/architecture.md) | How the system works and why it is built this way |
+| [Development](docs/development.md) | Codebase map, tests, migrations, conventions |
+| [Operations](docs/operations.md) | Configuration reference, production deploy, runbook |
 
-| pie-parser outcome | Portal relationship |
-|--------------------|---------------------|
-| Authoritative identity (`AUTO_MATCH` / `CONFIRMED`, `SAME_PRODUCT`) | **EXACT** |
-| Requirement + top equivalence score ≥ 0.85 | **TECH** (technical equivalent) |
-| … score 0.60–0.85 | **COMPAT** |
-| … score < 0.60 | **POSSIBLE** |
-| `AMBIGUOUS` / `CONFLICT` | **AMBIGUOUS** (abstain, show options) |
-| Unresolved / no match | **UNRESOLVED** |
-| Engine failure | **PIE OFFLINE** (line degrades; the quote never fails) |
+---
 
-Availability, list price and landed cost come from the **Zoho** layer (keyed by
-the manufacturer MM# resolution returns), because pie-parser deliberately never
-carries commercial data.
-
-### Zoho boundary (`backend/app/zoho.py`)
-
-A `ZohoService` protocol with a deterministic `MockZoho` adapter so the whole
-flow works offline today. Values (list price, cost, stock, in-books) are derived
-from a stable hash of the item code, and a few codes are steered into the
-zero-stock / not-in-books / unknown-availability states the design exercises.
-See **Wiring real Zoho** below.
-
-### Role-gated economics
-
-`Line.to_dict(mgmt)` only serialises the `economics` block (cost, margin,
-below-floor) and the margin-floor banner for a **management** principal. The
-sales client never receives cost or margin over the wire — enforced in the
-serializer, not by the UI.
-
-## Setup
+## Quickstart
 
 Requires Python 3.11+ and Node 20+.
 
@@ -76,149 +36,141 @@ Requires Python 3.11+ and Node 20+.
 git clone https://github.com/srisankethu/pie-portal
 cd pie-portal
 
-# fetch the pie-parser engine at its pinned commit (into ./pie-parser)
-./scripts/setup_pie_parser.sh
+./scripts/setup_pie_parser.sh                        # PIE engine (private repo)
+python -m pip install -r backend/requirements.txt
+python scripts/build_catalog.py
+(cd frontend && npm install)
 
-# backend
-python3 -m pip install -r backend/requirements.txt
-python3 scripts/build_catalog.py          # decode the PIE catalogue (~13 MB, gitignored)
-
-# frontend
-cd frontend && npm install && cd ..
+# terminal 1
+cd backend && python -m uvicorn app.main:app --reload --port 8000
+# terminal 2
+cd frontend && npm run dev
 ```
 
-`pie-parser` is fetched at a pinned commit into `./pie-parser` (gitignored)
-rather than committed here, so the integration always builds against a known-good
-engine revision. Point `PIE_PARSER_ROOT` at an existing checkout to reuse one.
+Open **http://localhost:5173**. The backend creates and seeds its own database
+on first start — there is no separate migrate/seed step.
 
-The catalogue is built from the corpus bundled in pie-parser
-(`corpora/kmt_zcnc_2026-07_nomenclature.csv`, 6,717 real Kennametal/WIDIA rows).
-It is deterministic, large, and therefore gitignored; the backend also builds it
-lazily on first startup if absent.
-
-## Run
-
-```bash
-make dev          # backend on :8000, frontend on :5173 (proxies /api → :8000)
-# or separately:
-make backend
-make frontend
-```
-
-The backend **bootstraps its own database on startup**: it creates
-`backend/data/`, applies the migrations, and seeds the organization, the demo
-users, and a realistic demo dataset. No separate migrate/seed step is needed —
-just start it. (Skipped in production; see below.)
-
-Open http://localhost:5173 and sign in with any password:
+Sign in with any password:
 
 | Email | Role | Sees |
 |---|---|---|
-| `r.nair@sanketh.in` | Salesperson | Own assigned customers; **no cost or margin** |
+| `r.nair@sanketh.in` | Salesperson | Own customers; **no cost or margin** |
 | `m.rao@sanketh.in` | Sales manager | Whole organization + economics |
-| `s.menon@sanketh.in` | Owner | Whole organization + economics + AI ops metrics |
+| `s.menon@sanketh.in` | Owner | The above + AI cost/health metrics |
 
-In the Quote Builder, click **Paste RFQ → Use sample RFQ → Resolve & add**.
+On Windows, or if anything goes wrong, see
+[getting-started.md](docs/getting-started.md).
 
-### Windows (no `make`)
+---
 
-Run the same commands directly — `make` is only a shortcut:
+## The two surfaces
 
-```powershell
-python -m pip install -r backend\requirements.txt
-python scripts\build_catalog.py
+One backend, one frontend build, two surfaces:
 
-# backend (bootstraps the database automatically on startup)
-cd backend
-python -m uvicorn app.main:app --reload --port 8000
+**Commercial Decision Platform** (primary) — detects five commercial situations,
+grounds an AI interpretation on deterministic facts, and routes role-scoped
+decisions:
 
-# frontend, in a second terminal
-cd frontend
-npm install
-npm run dev
-```
-
-To prepare the database explicitly (equivalent to `make bootstrap`):
-
-```powershell
-cd backend
-python -m app.bootstrap
-```
-
-This creates the DB file and its directory, applies all migrations, and seeds
-users + demo data. It is idempotent — safe to re-run at any time.
-
-### Troubleshooting
-
-**`sqlite3.OperationalError: no such table: users` on sign-in**, or
-**`unable to open database file`** — the database was never created. Run
-`python -m app.bootstrap` from `backend/`, then restart. (Startup does this
-automatically; you will only see this if `AUTO_BOOTSTRAP=0`, if you are running
-with `APP_ENV=production`, or if the bootstrap logged an error at startup.)
-
-To start completely fresh, delete `backend/data/platform.db` and restart the
-backend — it will be rebuilt and re-seeded.
-
-### Production
-
-Auto-bootstrap and demo seeding are **disabled** when `APP_ENV=production`:
-migrations there are a deliberate, reviewed deploy step, and fabricated demo
-customers must never reach a real read model. Deploy with:
-
-```bash
-export APP_ENV=production
-export AUTH_SECRET=<a strong secret>      # the app refuses to boot without it
-python -m alembic upgrade head
-python -m app.seed                        # org + users only, no demo data
-```
-
-| Variable | Default | Purpose |
+| Category | The fact it states | Routed to |
 |---|---|---|
-| `AUTO_BOOTSTRAP` | `1` | Create/migrate/seed the DB on startup. Always off in production. |
-| `DEMO_SEED_ON_START` | `1` | Seed the demo dataset on startup. Always off in production. |
-| `DATABASE_URL` | `sqlite:///backend/data/platform.db` | SQLAlchemy URL; set a Postgres URL in production. |
-| `APP_ENV` | `development` | `production` enables the hard guards above. |
+| Customer Decline | Recent revenue materially down vs a comparable prior period | Salesperson |
+| Customer Dormancy | A regular buyer has gone silent beyond its typical interval | Salesperson |
+| Margin Deterioration | A product's margin has fallen, computed only from reliable cost | Manager / Owner |
+| Cost Pass-Through | Purchase cost rose but selling price did not follow | Manager / Owner |
+| Quote Context | On demand while quoting: history, last price, trend, cadence | Salesperson + |
 
-## Test
+**Quote Builder** — paste a messy RFQ (manufacturer codes, loose descriptions,
+quantities); each line is resolved through pie-parser into a concrete supply
+product with a relationship and ranked alternatives, priced against Zoho, with
+the platform's decision support alongside each line.
 
-```bash
-make test         # backend pytest (pie-parser integration, pricing, API flow)
+```
+   RFQ text ──▶ pie-parser (identity-first resolution + equivalence)
+                     │  reqCode → supplyCode + relationship + alternatives
+                     ▼
+   Zoho Books ──▶ availability · list price · landed cost · estimate
+                     │
+                     ▼
+   Pricing engine (management-only) ──▶ recommended price · margin · floor
+                     │
+                     ▼
+   Role-gated API ──▶ React quote grid (sales view has NO economics)
 ```
 
-The backend suite covers the real pie-parser resolution (exact identity, fuzzy
-requirement → ranked candidates, unresolved), the pricing/margin engine, and the
-end-to-end API including the role-gating of economics.
+pie-parser is **nomenclature only** — it never carries price or stock. All
+commercial data comes from the Zoho layer.
 
-## Scope
+| pie-parser outcome | Portal relationship |
+|---|---|
+| Authoritative identity (`AUTO_MATCH`/`CONFIRMED`, `SAME_PRODUCT`) | **EXACT** |
+| Requirement + top equivalence score ≥ 0.85 | **TECH** |
+| … 0.60–0.85 | **COMPAT** |
+| … < 0.60 | **POSSIBLE** |
+| `AMBIGUOUS` / `CONFLICT` | **AMBIGUOUS** (abstain, show options) |
+| Unresolved / no match | **UNRESOLVED** |
+| Engine failure | **PIE OFFLINE** (the line degrades; the quote never fails) |
 
-This first implementation covers the **core quoting flow**: sign-in + roles, RFQ
-intake, the pie-parser resolution grid, the supply-selection drawer, pricing with
-the management margin floor, Zoho item creation, and estimate creation. The
-design's price-exception requests, management approvals, audit log and analytics
-are intentionally deferred to a follow-up (the role model and economics gate are
-already in place to build on).
+---
 
-## Wiring real Zoho
+## What makes it trustworthy
 
-Implement the `ZohoService` protocol (`backend/app/zoho.py`) against the live
-Zoho Books API — `get_item`, `create_item`, `create_estimate`, `available` — and
-return it from `get_zoho` in `backend/app/deps.py`. No routers or UI change: the
-mock and the real adapter are interchangeable.
+- **Facts and AI are structurally separate** — in the data model, in the API,
+  and on screen. You always know which is which.
+- **Grounding gate.** Every number in AI output must trace to a supplied fact,
+  or the response is rejected and the deterministic reading is shown instead.
+- **Permissions enforced server-side.** A salesperson's cost/margin facts are
+  *absent* from the payload, not hidden by the UI.
+- **Honest degradation.** When the AI is unavailable, times out, or fails
+  validation, the facts still stand and the decision stays actionable.
+- **No auto-correction of bad data.** Anomalies suppress the dependent signal
+  rather than producing a confident wrong answer.
+- **Full audit trail.** Immutable signals with their evidence, the exact facts
+  the AI cited, and the human action taken.
+
+---
 
 ## Layout
 
 ```
-pie-parser/            pinned clone — the resolution engine (fetched, gitignored)
-backend/
-  app/
-    pie_service.py     in-process pie-parser bridge + relationship mapping
-    catalog.py         build/locate products.jsonl from the pie-parser corpus
-    zoho.py            ZohoService protocol + deterministic MockZoho
-    pricing.py         management-only recommended price + margin floor
-    security.py        demo accounts, roles, signed tokens
-    store.py           quote/line state, status derivation, role-gated serialize
-    routers/           auth + quote endpoints
-  tests/               pie-parser integration, pricing, full API flow
-frontend/src/          React quote-builder UI (ported design system)
-scripts/build_catalog.py
+backend/app/
+  signals/       the five deterministic detectors (pure functions)
+  context/       permission-scoped fact bundle for the AI
+  ai/            provider · prompt · grounding gate · telemetry · metrics
+  decisions/     signal → decision; on-demand quote support
+  ingestion/     Zoho source → normalize → idempotent sync
+  domain/        ORM models · enums · schemas
+  routers/       HTTP surface
+  pie_service.py in-process pie-parser bridge + relationship mapping
+  pricing.py     management-only recommended price + margin floor
+frontend/src/
+  platform/      Decision Platform UI
+  components/    Quote Builder UI + decision-support panel
+docs/            getting-started · architecture · development · operations
 ```
+
+---
+
+## Testing
+
+```bash
+cd backend && python -m pytest -q        # 138 tests
+python -m pytest -m live                 # opt-in: real AI provider (needs a key)
+```
+
+Coverage spans the deterministic detectors, the AI grounding gate and every
+failure path (timeout, malformed, hallucinated number, prompt injection,
+withheld), context redaction, API authorization and organization isolation, the
+decision lifecycle, the Quote Builder integration, and fresh-clone startup.
+
+---
+
+## Status
+
+V1 is complete and demo-ready. Before it runs on real customer data, three
+deployment gates remain — replacing the demo login with a real identity
+provider, mapping customer→salesperson assignment from Zoho, and setting the
+real AI cost rates. The Outcome Tracker (measuring the realised impact of
+accepted recommendations) is the most valuable next increment.
+
+Details in [operations.md](docs/operations.md) and
+[architecture.md](docs/architecture.md).

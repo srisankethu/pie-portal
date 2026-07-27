@@ -68,3 +68,39 @@ export interface Account {
   status: string;
   assigned_user_id: string | null;
 }
+
+export interface ConnectionState {
+  state: "CONNECTED" | "SAMPLE_DATA" | "ERROR" | "UNREACHABLE" | "WRONG_ORG";
+  headline: string;
+  detail: string | null;
+  source: string;
+  organization_id?: string;
+  organization_name?: string;
+  currency?: string;
+  api_base?: string;
+  history_days?: number;
+  visible_organizations?: { organization_id: string; name: string }[];
+}
+
+export interface SyncRun {
+  status: string;
+  source: string;
+  started_at: string | null;
+  finished_at: string | null;
+  customers: number;
+  products: number;
+  sales_txns: number;
+  cost_records: number;
+  skipped_count: number;
+  skipped_sample: { kind?: string; ref?: string; code?: string; detail?: string }[];
+  signals_emitted: number;
+  decisions_created: number;
+  error: string | null;
+}
+
+export interface DataStatus {
+  connection: ConnectionState;
+  last_sync: SyncRun | null;
+  read_model: Record<string, number>;
+  can_sync: boolean;
+}

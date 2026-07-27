@@ -587,3 +587,32 @@ table.grid tbody tr:hover td { background: color-mix(in srgb, var(--color-accent
   border-radius: var(--radius-md); padding: 9px 12px;
   font-size: 13px; margin-bottom: var(--space-4);
 }
+
+/* ── Data & connection ─────────────────────────────────────────────────────── */
+.conn-top { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.conn-badge {
+  font-family: var(--font-heading); text-transform: uppercase; letter-spacing: .05em;
+  font-size: 11px; font-weight: 700; padding: 3px 10px; border-radius: 999px;
+  border: 1px solid transparent;
+}
+.conn-badge.ok   { color: #1f6b3a; background: #e7f4ec; border-color: #bfe0cc; }
+.conn-badge.warn { color: #7a5b12; background: #fbf3df; border-color: #ecdcae; }
+.conn-badge.bad  { color: #9a2c2c; background: #fbeaea; border-color: #eec4c4; }
+.conn-src { font-size: 12px; color: var(--color-neutral-700); }
+.conn-headline { font-family: var(--font-heading); font-size: 19px; font-weight: 700; }
+.conn-detail { font-size: 13.5px; color: var(--color-neutral-700); margin: 6px 0 0; line-height: 1.5; }
+.conn.conn-ok   { border-left: 3px solid #1f6b3a; }
+.conn.conn-warn { border-left: 3px solid #b8860b; }
+.conn.conn-bad  { border-left: 3px solid #9a2c2c; }
+.conn-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+              gap: 10px 18px; margin: 14px 0 0; }
+.conn-facts dt { font-size: 11px; text-transform: uppercase; letter-spacing: .04em;
+                 color: var(--color-neutral-700); }
+.conn-facts dd { margin: 2px 0 0; font-weight: 600; font-size: 14px; }
+.conn-result {
+  margin-top: 12px; padding: 9px 12px; border-radius: var(--radius-md);
+  background: var(--color-accent-100); border: 1px solid var(--color-accent-200);
+  font-size: 13.5px;
+}
+.dp-split-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: start; }
+@media (max-width: 820px) { .dp-split-2 { grid-template-columns: 1fr; } }

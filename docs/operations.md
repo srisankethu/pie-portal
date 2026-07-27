@@ -38,7 +38,11 @@ always wins over it**. All values have defaults that work for local development.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `ZOHO_SOURCE` | `fixture` | `fixture` (deterministic offline data) or `api` (live Zoho). |
+| `ZOHO_SOURCE` | `fixture` | `fixture` (deterministic offline data) or `api` (live Zoho). See [zoho-setup.md](zoho-setup.md). |
+| `ZOHO_ACCOUNTS_BASE` | `https://accounts.zoho.in` | OAuth token host. Must match the account's data centre. |
+| `ZOHO_HISTORY_DAYS` | `730` | How far back the live pull reaches. |
+| `ZOHO_PAGE_SIZE` / `ZOHO_MAX_PAGES` | `200` / `50` | Pagination bounds. |
+| `ZOHO_TIMEOUT_SECONDS` | `30` | Per-request timeout. |
 | `ZOHO_ORGANIZATION_ID` | — | Zoho Books organization id. |
 | `ZOHO_CLIENT_ID` / `ZOHO_CLIENT_SECRET` / `ZOHO_REFRESH_TOKEN` | — | OAuth credentials. **Read-only scope is sufficient** — the platform never writes to Zoho. |
 | `ZOHO_API_BASE` | `https://www.zohoapis.in/books/v3` | Regional API base (`.in` for India). |

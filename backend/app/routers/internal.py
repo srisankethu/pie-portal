@@ -46,6 +46,37 @@ def ai_metrics(
     return report(AiTelemetryRepository(session, principal.organization_id))
 
 
+@router.get("/zoho/check")
+def zoho_check(principal: Principal = Depends(require_manager_or_owner)) -> dict:
+    """Verify the Zoho credentials and organization id without pulling any data.
+
+    Run this before the first sync: it distinguishes the three things that
+    actually go wrong — wrong data centre, revoked/incorrect token, and a valid
+    login that simply cannot see the organization id you configured.
+    """
+    if settings.ZOHO_SOURCE != "api":
+        return {"ok": False, "source": settings.ZOHO_SOURCE,
+                "detail": "ZOHO_SOURCE is not 'api' — the offline fixture source is in use."}
+    from ..ingestion.zoho_client import ZohoApiSource, ZohoError
+
+    try:
+        result = ZohoApiSource().ping()
+    except ZohoError as e:
+        return {"ok": False, "source": "api", "detail": str(e),
+                "api_base": settings.ZOHO_API_BASE,
+                "accounts_base": settings.ZOHO_ACCOUNTS_BASE}
+    ok = bool(result.get("organization_found"))
+    return {
+        "ok": ok, "source": "api",
+        "api_base": settings.ZOHO_API_BASE,
+        "accounts_base": settings.ZOHO_ACCOUNTS_BASE,
+        "detail": None if ok else (
+            "Authenticated, but this login cannot see the configured "
+            "ZOHO_ORGANIZATION_ID. Pick one of visible_organizations."),
+        **result,
+    }
+
+
 @router.post("/sync/zoho")
 def sync_zoho(
     principal: Principal = Depends(require_manager_or_owner),

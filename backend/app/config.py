@@ -108,8 +108,20 @@ class Settings:
     ZOHO_CLIENT_SECRET: str = os.environ.get("ZOHO_CLIENT_SECRET", "")
     ZOHO_REFRESH_TOKEN: str = os.environ.get("ZOHO_REFRESH_TOKEN", "")
     ZOHO_API_BASE: str = os.environ.get("ZOHO_API_BASE", "https://www.zohoapis.in/books/v3")
-    # "fixture" (deterministic offline source) or "api" (live Zoho, deferred).
+    # OAuth token endpoint host. MUST match the data centre the account lives in
+    # (.in for India, .com for US, .eu, .com.au, .jp) — a refresh token issued in
+    # one DC is rejected by every other.
+    ZOHO_ACCOUNTS_BASE: str = os.environ.get("ZOHO_ACCOUNTS_BASE", "https://accounts.zoho.in")
+    # "fixture" (deterministic offline source) or "api" (live Zoho).
     ZOHO_SOURCE: str = os.environ.get("ZOHO_SOURCE", "fixture")
+
+    # Live pull shape. History is bounded because the detectors compare a recent
+    # window against a prior one — pulling a decade of ledger costs API calls and
+    # buys nothing.
+    ZOHO_TIMEOUT_SECONDS: float = float(os.environ.get("ZOHO_TIMEOUT_SECONDS", "30"))
+    ZOHO_PAGE_SIZE: int = int(os.environ.get("ZOHO_PAGE_SIZE", "200"))
+    ZOHO_MAX_PAGES: int = int(os.environ.get("ZOHO_MAX_PAGES", "50"))
+    ZOHO_HISTORY_DAYS: int = int(os.environ.get("ZOHO_HISTORY_DAYS", "730"))
 
     # Version stamped onto deterministic artifacts for provenance/reproducibility.
     # (Threshold-config version is carried by SignalThresholds.version, not here.)

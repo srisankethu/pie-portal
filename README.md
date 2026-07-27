@@ -25,6 +25,7 @@ nothing, macOS/Linux and Windows, in about 15 minutes.
 | [Architecture](docs/architecture.md) | How the system works and why it is built this way |
 | [Development](docs/development.md) | Codebase map, tests, migrations, conventions |
 | [Operations](docs/operations.md) | Configuration reference, production deploy, runbook |
+| [Zoho setup](docs/zoho-setup.md) | Connecting a live Zoho Books account (read-only) |
 
 ---
 

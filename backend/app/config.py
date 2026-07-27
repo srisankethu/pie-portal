@@ -61,6 +61,13 @@ class Settings:
     )
     SQL_ECHO: bool = os.environ.get("SQL_ECHO", "0") == "1"
 
+    # Create the database + schema + demo users on startup, so a fresh clone
+    # runs without a separate migrate/seed step. Always disabled in production,
+    # where migrations are a deliberate, reviewed deploy step.
+    AUTO_BOOTSTRAP: bool = os.environ.get("AUTO_BOOTSTRAP", "1") != "0"
+    # Seed the realistic demo dataset on startup. Never in production.
+    DEMO_SEED_ON_START: bool = os.environ.get("DEMO_SEED_ON_START", "1") != "0"
+
     # The single supported organization for V1 (one org, one ERP). organization_id
     # is carried on every record for future multi-org, but no cross-org logic exists.
     DEFAULT_ORG_ID: str = os.environ.get("DEFAULT_ORG_ID", "org_sanketh")

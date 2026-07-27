@@ -105,12 +105,79 @@ make backend
 make frontend
 ```
 
-Open http://localhost:5173 and sign in:
+The backend **bootstraps its own database on startup**: it creates
+`backend/data/`, applies the migrations, and seeds the organization, the demo
+users, and a realistic demo dataset. No separate migrate/seed step is needed —
+just start it. (Skipped in production; see below.)
 
-- **r.nair@sanketh.in** — salesperson (no economics)
-- **s.menon@sanketh.in** — management (full economics + margin floor)
+Open http://localhost:5173 and sign in with any password:
 
-Any password. Click **Paste RFQ → Use sample RFQ → Resolve & add**.
+| Email | Role | Sees |
+|---|---|---|
+| `r.nair@sanketh.in` | Salesperson | Own assigned customers; **no cost or margin** |
+| `m.rao@sanketh.in` | Sales manager | Whole organization + economics |
+| `s.menon@sanketh.in` | Owner | Whole organization + economics + AI ops metrics |
+
+In the Quote Builder, click **Paste RFQ → Use sample RFQ → Resolve & add**.
+
+### Windows (no `make`)
+
+Run the same commands directly — `make` is only a shortcut:
+
+```powershell
+python -m pip install -r backend\requirements.txt
+python scripts\build_catalog.py
+
+# backend (bootstraps the database automatically on startup)
+cd backend
+python -m uvicorn app.main:app --reload --port 8000
+
+# frontend, in a second terminal
+cd frontend
+npm install
+npm run dev
+```
+
+To prepare the database explicitly (equivalent to `make bootstrap`):
+
+```powershell
+cd backend
+python -m app.bootstrap
+```
+
+This creates the DB file and its directory, applies all migrations, and seeds
+users + demo data. It is idempotent — safe to re-run at any time.
+
+### Troubleshooting
+
+**`sqlite3.OperationalError: no such table: users` on sign-in**, or
+**`unable to open database file`** — the database was never created. Run
+`python -m app.bootstrap` from `backend/`, then restart. (Startup does this
+automatically; you will only see this if `AUTO_BOOTSTRAP=0`, if you are running
+with `APP_ENV=production`, or if the bootstrap logged an error at startup.)
+
+To start completely fresh, delete `backend/data/platform.db` and restart the
+backend — it will be rebuilt and re-seeded.
+
+### Production
+
+Auto-bootstrap and demo seeding are **disabled** when `APP_ENV=production`:
+migrations there are a deliberate, reviewed deploy step, and fabricated demo
+customers must never reach a real read model. Deploy with:
+
+```bash
+export APP_ENV=production
+export AUTH_SECRET=<a strong secret>      # the app refuses to boot without it
+python -m alembic upgrade head
+python -m app.seed                        # org + users only, no demo data
+```
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `AUTO_BOOTSTRAP` | `1` | Create/migrate/seed the DB on startup. Always off in production. |
+| `DEMO_SEED_ON_START` | `1` | Seed the demo dataset on startup. Always off in production. |
+| `DATABASE_URL` | `sqlite:///backend/data/platform.db` | SQLAlchemy URL; set a Postgres URL in production. |
+| `APP_ENV` | `development` | `production` enables the hard guards above. |
 
 ## Test
 

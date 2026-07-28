@@ -25,6 +25,7 @@ from sqlalchemy import (
     Boolean,
     Date,
     DateTime,
+    Float,
     ForeignKey,
     Integer,
     Numeric,
@@ -159,8 +160,15 @@ class SalesTxn(Base):
     product_id: Mapped[str] = mapped_column(String(64), index=True)
     date: Mapped[date] = mapped_column(Date, index=True)
     qty: Mapped[Any] = mapped_column(Numeric(18, 4))
+    # NET selling price per unit — after the line discount, which is what the
+    # customer actually paid and the only figure a margin may be computed from.
     unit_price: Mapped[Any] = mapped_column(Numeric(18, 4))
-    line_revenue: Mapped[Any] = mapped_column(Numeric(18, 4))
+    line_revenue: Mapped[Any] = mapped_column(Numeric(18, 4))   # pre-tax, post-discount
+    # Audit trail for the price above, mirroring CostRecord. Nullable: rows
+    # synced before the sales-discount fix have neither until the invoice is
+    # re-fetched from Zoho (a full re-sync) — see docs/zoho-setup.md.
+    rate: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
+    discount_percent: Mapped[Optional[Any]] = mapped_column(Numeric(9, 4))
     source_ref: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
@@ -348,6 +356,95 @@ class IngestedDocument(Base):
     doc_id: Mapped[str] = mapped_column(String(64), index=True)
     modified_at: Mapped[Optional[str]] = mapped_column(String(64))  # Zoho's stamp, verbatim
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class CustomerItemMetric(Base):
+    """Derived Customer × Item commercial metrics — a recomputable projection.
+
+    Holds no source facts of its own: every number here is computed from the
+    ``SalesTxn`` and ``CostRecord`` rows for one (customer, product) pair, and
+    the whole table can be dropped and rebuilt from them at any time
+    (``python -m app.commercial.backfill``). It exists so the customer screen
+    does not have to scan every invoice line in the organization on each page
+    load — the one thing that would not survive thousands of customers ×
+    thousands of items × years of history.
+
+    ``thresholds_version`` and ``computed_at`` make any row reproducible: it
+    says which threshold set and which moment produced these numbers.
+
+    All of it is RESTRICTED (cost/margin) and never reaches a salesperson.
+    """
+
+    __tablename__ = "customer_item_metrics"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "customer_id", "product_id",
+                         name="uq_cim_org_customer_product"),
+    )
+
+    customer_item_metric_id: Mapped[str] = mapped_column(String(64), primary_key=True,
+                                                         default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    customer_id: Mapped[str] = mapped_column(String(64), index=True)
+    product_id: Mapped[str] = mapped_column(String(64), index=True)
+
+    # ── identity / activity ──────────────────────────────────────────────────
+    first_transaction_date: Mapped[Optional[date]] = mapped_column(Date)
+    last_transaction_date: Mapped[Optional[date]] = mapped_column(Date, index=True)
+    transaction_count: Mapped[int] = mapped_column(Integer, default=0)
+    history_months: Mapped[Optional[float]] = mapped_column(Float)
+
+    # ── commercial position (recent window) ──────────────────────────────────
+    revenue_recent: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
+    revenue_12m: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4), index=True)
+    gross_profit_recent: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
+    gross_profit_12m: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
+    current_sell_price: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
+    current_effective_cost: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
+
+    # ── margin over periods (gross profit ÷ revenue, never a mean of percents)
+    current_margin: Mapped[Optional[float]] = mapped_column(Float)
+    previous_margin: Mapped[Optional[float]] = mapped_column(Float)
+    margin_3m: Mapped[Optional[float]] = mapped_column(Float)
+    margin_6m: Mapped[Optional[float]] = mapped_column(Float)
+    margin_12m: Mapped[Optional[float]] = mapped_column(Float)
+    historical_margin: Mapped[Optional[float]] = mapped_column(Float)
+
+    # ── movement ─────────────────────────────────────────────────────────────
+    margin_change_pp: Mapped[Optional[float]] = mapped_column(Float)   # percentage POINTS
+    price_change_pct: Mapped[Optional[float]] = mapped_column(Float)
+    cost_change_pct: Mapped[Optional[float]] = mapped_column(Float)
+    erosion_kind: Mapped[Optional[str]] = mapped_column(String(24))    # COST_DRIVEN | …
+
+    # ── same-item peer benchmark ─────────────────────────────────────────────
+    same_item_median_price: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
+    same_item_median_margin: Mapped[Optional[float]] = mapped_column(Float)
+    price_deviation_pct: Mapped[Optional[float]] = mapped_column(Float)
+    margin_deviation_pp: Mapped[Optional[float]] = mapped_column(Float)
+    peer_count: Mapped[int] = mapped_column(Integer, default=0)
+
+    # ── volume ───────────────────────────────────────────────────────────────
+    qty_recent: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
+    qty_previous: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
+    volume_change_pct: Mapped[Optional[float]] = mapped_column(Float)
+
+    # ── economic impact (estimates, never "lost profit") ─────────────────────
+    historical_margin_gap: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
+    peer_margin_gap: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
+    annualized_historical_margin_gap: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
+
+    # ── deterministic signal flags (what the detectors act on) ───────────────
+    signals: Mapped[list[str]] = mapped_column(JSON, default=list)
+
+    # ── data quality ─────────────────────────────────────────────────────────
+    data_sufficiency: Mapped[str] = mapped_column(String(16), default="INSUFFICIENT",
+                                                  index=True)
+    sufficiency_reasons: Mapped[list[str]] = mapped_column(JSON, default=list)
+    cost_covered_txns: Mapped[int] = mapped_column(Integer, default=0)
+    cost_missing_txns: Mapped[int] = mapped_column(Integer, default=0)
+
+    # ── provenance ───────────────────────────────────────────────────────────
+    thresholds_version: Mapped[str] = mapped_column(String(32), default="")
+    computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
 class Outcome(Base):

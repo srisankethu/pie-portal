@@ -359,6 +359,13 @@ class ZohoApiSource:
                         "quantity": li.get("quantity"),
                         "rate": li.get("rate"),
                         "item_total": li.get("item_total"),
+                        # A line-item discount, and Zoho's own resolved values
+                        # for it — passed through raw exactly as on bills;
+                        # normalize.py decides which is authoritative. Without
+                        # these the net selling price silently becomes the
+                        # pre-discount list rate.
+                        "discount": li.get("discount"),
+                        "discount_amount": li.get("discount_amount"),
                     }
                     for li in (inv.get("line_items") or [])
                     # A line with no item_id is a comment/charge row, not a product.

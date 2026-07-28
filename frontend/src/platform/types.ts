@@ -127,3 +127,126 @@ export interface DataStatus {
   can_sync: boolean;
   can_manage_connection: boolean;
 }
+
+// ── Customer × Item commercial intelligence ─────────────────────────────────
+// All of it is cost/margin, so every one of these surfaces is manager/owner
+// only — there is no salesperson-safe projection of a margin analysis.
+
+/** A margin is a ratio (0.261); it becomes a percentage at the render edge.
+ *  A `_pp` value is a percentage-POINT difference, never a percent change. */
+export interface CustomerItemRow {
+  product_id: string;
+  item_name: string;
+  item_code: string | null;
+  revenue_12m: number | null;
+  current_margin: number | null;
+  historical_margin: number | null;
+  peer_median_margin: number | null;
+  peer_count: number;
+  margin_change_pp: number | null;
+  cost_change_pct: number | null;
+  price_change_pct: number | null;
+  volume_change_pct: number | null;
+  erosion_kind: string | null;
+  historical_margin_gap: number | null;
+  peer_margin_gap: number | null;
+  annualized_historical_margin_gap: number | null;
+  signals: string[];
+  data_sufficiency: "SUFFICIENT" | "PARTIAL" | "INSUFFICIENT";
+  sufficiency_reasons: string[];
+  last_transaction_date: string | null;
+  transaction_count: number;
+}
+
+export interface PortfolioSummary {
+  customer_id: string;
+  revenue_12m: number | null;
+  gross_profit_12m: number | null;
+  gross_margin_12m: number | null;
+  active_items: number;
+  items_with_margin_erosion: number;
+  items_below_peer_benchmark: number;
+  items_cost_not_passed: number;
+  items_margin_down_volume_up: number;
+  material_gap_items: number;
+  historical_margin_gap: number | null;
+  peer_benchmark_gap: number | null;
+  items_without_cost: number;
+}
+
+export interface CustomerPortfolio {
+  customer: { customer_id: string; name: string };
+  summary: PortfolioSummary;
+  /** Already ranked by economic materiality — do not re-sort by percentage. */
+  items_requiring_attention: CustomerItemRow[];
+  all_items: CustomerItemRow[];
+  computed_at: string | null;
+}
+
+export interface PeerRow {
+  customer_id: string;
+  name: string;
+  net_sell_price: number | null;
+  margin: number | null;
+  qty: number | null;
+  txn_count: number;
+  last_transaction_date: string | null;
+  is_subject: boolean;
+}
+
+export interface CustomerItemDetail {
+  customer: { customer_id: string; name: string };
+  item: { product_id: string; name: string; code: string | null; uom: string | null };
+  as_of: string;
+  headline: {
+    revenue_recent: number | null;
+    revenue_12m: number | null;
+    gross_profit_recent: number | null;
+    gross_profit_12m: number | null;
+    current_margin: number | null;
+    historical_margin: number | null;
+    margin_change_pp: number | null;
+    qty_recent: number | null;
+    current_sell_price: number | null;
+    current_effective_cost: number | null;
+    historical_margin_gap: number | null;
+    annualized_historical_margin_gap: number | null;
+    peer_median_margin: number | null;
+    peer_count: number;
+  };
+  /** Deterministic prose rendered from computed values — never AI-generated. */
+  diagnosis: string[];
+  data_quality: {
+    data_sufficiency: "SUFFICIENT" | "PARTIAL" | "INSUFFICIENT";
+    reasons: string[];
+    transaction_count: number;
+    cost_covered_txns: number;
+    cost_missing_txns: number;
+    history_months: number;
+  };
+  series: { date: string; net_sell_price: number | null; effective_cost: number | null;
+            margin: number | null; qty: number | null }[];
+  margin_periods: {
+    current: number | null; previous: number | null; m3: number | null;
+    m6: number | null; m12: number | null; historical: number | null;
+  };
+  peers: {
+    median_price: number | null;
+    median_margin: number | null;
+    price_deviation_pct: number | null;
+    margin_deviation_pp: number | null;
+    peer_count: number;
+    is_reliable: boolean;
+    window_days: number;
+    rows: PeerRow[];
+    subject: PeerRow | null;
+  };
+  volume_vs_margin: { period_start: string; period_end: string; qty: number | null;
+                      revenue: number | null; margin: number | null; txn_count: number }[];
+  transactions: {
+    date: string; invoice_id: string | null; external_ref: string; qty: number | null;
+    rate: number | null; discount_percent: number | null; net_sell_price: number | null;
+    effective_cost: number | null; revenue: number | null; cogs: number | null;
+    gross_profit: number | null; margin: number | null; cost_source: string | null;
+  }[];
+}

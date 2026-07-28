@@ -33,10 +33,14 @@ class SaleRow:
     product_id: str
     date: date
     qty: Decimal
-    unit_price: Decimal
-    line_revenue: Decimal
+    unit_price: Decimal          # NET of line discount — what the customer paid
+    line_revenue: Decimal        # pre-tax, post-discount
     source_ref: dict[str, Any]
     external_ref: str
+    # Audit trail for unit_price. Optional because rows synced before the
+    # sales-discount fix have neither until their invoice is re-fetched.
+    rate: Optional[Decimal] = None
+    discount_percent: Optional[Decimal] = None
 
 
 @dataclass(frozen=True)

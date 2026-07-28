@@ -103,6 +103,8 @@ class ReadModelRepository:
         row.qty = t.qty
         row.unit_price = t.unit_price
         row.line_revenue = t.line_revenue
+        row.rate = t.rate
+        row.discount_percent = t.discount_percent
         row.source_ref = t.source_ref.model_dump()
         return row
 

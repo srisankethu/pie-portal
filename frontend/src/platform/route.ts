@@ -7,11 +7,16 @@
  * gives back/forward, reload-in-place and shareable links without pulling in
  * a routing dependency.
  */
-export type Screen = "home" | "list" | "detail" | "customer" | "quotes" | "states" | "data";
+export type Screen =
+  | "home" | "list" | "detail" | "customer" | "quotes" | "states" | "data"
+  /** One customer's relationship with one item — needs two ids, so it carries
+   *  an extra `itemId` alongside the customer in `id`. */
+  | "customerItem";
 
 export interface Route {
   screen: Screen;
   id?: string;
+  itemId?: string;
 }
 
 const PATHS: Record<Screen, string> = {
@@ -19,6 +24,7 @@ const PATHS: Record<Screen, string> = {
   list: "/decisions",
   detail: "/decision",
   customer: "/accounts",
+  customerItem: "/accounts",
   quotes: "/quotes",
   states: "/states",
   data: "/data",
@@ -26,6 +32,9 @@ const PATHS: Record<Screen, string> = {
 
 export function toHash(r: Route): string {
   if (r.screen === "detail" && r.id) return `#/decision/${encodeURIComponent(r.id)}`;
+  if (r.screen === "customerItem" && r.id && r.itemId) {
+    return `#/account/${encodeURIComponent(r.id)}/item/${encodeURIComponent(r.itemId)}`;
+  }
   if (r.screen === "customer" && r.id) return `#/account/${encodeURIComponent(r.id)}`;
   return `#${PATHS[r.screen]}`;
 }
@@ -42,9 +51,16 @@ export function parseHash(hash: string): Route {
     case "accounts":
       return { screen: "customer" };
     case "account":
-      return parts[1]
-        ? { screen: "customer", id: decodeURIComponent(parts[1]) }
-        : { screen: "customer" };
+      if (!parts[1]) return { screen: "customer" };
+      // /account/<customer>/item/<product>
+      if (parts[2] === "item" && parts[3]) {
+        return {
+          screen: "customerItem",
+          id: decodeURIComponent(parts[1]),
+          itemId: decodeURIComponent(parts[3]),
+        };
+      }
+      return { screen: "customer", id: decodeURIComponent(parts[1]) };
     case "quotes":
       return { screen: "quotes" };
     case "states":

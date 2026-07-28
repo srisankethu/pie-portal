@@ -1,0 +1,583 @@
+import { useCallback, useEffect, useState } from "react";
+import { papi } from "./api";
+import type {
+  CustomerItemDetail,
+  CustomerItemRow,
+  CustomerPortfolio,
+  PeerRow,
+  PlatformSession,
+} from "./types";
+import { Bp } from "./ui";
+
+/**
+ * Customer × Item commercial intelligence.
+ *
+ * Two screens: the customer's items ranked by what the gap is worth, and the
+ * drill-down that explains one relationship and shows the transactions behind
+ * every claim on it.
+ *
+ * Presentation only — every number here was computed and persisted by the
+ * backend. Nothing on this page calculates a margin, and nothing on it is
+ * AI-generated: the diagnosis prose arrives as sentences already rendered from
+ * the same values shown in the tables.
+ */
+
+// ── formatting ──────────────────────────────────────────────────────────────
+const nf = new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 });
+
+/** A ratio (0.261) rendered as a percentage. */
+function pct(v: number | null | undefined, digits = 1): string {
+  return v == null ? "—" : `${(v * 100).toFixed(digits)}%`;
+}
+
+/** A percentage-POINT movement, signed. Never a percent change of a percent. */
+function pp(v: number | null | undefined): string {
+  if (v == null) return "—";
+  const sign = v > 0 ? "+" : "";
+  return `${sign}${(v * 100).toFixed(1)} pp`;
+}
+
+function signedPct(v: number | null | undefined): string {
+  if (v == null) return "—";
+  const sign = v > 0 ? "+" : "";
+  return `${sign}${(v * 100).toFixed(1)}%`;
+}
+
+function inr(v: number | null | undefined): string {
+  return v == null ? "—" : `₹${nf.format(Math.round(v))}`;
+}
+
+function num(v: number | null | undefined): string {
+  return v == null ? "—" : nf.format(v);
+}
+
+function when(iso: string | null): string {
+  return iso ? new Date(iso).toLocaleDateString("en-IN", { dateStyle: "medium" }) : "—";
+}
+
+const SIGNAL_LABEL: Record<string, string> = {
+  CI_MARGIN_EROSION: "Margin eroding",
+  CI_COST_NOT_PASSED: "Cost not passed on",
+  CI_LOW_PEER_PRICING: "Below peers",
+  CI_MARGIN_DECLINE_NO_VOLUME: "No volume gained",
+  CI_MARGIN_DECLINE_WITH_VOLUME: "Volume traded for margin",
+  CI_MATERIAL_MARGIN_GAP: "Material gap",
+};
+
+const EROSION_LABEL: Record<string, string> = {
+  COST_DRIVEN: "Cost rose, price didn't follow",
+  PRICE_DRIVEN: "Price fell",
+  MIXED: "Cost rose and price fell",
+  NONE: "—",
+};
+
+/** Data sufficiency, stated plainly. A conclusion drawn from thin data has to
+ *  look different from one drawn from years of trading. */
+function Sufficiency({ level, reasons }: { level: string; reasons?: string[] }) {
+  if (level === "SUFFICIENT") return null;
+  const label = level === "INSUFFICIENT" ? "Not enough data" : "Limited data";
+  return (
+    <span className="ci-suff" title={(reasons || []).join("; ")}>
+      {label}
+    </span>
+  );
+}
+
+// ── customer portfolio ──────────────────────────────────────────────────────
+type SortKey = "impact" | "deterioration" | "peer_gap" | "revenue" | "volume";
+
+const SORTS: { key: SortKey; label: string }[] = [
+  { key: "impact", label: "Margin gap ₹" },
+  { key: "deterioration", label: "Margin deterioration" },
+  { key: "peer_gap", label: "Peer benchmark gap" },
+  { key: "revenue", label: "Revenue" },
+  { key: "volume", label: "Volume change" },
+];
+
+function sortRows(rows: CustomerItemRow[], key: SortKey): CustomerItemRow[] {
+  const v = (r: CustomerItemRow) => {
+    switch (key) {
+      case "deterioration": return -(r.margin_change_pp ?? 0);
+      case "peer_gap": return r.peer_margin_gap ?? 0;
+      case "revenue": return r.revenue_12m ?? 0;
+      case "volume": return -(r.volume_change_pct ?? 0);
+      default: return r.historical_margin_gap ?? 0;
+    }
+  };
+  return [...rows].sort((a, b) => v(b) - v(a));
+}
+
+export function CustomerCommercial({
+  session,
+  customerId,
+  onOpenItem,
+}: {
+  session: PlatformSession;
+  customerId: string;
+  onOpenItem: (productId: string) => void;
+}) {
+  const [data, setData] = useState<CustomerPortfolio | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [sort, setSort] = useState<SortKey>("impact");
+  const [showAll, setShowAll] = useState(false);
+
+  const load = useCallback(async () => {
+    setError(null);
+    try {
+      setData(await papi.customerPortfolio(session.token, customerId));
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }, [session.token, customerId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  if (error) {
+    return (
+      <div className="state-panel">
+        <div className="state-mark">Commercial analysis could not be loaded</div>
+        <p style={{ margin: 0, fontSize: 13.5 }}>{error}</p>
+      </div>
+    );
+  }
+  if (!data) return <div className="skeleton" style={{ height: 120 }} />;
+
+  const s = data.summary;
+  if (s.active_items === 0) {
+    return (
+      <div className="dp-empty">
+        No item-level history for this account yet. Once invoices are synced, this
+        is where the items driving its margin appear.
+      </div>
+    );
+  }
+
+  const rows = showAll ? data.all_items : data.items_requiring_attention;
+  // The backend already ranks by materiality; re-sorting is an explicit user act.
+  const shown = sort === "impact" && !showAll ? rows : sortRows(rows, sort);
+
+  return (
+    <div>
+      <div className="section-h">Commercial summary · last 12 months</div>
+      <div className="ci-kpis">
+        <Kpi label="Revenue" value={inr(s.revenue_12m)} />
+        <Kpi label="Gross profit" value={inr(s.gross_profit_12m)} />
+        <Kpi label="Gross margin" value={pct(s.gross_margin_12m)} />
+        <Kpi label="Active items" value={num(s.active_items)} />
+        <Kpi label="Items eroding" value={num(s.items_with_margin_erosion)}
+             tone={s.items_with_margin_erosion ? "warn" : undefined} />
+        <Kpi label="Material gaps" value={num(s.material_gap_items)}
+             tone={s.material_gap_items ? "warn" : undefined} />
+        <Kpi label="Historical margin gap" value={inr(s.historical_margin_gap)}
+             sub="estimate, not recoverable profit"
+             tone={s.historical_margin_gap ? "warn" : undefined} />
+      </div>
+
+      {s.items_without_cost > 0 && (
+        <p className="ci-note">
+          {s.items_without_cost} of {s.active_items} items have no reliable purchase
+          cost recorded, so no margin is shown for them. That is missing data, not a
+          zero margin.
+        </p>
+      )}
+
+      <div className="section-h" style={{ marginTop: 18 }}>
+        {showAll ? "All items" : "Items requiring attention"}
+      </div>
+      <div className="ci-controls">
+        <label>
+          Sort by
+          <select className="input" value={sort}
+                  onChange={(e) => setSort(e.target.value as SortKey)}>
+            {SORTS.map((o) => <option key={o.key} value={o.key}>{o.label}</option>)}
+          </select>
+        </label>
+        <button className="btn btn-ghost btn-sm" onClick={() => setShowAll(!showAll)}>
+          {showAll ? "Only items needing attention" : `Show all ${s.active_items} items`}
+        </button>
+      </div>
+
+      {shown.length === 0 ? (
+        <div className="dp-empty">
+          Nothing on this account is flagged. That is a fact about the data, not a
+          judgement about the relationship.
+        </div>
+      ) : (
+        <Bp style={{ padding: 2 }}>
+          <div className="ci-scroll">
+            <table className="dp-table ci-table">
+              <thead>
+                <tr>
+                  <th>Item</th>
+                  <th className="num">Revenue 12M</th>
+                  <th className="num">Current</th>
+                  <th className="num">Historical</th>
+                  <th className="num">Peers</th>
+                  <th className="num">Change</th>
+                  <th className="num">Volume</th>
+                  <th className="num">Margin gap ₹</th>
+                  <th>Reason</th>
+                </tr>
+              </thead>
+              <tbody>
+                {shown.map((r) => (
+                  <tr key={r.product_id} data-open onClick={() => onOpenItem(r.product_id)}>
+                    <td>
+                      <div style={{ fontWeight: 600 }}>{r.item_name}</div>
+                      {r.item_code && <div className="fsrc">{r.item_code}</div>}
+                    </td>
+                    <td className="num">{inr(r.revenue_12m)}</td>
+                    <td className="num">{pct(r.current_margin)}</td>
+                    <td className="num">{pct(r.historical_margin)}</td>
+                    <td className="num">
+                      {r.peer_count > 0 ? pct(r.peer_median_margin) : "—"}
+                      {r.peer_count > 0 && <div className="fsrc">{r.peer_count} peers</div>}
+                    </td>
+                    <td className={`num ${(r.margin_change_pp ?? 0) < 0 ? "ci-bad" : ""}`}>
+                      {pp(r.margin_change_pp)}
+                    </td>
+                    <td className="num">{signedPct(r.volume_change_pct)}</td>
+                    <td className="num" style={{ fontWeight: 600 }}>
+                      {inr(r.historical_margin_gap)}
+                    </td>
+                    <td>
+                      <div className="ci-tags">
+                        {r.signals.map((sig) => (
+                          <span key={sig} className="ci-tag">{SIGNAL_LABEL[sig] || sig}</span>
+                        ))}
+                      </div>
+                      {r.erosion_kind && r.erosion_kind !== "NONE" && (
+                        <div className="fsrc">{EROSION_LABEL[r.erosion_kind]}</div>
+                      )}
+                      <Sufficiency level={r.data_sufficiency}
+                                   reasons={r.sufficiency_reasons} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Bp>
+      )}
+    </div>
+  );
+}
+
+function Kpi({ label, value, sub, tone }: {
+  label: string; value: string; sub?: string; tone?: "warn";
+}) {
+  return (
+    <div className={`ci-kpi${tone ? ` ci-kpi-${tone}` : ""}`}>
+      <div className="ci-kpi-label">{label}</div>
+      <div className="ci-kpi-value">{value}</div>
+      {sub && <div className="fsrc">{sub}</div>}
+    </div>
+  );
+}
+
+// ── Customer × Item drill-down ──────────────────────────────────────────────
+export function CustomerItemScreen({
+  session,
+  customerId,
+  productId,
+  onBack,
+}: {
+  session: PlatformSession;
+  customerId: string;
+  productId: string;
+  onBack: () => void;
+}) {
+  const [data, setData] = useState<CustomerItemDetail | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setData(null);
+    setError(null);
+    papi
+      .customerItemDetail(session.token, customerId, productId)
+      .then((d) => !cancelled && setData(d))
+      .catch((e) => !cancelled && setError((e as Error).message));
+    return () => { cancelled = true; };
+  }, [session.token, customerId, productId]);
+
+  if (error) {
+    return (
+      <div>
+        <button className="btn btn-ghost btn-sm" onClick={onBack}>← Back</button>
+        <div className="state-panel" style={{ marginTop: 10 }}>
+          <div className="state-mark">This item view could not be loaded</div>
+          <p style={{ margin: 0, fontSize: 13.5 }}>{error}</p>
+        </div>
+      </div>
+    );
+  }
+  if (!data) return <div className="skeleton" style={{ height: 200 }} />;
+
+  const h = data.headline;
+  const q = data.data_quality;
+
+  return (
+    <div>
+      <button className="btn btn-ghost btn-sm" onClick={onBack} style={{ marginBottom: 10 }}>
+        ← {data.customer.name}
+      </button>
+      <div className="dp-head">
+        <h1>{data.item.name}</h1>
+        <p>
+          {data.customer.name}
+          {data.item.code && <> · <span className="mono">{data.item.code}</span></>}
+          {" "}· as at {when(data.as_of)}
+        </p>
+      </div>
+
+      <div className="ci-kpis">
+        <Kpi label="Revenue (recent)" value={inr(h.revenue_recent)} />
+        <Kpi label="Gross profit" value={inr(h.gross_profit_recent)} />
+        <Kpi label="Current margin" value={pct(h.current_margin)} />
+        <Kpi label="Historical margin" value={pct(h.historical_margin)} />
+        <Kpi label="Change" value={pp(h.margin_change_pp)}
+             tone={(h.margin_change_pp ?? 0) < 0 ? "warn" : undefined} />
+        <Kpi label="Net selling price" value={inr(h.current_sell_price)} sub="per unit" />
+        <Kpi label="Effective cost" value={inr(h.current_effective_cost)} sub="per unit" />
+        <Kpi label="Historical margin gap" value={inr(h.historical_margin_gap)}
+             sub={h.annualized_historical_margin_gap
+               ? `${inr(h.annualized_historical_margin_gap)} annualized`
+               : "not enough history to annualize"}
+             tone={h.historical_margin_gap ? "warn" : undefined} />
+      </div>
+
+      {/* A. deterministic diagnosis — every number computed, none AI-generated */}
+      <div className="section-h">What the data says</div>
+      <Bp style={{ padding: 16 }}>
+        {data.diagnosis.map((line, i) => (
+          <p key={i} className="ci-diagnosis">{line}</p>
+        ))}
+        {q.data_sufficiency !== "SUFFICIENT" && (
+          <p className="ci-note" style={{ marginTop: 10 }}>
+            Based on {q.transaction_count} transaction{q.transaction_count === 1 ? "" : "s"}
+            {" "}over {q.history_months} months
+            {q.cost_missing_txns > 0 &&
+              `, ${q.cost_missing_txns} of them without a reliable cost`}.
+          </p>
+        )}
+      </Bp>
+
+      {/* B + C. unit economics and margin through time */}
+      <div className="section-h">Net selling price vs effective cost</div>
+      <Bp style={{ padding: 16 }}>
+        {data.series.length < 2 ? (
+          <p className="ci-note">
+            Only {data.series.length} transaction{data.series.length === 1 ? "" : "s"} —
+            too few to draw a trend from.
+          </p>
+        ) : (
+          <PriceCostChart series={data.series} />
+        )}
+        <div className="ci-periods">
+          {([["Current", data.margin_periods.current], ["3M", data.margin_periods.m3],
+             ["6M", data.margin_periods.m6], ["12M", data.margin_periods.m12],
+             ["Historical", data.margin_periods.historical]] as const).map(([label, v]) => (
+            <div key={label}>
+              <dt>{label}</dt>
+              <dd>{pct(v)}</dd>
+            </div>
+          ))}
+        </div>
+      </Bp>
+
+      {/* D. same item across other customers — a benchmark, not a mandate */}
+      <div className="section-h">Same item, other customers</div>
+      <Bp style={{ padding: 2 }}>
+        {!data.peers.is_reliable ? (
+          <p className="ci-note" style={{ padding: 14 }}>
+            {data.peers.peer_count === 0 ? (
+              <>
+                No other customer bought this item in the last{" "}
+                {Math.round(data.peers.window_days / 30)} months, so there is nothing to
+                compare this price against.
+              </>
+            ) : (
+              <>
+                Only {data.peers.peer_count} other customer
+                {data.peers.peer_count === 1 ? "" : "s"} bought this item in the last{" "}
+                {Math.round(data.peers.window_days / 30)} months — too few for a
+                meaningful price comparison.
+              </>
+            )}
+          </p>
+        ) : (
+          <>
+            <div className="ci-benchmark">
+              <div><dt>Median selling price</dt><dd>{inr(data.peers.median_price)}</dd></div>
+              <div><dt>Median margin</dt><dd>{pct(data.peers.median_margin)}</dd></div>
+              <div><dt>This customer's price</dt>
+                   <dd>{signedPct(data.peers.price_deviation_pct)}</dd></div>
+              <div><dt>This customer's margin</dt>
+                   <dd>{pp(data.peers.margin_deviation_pp)}</dd></div>
+              <div><dt>Peer customers</dt><dd>{data.peers.peer_count}</dd></div>
+            </div>
+            <p className="ci-note" style={{ padding: "0 14px 12px" }}>
+              A benchmark, not a target — volume, freight and payment terms differ
+              between accounts, and none of that is in this data.
+            </p>
+          </>
+        )}
+        <div className="ci-scroll">
+          <table className="dp-table ci-table">
+            <thead>
+              <tr>
+                <th>Customer</th><th className="num">Selling price</th>
+                <th className="num">Margin</th><th className="num">Volume</th>
+                <th className="num">Orders</th><th>Last bought</th>
+              </tr>
+            </thead>
+            <tbody>
+              {[data.peers.subject, ...data.peers.rows]
+                .filter((p): p is PeerRow => p != null)
+                .map((p) => (
+                  <tr key={p.customer_id} className={p.is_subject ? "ci-subject" : ""}>
+                    <td style={{ fontWeight: p.is_subject ? 700 : 400 }}>
+                      {p.name}{p.is_subject && <span className="ci-you"> this customer</span>}
+                    </td>
+                    <td className="num">{inr(p.net_sell_price)}</td>
+                    <td className="num">{pct(p.margin)}</td>
+                    <td className="num">{num(p.qty)}</td>
+                    <td className="num">{p.txn_count}</td>
+                    <td>{when(p.last_transaction_date)}</td>
+                  </tr>
+                ))}
+            </tbody>
+          </table>
+        </div>
+      </Bp>
+
+      {/* E. did the lower margin buy anything */}
+      <div className="section-h">Volume against margin</div>
+      <Bp style={{ padding: 2 }}>
+        <table className="dp-table ci-table">
+          <thead>
+            <tr>
+              <th>Period</th><th className="num">Quantity</th>
+              <th className="num">Revenue</th><th className="num">Margin</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.volume_vs_margin.map((p) => (
+              <tr key={p.period_start}>
+                <td>{when(p.period_start)} – {when(p.period_end)}</td>
+                <td className="num">{num(p.qty)}</td>
+                <td className="num">{inr(p.revenue)}</td>
+                <td className="num">{pct(p.margin)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Bp>
+
+      {/* F. the evidence every conclusion above rests on */}
+      <div className="section-h">Transactions</div>
+      <p className="ci-note">
+        Every figure above is an aggregate of exactly these lines.
+      </p>
+      <Bp style={{ padding: 2 }}>
+        <div className="ci-scroll">
+          <table className="dp-table ci-table">
+            <thead>
+              <tr>
+                <th>Date</th><th>Invoice</th><th className="num">Qty</th>
+                <th className="num">Rate</th><th className="num">Disc</th>
+                <th className="num">Net price</th><th className="num">Eff. cost</th>
+                <th className="num">GP ₹</th><th className="num">Margin</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.transactions.map((t) => (
+                <tr key={t.external_ref}>
+                  <td>{when(t.date)}</td>
+                  <td className="mono" style={{ fontSize: 12 }}>{t.invoice_id || "—"}</td>
+                  <td className="num">{num(t.qty)}</td>
+                  <td className="num">{inr(t.rate)}</td>
+                  <td className="num">{t.discount_percent ? pct(t.discount_percent / 100) : "—"}</td>
+                  <td className="num">{inr(t.net_sell_price)}</td>
+                  <td className="num">
+                    {t.effective_cost == null
+                      ? <span className="fsrc">no cost</span>
+                      : inr(t.effective_cost)}
+                  </td>
+                  <td className="num">{inr(t.gross_profit)}</td>
+                  <td className="num">{pct(t.margin)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Bp>
+    </div>
+  );
+}
+
+/**
+ * Net selling price against effective cost, over time.
+ *
+ * Inline SVG rather than a charting dependency — two series and a shared scale
+ * is not worth 40 kB. The point of the picture is one thing: whether the cost
+ * line climbs while the price line stays flat.
+ */
+function PriceCostChart({ series }: { series: CustomerItemDetail["series"] }) {
+  const W = 720, H = 200, PAD = 34;
+  const points = series.filter((p) => p.net_sell_price != null);
+  if (points.length < 2) return null;
+
+  const values = points.flatMap((p) =>
+    [p.net_sell_price, p.effective_cost].filter((v): v is number => v != null));
+  const max = Math.max(...values) * 1.1;
+  const min = Math.min(...values) * 0.9;
+  const span = max - min || 1;
+
+  const x = (i: number) => PAD + (i / (points.length - 1)) * (W - PAD * 2);
+  const y = (v: number) => H - PAD - ((v - min) / span) * (H - PAD * 2);
+
+  const path = (pick: (p: typeof points[number]) => number | null) =>
+    points
+      .map((p, i) => ({ v: pick(p), i }))
+      .filter((d): d is { v: number; i: number } => d.v != null)
+      .map((d, n) => `${n === 0 ? "M" : "L"}${x(d.i).toFixed(1)},${y(d.v).toFixed(1)}`)
+      .join(" ");
+
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="ci-chart" role="img"
+         aria-label="Net selling price and effective cost per unit over time">
+      <line x1={PAD} y1={H - PAD} x2={W - PAD} y2={H - PAD} className="ci-axis" />
+      <line x1={PAD} y1={PAD} x2={PAD} y2={H - PAD} className="ci-axis" />
+      <text x={PAD - 6} y={PAD + 4} className="ci-axis-label" textAnchor="end">
+        {inr(max)}
+      </text>
+      <text x={PAD - 6} y={H - PAD} className="ci-axis-label" textAnchor="end">
+        {inr(min)}
+      </text>
+      <path d={path((p) => p.net_sell_price)} className="ci-line ci-line-price" />
+      <path d={path((p) => p.effective_cost)} className="ci-line ci-line-cost" />
+      {points.map((p, i) =>
+        p.net_sell_price == null ? null : (
+          <circle key={`p${i}`} cx={x(i)} cy={y(p.net_sell_price)} r="2.5"
+                  className="ci-dot ci-dot-price">
+            <title>{`${when(p.date)} · price ${inr(p.net_sell_price)}`}</title>
+          </circle>
+        ))}
+      {points.map((p, i) =>
+        p.effective_cost == null ? null : (
+          <circle key={`c${i}`} cx={x(i)} cy={y(p.effective_cost)} r="2.5"
+                  className="ci-dot ci-dot-cost">
+            <title>{`${when(p.date)} · cost ${inr(p.effective_cost)}`}</title>
+          </circle>
+        ))}
+      <g className="ci-legend">
+        <rect x={W - 168} y={8} width="10" height="3" className="ci-line-price" />
+        <text x={W - 152} y={13}>Net selling price</text>
+        <rect x={W - 168} y={24} width="10" height="3" className="ci-line-cost" />
+        <text x={W - 152} y={29}>Effective cost</text>
+      </g>
+    </svg>
+  );
+}

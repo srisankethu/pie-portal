@@ -24,7 +24,10 @@ def load_snapshot(session: Session, organization_id: str) -> Snapshot:
         SaleRow(customer_id=t.customer_id, product_id=t.product_id, date=t.date,
                 qty=Decimal(t.qty), unit_price=Decimal(t.unit_price),
                 line_revenue=Decimal(t.line_revenue), source_ref=t.source_ref or {},
-                external_ref=t.external_ref)
+                external_ref=t.external_ref,
+                rate=(Decimal(t.rate) if t.rate is not None else None),
+                discount_percent=(Decimal(t.discount_percent)
+                                  if t.discount_percent is not None else None))
         for t in session.scalars(
             select(models.SalesTxn).where(models.SalesTxn.organization_id == organization_id))
     ]

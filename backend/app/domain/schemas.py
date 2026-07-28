@@ -54,13 +54,18 @@ class SalesTxnIn(BaseModel):
     product_external_id: str = Field(min_length=1)
     date: date
     qty: Decimal
-    unit_price: Decimal
-    line_revenue: Decimal
+    unit_price: Decimal       # NET of line discount — what the customer paid
+    line_revenue: Decimal     # pre-tax, post-discount
+    rate: Optional[Decimal] = None              # original list rate (audit)
+    discount_percent: Optional[Decimal] = None  # audit only
     source_ref: SourceRef
 
-    @field_validator("qty", "unit_price", "line_revenue", mode="before")
+    @field_validator("qty", "unit_price", "line_revenue", "rate", "discount_percent",
+                     mode="before")
     @classmethod
-    def _to_decimal(cls, v: Any) -> Decimal:
+    def _to_decimal(cls, v: Any) -> Optional[Decimal]:
+        if v is None:
+            return None
         # Parse via str so floats don't introduce binary-float noise (determinism).
         return v if isinstance(v, Decimal) else Decimal(str(v))
 

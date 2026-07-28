@@ -258,6 +258,7 @@ def run_sync(
                          triggered_by=principal.user_id, since=since)
     session.add(run)
     demo_removed: dict[str, int] = {}
+    commercial_report: Optional[dict] = None
     svc: Optional[SyncService] = None
     report = SyncReport(organization_id=org)   # placeholder until a source resolves
     try:
@@ -285,6 +286,24 @@ def run_sync(
 
         detected = run_detectors(session, org)
         run.signals_emitted = detected.get("signals_emitted", 0)
+
+        # Customer × Item metrics are derived from what just landed, so they are
+        # rebuilt here rather than on the next page load. Targeted at the
+        # relationships this pull actually moved — a full rebuild would scan the
+        # organization's entire history to re-derive rows nothing changed.
+        # Best-effort: a metrics problem must not fail a pull that succeeded.
+        try:
+            from ..commercial.compute import recompute as recompute_commercial
+
+            ci = recompute_commercial(
+                session, org,
+                customer_ids=(report.touched_customer_ids or None),
+            )
+            run.signals_emitted += sum(ci.signals_by_type.values())
+            commercial_report = ci.to_dict()
+        except Exception:  # noqa: BLE001
+            log.exception("customer-item recompute failed; the pull itself is kept")
+
         generated = DecisionService(session, org).generate()
         run.decisions_created = generated.get("created", 0)
         run.status = "OK"
@@ -315,4 +334,6 @@ def run_sync(
     result = {"run": _run_dict(run), "connection": _connection(session, org)}
     if any(demo_removed.values()):
         result["demo_data_removed"] = demo_removed
+    if commercial_report is not None:
+        result["commercial"] = commercial_report
     return result

@@ -12,6 +12,7 @@ import { aiState, factLabel, factValue, isPrimaryFact } from "./format";
 import { Bp, Conf, FactChip, Interpretation, Pri, typeLabel } from "./ui";
 import { navigate, parseHash, type Screen } from "./route";
 import { DataScreen } from "./DataScreen";
+import { CustomerCommercial, CustomerItemScreen } from "./CommercialScreens";
 
 const ROLE_HOME: Record<Role, { title: string; sub: string; nav: string }> = {
   SALESPERSON: { title: "Today", sub: "Decisions that need you, most urgent first", nav: "Today" },
@@ -269,7 +270,9 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
   const [notice, setNotice] = useState<string | null>(null);
 
   const detailId = route.screen === "detail" ? route.id ?? null : null;
-  const customerId = route.screen === "customer" ? route.id ?? null : null;
+  const customerId =
+    route.screen === "customer" || route.screen === "customerItem" ? route.id ?? null : null;
+  const itemId = route.screen === "customerItem" ? route.itemId ?? null : null;
 
   useEffect(() => {
     const onHash = () => setRoute(parseHash(window.location.hash));
@@ -277,9 +280,9 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
 
-  const go = useCallback((s: Screen, id?: string) => {
-    navigate({ screen: s, id });
-    setRoute({ screen: s, id });
+  const go = useCallback((s: Screen, id?: string, itemId?: string) => {
+    navigate({ screen: s, id, itemId });
+    setRoute({ screen: s, id, itemId });
   }, []);
 
   const flash = (msg: string, undo?: () => void) => {
@@ -524,6 +527,17 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
             customerId={customerId}
             setCustomerId={(id) => go("customer", id ?? undefined)}
             onOpen={openDetail}
+            onOpenItem={(pid) => go("customerItem", customerId ?? undefined, pid)}
+          />
+        )}
+
+        {/* ── CUSTOMER x ITEM (the grain that names what is eroding) ── */}
+        {screen === "customerItem" && customerId && itemId && (
+          <CustomerItemScreen
+            session={session}
+            customerId={customerId}
+            productId={itemId}
+            onBack={() => go("customer", customerId)}
           />
         )}
 
@@ -837,12 +851,14 @@ function CustomerScreen({
   customerId,
   setCustomerId,
   onOpen,
+  onOpenItem,
 }: {
   session: PlatformSession;
   details: Record<string, DecisionDetail>;
   customerId: string | null;
   setCustomerId: (id: string | null) => void;
   onOpen: (id: string) => void;
+  onOpenItem: (productId: string) => void;
 }) {
   const all = Object.values(details);
   // The directory is every account in scope — not only those that happen to
@@ -937,6 +953,18 @@ function CustomerScreen({
         <h1>{name}</h1>
         <p>Trading facts and what we read from them.</p>
       </div>
+      {/* Which items are driving this account's margin. Cost/margin throughout,
+          so it is shown only to the roles allowed to see economics — a
+          salesperson gets the decisions below and nothing from this surface. */}
+      {session.role !== "SALESPERSON" && (
+        <CustomerCommercial
+          session={session}
+          customerId={customerId}
+          onOpenItem={onOpenItem}
+        />
+      )}
+
+      <div className="section-h" style={{ marginTop: 20 }}>Open decisions</div>
       {decs.length === 0 ? (
         <div className="dp-empty">
           Nothing is flagged on this account right now. That is a fact about the data, not a

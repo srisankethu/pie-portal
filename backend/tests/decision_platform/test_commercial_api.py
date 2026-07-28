@@ -1,0 +1,308 @@
+"""Customer × Item API, persistence, backfill and role gating.
+
+End to end through the real database and the real endpoints: source rows in,
+derived metrics persisted, portfolio and drill-down out — and every conclusion
+traceable to the transactions it was computed from.
+"""
+from __future__ import annotations
+
+from datetime import date, timedelta
+from decimal import Decimal
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+
+from app.commercial.compute import recompute
+from app.db import Base, get_session
+from app.domain import models
+from app.domain.enums import SignalType
+from app.routers import commercial, platform_auth
+from app.seed import ensure_org_and_users
+
+ORG = "org_sanketh"          # the seeded default org the demo users belong to
+AS_OF = date(2026, 7, 1)
+
+
+def _d(days_ago: int) -> date:
+    return AS_OF - timedelta(days=days_ago)
+
+
+def _seed_commercial_data(s) -> None:
+    """One eroding relationship (c1/p1) plus three peers priced better."""
+    for cid, name in (("c1", "Acme Engineering"), ("c2", "Beta Works"),
+                      ("c3", "Gamma Tools"), ("c4", "Delta Precision")):
+        s.add(models.Customer(customer_id=cid, organization_id=ORG, external_id=cid,
+                              name=name))
+    s.add(models.Product(product_id="p1", organization_id=ORG, external_id="ITEM-900",
+                         name="CNMG 120408-MP insert", uom="pcs"))
+    # cost 100 -> 124
+    s.add(models.CostRecord(organization_id=ORG, external_ref="B1:1", product_id="p1",
+                            date=_d(400), qty=Decimal("100"), unit_cost=Decimal("100"),
+                            source_ref={"record_type": "bill", "record_id": "B1"}))
+    s.add(models.CostRecord(organization_id=ORG, external_ref="B2:1", product_id="p1",
+                            date=_d(120), qty=Decimal("100"), unit_cost=Decimal("124"),
+                            source_ref={"record_type": "bill", "record_id": "B2"}))
+
+    def sale(cust, days, qty, price, ref):
+        q, p = Decimal(str(qty)), Decimal(str(price))
+        s.add(models.SalesTxn(
+            organization_id=ORG, external_ref=f"{ref}:1", customer_id=cust,
+            product_id="p1", date=_d(days), qty=q, unit_price=p, line_revenue=q * p,
+            rate=p, discount_percent=Decimal("0"),
+            source_ref={"record_type": "invoice", "record_id": ref}))
+
+    for i, days in enumerate([600, 500, 400, 300, 200]):
+        sale("c1", days, 100, 135, f"INV-H{i}")          # historical ~25.9%
+    for i, days in enumerate([80, 50, 20]):
+        sale("c1", days, 100, 139, f"INV-R{i}")          # recent ~10.8%
+    for i, days in enumerate([80, 40]):                  # peers priced better
+        sale("c2", days, 50, 165, f"INV-C2{i}")
+        sale("c3", days, 50, 170, f"INV-C3{i}")
+        sale("c4", days, 50, 168, f"INV-C4{i}")
+    s.flush()
+
+
+@pytest.fixture()
+def client():
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False},
+                           poolclass=StaticPool, future=True)
+    Base.metadata.create_all(engine)
+    Maker = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False, future=True)
+
+    s = Maker()
+    ensure_org_and_users(s)
+    _seed_commercial_data(s)
+    recompute(s, ORG, as_of=AS_OF)
+    s.commit()
+    s.close()
+
+    app = FastAPI()
+    app.include_router(platform_auth.router)
+    app.include_router(commercial.router)
+
+    def _override():
+        sess = Maker()
+        try:
+            yield sess
+            sess.commit()
+        finally:
+            sess.close()
+
+    app.dependency_overrides[get_session] = _override
+    tc = TestClient(app)
+    tc.Maker = Maker
+    return tc
+
+
+def _hdr(c, email):
+    r = c.post("/api/v1/auth/login", json={"email": email, "password": "x"})
+    return {"Authorization": f"Bearer {r.json()['token']}"}
+
+
+# ── persistence ─────────────────────────────────────────────────────────────
+def test_recompute_persists_one_row_per_relationship(client):
+    s = client.Maker()
+    rows = s.query(models.CustomerItemMetric).all()
+    assert len(rows) == 4, "c1..c4, one item each"
+    subject = next(r for r in rows if r.customer_id == "c1")
+    assert abs(subject.historical_margin - 0.2593) < 1e-3
+    assert abs(subject.current_margin - 0.1079) < 1e-3
+    assert subject.erosion_kind == "COST_DRIVEN"
+    assert subject.peer_count == 3
+    assert subject.thresholds_version.startswith("ci_")
+    s.close()
+
+
+def test_recompute_is_idempotent(client):
+    s = client.Maker()
+    before = s.query(models.CustomerItemMetric).count()
+    recompute(s, ORG, as_of=AS_OF)
+    s.commit()
+    assert s.query(models.CustomerItemMetric).count() == before, "upserted, not duplicated"
+    s.close()
+
+
+def test_recompute_never_touches_source_transactions(client):
+    s = client.Maker()
+    before = (s.query(models.SalesTxn).count(), s.query(models.CostRecord).count())
+    recompute(s, ORG, as_of=AS_OF)
+    s.commit()
+    assert (s.query(models.SalesTxn).count(), s.query(models.CostRecord).count()) == before
+    s.close()
+
+
+def test_recompute_emits_customer_item_signals(client):
+    s = client.Maker()
+    types = {sig.signal_type for sig in s.query(models.Signal).all()}
+    assert SignalType.CI_MARGIN_EROSION.value in types
+    assert SignalType.CI_COST_NOT_PASSED.value in types
+    assert SignalType.CI_LOW_PEER_PRICING.value in types
+    s.close()
+
+
+def test_targeted_recompute_only_touches_the_named_customer(client):
+    """The scaling property: recomputing one account must not rewrite the
+    organization's every row."""
+    s = client.Maker()
+    others = {r.customer_id: r.computed_at
+              for r in s.query(models.CustomerItemMetric).all() if r.customer_id != "c1"}
+    recompute(s, ORG, customer_ids={"c1"}, as_of=AS_OF)
+    s.commit()
+
+    for r in s.query(models.CustomerItemMetric).all():
+        if r.customer_id != "c1":
+            assert r.computed_at == others[r.customer_id], "untouched"
+    s.close()
+
+
+# ── portfolio ───────────────────────────────────────────────────────────────
+def test_portfolio_answers_which_items_need_attention(client):
+    body = client.get("/api/v1/commercial/customers/c1/portfolio",
+                      headers=_hdr(client, "m.rao@sanketh.in")).json()
+
+    assert body["customer"]["name"] == "Acme Engineering"
+    summary = body["summary"]
+    assert summary["active_items"] == 1
+    assert summary["items_with_margin_erosion"] == 1
+    assert summary["items_cost_not_passed"] == 1
+    assert summary["items_below_peer_benchmark"] == 1
+    assert summary["historical_margin_gap"] > 0
+
+    flagged = body["items_requiring_attention"]
+    assert len(flagged) == 1
+    row = flagged[0]
+    assert row["item_name"] == "CNMG 120408-MP insert"
+    assert row["item_code"] == "ITEM-900"
+    assert SignalType.CI_MARGIN_EROSION.value in row["signals"]
+
+
+def test_portfolio_margin_is_profit_over_revenue_across_items(client):
+    body = client.get("/api/v1/commercial/customers/c1/portfolio",
+                      headers=_hdr(client, "m.rao@sanketh.in")).json()
+    s = body["summary"]
+    expected = s["gross_profit_12m"] / s["revenue_12m"]
+    assert abs(s["gross_margin_12m"] - expected) < 1e-3
+
+
+def test_portfolio_404s_for_an_unknown_customer(client):
+    r = client.get("/api/v1/commercial/customers/nope/portfolio",
+                   headers=_hdr(client, "m.rao@sanketh.in"))
+    assert r.status_code == 404
+
+
+# ── drill-down ──────────────────────────────────────────────────────────────
+def test_drilldown_answers_all_six_questions(client):
+    body = client.get("/api/v1/commercial/customers/c1/items/p1",
+                      headers=_hdr(client, "m.rao@sanketh.in")).json()
+
+    h = body["headline"]
+    assert abs(h["current_margin"] - 0.1079) < 1e-3          # 1. deteriorating?
+    assert abs(h["historical_margin"] - 0.2593) < 1e-3
+    assert h["margin_change_pp"] < 0
+    assert h["current_effective_cost"] and h["current_sell_price"]   # 2. cost vs price
+    assert body["peers"]["peer_count"] == 3                          # 3. vs others
+    assert h["historical_margin_gap"] > 0                            # 4. materiality
+    assert body["volume_vs_margin"]                                  # 5. volume
+    assert body["margin_periods"]["historical"] is not None
+
+
+def test_drilldown_diagnosis_is_deterministic_prose_from_real_numbers(client):
+    body = client.get("/api/v1/commercial/customers/c1/items/p1",
+                      headers=_hdr(client, "m.rao@sanketh.in")).json()
+    text = " ".join(body["diagnosis"])
+
+    assert "25.9%" in text and "10.8%" in text, "the computed margins appear verbatim"
+    assert "percentage points" in text
+    assert "not recoverable profit" in text, "the gap must be framed as an estimate"
+    assert "benchmark, not a target" in text, "peers are evidence, not a mandate"
+
+
+def test_drilldown_peers_exclude_the_subject_and_flag_it_separately(client):
+    body = client.get("/api/v1/commercial/customers/c1/items/p1",
+                      headers=_hdr(client, "m.rao@sanketh.in")).json()
+    peers = body["peers"]
+
+    assert "c1" not in [p["customer_id"] for p in peers["rows"]]
+    assert peers["subject"]["customer_id"] == "c1" and peers["subject"]["is_subject"]
+    assert peers["is_reliable"] is True
+    assert {p["name"] for p in peers["rows"]} == {"Beta Works", "Gamma Tools",
+                                                  "Delta Precision"}
+
+
+def test_drilldown_exposes_the_transactions_behind_every_conclusion(client):
+    body = client.get("/api/v1/commercial/customers/c1/items/p1",
+                      headers=_hdr(client, "m.rao@sanketh.in")).json()
+    txns = body["transactions"]
+
+    assert len(txns) == 8
+    row = txns[0]
+    for field in ("date", "invoice_id", "qty", "rate", "discount_percent",
+                  "net_sell_price", "effective_cost", "gross_profit", "margin"):
+        assert field in row, f"{field} must be inspectable"
+    assert row["cost_source"], "the bill the cost came from is named"
+    # revenue really is the sum of the lines the headline was computed from:
+    # 5 x 100 x 135 historical + 3 x 100 x 139 recent
+    assert abs(sum(t["revenue"] for t in txns) - 109_200) < 1.0
+
+
+def test_drilldown_404s_for_an_item_this_customer_never_bought(client):
+    s = client.Maker()
+    s.add(models.Product(product_id="p2", organization_id=ORG, external_id="ITEM-901",
+                         name="Unrelated"))
+    s.commit()
+    s.close()
+    r = client.get("/api/v1/commercial/customers/c1/items/p2",
+                   headers=_hdr(client, "m.rao@sanketh.in"))
+    assert r.status_code == 404
+
+
+# ── role gating ─────────────────────────────────────────────────────────────
+def test_a_salesperson_cannot_reach_any_of_this(client):
+    """Every response here is cost and margin throughout. There is no
+    salesperson-safe projection of a margin analysis."""
+    sales = _hdr(client, "r.nair@sanketh.in")
+    assert client.get("/api/v1/commercial/customers/c1/portfolio",
+                      headers=sales).status_code == 403
+    assert client.get("/api/v1/commercial/customers/c1/items/p1",
+                      headers=sales).status_code == 403
+    assert client.post("/api/v1/commercial/recompute", headers=sales).status_code == 403
+
+
+def test_an_owner_can_recompute_from_already_synced_data(client):
+    r = client.post("/api/v1/commercial/recompute",
+                    headers=_hdr(client, "s.menon@sanketh.in"),
+                    json={"customer_id": "c1"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["relationships"] == 1
+    assert body["relationships_with_cost"] == 1
+    assert body["failures"] == []
+
+
+# ── insufficient data ───────────────────────────────────────────────────────
+def test_a_thin_relationship_reports_insufficiency_rather_than_a_conclusion(client):
+    s = client.Maker()
+    s.add(models.Customer(customer_id="c9", organization_id=ORG, external_id="c9",
+                          name="One Order Ltd"))
+    s.add(models.SalesTxn(organization_id=ORG, external_ref="INV-ONE:1", customer_id="c9",
+                          product_id="p1", date=_d(20), qty=Decimal("1"),
+                          unit_price=Decimal("139"), line_revenue=Decimal("139"),
+                          source_ref={"record_type": "invoice", "record_id": "INV-ONE"}))
+    s.flush()
+    recompute(s, ORG, as_of=AS_OF)
+    s.commit()
+    s.close()
+
+    body = client.get("/api/v1/commercial/customers/c9/items/p1",
+                      headers=_hdr(client, "m.rao@sanketh.in")).json()
+    assert body["data_quality"]["data_sufficiency"] == "INSUFFICIENT"
+    assert "Not enough data" in body["diagnosis"][0]
+
+    s = client.Maker()
+    row = s.query(models.CustomerItemMetric).filter_by(customer_id="c9").one()
+    assert row.signals == [], "no signal may be raised on one transaction"
+    s.close()

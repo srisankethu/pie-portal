@@ -52,6 +52,11 @@ class SyncReport:
     documents_fetched: int = 0
     documents_resumed: int = 0
     skipped: list[dict[str, str]] = field(default_factory=list)
+    # Relationships this pull actually moved. Lets the Customer × Item
+    # recompute afterwards target what changed instead of rebuilding the whole
+    # organization — the difference between seconds and minutes at scale.
+    touched_customer_ids: set[str] = field(default_factory=set)
+    touched_product_ids: set[str] = field(default_factory=set)
 
     def skip(self, kind: str, ref: str, code: str, detail: str) -> None:
         self.skipped.append({"kind": kind, "ref": ref, "code": code, "detail": detail})
@@ -164,6 +169,11 @@ class SyncService:
                     continue
                 self.repo.upsert_sales_txn(t, cust.customer_id, prod.product_id)
                 self.report.sales_txns += 1
+                # Which relationships this pull actually moved, so the
+                # Customer × Item recompute afterwards is targeted rather than
+                # a full rebuild of the organization.
+                self.report.touched_customer_ids.add(cust.customer_id)
+                self.report.touched_product_ids.add(prod.product_id)
             self._note_owner(raw, lines[0].customer_external_id, lines[0].date)
             self.repo.mark_ingested("invoice", ref, str(raw.get("last_modified_time") or ""))
         self._store_owners()
@@ -210,6 +220,9 @@ class SyncService:
                     continue
                 self.repo.upsert_cost_record(r, prod.product_id)
                 self.report.cost_records += 1
+                # A new cost changes the margin of every customer buying this
+                # item, not just the buyer of this bill.
+                self.report.touched_product_ids.add(prod.product_id)
             self.repo.mark_ingested("bill", ref, str(raw.get("last_modified_time") or ""))
 
     def _sync_assignments(self) -> None:

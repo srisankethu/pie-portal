@@ -26,6 +26,9 @@ class SubjectEntityType(str, Enum):
     CUSTOMER = "CUSTOMER"
     PRODUCT = "PRODUCT"
     QUOTE = "QUOTE"
+    # One customer's relationship with one item. The id is a composite,
+    # ``customer_id::product_id`` — see ``commercial.subject``.
+    CUSTOMER_ITEM = "CUSTOMER_ITEM"
 
 
 class DecisionType(str, Enum):
@@ -37,12 +40,32 @@ class DecisionType(str, Enum):
     COST_PASS_THROUGH = "COST_PASS_THROUGH"
     QUOTE_CONTEXT = "QUOTE_CONTEXT"
 
+    # Customer × Item grain. The four families above speak about a customer or a
+    # product; these speak about one customer's relationship with one item,
+    # which is the grain that can actually name what is eroding and why.
+    CI_MARGIN_EROSION = "CI_MARGIN_EROSION"
+    CI_COST_NOT_PASSED = "CI_COST_NOT_PASSED"
+    CI_LOW_PEER_PRICING = "CI_LOW_PEER_PRICING"
+    CI_MARGIN_DECLINE_NO_VOLUME = "CI_MARGIN_DECLINE_NO_VOLUME"
+    CI_MARGIN_DECLINE_WITH_VOLUME = "CI_MARGIN_DECLINE_WITH_VOLUME"
+    CI_MATERIAL_MARGIN_GAP = "CI_MATERIAL_MARGIN_GAP"
+
+
+# Every Customer × Item decision type. All of them carry cost/margin.
+CUSTOMER_ITEM_DECISION_TYPES = frozenset({
+    DecisionType.CI_MARGIN_EROSION,
+    DecisionType.CI_COST_NOT_PASSED,
+    DecisionType.CI_LOW_PEER_PRICING,
+    DecisionType.CI_MARGIN_DECLINE_NO_VOLUME,
+    DecisionType.CI_MARGIN_DECLINE_WITH_VOLUME,
+    DecisionType.CI_MATERIAL_MARGIN_GAP,
+})
 
 # Decision types that carry RESTRICTED economics and are never routed to a
 # salesperson (§14 decision-type gating).
 RESTRICTED_DECISION_TYPES = frozenset(
     {DecisionType.MARGIN_DETERIORATION, DecisionType.COST_PASS_THROUGH}
-)
+) | CUSTOMER_ITEM_DECISION_TYPES
 
 
 class SignalType(str, Enum):
@@ -52,6 +75,14 @@ class SignalType(str, Enum):
     CUSTOMER_DORMANCY = "CUSTOMER_DORMANCY"
     MARGIN_DETERIORATION = "MARGIN_DETERIORATION"
     COST_PASS_THROUGH = "COST_PASS_THROUGH"
+
+    # Customer × Item grain (see DecisionType for why this grain exists).
+    CI_MARGIN_EROSION = "CI_MARGIN_EROSION"
+    CI_COST_NOT_PASSED = "CI_COST_NOT_PASSED"
+    CI_LOW_PEER_PRICING = "CI_LOW_PEER_PRICING"
+    CI_MARGIN_DECLINE_NO_VOLUME = "CI_MARGIN_DECLINE_NO_VOLUME"
+    CI_MARGIN_DECLINE_WITH_VOLUME = "CI_MARGIN_DECLINE_WITH_VOLUME"
+    CI_MATERIAL_MARGIN_GAP = "CI_MATERIAL_MARGIN_GAP"
 
 
 class DecisionStatus(str, Enum):

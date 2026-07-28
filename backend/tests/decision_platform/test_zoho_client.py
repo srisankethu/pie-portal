@@ -163,8 +163,10 @@ def test_invoice_detail_is_fetched_for_line_items():
     assert len(rows) == 1
     assert rows[0]["customer_id"] == "55"
     # the comment row (no item_id) is not a product line
-    assert rows[0]["line_items"] == [
-        {"line_item_id": "1", "item_id": "9", "quantity": 20, "rate": 530, "item_total": 10600}]
+    assert len(rows[0]["line_items"]) == 1
+    line = rows[0]["line_items"][0]
+    assert (line["line_item_id"], line["item_id"]) == ("1", "9")
+    assert (line["quantity"], line["rate"], line["item_total"]) == (20, 530, 10600)
 
 
 def test_bill_discount_fields_are_passed_through_raw():

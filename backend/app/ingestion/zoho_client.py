@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import logging
 import time
+from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any, Callable, Iterable, Iterator, Optional
 
@@ -41,6 +42,39 @@ SkipPredicate = Callable[[str, str], bool]
 # Invoice/bill statuses that do not represent real trade.
 _EXCLUDED_INVOICE_STATUS = {"draft", "void"}
 _EXCLUDED_BILL_STATUS = {"draft", "void"}
+
+
+@dataclass(frozen=True)
+class ZohoCredentials:
+    """One tenant's Zoho identity — everything that varies per organization.
+
+    Deliberately narrow: pull tuning (pacing, retries, page size, history
+    window) stays a shared, global operational setting in ``config.py``, since
+    it's infrastructure behaviour, not an account identity. Only what actually
+    differs between two Zoho Books organizations lives here.
+    """
+
+    organization_id: str          # the Zoho Books org id, NOT the platform's
+    client_id: str
+    client_secret: str
+    refresh_token: str
+    accounts_base: str = "https://accounts.zoho.in"
+    api_base: str = "https://www.zohoapis.in/books/v3"
+
+    @classmethod
+    def from_settings(cls) -> "ZohoCredentials":
+        """The pre-multi-tenant configuration path: one connection, from
+        environment variables. Used only as the fallback for the platform's
+        default organization when it has no stored connection of its own —
+        every other organization must configure its own."""
+        return cls(
+            organization_id=settings.ZOHO_ORGANIZATION_ID,
+            client_id=settings.ZOHO_CLIENT_ID,
+            client_secret=settings.ZOHO_CLIENT_SECRET,
+            refresh_token=settings.ZOHO_REFRESH_TOKEN,
+            accounts_base=settings.ZOHO_ACCOUNTS_BASE,
+            api_base=settings.ZOHO_API_BASE,
+        )
 
 
 class ZohoError(RuntimeError):
@@ -65,10 +99,13 @@ class ZohoApiSource:
     changing configuration.
     """
 
-    def __init__(self, http: Any = None, since: Optional[date] = None) -> None:
-        self._base = settings.ZOHO_API_BASE.rstrip("/")
-        self._accounts = settings.ZOHO_ACCOUNTS_BASE.rstrip("/")
-        self._org = settings.ZOHO_ORGANIZATION_ID
+    def __init__(self, http: Any = None, since: Optional[date] = None,
+                 credentials: Optional[ZohoCredentials] = None) -> None:
+        creds = credentials or ZohoCredentials.from_settings()
+        self._creds = creds
+        self._base = creds.api_base.rstrip("/")
+        self._accounts = creds.accounts_base.rstrip("/")
+        self._org = creds.organization_id
         self._http = http                      # injectable for tests
         self._token: Optional[str] = None
         self._token_expires_at: float = 0.0
@@ -91,10 +128,10 @@ class ZohoApiSource:
         missing = [
             name
             for name, value in (
-                ("ZOHO_ORGANIZATION_ID", self._org),
-                ("ZOHO_CLIENT_ID", settings.ZOHO_CLIENT_ID),
-                ("ZOHO_CLIENT_SECRET", settings.ZOHO_CLIENT_SECRET),
-                ("ZOHO_REFRESH_TOKEN", settings.ZOHO_REFRESH_TOKEN),
+                ("organization_id", self._org),
+                ("client_id", self._creds.client_id),
+                ("client_secret", self._creds.client_secret),
+                ("refresh_token", self._creds.refresh_token),
             )
             if not value
         ]
@@ -114,9 +151,9 @@ class ZohoApiSource:
         resp = self._client().post(
             f"{self._accounts}/oauth/v2/token",
             params={
-                "refresh_token": settings.ZOHO_REFRESH_TOKEN,
-                "client_id": settings.ZOHO_CLIENT_ID,
-                "client_secret": settings.ZOHO_CLIENT_SECRET,
+                "refresh_token": self._creds.refresh_token,
+                "client_id": self._creds.client_id,
+                "client_secret": self._creds.client_secret,
                 "grant_type": "refresh_token",
             },
         )

@@ -2,8 +2,10 @@
 
 Structure mirrors the approved spec §4–§8. Design choices:
 
-- ``organization_id`` on every entity (§4) — carried for future multi-org, but
-  no cross-org logic exists; all access is scoped to one org.
+- ``organization_id`` on every entity (§4) is the multi-tenant boundary: every
+  repository query is scoped to exactly one org, and each org is a fully
+  separate tenant (its own users, its own Zoho connection, its own decisions —
+  see ``ZohoConnection``). There is deliberately no cross-org query surface.
 - Queryable fields are real columns; rich/nested sub-objects (metrics, ai,
   evidence_refs, …) are ``JSON`` so the schema stays stable as those evolve.
 - Money/quantities are ``Numeric`` (not float) to keep deterministic math exact
@@ -52,6 +54,41 @@ class Organization(Base):
     currency: Mapped[str] = mapped_column(String(8), default="INR")
     config: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class ZohoConnection(Base):
+    """One organization's Zoho Books connection — one platform tenant, one
+    Zoho Books company. Each org is a fully separate tenant, so this is a
+    one-to-one relationship, not a list: connecting a second Zoho company
+    means provisioning a second organization (see ``app/provision_org.py``),
+    not adding a second row here.
+
+    ``client_secret`` and ``refresh_token`` are encrypted at rest (see
+    ``app/crypto.py``) — this table, unlike a ``.env`` file, can end up in a
+    database backup or a read replica. Pull tuning (pacing, retries, page
+    size, history window) is deliberately NOT here: it is shared, global
+    operational behaviour in ``config.py``, not part of an account's identity.
+
+    The platform's original default organization has no row here until someone
+    explicitly connects it — until then it falls back to the ``ZOHO_*``
+    environment variables, so an existing single-tenant deployment keeps
+    working unchanged (see ``ingestion/connections.py``).
+    """
+
+    __tablename__ = "zoho_connections"
+
+    organization_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("organizations.organization_id"), primary_key=True)
+    zoho_organization_id: Mapped[str] = mapped_column(String(64))
+    client_id: Mapped[str] = mapped_column(String(255))
+    client_secret_encrypted: Mapped[str] = mapped_column(String(2048))
+    refresh_token_encrypted: Mapped[str] = mapped_column(String(2048))
+    accounts_base: Mapped[str] = mapped_column(String(255), default="https://accounts.zoho.in")
+    api_base: Mapped[str] = mapped_column(String(255),
+                                          default="https://www.zohoapis.in/books/v3")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
+                                                 onupdate=_now)
 
 
 class User(Base):

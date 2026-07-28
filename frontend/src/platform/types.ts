@@ -70,7 +70,7 @@ export interface Account {
 }
 
 export interface ConnectionState {
-  state: "CONNECTED" | "SAMPLE_DATA" | "ERROR" | "UNREACHABLE" | "WRONG_ORG";
+  state: "CONNECTED" | "SAMPLE_DATA" | "ERROR" | "UNREACHABLE" | "WRONG_ORG" | "NOT_CONFIGURED";
   headline: string;
   detail: string | null;
   source: string;
@@ -80,6 +80,17 @@ export interface ConnectionState {
   api_base?: string;
   history_days?: number;
   visible_organizations?: { organization_id: string; name: string }[];
+}
+
+/** What an owner submits to connect (or replace) this organization's own
+ *  Zoho Books account. Always a full replace — there is no partial update. */
+export interface ZohoConnectionInput {
+  zoho_organization_id: string;
+  client_id: string;
+  client_secret: string;
+  refresh_token: string;
+  accounts_base?: string;
+  api_base?: string;
 }
 
 export interface SyncRun {
@@ -114,4 +125,5 @@ export interface DataStatus {
   last_sync: SyncRun | null;
   read_model: Record<string, number>;
   can_sync: boolean;
+  can_manage_connection: boolean;
 }

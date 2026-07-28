@@ -76,6 +76,15 @@ class Settings:
     # Demo auth secret (dev only). A real deployment injects this.
     AUTH_SECRET: str = os.environ.get("AUTH_SECRET", "dev-secret-change-me")
 
+    # Encrypts Zoho client secrets/refresh tokens stored per organization (see
+    # app/crypto.py). A Fernet key: 32 url-safe base64 bytes. The default below
+    # is fixed and public — fine for local dev, never for production, where a
+    # stale default would make every stored credential recoverable by anyone
+    # who has read the source. Generate a real one with:
+    #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    CREDENTIAL_ENCRYPTION_KEY: str = os.environ.get(
+        "CREDENTIAL_ENCRYPTION_KEY", "sIfoCtwlOtGqxAtOkV5t3Rz-i6ZQ2VuTNQeXHpxTfWA=")
+
     @property
     def is_production(self) -> bool:
         return self.APP_ENV.strip().lower() == "production"

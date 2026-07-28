@@ -83,7 +83,7 @@ def test_missing_credentials_name_what_is_missing(monkeypatch):
     monkeypatch.setattr(settings, "ZOHO_REFRESH_TOKEN", "")
     with pytest.raises(ZohoAuthError) as e:
         ZohoApiSource(http=FakeHttp({})).list_items().__iter__().__next__()
-    assert "ZOHO_REFRESH_TOKEN" in str(e.value)
+    assert "refresh_token" in str(e.value)
 
 
 def test_token_failure_points_at_the_data_centre():
@@ -106,6 +106,36 @@ def test_organization_id_is_sent_on_every_call():
     http = FakeHttp({"/items": {"code": 0, "items": [], "page_context": {"has_more_page": False}}})
     list(ZohoApiSource(http=http).list_items())
     assert all(p.get("organization_id") == "60036630487" for _, p in http.gets)
+
+
+# ── explicit credentials (multi-tenant) ─────────────────────────────────────
+def test_explicit_credentials_are_used_instead_of_settings():
+    """The multi-tenant contract: passing credentials must fully override the
+    process-wide settings, not merely supplement them — two tenants running in
+    the same process must never blend into one another's Zoho account."""
+    from app.ingestion.zoho_client import ZohoCredentials
+
+    creds = ZohoCredentials(organization_id="999999", client_id="other-cid",
+                            client_secret="other-csec", refresh_token="other-rtok",
+                            accounts_base="https://accounts.zoho.eu",
+                            api_base="https://www.zohoapis.eu/books/v3")
+    http = FakeHttp({"/items": {"code": 0, "items": [], "page_context": {"has_more_page": False}}})
+    src = ZohoApiSource(http=http, credentials=creds)
+    list(src.list_items())
+
+    assert all(p.get("organization_id") == "999999" for _, p in http.gets)
+    assert all(u.startswith("https://www.zohoapis.eu/books/v3") for u, _ in http.gets)
+
+
+def test_omitted_credentials_still_fall_back_to_settings():
+    """Backward compatibility: existing single-tenant deployments and every
+    test in this file that constructs ZohoApiSource(http=...) with no
+    credentials argument must keep reading from settings unchanged."""
+    from app.ingestion.zoho_client import ZohoCredentials
+
+    src = ZohoApiSource(http=FakeHttp({}))
+    assert src._creds == ZohoCredentials.from_settings()
+    assert src._org == "60036630487"
 
 
 # ── shapes the normalizer expects ───────────────────────────────────────────

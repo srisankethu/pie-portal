@@ -16,6 +16,7 @@ always wins over it**. All values have defaults that work for local development.
 |---|---|---|
 | `APP_ENV` | `development` | `production` enables the hard guards below. |
 | `AUTH_SECRET` | `dev-secret-change-me` | Signs bearer tokens. **The app refuses to boot in production while this is the default** — the value is public, so a stale default would let anyone forge a token for any user and role. |
+| `CREDENTIAL_ENCRYPTION_KEY` | *(fixed dev key)* | Encrypts every organization's Zoho client secret and refresh token at rest (see `app/crypto.py`). **The app refuses to boot in production while this is the default** — same reasoning as `AUTH_SECRET`: the value is public. Generate one with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. Rotating it makes every stored connection undecryptable — reconnect them afterward. |
 
 ### Database
 
@@ -30,26 +31,37 @@ always wins over it**. All values have defaults that work for local development.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `DEFAULT_ORG_ID` | `org_sanketh` | The single V1 organization. |
-| `DEFAULT_ORG_NAME` | `Sanketh` | Display name. |
+| `DEFAULT_ORG_ID` | `org_sanketh` | The organization seeded automatically at bootstrap. Every other one is provisioned explicitly — see `app/provision_org.py` and [zoho-setup.md](zoho-setup.md#multiple-organizations). Each organization is a fully separate tenant: its own users, its own Zoho connection, its own decisions. |
+| `DEFAULT_ORG_NAME` | `Sanketh` | Display name for the default organization. |
 | `DEFAULT_CURRENCY` | `INR` | Reporting currency. |
 
 ### Zoho
 
+Only `ZOHO_SOURCE` and the pull-behaviour settings below are process-wide. Every
+organization's actual credentials (organization id, client id/secret, refresh
+token, data-centre hosts) live per-organization in the database, encrypted —
+connected via `PUT /api/v1/data/connection`, not an environment variable (see
+[zoho-setup.md](zoho-setup.md)). The `ZOHO_ORGANIZATION_ID` /
+`ZOHO_CLIENT_ID` / `ZOHO_CLIENT_SECRET` / `ZOHO_REFRESH_TOKEN` /
+`ZOHO_ACCOUNTS_BASE` / `ZOHO_API_BASE` variables still exist, but only as the
+fallback for `DEFAULT_ORG_ID` when it has no stored connection of its own — the
+pre-multi-tenant configuration path, kept so an existing single-tenant
+deployment needs no migration step.
+
 | Variable | Default | Purpose |
 |---|---|---|
-| `ZOHO_SOURCE` | `fixture` | `fixture` (deterministic offline data) or `api` (live Zoho). See [zoho-setup.md](zoho-setup.md). |
-| `ZOHO_ACCOUNTS_BASE` | `https://accounts.zoho.in` | OAuth token host. Must match the account's data centre. |
-| `ZOHO_HISTORY_DAYS` | `730` | Rolling fallback window, used when no start date is chosen. |
+| `ZOHO_SOURCE` | `fixture` | `fixture` (deterministic offline data) or `api` (live Zoho), for every organization alike. |
+| `ZOHO_HISTORY_DAYS` | `730` | Rolling fallback window, used when no start date is chosen. Shared across every organization. |
 | `ZOHO_SYNC_FROM` | — | Default start date (ISO) offered for a pull. The operator picks the actual date per run on **Data & connection**; an unparseable value falls back to the rolling window. |
 | `ZOHO_PAGE_SIZE` / `ZOHO_MAX_PAGES` | `200` / `50` | Pagination bounds. |
 | `ZOHO_TIMEOUT_SECONDS` | `30` | Per-request timeout. |
 | `ZOHO_REQUESTS_PER_MINUTE` | `90` | Call pacing. Zoho allows ~100/min per org and a pull is one call per document, so an unpaced pull trips the limiter within seconds. `0` disables pacing. |
 | `ZOHO_MAX_RETRIES` | `6` | Attempts per call before giving up. |
 | `ZOHO_THROTTLE_BACKOFF_SECONDS` / `ZOHO_MAX_BACKOFF_SECONDS` | `15` / `90` | Backoff on HTTP 429, doubling and capped. Zoho's own `Retry-After` header wins when present. |
-| `ZOHO_ORGANIZATION_ID` | — | Zoho Books organization id. |
-| `ZOHO_CLIENT_ID` / `ZOHO_CLIENT_SECRET` / `ZOHO_REFRESH_TOKEN` | — | OAuth credentials. **Read-only scope is sufficient** — the platform never writes to Zoho. |
-| `ZOHO_API_BASE` | `https://www.zohoapis.in/books/v3` | Regional API base (`.in` for India). |
+| `ZOHO_ORGANIZATION_ID` | — | *Default-organization fallback only.* Zoho Books organization id. |
+| `ZOHO_CLIENT_ID` / `ZOHO_CLIENT_SECRET` / `ZOHO_REFRESH_TOKEN` | — | *Default-organization fallback only.* OAuth credentials. **Read-only scope is sufficient** — the platform never writes to Zoho. |
+| `ZOHO_ACCOUNTS_BASE` | `https://accounts.zoho.in` | *Default-organization fallback only.* OAuth token host — must match the account's data centre. |
+| `ZOHO_API_BASE` | `https://www.zohoapis.in/books/v3` | *Default-organization fallback only.* Regional API base (`.in` for India). |
 
 ### PIE (Quote Builder only)
 
@@ -188,12 +200,17 @@ failure-reason distribution.
 
 ### Operational endpoints
 
-All require manager or owner; `ai-metrics` requires owner.
+Manager or owner unless noted; `PUT`/`DELETE /data/connection` and
+`ai-metrics` are owner only — a connection is a write credential for the whole
+organization's commercial data, not an operational action.
 
 | Endpoint | Purpose |
 |---|---|
-| `POST /api/v1/internal/sync/zoho` | Pull Zoho into the read model. Idempotent; reports what was written and what was skipped and why. |
+| `POST /api/v1/internal/sync/zoho` | Pull Zoho into the read model, using the caller's own organization's connection. Idempotent; reports what was written and what was skipped and why. |
 | `POST /api/v1/data/sync` | The same pull plus detectors and decision generation, recorded as a `SyncRun`. Optional body `{"since": "2025-01-01", "full": false}` — `since` sets the start date, `full` discards the resume cursor. This is what the **Data & connection** screen calls. |
+| `PUT /api/v1/data/connection` | **Owner only.** Connect (or replace) the caller's own organization's Zoho account. Body: `zoho_organization_id`, `client_id`, `client_secret`, `refresh_token`, optional `accounts_base`/`api_base`. Secrets are encrypted before storage and never echoed back. |
+| `DELETE /api/v1/data/connection` | **Owner only.** Unlink the caller's own organization's Zoho connection. Read-model data already pulled is untouched. |
+| `GET /api/v1/internal/zoho/check` | Verify the caller's own organization's connection without pulling data. |
 | `POST /api/v1/internal/detectors/run` | Run the deterministic Signal Engine. No AI. |
 | `POST /api/v1/internal/decisions/generate` | Turn the latest signals into decisions via the AI layer. |
 | `GET /api/v1/internal/ai-metrics` | AI cost and health (owner only). |

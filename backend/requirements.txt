@@ -7,6 +7,8 @@ SQLAlchemy>=2.0
 alembic>=1.13
 # Postgres driver for production; dev/test default to SQLite (stdlib, no driver).
 psycopg[binary]>=3.1
+# Encrypts each organization's Zoho client secret/refresh token at rest.
+cryptography>=41.0
 
 # pie-parser (the pinned clone at ../pie-parser) pulls these in:
 pyyaml>=6.0

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { papi } from "./api";
-import type { DataStatus, PlatformSession } from "./types";
+import type { DataStatus, PlatformSession, ZohoConnectionInput } from "./types";
 import { Bp } from "./ui";
 
 /**
@@ -16,9 +16,31 @@ import { Bp } from "./ui";
 const STATE_UI: Record<string, { label: string; tone: "ok" | "warn" | "bad" }> = {
   CONNECTED: { label: "Connected", tone: "ok" },
   SAMPLE_DATA: { label: "Sample data", tone: "warn" },
+  NOT_CONFIGURED: { label: "Not connected", tone: "warn" },
   WRONG_ORG: { label: "Wrong organization", tone: "bad" },
   ERROR: { label: "Rejected", tone: "bad" },
   UNREACHABLE: { label: "Unreachable", tone: "bad" },
+};
+
+/** Data-centre presets — a refresh token issued in one is rejected by every
+ *  other, so picking the right row up front avoids the single most common
+ *  setup failure (see docs/zoho-setup.md). */
+const DC_PRESETS: { label: string; accounts_base: string; api_base: string }[] = [
+  { label: "India (.in)", accounts_base: "https://accounts.zoho.in",
+    api_base: "https://www.zohoapis.in/books/v3" },
+  { label: "United States (.com)", accounts_base: "https://accounts.zoho.com",
+    api_base: "https://www.zohoapis.com/books/v3" },
+  { label: "Europe (.eu)", accounts_base: "https://accounts.zoho.eu",
+    api_base: "https://www.zohoapis.eu/books/v3" },
+  { label: "Australia (.com.au)", accounts_base: "https://accounts.zoho.com.au",
+    api_base: "https://www.zohoapis.com.au/books/v3" },
+  { label: "Japan (.jp)", accounts_base: "https://accounts.zoho.jp",
+    api_base: "https://www.zohoapis.jp/books/v3" },
+];
+
+const EMPTY_CONN_FORM: ZohoConnectionInput = {
+  zoho_organization_id: "", client_id: "", client_secret: "", refresh_token: "",
+  accounts_base: DC_PRESETS[0].accounts_base, api_base: DC_PRESETS[0].api_base,
 };
 
 const RESULT_UI: Record<string, string> = {
@@ -55,6 +77,10 @@ export function DataScreen({ session, onSynced }: { session: PlatformSession; on
   const [result, setResult] = useState<string | null>(null);
   const [since, setSince] = useState<string>(defaultSince());
   const [full, setFull] = useState(false);
+  const [connForm, setConnForm] = useState<ZohoConnectionInput>(EMPTY_CONN_FORM);
+  const [connecting, setConnecting] = useState(false);
+  const [connError, setConnError] = useState<string | null>(null);
+  const [disconnecting, setDisconnecting] = useState(false);
 
   const load = useCallback(async () => {
     setChecking(true);
@@ -71,6 +97,45 @@ export function DataScreen({ session, onSynced }: { session: PlatformSession; on
   useEffect(() => {
     load();
   }, [load]);
+
+  async function connect(e: React.FormEvent) {
+    e.preventDefault();
+    setConnecting(true);
+    setConnError(null);
+    try {
+      await papi.setZohoConnection(session.token, {
+        ...connForm,
+        zoho_organization_id: connForm.zoho_organization_id.trim(),
+        client_id: connForm.client_id.trim(),
+        client_secret: connForm.client_secret.trim(),
+        refresh_token: connForm.refresh_token.trim(),
+      });
+      setConnForm(EMPTY_CONN_FORM);
+      await load();
+      onSynced();
+    } catch (e) {
+      setConnError((e as Error).message);
+    } finally {
+      setConnecting(false);
+    }
+  }
+
+  async function disconnect() {
+    if (!window.confirm(
+      "Disconnect this Zoho account? Data already pulled stays put — only the " +
+      "credentials are removed, and syncing stops until reconnected.")) {
+      return;
+    }
+    setDisconnecting(true);
+    try {
+      await papi.clearZohoConnection(session.token);
+      await load();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setDisconnecting(false);
+    }
+  }
 
   async function sync() {
     setSyncing(true);
@@ -156,7 +221,73 @@ export function DataScreen({ session, onSynced }: { session: PlatformSession; on
               </dl>
             )}
 
-            {status?.can_sync && (
+            {c.state === "NOT_CONFIGURED" && status?.can_manage_connection && (
+              <form className="sync-opts" onSubmit={connect}>
+                <label htmlFor="conn-zoho-org">
+                  Zoho Books organization id
+                  <span className="fsrc">
+                    Settings → Organization Profile in Zoho Books, or the id in its URL.
+                  </span>
+                </label>
+                <input id="conn-zoho-org" className="input" required
+                  value={connForm.zoho_organization_id}
+                  onChange={(e) => setConnForm({ ...connForm, zoho_organization_id: e.target.value })} />
+
+                <label htmlFor="conn-dc" style={{ marginTop: 10 }}>
+                  Data centre
+                  <span className="fsrc">
+                    A refresh token issued in one is rejected by every other — this is the
+                    single most common setup failure. Match it to the account.
+                  </span>
+                </label>
+                <select id="conn-dc" className="input"
+                  value={connForm.accounts_base}
+                  onChange={(e) => {
+                    const p = DC_PRESETS.find((d) => d.accounts_base === e.target.value);
+                    if (p) setConnForm({ ...connForm, accounts_base: p.accounts_base, api_base: p.api_base });
+                  }}>
+                  {DC_PRESETS.map((p) => (
+                    <option key={p.accounts_base} value={p.accounts_base}>{p.label}</option>
+                  ))}
+                </select>
+
+                <label htmlFor="conn-client-id" style={{ marginTop: 10 }}>Client ID</label>
+                <input id="conn-client-id" className="input" required
+                  value={connForm.client_id}
+                  onChange={(e) => setConnForm({ ...connForm, client_id: e.target.value })} />
+
+                <label htmlFor="conn-client-secret" style={{ marginTop: 10 }}>Client secret</label>
+                <input id="conn-client-secret" type="password" className="input" required
+                  value={connForm.client_secret}
+                  onChange={(e) => setConnForm({ ...connForm, client_secret: e.target.value })} />
+
+                <label htmlFor="conn-refresh-token" style={{ marginTop: 10 }}>
+                  Refresh token
+                  <span className="fsrc">Encrypted before it is stored; never shown again.</span>
+                </label>
+                <input id="conn-refresh-token" type="password" className="input" required
+                  value={connForm.refresh_token}
+                  onChange={(e) => setConnForm({ ...connForm, refresh_token: e.target.value })} />
+
+                {connError && (
+                  <p className="conn-detail" style={{ color: "var(--color-danger, #b3261e)" }}>
+                    {connError}
+                  </p>
+                )}
+                <div style={{ marginTop: 12 }}>
+                  <button type="submit" className="btn btn-primary btn-sm" disabled={connecting}>
+                    {connecting ? "Connecting…" : "Connect Zoho"}
+                  </button>
+                </div>
+              </form>
+            )}
+            {c.state === "NOT_CONFIGURED" && !status?.can_manage_connection && (
+              <p className="conn-detail" style={{ marginTop: 10 }}>
+                Ask an owner to connect this organization's Zoho account.
+              </p>
+            )}
+
+            {status?.can_sync && c.state !== "NOT_CONFIGURED" && (
               <div className="sync-opts">
                 <label htmlFor="sync-since">
                   Read the books from
@@ -186,13 +317,18 @@ export function DataScreen({ session, onSynced }: { session: PlatformSession; on
               <button className="btn btn-secondary btn-sm" onClick={load} disabled={checking}>
                 {checking ? "Checking…" : "Re-check connection"}
               </button>
-              {status?.can_sync && (
+              {status?.can_sync && c.state !== "NOT_CONFIGURED" && (
                 <button className="btn btn-primary btn-sm" onClick={sync} disabled={syncing}>
                   {syncing ? "Syncing…" : "Sync now"}
                 </button>
               )}
+              {status?.can_manage_connection && c.state !== "NOT_CONFIGURED" && c.state !== "SAMPLE_DATA" && (
+                <button className="btn btn-secondary btn-sm" onClick={disconnect} disabled={disconnecting}>
+                  {disconnecting ? "Disconnecting…" : "Disconnect"}
+                </button>
+              )}
             </div>
-            {status && !status.can_sync && (
+            {status && !status.can_sync && c.state !== "NOT_CONFIGURED" && (
               <p className="conn-detail" style={{ marginTop: 10 }}>
                 Syncing is a manager or owner action.
               </p>

@@ -255,10 +255,29 @@ class SyncService:
             self.report.assignments += 1
 
 
-def get_source(since: Optional[date] = None) -> ZohoSource:
-    """Select the Zoho source from configuration (fixture offline, or live API)."""
+class ZohoNotConfiguredError(RuntimeError):
+    """This organization has no Zoho connection — distinct from a connection
+    that exists but was rejected, because the remedy is different: connect
+    one, rather than fix a credential."""
+
+
+def get_source(session: Session, organization_id: str,
+               since: Optional[date] = None) -> ZohoSource:
+    """Select this organization's Zoho source (fixture offline, or its own live
+    connection). ``ZOHO_SOURCE=fixture`` is a process-wide dev/test switch and
+    applies to every org identically; ``api`` pulls each org's own credentials
+    (see ``connections.get_zoho_credentials``) — never another org's, and never
+    a silent fall-through to another org's leftover settings.
+    """
     if settings.ZOHO_SOURCE == "api":
+        from .connections import get_zoho_credentials
         from .zoho_client import ZohoApiSource
-        return ZohoApiSource(since=since)
+
+        creds = get_zoho_credentials(session, organization_id)
+        if creds is None:
+            raise ZohoNotConfiguredError(
+                f"Organization {organization_id!r} has no Zoho connection. "
+                "Connect one via PUT /api/v1/data/connection before syncing.")
+        return ZohoApiSource(since=since, credentials=creds)
     from .mock_source import FixtureZohoSource
     return FixtureZohoSource()

@@ -1,4 +1,4 @@
-import type { Account, DataStatus, DecisionDetail, DecisionSummary, PlatformSession, SyncOptions, SyncRun } from "./types";
+import type { Account, DataStatus, DecisionDetail, DecisionSummary, PlatformSession, SyncOptions, SyncRun, ZohoConnectionInput } from "./types";
 
 const KEY = "pie_platform_session";
 
@@ -68,6 +68,14 @@ export const papi = {
     req<{ run: SyncRun; connection: DataStatus["connection"];
          demo_data_removed?: Record<string, number> }>(
       "/api/v1/data/sync", { method: "POST", body: JSON.stringify(opts) }, t),
+
+  setZohoConnection: (t: string, body: ZohoConnectionInput) =>
+    req<{ connection: DataStatus["connection"] }>(
+      "/api/v1/data/connection", { method: "PUT", body: JSON.stringify(body) }, t),
+
+  clearZohoConnection: (t: string) =>
+    req<{ removed: boolean; connection: DataStatus["connection"] }>(
+      "/api/v1/data/connection", { method: "DELETE" }, t),
 
   listAccounts: (t: string, q = "") =>
     req<Account[]>(`/api/v1/accounts${q ? `?q=${encodeURIComponent(q)}` : ""}`, {}, t),

@@ -30,6 +30,20 @@ if settings.is_production and settings.AUTH_SECRET == "dev-secret-change-me":
         "Set AUTH_SECRET to a strong, secret value before starting."
     )
 
+# Same reasoning, for the key that encrypts every organization's Zoho client
+# secret and refresh token at rest — the default is public (it's in the source),
+# so a stale default would make every stored connection's credentials
+# recoverable by anyone who has read this file.
+_DEV_CREDENTIAL_KEY = "sIfoCtwlOtGqxAtOkV5t3Rz-i6ZQ2VuTNQeXHpxTfWA="
+if settings.is_production and settings.CREDENTIAL_ENCRYPTION_KEY == _DEV_CREDENTIAL_KEY:
+    raise RuntimeError(
+        "CREDENTIAL_ENCRYPTION_KEY is still the development default in a production "
+        "environment. Generate a real one with:\n"
+        "  python -c \"from cryptography.fernet import Fernet; "
+        "print(Fernet.generate_key().decode())\"\n"
+        "and set it before starting."
+    )
+
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):

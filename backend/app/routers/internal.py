@@ -50,32 +50,41 @@ def ai_metrics(
 
 
 @router.get("/zoho/check")
-def zoho_check(principal: Principal = Depends(require_manager_or_owner)) -> dict:
-    """Verify the Zoho credentials and organization id without pulling any data.
+def zoho_check(
+    principal: Principal = Depends(require_manager_or_owner),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Verify this organization's Zoho credentials without pulling any data.
 
-    Run this before the first sync: it distinguishes the three things that
-    actually go wrong — wrong data centre, revoked/incorrect token, and a valid
-    login that simply cannot see the organization id you configured.
+    Run this before the first sync: it distinguishes the things that actually
+    go wrong — no connection configured, wrong data centre, revoked/incorrect
+    token, and a valid login that cannot see the connected organization id.
     """
     if settings.ZOHO_SOURCE != "api":
         return {"ok": False, "source": settings.ZOHO_SOURCE,
                 "detail": "ZOHO_SOURCE is not 'api' — the offline fixture source is in use."}
+
+    from ..ingestion.connections import get_zoho_credentials
     from ..ingestion.zoho_client import ZohoApiSource, ZohoError
 
+    creds = get_zoho_credentials(session, principal.organization_id)
+    if creds is None:
+        return {"ok": False, "source": "api",
+                "detail": "This organization has no Zoho connection. Connect one via "
+                          "PUT /api/v1/data/connection."}
     try:
-        result = ZohoApiSource().ping()
+        result = ZohoApiSource(credentials=creds).ping()
     except ZohoError as e:
         return {"ok": False, "source": "api", "detail": str(e),
-                "api_base": settings.ZOHO_API_BASE,
-                "accounts_base": settings.ZOHO_ACCOUNTS_BASE}
+                "api_base": creds.api_base, "accounts_base": creds.accounts_base}
     ok = bool(result.get("organization_found"))
     return {
         "ok": ok, "source": "api",
-        "api_base": settings.ZOHO_API_BASE,
-        "accounts_base": settings.ZOHO_ACCOUNTS_BASE,
+        "api_base": creds.api_base,
+        "accounts_base": creds.accounts_base,
         "detail": None if ok else (
-            "Authenticated, but this login cannot see the configured "
-            "ZOHO_ORGANIZATION_ID. Pick one of visible_organizations."),
+            "Authenticated, but this login cannot see the connected organization id. "
+            "Pick one of visible_organizations."),
         **result,
     }
 
@@ -92,8 +101,8 @@ def sync_zoho(
 ) -> dict:
     """Trigger a Zoho read sync into the org's read model (owner/manager only)."""
     ensure_org_and_users(session)
-    service = SyncService(session, get_source(since=since), principal.organization_id,
-                          resume=not full)
+    source = get_source(session, principal.organization_id, since=since)
+    service = SyncService(session, source, principal.organization_id, resume=not full)
     report = service.run()
     return report.to_dict()
 

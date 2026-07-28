@@ -1,7 +1,9 @@
 # Connecting a live Zoho Books account
 
-What you need to create in Zoho, and what to send back. Written for the
-**4U Precision** organization, but nothing here is specific to it.
+What you need to create in Zoho, and how to connect it. Written for the
+**4U Precision** organization, but nothing here is specific to it — the
+platform supports any number of organizations, each with its own Zoho Books
+connection (see [Multiple organizations](#multiple-organizations) below).
 
 The connection is **read-only**. The platform never creates, updates or deletes
 anything in Zoho — every call it makes is a GET.
@@ -97,20 +99,15 @@ The defaults are India.
 
 ---
 
-## 5. Configure
+## 5. Turn on live mode, then connect the credentials in the app
 
-Put these in `.env` (gitignored) or the deployment's environment:
+One environment variable is still needed, because it is the process-wide
+switch between the offline sample source and Zoho:
 
 ```bash
 ZOHO_SOURCE=api                      # switches off the offline fixture source
-ZOHO_ORGANIZATION_ID=60036630626
-ZOHO_CLIENT_ID=1000.xxxxxxxx
-ZOHO_CLIENT_SECRET=xxxxxxxx
-ZOHO_REFRESH_TOKEN=1000.xxxxxxxx.xxxxxxxx
-ZOHO_ACCOUNTS_BASE=https://accounts.zoho.in
-ZOHO_API_BASE=https://www.zohoapis.in/books/v3
 
-# Optional, sane defaults
+# Optional, sane defaults — shared pull behaviour, not credentials
 ZOHO_HISTORY_DAYS=730                # rolling fallback when no start date is chosen
 ZOHO_SYNC_FROM=                      # e.g. 2025-01-01 — an explicit start date wins
 ZOHO_PAGE_SIZE=200
@@ -125,12 +122,10 @@ ZOHO_THROTTLE_BACKOFF_SECONDS=15     # 15s, 30s, 60s, 90s… on HTTP 429
 ZOHO_MAX_BACKOFF_SECONDS=90
 ```
 
-**You do not have to set `ZOHO_SYNC_FROM`.** The **Data & connection** screen
-asks for the start date each time you sync, and defaults to eighteen months
-back. Use the variable only if you want a different default.
-
 **`ZOHO_SOURCE=api` is the switch.** Until it is set, the platform keeps using
-the offline fixture source no matter what other credentials are present.
+the offline fixture source no matter what other credentials are present. Every
+setting above is shared, global pull behaviour, not an account identity — it
+applies the same way to every connected organization.
 
 Setting it also does two things automatically, so demo data never lingers next
 to your real books:
@@ -144,6 +139,92 @@ to your real books:
   touched. The sync result names what it removed; every sync after the first
   finds nothing left to remove.
 
+**The credentials themselves are entered in the app, not `.env`.** Each
+organization is a fully separate tenant with its own Zoho connection, so
+credentials live per-organization in the database (encrypted — see
+`CREDENTIAL_ENCRYPTION_KEY` in [operations.md](operations.md)), not in a
+process-wide environment variable. Sign in as that organization's **owner**,
+open **Data & connection**, and its badge reads **Not connected** with a form
+right there:
+
+| Field | Where it comes from |
+|---|---|
+| Zoho Books organization id | Step 4 above |
+| Data centre | The table above — pick the row matching the account |
+| Client ID / Client secret | Step 1 |
+| Refresh token | Step 3 |
+
+Press **Connect Zoho**. The page re-checks the connection immediately using
+what you just entered, so you find out right away if something doesn't match —
+same states as the table in the next section. The secret and refresh token are
+encrypted before they touch the database and are never echoed back by any
+response.
+
+**Or from the command line**, once signed in as that organization's owner:
+
+```bash
+curl -X PUT localhost:8000/api/v1/data/connection \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{
+    "zoho_organization_id": "60036630626",
+    "client_id": "1000.xxxxxxxx",
+    "client_secret": "xxxxxxxx",
+    "refresh_token": "1000.xxxxxxxx.xxxxxxxx",
+    "accounts_base": "https://accounts.zoho.in",
+    "api_base": "https://www.zohoapis.in/books/v3"
+  }'
+```
+
+`DELETE /api/v1/data/connection` unlinks it (data already pulled is untouched;
+only the credentials are removed) — owner-only, same as connecting.
+
+**The exception is the platform's original default organization.** If it has
+no stored connection, it falls back to `ZOHO_ORGANIZATION_ID` /
+`ZOHO_CLIENT_ID` / `ZOHO_CLIENT_SECRET` / `ZOHO_REFRESH_TOKEN` /
+`ZOHO_ACCOUNTS_BASE` / `ZOHO_API_BASE` in the environment, exactly as before —
+so an existing single-tenant deployment configured that way keeps working with
+no changes required. Connecting that organization from the app (or via the
+`PUT` above) takes over from the environment variables from then on.
+
+## Multiple organizations
+
+Each Zoho connection is a **fully separate tenant** — its own users, its own
+decision queue, no data crosses between them. This is how Sanketh's several
+legal entities (each its own Zoho Books account) run on one deployment without
+their numbers ever mixing.
+
+**Provisioning a new organization** (its first time only — one per legal
+entity, not one per Zoho reconnection) is a backend step, the same way the
+default organization's demo users are seeded:
+
+```bash
+python -m app.provision_org \
+  --org-id org_sls --name "SLS Engineers" \
+  --owner-email owner@sls.example --owner-name "S. Owner"
+```
+
+This creates the organization and its first (owner) user. It does **not**
+connect Zoho — that owner signs in with their email (any password, until real
+auth is wired up) and connects their own account from **Data & connection**,
+exactly as in the previous section. Add a manager or salesperson to that
+organization the same way:
+
+```bash
+python -c "
+from app.db import SessionLocal
+from app.domain.enums import Role
+from app.provision_org import add_user
+s = SessionLocal()
+add_user(s, organization_id='org_sls', email='m.rao@sls.example', name='M. Rao', role=Role.SALES_MANAGER)
+s.commit()
+"
+```
+
+Email is the platform's login key and is globally unique — the same address
+cannot head two different organizations. Signing in always resolves to exactly
+one organization; there is no "switch organization" step because each is a
+separate tenant with separate accounts.
+
 ## 6. Verify — from the app
 
 Sign in as the owner or a manager and open **Data & connection** in the nav.
@@ -152,9 +233,10 @@ It states in words whether you are looking at your books or sample data:
 | Badge | Meaning | What to do |
 |---|---|---|
 | **CONNECTED** | Live, with the organization name, id, currency and history window | Press **Sync now** |
+| **NOT CONNECTED** | `ZOHO_SOURCE=api`, but this organization has no Zoho connection yet | An owner connects one — see above |
 | **SAMPLE DATA** | `ZOHO_SOURCE` is not `api` — everything on screen is demonstration data | Set `ZOHO_SOURCE=api` and restart |
-| **WRONG ORGANIZATION** | Credentials work, but the login cannot see the configured id | The panel lists the ids it *can* see — copy the right one |
-| **REJECTED** | Zoho refused the credentials | Usually the data centre; check `ZOHO_ACCOUNTS_BASE` |
+| **WRONG ORGANIZATION** | Credentials work, but the login cannot see the connected id | The panel lists the ids it *can* see — copy the right one and reconnect |
+| **REJECTED** | Zoho refused the credentials | Usually the data centre; reconnect with the matching accounts/API base |
 | **UNREACHABLE** | The network could not reach Zoho | Firewall/proxy on the host |
 
 **Sync now** runs the whole cycle — pull, detect signals, generate decisions —
@@ -196,8 +278,9 @@ pulling any data**. It separates the three failures that look alike:
 | Result | Meaning |
 |---|---|
 | `"ok": true` + your org name | Ready to sync |
+| `detail` mentions *no Zoho connection* | This organization hasn't connected one yet — see [step 5](#5-turn-on-live-mode-then-connect-the-credentials-in-the-app) |
 | `detail` mentions *data centre* | Token was issued in a different DC |
-| `organization_found: false` | Credentials fine, but `ZOHO_ORGANIZATION_ID` is wrong — pick from `visible_organizations` |
+| `organization_found: false` | Credentials fine, but the connected organization id is wrong — pick from `visible_organizations` and reconnect |
 | `"source": "fixture"` | `ZOHO_SOURCE=api` is not set |
 
 ## 7. First sync

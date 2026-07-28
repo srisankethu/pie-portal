@@ -5,6 +5,8 @@ from datetime import date
 from decimal import Decimal
 from typing import Any
 
+import pytest
+
 from app.domain import models
 from app.ingestion.sync import SyncService
 from app.repositories import ReadModelRepository
@@ -344,3 +346,61 @@ def test_pending_backfill_count_reflects_legacy_rows(session):
     session.commit()
     assert repo.count_cost_records_pending_discount_backfill() == 1, \
         "the new row has rate set and must not count as pending"
+
+
+# ── get_source: multi-tenant credential resolution ─────────────────────────
+def test_get_source_is_the_fixture_regardless_of_org_when_source_is_not_api(session, monkeypatch):
+    from app.config import settings
+    from app.ingestion.mock_source import FixtureZohoSource
+    from app.ingestion.sync import get_source
+
+    monkeypatch.setattr(settings, "ZOHO_SOURCE", "fixture")
+    assert isinstance(get_source(session, "org_a"), FixtureZohoSource)
+
+
+def test_get_source_raises_clearly_when_the_org_has_no_connection(session, monkeypatch):
+    from app.config import settings
+    from app.ingestion.sync import ZohoNotConfiguredError, get_source
+
+    monkeypatch.setattr(settings, "ZOHO_SOURCE", "api")
+    session.add(models.Organization(organization_id="org_unconfigured", name="Unconfigured"))
+    session.flush()
+
+    with pytest.raises(ZohoNotConfiguredError) as e:
+        get_source(session, "org_unconfigured")
+    assert "org_unconfigured" in str(e.value)
+
+
+def test_get_source_uses_this_org_s_own_stored_connection(session, monkeypatch):
+    from app.config import settings
+    from app.ingestion.connections import set_zoho_credentials
+    from app.ingestion.sync import get_source
+    from app.ingestion.zoho_client import ZohoApiSource
+
+    monkeypatch.setattr(settings, "ZOHO_SOURCE", "api")
+    session.add(models.Organization(organization_id="org_a", name="Org A"))
+    session.flush()
+    set_zoho_credentials(session, "org_a", zoho_organization_id="12345", client_id="cid",
+                         client_secret="s", refresh_token="r")
+
+    src = get_source(session, "org_a")
+    assert isinstance(src, ZohoApiSource)
+    assert src._org == "12345"
+
+
+def test_two_orgs_sync_from_their_own_credentials_never_the_others(session, monkeypatch):
+    from app.config import settings
+    from app.ingestion.connections import set_zoho_credentials
+    from app.ingestion.sync import get_source
+
+    monkeypatch.setattr(settings, "ZOHO_SOURCE", "api")
+    session.add(models.Organization(organization_id="org_a", name="Org A"))
+    session.add(models.Organization(organization_id="org_b", name="Org B"))
+    session.flush()
+    set_zoho_credentials(session, "org_a", zoho_organization_id="AAA", client_id="cid-a",
+                         client_secret="sa", refresh_token="ra")
+    set_zoho_credentials(session, "org_b", zoho_organization_id="BBB", client_id="cid-b",
+                         client_secret="sb", refresh_token="rb")
+
+    assert get_source(session, "org_a")._org == "AAA"
+    assert get_source(session, "org_b")._org == "BBB"

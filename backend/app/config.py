@@ -122,6 +122,21 @@ class Settings:
     ZOHO_PAGE_SIZE: int = int(os.environ.get("ZOHO_PAGE_SIZE", "200"))
     ZOHO_MAX_PAGES: int = int(os.environ.get("ZOHO_MAX_PAGES", "50"))
     ZOHO_HISTORY_DAYS: int = int(os.environ.get("ZOHO_HISTORY_DAYS", "730"))
+    # An explicit start date (ISO, e.g. 2025-01-01) wins over the rolling window.
+    # A manager picks this per run in the UI; this is only the default offered.
+    ZOHO_SYNC_FROM: str = os.environ.get("ZOHO_SYNC_FROM", "")
+
+    # Throttling. Zoho Books allows on the order of 100 calls per minute per
+    # organization, and a pull costs one call per document — so an unpaced pull
+    # trips the limiter within seconds and dies mid-ledger. Pacing prevents that;
+    # the backoff is the fallback for when the limiter is hit anyway. Backoff is
+    # deliberately tens of seconds: a rate limiter is not a transient 5xx and
+    # retrying after one second simply burns the retry budget.
+    ZOHO_REQUESTS_PER_MINUTE: int = int(os.environ.get("ZOHO_REQUESTS_PER_MINUTE", "90"))
+    ZOHO_MAX_RETRIES: int = int(os.environ.get("ZOHO_MAX_RETRIES", "6"))
+    ZOHO_THROTTLE_BACKOFF_SECONDS: float = float(
+        os.environ.get("ZOHO_THROTTLE_BACKOFF_SECONDS", "15"))
+    ZOHO_MAX_BACKOFF_SECONDS: float = float(os.environ.get("ZOHO_MAX_BACKOFF_SECONDS", "90"))
 
     # Version stamped onto deterministic artifacts for provenance/reproducibility.
     # (Threshold-config version is carried by SignalThresholds.version, not here.)

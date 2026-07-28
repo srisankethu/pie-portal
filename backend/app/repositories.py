@@ -127,6 +127,51 @@ class ReadModelRepository:
         return len(self.s.scalars(
             select(model).where(model.organization_id == self.org)).all())
 
+    # ── users (for ownership mapping) ────────────────────────────────────────
+    def users_by_email(self) -> dict[str, models.User]:
+        return {
+            u.email.strip().lower(): u
+            for u in self.s.scalars(
+                select(models.User).where(models.User.organization_id == self.org))
+            if u.email
+        }
+
+    # ── resume cursor ────────────────────────────────────────────────────────
+    def ingested_index(self, doc_type: str) -> dict[str, str]:
+        """``{doc_id: modified_at}`` for documents already pulled."""
+        return {
+            r.doc_id: (r.modified_at or "")
+            for r in self.s.scalars(
+                select(models.IngestedDocument).where(
+                    models.IngestedDocument.organization_id == self.org,
+                    models.IngestedDocument.doc_type == doc_type,
+                ))
+        }
+
+    def mark_ingested(self, doc_type: str, doc_id: str, modified_at: str) -> None:
+        row = self.s.scalar(
+            select(models.IngestedDocument).where(
+                models.IngestedDocument.organization_id == self.org,
+                models.IngestedDocument.doc_type == doc_type,
+                models.IngestedDocument.doc_id == doc_id,
+            )
+        )
+        if row is None:
+            row = models.IngestedDocument(organization_id=self.org, doc_type=doc_type,
+                                          doc_id=doc_id)
+            self.s.add(row)
+        row.modified_at = modified_at or None
+        row.fetched_at = datetime.now(timezone.utc)
+
+    def clear_ingested(self) -> int:
+        """Forget the cursor, so the next pull re-fetches every document."""
+        rows = self.s.scalars(
+            select(models.IngestedDocument).where(
+                models.IngestedDocument.organization_id == self.org)).all()
+        for r in rows:
+            self.s.delete(r)
+        return len(rows)
+
 
 class DecisionRepository:
     """Persistence + lifecycle for decisions, scoped to one org."""

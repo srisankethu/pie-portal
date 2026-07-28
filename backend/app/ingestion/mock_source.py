@@ -7,7 +7,9 @@ stand-in for a real pull, not seed business data.
 """
 from __future__ import annotations
 
-from typing import Any, Iterable
+from typing import Any, Iterable, Optional
+
+from .source import SkipPredicate
 
 _CONTACTS = [
     {"contact_id": "cst-1001", "contact_name": "Pitti Engineering Ltd", "status": "active"},
@@ -22,8 +24,13 @@ _ITEMS = [
      "hsn_or_sac": "82090090", "status": "active"},
 ]
 
+_USERS = [
+    {"user_id": "zu-1", "email": "r.nair@sanketh.in", "name": "R. Nair", "status": "active"},
+]
+
 _INVOICES = [
     {"invoice_id": "inv-3001", "customer_id": "cst-1001", "date": "2026-06-10",
+     "salesperson_id": "zu-1", "salesperson_name": "R. Nair",
      "line_items": [
          {"line_item_id": "l1", "item_id": "itm-2001", "quantity": 20, "rate": 530,
           "item_total": 10600},
@@ -45,14 +52,20 @@ _BILLS = [
 
 
 class FixtureZohoSource:
+    """The offline source has no per-document call to save, so it honours
+    ``skip`` only in the sense of accepting it — the fixture is returned whole."""
+
     def list_contacts(self) -> Iterable[dict[str, Any]]:
         return list(_CONTACTS)
 
     def list_items(self) -> Iterable[dict[str, Any]]:
         return list(_ITEMS)
 
-    def list_invoices(self) -> Iterable[dict[str, Any]]:
+    def list_invoices(self, skip: Optional[SkipPredicate] = None) -> Iterable[dict[str, Any]]:
         return list(_INVOICES)
 
-    def list_bills(self) -> Iterable[dict[str, Any]]:
+    def list_bills(self, skip: Optional[SkipPredicate] = None) -> Iterable[dict[str, Any]]:
         return list(_BILLS)
+
+    def list_users(self) -> Iterable[dict[str, Any]]:
+        return list(_USERS)

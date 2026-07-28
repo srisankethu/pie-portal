@@ -93,9 +93,14 @@ def test_a_failed_sync_is_recorded_not_swallowed(client, monkeypatch):
         def list_contacts(self):
             raise RuntimeError("token rejected")
 
-        list_items = list_invoices = list_bills = list_contacts
+        list_items = list_users = list_contacts
 
-    monkeypatch.setattr("app.ingestion.sync.get_source", lambda: Boom())
+        def list_invoices(self, skip=None):
+            raise RuntimeError("token rejected")
+
+        list_bills = list_invoices
+
+    monkeypatch.setattr("app.ingestion.sync.get_source", lambda since=None: Boom())
     owner = _hdr(client, "s.menon@sanketh.in")
     run = client.post("/api/v1/data/sync", headers=owner).json()["run"]
     assert run["status"] == "FAILED"
@@ -104,6 +109,61 @@ def test_a_failed_sync_is_recorded_not_swallowed(client, monkeypatch):
     # and it is still there on the next page load
     body = client.get("/api/v1/data/status", headers=owner).json()
     assert body["last_sync"]["status"] == "FAILED"
+
+
+def test_an_interrupted_pull_reports_what_it_wrote(client, monkeypatch):
+    """The bug this fixes: a run that pulled 300 rows and then hit the rate
+    limiter recorded FAILED with every counter at zero, while the rows sat in
+    the database. The audit trail then contradicted the data."""
+    monkeypatch.setattr(settings, "ZOHO_SOURCE", "api")
+
+    class Throttled:
+        def list_contacts(self):
+            return [{"contact_id": "c1", "contact_name": "Acme", "status": "active"}]
+
+        def list_items(self):
+            return [{"item_id": "i1", "name": "Insert", "status": "active"}]
+
+        def list_users(self):
+            return []
+
+        def list_bills(self, skip=None):
+            return []
+
+        def list_invoices(self, skip=None):
+            raise RuntimeError("HTTP 429 (rate limited)")
+
+    monkeypatch.setattr("app.ingestion.sync.get_source", lambda since=None: Throttled())
+    owner = _hdr(client, "s.menon@sanketh.in")
+    run = client.post("/api/v1/data/sync", headers=owner).json()["run"]
+
+    assert run["status"] == "PARTIAL", "rows landed — this is not a total failure"
+    assert run["customers"] == 1 and run["products"] == 1
+    assert "429" in run["error"]
+    # and the rows really are there, ready for the next run to build on
+    assert client.get("/api/v1/data/status",
+                      headers=owner).json()["read_model"]["customers"] == 1
+
+
+def test_the_operator_chooses_the_start_date(client, monkeypatch):
+    """How far back the books are worth reading is a business judgement, so it
+    is an input to the run rather than a constant in the code."""
+    monkeypatch.setattr(settings, "ZOHO_SOURCE", "fixture")
+    seen: dict = {}
+
+    from app.ingestion import mock_source
+
+    def _capture(since=None):
+        seen["since"] = since
+        return mock_source.FixtureZohoSource()
+
+    monkeypatch.setattr("app.ingestion.sync.get_source", _capture)
+    owner = _hdr(client, "s.menon@sanketh.in")
+    run = client.post("/api/v1/data/sync", headers=owner,
+                      json={"since": "2025-01-01"}).json()["run"]
+
+    assert seen["since"].isoformat() == "2025-01-01", "the date must reach the source"
+    assert run["since"] == "2025-01-01", "and be recorded, so the window is auditable"
 
 
 def test_wrong_organization_id_names_the_right_one(monkeypatch):

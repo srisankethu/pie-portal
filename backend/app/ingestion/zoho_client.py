@@ -4,7 +4,7 @@ Read-only by construction: every call is a GET, and no method here can create,
 update or delete anything in Zoho. The platform treats Zoho as the system of
 record and never writes back.
 
-Three things about the Books API shape the design:
+Four things about the Books API shape the design:
 
 1. **Data centre matters.** A refresh token issued in one DC (``.in``, ``.com``,
    ``.eu``, ``.com.au``, ``.jp``) is rejected by every other, and the token host
@@ -12,20 +12,31 @@ Three things about the Books API shape the design:
 2. **List endpoints omit line items.** ``/invoices`` and ``/bills`` return
    summary rows; the lines a signal is computed from only appear on the detail
    record. So a pull is one list call per page plus one detail call per
-   document, which is why history is bounded by ``ZOHO_HISTORY_DAYS``.
+   document, which is why the history window exists.
 3. **Drafts and voids are not trade.** They are excluded, so a cancelled
    invoice never counts as revenue a customer stopped spending.
+4. **The API is rate limited, and one call per document adds up fast.** Calls
+   are therefore *paced* to stay under the limit rather than fired as fast as
+   the network allows, and a 429 is backed off in tens of seconds — a rate
+   limiter is not a transient fault, and retrying a second later just burns the
+   retry budget. A pull that is throttled out anyway is resumable: the caller
+   supplies a ``skip`` predicate for documents it already holds, so the next
+   attempt pays only for what is missing.
 """
 from __future__ import annotations
 
 import logging
 import time
 from datetime import date, timedelta
-from typing import Any, Iterable, Iterator, Optional
+from typing import Any, Callable, Iterable, Iterator, Optional
 
 from ..config import settings
 
 log = logging.getLogger("pie_portal.zoho")
+
+# ``skip(doc_id, last_modified) -> bool``: True when the caller already holds
+# this document unchanged and the detail call can be spared.
+SkipPredicate = Callable[[str, str], bool]
 
 # Invoice/bill statuses that do not represent real trade.
 _EXCLUDED_INVOICE_STATUS = {"draft", "void"}
@@ -40,16 +51,33 @@ class ZohoAuthError(ZohoError):
     """Credentials were rejected — wrong DC, revoked token, or bad client."""
 
 
-class ZohoApiSource:
-    """Read-only Zoho Books client."""
+class ZohoThrottleError(ZohoError):
+    """The rate limiter won. Distinct from other failures because the remedy is
+    different: wait and resume, rather than fix a credential."""
 
-    def __init__(self, http: Any = None) -> None:
+
+class ZohoApiSource:
+    """Read-only Zoho Books client.
+
+    ``since`` bounds how far back documents are pulled. When omitted it falls
+    back to ``ZOHO_SYNC_FROM`` and then to the rolling ``ZOHO_HISTORY_DAYS``
+    window, so an operator can choose an explicit start date per run without
+    changing configuration.
+    """
+
+    def __init__(self, http: Any = None, since: Optional[date] = None) -> None:
         self._base = settings.ZOHO_API_BASE.rstrip("/")
         self._accounts = settings.ZOHO_ACCOUNTS_BASE.rstrip("/")
         self._org = settings.ZOHO_ORGANIZATION_ID
         self._http = http                      # injectable for tests
         self._token: Optional[str] = None
         self._token_expires_at: float = 0.0
+        self._since = since or configured_since()
+        self._last_call_at: float = 0.0
+        # Observable so a sync run can report what the pull actually cost.
+        self.calls = 0
+        self.documents_fetched = 0
+        self.documents_resumed = 0
 
     # ── transport ────────────────────────────────────────────────────────────
     def _client(self):
@@ -108,6 +136,32 @@ class ZohoApiSource:
         self._token_expires_at = time.time() + max(60, int(body.get("expires_in", 3600))) - 60
         return self._token
 
+    # ── throttling ───────────────────────────────────────────────────────────
+    def _sleep(self, seconds: float) -> None:
+        """Single seam for every wait, so tests can run the real retry logic."""
+        if seconds > 0:
+            time.sleep(seconds)
+
+    def _pace(self) -> None:
+        """Hold calls to ZOHO_REQUESTS_PER_MINUTE.
+
+        Staying under the limit is worth far more than recovering from it: a
+        pull is thousands of calls, and one 429 used to end the whole run.
+        """
+        rpm = settings.ZOHO_REQUESTS_PER_MINUTE
+        if rpm <= 0 or self._last_call_at == 0.0:
+            return
+        self._sleep(self._last_call_at + (60.0 / rpm) - time.monotonic())
+
+    @staticmethod
+    def _retry_after(resp: Any) -> Optional[float]:
+        """Zoho's own instruction, when it sends one, beats any guess."""
+        try:
+            raw = (getattr(resp, "headers", None) or {}).get("Retry-After")
+            return max(0.0, float(raw)) if raw is not None else None
+        except (TypeError, ValueError):
+            return None
+
     def _get(self, path: str, **params: Any) -> dict[str, Any]:
         """One authenticated GET, with retry on throttling and transient faults."""
         url = f"{self._base}/{path.lstrip('/')}"
@@ -115,11 +169,16 @@ class ZohoApiSource:
         params["organization_id"] = self._org
 
         last: Optional[str] = None
-        for attempt in range(4):
+        throttled = False
+        attempts = max(1, settings.ZOHO_MAX_RETRIES)
+        for attempt in range(attempts):
             token = self._access_token()
+            self._pace()
             resp = self._client().get(
                 url, params=params,
                 headers={"Authorization": f"Zoho-oauthtoken {token}"})
+            self._last_call_at = time.monotonic()
+            self.calls += 1
 
             if resp.status_code == 401:
                 # Token may have been revoked mid-run; drop the cache and retry once.
@@ -130,9 +189,20 @@ class ZohoApiSource:
                 raise ZohoAuthError(
                     "Zoho rejected the access token. Confirm the refresh token, the "
                     "client credentials and the data centre all belong to the same account.")
-            if resp.status_code == 429 or resp.status_code >= 500:
+            if resp.status_code == 429:
+                throttled = True
+                last = "HTTP 429 (rate limited)"
+                delay = self._retry_after(resp)
+                if delay is None:
+                    delay = min(settings.ZOHO_MAX_BACKOFF_SECONDS,
+                                settings.ZOHO_THROTTLE_BACKOFF_SECONDS * (2 ** attempt))
+                log.warning("zoho %s: rate limited, waiting %.0fs (attempt %d/%d)",
+                            path, delay, attempt + 1, attempts)
+                self._sleep(delay)
+                continue
+            if resp.status_code >= 500:
                 last = f"HTTP {resp.status_code}"
-                time.sleep(2 ** attempt)       # 1s, 2s, 4s
+                self._sleep(min(settings.ZOHO_MAX_BACKOFF_SECONDS, 2 ** attempt))
                 continue
             try:
                 body = resp.json()
@@ -143,6 +213,11 @@ class ZohoApiSource:
                     f"Zoho error on {path}: {body.get('message') or resp.status_code}")
             return body
 
+        if throttled:
+            raise ZohoThrottleError(
+                f"Zoho rate limited the pull at {path} and did not recover after "
+                f"{attempts} attempts. Everything fetched so far has been kept — run the "
+                "sync again later and it will resume from where it stopped.")
         raise ZohoError(f"Zoho call to {path} failed after retries ({last}).")
 
     def _paginate(self, path: str, key: str, **params: Any) -> Iterator[dict[str, Any]]:
@@ -196,11 +271,17 @@ class ZohoApiSource:
             }
 
     def _cutoff(self) -> date:
-        return date.today() - timedelta(days=settings.ZOHO_HISTORY_DAYS)
+        return self._since or (date.today() - timedelta(days=settings.ZOHO_HISTORY_DAYS))
 
     def _documents(self, path: str, list_key: str, detail_key: str, id_field: str,
-                   excluded_status: set[str]) -> Iterator[dict[str, Any]]:
-        """List documents, then fetch each one's detail for its line items."""
+                   excluded_status: set[str],
+                   skip: Optional[SkipPredicate] = None) -> Iterator[dict[str, Any]]:
+        """List documents, then fetch each one's detail for its line items.
+
+        ``skip`` lets the caller say "I already have this one, unchanged", which
+        turns a resumed pull from thousands of detail calls into a handful of
+        list calls.
+        """
         cutoff = self._cutoff()
         for row in self._paginate(path, list_key, sort_column="date", sort_order="D"):
             status = str(row.get("status") or "").lower()
@@ -213,17 +294,27 @@ class ZohoApiSource:
             except ValueError:
                 continue                      # unparseable date: skip, sync reports it
             doc_id = str(row.get(id_field))
+            if skip is not None and skip(doc_id, str(row.get("last_modified_time") or "")):
+                self.documents_resumed += 1
+                continue
             detail = self._get(f"{path}/{doc_id}").get(detail_key) or {}
             if detail:
+                self.documents_fetched += 1
                 yield detail
 
-    def list_invoices(self) -> Iterable[dict[str, Any]]:
+    def list_invoices(self, skip: Optional[SkipPredicate] = None) -> Iterable[dict[str, Any]]:
         for inv in self._documents("invoices", "invoices", "invoice", "invoice_id",
-                                   _EXCLUDED_INVOICE_STATUS):
+                                   _EXCLUDED_INVOICE_STATUS, skip=skip):
             yield {
                 "invoice_id": str(inv.get("invoice_id")),
                 "customer_id": str(inv.get("customer_id")),
                 "date": inv.get("date"),
+                "last_modified_time": inv.get("last_modified_time"),
+                # Zoho's own record of who owns the sale. Mapped onto a platform
+                # user by the sync layer; never guessed at when it is absent.
+                "salesperson_id": (str(inv["salesperson_id"])
+                                   if inv.get("salesperson_id") else None),
+                "salesperson_name": inv.get("salesperson_name"),
                 "line_items": [
                     {
                         "line_item_id": str(li.get("line_item_id")),
@@ -238,12 +329,13 @@ class ZohoApiSource:
                 ],
             }
 
-    def list_bills(self) -> Iterable[dict[str, Any]]:
+    def list_bills(self, skip: Optional[SkipPredicate] = None) -> Iterable[dict[str, Any]]:
         for bill in self._documents("bills", "bills", "bill", "bill_id",
-                                    _EXCLUDED_BILL_STATUS):
+                                    _EXCLUDED_BILL_STATUS, skip=skip):
             yield {
                 "bill_id": str(bill.get("bill_id")),
                 "date": bill.get("date"),
+                "last_modified_time": bill.get("last_modified_time"),
                 "line_items": [
                     {
                         "line_item_id": str(li.get("line_item_id")),
@@ -255,3 +347,33 @@ class ZohoApiSource:
                     if li.get("item_id")
                 ],
             }
+
+    def list_users(self) -> Iterable[dict[str, Any]]:
+        """Zoho's user list — the only thing that turns an invoice's
+        ``salesperson_id`` into a person the platform knows."""
+        for u in self._paginate("users", "users"):
+            yield {
+                "user_id": str(u.get("user_id")),
+                "email": str(u.get("email") or "").strip().lower(),
+                "name": u.get("name") or "",
+                "status": str(u.get("status") or "active"),
+            }
+
+
+def configured_since() -> Optional[date]:
+    """``ZOHO_SYNC_FROM`` as a date, or None for the rolling window.
+
+    A malformed value is ignored rather than guessed at — the rolling window is
+    the documented default, and silently pulling from the wrong date would be
+    worse than pulling from the default one.
+    """
+    raw = (settings.ZOHO_SYNC_FROM or "").strip()
+    if not raw:
+        return None
+    try:
+        return date.fromisoformat(raw)
+    except ValueError:
+        log.warning("ZOHO_SYNC_FROM=%r is not an ISO date (YYYY-MM-DD); "
+                    "falling back to the rolling %d-day window.",
+                    raw, settings.ZOHO_HISTORY_DAYS)
+        return None

@@ -40,9 +40,13 @@ always wins over it**. All values have defaults that work for local development.
 |---|---|---|
 | `ZOHO_SOURCE` | `fixture` | `fixture` (deterministic offline data) or `api` (live Zoho). See [zoho-setup.md](zoho-setup.md). |
 | `ZOHO_ACCOUNTS_BASE` | `https://accounts.zoho.in` | OAuth token host. Must match the account's data centre. |
-| `ZOHO_HISTORY_DAYS` | `730` | How far back the live pull reaches. |
+| `ZOHO_HISTORY_DAYS` | `730` | Rolling fallback window, used when no start date is chosen. |
+| `ZOHO_SYNC_FROM` | — | Default start date (ISO) offered for a pull. The operator picks the actual date per run on **Data & connection**; an unparseable value falls back to the rolling window. |
 | `ZOHO_PAGE_SIZE` / `ZOHO_MAX_PAGES` | `200` / `50` | Pagination bounds. |
 | `ZOHO_TIMEOUT_SECONDS` | `30` | Per-request timeout. |
+| `ZOHO_REQUESTS_PER_MINUTE` | `90` | Call pacing. Zoho allows ~100/min per org and a pull is one call per document, so an unpaced pull trips the limiter within seconds. `0` disables pacing. |
+| `ZOHO_MAX_RETRIES` | `6` | Attempts per call before giving up. |
+| `ZOHO_THROTTLE_BACKOFF_SECONDS` / `ZOHO_MAX_BACKOFF_SECONDS` | `15` / `90` | Backoff on HTTP 429, doubling and capped. Zoho's own `Retry-After` header wins when present. |
 | `ZOHO_ORGANIZATION_ID` | — | Zoho Books organization id. |
 | `ZOHO_CLIENT_ID` / `ZOHO_CLIENT_SECRET` / `ZOHO_REFRESH_TOKEN` | — | OAuth credentials. **Read-only scope is sufficient** — the platform never writes to Zoho. |
 | `ZOHO_API_BASE` | `https://www.zohoapis.in/books/v3` | Regional API base (`.in` for India). |
@@ -135,10 +139,14 @@ ready for real customer data** until they are closed:
 1. **Replace the demo login.** `routers/platform_auth.py` accepts any password
    for a known email. It is explicitly demo-grade auth and must be swapped for
    the organization's identity provider.
-2. **Populate customer → salesperson assignment.** Zoho sync does not currently
-   set `customer.assigned_user_id`. Salesperson scope is
-   `assigned_user_id == user_id`, so **every salesperson queue would be empty**
-   until this is mapped from the Zoho owner field.
+2. **Give every salesperson a Zoho account with a matching email.** The sync now
+   maps the salesperson on a customer's most recent invoice to a platform user,
+   but only on an exact email match. Salesperson scope is
+   `assigned_user_id == user_id`, so any account it cannot map stays invisible
+   to the person who should act on it. After the first live sync, check
+   **Skipped rows** on **Data & connection** for `UNMAPPED_SALESPERSON` and
+   `ASSIGNMENT_UNAVAILABLE` (the latter means the `ZohoBooks.users.READ` scope
+   is missing) — and check that invoices in Zoho actually carry a salesperson.
 3. **Set the real AI cost rates** (above), or every cost figure is wrong.
 
 Also worth knowing: the **Outcome Tracker is not built**. You can measure
@@ -185,6 +193,7 @@ All require manager or owner; `ai-metrics` requires owner.
 | Endpoint | Purpose |
 |---|---|
 | `POST /api/v1/internal/sync/zoho` | Pull Zoho into the read model. Idempotent; reports what was written and what was skipped and why. |
+| `POST /api/v1/data/sync` | The same pull plus detectors and decision generation, recorded as a `SyncRun`. Optional body `{"since": "2025-01-01", "full": false}` — `since` sets the start date, `full` discards the resume cursor. This is what the **Data & connection** screen calls. |
 | `POST /api/v1/internal/detectors/run` | Run the deterministic Signal Engine. No AI. |
 | `POST /api/v1/internal/decisions/generate` | Turn the latest signals into decisions via the AI layer. |
 | `GET /api/v1/internal/ai-metrics` | AI cost and health (owner only). |
@@ -200,6 +209,13 @@ Schedule it (cron, or your scheduler of choice) at whatever cadence suits the
 business — daily is reasonable for this data. Each step is idempotent, and
 `decisions/generate` skips re-inference when a decision's underlying context is
 unchanged, so re-running it costs nothing extra.
+
+The pull is **resumable**: every invoice and bill is recorded once its lines are
+written, so a run cut short by Zoho's rate limiter is continued rather than
+repeated by the next one. That run is recorded as `PARTIAL`, not `FAILED` — it
+carries the counts it actually wrote, because a run that wrote 336 sales lines
+and then stopped did write 336 sales lines, and recording zero would leave the
+audit trail contradicting the database.
 
 ### Backup and recovery
 

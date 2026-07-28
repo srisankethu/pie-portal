@@ -1,4 +1,4 @@
-import type { Account, DataStatus, DecisionDetail, DecisionSummary, PlatformSession, SyncRun } from "./types";
+import type { Account, DataStatus, DecisionDetail, DecisionSummary, PlatformSession, SyncOptions, SyncRun } from "./types";
 
 const KEY = "pie_platform_session";
 
@@ -64,9 +64,9 @@ export const papi = {
 
   dataStatus: (t: string) => req<DataStatus>("/api/v1/data/status", {}, t),
 
-  runSync: (t: string) =>
+  runSync: (t: string, opts: SyncOptions = {}) =>
     req<{ run: SyncRun; connection: DataStatus["connection"] }>(
-      "/api/v1/data/sync", { method: "POST" }, t),
+      "/api/v1/data/sync", { method: "POST", body: JSON.stringify(opts) }, t),
 
   listAccounts: (t: string, q = "") =>
     req<Account[]>(`/api/v1/accounts${q ? `?q=${encodeURIComponent(q)}` : ""}`, {}, t),

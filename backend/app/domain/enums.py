@@ -178,6 +178,34 @@ class OutcomeStatus(str, Enum):
     NOT_MEASURABLE = "NOT_MEASURABLE"
 
 
+class QuoteOutcomeStatus(str, Enum):
+    """A quote's commercial lifecycle.
+
+    Deliberately narrow. This is not a CRM pipeline: it exists so that a priced
+    decision can later be joined to whether the customer accepted it, which is
+    the only way to tell a disciplined price from a lost order.
+    """
+
+    DRAFT = "DRAFT"
+    SENT = "SENT"
+    WON = "WON"
+    LOST = "LOST"
+
+
+# Legal transitions. A quote may be re-sent (revised) while still SENT, and a
+# decided quote is terminal — reopening one would silently rewrite history that
+# a margin analysis has already counted.
+QUOTE_OUTCOME_TRANSITIONS: dict[QuoteOutcomeStatus, frozenset] = {
+    QuoteOutcomeStatus.DRAFT: frozenset({QuoteOutcomeStatus.SENT,
+                                         QuoteOutcomeStatus.LOST}),
+    QuoteOutcomeStatus.SENT: frozenset({QuoteOutcomeStatus.SENT,
+                                        QuoteOutcomeStatus.WON,
+                                        QuoteOutcomeStatus.LOST}),
+    QuoteOutcomeStatus.WON: frozenset(),
+    QuoteOutcomeStatus.LOST: frozenset(),
+}
+
+
 # Data classes for permission redaction (§14). RESTRICTED fields are visible to
 # SALES_MANAGER and OWNER only. Enforced downstream (context assembly / API);
 # defined here so every layer references one source of truth.

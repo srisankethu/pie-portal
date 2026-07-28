@@ -6,6 +6,7 @@ import { IntakeModal } from "./components/IntakeModal";
 import { SupplyDrawer } from "./components/SupplyDrawer";
 import { LineGrid } from "./components/LineGrid";
 import { SummaryBar } from "./components/SummaryBar";
+import { useQuoteIntelligence } from "./useQuoteIntelligence";
 
 const FILTERS: [string, string][] = [
   ["ALL", "All"],
@@ -15,10 +16,13 @@ const FILTERS: [string, string][] = [
   ["MANUAL", "Manual review"],
   ["UNRES", "Unresolved"],
   ["SUBST", "Substituted"],
+  ["EXC", "Commercial exceptions"],
 ];
 
-function passesFilter(l: Line, f: string): boolean {
+function passesFilter(l: Line, f: string, flagged: Set<string>): boolean {
   switch (f) {
+    case "EXC":
+      return flagged.has(l.id);
     case "NEEDS":
       return l.flags.attention;
     case "PROC":
@@ -38,7 +42,7 @@ function passesFilter(l: Line, f: string): boolean {
   }
 }
 
-export default function App() {
+export default function App({ onOpenPlatform }: { onOpenPlatform?: (hash: string) => void } = {}) {
   const [session, setSession] = useState<Session | null>(loadSession());
   const [quote, setQuote] = useState<Quote | null>(null);
   const [filter, setFilter] = useState("ALL");
@@ -53,6 +57,8 @@ export default function App() {
   const toastTimer = useRef<number | undefined>(undefined);
 
   const mgmt = session?.role === "mgmt";
+  // One assessment for the whole quote — see useQuoteIntelligence.
+  const ci = useQuoteIntelligence(quote);
 
   const flash = (msg: string) => {
     setToast(msg);
@@ -97,16 +103,26 @@ export default function App() {
     setDraftStatus(null);
   };
 
+  const flaggedLines = useMemo(
+    () =>
+      new Set(
+        Object.values(ci.byLineId)
+          .filter((i) => i.exceptions.some((e) => e.severity !== "INFO"))
+          .map((i) => i.line_id),
+      ),
+    [ci.byLineId],
+  );
+
   const visible = useMemo(() => {
     if (!quote) return [];
     const q = search.trim().toLowerCase();
     return quote.lines.filter(
       (l) =>
-        passesFilter(l, filter) &&
+        passesFilter(l, filter, flaggedLines) &&
         (!q ||
           [l.reqCode, l.reqDesc, l.supplyCode, l.raw].filter(Boolean).join(" ").toLowerCase().includes(q)),
     );
-  }, [quote, filter, search]);
+  }, [quote, filter, search, flaggedLines]);
 
   const saveDraft = () => {
     if (!quote) return;
@@ -423,6 +439,7 @@ export default function App() {
             <LineGrid
               lines={visible}
               mgmt={mgmt}
+              intel={ci.byLineId}
               selected={selected}
               focusId={focusId}
               onToggle={(id) => setSelected((s) => ({ ...s, [id]: !s[id] }))}
@@ -469,6 +486,12 @@ export default function App() {
           line={drawerLine}
           customer={quote.customer}
           mgmt={mgmt}
+          intel={ci.byLineId[drawerLine.id] ?? null}
+          intelLoading={ci.loading}
+          intelError={ci.error}
+          intelConnected={ci.connected}
+          onRecordOverride={ci.recordOverride}
+          onOpenPlatform={onOpenPlatform}
           onClose={() => setDrawerLineId(null)}
           onSelect={doSelect}
           onRevert={doRevert}

@@ -27,6 +27,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     String,
@@ -445,6 +446,115 @@ class CustomerItemMetric(Base):
     # ── provenance ───────────────────────────────────────────────────────────
     thresholds_version: Mapped[str] = mapped_column(String(32), default="")
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class QuoteDecision(Base):
+    """An immutable snapshot of one priced quote line, at the moment it was priced.
+
+    Append-only. Re-pricing a line writes a **new** row; nothing here is ever
+    updated. That is the point: a quote decision is evidence about a judgement
+    made against particular numbers on a particular day, and a row that can be
+    edited afterwards proves nothing. If today's cost has moved, the old row
+    must still say what it said — otherwise a margin review six months from now
+    silently re-judges the salesperson against facts they never saw.
+
+    The snapshot therefore carries the *values*, not references to them: the
+    cost basis used, the references compared against, the exceptions that fired,
+    and the threshold and engine versions that produced them.
+
+    All economics here are RESTRICTED and never reach a salesperson.
+    """
+
+    __tablename__ = "quote_decisions"
+    __table_args__ = (
+        Index("ix_quote_decisions_org_quote", "organization_id", "quote_id"),
+        Index("ix_quote_decisions_org_customer_product",
+              "organization_id", "customer_id", "product_id"),
+    )
+
+    quote_decision_id: Mapped[str] = mapped_column(String(64), primary_key=True,
+                                                   default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    quote_id: Mapped[str] = mapped_column(String(64), index=True)
+    quote_line_id: Mapped[str] = mapped_column(String(64))
+
+    # ── what was quoted ──────────────────────────────────────────────────────
+    # Refs are kept alongside the resolved ids: an unresolved item is still a
+    # decision that was made, and dropping it would make the audit trail lie by
+    # omission about exactly the lines with the least information behind them.
+    customer_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    product_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    customer_ref: Mapped[str] = mapped_column(String(255), default="")
+    product_ref: Mapped[str] = mapped_column(String(255), default="")
+
+    quantity: Mapped[Any] = mapped_column(Numeric(18, 4))
+    quantity_band: Mapped[str] = mapped_column(String(24), default="")
+    quoted_unit_price: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
+
+    # ── the economics at that moment ─────────────────────────────────────────
+    unit_cost: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
+    line_revenue: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
+    cogs: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
+    gross_profit: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
+    margin: Mapped[Optional[float]] = mapped_column(Float)
+
+    # ── what it was judged against ───────────────────────────────────────────
+    references: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    exceptions: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    relationship_metrics: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    evidence_refs: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+
+    data_sufficiency: Mapped[str] = mapped_column(String(16), default="INSUFFICIENT")
+    sufficiency_reasons: Mapped[list[str]] = mapped_column(JSON, default=list)
+
+    # ── the human part ───────────────────────────────────────────────────────
+    # An override is a price that went out despite a rule firing. The reason is
+    # the single most valuable field in this table: it is how a threshold that
+    # is wrong for the business gets found.
+    requires_approval: Mapped[bool] = mapped_column(Boolean, default=False)
+    overridden: Mapped[bool] = mapped_column(Boolean, default=False)
+    override_reason_code: Mapped[Optional[str]] = mapped_column(String(48))
+    override_reason: Mapped[Optional[str]] = mapped_column(String(1024))
+    overridden_exception_codes: Mapped[list[str]] = mapped_column(JSON, default=list)
+
+    # ── provenance ───────────────────────────────────────────────────────────
+    thresholds_version: Mapped[str] = mapped_column(String(32), default="")
+    engine_version: Mapped[str] = mapped_column(String(32), default="")
+    as_of: Mapped[date] = mapped_column(Date)
+    created_by_user_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
+                                                 index=True)
+
+
+class QuoteOutcome(Base):
+    """Whether a quote was sent, and whether it was won.
+
+    Per quote, not per line — a customer accepts or declines a quote, not a
+    line. Kept in its own table precisely so that ``QuoteDecision`` can stay
+    append-only: the outcome is learned later and must be mutable, the priced
+    facts were true at the time and must not be.
+    """
+
+    __tablename__ = "quote_outcomes"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "quote_id", name="uq_quote_outcome_org_quote"),
+    )
+
+    quote_outcome_id: Mapped[str] = mapped_column(String(64), primary_key=True,
+                                                  default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    quote_id: Mapped[str] = mapped_column(String(64), index=True)
+    customer_ref: Mapped[str] = mapped_column(String(255), default="")
+    customer_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+
+    status: Mapped[str] = mapped_column(String(16), default="DRAFT", index=True)
+    note: Mapped[Optional[str]] = mapped_column(String(1024))
+    sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    decided_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    updated_by_user_id: Mapped[Optional[str]] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
+                                                 onupdate=_now)
 
 
 class Outcome(Base):

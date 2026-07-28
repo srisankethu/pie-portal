@@ -713,3 +713,98 @@ table.grid tbody tr:hover td { background: color-mix(in srgb, var(--color-accent
 @media (max-width: 720px) {
   .ci-kpis { grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); }
 }
+
+/* ── Quote intelligence panel ────────────────────────────────────────────────
+ * Deterministic commercial context on a quote line. Visually distinct from the
+ * AI panel below it: this section states measured facts, that one interprets
+ * them, and a reader must never have to guess which is which.
+ */
+.qi {
+  margin-top: 14px; padding: 12px 14px; border: 1px solid var(--color-divider);
+  border-left: 3px solid var(--color-accent); border-radius: 4px;
+  background: var(--color-neutral-100);
+}
+.qi-connect { border-left-color: var(--color-neutral-500); }
+.qi-head {
+  font-family: "Barlow Condensed", sans-serif; text-transform: uppercase;
+  letter-spacing: .06em; font-weight: 600; font-size: 13px;
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+}
+.qi-conf {
+  font-size: 10.5px; letter-spacing: .04em; padding: 1px 7px; border-radius: 10px;
+  border: 1px solid currentColor; text-transform: none;
+}
+.qi-conf.High { color: var(--color-accent-700); }
+.qi-conf.Medium { color: var(--warn); }
+.qi-conf.Low { color: var(--color-neutral-600); }
+.qi-sub { font-size: 11.5px; color: var(--color-neutral-700); margin: 4px 0 10px; }
+.qi-skel, .qi-error { font-size: 12px; padding: 8px 0; color: var(--color-neutral-700); }
+.qi-error { color: var(--danger-fg); }
+
+.qi-section { margin-top: 12px; }
+.qi-section-h {
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: .07em;
+  color: var(--color-neutral-600); margin-bottom: 6px;
+  display: flex; align-items: center; gap: 8px;
+}
+.qi-approval {
+  background: var(--danger-bg); color: var(--danger-fg); border-radius: 2px;
+  padding: 1px 6px; letter-spacing: .04em;
+}
+
+.qi-exc {
+  margin-bottom: 6px; padding: 8px 10px; border-radius: 3px;
+  border-left: 3px solid var(--color-neutral-500); background: var(--color-surface);
+}
+.qi-exc.qi-critical { border-left-color: var(--danger-fg); background: var(--danger-bg); }
+.qi-exc.qi-warning { border-left-color: var(--warn); background: var(--caution-bg); }
+.qi-exc.qi-info { border-left-color: var(--color-neutral-500); }
+.qi-exc-head { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; }
+.qi-exc-title { font-weight: 600; font-size: 12.5px; }
+.qi-exc-impact { font-variant-numeric: tabular-nums; font-size: 12px; font-weight: 600; }
+.qi-exc-detail { margin: 3px 0 0; font-size: 12px; line-height: 1.45; }
+.qi-exc-mgmt {
+  margin: 4px 0 0; font-size: 11.5px; line-height: 1.4;
+  color: var(--color-neutral-700); font-variant-numeric: tabular-nums;
+}
+
+.qi-refs { width: 100%; border-collapse: collapse; font-size: 12px; }
+.qi-refs th {
+  text-align: left; font-weight: 500; padding: 5px 0; vertical-align: top;
+  border-bottom: 1px solid var(--color-divider);
+}
+.qi-refs td { padding: 5px 0; border-bottom: 1px solid var(--color-divider); }
+.qi-refs td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.qi-ref-basis { display: block; font-size: 10.5px; color: var(--color-neutral-600); font-weight: 400; }
+.qi-delta { width: 82px; }
+.qi-delta.under { color: var(--danger-fg); }
+.qi-delta.over { color: var(--color-accent-700); }
+.qi-withheld, .qi-prov {
+  font-size: 10.5px; color: var(--color-neutral-600); margin-top: 6px;
+}
+.qi-prov { margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--color-divider); }
+
+.qi-econ { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px 16px; margin: 0; }
+.qi-econ dt { font-size: 10.5px; color: var(--color-neutral-600); }
+.qi-econ dd { margin: 0; font-size: 13px; font-variant-numeric: tabular-nums; font-weight: 600; }
+
+.qi-reasons { margin: 10px 0 0; padding-left: 16px; font-size: 11.5px; color: var(--color-neutral-700); }
+.qi-actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+.qi-capture { margin-top: 12px; display: flex; flex-direction: column; gap: 6px; }
+.qi-label { font-size: 11px; color: var(--color-neutral-700); }
+.qi-captured {
+  margin-top: 12px; font-size: 12px; padding: 7px 10px; border-radius: 3px;
+  background: var(--color-accent-100); color: var(--color-accent-800);
+}
+
+/* Per-line chip in the grid */
+.qi-chip {
+  display: inline-flex; align-items: center; gap: 4px; font-size: 10.5px;
+  padding: 1px 7px; border-radius: 10px; border: 1px solid currentColor;
+  white-space: nowrap;
+}
+.qi-chip.ok { color: var(--color-neutral-500); border-style: dashed; }
+.qi-chip.info { color: var(--color-neutral-700); }
+.qi-chip.warning { color: var(--warn); background: var(--caution-bg); }
+.qi-chip.critical { color: var(--danger-fg); background: var(--danger-bg); font-weight: 600; }
+.qi-chip-more { opacity: .7; }

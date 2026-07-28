@@ -13,7 +13,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
+from typing import Optional
 
 
 def _f(name: str, default: float) -> float:
@@ -22,6 +23,32 @@ def _f(name: str, default: float) -> float:
 
 def _i(name: str, default: int) -> int:
     return int(os.environ.get(name, default))
+
+
+def _default(name: str):
+    return next(f.default for f in fields(CommercialThresholds) if f.name == name)
+
+
+def _edges() -> tuple[int, ...]:
+    """``CI_QUANTITY_BAND_EDGES=1,10,50,200`` — ascending, positive, deduped."""
+    raw = os.environ.get("CI_QUANTITY_BAND_EDGES")
+    if not raw:
+        return _default("quantity_band_edges")
+    edges = sorted({int(p) for p in raw.split(",") if p.strip()})
+    return tuple(e for e in edges if e > 0) or _default("quantity_band_edges")
+
+
+def _families() -> tuple[tuple[str, float], ...]:
+    """``CI_TARGET_MARGIN_BY_FAMILY=milling_insert:0.30,reamer:0.27``."""
+    raw = os.environ.get("CI_TARGET_MARGIN_BY_FAMILY")
+    if not raw:
+        return _default("target_margin_by_family")
+    out = []
+    for part in raw.split(","):
+        if ":" in part:
+            name, _, value = part.partition(":")
+            out.append((name.strip(), float(value)))
+    return tuple(sorted(out)) or _default("target_margin_by_family")
 
 
 @dataclass(frozen=True)
@@ -71,6 +98,40 @@ class CommercialThresholds:
     # A peer whose last purchase predates this is not evidence about today.
     peer_recency_days: int = 365
 
+    # ── pricing policy (the authority; ``app.pricing`` reads it from here) ────
+    # These used to live as module constants in ``app/pricing.py``, where the
+    # Quote Builder read one set of numbers and the commercial analysis another.
+    # One definition, one version hash, one place to change them.
+    target_margin_default: float = 0.24
+    # Tuple-of-pairs rather than a dict so the dataclass stays frozen, hashable
+    # and JSON-stable for the version hash.
+    target_margin_by_family: tuple[tuple[str, float], ...] = (
+        ("solid_carbide_drill", 0.28),
+        ("solid_carbide_endmill", 0.28),
+        ("milling_insert", 0.30),
+        ("drill_tip", 0.30),
+        ("reamer", 0.27),
+    )
+    min_margin: float = 0.12            # hard floor — below this needs approval
+    margin_floor: float = 0.15          # soft floor — below this is flagged
+    sales_discretion_band: float = 0.03  # ±band off recommended without approval
+
+    # ── quote-time quantity bands ────────────────────────────────────────────
+    # Upper edges, inclusive. (1, 10, 50, 200) gives 1 / 2–10 / 11–50 / 51–200 /
+    # 201+. Quantity is part of the identity of a price: the same item at 5
+    # pieces and at 500 is not the same commercial question, and comparing a
+    # quote against an all-quantities average silently mixes the two.
+    quantity_band_edges: tuple[int, ...] = (1, 10, 50, 200)
+    # A band reference drawn from a single past line is a coincidence.
+    min_band_transactions: int = 2
+
+    # ── quote exceptions ─────────────────────────────────────────────────────
+    # A gap smaller than this is inside the noise of freight and rounding; a
+    # quote screen that flags every ₹40 becomes a screen nobody reads.
+    min_quote_exception_impact_rupees: float = 500.0
+    # How far below a reference price counts as materially below.
+    quote_price_tolerance_pct: float = 0.02
+
     @classmethod
     def from_env(cls) -> "CommercialThresholds":
         return cls(
@@ -91,7 +152,25 @@ class CommercialThresholds:
             annualize_min_history_months=_f("CI_ANNUALIZE_MIN_HISTORY_MONTHS", 6.0),
             annualize_min_transactions=_i("CI_ANNUALIZE_MIN_TRANSACTIONS", 4),
             peer_recency_days=_i("CI_PEER_RECENCY_DAYS", 365),
+            target_margin_default=_f("CI_TARGET_MARGIN_DEFAULT", 0.24),
+            target_margin_by_family=_families(),
+            min_margin=_f("CI_MIN_MARGIN", 0.12),
+            margin_floor=_f("CI_MARGIN_FLOOR", 0.15),
+            sales_discretion_band=_f("CI_SALES_DISCRETION_BAND", 0.03),
+            quantity_band_edges=_edges(),
+            min_band_transactions=_i("CI_MIN_BAND_TRANSACTIONS", 2),
+            min_quote_exception_impact_rupees=_f("CI_MIN_QUOTE_EXCEPTION_IMPACT", 500.0),
+            quote_price_tolerance_pct=_f("CI_QUOTE_PRICE_TOLERANCE_PCT", 0.02),
         )
+
+    # ── pricing-policy lookups ───────────────────────────────────────────────
+    def target_margin(self, family: Optional[str]) -> float:
+        """The target margin for a tool family, or the default."""
+        if family:
+            for name, value in self.target_margin_by_family:
+                if name == family:
+                    return value
+        return self.target_margin_default
 
     @property
     def version(self) -> str:

@@ -1,9 +1,32 @@
-import type { Line } from "../types";
+import type { Line, LineIntelligence } from "../types";
 import { REL_STYLE, statusColor, inr } from "../rel";
+
+/** The worst exception on a line, as a chip. Ordered by severity, so the chip
+ *  always shows the thing that most needs a decision rather than the first
+ *  rule that happened to fire. */
+function CommercialChip({ intel }: { intel: LineIntelligence | undefined }) {
+  if (!intel) return <span className="text-muted">—</span>;
+  const worst = intel.exceptions[0];
+  if (!worst) return <span className="qi-chip ok">clear</span>;
+  if (worst.severity === "INFO" && intel.exceptions.length === 1) {
+    return <span className="qi-chip info" title={worst.detail}>{worst.title}</span>;
+  }
+  const others = intel.exceptions.length - 1;
+  return (
+    <span
+      className={`qi-chip ${worst.severity.toLowerCase()}`}
+      title={intel.exceptions.map((e) => e.title).join(" · ")}
+    >
+      {intel.requires_approval ? "approval" : worst.severity === "WARNING" ? "check price" : worst.title}
+      {others > 0 && <span className="qi-chip-more">+{others}</span>}
+    </span>
+  );
+}
 
 export function LineGrid({
   lines,
   mgmt,
+  intel,
   selected,
   focusId,
   onToggle,
@@ -14,6 +37,7 @@ export function LineGrid({
 }: {
   lines: Line[];
   mgmt: boolean;
+  intel: Record<string, LineIntelligence>;
   selected: Record<string, boolean>;
   focusId: string | null;
   onToggle: (id: string) => void;
@@ -40,6 +64,7 @@ export function LineGrid({
           <th className="num">Quoted ₹</th>
           <th className="num">Line total</th>
           {mgmt && <th className="num">Margin</th>}
+          <th>Commercial</th>
           <th>Status</th>
         </tr>
       </thead>
@@ -68,6 +93,12 @@ export function LineGrid({
             l.shortage && l.shortage > 0 ? `shortage ${l.shortage}` : "",
             l.availUnknown ? "availability pending" : "",
           ].filter(Boolean);
+          const li = intel[l.id];
+          // The authoritative margin is the platform's: it uses the recorded
+          // purchase cost as of today, net of bill-line discounts. The legacy
+          // per-line figure is only a fallback for when the platform is not
+          // connected.
+          const authMargin = li?.economics?.margin ?? null;
           const econ = l.economics;
           return (
             <tr key={l.id} className={rowClass} onClick={() => onOpen(l.id)}>
@@ -160,8 +191,12 @@ export function LineGrid({
               <td className="num">{inr(l.lineTotal)}</td>
               {mgmt && (
                 <td className="num">
-                  {econ && econ.margin !== null ? (
-                    <span className={econ.below_floor ? "warn" : ""}>
+                  {authMargin !== null ? (
+                    <span className={li?.blocking ? "warn" : ""} title="From recorded purchase cost">
+                      {(authMargin * 100).toFixed(1)}%
+                    </span>
+                  ) : econ && econ.margin !== null ? (
+                    <span className={econ.below_floor ? "warn" : ""} title="Catalogue cost — platform not connected">
                       {(econ.margin * 100).toFixed(1)}%
                     </span>
                   ) : (
@@ -169,6 +204,9 @@ export function LineGrid({
                   )}
                 </td>
               )}
+              <td>
+                <CommercialChip intel={li} />
+              </td>
               <td>
                 <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                   <span

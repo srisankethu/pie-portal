@@ -1,28 +1,50 @@
-"""Management-side pricing engine.
+"""Management-side pricing policy, applied to a Quote Builder line.
 
-Mirrors the artifact's private pricing rules. These computations are the
-"full economics" the design keeps out of the salesperson client entirely: a
-recommended price and a margin, derived from landed cost and target margins by
-tool family. The API layer is responsible for never serialising any of this to
-a sales-role response — this module just computes it.
+The *policy* — target margins by tool family, the hard minimum, the soft floor,
+the salesperson's discretionary band — is no longer defined here. It lives in
+``app.commercial.config.CommercialThresholds`` alongside every other commercial
+threshold, so there is exactly one place to change it and exactly one version
+hash covering it. This module is the thin application of that policy to a line.
+
+That consolidation matters: before it, the Quote Builder recommended a price
+from constants in this file while the Customer × Item analysis judged the very
+same margin against a different set, and nothing kept the two in step.
+
+These computations are the "full economics" the design keeps out of the
+salesperson client entirely. The API layer is responsible for never serialising
+any of it to a sales-role response — this module just computes it.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Optional
+from typing import Optional
 
-# Management-defined pricing policy (never sent to a sales client).
-DEFAULT_TARGET = 0.24
-FAMILY_TARGET: Dict[str, float] = {
-    "solid_carbide_drill": 0.28,
-    "solid_carbide_endmill": 0.28,
-    "milling_insert": 0.30,
-    "drill_tip": 0.30,
-    "reamer": 0.27,
-}
-SALES_BAND = 0.03          # salesperson may move ±3% off recommended without approval
-MIN_MARGIN = 0.12          # hard commercial floor
-MARGIN_FLOOR = 0.15        # soft floor: lines below this are flagged for review
+from .commercial.config import CommercialThresholds, load_commercial_thresholds
+
+
+def _th() -> CommercialThresholds:
+    return load_commercial_thresholds()
+
+
+def __getattr__(name: str):
+    """Module-level policy constants, resolved from the central thresholds.
+
+    Kept as attributes (``pricing.MARGIN_FLOOR``) because callers and tests read
+    them that way, but resolved on access so an env override applies without a
+    reimport — and so there is no second copy of the number to drift.
+    """
+    th = _th()
+    if name == "DEFAULT_TARGET":
+        return th.target_margin_default
+    if name == "FAMILY_TARGET":
+        return dict(th.target_margin_by_family)
+    if name == "SALES_BAND":
+        return th.sales_discretion_band
+    if name == "MIN_MARGIN":
+        return th.min_margin
+    if name == "MARGIN_FLOOR":
+        return th.margin_floor
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 @dataclass
@@ -44,17 +66,17 @@ class Economics:
         }
 
 
-def target_margin(family: Optional[str]) -> float:
-    if family and family in FAMILY_TARGET:
-        return FAMILY_TARGET[family]
-    return DEFAULT_TARGET
+def target_margin(family: Optional[str],
+                  th: Optional[CommercialThresholds] = None) -> float:
+    return (th or _th()).target_margin(family)
 
 
-def recommend_price(cost: Optional[float], family: Optional[str]) -> Optional[float]:
+def recommend_price(cost: Optional[float], family: Optional[str],
+                    th: Optional[CommercialThresholds] = None) -> Optional[float]:
     """Recommended selling price to hit the family target margin, rounded to ₹5."""
     if cost is None or cost <= 0:
         return None
-    rec = cost / (1 - target_margin(family))
+    rec = cost / (1 - target_margin(family, th))
     return round(rec / 5) * 5
 
 
@@ -67,16 +89,19 @@ def margin_pct(price: Optional[float], cost: Optional[float]) -> Optional[float]
 def compute_economics(
     cost: Optional[float], list_price: Optional[float],
     quoted: Optional[float], family: Optional[str],
+    th: Optional[CommercialThresholds] = None,
 ) -> Economics:
-    rec = recommend_price(cost, family)
+    th = th or _th()
+    rec = recommend_price(cost, family, th)
     margin = margin_pct(quoted, cost)
-    below = margin is not None and margin < MARGIN_FLOOR
+    below = margin is not None and margin < th.margin_floor
     return Economics(cost=cost, list_price=list_price, recommended=rec,
                      quoted=quoted, margin=margin, below_floor=below)
 
 
-def within_authority(requested: Optional[float], recommended: Optional[float]) -> bool:
+def within_authority(requested: Optional[float], recommended: Optional[float],
+                     th: Optional[CommercialThresholds] = None) -> bool:
     """Is a salesperson's requested price within their discretionary band?"""
     if requested is None or recommended is None:
         return False
-    return requested >= recommended * (1 - SALES_BAND)
+    return requested >= recommended * (1 - (th or _th()).sales_discretion_band)

@@ -1,11 +1,18 @@
-import type { Line } from "../types";
+import type { Line, LineIntelligence } from "../types";
 import { REL_STYLE, inr } from "../rel";
 import { DecisionSupport } from "./DecisionSupport";
+import { QuoteIntelligence } from "./QuoteIntelligence";
 
 export function SupplyDrawer({
   line,
   customer,
   mgmt,
+  intel,
+  intelLoading,
+  intelError,
+  intelConnected,
+  onRecordOverride,
+  onOpenPlatform,
   onClose,
   onSelect,
   onRevert,
@@ -13,6 +20,13 @@ export function SupplyDrawer({
   line: Line;
   customer: string;
   mgmt: boolean;
+  intel: LineIntelligence | null;
+  intelLoading: boolean;
+  intelError: string | null;
+  intelConnected: boolean;
+  onRecordOverride: (lineId: string, reasonCode: string, reason: string) => Promise<void>;
+  /** Jump to a platform screen — the Customer × Item analysis drill-down. */
+  onOpenPlatform?: (hash: string) => void;
   onClose: () => void;
   onSelect: (code: string, manual: boolean) => void;
   onRevert: () => void;
@@ -86,6 +100,17 @@ export function SupplyDrawer({
               <div className="drawer-pricing-footnote">Adjust the rate inline in the grid when you need to update this line.</div>
             </div>
           )}
+          <QuoteIntelligence
+            line={line}
+            intel={intel}
+            loading={intelLoading}
+            error={intelError}
+            connected={intelConnected}
+            onOverride={onRecordOverride}
+            onDrilldown={(customerId, productId) =>
+              onOpenPlatform?.(`#/account/${customerId}/item/${productId}`)
+            }
+          />
           <DecisionSupport customer={customer} line={line} />
 
           {line.candidates.length === 0 && (

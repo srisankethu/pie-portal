@@ -31,7 +31,12 @@ export default function Root() {
             Quote intelligence · Quote Builder
           </span>
         </div>
-        <App />
+        <App
+          onOpenPlatform={(hash) => {
+            window.location.hash = hash;
+            setMode("platform");
+          }}
+        />
       </div>
     );
   }

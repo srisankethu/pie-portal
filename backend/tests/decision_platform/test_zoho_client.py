@@ -137,6 +137,25 @@ def test_invoice_detail_is_fetched_for_line_items():
         {"line_item_id": "1", "item_id": "9", "quantity": 20, "rate": 530, "item_total": 10600}]
 
 
+def test_bill_discount_fields_are_passed_through_raw():
+    """The client must not interpret the discount — normalize.py decides which
+    of item_total / discount_amount / discount is authoritative. If the client
+    silently dropped these fields the bug (rate treated as cost) would return."""
+    listing = {"code": 0, "bills": [{"bill_id": "B1", "date": _today(5), "status": "open"}],
+               "page_context": {"has_more_page": False}}
+    detail = {"code": 0, "bill": {
+        "bill_id": "B1", "date": _today(5),
+        "line_items": [{"line_item_id": 1, "item_id": 9, "quantity": 1, "rate": 3166,
+                        "discount": "50%", "discount_amount": 1583, "item_total": 1583}]}}
+    http = FakeHttp({"/bills/B1": detail, "/bills": listing})
+    row = list(ZohoApiSource(http=http).list_bills())[0]
+    line = row["line_items"][0]
+    assert line["rate"] == 3166
+    assert line["discount"] == "50%"
+    assert line["discount_amount"] == 1583
+    assert line["item_total"] == 1583
+
+
 def test_live_rows_normalize_without_error():
     """The client's output must feed normalize.py unchanged."""
     from app.ingestion.normalize import normalize_customer, normalize_invoice

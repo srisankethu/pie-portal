@@ -141,7 +141,14 @@ class CostRecord(Base):
     product_id: Mapped[str] = mapped_column(String(64), index=True)
     date: Mapped[date] = mapped_column(Date, index=True)
     qty: Mapped[Any] = mapped_column(Numeric(18, 4))
+    # Effective, post-discount unit cost — every margin/pricing consumer reads this.
     unit_cost: Mapped[Any] = mapped_column(Numeric(18, 4))
+    # Audit trail for the calculation above. Nullable: rows synced before the
+    # discount-aware fix have neither, until the bill is re-fetched from Zoho —
+    # see docs/zoho-setup.md for the backfill (discount was never stored locally,
+    # so a re-sync is the only way to recover it for historical bills).
+    rate: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
+    discount_percent: Mapped[Optional[Any]] = mapped_column(Numeric(9, 4))
     source_ref: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 

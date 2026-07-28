@@ -10,10 +10,12 @@ from __future__ import annotations
 
 from datetime import date
 from decimal import Decimal, InvalidOperation
-from typing import Any
+from typing import Any, Optional
 
 from ..domain.enums import CustomerStatus
 from ..domain.schemas import CostRecordIn, CustomerIn, ProductIn, SalesTxnIn, SourceRef
+
+_HUNDRED = Decimal("100")
 
 
 class NormalizationError(ValueError):
@@ -97,8 +99,74 @@ def normalize_invoice(raw: dict[str, Any]) -> list[SalesTxnIn]:
     return out
 
 
+def _parse_percent(value: Any, ctx: str, field: str) -> Decimal:
+    """A Zoho line-item discount: either a bare number (percent) or a string
+    like "50%" — both forms appear across Books API versions/organizations."""
+    if isinstance(value, str):
+        value = value.strip().rstrip("%")
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, TypeError):
+        raise NormalizationError("BAD_DISCOUNT", f"{ctx}: {field} not numeric ({value!r})")
+
+
+def _effective_unit_cost(rate: Decimal, qty: Decimal, ln: dict[str, Any],
+                         ctx: str) -> tuple[Decimal, Optional[Decimal]]:
+    """The actual per-unit purchase cost after the line's discount, plus the
+    discount percent for audit — ``rate * (1 - discount% / 100)`` is only the
+    fallback; Zoho's own resolved values are preferred whenever present:
+
+    1. ``item_total`` — the line's post-discount, pre-tax total. Most
+       authoritative: Zoho has already resolved whatever discount shape it used.
+    2. ``discount_amount`` — Zoho's own resolved monetary discount for the line,
+       sidestepping whether ``discount`` itself is a percentage or an amount.
+    3. ``discount`` — parsed as a percentage of ``rate`` (the documented formula).
+    4. Nothing present — no discount; cost equals the list rate.
+
+    Taxes and bill-level (non-line) adjustments are deliberately not touched:
+    the existing definition of cost here has always been pre-tax, and this fix
+    does not change that.
+    """
+    item_total, discount_amount, discount_raw = (
+        ln.get("item_total"), ln.get("discount_amount"), ln.get("discount"))
+    discount_pct: Optional[Decimal] = None
+
+    if item_total not in (None, "") and qty > 0:
+        unit_cost = _parse_decimal(item_total, ctx, "item_total") / qty
+    elif discount_amount not in (None, "") and qty > 0:
+        amount = _parse_decimal(discount_amount, ctx, "discount_amount")
+        unit_cost = rate - (amount / qty)
+    elif discount_raw not in (None, ""):
+        discount_pct = _parse_percent(discount_raw, ctx, "discount")
+        if discount_pct < 0 or discount_pct > _HUNDRED:
+            raise NormalizationError(
+                "BAD_DISCOUNT", f"{ctx}: discount {discount_pct}% out of range [0, 100]")
+        unit_cost = rate * (Decimal("1") - discount_pct / _HUNDRED)
+    else:
+        unit_cost = rate
+
+    if unit_cost < 0:
+        raise NormalizationError(
+            "BAD_DISCOUNT", f"{ctx}: resolved a negative unit cost ({unit_cost})")
+
+    if discount_pct is None and rate > 0:
+        # Derive the audit percent from whichever authoritative value supplied
+        # the cost, so it stays consistent regardless of which Zoho field it came
+        # from — this is what lets the platform later say "rate ₹3,166, discount
+        # 50%, effective cost ₹1,583" no matter which path computed the ₹1,583.
+        discount_pct = (Decimal("1") - unit_cost / rate) * _HUNDRED
+
+    return unit_cost, discount_pct
+
+
 def normalize_bill(raw: dict[str, Any]) -> list[CostRecordIn]:
-    """One bill → one CostRecordIn per line item (bill-line grain)."""
+    """One bill → one CostRecordIn per line item (bill-line grain).
+
+    ``unit_cost`` is the *effective*, post-discount cost — what every margin,
+    pricing and decision calculation must read. ``rate`` (the original,
+    pre-discount list rate) and ``discount_percent`` are preserved alongside it
+    purely for audit; nothing downstream should compute from them.
+    """
     bill_id = str(_require(raw, "bill_id", "bill"))
     when = _parse_date(_require(raw, "date", f"bill {bill_id}"), f"bill {bill_id}")
     lines = raw.get("line_items") or []
@@ -111,10 +179,12 @@ def normalize_bill(raw: dict[str, Any]) -> list[CostRecordIn]:
         product_ext = str(_require(ln, "item_id", ctx))
         qty = _parse_decimal(_require(ln, "quantity", ctx), ctx, "quantity")
         rate = _parse_decimal(_require(ln, "rate", ctx), ctx, "rate")
+        unit_cost, discount_pct = _effective_unit_cost(rate, qty, ln, ctx)
         out.append(CostRecordIn(
             external_ref=f"{bill_id}:{line_id}",
             product_external_id=product_ext,
-            date=when, qty=qty, unit_cost=rate,
+            date=when, qty=qty, unit_cost=unit_cost, rate=rate,
+            discount_percent=discount_pct,
             source_ref=SourceRef(record_type="bill", record_id=bill_id, line_id=line_id),
         ))
     return out

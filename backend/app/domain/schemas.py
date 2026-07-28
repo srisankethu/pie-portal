@@ -72,12 +72,16 @@ class CostRecordIn(BaseModel):
     product_external_id: str = Field(min_length=1)
     date: date
     qty: Decimal
-    unit_cost: Decimal
+    unit_cost: Decimal        # effective, post-discount — what every cost consumer reads
+    rate: Decimal             # the bill line's original list rate, pre-discount (audit)
+    discount_percent: Optional[Decimal] = None   # audit only; None when not determinable
     source_ref: SourceRef
 
-    @field_validator("qty", "unit_cost", mode="before")
+    @field_validator("qty", "unit_cost", "rate", "discount_percent", mode="before")
     @classmethod
-    def _to_decimal(cls, v: Any) -> Decimal:
+    def _to_decimal(cls, v: Any) -> Optional[Decimal]:
+        if v is None:
+            return None
         return v if isinstance(v, Decimal) else Decimal(str(v))
 
 

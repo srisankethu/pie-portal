@@ -120,8 +120,20 @@ class ReadModelRepository:
         row.date = r.date
         row.qty = r.qty
         row.unit_cost = r.unit_cost
+        row.rate = r.rate
+        row.discount_percent = r.discount_percent
         row.source_ref = r.source_ref.model_dump()
         return row
+
+    def count_cost_records_pending_discount_backfill(self) -> int:
+        """Rows synced before the discount-aware fix — ``rate`` is only ever
+        null on a legacy row, since every current write sets it. Re-syncing
+        with ``full=True`` re-fetches the bill and corrects it."""
+        return len(self.s.scalars(
+            select(models.CostRecord).where(
+                models.CostRecord.organization_id == self.org,
+                models.CostRecord.rate.is_(None),
+            )).all())
 
     def count(self, model) -> int:
         return len(self.s.scalars(

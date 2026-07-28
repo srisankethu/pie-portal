@@ -342,6 +342,12 @@ class ZohoApiSource:
                         "item_id": str(li.get("item_id")),
                         "quantity": li.get("quantity"),
                         "rate": li.get("rate"),
+                        # A line-item discount, and Zoho's own resolved values for
+                        # it — passed through raw; normalize.py decides which is
+                        # most authoritative. Never computed or interpreted here.
+                        "discount": li.get("discount"),
+                        "discount_amount": li.get("discount_amount"),
+                        "item_total": li.get("item_total"),
                     }
                     for li in (bill.get("line_items") or [])
                     if li.get("item_id")

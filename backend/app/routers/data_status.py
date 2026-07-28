@@ -122,6 +122,8 @@ def data_status(
 ) -> dict:
     """Connection + last-ingestion state. Readable by any signed-in user; only
     managers and owners can act on it."""
+    from ..repositories import ReadModelRepository
+
     org = principal.organization_id
     counts = {
         "customers": session.query(models.Customer).filter_by(organization_id=org).count(),
@@ -129,6 +131,10 @@ def data_status(
         "sales_txns": session.query(models.SalesTxn).filter_by(organization_id=org).count(),
         "cost_records": session.query(models.CostRecord).filter_by(organization_id=org).count(),
         "decisions": session.query(models.Decision).filter_by(organization_id=org).count(),
+        # Rows written before the bill-discount fix — re-sync with full=true to
+        # re-fetch these bills from Zoho and correct them (see zoho-setup.md).
+        "cost_records_pending_discount_backfill":
+            ReadModelRepository(session, org).count_cost_records_pending_discount_backfill(),
     }
     return {
         "connection": _connection(session, org),

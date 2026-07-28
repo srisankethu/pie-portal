@@ -263,3 +263,55 @@ Two things keep that survivable:
    Zoho email does not match a platform user — both are listed under **Skipped
    rows** as `UNMAPPED_SALESPERSON`. Managers and owners see everything
    regardless.
+
+## Purchase cost is the bill line's *effective* rate, after discount
+
+A bill line's `rate` is the pre-discount list price, not what was actually paid.
+When a line carries a discount, the platform computes the effective per-unit
+cost and stores that everywhere margin, cost pass-through, and pricing
+intelligence read cost from — `rate` and the discount are kept alongside it,
+never overwritten, purely for audit.
+
+Zoho resolves a discount in more than one way depending on the payload, and the
+platform prefers whichever is most authoritative rather than re-deriving it:
+
+1. **`item_total`** — the line's own post-discount, pre-tax total. Preferred
+   whenever present, because Zoho has already resolved the discount for you.
+2. **`discount_amount`** — Zoho's own resolved monetary discount for the line.
+3. **`discount`** — a percentage (as a bare number or a `"50%"` string),
+   applied to `rate`.
+4. Nothing present — no discount; cost equals `rate`.
+
+This is pre-tax cost, unchanged from before — bill-level adjustments and tax
+are still not folded into it.
+
+**If this looks wrong for your books**, check `POST /api/v1/data/status` →
+`read_model.cost_records_pending_discount_backfill`. That count is bill lines
+synced *before* this fix, when the discount was never read from Zoho at all —
+only the (wrong) resulting cost was stored, so there is nothing locally to
+correct it from. The only fix is a full re-sync, which re-fetches those bills
+and overwrites the cost record in place:
+
+```powershell
+Invoke-RestMethod -Method Post -Uri "http://localhost:8000/api/v1/data/sync" `
+  -Headers @{ Authorization = "Bearer $t" } -ContentType "application/json" `
+  -Body '{"full": true}'
+```
+
+or tick **Re-read everything** on **Data & connection** before **Sync now**.
+Once it completes, `cost_records_pending_discount_backfill` should read `0`.
+
+**Decisions generated before the backfill may be stale.** `MARGIN_DETERIORATION`
+and `COST_PASS_THROUGH` decisions computed from the wrong (pre-discount) cost
+are not automatically corrected by the backfill alone — run the pipeline again
+afterward:
+
+```powershell
+Invoke-RestMethod -Method Post -Uri "http://localhost:8000/api/v1/internal/detectors/run" -Headers @{ Authorization = "Bearer $t" }
+Invoke-RestMethod -Method Post -Uri "http://localhost:8000/api/v1/internal/decisions/generate" -Headers @{ Authorization = "Bearer $t" }
+```
+
+This re-detects signals from the corrected cost and re-evaluates any decision
+whose underlying facts changed — decisions already resolved in an earlier week
+are not reopened by design and should be reviewed manually if they touched an
+affected product.

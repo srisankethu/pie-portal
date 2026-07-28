@@ -83,6 +83,8 @@ def test_sync_runs_the_whole_cycle_and_is_recorded(client, monkeypatch):
     after = client.get("/api/v1/data/status", headers=owner).json()
     assert after["last_sync"]["status"] == "OK"
     assert after["read_model"]["customers"] == run["customers"]
+    # a fresh sync writes rate/discount on every cost record — nothing pending
+    assert after["read_model"]["cost_records_pending_discount_backfill"] == 0
 
 
 def test_a_failed_sync_is_recorded_not_swallowed(client, monkeypatch):

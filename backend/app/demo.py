@@ -35,9 +35,12 @@ def _sale(org, cust, prod, when, qty, price, inv, line="l1"):
 
 
 def _cost(org, prod, when, qty, unit_cost, bill, line="l1"):
+    # Demo bills carry no discount, so rate == the effective cost and the
+    # discount is 0% — the same shape a real, undiscounted bill line produces.
+    cost = Decimal(str(unit_cost))
     return models.CostRecord(
         organization_id=org, external_ref=f"{bill}:{line}", product_id=prod, date=when,
-        qty=Decimal(str(qty)), unit_cost=Decimal(str(unit_cost)),
+        qty=Decimal(str(qty)), unit_cost=cost, rate=cost, discount_percent=Decimal("0"),
         source_ref={"system": "zoho", "record_type": "bill", "record_id": bill, "line_id": line})
 
 

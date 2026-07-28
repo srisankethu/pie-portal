@@ -85,7 +85,153 @@ def test_normalize_bill_ok():
                                             "quantity": 100, "rate": 405}]})
     assert costs[0].external_ref == "bill-1:l1"
     assert costs[0].unit_cost == Decimal("405")
+    assert costs[0].rate == Decimal("405")
+    assert costs[0].discount_percent == Decimal("0")
     assert costs[0].source_ref.record_type == "bill"
+
+
+# ── bill line-item discount: the effective-unit-cost bug ───────────────────
+def _bill_line(**overrides):
+    line = {"line_item_id": "l1", "item_id": "itm-1", "quantity": 1, "rate": 3166}
+    line.update(overrides)
+    return {"bill_id": "bill-1", "date": "2026-05-01", "line_items": [line]}
+
+
+def test_no_discount_cost_equals_rate():
+    c = normalize_bill(_bill_line())[0]
+    assert c.unit_cost == Decimal("3166")
+    assert c.rate == Decimal("3166")
+    assert c.discount_percent == Decimal("0")
+
+
+def test_zero_percent_discount_is_the_same_as_no_discount():
+    c = normalize_bill(_bill_line(discount=0))[0]
+    assert c.unit_cost == Decimal("3166")
+    assert c.discount_percent == Decimal("0")
+
+
+def test_fifty_percent_discount_numeric():
+    """The example from the bug report: Rate 3,166, discount 50% -> 1,583."""
+    c = normalize_bill(_bill_line(discount=50))[0]
+    assert c.unit_cost == Decimal("1583")
+    assert c.rate == Decimal("3166"), "the original rate must not be overwritten"
+    assert c.discount_percent == Decimal("50")
+
+
+def test_fifty_percent_discount_as_percent_string():
+    """Some Books payloads send discount as a "50%" string, not a bare number."""
+    c = normalize_bill(_bill_line(discount="50%"))[0]
+    assert c.unit_cost == Decimal("1583")
+
+
+def test_quantity_does_not_multiply_into_unit_cost():
+    """The exact failure mode this bug could reintroduce: a per-unit cost that
+    is actually the line total because quantity leaked into the calculation."""
+    c = normalize_bill(_bill_line(discount=50, quantity=10))[0]
+    assert c.unit_cost == Decimal("1583"), "must stay per-unit, not become 15,830"
+    assert c.qty == Decimal("10")
+    assert c.unit_cost * c.qty == Decimal("15830"), "the merchandise value, separately"
+
+
+def test_hundred_percent_discount_is_free_goods():
+    c = normalize_bill(_bill_line(discount=100))[0]
+    assert c.unit_cost == Decimal("0")
+    assert c.discount_percent == Decimal("100")
+
+
+def test_decimal_discount_percentage():
+    c = normalize_bill(_bill_line(rate=1000, discount="12.5"))[0]
+    assert c.unit_cost == Decimal("875.0")
+
+
+def test_missing_discount_field_defaults_to_no_discount():
+    c = normalize_bill(_bill_line())[0]  # no "discount" key at all
+    assert c.unit_cost == c.rate == Decimal("3166")
+
+
+def test_null_discount_defaults_to_no_discount():
+    c = normalize_bill(_bill_line(discount=None))[0]
+    assert c.unit_cost == Decimal("3166")
+
+
+def test_missing_rate_raises():
+    with pytest.raises(NormalizationError) as e:
+        normalize_bill({"bill_id": "b", "date": "2026-01-01",
+                        "line_items": [{"item_id": "i", "quantity": 1}]})
+    assert e.value.code == "MISSING_FIELD"
+
+
+def test_zero_rate_with_no_discount_is_zero_cost():
+    c = normalize_bill(_bill_line(rate=0))[0]
+    assert c.unit_cost == Decimal("0")
+    assert c.discount_percent is None, "cannot express a percent of a zero list rate"
+
+
+def test_malformed_discount_raises_bad_discount():
+    with pytest.raises(NormalizationError) as e:
+        normalize_bill(_bill_line(discount="fifty percent off"))
+    assert e.value.code == "BAD_DISCOUNT"
+
+
+def test_discount_over_100_percent_raises():
+    with pytest.raises(NormalizationError) as e:
+        normalize_bill(_bill_line(discount=150))
+    assert e.value.code == "BAD_DISCOUNT"
+
+
+def test_negative_discount_raises():
+    with pytest.raises(NormalizationError) as e:
+        normalize_bill(_bill_line(discount=-10))
+    assert e.value.code == "BAD_DISCOUNT"
+
+
+def test_rounding_uses_decimal_not_float():
+    """A discount that does not divide evenly must not pick up binary-float
+    noise (e.g. 1000 * (1 - 1/3) landing on 666.66666666...7)."""
+    c = normalize_bill(_bill_line(rate="1000", discount="33.333"))[0]
+    assert c.unit_cost == Decimal("1000") * (Decimal("1") - Decimal("33.333") / Decimal("100"))
+    assert isinstance(c.unit_cost, Decimal)
+
+
+# ── Zoho's own resolved values take priority over reapplying discount% ──────
+def test_item_total_is_the_most_authoritative_source():
+    """item_total is Zoho's own post-discount, pre-tax line total — it must win
+    even if a (possibly stale or differently-shaped) discount field is also
+    present, and it is qty-aware without needing quantity handled separately."""
+    c = normalize_bill(_bill_line(discount=10, quantity=10, item_total="15830"))[0]
+    assert c.unit_cost == Decimal("1583"), "15830 / 10, not derived from the 10% discount"
+
+
+def test_discount_amount_is_preferred_over_a_percent_reapplication():
+    """discount_amount is Zoho's own resolved monetary discount for the line —
+    used directly rather than re-deriving a percentage from it."""
+    c = normalize_bill(_bill_line(quantity=1, discount_amount="1583"))[0]
+    assert c.unit_cost == Decimal("1583")
+    assert c.discount_percent == Decimal("50"), "back-derived for audit, from rate vs cost"
+
+
+def test_tax_fields_are_not_folded_into_unit_cost():
+    """Cost has always been pre-tax here; this fix must not change that."""
+    c = normalize_bill(_bill_line(discount=50, tax_amount="500", tax_percentage="18"))[0]
+    assert c.unit_cost == Decimal("1583")
+
+
+def test_downstream_margin_uses_effective_cost_not_the_raw_bill_rate():
+    """End to end, through the real normalize_bill and the real margin formula:
+    selling ₹2,000 against a ₹3,166 rate discounted 50% must show a 20.85% gross
+    margin, not a large loss computed against the pre-discount rate."""
+    from app.signals.margin import _margin
+
+    cost = normalize_bill(_bill_line(rate=3166, discount=50))[0]
+    assert cost.unit_cost == Decimal("1583")
+
+    selling_price = Decimal("2000")
+    gross_profit = selling_price - cost.unit_cost
+    assert gross_profit == Decimal("417")
+
+    gross_margin_pct = _margin(selling_price, cost.unit_cost)
+    assert round(gross_margin_pct, 4) == round(0.2085, 4)
+    assert round(gross_margin_pct * 100, 2) == 20.85
 
 
 def test_decimal_parsing_is_exact():

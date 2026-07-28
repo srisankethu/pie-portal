@@ -1,6 +1,7 @@
 """Sync + persistence: idempotency, provenance, malformed handling, isolation."""
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal
 from typing import Any
 
@@ -271,3 +272,75 @@ def test_ownership_survives_a_resumed_pull(session):
     assert second.detail_calls == [], "the invoices are already held"
     assert session.query(models.Customer).one().assigned_user_id == user.user_id
     assert report.assignments == 1
+
+
+# ── bill discount: the effective-unit-cost bug ─────────────────────────────
+def test_sync_stores_effective_cost_and_preserves_the_audit_trail(session):
+    """The bug this guards: unit_cost must be the post-discount cost, and the
+    original rate must still be recoverable for audit."""
+    src = _Source(
+        contacts=[{"contact_id": "c1", "contact_name": "Acme"}],
+        items=[{"item_id": "i1", "name": "Insert"}],
+        bills=[{"bill_id": "b1", "date": "2026-05-01",
+                "line_items": [{"line_item_id": "l1", "item_id": "i1",
+                                "quantity": 1, "rate": 3166, "discount": 50}]}],
+    )
+    SyncService(session, src, "org_a").run()
+    session.commit()
+    cost = session.query(models.CostRecord).one()
+    assert cost.unit_cost == Decimal("1583")
+    assert cost.rate == Decimal("3166")
+    assert cost.discount_percent == Decimal("50")
+
+
+def test_re_sync_backfills_a_historical_cost_record_in_place(session):
+    """A row written before the fix (rate == unit_cost, no discount known)
+    must be corrected once the bill is re-fetched with the discount fields —
+    the same re-sync path used to recover from a rate-limited pull."""
+    legacy = _Source(
+        contacts=[{"contact_id": "c1", "contact_name": "Acme"}],
+        items=[{"item_id": "i1", "name": "Insert"}],
+        bills=[{"bill_id": "b1", "date": "2026-05-01",
+                "line_items": [{"line_item_id": "l1", "item_id": "i1",
+                                "quantity": 1, "rate": 3166}]}],  # no discount info
+    )
+    SyncService(session, legacy, "org_a").run()
+    session.commit()
+    before = session.query(models.CostRecord).one()
+    assert before.unit_cost == Decimal("3166")
+
+    corrected = _Source(
+        contacts=legacy._c, items=legacy._i,
+        bills=[{"bill_id": "b1", "date": "2026-05-01",
+                "line_items": [{"line_item_id": "l1", "item_id": "i1",
+                                "quantity": 1, "rate": 3166, "discount": 50}]}],
+    )
+    SyncService(session, corrected, "org_a", resume=False).run()
+    session.commit()
+
+    after = session.query(models.CostRecord).one()
+    assert after.cost_record_id == before.cost_record_id, "same row, corrected in place"
+    assert after.unit_cost == Decimal("1583")
+    assert after.rate == Decimal("3166") and after.discount_percent == Decimal("50")
+
+
+def test_pending_backfill_count_reflects_legacy_rows(session):
+    """Visibility for the operator: how many cost records still need a re-sync
+    before their unit_cost can be trusted."""
+    from app.repositories import ReadModelRepository
+
+    repo = ReadModelRepository(session, "org_a")
+    session.add(models.Product(organization_id="org_a", product_id="p1", external_id="i1",
+                               name="Insert"))
+    session.flush()
+    # a legacy row with no rate/discount recorded (as if written before the fix)
+    session.add(models.CostRecord(organization_id="org_a", external_ref="legacy-bill:l1",
+                                  product_id="p1", date=date(2026, 5, 1),
+                                  qty=Decimal("1"), unit_cost=Decimal("3166")))
+    session.commit()
+    assert repo.count_cost_records_pending_discount_backfill() == 1
+
+    SyncService(session, _good_source(), "org_a").run()   # a fresh, correctly-shaped row
+    session.commit()
+    assert repo.count_cost_records_pending_discount_backfill() == 1, \
+        "the new row has rate set and must not count as pending"

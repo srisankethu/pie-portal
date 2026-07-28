@@ -10,12 +10,19 @@ from datetime import date, timedelta
 import pytest
 
 from app.config import settings
-from app.ingestion.zoho_client import ZohoApiSource, ZohoAuthError, ZohoError
+from app.ingestion.zoho_client import (
+    ZohoApiSource,
+    ZohoAuthError,
+    ZohoError,
+    ZohoThrottleError,
+    configured_since,
+)
 
 
 class FakeResponse:
-    def __init__(self, body, status=200):
+    def __init__(self, body, status=200, headers=None):
         self._body, self.status_code = body, status
+        self.headers = headers or {}
 
     def json(self):
         if self._body is None:
@@ -54,6 +61,17 @@ def _creds(monkeypatch):
     monkeypatch.setattr(settings, "ZOHO_CLIENT_SECRET", "csec")
     monkeypatch.setattr(settings, "ZOHO_REFRESH_TOKEN", "rtok")
     monkeypatch.setattr(settings, "ZOHO_HISTORY_DAYS", 730)
+    monkeypatch.setattr(settings, "ZOHO_SYNC_FROM", "")
+
+
+@pytest.fixture()
+def waits(monkeypatch):
+    """Capture every wait instead of serving it, so the real retry and pacing
+    logic runs at test speed."""
+    recorded: list[float] = []
+    monkeypatch.setattr(ZohoApiSource, "_sleep",
+                        lambda self, seconds: recorded.append(seconds))
+    return recorded
 
 
 def _today(offset_days: int = 0) -> str:
@@ -194,6 +212,155 @@ def test_ping_reports_when_the_org_is_not_visible():
     assert out["authenticated"] is True
     assert out["organization_found"] is False
     assert out["visible_organizations"][0]["organization_id"] == "999"
+
+
+# ── rate limiting ───────────────────────────────────────────────────────────
+# A live pull is thousands of calls against a per-minute limit. The first real
+# sync died on a 429 mid-invoice, so this is the behaviour that decides whether
+# a pull finishes at all.
+def test_a_429_is_waited_out_in_tens_of_seconds_not_one(waits):
+    """A rate limiter is not a transient fault. The old 1s/2s/4s backoff simply
+    spent the retry budget inside a window the limiter had not yet released."""
+    state = {"n": 0}
+
+    def items(params):
+        state["n"] += 1
+        if state["n"] <= 2:
+            return None                      # marker: the route returns a 429 below
+        return {"code": 0, "items": [{"item_id": 1, "name": "x"}],
+                "page_context": {"has_more_page": False}}
+
+    class Throttling(FakeHttp):
+        def get(self, url, params=None, headers=None, **kw):
+            self.gets.append((url, dict(params or {})))
+            body = items(params)
+            if body is None:
+                return FakeResponse({"message": "too many requests"}, status=429)
+            return FakeResponse(body)
+
+    rows = list(ZohoApiSource(http=Throttling({})).list_items())
+    assert [r["item_id"] for r in rows] == ["1"], "it must recover, not give up"
+    backoffs = [w for w in waits if w >= 1]      # the rest is ordinary pacing
+    assert len(backoffs) == 2 and min(backoffs) >= 10, \
+        f"backoff was too short to outlast a rate limiter: {waits}"
+
+
+def test_zoho_s_own_retry_after_beats_our_guess(waits):
+    class Throttling(FakeHttp):
+        def __init__(self):
+            super().__init__({})
+            self.n = 0
+
+        def get(self, url, params=None, headers=None, **kw):
+            self.n += 1
+            if self.n == 1:
+                return FakeResponse({"message": "slow down"}, status=429,
+                                    headers={"Retry-After": "7"})
+            return FakeResponse({"code": 0, "items": [],
+                                 "page_context": {"has_more_page": False}})
+
+    list(ZohoApiSource(http=Throttling()).list_items())
+    assert 7 in waits, f"Retry-After was ignored: {waits}"
+
+
+def test_being_throttled_out_says_the_work_so_far_is_kept(monkeypatch, waits):
+    """The message a person reads has to name the remedy — wait and re-run —
+    rather than look like a broken credential."""
+    monkeypatch.setattr(settings, "ZOHO_MAX_RETRIES", 2)
+
+    class AlwaysThrottled(FakeHttp):
+        def get(self, url, params=None, headers=None, **kw):
+            return FakeResponse({"message": "too many requests"}, status=429)
+
+    with pytest.raises(ZohoThrottleError) as e:
+        list(ZohoApiSource(http=AlwaysThrottled({})).list_items())
+    assert "resume" in str(e.value) and "kept" in str(e.value)
+
+
+def test_calls_are_paced_to_stay_under_the_limit(monkeypatch):
+    """Recovering from a 429 is the fallback; not provoking one is the fix."""
+    monkeypatch.setattr(settings, "ZOHO_REQUESTS_PER_MINUTE", 60)
+    waited: list[float] = []
+    monkeypatch.setattr(ZohoApiSource, "_sleep", lambda self, s: waited.append(s))
+
+    def items(params):
+        page = int(params.get("page", 1))
+        return {"code": 0, "items": [{"item_id": page, "name": "x"}],
+                "page_context": {"has_more_page": page < 3}}
+
+    list(ZohoApiSource(http=FakeHttp({"/items": items})).list_items())
+    # three calls, so two gaps to hold: 60rpm ⇒ one second apart
+    assert len([w for w in waited if w > 0.5]) == 2, waited
+
+
+# ── resuming an interrupted pull ────────────────────────────────────────────
+def test_documents_already_held_are_not_fetched_again():
+    """The detail call is the entire cost of a pull. A resumed run must pay for
+    the list calls only, or being throttled out once means never finishing."""
+    listing = {"code": 0, "invoices": [
+        {"invoice_id": "OLD", "date": _today(3), "status": "paid",
+         "last_modified_time": "2026-07-01T10:00:00+0530"},
+        {"invoice_id": "NEW", "date": _today(2), "status": "paid",
+         "last_modified_time": "2026-07-02T10:00:00+0530"},
+    ], "page_context": {"has_more_page": False}}
+    detail = {"code": 0, "invoice": {"invoice_id": "NEW", "customer_id": "9",
+                                     "date": _today(2), "line_items": []}}
+    http = FakeHttp({"/invoices/NEW": detail, "/invoices": listing})
+
+    src = ZohoApiSource(http=http)
+    rows = list(src.list_invoices(skip=lambda doc_id, mod: doc_id == "OLD"))
+
+    assert [r["invoice_id"] for r in rows] == ["NEW"]
+    assert not any(u.endswith("/invoices/OLD") for u, _ in http.gets)
+    assert (src.documents_fetched, src.documents_resumed) == (1, 1)
+
+
+def test_a_document_edited_in_zoho_is_pulled_again():
+    """Resuming must not freeze a stale copy: the modification stamp is what
+    distinguishes 'already have it' from 'had it, it changed'."""
+    listing = {"code": 0, "invoices": [
+        {"invoice_id": "INV1", "date": _today(3), "status": "paid",
+         "last_modified_time": "2026-07-09T10:00:00+0530"}],
+        "page_context": {"has_more_page": False}}
+    detail = {"code": 0, "invoice": {"invoice_id": "INV1", "customer_id": "9",
+                                     "date": _today(3), "line_items": []}}
+    http = FakeHttp({"/invoices/INV1": detail, "/invoices": listing})
+
+    held = {"INV1": "2026-07-01T10:00:00+0530"}       # an older stamp
+    rows = list(ZohoApiSource(http=http).list_invoices(
+        skip=lambda doc_id, mod: doc_id in held and mod == held[doc_id]))
+    assert [r["invoice_id"] for r in rows] == ["INV1"]
+
+
+# ── the operator's start date ───────────────────────────────────────────────
+def test_an_explicit_start_date_overrides_the_rolling_window():
+    listing = {"code": 0, "invoices": [
+        {"invoice_id": "IN", "date": "2025-06-01", "status": "paid"},
+        {"invoice_id": "OUT", "date": "2024-06-01", "status": "paid"},
+    ], "page_context": {"has_more_page": False}}
+    detail = {"code": 0, "invoice": {"invoice_id": "IN", "customer_id": "9",
+                                     "date": "2025-06-01", "line_items": []}}
+    http = FakeHttp({"/invoices/IN": detail, "/invoices": listing})
+    rows = list(ZohoApiSource(http=http, since=date(2025, 1, 1)).list_invoices())
+    assert [r["invoice_id"] for r in rows] == ["IN"]
+
+
+def test_a_malformed_start_date_falls_back_rather_than_guessing(monkeypatch):
+    monkeypatch.setattr(settings, "ZOHO_SYNC_FROM", "last january")
+    assert configured_since() is None
+
+
+def test_the_salesperson_on_an_invoice_is_carried_through():
+    """Ownership is Zoho's fact, not something the platform infers."""
+    listing = {"code": 0, "invoices": [{"invoice_id": "INV1", "date": _today(3),
+                                        "status": "paid"}],
+               "page_context": {"has_more_page": False}}
+    detail = {"code": 0, "invoice": {
+        "invoice_id": "INV1", "customer_id": "9", "date": _today(3),
+        "salesperson_id": 4455, "salesperson_name": "R. Nair", "line_items": []}}
+    row = list(ZohoApiSource(http=FakeHttp({"/invoices/INV1": detail,
+                                            "/invoices": listing})).list_invoices())[0]
+    assert row["salesperson_id"] == "4455" and row["salesperson_name"] == "R. Nair"
 
 
 def test_ping_confirms_the_configured_org():

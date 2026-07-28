@@ -96,6 +96,17 @@ export interface SyncRun {
   signals_emitted: number;
   decisions_created: number;
   error: string | null;
+  since: string | null;
+  documents_fetched: number;
+  documents_resumed: number;
+  assignments: number;
+}
+
+/** What to pull. `since` is the operator's judgement about how far back the
+ *  books are worth reading; `full` discards the resume cursor. */
+export interface SyncOptions {
+  since?: string;
+  full?: boolean;
 }
 
 export interface DataStatus {

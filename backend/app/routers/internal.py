@@ -5,7 +5,10 @@ audit endpoints are deferred to later phases.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from datetime import date
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -79,12 +82,18 @@ def zoho_check(principal: Principal = Depends(require_manager_or_owner)) -> dict
 
 @router.post("/sync/zoho")
 def sync_zoho(
+    since: Optional[date] = Query(
+        None, description="Start date for the pull (ISO). Defaults to ZOHO_SYNC_FROM, "
+                          "then to the rolling ZOHO_HISTORY_DAYS window."),
+    full: bool = Query(
+        False, description="Discard the resume cursor and re-read every document."),
     principal: Principal = Depends(require_manager_or_owner),
     session: Session = Depends(get_session),
 ) -> dict:
     """Trigger a Zoho read sync into the org's read model (owner/manager only)."""
     ensure_org_and_users(session)
-    service = SyncService(session, get_source(), principal.organization_id)
+    service = SyncService(session, get_source(since=since), principal.organization_id,
+                          resume=not full)
     report = service.run()
     return report.to_dict()
 

@@ -609,6 +609,23 @@ table.grid tbody tr:hover td { background: color-mix(in srgb, var(--color-accent
 .conn-facts dt { font-size: 11px; text-transform: uppercase; letter-spacing: .04em;
                  color: var(--color-neutral-700); }
 .conn-facts dd { margin: 2px 0 0; font-weight: 600; font-size: 14px; }
+/* Sync options. The start date is a commercial judgement — how far back the
+   books are worth reading — so it is presented as a choice with its cost
+   explained, not buried in configuration. */
+.sync-opts {
+  margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--color-neutral-200);
+  display: grid; gap: 8px; max-width: 560px;
+}
+.sync-opts > label { font-size: 12px; font-weight: 600; color: var(--color-neutral-700); }
+.sync-opts .fsrc {
+  display: block; font-weight: 400; font-size: 12px; line-height: 1.5;
+  color: var(--color-neutral-500); margin-top: 3px;
+}
+.sync-opts .input { max-width: 200px; }
+.sync-check {
+  display: flex; align-items: center; gap: 7px;
+  font-size: 13px; font-weight: 400; color: var(--color-neutral-700);
+}
 .conn-result {
   margin-top: 12px; padding: 9px 12px; border-radius: var(--radius-md);
   background: var(--color-accent-100); border: 1px solid var(--color-accent-200);

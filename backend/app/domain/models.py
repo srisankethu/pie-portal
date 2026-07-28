@@ -77,6 +77,11 @@ class Customer(Base):
     external_id: Mapped[str] = mapped_column(String(128), index=True)  # Zoho contact_id
     name: Mapped[str] = mapped_column(String(255))
     assigned_user_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    # Zoho's salesperson on this account's most recent invoice, kept as Zoho's own
+    # id. Held separately from assigned_user_id so ownership survives a resumed
+    # pull that never re-reads those invoices, and so the mapping stays reversible.
+    source_owner_id: Mapped[Optional[str]] = mapped_column(String(64))
+    source_owner_at: Mapped[Optional[date]] = mapped_column(Date)
     first_seen: Mapped[Optional[date]] = mapped_column(Date)
     status: Mapped[str] = mapped_column(String(32), default="ACTIVE")
     source_ref: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
@@ -248,6 +253,10 @@ class SyncRun(Base):
     Persisted so the UI can answer "is Zoho connected, and when did data last
     arrive?" without re-hitting the API. A failed run is recorded too: silence
     about a failure is exactly what made the connection unreadable before.
+
+    A run that dies part-way is ``PARTIAL``, not ``FAILED``: rows that did land
+    are kept (they are what makes the next attempt cheap), and reporting zero
+    for them would misdescribe the database.
     """
 
     __tablename__ = "sync_runs"
@@ -255,7 +264,7 @@ class SyncRun(Base):
     sync_run_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
     organization_id: Mapped[str] = mapped_column(String(64), index=True)
     source: Mapped[str] = mapped_column(String(16))           # "api" | "fixture"
-    status: Mapped[str] = mapped_column(String(16), index=True)  # OK | FAILED
+    status: Mapped[str] = mapped_column(String(16), index=True)  # OK | PARTIAL | FAILED
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, index=True)
     finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     customers: Mapped[int] = mapped_column(Integer, default=0)
@@ -268,6 +277,33 @@ class SyncRun(Base):
     decisions_created: Mapped[int] = mapped_column(Integer, default=0)
     error: Mapped[Optional[str]] = mapped_column(String(1024))
     triggered_by: Mapped[Optional[str]] = mapped_column(String(64))
+    # The window this run asked for, and what the pull cost / saved.
+    since: Mapped[Optional[date]] = mapped_column(Date)
+    documents_fetched: Mapped[int] = mapped_column(Integer, default=0)
+    documents_resumed: Mapped[int] = mapped_column(Integer, default=0)
+    assignments: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class IngestedDocument(Base):
+    """One Zoho document already pulled — the resume cursor.
+
+    Zoho's list endpoints omit line items, so every invoice and bill costs its
+    own detail call. Recording what has been fetched (and the modification stamp
+    it was fetched at) means an interrupted pull resumes for the price of the
+    list calls alone, and a document edited in Zoho is re-fetched because its
+    stamp moved.
+    """
+
+    __tablename__ = "ingested_documents"
+    __table_args__ = (UniqueConstraint("organization_id", "doc_type", "doc_id",
+                                       name="uq_ingested_org_type_doc"),)
+
+    ingested_document_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    doc_type: Mapped[str] = mapped_column(String(16), index=True)   # invoice | bill
+    doc_id: Mapped[str] = mapped_column(String(64), index=True)
+    modified_at: Mapped[Optional[str]] = mapped_column(String(64))  # Zoho's stamp, verbatim
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
 class Outcome(Base):

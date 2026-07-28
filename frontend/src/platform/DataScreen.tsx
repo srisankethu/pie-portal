@@ -21,6 +21,22 @@ const STATE_UI: Record<string, { label: string; tone: "ok" | "warn" | "bad" }> =
   UNREACHABLE: { label: "Unreachable", tone: "bad" },
 };
 
+const RESULT_UI: Record<string, string> = {
+  OK: "Succeeded",
+  PARTIAL: "Stopped part-way",
+  FAILED: "Failed",
+};
+
+/** A default worth offering rather than a default worth hiding: eighteen months
+ *  gives the detectors a full recent window, a full comparison window and room
+ *  above the six-month history floor. The operator can move it either way. */
+function defaultSince(): string {
+  const d = new Date();
+  d.setMonth(d.getMonth() - 18);
+  d.setDate(1);
+  return d.toISOString().slice(0, 10);
+}
+
 function when(iso: string | null): string {
   if (!iso) return "—";
   const d = new Date(iso);
@@ -37,6 +53,8 @@ export function DataScreen({ session, onSynced }: { session: PlatformSession; on
   const [syncing, setSyncing] = useState(false);
   const [checking, setChecking] = useState(false);
   const [result, setResult] = useState<string | null>(null);
+  const [since, setSince] = useState<string>(defaultSince());
+  const [full, setFull] = useState(false);
 
   const load = useCallback(async () => {
     setChecking(true);
@@ -59,13 +77,20 @@ export function DataScreen({ session, onSynced }: { session: PlatformSession; on
     setResult(null);
     setError(null);
     try {
-      const r = await papi.runSync(session.token);
+      const r = await papi.runSync(session.token, { since: since || undefined, full });
+      const run = r.run;
+      const pulled =
+        `Pulled ${run.sales_txns} sales lines and ${run.cost_records} cost records` +
+        (run.documents_resumed ? ` (${run.documents_resumed} already held, not re-read)` : "");
       setResult(
-        r.run.status === "OK"
-          ? `Pulled ${r.run.sales_txns} sales lines and ${r.run.cost_records} cost records — ` +
-            `${r.run.signals_emitted} signals, ${r.run.decisions_created} new decisions.`
-          : `Sync failed: ${r.run.error}`,
+        run.status === "OK"
+          ? `${pulled} — ${run.signals_emitted} signals, ${run.decisions_created} new decisions.`
+          : run.status === "PARTIAL"
+            ? `${pulled}, then stopped. Nothing was lost — run it again and it will carry on ` +
+              `from here. Reason: ${run.error}`
+            : `Sync failed before anything was read: ${run.error}`,
       );
+      setFull(false);
       await load();
       onSynced();
     } catch (e) {
@@ -112,7 +137,7 @@ export function DataScreen({ session, onSynced }: { session: PlatformSession; on
                 <div><dt>Organization</dt><dd>{c.organization_name}</dd></div>
                 <div><dt>Organization id</dt><dd>{c.organization_id}</dd></div>
                 <div><dt>Currency</dt><dd>{c.currency || "—"}</dd></div>
-                <div><dt>History pulled</dt><dd>{c.history_days} days</dd></div>
+                <div><dt>Default history</dt><dd>{c.history_days} days</dd></div>
               </dl>
             )}
             {c.state === "WRONG_ORG" && (c.visible_organizations?.length ?? 0) > 0 && (
@@ -124,6 +149,32 @@ export function DataScreen({ session, onSynced }: { session: PlatformSession; on
                   </div>
                 ))}
               </dl>
+            )}
+
+            {status?.can_sync && (
+              <div className="sync-opts">
+                <label htmlFor="sync-since">
+                  Read the books from
+                  <span className="fsrc">
+                    Every invoice and bill after this date is read individually, so an
+                    earlier date means a longer pull. The detectors compare the last 90
+                    days against the 90 before that, and need six months of history
+                    before they will call a decline — a year and a half covers all of it.
+                  </span>
+                </label>
+                <input
+                  id="sync-since"
+                  type="date"
+                  className="input"
+                  value={since}
+                  max={new Date().toISOString().slice(0, 10)}
+                  onChange={(e) => setSince(e.target.value)}
+                />
+                <label className="sync-check">
+                  <input type="checkbox" checked={full} onChange={(e) => setFull(e.target.checked)} />
+                  Re-read everything, including documents already held
+                </label>
+              </div>
             )}
 
             <div style={{ display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" }}>
@@ -155,12 +206,37 @@ export function DataScreen({ session, onSynced }: { session: PlatformSession; on
               ) : (
                 <table className="facttable">
                   <tbody>
-                    <tr><td>Result</td><td className="fv">{s.status === "OK" ? "Succeeded" : "Failed"}</td></tr>
+                    <tr><td>Result</td><td className="fv">{RESULT_UI[s.status] || s.status}</td></tr>
                     <tr><td>When</td><td className="fv">{when(s.started_at)}</td></tr>
+                    <tr>
+                      <td>
+                        Read from
+                        <div className="fsrc">the start date this run was given</div>
+                      </td>
+                      <td className="fv">{s.since || "rolling window"}</td>
+                    </tr>
                     <tr><td>Customers</td><td className="fv">{s.customers}</td></tr>
                     <tr><td>Products</td><td className="fv">{s.products}</td></tr>
                     <tr><td>Sales lines</td><td className="fv">{s.sales_txns}</td></tr>
                     <tr><td>Cost records</td><td className="fv">{s.cost_records}</td></tr>
+                    <tr>
+                      <td>
+                        Documents read
+                        <div className="fsrc">
+                          {s.documents_resumed
+                            ? `${s.documents_resumed} were already held and were not read again`
+                            : "invoices and bills fetched individually"}
+                        </div>
+                      </td>
+                      <td className="fv">{s.documents_fetched}</td>
+                    </tr>
+                    <tr>
+                      <td>
+                        Accounts assigned
+                        <div className="fsrc">from Zoho's salesperson on the latest invoice</div>
+                      </td>
+                      <td className="fv">{s.assignments}</td>
+                    </tr>
                     <tr><td>Signals detected</td><td className="fv">{s.signals_emitted}</td></tr>
                     <tr><td>Decisions created</td><td className="fv">{s.decisions_created}</td></tr>
                     <tr>
@@ -175,8 +251,16 @@ export function DataScreen({ session, onSynced }: { session: PlatformSession; on
               )}
               {s?.error && (
                 <div className="state-panel" style={{ margin: "0 0 12px" }}>
-                  <div className="state-mark">Why it failed</div>
+                  <div className="state-mark">
+                    {s.status === "PARTIAL" ? "Why it stopped" : "Why it failed"}
+                  </div>
                   <p style={{ margin: 0, fontSize: 13 }}>{s.error}</p>
+                  {s.status === "PARTIAL" && (
+                    <p style={{ margin: "8px 0 0", fontSize: 13 }}>
+                      The rows above were kept. Running the sync again continues from
+                      here rather than starting over.
+                    </p>
+                  )}
                 </div>
               )}
             </Bp>

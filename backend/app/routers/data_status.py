@@ -9,10 +9,11 @@ three calls in the right order.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Body, Depends
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -46,6 +47,10 @@ def _run_dict(r: Optional[models.SyncRun]) -> Optional[dict[str, Any]]:
         "skipped_count": r.skipped_count, "skipped_sample": r.skipped_sample or [],
         "signals_emitted": r.signals_emitted, "decisions_created": r.decisions_created,
         "error": r.error,
+        "since": r.since.isoformat() if r.since else None,
+        "documents_fetched": r.documents_fetched,
+        "documents_resumed": r.documents_resumed,
+        "assignments": r.assignments,
     }
 
 
@@ -133,35 +138,49 @@ def data_status(
     }
 
 
+class SyncRequest(BaseModel):
+    """What to pull, and whether to trust what is already held.
+
+    ``since`` is the operator's choice of start date — how far back the books
+    are worth reading. ``full`` discards the resume cursor so every document is
+    fetched again.
+    """
+
+    since: Optional[date] = None
+    full: bool = False
+
+
 @router.post("/sync")
 def run_sync(
+    req: SyncRequest = Body(default_factory=SyncRequest),
     principal: Principal = Depends(require_manager_or_owner),
     session: Session = Depends(get_session),
 ) -> dict:
     """Pull from Zoho, detect signals, generate decisions — the whole cycle.
 
-    Recorded either way: a failed pull leaves a FAILED run rather than silence.
+    Recorded whatever happens, and recorded *truthfully*: an interrupted pull is
+    PARTIAL with the rows it did write, not FAILED with zeros. Zoho rate-limits
+    per organization and a pull costs one call per document, so being cut short
+    is an ordinary event, not an exception — the rows already written are kept
+    and the next run resumes from them.
     """
     from ..decisions.service import DecisionService
     from ..ingestion.sync import SyncService, get_source
+    from ..ingestion.zoho_client import configured_since
     from ..seed import ensure_org_and_users
     from ..signals.engine import run_detectors
 
     org = principal.organization_id
+    since = req.since or configured_since()
     run = models.SyncRun(organization_id=org, source=settings.ZOHO_SOURCE,
                          status="OK", started_at=datetime.now(timezone.utc),
-                         triggered_by=principal.user_id)
+                         triggered_by=principal.user_id, since=since)
     session.add(run)
+    svc = SyncService(session, get_source(since=since), org, resume=not req.full)
     try:
         ensure_org_and_users(session)
-        report = SyncService(session, get_source(), org).run()
+        svc.run()
         session.flush()
-        run.customers = report.customers
-        run.products = report.products
-        run.sales_txns = report.sales_txns
-        run.cost_records = report.cost_records
-        run.skipped_count = len(report.skipped)
-        run.skipped_sample = report.skipped[:20]
 
         detected = run_detectors(session, org)
         run.signals_emitted = detected.get("signals_emitted", 0)
@@ -170,9 +189,24 @@ def run_sync(
         run.status = "OK"
     except Exception as e:  # noqa: BLE001 — a failed sync must be visible, not silent
         log.exception("sync failed")
-        run.status = "FAILED"
+        run.status = "PARTIAL" if svc.report.wrote_anything else "FAILED"
         run.error = f"{type(e).__name__}: {e}"[:1000]
     finally:
+        # Counters come from the report either way: a run that wrote 336 sales
+        # lines and then died wrote 336 sales lines, and saying zero would make
+        # the database unreadable from its own audit trail.
+        report = svc.report
+        run.customers = report.customers
+        run.products = report.products
+        run.sales_txns = report.sales_txns
+        run.cost_records = report.cost_records
+        run.assignments = report.assignments
+        run.documents_fetched = report.documents_fetched or getattr(
+            svc.source, "documents_fetched", 0)
+        run.documents_resumed = report.documents_resumed or getattr(
+            svc.source, "documents_resumed", 0)
+        run.skipped_count = len(report.skipped)
+        run.skipped_sample = report.skipped[:20]
         run.finished_at = datetime.now(timezone.utc)
         session.flush()
 

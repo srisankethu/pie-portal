@@ -20,6 +20,8 @@ def test_purge_removes_every_demo_row(session):
     session.commit()
     assert session.query(models.Customer).count() == 5
     assert session.query(models.Decision).count() > 0
+    assert session.query(models.AiCallLog).count() > 0, \
+        "the demo seed runs the real AI pipeline, so it does leave telemetry"
 
     removed = purge_demo_seed(session, "org_sanketh")
     session.commit()
@@ -28,11 +30,15 @@ def test_purge_removes_every_demo_row(session):
     assert removed["products"] == 4
     assert removed["decisions"] > 0
     assert removed["signals"] > 0
+    assert removed["ai_call_logs"] > 0
     assert session.query(models.Customer).count() == 0
     assert session.query(models.Product).count() == 0
     assert session.query(models.SalesTxn).count() == 0
     assert session.query(models.CostRecord).count() == 0
     assert session.query(models.Signal).count() == 0
+    assert session.query(models.Decision).count() == 0
+    assert session.query(models.AiCallLog).count() == 0, \
+        "left in place, demo runs would permanently skew the AI cost/health metrics"
     assert session.query(models.Decision).count() == 0
 
 

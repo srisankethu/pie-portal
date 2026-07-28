@@ -142,6 +142,13 @@ def purge_demo_seed(session: Session, organization_id: str) -> dict[str, int]:
             models.Signal.organization_id == organization_id,
             models.Signal.subject_entity_id.in_(subject_ids),
         ).delete(synchronize_session=False),
+        # Telemetry from the AI calls the demo decisions triggered — not
+        # customer-visible, but left in place it would permanently skew the
+        # owner-facing AI cost/health metrics with demo-run numbers.
+        "ai_call_logs": session.query(models.AiCallLog).filter(
+            models.AiCallLog.organization_id == organization_id,
+            models.AiCallLog.subject_entity_id.in_(subject_ids),
+        ).delete(synchronize_session=False),
         "sales_txns": session.query(models.SalesTxn).filter(
             models.SalesTxn.organization_id == organization_id,
             models.SalesTxn.customer_id.in_(list(DEMO_CUSTOMER_IDS)),

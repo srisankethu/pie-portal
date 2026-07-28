@@ -24,7 +24,7 @@ always wins over it**. All values have defaults that work for local development.
 | `DATABASE_URL` | `sqlite:///backend/data/platform.db` | SQLAlchemy URL. Production: `postgresql+psycopg://user:pw@host/db`. |
 | `SQL_ECHO` | `0` | Log every SQL statement. Debugging only. |
 | `AUTO_BOOTSTRAP` | `1` | Create the DB, migrate, and seed users on startup. **Ignored in production.** |
-| `DEMO_SEED_ON_START` | `1` | Seed the demo dataset on startup. **Ignored in production.** |
+| `DEMO_SEED_ON_START` | `1` | Seed the demo dataset on startup. **Ignored in production, and ignored whenever `ZOHO_SOURCE=api`** — a live account means no fabricated customer should ever appear. |
 
 ### Organization
 

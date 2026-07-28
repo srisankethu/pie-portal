@@ -183,8 +183,22 @@ def run_sync(
                          triggered_by=principal.user_id, since=since)
     session.add(run)
     svc = SyncService(session, get_source(since=since), org, resume=not req.full)
+    demo_removed: dict[str, int] = {}
     try:
         ensure_org_and_users(session)
+
+        if settings.ZOHO_SOURCE == "api":
+            # A real sync means a real Zoho account is linked — any demo/sample
+            # customers, products, or the decisions built from them must not go
+            # on sitting alongside real data. This never touches a real Zoho
+            # record: demo rows are identifiable by fixed ids no live sync ever
+            # produces. Best-effort — a purge problem must not block the pull.
+            try:
+                from ..demo import purge_demo_seed
+                demo_removed = purge_demo_seed(session, org)
+            except Exception:  # noqa: BLE001
+                log.exception("demo-data purge failed; continuing with the sync")
+
         svc.run()
         session.flush()
 
@@ -216,4 +230,7 @@ def run_sync(
         run.finished_at = datetime.now(timezone.utc)
         session.flush()
 
-    return {"run": _run_dict(run), "connection": _connection(session, org)}
+    result = {"run": _run_dict(run), "connection": _connection(session, org)}
+    if any(demo_removed.values()):
+        result["demo_data_removed"] = demo_removed
+    return result

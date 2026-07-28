@@ -132,6 +132,18 @@ back. Use the variable only if you want a different default.
 **`ZOHO_SOURCE=api` is the switch.** Until it is set, the platform keeps using
 the offline fixture source no matter what other credentials are present.
 
+Setting it also does two things automatically, so demo data never lingers next
+to your real books:
+
+- The app stops seeding the sample dataset on startup — there is no window
+  where fabricated customers sit next to your real ones.
+- The **first live sync removes any sample data already there** (from before
+  you linked Zoho). This is exact and safe: the demo customers/products have
+  fixed ids no real Zoho sync ever produces, so a real customer — even one
+  that happens to share a name with a demo one, like "Rane Madras" — is never
+  touched. The sync result names what it removed; every sync after the first
+  finds nothing left to remove.
+
 ## 6. Verify — from the app
 
 Sign in as the owner or a manager and open **Data & connection** in the nav.

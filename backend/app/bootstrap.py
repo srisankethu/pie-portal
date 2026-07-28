@@ -110,11 +110,18 @@ def bootstrap(*, with_demo: Optional[bool] = None,
         summary["users"] = [u["email"] for u in DEMO_USERS]
 
         seed_demo_data = (settings.DEMO_SEED_ON_START and not settings.is_production
+                          and settings.ZOHO_SOURCE != "api"
                           if with_demo is None else with_demo)
         if seed_demo_data and settings.is_production:
             summary["demo"] = "refused: production"
         elif seed_demo_data:
             summary["demo"] = _seed_demo(session)
+        elif with_demo is None and settings.ZOHO_SOURCE == "api":
+            # A live account is configured — fabricated customers must never be
+            # (re-)introduced next to real Zoho data. Any left over from before
+            # the account was linked are removed on the next sync, not here:
+            # this is a read-only bootstrap step and must not delete data.
+            summary["demo"] = "disabled: live Zoho source configured"
         else:
             summary["demo"] = "disabled"
     finally:

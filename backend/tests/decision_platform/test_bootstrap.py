@@ -154,3 +154,35 @@ def test_app_startup_bootstraps_so_first_login_succeeds(tmp_path, monkeypatch):
                         json={"email": "r.nair@sanketh.in", "password": "demo"})
     assert r.status_code == 200, r.text
     assert r.json()["role"] == "SALESPERSON"
+
+
+def test_live_zoho_source_disables_auto_demo_seed(fresh_db, monkeypatch):
+    """A live account means fabricated customers must never appear at all, not
+    even transiently between linking Zoho and the first sync."""
+    monkeypatch.setattr(settings, "ZOHO_SOURCE", "api")
+    summary = bootstrap(database_url=fresh_db)   # with_demo=None: configured default
+    assert summary["demo"] == "disabled: live Zoho source configured"
+
+    from app.db import SessionLocal
+
+    session = SessionLocal()
+    try:
+        assert session.query(models.Customer).count() == 0
+    finally:
+        session.close()
+
+
+def test_explicit_with_demo_still_wins_over_a_live_source(fresh_db, monkeypatch):
+    """An explicit override (e.g. a test, or a deliberate reseed) is not
+    silently defeated by the live-source gate."""
+    monkeypatch.setattr(settings, "ZOHO_SOURCE", "api")
+    summary = bootstrap(with_demo=True, database_url=fresh_db)
+    assert "error" not in str(summary["demo"])
+
+    from app.db import SessionLocal
+
+    session = SessionLocal()
+    try:
+        assert session.query(models.Customer).count() > 0
+    finally:
+        session.close()

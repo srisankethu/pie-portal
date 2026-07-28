@@ -21,6 +21,26 @@ from .signals.engine import run_detectors
 # Reference "today" for the demo histories.
 AS_OF = date(2026, 7, 22)
 
+# Demo customers/products get fixed, human-readable primary keys — never the
+# random uuid4 a real Zoho sync assigns. That is what makes them unambiguously
+# identifiable later: no real synced row can ever collide with one of these
+# ids, no matter what a real customer or product happens to be named.
+_DEMO_CUSTOMERS = [
+    ("cst_rane", "Rane Madras", "usr_sales"),
+    ("cst_ace", "ACE Designers", "usr_sales"),
+    ("cst_pitti", "Pitti Engineering Ltd", "usr_sales"),
+    ("cst_brakes", "Brakes India", "usr_sales"),
+    ("cst_tvs", "TVS Sundram Fasteners", "usr_sales"),
+]
+_DEMO_PRODUCTS = [
+    ("prd_cnmg", "CNMG 120408-MP insert"),
+    ("prd_dnmg", "DNMG 150608-MP insert"),
+    ("prd_holder", "25mm shank turning holder"),
+    ("prd_ream", "8.0mm HSS-Co machine reamer"),
+]
+DEMO_CUSTOMER_IDS = frozenset(c[0] for c in _DEMO_CUSTOMERS)
+DEMO_PRODUCT_IDS = frozenset(p[0] for p in _DEMO_PRODUCTS)
+
 
 def _d(days_ago: int) -> date:
     return AS_OF - timedelta(days=days_ago)
@@ -49,30 +69,14 @@ def seed_demo(session: Session) -> dict:
     org = settings.DEFAULT_ORG_ID
     ensure_org_and_users(session)
 
-    # A salesperson to own customer-facing decisions.
-    sales_uid = "usr_sales"
-
-    customers = [
-        ("cst_rane", "Rane Madras", sales_uid),
-        ("cst_ace", "ACE Designers", sales_uid),
-        ("cst_pitti", "Pitti Engineering Ltd", sales_uid),
-        ("cst_brakes", "Brakes India", sales_uid),
-        ("cst_tvs", "TVS Sundram Fasteners", sales_uid),
-    ]
-    products = [
-        ("prd_cnmg", "CNMG 120408-MP insert"),
-        ("prd_dnmg", "DNMG 150608-MP insert"),
-        ("prd_holder", "25mm shank turning holder"),
-        ("prd_ream", "8.0mm HSS-Co machine reamer"),
-    ]
     # Skip if already seeded.
     if session.get(models.Customer, "cst_rane"):
         return {"note": "demo already seeded"}
 
-    for cid, name, uid in customers:
+    for cid, name, uid in _DEMO_CUSTOMERS:
         session.add(models.Customer(customer_id=cid, organization_id=org, external_id=cid,
                                     name=name, assigned_user_id=uid, status="ACTIVE"))
-    for pid, name in products:
+    for pid, name in _DEMO_PRODUCTS:
         session.add(models.Product(product_id=pid, organization_id=org, external_id=pid, name=name))
 
     rows: list = []
@@ -113,6 +117,50 @@ def seed_demo(session: Session) -> dict:
     summary = DecisionService(session, org).generate()
     session.flush()
     return summary
+
+
+def purge_demo_seed(session: Session, organization_id: str) -> dict[str, int]:
+    """Remove the demo dataset for one org, if present.
+
+    Called whenever a real Zoho sync runs, so a fabricated customer or product
+    never sits alongside real data — a fresh clone shows demo decisions before
+    anyone connects Zoho, and once a real account is linked those decisions
+    would otherwise linger forever, indistinguishable from the real ones they
+    were only ever a stand-in for.
+
+    Every delete is scoped to the fixed demo ids, so it can never touch a real
+    Zoho customer or product, and it is a no-op (all counts zero) once nothing
+    demo-seeded remains — safe to call on every sync, not just the first.
+    """
+    subject_ids = list(DEMO_CUSTOMER_IDS | DEMO_PRODUCT_IDS)
+    removed = {
+        "decisions": session.query(models.Decision).filter(
+            models.Decision.organization_id == organization_id,
+            models.Decision.subject_entity_id.in_(subject_ids),
+        ).delete(synchronize_session=False),
+        "signals": session.query(models.Signal).filter(
+            models.Signal.organization_id == organization_id,
+            models.Signal.subject_entity_id.in_(subject_ids),
+        ).delete(synchronize_session=False),
+        "sales_txns": session.query(models.SalesTxn).filter(
+            models.SalesTxn.organization_id == organization_id,
+            models.SalesTxn.customer_id.in_(list(DEMO_CUSTOMER_IDS)),
+        ).delete(synchronize_session=False),
+        "cost_records": session.query(models.CostRecord).filter(
+            models.CostRecord.organization_id == organization_id,
+            models.CostRecord.product_id.in_(list(DEMO_PRODUCT_IDS)),
+        ).delete(synchronize_session=False),
+        "customers": session.query(models.Customer).filter(
+            models.Customer.organization_id == organization_id,
+            models.Customer.customer_id.in_(list(DEMO_CUSTOMER_IDS)),
+        ).delete(synchronize_session=False),
+        "products": session.query(models.Product).filter(
+            models.Product.organization_id == organization_id,
+            models.Product.product_id.in_(list(DEMO_PRODUCT_IDS)),
+        ).delete(synchronize_session=False),
+    }
+    session.flush()
+    return removed
 
 
 def main() -> None:

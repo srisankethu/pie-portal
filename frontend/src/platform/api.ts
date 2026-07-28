@@ -65,7 +65,8 @@ export const papi = {
   dataStatus: (t: string) => req<DataStatus>("/api/v1/data/status", {}, t),
 
   runSync: (t: string, opts: SyncOptions = {}) =>
-    req<{ run: SyncRun; connection: DataStatus["connection"] }>(
+    req<{ run: SyncRun; connection: DataStatus["connection"];
+         demo_data_removed?: Record<string, number> }>(
       "/api/v1/data/sync", { method: "POST", body: JSON.stringify(opts) }, t),
 
   listAccounts: (t: string, q = "") =>

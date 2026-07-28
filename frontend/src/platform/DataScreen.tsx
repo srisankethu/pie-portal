@@ -82,13 +82,18 @@ export function DataScreen({ session, onSynced }: { session: PlatformSession; on
       const pulled =
         `Pulled ${run.sales_txns} sales lines and ${run.cost_records} cost records` +
         (run.documents_resumed ? ` (${run.documents_resumed} already held, not re-read)` : "");
+      const demoRemoved = r.demo_data_removed;
+      const demoNote = demoRemoved
+        ? ` Removed the leftover sample data (${demoRemoved.customers ?? 0} customers, ` +
+          `${demoRemoved.decisions ?? 0} decisions) now that real data has arrived.`
+        : "";
       setResult(
-        run.status === "OK"
+        (run.status === "OK"
           ? `${pulled} — ${run.signals_emitted} signals, ${run.decisions_created} new decisions.`
           : run.status === "PARTIAL"
             ? `${pulled}, then stopped. Nothing was lost — run it again and it will carry on ` +
               `from here. Reason: ${run.error}`
-            : `Sync failed before anything was read: ${run.error}`,
+            : `Sync failed before anything was read: ${run.error}`) + demoNote,
       );
       setFull(false);
       await load();

@@ -43,7 +43,9 @@ def client():
             sess.close()
 
     app.dependency_overrides[get_session] = _override
-    return TestClient(app)
+    tc = TestClient(app)
+    tc.Maker = Maker    # exposed so a test can seed/inspect data outside the API
+    return tc
 
 
 def _hdr(c, email):
@@ -186,3 +188,79 @@ def test_wrong_organization_id_names_the_right_one(monkeypatch):
     c = _connection(None, "org")
     assert c["state"] == "WRONG_ORG"
     assert "60036630626" in c["detail"] and "4U PRECISION" in c["detail"]
+
+
+# ── a real sync must remove leftover demo data ─────────────────────────────
+def test_a_live_sync_removes_leftover_demo_data(client, monkeypatch):
+    """The bug this guards: fabricated customers/decisions from the demo seed
+    were left sitting alongside real Zoho data forever, indistinguishable from
+    the real ones once someone actually linked their account."""
+    from app.demo import seed_demo
+
+    s = client.Maker()
+    seed_demo(s)
+    s.commit()
+    assert s.query(models.Customer).filter_by(customer_id="cst_rane").count() == 1
+    assert s.query(models.Decision).count() > 0
+    s.close()
+
+    monkeypatch.setattr(settings, "ZOHO_SOURCE", "api")
+
+    class Empty:
+        def list_contacts(self): return []
+        def list_items(self): return []
+        def list_users(self): return []
+        def list_invoices(self, skip=None): return []
+        def list_bills(self, skip=None): return []
+
+    monkeypatch.setattr("app.ingestion.sync.get_source", lambda since=None: Empty())
+    owner = _hdr(client, "s.menon@sanketh.in")
+    body = client.post("/api/v1/data/sync", headers=owner).json()
+
+    assert body["run"]["status"] == "OK"
+    assert body["demo_data_removed"]["customers"] == 5
+    assert body["demo_data_removed"]["products"] == 4
+    assert body["demo_data_removed"]["decisions"] > 0
+
+    s = client.Maker()
+    assert s.query(models.Customer).filter_by(customer_id="cst_rane").count() == 0
+    assert s.query(models.Decision).count() == 0
+    s.close()
+
+
+def test_a_second_live_sync_has_nothing_left_to_remove(client, monkeypatch):
+    """Idempotent: once the demo data is gone, every count is zero and the key
+    is not reported at all — it must not look like something happened."""
+    monkeypatch.setattr(settings, "ZOHO_SOURCE", "api")
+
+    class Empty:
+        def list_contacts(self): return []
+        def list_items(self): return []
+        def list_users(self): return []
+        def list_invoices(self, skip=None): return []
+        def list_bills(self, skip=None): return []
+
+    monkeypatch.setattr("app.ingestion.sync.get_source", lambda since=None: Empty())
+    owner = _hdr(client, "s.menon@sanketh.in")
+    body = client.post("/api/v1/data/sync", headers=owner).json()
+    assert "demo_data_removed" not in body
+
+
+def test_a_fixture_source_sync_does_not_purge_demo_data(client, monkeypatch):
+    """The purge is specifically tied to a real Zoho pull. Syncing against the
+    offline fixture source (dev/demo mode) must leave the demo dataset alone."""
+    from app.demo import seed_demo
+
+    s = client.Maker()
+    seed_demo(s)
+    s.commit()
+    s.close()
+
+    monkeypatch.setattr(settings, "ZOHO_SOURCE", "fixture")
+    owner = _hdr(client, "s.menon@sanketh.in")
+    body = client.post("/api/v1/data/sync", headers=owner).json()
+
+    assert "demo_data_removed" not in body
+    s = client.Maker()
+    assert s.query(models.Customer).filter_by(customer_id="cst_rane").count() == 1
+    s.close()

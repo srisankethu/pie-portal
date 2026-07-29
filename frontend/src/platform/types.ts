@@ -334,3 +334,29 @@ export interface ThresholdView {
   min_transactions: number;
   min_peer_customers: number;
 }
+
+/* ── Zoho credentials ──────────────────────────────────────────────────────
+ * One OAuth grant, usable by several organizations. A refresh token belongs to
+ * a Zoho user rather than a company, so one grant already reaches every company
+ * that user can see — separate legal entities do not need separate secrets, and
+ * pretending otherwise turns one rotation into N.
+ */
+export interface ZohoCredential {
+  credential_id: string;
+  label: string;
+  client_id: string;
+  owner_organization_id: string;
+  is_owner: boolean;
+  shared_with_organization_ids: string[];
+  accounts_base: string;
+  api_base: string;
+  rotated_at: string | null;
+  created_at: string | null;
+  used_by: { organization_id: string; zoho_organization_id: string }[];
+}
+
+export interface ZohoVisibleOrg {
+  organization_id: string;
+  name: string;
+  already_connected: boolean;
+}

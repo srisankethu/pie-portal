@@ -171,6 +171,7 @@ class ZohoConnectionRequest(BaseModel):
     refresh_token: str
     accounts_base: str = "https://accounts.zoho.in"
     api_base: str = "https://www.zohoapis.in/books/v3"
+    label: str = ""
 
 
 @router.put("/connection")
@@ -202,8 +203,206 @@ def set_connection(
         refresh_token=body.refresh_token.strip(),
         accounts_base=body.accounts_base.strip().rstrip("/"),
         api_base=body.api_base.strip().rstrip("/"),
+        label=body.label.strip(),
     )
     return {"connection": _connection(session, principal.organization_id)}
+
+
+# ── credentials (shared across organizations, deliberately) ──────────────────
+def _credential_dict(session: Session, cred, org: str) -> dict:
+    """A credential, described without ever repeating a secret.
+
+    ``visible_organizations`` is the answer to the question that makes this
+    whole split worth having: one Zoho grant already sees every company its
+    authorizing user can. It is fetched live rather than cached, because it is
+    exactly what someone is looking at when deciding whether they need a second
+    credential at all — and a stale answer there sends them to re-enter secrets
+    they did not need.
+    """
+    from ..ingestion.connections import connections_using
+
+    using = connections_using(session, cred.credential_id)
+    return {
+        "credential_id": cred.credential_id,
+        "label": cred.label or "Zoho connection",
+        "client_id": cred.client_id,          # an identifier, not a secret
+        "owner_organization_id": cred.owner_organization_id,
+        "is_owner": cred.owner_organization_id == org,
+        "shared_with_organization_ids": cred.shared_with_organization_ids or [],
+        "accounts_base": cred.accounts_base,
+        "api_base": cred.api_base,
+        "rotated_at": cred.rotated_at.isoformat() if cred.rotated_at else None,
+        "created_at": cred.created_at.isoformat() if cred.created_at else None,
+        "used_by": [
+            {"organization_id": c.organization_id,
+             "zoho_organization_id": c.zoho_organization_id}
+            for c in using
+        ],
+    }
+
+
+@router.get("/credentials")
+def list_credentials(
+    principal: Principal = Depends(require_owner),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Every Zoho grant this organization may connect through.
+
+    Usually one. A second is needed only when the companies live under genuinely
+    separate Zoho logins — not merely because they are separate legal entities,
+    which is the assumption that turns one rotation into three.
+    """
+    from ..ingestion.connections import usable_credentials
+
+    org = principal.organization_id
+    return {
+        "credentials": [_credential_dict(session, c, org)
+                        for c in usable_credentials(session, org)],
+        "organizations": [
+            {"organization_id": o.organization_id, "name": o.name}
+            for o in session.scalars(select(models.Organization)
+                                     .order_by(models.Organization.name))
+        ],
+    }
+
+
+@router.get("/credentials/{credential_id}/organizations")
+def credential_organizations(
+    credential_id: str,
+    principal: Principal = Depends(require_owner),
+    session: Session = Depends(get_session),
+) -> dict:
+    """The Zoho companies this one grant can already reach.
+
+    Ask Zoho, do not guess. If all three entities appear here, one credential is
+    all that is ever needed and the other two connections cost nothing but a
+    company id.
+    """
+    from ..ingestion.connections import CredentialNotUsable, get_credential
+    from ..ingestion.zoho_client import ZohoApiSource, ZohoAuthError, ZohoCredentials
+    from .. import crypto
+
+    try:
+        cred = get_credential(session, principal.organization_id, credential_id)
+    except CredentialNotUsable as e:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(e)) from e
+
+    creds = ZohoCredentials(
+        organization_id="",                    # ping lists all of them
+        client_id=cred.client_id,
+        client_secret=crypto.decrypt(cred.client_secret_encrypted),
+        refresh_token=crypto.decrypt(cred.refresh_token_encrypted),
+        accounts_base=cred.accounts_base, api_base=cred.api_base)
+    try:
+        info = ZohoApiSource(credentials=creds).ping()
+    except ZohoAuthError as e:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY,
+                            f"Zoho rejected this credential: {e}") from e
+
+    connected = {c.zoho_organization_id
+                 for c in session.scalars(select(models.ZohoConnection))}
+    return {
+        "credential_id": credential_id,
+        "visible_organizations": [
+            {**o, "already_connected": o["organization_id"] in connected}
+            for o in info.get("visible_organizations", [])
+        ],
+    }
+
+
+class ConnectWithCredential(BaseModel):
+    """Connect using a grant already on file — no secret re-entered."""
+
+    credential_id: str
+    zoho_organization_id: str
+
+
+@router.post("/connection/use-credential")
+def connect_with_existing_credential(
+    body: ConnectWithCredential,
+    principal: Principal = Depends(require_owner),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Point this organization at another Zoho company using an existing grant.
+
+    The second and third entity go through here. Nothing is typed twice, so
+    there is no second copy of a secret for a future rotation to miss.
+    """
+    from ..ingestion.connections import CredentialNotUsable, connect_with_credential
+
+    if not body.zoho_organization_id.strip():
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            "A Zoho organization id is required")
+    try:
+        connect_with_credential(
+            session, principal.organization_id,
+            credential_id=body.credential_id,
+            zoho_organization_id=body.zoho_organization_id.strip())
+    except CredentialNotUsable as e:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(e)) from e
+    return {"connection": _connection(session, principal.organization_id)}
+
+
+class RotateCredential(BaseModel):
+    refresh_token: str
+    client_id: Optional[str] = None
+    client_secret: Optional[str] = None
+
+
+@router.post("/credentials/{credential_id}/rotate")
+def rotate(
+    credential_id: str,
+    body: RotateCredential,
+    principal: Principal = Depends(require_owner),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Replace the secrets on one grant. Every connection using it follows.
+
+    One operation, however many companies are connected through it — which is
+    what makes rotating after a leak, or on a schedule, something a person will
+    actually do rather than put off.
+    """
+    from ..ingestion.connections import CredentialNotUsable, rotate_credential
+
+    if not body.refresh_token.strip():
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "A refresh token is required")
+    try:
+        cred = rotate_credential(
+            session, principal.organization_id, credential_id,
+            refresh_token=body.refresh_token.strip(),
+            client_id=(body.client_id or "").strip() or None,
+            client_secret=(body.client_secret or "").strip() or None)
+    except CredentialNotUsable as e:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(e)) from e
+    return {"credential": _credential_dict(session, cred, principal.organization_id),
+            "connection": _connection(session, principal.organization_id)}
+
+
+class ShareCredential(BaseModel):
+    organization_ids: list[str] = []
+
+
+@router.post("/credentials/{credential_id}/share")
+def share(
+    credential_id: str,
+    body: ShareCredential,
+    principal: Principal = Depends(require_owner),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Set which other organizations may connect through this grant.
+
+    A full replace, so revoking is the same operation as granting and cannot be
+    forgotten. Sharing a key is not sharing data: each organization keeps its
+    own users, decisions and margins.
+    """
+    from ..ingestion.connections import CredentialNotUsable, share_credential
+
+    try:
+        cred = share_credential(session, principal.organization_id, credential_id,
+                                with_organization_ids=body.organization_ids)
+    except CredentialNotUsable as e:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(e)) from e
+    return {"credential": _credential_dict(session, cred, principal.organization_id)}
 
 
 @router.delete("/connection")

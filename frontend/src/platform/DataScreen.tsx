@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { papi } from "./api";
-import type { DataStatus, PlatformSession, ZohoConnectionInput } from "./types";
+import type { DataStatus, PlatformSession, ZohoConnectionInput, ZohoCredential, ZohoVisibleOrg } from "./types";
 import { Bp } from "./ui";
 
 /**
@@ -79,6 +79,14 @@ export function DataScreen({ session, onSynced }: { session: PlatformSession; on
   const [full, setFull] = useState(false);
   const [connForm, setConnForm] = useState<ZohoConnectionInput>(EMPTY_CONN_FORM);
   const [connecting, setConnecting] = useState(false);
+  // Grants already on file. Connecting a second or third company should reuse
+  // one of these rather than asking for the same secret again.
+  const [credentials, setCredentials] = useState<ZohoCredential[]>([]);
+  const [reuseId, setReuseId] = useState("");
+  const [reuseOrgs, setReuseOrgs] = useState<ZohoVisibleOrg[] | null>(null);
+  const [reuseZohoOrg, setReuseZohoOrg] = useState("");
+  const [rotateToken, setRotateToken] = useState("");
+  const [credMsg, setCredMsg] = useState<string | null>(null);
   const [connError, setConnError] = useState<string | null>(null);
   const [disconnecting, setDisconnecting] = useState(false);
 
@@ -170,6 +178,55 @@ export function DataScreen({ session, onSynced }: { session: PlatformSession; on
     }
   }
 
+  const loadCredentials = useCallback(async () => {
+    if (!status?.can_manage_connection) return;
+    try {
+      setCredentials((await papi.listCredentials(session.token)).credentials);
+    } catch {
+      /* an owner without credentials yet is the normal first-run state */
+    }
+  }, [session.token, status?.can_manage_connection]);
+
+  useEffect(() => {
+    loadCredentials();
+  }, [loadCredentials]);
+
+  async function useExisting(e: React.FormEvent) {
+    e.preventDefault();
+    setCredMsg(null);
+    try {
+      await papi.connectWithCredential(session.token, reuseId, reuseZohoOrg.trim());
+      await load();
+      await loadCredentials();
+    } catch (err) {
+      setCredMsg((err as Error).message);
+    }
+  }
+
+  async function showCompanies(credentialId: string) {
+    setCredMsg(null);
+    setReuseOrgs(null);
+    try {
+      const r = await papi.credentialOrganizations(session.token, credentialId);
+      setReuseOrgs(r.visible_organizations);
+    } catch (err) {
+      setCredMsg((err as Error).message);
+    }
+  }
+
+  async function doRotate(credentialId: string) {
+    setCredMsg(null);
+    try {
+      await papi.rotateCredential(session.token, credentialId, rotateToken.trim());
+      setRotateToken("");
+      setCredMsg("Rotated. Every connection using this grant now uses the new token.");
+      await loadCredentials();
+      await load();
+    } catch (err) {
+      setCredMsg((err as Error).message);
+    }
+  }
+
   const c = status?.connection;
   const ui = c ? STATE_UI[c.state] || STATE_UI.ERROR : null;
   const s = status?.last_sync;
@@ -219,6 +276,69 @@ export function DataScreen({ session, onSynced }: { session: PlatformSession; on
                   </div>
                 ))}
               </dl>
+            )}
+
+            {/* Reuse before re-enter. A Zoho refresh token belongs to a user,
+                not a company, so a grant already on file usually reaches this
+                company too — and a second copy of a secret is a second thing to
+                rotate, which is how one gets missed. */}
+            {c.state === "NOT_CONFIGURED" && status?.can_manage_connection
+              && credentials.length > 0 && (
+              <form className="cred-reuse" onSubmit={useExisting}>
+                <div className="cred-reuse-h">Use a connection you already have</div>
+                <p className="fsrc">
+                  One Zoho sign-in reaches every company it can see. Separate legal
+                  entities do not need separate secrets — reusing one here means one
+                  rotation later instead of one per entity.
+                </p>
+                <select className="input" value={reuseId} required
+                  aria-label="Existing Zoho credential"
+                  onChange={(e) => { setReuseId(e.target.value); setReuseOrgs(null); }}>
+                  <option value="">Choose an existing connection…</option>
+                  {credentials.map((cr) => (
+                    <option key={cr.credential_id} value={cr.credential_id}>
+                      {cr.label} · {cr.client_id.slice(0, 18)}… · used by {cr.used_by.length}
+                    </option>
+                  ))}
+                </select>
+
+                {reuseId && (
+                  <button type="button" className="btn btn-ghost btn-sm"
+                    style={{ marginTop: 8 }} onClick={() => showCompanies(reuseId)}>
+                    Show the companies this reaches
+                  </button>
+                )}
+                {reuseOrgs && (
+                  <ul className="cred-orgs">
+                    {reuseOrgs.length === 0 && <li>Zoho returned no companies for this grant.</li>}
+                    {reuseOrgs.map((o) => (
+                      <li key={o.organization_id}>
+                        <button type="button" className="cred-org"
+                          disabled={o.already_connected}
+                          onClick={() => setReuseZohoOrg(o.organization_id)}>
+                          {o.name} <span className="mono">{o.organization_id}</span>
+                          {o.already_connected && <em> already connected</em>}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+
+                <label htmlFor="reuse-zoho-org" style={{ marginTop: 10 }}>
+                  Zoho Books organization id
+                </label>
+                <input id="reuse-zoho-org" className="input" required
+                  value={reuseZohoOrg}
+                  onChange={(e) => setReuseZohoOrg(e.target.value)} />
+
+                {credMsg && <p className="conn-detail">{credMsg}</p>}
+                <div style={{ marginTop: 12 }}>
+                  <button type="submit" className="btn btn-primary btn-sm" disabled={!reuseId}>
+                    Connect with this
+                  </button>
+                </div>
+                <div className="cred-or">or enter a different Zoho sign-in below</div>
+              </form>
             )}
 
             {c.state === "NOT_CONFIGURED" && status?.can_manage_connection && (
@@ -286,6 +406,31 @@ export function DataScreen({ session, onSynced }: { session: PlatformSession; on
                 Ask an owner to connect this organization's Zoho account.
               </p>
             )}
+
+            {status?.can_manage_connection && c.state !== "NOT_CONFIGURED"
+              && credentials.filter((cr) => cr.is_owner).map((cr) => (
+              <div className="cred-rotate" key={cr.credential_id}>
+                <div className="cred-reuse-h">Rotate this connection</div>
+                <p className="fsrc">
+                  Replaces the refresh token once, for every company connected through
+                  it — {cr.used_by.length}{" "}
+                  {cr.used_by.length === 1 ? "organization" : "organizations"}
+                  {cr.rotated_at && <> · last rotated {cr.rotated_at.slice(0, 10)}</>}.
+                  Generate a new token in the Zoho API console and paste it here; the
+                  old one stops working when you revoke it there.
+                </p>
+                <input className="input" type="password" placeholder="New refresh token"
+                  value={rotateToken} aria-label="New refresh token"
+                  onChange={(e) => setRotateToken(e.target.value)} />
+                {credMsg && <p className="conn-detail">{credMsg}</p>}
+                <div style={{ marginTop: 10 }}>
+                  <button className="btn btn-secondary btn-sm" disabled={!rotateToken.trim()}
+                    onClick={() => doRotate(cr.credential_id)}>
+                    Rotate
+                  </button>
+                </div>
+              </div>
+            ))}
 
             {status?.can_sync && c.state !== "NOT_CONFIGURED" && (
               <div className="sync-opts">

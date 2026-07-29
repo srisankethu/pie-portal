@@ -1,4 +1,4 @@
-import type { Account, ApprovalRequest, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, OrgPolicy, PlatformSession, PlatformUser, QuoteGate, Role, SyncOptions, SyncRun, ThresholdView, ZohoConnectionInput } from "./types";
+import type { Account, ApprovalRequest, ZohoCredential, ZohoVisibleOrg, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, OrgPolicy, PlatformSession, PlatformUser, QuoteGate, Role, SyncOptions, SyncRun, ThresholdView, ZohoConnectionInput } from "./types";
 
 const KEY = "pie_platform_session";
 
@@ -73,6 +73,34 @@ export const papi = {
   setZohoConnection: (t: string, body: ZohoConnectionInput) =>
     req<{ connection: DataStatus["connection"] }>(
       "/api/v1/data/connection", { method: "PUT", body: JSON.stringify(body) }, t),
+
+  // ── Zoho credentials, shared across organizations on purpose ─────────────
+  // A refresh token belongs to a Zoho *user*, not a company, so one grant
+  // already reaches every company that user can see. Re-entering it per legal
+  // entity only creates copies for a future rotation to miss.
+  listCredentials: (t: string) =>
+    req<{ credentials: ZohoCredential[]; organizations: { organization_id: string; name: string }[] }>(
+      "/api/v1/data/credentials", {}, t),
+
+  credentialOrganizations: (t: string, credentialId: string) =>
+    req<{ credential_id: string; visible_organizations: ZohoVisibleOrg[] }>(
+      `/api/v1/data/credentials/${credentialId}/organizations`, {}, t),
+
+  connectWithCredential: (t: string, credential_id: string, zoho_organization_id: string) =>
+    req<{ connection: DataStatus["connection"] }>(
+      "/api/v1/data/connection/use-credential",
+      { method: "POST", body: JSON.stringify({ credential_id, zoho_organization_id }) }, t),
+
+  rotateCredential: (t: string, credentialId: string, refresh_token: string,
+                     client_id?: string, client_secret?: string) =>
+    req<{ credential: ZohoCredential }>(
+      `/api/v1/data/credentials/${credentialId}/rotate`,
+      { method: "POST", body: JSON.stringify({ refresh_token, client_id, client_secret }) }, t),
+
+  shareCredential: (t: string, credentialId: string, organization_ids: string[]) =>
+    req<{ credential: ZohoCredential }>(
+      `/api/v1/data/credentials/${credentialId}/share`,
+      { method: "POST", body: JSON.stringify({ organization_ids }) }, t),
 
   clearZohoConnection: (t: string) =>
     req<{ removed: boolean; connection: DataStatus["connection"] }>(

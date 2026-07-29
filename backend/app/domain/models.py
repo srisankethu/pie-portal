@@ -58,23 +58,81 @@ class Organization(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
-class ZohoConnection(Base):
-    """One organization's Zoho Books connection — one platform tenant, one
-    Zoho Books company. Each org is a fully separate tenant, so this is a
-    one-to-one relationship, not a list: connecting a second Zoho company
-    means provisioning a second organization (see ``app/provision_org.py``),
-    not adding a second row here.
+class ZohoCredential(Base):
+    """One Zoho OAuth grant — an app registration plus one user's refresh token.
+
+    Separate from ``ZohoConnection`` because they are genuinely different
+    things, and conflating them was a design error worth naming.
+
+    A Zoho refresh token belongs to a *user*, not to a company. Zoho Books
+    passes ``organization_id`` as a request parameter, and ``GET /organizations``
+    returns every company that user can see. So one grant already reaches all of
+    them: a business with three legal entities under one Zoho login needs one
+    credential, not three. Storing the client id, secret and refresh token on
+    each connection row forced the same secret to be typed in — and later
+    rotated — once per entity, multiplying a one-time job by the number of
+    companies for no security benefit at all. The blast radius was identical
+    either way, since it was the same secret.
+
+    Sharing a credential does not share data. Each platform organization
+    remains a fully separate tenant with its own users, decisions and margins;
+    this is only the key used to fetch its rows.
 
     ``client_secret`` and ``refresh_token`` are encrypted at rest (see
     ``app/crypto.py``) — this table, unlike a ``.env`` file, can end up in a
-    database backup or a read replica. Pull tuning (pacing, retries, page
-    size, history window) is deliberately NOT here: it is shared, global
-    operational behaviour in ``config.py``, not part of an account's identity.
+    database backup or a read replica.
+    """
+
+    __tablename__ = "zoho_credentials"
+
+    credential_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    # Who may rotate it and decide who else may use it.
+    owner_organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    label: Mapped[str] = mapped_column(String(255), default="")
+
+    client_id: Mapped[str] = mapped_column(String(255))
+    client_secret_encrypted: Mapped[str] = mapped_column(String(2048))
+    refresh_token_encrypted: Mapped[str] = mapped_column(String(2048))
+    accounts_base: Mapped[str] = mapped_column(String(255),
+                                               default="https://accounts.zoho.in")
+    api_base: Mapped[str] = mapped_column(String(255),
+                                          default="https://www.zohoapis.in/books/v3")
+
+    # Other platform organizations allowed to connect through this grant.
+    # Explicit rather than implicit: a credential reachable by every tenant in
+    # the deployment would be a cross-tenant hole, whatever the intent.
+    shared_with_organization_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
+
+    # When the refresh token was last replaced — the one date that answers
+    # "are we overdue a rotation?" without anyone having to remember.
+    rotated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
+                                                 onupdate=_now)
+
+    def is_usable_by(self, organization_id: str) -> bool:
+        return (organization_id == self.owner_organization_id
+                or organization_id in (self.shared_with_organization_ids or []))
+
+
+class ZohoConnection(Base):
+    """One platform organization pointed at one Zoho Books company.
+
+    A connection is now just that pairing: which grant to authenticate with, and
+    which company id to ask for. Still one row per platform organization —
+    connecting a second Zoho company still means provisioning a second
+    organization (see ``app/provision_org.py``) — but the secret behind it can
+    be shared, so three entities under one Zoho login are three connections over
+    one credential, and one rotation.
+
+    Pull tuning (pacing, retries, page size, history window) is deliberately NOT
+    here: it is shared, global operational behaviour in ``config.py``, not part
+    of an account's identity.
 
     The platform's original default organization has no row here until someone
     explicitly connects it — until then it falls back to the ``ZOHO_*``
-    environment variables, so an existing single-tenant deployment keeps
-    working unchanged (see ``ingestion/connections.py``).
+    environment variables, so an existing single-tenant deployment keeps working
+    unchanged (see ``ingestion/connections.py``).
     """
 
     __tablename__ = "zoho_connections"
@@ -82,15 +140,23 @@ class ZohoConnection(Base):
     organization_id: Mapped[str] = mapped_column(
         String(64), ForeignKey("organizations.organization_id"), primary_key=True)
     zoho_organization_id: Mapped[str] = mapped_column(String(64))
-    client_id: Mapped[str] = mapped_column(String(255))
-    client_secret_encrypted: Mapped[str] = mapped_column(String(2048))
-    refresh_token_encrypted: Mapped[str] = mapped_column(String(2048))
+    credential_id: Mapped[Optional[str]] = mapped_column(
+        String(64), ForeignKey("zoho_credentials.credential_id"), index=True)
+
+    # Legacy inline credentials. Rows created before credentials were separated
+    # keep working from these until the migration backfills them; nothing new is
+    # ever written here.
+    client_id: Mapped[Optional[str]] = mapped_column(String(255))
+    client_secret_encrypted: Mapped[Optional[str]] = mapped_column(String(2048))
+    refresh_token_encrypted: Mapped[Optional[str]] = mapped_column(String(2048))
     accounts_base: Mapped[str] = mapped_column(String(255), default="https://accounts.zoho.in")
     api_base: Mapped[str] = mapped_column(String(255),
                                           default="https://www.zohoapis.in/books/v3")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
                                                  onupdate=_now)
+
+    credential: Mapped[Optional["ZohoCredential"]] = relationship(lazy="joined")
 
 
 class User(Base):

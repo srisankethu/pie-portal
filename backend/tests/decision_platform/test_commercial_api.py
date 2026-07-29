@@ -21,7 +21,7 @@ from app.db import Base, get_session
 from app.domain import models
 from app.domain.enums import SignalType
 from app.routers import commercial, platform_auth
-from app.seed import ensure_org_and_users
+from app.seed import SEED_PASSWORD, ensure_org_and_users
 
 ORG = "org_sanketh"          # the seeded default org the demo users belong to
 AS_OF = date(2026, 7, 1)
@@ -99,7 +99,7 @@ def client():
 
 
 def _hdr(c, email):
-    r = c.post("/api/v1/auth/login", json={"email": email, "password": "x"})
+    r = c.post("/api/v1/auth/login", json={"email": email, "password": SEED_PASSWORD})
     return {"Authorization": f"Bearer {r.json()['token']}"}
 
 

@@ -263,6 +263,11 @@ class DecisionRepository:
         elif action is HumanAction.OVERRIDE:
             decision.status = DecisionStatus.OVERRIDDEN.value
             decision.override_reason = reason
+        elif action is HumanAction.ESCALATE:
+            # Parked, not closed. The approval request raised alongside this is
+            # what actually routes it; settling that request moves the decision
+            # on (see approvals._settle_escalated_decision).
+            decision.status = DecisionStatus.ESCALATED.value
         elif action is HumanAction.SNOOZE:
             pass  # snooze keeps status; scheduling deferred to the outcome phase
         elif action is HumanAction.REOPEN:

@@ -6,8 +6,15 @@ principal never receives per-line economics.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from typing import Optional
 
+from fastapi import APIRouter, Depends, Header, HTTPException, status
+from sqlalchemy.orm import Session
+
+from .. import approvals
+from ..authz import Principal as PlatformPrincipal, load_principal
+from ..config import settings
+from ..db import get_session
 from ..deps import current_principal, get_zoho
 from ..schemas import (
     CreateQuoteRequest,
@@ -22,6 +29,27 @@ from ..store import Line, Quote, store
 from ..zoho import ZohoService
 
 router = APIRouter(prefix="/api/quotes", tags=["quotes"])
+
+
+def optional_platform_principal(
+    x_platform_authorization: Optional[str] = Header(default=None),
+    session: Session = Depends(get_session),
+) -> Optional[PlatformPrincipal]:
+    """The platform identity the browser also holds, if it sent one.
+
+    A separate header rather than ``Authorization`` because this router already
+    authenticates a Quote Builder principal there, and the two identity systems
+    are genuinely different: one is the quoting tool's demo login, the other is
+    the org-scoped platform user the approval queue belongs to. Optional here,
+    mandatory at the point of use when policy requires approvals — the endpoint
+    decides that, not the dependency.
+    """
+    if not x_platform_authorization:
+        return None
+    token = x_platform_authorization.strip()
+    if token.lower().startswith("bearer "):
+        token = token.split(" ", 1)[1].strip()
+    return load_principal(session, token)
 
 
 def _get_quote(quote_id: str) -> Quote:
@@ -129,7 +157,9 @@ def create_item(quote_id: str, line_id: str,
 @router.post("/{quote_id}/estimate", response_model=EstimateResponse)
 def create_estimate(quote_id: str,
                     principal: Principal = Depends(current_principal),
-                    zoho: ZohoService = Depends(get_zoho)):
+                    zoho: ZohoService = Depends(get_zoho),
+                    platform: Optional[PlatformPrincipal] = Depends(optional_platform_principal),
+                    session: Session = Depends(get_session)):
     q = _get_quote(quote_id)
     blockers = store.blockers(q)
     if blockers:
@@ -138,6 +168,28 @@ def create_estimate(quote_id: str,
             blockers=[ln.id for ln in blockers],
             message=f"{len(blockers)} critical line(s) must be resolved first.",
         )
+
+    # ── the commercial gate ──────────────────────────────────────────────────
+    # A line priced below the floor was previously computed, flagged, recorded
+    # — and then sent anyway, because nothing refused it. This is where it is
+    # refused. The check runs server-side against the recorded snapshots; a
+    # client that simply does not call the approvals API cannot route around it.
+    #
+    # The gate needs an organization, which the Quote Builder's own demo
+    # identity does not carry, so it reads the platform token the browser
+    # already holds. When an org has enforcement on, that token is mandatory:
+    # otherwise "send without signing in to the platform" would be the bypass.
+    org = platform.organization_id if platform else settings.DEFAULT_ORG_ID
+    policy = approvals.get_policy(session, org)
+    if policy.require_approval_for_quotes:
+        if platform is None:
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                "Sign in to the Decisions platform to send a quote — approvals "
+                "are required in this organization.")
+        blocked = approvals.quote_submission_block(session, org, quote_id)
+        if blocked:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, blocked)
     lines = [{"code": ln.supplyCode, "qty": ln.reqQty, "rate": ln.quoted}
              for ln in q.lines if ln.supplyCode]
     est = zoho.create_estimate(q.customer, lines)

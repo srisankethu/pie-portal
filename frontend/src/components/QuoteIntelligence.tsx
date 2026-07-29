@@ -51,6 +51,8 @@ export function QuoteIntelligence({
   error,
   connected,
   onOverride,
+  onRequestApproval,
+  approvalStatus,
   onDrilldown,
 }: {
   line: Line;
@@ -59,6 +61,9 @@ export function QuoteIntelligence({
   error: string | null;
   connected: boolean;
   onOverride: (lineId: string, reasonCode: string, reason: string) => Promise<void>;
+  onRequestApproval: (lineId: string, reasonCode: string, reason: string) => Promise<void>;
+  /** The live approval on this line, if one has been raised. */
+  approvalStatus: { status: string; required_authority: string; decision_note: string | null } | null;
   onDrilldown: (customerId: string, productId: string) => void;
 }) {
   const [reasonCode, setReasonCode] = useState(OVERRIDE_REASONS[0][0]);
@@ -103,10 +108,18 @@ export function QuoteIntelligence({
   const confidence =
     dq.data_sufficiency === "SUFFICIENT" ? "High" : dq.data_sufficiency === "PARTIAL" ? "Medium" : "Low";
 
+  const needsApproval = intel?.requires_approval ?? false;
+
   async function save() {
     setSaveError(null);
     try {
-      await onOverride(intel!.line_id, reasonCode, reason.trim());
+      // Below the floor, recording a reason is not enough — the reason goes
+      // with a request that somebody has to answer before this can be sent.
+      if (needsApproval) {
+        await onRequestApproval(intel!.line_id, reasonCode, reason.trim());
+      } else {
+        await onOverride(intel!.line_id, reasonCode, reason.trim());
+      }
       setSaved(true);
       setCapturing(false);
       setReason("");
@@ -132,6 +145,20 @@ export function QuoteIntelligence({
           <>No sales history matches “{intel.product_ref || line.reqCode}”.</>
         )}
       </div>
+
+      {approvalStatus && (
+        <div className={`qi-approval qi-ap-${approvalStatus.status.toLowerCase()}`}>
+          {approvalStatus.status === "PENDING" && (
+            <>Waiting on {approvalStatus.required_authority === "OWNER" ? "an owner" : "a manager"} to approve this price.</>
+          )}
+          {approvalStatus.status === "APPROVED" && <>Approved at this price.</>}
+          {approvalStatus.status === "REJECTED" && <>Rejected. This price cannot be sent.</>}
+          {approvalStatus.status === "CHANGES_REQUESTED" && <>A different price was asked for.</>}
+          {approvalStatus.decision_note && (
+            <div className="qi-approval-note">“{approvalStatus.decision_note}”</div>
+          )}
+        </div>
+      )}
 
       {/* Exceptions first: this is the part that changes what someone does. */}
       {intel.exceptions.length > 0 && (
@@ -222,11 +249,15 @@ export function QuoteIntelligence({
           records why, against the exact rules that fired. */}
       {intel.exceptions.some((e) => e.severity !== "INFO") &&
         (saved ? (
-          <div className="qi-captured">Recorded. The price is yours to set — this notes why.</div>
+          <div className="qi-captured">
+            {needsApproval
+              ? "Sent for approval. The quote cannot go out until someone answers."
+              : "Recorded. The price is yours to set — this notes why."}
+          </div>
         ) : capturing ? (
           <div className="qi-capture">
             <label className="qi-label" htmlFor={`qi-reason-${intel.line_id}`}>
-              Why is this price right?
+              {needsApproval ? "Why should this be approved?" : "Why is this price right?"}
             </label>
             <select
               id={`qi-reason-${intel.line_id}`}
@@ -251,7 +282,7 @@ export function QuoteIntelligence({
             {saveError && <div className="qi-error">{saveError}</div>}
             <div className="qi-actions">
               <button className="btn btn-primary btn-sm" onClick={save}>
-                Record this decision
+                {needsApproval ? "Send for approval" : "Record this decision"}
               </button>
               <button className="btn btn-ghost btn-sm" onClick={() => setCapturing(false)}>
                 Cancel
@@ -261,7 +292,7 @@ export function QuoteIntelligence({
         ) : (
           <div className="qi-actions">
             <button className="btn btn-secondary btn-sm" onClick={() => setCapturing(true)}>
-              Record why this price is right
+              {needsApproval ? "Request approval" : "Record why this price is right"}
             </button>
             {intel.drilldown && (
               <button

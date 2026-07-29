@@ -105,6 +105,21 @@ class User(Base):
     role: Mapped[str] = mapped_column(String(32))
     active: Mapped[bool] = mapped_column(Boolean, default=True)
 
+    # ── credentials ──────────────────────────────────────────────────────────
+    # Nullable, and a null means "cannot sign in" — never "any password works",
+    # which is what the login endpoint previously did and which made the three
+    # roles a display preference rather than a boundary.
+    password_hash: Mapped[Optional[str]] = mapped_column(String(255))
+    must_change_password: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_login_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    # Who created this account, and who last changed its role. Role changes are
+    # the most security-relevant edit in the product; an unattributed one is not
+    # worth recording.
+    created_by_user_id: Mapped[Optional[str]] = mapped_column(String(64))
+    role_changed_by_user_id: Mapped[Optional[str]] = mapped_column(String(64))
+    role_changed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
 
 class Customer(Base):
     __tablename__ = "customers"
@@ -446,6 +461,102 @@ class CustomerItemMetric(Base):
     # ── provenance ───────────────────────────────────────────────────────────
     thresholds_version: Mapped[str] = mapped_column(String(32), default="")
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class ApprovalRequest(Base):
+    """Something a person could not authorize on their own, and what came of it.
+
+    This is the piece the platform was missing. A quote line below the margin
+    floor was *computed*, *flagged* and *recorded* — and then went out anyway,
+    because nothing anywhere refused it. A control that only annotates is not a
+    control.
+
+    The request carries a snapshot of what was being asked for (``subject``),
+    not a live reference to it. If the salesperson re-prices the line while a
+    manager is looking at the request, the manager must still see the number
+    they were asked about; a request that silently re-points at whatever the
+    price is *now* can be used to launder an approval.
+
+    Immutable except for the decision fields. The thread of notes is append-only
+    JSON for the same reason a quote decision is append-only: an approval
+    argument that can be edited afterwards settles nothing.
+    """
+
+    __tablename__ = "approval_requests"
+    __table_args__ = (
+        Index("ix_approval_org_status", "organization_id", "status"),
+        Index("ix_approval_org_subject", "organization_id", "kind", "subject_id"),
+    )
+
+    approval_request_id: Mapped[str] = mapped_column(String(64), primary_key=True,
+                                                     default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+
+    kind: Mapped[str] = mapped_column(String(32), index=True)
+    status: Mapped[str] = mapped_column(String(24), default="PENDING", index=True)
+    # The minimum role that may decide this one (MANAGER | OWNER).
+    required_authority: Mapped[str] = mapped_column(String(16), default="MANAGER")
+
+    # What it is about. ``subject_id`` is the quote id or decision id; the
+    # frozen detail lives in ``subject``.
+    subject_id: Mapped[str] = mapped_column(String(64), index=True)
+    subject_line_id: Mapped[Optional[str]] = mapped_column(String(64))
+    subject: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+    title: Mapped[str] = mapped_column(String(255), default="")
+    # Salesperson-safe summary. The approver additionally gets ``subject``,
+    # which may carry cost and margin; this field never does.
+    summary: Mapped[str] = mapped_column(String(1024), default="")
+    reason_code: Mapped[Optional[str]] = mapped_column(String(48))
+    reason: Mapped[Optional[str]] = mapped_column(String(2048))
+
+    requested_by_user_id: Mapped[str] = mapped_column(String(64), index=True)
+    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),
+                                                   default=_now, index=True)
+    decided_by_user_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    decided_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    decision_note: Mapped[Optional[str]] = mapped_column(String(2048))
+
+    # Append-only conversation: [{at, user_id, name, action, note}]
+    thread: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+
+    thresholds_version: Mapped[str] = mapped_column(String(32), default="")
+
+
+class OrgPolicy(Base):
+    """One organization's approval policy — who must sign off on what.
+
+    Separate from ``CommercialThresholds`` on purpose. Thresholds answer "is
+    this price thin?" and are a property of the analysis; this answers "may it
+    go out anyway, and whose call is that?" and is a property of the business.
+    Conflating them means a company that wants a stricter sign-off has to
+    distort its own margin analysis to get it.
+    """
+
+    __tablename__ = "org_policies"
+
+    organization_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+
+    # The master switch. Off, the platform advises and records but refuses
+    # nothing — which is exactly where this product started.
+    require_approval_for_quotes: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Below the *review* floor as well, not just the hard minimum. Off by
+    # default: flagging every thin line for sign-off trains people to rubber
+    # stamp, which is worse than not asking.
+    require_approval_below_review_floor: Mapped[bool] = mapped_column(Boolean,
+                                                                     default=False)
+    # Selling under cost is the owner's call, not a manager's.
+    below_cost_requires_owner: Mapped[bool] = mapped_column(Boolean, default=True)
+    # A manager cannot approve their own request. Owners can, because in a small
+    # business the owner is often the only approver and a rule they cannot
+    # satisfy is a rule they will switch off entirely.
+    allow_self_approval: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Escalating a decision raises an approval request rather than closing it.
+    escalation_creates_approval: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    updated_by_user_id: Mapped[Optional[str]] = mapped_column(String(64))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
+                                                 onupdate=_now)
 
 
 class QuoteDecision(Base):

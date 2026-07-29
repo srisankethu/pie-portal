@@ -18,7 +18,9 @@ from ..authz import Principal, can_view_decision, current_principal, decision_li
 from ..context.assembler import _flatten, _is_restricted
 from ..db import get_session
 from ..domain import models
-from ..domain.enums import DecisionType, HumanAction, Role, SubjectEntityType
+from ..domain.enums import (ApprovalKind, DecisionType, HumanAction, Role,
+                            SubjectEntityType)
+from .. import approvals
 from ..domain.schemas import ActionRequest, DecisionRead
 from ..repositories import DecisionRepository
 
@@ -170,4 +172,28 @@ def act_on_decision(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Unknown action {body.action!r}")
     repo.record_human_action(d, action, actor_user_id=principal.user_id,
                              note=body.note, reason=body.reason)
+
+    # Escalation is the one action that has to leave this endpoint. It used to
+    # mean "set OVERRIDDEN and write a note", so the decision closed and nobody
+    # upstream was told; now it raises a request into the approval queue and the
+    # decision waits there.
+    if action is HumanAction.ESCALATE:
+        policy = approvals.get_policy(session, principal.organization_id)
+        if policy.escalation_creates_approval:
+            approvals.raise_request(
+                session, principal, kind=ApprovalKind.DECISION_ESCALATION,
+                subject_id=d.decision_id,
+                subject={
+                    "decision_id": d.decision_id,
+                    "decision_type": d.decision_type,
+                    "subject_entity_type": d.subject_entity_type,
+                    "subject_entity_id": d.subject_entity_id,
+                    "priority_band": d.priority_band,
+                    "priority_score": d.priority_score,
+                    "ai": d.ai or {},
+                    "confidence": d.confidence or {},
+                },
+                title=(d.ai or {}).get("title") or d.decision_type,
+                summary=f"{d.decision_type} escalated for a decision above this role",
+                reason=body.note or body.reason)
     return _to_read(d)

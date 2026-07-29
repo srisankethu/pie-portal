@@ -12,6 +12,8 @@ export function SupplyDrawer({
   intelError,
   intelConnected,
   onRecordOverride,
+  onRequestApproval,
+  approvalStatus,
   onOpenPlatform,
   onClose,
   onSelect,
@@ -25,6 +27,8 @@ export function SupplyDrawer({
   intelError: string | null;
   intelConnected: boolean;
   onRecordOverride: (lineId: string, reasonCode: string, reason: string) => Promise<void>;
+  onRequestApproval: (lineId: string, reasonCode: string, reason: string) => Promise<void>;
+  approvalStatus: { status: string; required_authority: string; decision_note: string | null } | null;
   /** Jump to a platform screen — the Customer × Item analysis drill-down. */
   onOpenPlatform?: (hash: string) => void;
   onClose: () => void;
@@ -107,6 +111,8 @@ export function SupplyDrawer({
             error={intelError}
             connected={intelConnected}
             onOverride={onRecordOverride}
+            onRequestApproval={onRequestApproval}
+            approvalStatus={approvalStatus}
             onDrilldown={(customerId, productId) =>
               onOpenPlatform?.(`#/account/${customerId}/item/${productId}`)
             }

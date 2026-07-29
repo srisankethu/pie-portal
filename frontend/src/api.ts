@@ -86,10 +86,20 @@ export const api = {
   createItem: (t: string, id: string, lineId: string) =>
     req<Quote>(`/api/quotes/${id}/lines/${lineId}/create-item`, { method: "POST" }, t),
 
-  createEstimate: (t: string, id: string) =>
+  /** Create the Zoho estimate.
+   *
+   *  ``platformToken`` is the org-scoped Decisions identity, sent in a second
+   *  header because the Quote Builder's own login carries no organization and
+   *  the approval gate needs one. The server refuses to send when the policy
+   *  requires approvals and this header is missing — a client that simply
+   *  omitted it would otherwise be the way around every approval. */
+  createEstimate: (t: string, id: string, platformToken?: string | null) =>
     req<{ ok: boolean; estimateNumber: string | null; lineCount: number | null; blockers: string[]; message: string }>(
       `/api/quotes/${id}/estimate`,
-      { method: "POST" },
+      {
+        method: "POST",
+        headers: platformToken ? { "X-Platform-Authorization": `Bearer ${platformToken}` } : {},
+      },
       t,
     ),
 };

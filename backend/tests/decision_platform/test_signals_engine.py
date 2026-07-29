@@ -12,7 +12,7 @@ from sqlalchemy.pool import StaticPool
 from app.db import Base, get_session
 from app.domain import models
 from app.routers import internal, platform_auth
-from app.seed import ensure_org_and_users
+from app.seed import SEED_PASSWORD, ensure_org_and_users
 from app.signals.engine import run_detectors
 
 from .signal_fixtures import (
@@ -115,7 +115,7 @@ def test_detectors_run_endpoint_owner_only(client_and_maker):
 
     def tok(email):
         return client.post("/api/v1/auth/login",
-                           json={"email": email, "password": "x"}).json()["token"]
+                           json={"email": email, "password": SEED_PASSWORD}).json()["token"]
 
     # salesperson forbidden
     r = client.post("/api/v1/internal/detectors/run",

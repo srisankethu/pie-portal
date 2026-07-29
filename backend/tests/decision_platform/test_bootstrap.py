@@ -12,6 +12,7 @@ from sqlalchemy import create_engine, inspect, select
 
 from app.bootstrap import bootstrap, ensure_data_dir, ensure_schema
 from app.config import settings
+from app.seed import SEED_PASSWORD
 from app.domain import models
 
 
@@ -151,7 +152,7 @@ def test_app_startup_bootstraps_so_first_login_succeeds(tmp_path, monkeypatch):
 
     with TestClient(app) as client:            # 'with' runs the startup lifespan
         r = client.post("/api/v1/auth/login",
-                        json={"email": "r.nair@sanketh.in", "password": "demo"})
+                        json={"email": "r.nair@sanketh.in", "password": SEED_PASSWORD})
     assert r.status_code == 200, r.text
     assert r.json()["role"] == "SALESPERSON"
 

@@ -26,6 +26,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from .. import approvals
 from ..authz import Principal, current_principal
 from ..commercial.config import load_commercial_thresholds
 from ..commercial.quote_service import (
@@ -165,6 +166,12 @@ def snapshot(
             customer_ref=customer_ref, product_ref=refs.get(intel.line_id, ""),
             user_id=principal.user_id,
             override_reason=reason, override_reason_code=reason_code))
+        # A line re-priced back within policy should not leave an unanswerable
+        # request sitting in an approver's queue.
+        approvals.release_if_no_longer_needed(
+            session, principal, quote_id=body.quote_id.strip(),
+            line_id=intel.line_id,
+            still_requires_approval=intel.requires_approval)
 
     # A recorded quote is at least a draft, so the outcome path has a start.
     set_outcome(session, org, quote_id=body.quote_id.strip(),

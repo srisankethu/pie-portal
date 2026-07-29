@@ -16,7 +16,7 @@ from app.config import settings
 from app.db import Base, get_session
 from app.domain import models
 from app.routers import data_status, platform_auth
-from app.seed import ensure_org_and_users
+from app.seed import SEED_PASSWORD, ensure_org_and_users
 
 
 @pytest.fixture()
@@ -49,7 +49,7 @@ def client():
 
 
 def _hdr(c, email):
-    r = c.post("/api/v1/auth/login", json={"email": email, "password": "x"})
+    r = c.post("/api/v1/auth/login", json={"email": email, "password": SEED_PASSWORD})
     return {"Authorization": f"Bearer {r.json()['token']}"}
 
 
@@ -370,7 +370,8 @@ def test_two_tenants_sync_from_their_own_zoho_connection_only(client, monkeypatc
 
     s = client.Maker()
     provision_organization(s, organization_id="org_4u", name="4U Precision",
-                           owner_email="owner@4u.example", owner_name="4U Owner")
+                           owner_email="owner@4u.example", owner_name="4U Owner",
+                           owner_password=SEED_PASSWORD)
     s.commit()
     s.close()
 

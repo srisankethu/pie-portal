@@ -96,6 +96,18 @@ class DecisionStatus(str, Enum):
     EXPIRED = "EXPIRED"
     SUPERSEDED = "SUPERSEDED"
     RESOLVED = "RESOLVED"
+    # Waiting on someone with more authority. Deliberately *not* a closing
+    # state: escalation previously reused OVERRIDDEN, which closed the decision
+    # the moment it was handed upward, so the queue looked dealt with while
+    # nobody had actually looked at it.
+    ESCALATED = "ESCALATED"
+
+
+# Statuses that mean the decision is finished and off the queue.
+CLOSED_DECISION_STATUSES = frozenset({
+    DecisionStatus.ACTIONED, DecisionStatus.DISMISSED, DecisionStatus.OVERRIDDEN,
+    DecisionStatus.EXPIRED, DecisionStatus.SUPERSEDED, DecisionStatus.RESOLVED,
+})
 
 
 class HumanAction(str, Enum):
@@ -106,6 +118,10 @@ class HumanAction(str, Enum):
     DISMISS = "DISMISS"
     SNOOZE = "SNOOZE"
     OVERRIDE = "OVERRIDE"
+    # Hand upward for a judgement this person is not authorized to make. Raises
+    # an ApprovalRequest and parks the decision in ESCALATED; it is not a way to
+    # close a decision, which is what reusing OVERRIDE made it.
+    ESCALATE = "ESCALATE"
     # Undo a human action taken by mistake. The reopen is itself recorded, so
     # the audit trail shows both the original action and its reversal.
     REOPEN = "REOPEN"
@@ -176,6 +192,55 @@ class OutcomeStatus(str, Enum):
     PENDING = "PENDING"
     MEASURED = "MEASURED"
     NOT_MEASURABLE = "NOT_MEASURABLE"
+
+
+class ApprovalKind(str, Enum):
+    """What is being asked for.
+
+    Each kind names a specific thing a person could not do on their own
+    authority. A generic "approval" with a free-text subject would be
+    unenforceable: the gate has to know what it is gating.
+    """
+
+    # A quote line priced below the margin the business set for it.
+    QUOTE_LINE_PRICE = "QUOTE_LINE_PRICE"
+    # The whole quote going out, when any line on it needed approval.
+    QUOTE_SUBMISSION = "QUOTE_SUBMISSION"
+    # A decision handed upward because the person cannot judge it alone.
+    DECISION_ESCALATION = "DECISION_ESCALATION"
+
+
+class ApprovalStatus(str, Enum):
+    PENDING = "PENDING"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
+    # Approver wants a different price or more information — distinct from
+    # rejection, which ends the request. This one returns it to the requester
+    # with the thread intact.
+    CHANGES_REQUESTED = "CHANGES_REQUESTED"
+    # Requester no longer needs it (they re-priced above the floor).
+    WITHDRAWN = "WITHDRAWN"
+
+
+OPEN_APPROVAL_STATUSES = frozenset({ApprovalStatus.PENDING,
+                                    ApprovalStatus.CHANGES_REQUESTED})
+
+# Only an approver may set these; the requester may only WITHDRAW.
+APPROVER_DECISIONS = frozenset({ApprovalStatus.APPROVED, ApprovalStatus.REJECTED,
+                                ApprovalStatus.CHANGES_REQUESTED})
+
+
+class ApprovalAuthority(str, Enum):
+    """The minimum role that may decide a given request.
+
+    Two levels, because there are genuinely two kinds of ask. A thin margin is a
+    commercial judgement a sales manager is paid to make. Selling below what the
+    item cost is a decision about whether the business loses money on purpose,
+    and that is the owner's.
+    """
+
+    MANAGER = "MANAGER"
+    OWNER = "OWNER"
 
 
 class QuoteOutcomeStatus(str, Enum):

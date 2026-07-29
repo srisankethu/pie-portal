@@ -7,12 +7,16 @@ export function SummaryBar({
   onDiscount,
   onCreateEstimate,
   busy,
+  gateBlockedReason,
 }: {
   quote: Quote;
   selectedCount: number;
   onDiscount: (pct: number) => void;
   onCreateEstimate: () => void;
   busy: boolean;
+  /** Why the quote cannot be sent, from the approval gate. Shown here so the
+   *  reason sits next to the button rather than arriving as a failure. */
+  gateBlockedReason: string | null;
 }) {
   const hasLines = quote.lines.length > 0;
 
@@ -33,6 +37,9 @@ export function SummaryBar({
       <div className="spacer" />
       <div className="summary-actions">
         {!hasLines && <span className="summary-help">Paste an RFQ to start building the quote.</span>}
+        {hasLines && gateBlockedReason && (
+          <span className="summary-blocked">{gateBlockedReason}</span>
+        )}
         {selectedCount > 0 && (
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
             <span className="text-muted" style={{ fontSize: 12 }}>
@@ -45,11 +52,21 @@ export function SummaryBar({
         )}
         <button
           className="btn btn-primary"
-          title={hasLines ? "Create a Zoho estimate from the current quote" : "Add lines before creating the estimate"}
+          title={
+            gateBlockedReason ?? (hasLines
+              ? "Create a Zoho estimate from the current quote"
+              : "Add lines before creating the estimate")
+          }
           onClick={onCreateEstimate}
-          disabled={busy || !hasLines}
+          disabled={busy || !hasLines || !!gateBlockedReason}
         >
-          {busy ? "Creating…" : hasLines ? "Create Zoho estimate" : "Add lines to enable"}
+          {busy
+            ? "Creating…"
+            : gateBlockedReason
+              ? "Awaiting approval"
+              : hasLines
+                ? "Create Zoho estimate"
+                : "Add lines to enable"}
         </button>
       </div>
     </div>

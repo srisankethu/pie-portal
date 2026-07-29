@@ -6,12 +6,22 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.seed import SEED_PASSWORD
 
 client = TestClient(app)
 
 
 def _token(email: str) -> str:
     r = client.post("/api/auth/login", json={"email": email, "password": "x"})
+    assert r.status_code == 200, r.text
+    return r.json()["token"]
+
+
+def _platform_token(email: str) -> str:
+    """The org-scoped platform identity, which the commercial gate needs and the
+    Quote Builder's own demo login does not carry."""
+    r = client.post("/api/v1/auth/login",
+                    json={"email": email, "password": SEED_PASSWORD})
     assert r.status_code == 200, r.text
     return r.json()["token"]
 
@@ -96,20 +106,40 @@ def test_estimate_blocked_by_technical_lines(mgmt_hdr):
     assert est["blockers"]
 
 
-def test_estimate_created_when_clean(mgmt_hdr):
-    q = client.post("/api/quotes", json={"customer": "Pitti"}, headers=mgmt_hdr).json()
+def _clean_quote(hdr) -> str:
+    """A quote with one in-books, priced, technically-clean line."""
+    q = client.post("/api/quotes", json={"customer": "Pitti"}, headers=hdr).json()
     qid = q["id"]
-    client.post(f"/api/quotes/{qid}/intake", json={"text": "2001174, 10"}, headers=mgmt_hdr)
-    # ensure the line is in books + priced (create item if needed)
-    qd = client.get(f"/api/quotes/{qid}", headers=mgmt_hdr).json()
+    client.post(f"/api/quotes/{qid}/intake", json={"text": "2001174, 10"}, headers=hdr)
+    qd = client.get(f"/api/quotes/{qid}", headers=hdr).json()
     ln = qd["lines"][0]
     if ln["inBooks"] is False:
-        client.post(f"/api/quotes/{qid}/lines/{ln['id']}/create-item", headers=mgmt_hdr)
+        client.post(f"/api/quotes/{qid}/lines/{ln['id']}/create-item", headers=hdr)
     if ln["quoted"] is None:
-        client.post(f"/api/quotes/{qid}/lines/{ln['id']}/price", json={"price": 500}, headers=mgmt_hdr)
-    est = client.post(f"/api/quotes/{qid}/estimate", headers=mgmt_hdr).json()
-    # Only technical-status lines block; an in-books priced exact line should pass.
-    if not est["ok"]:
-        # if the seeded item happened to be NOT IN BOOKS (operational, not technical),
-        # that does not block — so ok must be True here.
-        assert est["ok"] is True, est
+        client.post(f"/api/quotes/{qid}/lines/{ln['id']}/price",
+                    json={"price": 500}, headers=hdr)
+    return qid
+
+
+def test_sending_a_quote_requires_a_platform_identity_when_approvals_are_on(mgmt_hdr):
+    """The Quote Builder's own login carries no organization, so it cannot be
+    checked against an approval queue. Sending without the platform token would
+    otherwise be the way around every approval in the product."""
+    qid = _clean_quote(mgmt_hdr)
+    r = client.post(f"/api/quotes/{qid}/estimate", headers=mgmt_hdr)
+    assert r.status_code == 403
+    assert "Decisions platform" in r.json()["detail"]
+
+
+def test_estimate_created_when_clean_and_nothing_needs_approval(mgmt_hdr):
+    """With a platform identity and no line requiring approval, the gate opens.
+
+    Only technical-status lines block on the Quote Builder side; the commercial
+    gate adds nothing when no snapshot on this quote asked for sign-off.
+    """
+    qid = _clean_quote(mgmt_hdr)
+    hdr = dict(mgmt_hdr)
+    hdr["X-Platform-Authorization"] = f"Bearer {_platform_token('s.menon@sanketh.in')}"
+    est = client.post(f"/api/quotes/{qid}/estimate", headers=hdr).json()
+    assert est["ok"] is True, est
+    assert est["estimateNumber"]

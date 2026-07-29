@@ -8,7 +8,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { LineIntelligence, Quote, QuoteIntelligence } from "./types";
-import { AssessLine, byLine, intelligence, platformToken } from "./intelligence";
+import { AssessLine, QuoteGate, byLine, intelligence, platformToken } from "./intelligence";
 
 function assessLines(quote: Quote | null): AssessLine[] {
   if (!quote) return [];
@@ -29,6 +29,8 @@ export interface QuoteIntelligenceState {
   error: string | null;
   connected: boolean;
   recordOverride: (lineId: string, reasonCode: string, reason: string) => Promise<void>;
+  requestApproval: (lineId: string, reasonCode: string, reason: string) => Promise<void>;
+  gate: QuoteGate | null;
   refresh: () => void;
 }
 
@@ -38,6 +40,7 @@ export function useQuoteIntelligence(quote: Quote | null): QuoteIntelligenceStat
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);
+  const [gate, setGate] = useState<QuoteGate | null>(null);
 
   const lines = useMemo(() => assessLines(quote), [quote]);
   // A stable key over exactly the inputs that change an assessment.
@@ -69,6 +72,21 @@ export function useQuoteIntelligence(quote: Quote | null): QuoteIntelligenceStat
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token, customer, quoteId, key, nonce]);
 
+  // The gate is re-read whenever the quote changes or something is submitted:
+  // an approval granted in another tab must show up here without a reload.
+  useEffect(() => {
+    if (!token || !quoteId) return;
+    let cancelled = false;
+    intelligence
+      .gate(token, quoteId)
+      .then((g) => !cancelled && setGate(g))
+      .catch(() => !cancelled && setGate(null));
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token, quoteId, key, nonce]);
+
   const recordOverride = useCallback(
     async (lineId: string, reasonCode: string, reason: string) => {
       if (!token || !quoteId) throw new Error("Not connected to the Decisions platform");
@@ -77,6 +95,28 @@ export function useQuoteIntelligence(quote: Quote | null): QuoteIntelligenceStat
       await intelligence.snapshot(token, quoteId, customer, [
         { ...line, override_reason_code: reasonCode, override_reason: reason },
       ]);
+      setNonce((n) => n + 1);
+    },
+    [token, quoteId, customer],
+  );
+
+  /** Record the reason *and* raise the request. Recording alone was the old
+   *  behaviour, and it let a below-floor price go out with a note attached. */
+  const requestApproval = useCallback(
+    async (lineId: string, reasonCode: string, reason: string) => {
+      if (!token || !quoteId) throw new Error("Not connected to the Decisions platform");
+      const line = latest.current.find((l) => l.line_id === lineId);
+      if (!line) throw new Error("That line is no longer on the quote");
+      if (line.proposed_price === null) throw new Error("Set a price first");
+      await intelligence.snapshot(token, quoteId, customer, [
+        { ...line, override_reason_code: reasonCode, override_reason: reason },
+      ]);
+      await intelligence.requestApproval(token, {
+        quote_id: quoteId, customer, line_id: lineId, product: line.product,
+        qty: line.qty, proposed_price: line.proposed_price,
+        reason, reason_code: reasonCode,
+      });
+      setNonce((n) => n + 1);
     },
     [token, quoteId, customer],
   );
@@ -88,6 +128,8 @@ export function useQuoteIntelligence(quote: Quote | null): QuoteIntelligenceStat
     error,
     connected: !!token,
     recordOverride,
+    requestApproval,
+    gate,
     refresh: () => setNonce((n) => n + 1),
   };
 }

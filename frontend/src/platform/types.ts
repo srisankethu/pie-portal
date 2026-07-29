@@ -250,3 +250,87 @@ export interface CustomerItemDetail {
     gross_profit: number | null; margin: number | null; cost_source: string | null;
   }[];
 }
+
+/* ── users, approvals and policy ──────────────────────────────────────────── */
+export type ApprovalKindName = "QUOTE_LINE_PRICE" | "QUOTE_SUBMISSION" | "DECISION_ESCALATION";
+export type ApprovalStatusName =
+  | "PENDING" | "APPROVED" | "REJECTED" | "CHANGES_REQUESTED" | "WITHDRAWN";
+
+export interface ApprovalThreadEntry {
+  at: string;
+  user_id: string;
+  name: string;
+  action: string;
+  note: string | null;
+}
+
+export interface ApprovalRequest {
+  approval_request_id: string;
+  kind: ApprovalKindName;
+  status: ApprovalStatusName;
+  required_authority: "MANAGER" | "OWNER";
+  subject_id: string;
+  subject_line_id: string | null;
+  title: string;
+  summary: string;
+  reason: string | null;
+  reason_code: string | null;
+  requested_by: string;
+  requested_by_user_id: string;
+  requested_at: string | null;
+  decided_by: string | null;
+  decided_at: string | null;
+  decision_note: string | null;
+  thread: ApprovalThreadEntry[];
+  can_decide: boolean;
+  is_open: boolean;
+  /** Carries cost and margin — absent for a salesperson, even on their own request. */
+  subject?: Record<string, unknown>;
+}
+
+export interface QuoteGate {
+  quote_id: string;
+  can_submit: boolean;
+  blocked_reason: string | null;
+  outcome: string;
+  requests: ApprovalRequest[];
+  policy: { require_approval_for_quotes: boolean };
+}
+
+export interface PlatformUser {
+  user_id: string;
+  email: string | null;
+  name: string;
+  role: Role;
+  active: boolean;
+  has_password: boolean;
+  must_change_password: boolean;
+  last_login_at: string | null;
+  created_at: string | null;
+  created_by: string | null;
+  role_changed_by: string | null;
+  role_changed_at: string | null;
+}
+
+export interface OrgPolicy {
+  require_approval_for_quotes: boolean;
+  require_approval_below_review_floor: boolean;
+  below_cost_requires_owner: boolean;
+  allow_self_approval: boolean;
+  escalation_creates_approval: boolean;
+  updated_at: string | null;
+}
+
+export interface ThresholdView {
+  version: string;
+  target_margin_default: number;
+  target_margin_by_family: Record<string, number>;
+  min_margin: number;
+  margin_floor: number;
+  sales_discretion_band: number;
+  quantity_band_edges: number[];
+  min_quote_exception_impact_rupees: number;
+  recent_days: number;
+  min_transactions: number;
+  min_peer_customers: number;
+}

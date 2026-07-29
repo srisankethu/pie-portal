@@ -13,7 +13,7 @@ from sqlalchemy.pool import StaticPool
 from app.db import Base, get_session
 from app.domain import models
 from app.routers import decisions, internal, platform_auth
-from app.seed import ensure_org_and_users
+from app.seed import SEED_PASSWORD, ensure_org_and_users
 
 ORG = "org_sanketh"
 
@@ -49,7 +49,7 @@ def client_and_maker():
 
 
 def _login(client, email):
-    r = client.post("/api/v1/auth/login", json={"email": email, "password": "x"})
+    r = client.post("/api/v1/auth/login", json={"email": email, "password": SEED_PASSWORD})
     assert r.status_code == 200, r.text
     return r.json()["token"]
 
@@ -77,7 +77,7 @@ def test_login_and_roles(client_and_maker):
     client, _ = client_and_maker
     assert client.post("/api/v1/auth/login",
                        json={"email": "nobody@x.com", "password": "x"}).status_code == 401
-    r = client.post("/api/v1/auth/login", json={"email": "r.nair@sanketh.in", "password": "x"})
+    r = client.post("/api/v1/auth/login", json={"email": "r.nair@sanketh.in", "password": SEED_PASSWORD})
     assert r.json()["role"] == "SALESPERSON"
 
 

@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  DEMO_ACCOUNTS,
   clearPlatformSession,
   isAuthError,
   loadPlatformSession,
@@ -11,6 +10,7 @@ import type { Account, DecisionDetail, DecisionSummary, PlatformSession, Role } 
 import { aiState, factLabel, factValue, isPrimaryFact } from "./format";
 import { Bp, Conf, FactChip, Interpretation, Pri, typeLabel } from "./ui";
 import { navigate, parseHash, type Screen } from "./route";
+import { ApprovalsScreen, SettingsScreen } from "./AdminScreens";
 import { DataScreen } from "./DataScreen";
 import { CustomerCommercial, CustomerItemScreen } from "./CommercialScreens";
 
@@ -84,8 +84,8 @@ function SignIn({ onIn, notice }: { onIn: (s: PlatformSession) => void; notice?:
           {busy ? "Signing in…" : "Sign in"}
         </button>
         <div className="demo">
-          Demo — <b>r.nair@sanketh.in</b> salesperson · <b>m.rao@sanketh.in</b> manager ·{" "}
-          <b>s.menon@sanketh.in</b> owner. Any password.
+          Your account decides your role. An owner creates accounts and sets roles from
+          Settings; if you have not been given one, ask them.
         </div>
       </form>
     </div>
@@ -268,6 +268,9 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
   const [modal, setModal] = useState<{ id: string; kind: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  // A badge on the nav, because an approval queue nobody notices is the same as
+  // no approval queue.
+  const [pendingApprovals, setPendingApprovals] = useState(0);
 
   const detailId = route.screen === "detail" ? route.id ?? null : null;
   const customerId =
@@ -332,21 +335,24 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
     if (session) load();
   }, [session, load]);
 
+  useEffect(() => {
+    if (!session) return;
+    let cancelled = false;
+    papi
+      .listApprovals(session.token, "PENDING")
+      .then((r) => !cancelled && setPendingApprovals(r.pending_for_me))
+      .catch(() => undefined);   // a badge must never break the shell
+    return () => {
+      cancelled = true;
+    };
+  }, [session, screen]);
+
   const signIn = (s: PlatformSession) => {
     setNotice(null);
     savePlatformSession(s);
     setSession(s);
     go("home");
   };
-  const switchRole = async (email: string) => {
-    try {
-      const r = await papi.login(email, "demo");
-      signIn({ token: r.token, role: r.role, name: r.name, user_id: r.user_id, organization_id: r.organization_id });
-    } catch (e) {
-      flash((e as Error).message);
-    }
-  };
-
   const openDetail = (id: string) => go("detail", id);
 
   const refresh = useCallback(async (id?: string) => {
@@ -403,8 +409,10 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
     ["list", "Decisions", summaries ? String(summaries.length) : ""],
     ["customer", "Accounts", ""],
     ["quotes", "Quotes", ""],
+    ["approvals", "Approvals", pendingApprovals ? String(pendingApprovals) : ""],
     ["data", "Data & connection", ""],
     ["states", "AI states", ""],
+    ["settings", "Settings", ""],
   ];
 
   return (
@@ -424,17 +432,9 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
           ))}
         </div>
         <span className="dp-spacer" />
-        {/* Demo affordance only. In a real deployment a user has one role and a
-            role switcher in the product chrome would be confusing at best. */}
-        {import.meta.env.DEV && (
-          <div className="dp-role" role="group" aria-label="Switch role (demo only)">
-            {DEMO_ACCOUNTS.map((a) => (
-              <button key={a.role} className={session.role === a.role ? "on" : ""} onClick={() => switchRole(a.email)}>
-                {a.label}
-              </button>
-            ))}
-          </div>
-        )}
+        {/* No role switcher. A user has exactly one role, it comes from their
+            account, and a control that swapped it would be a control that lets
+            anyone read the cost of every line in the book. */}
         <div className="dp-whoami">
           <b>{session.name}</b>
           <br />
@@ -562,6 +562,8 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
 
         {/* ── DATA & CONNECTION ── */}
         {screen === "data" && <DataScreen session={session} onSynced={load} />}
+        {screen === "approvals" && <ApprovalsScreen session={session} />}
+        {screen === "settings" && <SettingsScreen session={session} />}
 
         {/* ── AI STATES (reference) ── */}
         {screen === "states" && <StatesScreen />}

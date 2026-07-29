@@ -6,6 +6,7 @@ import { IntakeModal } from "./components/IntakeModal";
 import { SupplyDrawer } from "./components/SupplyDrawer";
 import { LineGrid } from "./components/LineGrid";
 import { SummaryBar } from "./components/SummaryBar";
+import { platformToken } from "./intelligence";
 import { useQuoteIntelligence } from "./useQuoteIntelligence";
 
 const FILTERS: [string, string][] = [
@@ -286,7 +287,14 @@ export default function App({ onOpenPlatform }: { onOpenPlatform?: (hash: string
 
   const doEstimate = () =>
     guard(async () => {
-      const r = await api.createEstimate(t, quote!.id);
+      // The server re-checks the approval gate; this only avoids a round trip
+      // that is certain to be refused, and says why in the same words.
+      if (ci.gate && !ci.gate.can_submit) {
+        flash(ci.gate.blocked_reason ?? "This quote needs approval before it can be sent.");
+        setFilter("EXC");
+        return;
+      }
+      const r = await api.createEstimate(t, quote!.id, platformToken());
       flash(r.message);
       if (!r.ok && r.blockers.length) {
         setFilter("NEEDS");
@@ -477,6 +485,7 @@ export default function App({ onOpenPlatform }: { onOpenPlatform?: (hash: string
         selectedCount={selectedCount}
         onDiscount={doDiscount}
         onCreateEstimate={doEstimate}
+        gateBlockedReason={ci.gate && !ci.gate.can_submit ? ci.gate.blocked_reason : null}
         busy={busy}
       />
 
@@ -491,6 +500,10 @@ export default function App({ onOpenPlatform }: { onOpenPlatform?: (hash: string
           intelError={ci.error}
           intelConnected={ci.connected}
           onRecordOverride={ci.recordOverride}
+          onRequestApproval={ci.requestApproval}
+          approvalStatus={
+            ci.gate?.requests.find((r) => r.subject_line_id === drawerLine.id) ?? null
+          }
           onOpenPlatform={onOpenPlatform}
           onClose={() => setDrawerLineId(null)}
           onSelect={doSelect}

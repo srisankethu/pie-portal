@@ -68,7 +68,41 @@ export const intelligence = {
 
   outcome: (token: string, quoteId: string, status: QuoteOutcomeStatus, customer: string, note?: string) =>
     post<QuoteOutcome>("/api/v1/quote-intelligence/outcome", { quote_id: quoteId, status, customer, note }, token),
+
+  /** Ask a manager or owner to sign off this line at the price on it now.
+   *  Recording a reason is not the same as being allowed — this is the ask. */
+  requestApproval: (
+    token: string,
+    body: { quote_id: string; customer: string; line_id: string; product: string;
+            qty: number; proposed_price: number; reason?: string; reason_code?: string },
+  ) => post<{ approval_request_id: string; status: string; required_authority: string }>(
+        "/api/v1/approvals/quote-line", body, token),
+
+  /** Whether this quote may be sent, and what is holding it. Mirrors the
+   *  server-side check the send endpoint performs — it does not replace it. */
+  gate: async (token: string, quoteId: string): Promise<QuoteGate> => {
+    const res = await fetch(`/api/v1/approvals/quotes/${encodeURIComponent(quoteId)}/gate`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) throw new Error(res.statusText);
+    return (await res.json()) as QuoteGate;
+  },
 };
+
+export interface QuoteGate {
+  quote_id: string;
+  can_submit: boolean;
+  blocked_reason: string | null;
+  outcome: string;
+  requests: {
+    approval_request_id: string;
+    subject_line_id: string | null;
+    status: string;
+    required_authority: string;
+    decision_note: string | null;
+  }[];
+  policy: { require_approval_for_quotes: boolean };
+}
 
 /** Index the per-line results by the Quote Builder's own line id. */
 export function byLine(data: QuoteIntelligence | null): Record<string, LineIntelligence> {

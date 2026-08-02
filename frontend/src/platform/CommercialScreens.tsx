@@ -173,13 +173,25 @@ export function CustomerCommercial({
              tone={s.historical_margin_gap ? "warn" : undefined} />
       </div>
 
-      {s.items_without_cost > 0 && (
+      {/* When *every* item is uncostable the whole screen is revenue-only, and
+          the flagged table below will be empty. Said plainly here, because
+          "nothing is flagged" would otherwise read as "all is well" when the
+          truth is "we cannot tell". */}
+      {s.items_without_cost > 0 && s.items_without_cost === s.active_items ? (
+        <p className="ci-note warn">
+          No purchase cost is recorded for any item on this account, so margin
+          cannot be computed and nothing can be flagged. This is almost always
+          because bills have not been synced yet — invoices alone say what was
+          sold, never what it cost. Sync bills from Data &amp; connection, then
+          recompute.
+        </p>
+      ) : s.items_without_cost > 0 ? (
         <p className="ci-note">
           {s.items_without_cost} of {s.active_items} items have no reliable purchase
           cost recorded, so no margin is shown for them. That is missing data, not a
           zero margin.
         </p>
-      )}
+      ) : null}
 
       <div className="section-h" style={{ marginTop: 18 }}>
         {showAll ? "All items" : "Items requiring attention"}
@@ -199,8 +211,9 @@ export function CustomerCommercial({
 
       {shown.length === 0 ? (
         <div className="dp-empty">
-          Nothing on this account is flagged. That is a fact about the data, not a
-          judgement about the relationship.
+          {s.items_without_cost === s.active_items && s.active_items > 0
+            ? "Nothing can be flagged without a purchase cost to compare against — see above."
+            : "Nothing on this account is flagged. That is a fact about the data, not a judgement about the relationship."}
         </div>
       ) : (
         <Bp style={{ padding: 2 }}>

@@ -31,6 +31,7 @@ log = logging.getLogger("pie_portal.describe")
 # word does not (edge 12).
 _DIMENSIONS: tuple[tuple[str, str], ...] = (
     ("diameter_mm", "Ø"),
+    ("cutting_dia_mm", "Ø"),
     ("edge_length_mm", "edge "),
     ("cutting_length_mm", "cut "),
     ("overall_length_mm", "OAL "),

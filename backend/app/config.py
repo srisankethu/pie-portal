@@ -67,6 +67,10 @@ class Settings:
     PIE_PACK: Path = _path_env("PIE_PACK", PIE_PARSER_ROOT / "packs" / "kennametal_widia")
 
     # Max ranked alternatives returned per line.
+    # Shared secret for the machine-facing /api/v1/pie endpoints (Zoho Deluge).
+    # Empty means the endpoint is closed, not open — see routers/pie.py.
+    PIE_API_KEY: str = os.environ.get("PIE_API_KEY", "")
+
     TOP_N: int = int(os.environ.get("PIE_TOP_N", "6"))
 
     # Deployment environment. "production" turns on hard guards (real auth secret

@@ -19,6 +19,7 @@ analysed together. That is said on the screen, not left to be discovered.
 """
 from __future__ import annotations
 
+import inspect
 import logging
 from datetime import date
 from typing import Optional
@@ -26,6 +27,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from ..authz import Principal, require_manager_or_owner, require_owner
@@ -38,7 +40,41 @@ from ..ingestion.zoho_client import ZohoApiSource, ZohoAuthError
 
 log = logging.getLogger("pie_portal.connections")
 
-router = APIRouter(prefix="/api/v1/connections", tags=["connections"])
+
+class SchemaBehind(RuntimeError):
+    """The database is older than the code reading it."""
+
+
+def _schema_guard(call):
+    """Turn a database that is behind into a sentence someone can act on.
+
+    Every endpoint here goes through it, because the failure is not specific
+    to one of them: a bare 500 with an empty body is what a browser console
+    shows, and it names neither the cause nor the fix.
+    """
+    def wrapper(*args, **kwargs):
+        try:
+            return call(*args, **kwargs)
+        except SchemaBehind as e:
+            log.error("schema behind: %s", e)
+            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(e)) from e
+    wrapper.__name__ = call.__name__
+    wrapper.__doc__ = call.__doc__
+    # FastAPI reads the signature to build the dependency graph, so it has to
+    # survive the wrapping.
+    wrapper.__signature__ = inspect.signature(call)
+    wrapper.__annotations__ = call.__annotations__
+    return wrapper
+
+
+class _Router(APIRouter):
+    """An APIRouter that wraps every endpoint in the schema guard."""
+
+    def add_api_route(self, path, endpoint, **kwargs):  # type: ignore[override]
+        return super().add_api_route(path, _schema_guard(endpoint), **kwargs)
+
+
+router = _Router(prefix="/api/v1/connections", tags=["connections"])
 
 
 #: How far back a first pull reads when nobody has said otherwise. Eighteen
@@ -60,13 +96,30 @@ def _last_run(session: Session, row: models.ZohoConnection) -> Optional[models.S
     Runs that covered every connection are excluded on purpose: this answers
     "when did *this* company last come in", and a company that has never been
     pulled individually should say so rather than borrow another run's date.
+
+    ``sync_runs.connection_id`` arrived after this table existed, so a
+    deployment running the new code against an un-migrated database fails
+    here — and used to fail as a bare 500 with no body, which is unreadable
+    from a browser console. Worse, it only appeared once a connection existed:
+    with none, the query never ran and the screen looked healthy. Named
+    plainly instead, with the command that fixes it.
     """
-    return session.scalars(
-        select(models.SyncRun)
-        .where(models.SyncRun.organization_id == row.organization_id,
-               models.SyncRun.connection_id == row.connection_id)
-        .order_by(models.SyncRun.started_at.desc())
-        .limit(1)).first()
+    try:
+        return session.scalars(
+            select(models.SyncRun)
+            .where(models.SyncRun.organization_id == row.organization_id,
+                   models.SyncRun.connection_id == row.connection_id)
+            .order_by(models.SyncRun.started_at.desc())
+            .limit(1)).first()
+    except OperationalError as e:
+        if "connection_id" not in str(e):
+            raise
+        session.rollback()   # Postgres aborts the whole transaction otherwise
+        raise SchemaBehind(
+            "This database is missing sync_runs.connection_id, so the platform "
+            "cannot tell which company a sync covered. Run `alembic upgrade "
+            "head` against it and reload — no data is lost, and nothing else "
+            "needs changing.") from e
 
 
 def _dict(session: Session, row: models.ZohoConnection) -> dict:

@@ -18,11 +18,24 @@ async function req<T>(path: string, opts: RequestInit = {}, token?: string): Pro
   if (token) headers.Authorization = `Bearer ${token}`;
   const res = await fetch(path, { ...opts, headers: { ...headers, ...(opts.headers || {}) } });
   if (!res.ok) {
+    // A crash that escapes FastAPI's handlers comes back as plain text, not
+    // JSON — so parsing as JSON and giving up threw away the only description
+    // of what went wrong and reported a bare "Internal Server Error" instead.
+    // Read the body once, then decide how to interpret it.
     let detail = res.statusText;
-    try {
-      detail = (await res.json()).detail || detail;
-    } catch {
-      /* ignore */
+    const body = await res.text().catch(() => "");
+    if (body) {
+      try {
+        const parsed = JSON.parse(body);
+        detail = parsed.detail || parsed.message || body;
+      } catch {
+        detail = body.slice(0, 500);
+      }
+    }
+    if (res.status >= 500 && detail === "Internal Server Error") {
+      detail =
+        "The server hit an error it could not describe. Its log has the traceback — " +
+        "if this followed a deployment, the usual cause is a pending `alembic upgrade head`.";
     }
     const err = new Error(detail) as Error & { status?: number };
     err.status = res.status;

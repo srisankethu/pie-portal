@@ -47,6 +47,11 @@ if settings.is_production and settings.CREDENTIAL_ENCRYPTION_KEY == _DEV_CREDENT
     )
 
 
+#: Filled in at startup when the database is behind the code, so a screen can
+#: say so rather than leaving an operator to read server logs.
+SCHEMA_GAP: dict[str, object] = {"message": None}
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     """Prepare the database, then warm the pie-parser engine.
@@ -69,6 +74,18 @@ async def lifespan(_app: FastAPI):
         except Exception:  # noqa: BLE001
             log.exception("database bootstrap failed; sign-in will not work until "
                           "'python -m app.bootstrap' is run successfully.")
+
+    # Said once, at startup, rather than discovered later as a bare 500 on
+    # whichever request first touches a column that does not exist yet. A
+    # deployment that pulls new code and forgets the migration otherwise looks
+    # healthy until someone opens the one screen that reads the new column.
+    try:
+        from .db import engine
+        from .schema_check import check_at_startup
+
+        SCHEMA_GAP["message"] = check_at_startup(engine)
+    except Exception:  # noqa: BLE001
+        log.exception("schema check failed; continuing")
 
     if os.environ.get("PIE_WARM", "1") != "0":
         try:

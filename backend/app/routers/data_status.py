@@ -457,6 +457,20 @@ def run_sync(
 
     org = principal.organization_id
     since = req.since or configured_since()
+
+    # A database missing sync_runs.connection_id fails on the INSERT below and
+    # then again while recording the failure, which escapes as a bare 500 with
+    # no body. Checked first so the answer is a sentence with the fix in it.
+    from ..schema_check import FIX, missing_columns
+
+    gap = missing_columns(session.get_bind()).get("sync_runs") or []
+    if "connection_id" in gap:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            f"This database is missing sync_runs.connection_id, so a pull cannot "
+            f"record which company it covered. Run `{FIX}` against it and try "
+            f"again. Nothing already synced is affected.")
+
     run = models.SyncRun(organization_id=org, source=settings.ZOHO_SOURCE,
                          status="OK", started_at=datetime.now(timezone.utc),
                          triggered_by=principal.user_id, since=since,

@@ -478,6 +478,12 @@ class SyncRun(Base):
     # ride back on the POST response; once the work happens after the response,
     # the row is the only place they can live.
     notes: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    # A long pull is read in calendar slices, so progress has a denominator that
+    # is actually known: the months between the start date and today. This is
+    # coverage of the requested window, not a prediction of remaining time —
+    # months differ wildly in volume, and the screen says so.
+    windows_total: Mapped[int] = mapped_column(Integer, default=0)
+    windows_done: Mapped[int] = mapped_column(Integer, default=0)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, index=True)
     finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     customers: Mapped[int] = mapped_column(Integer, default=0)

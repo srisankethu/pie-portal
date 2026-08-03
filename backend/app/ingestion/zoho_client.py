@@ -100,7 +100,8 @@ class ZohoApiSource:
     """
 
     def __init__(self, http: Any = None, since: Optional[date] = None,
-                 credentials: Optional[ZohoCredentials] = None) -> None:
+                 credentials: Optional[ZohoCredentials] = None,
+                 until: Optional[date] = None) -> None:
         creds = credentials or ZohoCredentials.from_settings()
         self._creds = creds
         self._base = creds.api_base.rstrip("/")
@@ -110,6 +111,10 @@ class ZohoApiSource:
         self._token: Optional[str] = None
         self._token_expires_at: float = 0.0
         self._since = since or configured_since()
+        # Upper bound of the window this source reads. Set when a long pull is
+        # split into calendar slices so each one asks Zoho for its own months
+        # instead of every source walking the whole ledger.
+        self._until = until
         self._last_call_at: float = 0.0
         # Observable so a sync run can report what the pull actually cost.
         self.calls = 0
@@ -310,6 +315,20 @@ class ZohoApiSource:
     def _cutoff(self) -> date:
         return self._since or (date.today() - timedelta(days=settings.ZOHO_HISTORY_DAYS))
 
+    def _window(self) -> dict[str, Optional[str]]:
+        """The date bounds, as Zoho's own list filters.
+
+        Sent to the API rather than applied after the fact. Filtering in Python
+        still costs one list call per page of *every* document the company has
+        ever issued, which is the bulk of a pull's calls and is charged against
+        the same rate limit as useful work. Zoho does the filtering server-side
+        for free.
+        """
+        return {
+            "date_start": self._cutoff().isoformat(),
+            "date_end": self._until.isoformat() if self._until else None,
+        }
+
     def _documents(self, path: str, list_key: str, detail_key: str, id_field: str,
                    excluded_status: set[str],
                    skip: Optional[SkipPredicate] = None) -> Iterator[dict[str, Any]]:
@@ -320,16 +339,22 @@ class ZohoApiSource:
         list calls.
         """
         cutoff = self._cutoff()
-        for row in self._paginate(path, list_key, sort_column="date", sort_order="D"):
+        until = self._until
+        for row in self._paginate(path, list_key, sort_column="date", sort_order="D",
+                                  **self._window()):
             status = str(row.get("status") or "").lower()
             if status in excluded_status:
                 continue
+            # Re-checked locally as well: the bounds above are a request to
+            # Zoho, and a source that quietly ignored them would otherwise
+            # double-count a document into two windows.
             raw_date = str(row.get("date") or "")
             try:
-                if date.fromisoformat(raw_date) < cutoff:
-                    continue
+                doc_date = date.fromisoformat(raw_date)
             except ValueError:
                 continue                      # unparseable date: skip, sync reports it
+            if doc_date < cutoff or (until is not None and doc_date > until):
+                continue
             doc_id = str(row.get(id_field))
             if skip is not None and skip(doc_id, str(row.get("last_modified_time") or "")):
                 self.documents_resumed += 1

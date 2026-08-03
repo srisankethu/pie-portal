@@ -140,9 +140,89 @@ def last_successful_run(session: Session, organization_id: str) -> Optional[mode
         .limit(1)).first()
 
 
+# ── slicing a long pull into calendar windows ───────────────────────────────
+#
+# Two things this buys, and one it does not.
+#
+# **A denominator that is real.** Zoho does not say how many documents it will
+# return until they have been paged through, so a percentage of documents would
+# be invented. The number of months between the start date and today is known
+# before the first call, so "month 7 of 18" is a fact. It is a measure of
+# calendar coverage, not of remaining time — months are not equal in volume, and
+# the screen says so rather than implying an ETA.
+#
+# **Far fewer calls.** The window is sent to Zoho as a list filter instead of
+# being applied after the fact, so a slice asks for its own months rather than
+# every source walking the company's entire ledger and discarding most of it.
+#
+# What it does not buy is atomicity. A pull that dies in month 12 has genuinely
+# written months 1–11, which is the behaviour that already made a resumed sync
+# cheap; slicing makes the boundary explicit rather than introducing it.
+
+#: Windows longer than this are not worth the extra round trips.
+MAX_WINDOWS = 60
+
+
+def resolve_since(value: Optional[date]) -> date:
+    """A concrete start date, always.
+
+    ``since`` used to be allowed to stay None and the client filled it in with
+    a rolling window at request time. Slicing needs a real lower bound before
+    the first call — and a run row that records "rolling window" cannot later
+    say which months it actually read.
+    """
+    return value or (date.today() - timedelta(days=settings.ZOHO_HISTORY_DAYS))
+
+
+def _add_months(d: date, n: int) -> date:
+    total = d.year * 12 + (d.month - 1) + n
+    return date(total // 12, total % 12 + 1, 1)
+
+
+def plan_windows(since: date, until: Optional[date] = None,
+                 step_months: int = 1) -> list[tuple[date, date]]:
+    """Split [since, until] into inclusive calendar slices, oldest first.
+
+    Oldest first on purpose: a pull that is interrupted should leave the
+    *history* in place and the recent end missing, because the recent end is
+    what the next run will fetch anyway and what the detectors need last.
+
+    Returns a single window when the range is short enough that slicing would
+    cost more round trips than it saves.
+    """
+    until = until or date.today()
+    if until < since:
+        return [(since, since)]
+
+    months = (until.year - since.year) * 12 + (until.month - since.month) + 1
+    if months <= 1 or step_months <= 0:
+        return [(since, until)]
+
+    # Keep the number of slices sane on a very long history by widening them
+    # rather than by refusing to slice at all.
+    while months / step_months > MAX_WINDOWS:
+        step_months += 1
+
+    windows: list[tuple[date, date]] = []
+    start = since
+    while start <= until:
+        boundary = _add_months(date(start.year, start.month, 1), step_months)
+        end = min(boundary - timedelta(days=1), until)
+        windows.append((start, end))
+        start = end + timedelta(days=1)
+    return windows
+
+
+def _window_label(start: date, end: date) -> str:
+    """What the slice is called on screen: 'Mar 2025', or a range if wider."""
+    if (start.year, start.month) == (end.year, end.month):
+        return start.strftime("%b %Y")
+    return f"{start.strftime('%b %Y')} – {end.strftime('%b %Y')}"
+
+
 # ── the work itself ─────────────────────────────────────────────────────────
 def execute_sync(session: Session, run: models.SyncRun, *,
-                 since: date, full: bool = False,
+                 since: Optional[date] = None, full: bool = False,
                  connection_id: Optional[str] = None) -> dict:
     """Pull, detect, recompute, decide — the whole cycle, against one run row.
 
@@ -159,6 +239,10 @@ def execute_sync(session: Session, run: models.SyncRun, *,
     from .sync import SyncReport, SyncService, get_source
 
     org = run.organization_id
+    since = resolve_since(since)
+    # Recorded on the row, so it says which window it read rather than
+    # "rolling window" — which is unanswerable once the pull is over.
+    run.since = since
 
     def phase(name: str) -> None:
         """Record what is happening, and prove the job is still alive."""
@@ -190,11 +274,39 @@ def execute_sync(session: Session, run: models.SyncRun, *,
                 log.exception("demo-data purge failed; continuing with the sync")
 
         phase("Connecting to Zoho")
-        source = (get_source(session, org, since=since, connection_id=connection_id)
-                  if connection_id else get_source(session, org, since=since))
 
-        svc = SyncService(session, source, org, resume=not full, on_phase=phase)
-        svc.run()
+        def source_for(start: date, end: Optional[date]):
+            """One source per window, each asking Zoho only for its own months."""
+            kwargs = {"since": start}
+            if connection_id:
+                kwargs["connection_id"] = connection_id
+            src = get_source(session, org, **kwargs)
+            # Only the live client can be bounded above; the fixture source has
+            # no window to speak of and is left alone.
+            if end is not None and hasattr(src, "_until"):
+                src._until = end
+            return src
+
+        windows = plan_windows(since)
+        run.windows_total = len(windows)
+        run.windows_done = 0
+
+        svc = SyncService(session, source_for(since, None), org,
+                          resume=not full, on_phase=phase)
+        svc.begin()
+        # Customers and items are the whole master list whatever the window, so
+        # they are read once rather than once per slice.
+        svc.run_reference()
+
+        for start, end in windows:
+            label = _window_label(start, end)
+            svc.run_documents(source_for(start, end), label=label)
+            run.windows_done += 1
+            # Flushed per window so a watcher sees the count move, and so an
+            # interrupted pull records how far it actually got.
+            phase(f"Read {label}")
+
+        svc.finish()
         report = svc.report
         session.flush()
 
@@ -302,7 +414,8 @@ def thread_dispatch(sync_run_id: str, since: date, full: bool,
 Dispatch = Callable[[str, date, bool, Optional[str]], None]
 
 
-def start_sync(session: Session, organization_id: str, *, since: date,
+def start_sync(session: Session, organization_id: str, *,
+               since: Optional[date] = None,
                full: bool = False, connection_id: Optional[str] = None,
                triggered_by: Optional[str] = None,
                dispatch: Optional[Dispatch] = None) -> tuple[models.SyncRun, bool]:
@@ -322,6 +435,7 @@ def start_sync(session: Session, organization_id: str, *, since: date,
         if existing is not None:
             return existing, False
 
+        since = resolve_since(since)
         run = models.SyncRun(
             organization_id=organization_id, source=settings.ZOHO_SOURCE,
             status="QUEUED", started_at=_now(), heartbeat_at=_now(),

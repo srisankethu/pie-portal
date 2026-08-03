@@ -48,6 +48,10 @@ def _run_dict(r: Optional[models.SyncRun]) -> Optional[dict[str, Any]]:
         # stale before it is painted.
         "phase": r.phase,
         "active": r.status in jobs.ACTIVE,
+        # Calendar coverage of the requested window — a real denominator,
+        # unlike a document count Zoho will not reveal in advance.
+        "windows_total": r.windows_total,
+        "windows_done": r.windows_done,
         "heartbeat_at": r.heartbeat_at.isoformat() if r.heartbeat_at else None,
         "connection_id": r.connection_id,
         "started_at": r.started_at.isoformat() if r.started_at else None,

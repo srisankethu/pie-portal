@@ -309,3 +309,118 @@ def test_the_state_survives_a_page_reload(client):
     again = client.get("/api/v1/data/sync", headers=_hdr(client)).json()
     assert again["active"]["sync_run_id"] == started["run"]["sync_run_id"]
     assert again["can_start"] is False
+
+
+# ── slicing a long pull into calendar windows ───────────────────────────────
+#
+# Zoho will not say how many documents it holds until they have been paged
+# through, so a percentage of documents would be invented. The months between
+# the start date and today are known before the first call, which is what makes
+# "month 7 of 18" a fact rather than a guess.
+def test_a_single_month_is_not_sliced(client):
+    """Slicing a short range costs round trips and buys nothing."""
+    assert jobs.plan_windows(date(2026, 3, 5), date(2026, 3, 28)) == [
+        (date(2026, 3, 5), date(2026, 3, 28))]
+
+
+def test_a_long_range_is_split_into_whole_months(client):
+    w = jobs.plan_windows(date(2025, 11, 20), date(2026, 2, 10))
+    assert w == [
+        (date(2025, 11, 20), date(2025, 11, 30)),
+        (date(2025, 12, 1), date(2025, 12, 31)),
+        (date(2026, 1, 1), date(2026, 1, 31)),
+        (date(2026, 2, 1), date(2026, 2, 10)),
+    ]
+
+
+def test_windows_are_contiguous_and_never_overlap(client):
+    """An overlap double-counts a document into two windows; a gap loses it."""
+    w = jobs.plan_windows(date(2024, 1, 15), date(2026, 8, 3))
+    assert w[0][0] == date(2024, 1, 15) and w[-1][1] == date(2026, 8, 3)
+    for (_, end), (nxt, _) in zip(w, w[1:]):
+        assert nxt == end + timedelta(days=1), f"{end} -> {nxt}"
+
+
+def test_windows_run_oldest_first(client):
+    """An interrupted pull should leave the history in place and the recent end
+    missing — the recent end is what the next run fetches anyway."""
+    w = jobs.plan_windows(date(2024, 1, 1), date(2026, 1, 1))
+    assert w == sorted(w)
+
+
+def test_a_very_long_history_widens_the_slices_rather_than_exploding(client):
+    """Twenty years of books must not become 240 round trips."""
+    w = jobs.plan_windows(date(2006, 1, 1), date(2026, 1, 1))
+    assert len(w) <= jobs.MAX_WINDOWS
+    assert w[0][0] == date(2006, 1, 1) and w[-1][1] == date(2026, 1, 1)
+
+
+def test_a_backwards_range_does_not_hang(client):
+    assert jobs.plan_windows(date(2026, 5, 1), date(2025, 5, 1)) == [
+        (date(2026, 5, 1), date(2026, 5, 1))]
+
+
+def test_the_run_records_how_much_of_the_window_it_has_read(client):
+    client.monkeypatch.setattr(jobs, "thread_dispatch", client.inline)
+    client.post("/api/v1/data/sync", headers=_hdr(client),
+                json={"since": "2025-01-01"})
+
+    last = client.get("/api/v1/data/sync", headers=_hdr(client)).json()["last"]
+    assert last["windows_total"] > 1, "a year and a half is worth slicing"
+    assert last["windows_done"] == last["windows_total"], (
+        "a completed run has read every window it planned")
+
+
+def test_reference_data_is_read_once_not_once_per_window(client):
+    """The contact list is the whole master list whatever the window. Reading it
+    per slice would turn a fix for one problem into a worse one."""
+    calls = {"contacts": 0, "items": 0, "invoices": 0}
+
+    class Counting(Empty):
+        def list_contacts(self):
+            calls["contacts"] += 1
+            return []
+
+        def list_items(self):
+            calls["items"] += 1
+            return []
+
+        def list_invoices(self, skip=None):
+            calls["invoices"] += 1
+            return []
+
+    client.monkeypatch.setattr("app.ingestion.sync.get_source",
+                               lambda session, org, since=None, **kw: Counting())
+    client.monkeypatch.setattr(jobs, "thread_dispatch", client.inline)
+    client.post("/api/v1/data/sync", headers=_hdr(client),
+                json={"since": "2025-01-01"})
+
+    last = client.get("/api/v1/data/sync", headers=_hdr(client)).json()["last"]
+    assert calls["contacts"] == 1, f"read {calls['contacts']} times"
+    assert calls["items"] == 1, f"read {calls['items']} times"
+    assert calls["invoices"] == last["windows_total"], (
+        "documents, by contrast, are read once per window")
+
+
+def test_a_pull_interrupted_part_way_keeps_the_windows_it_finished(client):
+    """Slicing does not create the partial-progress case — it makes it legible."""
+    seen: list[int] = []
+
+    class Breaks(Empty):
+        def list_invoices(self, skip=None):
+            seen.append(1)
+            if len(seen) >= 3:
+                raise RuntimeError("Zoho rate limit")
+            return []
+
+    client.monkeypatch.setattr("app.ingestion.sync.get_source",
+                               lambda session, org, since=None, **kw: Breaks())
+    client.monkeypatch.setattr(jobs, "thread_dispatch", client.inline)
+    client.post("/api/v1/data/sync", headers=_hdr(client),
+                json={"since": "2025-01-01"})
+
+    last = client.get("/api/v1/data/sync", headers=_hdr(client)).json()["last"]
+    assert last["status"] in ("PARTIAL", "FAILED")
+    assert last["windows_done"] == 2, "the two windows it got through are recorded"
+    assert last["windows_done"] < last["windows_total"]
+    assert "rate limit" in last["error"]

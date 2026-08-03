@@ -35,6 +35,13 @@ def upgrade() -> None:
     # rebuild summary. These used to ride back on the POST response; the work
     # now happens after that response, so the row is the only place for them.
     op.add_column("sync_runs", sa.Column("notes", sa.JSON()))
+    # A long pull is read in calendar slices; these are how far through the
+    # requested window it has got. Zero on historical rows, which were never
+    # sliced — the UI reads that as "no window breakdown", not "no progress".
+    op.add_column("sync_runs", sa.Column("windows_total", sa.Integer(),
+                                         server_default="0"))
+    op.add_column("sync_runs", sa.Column("windows_done", sa.Integer(),
+                                         server_default="0"))
 
     # Every existing row is a completed run. Giving the heartbeat their finish
     # time (falling back to their start) means the staleness check can never
@@ -44,6 +51,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    op.drop_column("sync_runs", "windows_done")
+    op.drop_column("sync_runs", "windows_total")
     op.drop_column("sync_runs", "notes")
     op.drop_column("sync_runs", "heartbeat_at")
     op.drop_column("sync_runs", "phase")

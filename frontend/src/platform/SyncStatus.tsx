@@ -17,11 +17,14 @@ import { Bp, Labelled, Tip } from "./ui";
  * navigate away, come back tomorrow — the job lives in the database, not in
  * this tab.
  *
- * **There is no progress bar.** The backend cannot know how many invoices Zoho
- * will return before it has paged through them, so a percentage would be
- * invented. What it can say honestly is which stage is running and that the job
- * reported for itself a moment ago — so that is what is shown. A fake bar
- * stuck at 90% teaches people to distrust every other number on the screen.
+ * **The progress bar measures calendar coverage, not documents.** Zoho will not
+ * say how many invoices it holds until they have been paged through, so a
+ * document percentage would be invented. The pull is therefore read in monthly
+ * slices, and the months between the start date and today are known before the
+ * first call — so "month 7 of 18" is a fact. It is labelled as what it is: how
+ * much of the requested window has been read, not an estimate of time
+ * remaining. Months differ wildly in volume and the card says so, because a bar
+ * that implies an ETA it cannot support is the same lie in a nicer shape.
  */
 
 /** How often to ask while a job is in flight. Fast enough to feel live,
@@ -232,14 +235,32 @@ export function SyncStatusCard({
             <span className="sy-phase">{active.phase || "Working"}</span>
             <span className="sy-elapsed">{elapsed(active.started_at)} elapsed</span>
           </div>
+          {active.windows_total > 1 && (
+            <div className="sy-progress">
+              <div className="sy-bar" role="progressbar"
+                   aria-valuenow={active.windows_done}
+                   aria-valuemin={0} aria-valuemax={active.windows_total}
+                   aria-label="Months of the requested window read">
+                <i style={{ width: `${(active.windows_done / active.windows_total) * 100}%` }} />
+              </div>
+              <span className="sy-bar-label">
+                {active.windows_done} of {active.windows_total} months read
+              </span>
+            </div>
+          )}
           <p className="sy-detail">
             Started {at(active.started_at)}. This runs in the background — you can
             leave this page, and it will still be going when you come back.
           </p>
           <p className="sy-detail sy-quiet">
-            No percentage is shown because none can be known honestly: Zoho does not
-            say how many documents it will return until they have been paged
-            through. The stage above and the elapsed time are real.
+            {active.windows_total > 1
+              ? "That bar is how much of the requested date range has been read, not " +
+                "an estimate of time left — a busy month takes far longer than a quiet " +
+                "one. Zoho does not reveal how many documents it holds until they have " +
+                "been paged through, so no honest document percentage exists."
+              : "No percentage is shown for a range this short: Zoho does not say how " +
+                "many documents it will return until they have been paged through. The " +
+                "stage above and the elapsed time are real."}
           </p>
         </>
       ) : shown ? (
@@ -254,6 +275,13 @@ export function SyncStatusCard({
               {at(shown.finished_at)} · took {elapsed(shown.started_at, shown.finished_at)}
             </span>
           </div>
+          {shown.windows_total > 1 && shown.windows_done < shown.windows_total && (
+            <p className="sy-detail">
+              Read {shown.windows_done} of {shown.windows_total} months before it
+              stopped. Those months are written and kept — running it again carries
+              on from there rather than starting over.
+            </p>
+          )}
           {shown.error && (
             <div className="sy-error">
               <div className="sy-error-h">

@@ -106,6 +106,11 @@ export interface SyncRun {
   /** What the run is doing right now, in words. Null once it is over. */
   phase: string | null;
   active: boolean;
+  /** Calendar slices of the requested window. A real denominator: the months
+   *  between the start date and today are known before the first API call,
+   *  unlike a document count Zoho will not reveal in advance. */
+  windows_total: number;
+  windows_done: number;
   source: string;
   connection_id: string | null;
   started_at: string | null;

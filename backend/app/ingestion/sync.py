@@ -107,28 +107,62 @@ class SyncService:
             self._on_phase(name)
 
     def run(self) -> SyncReport:
+        """The whole pull in one pass, against this service's own source."""
+        self.begin()
+        self.run_reference()
+        self.run_documents()
+        self.finish()
+        return self.report
+
+    # ── the three stages, separable so a long pull can be sliced ─────────────
+    #
+    # Split because only *documents* are date-scoped. Customers and items are
+    # the whole master list however narrow the window, so a pull sliced into
+    # eighteen months would otherwise re-read the entire contact list eighteen
+    # times — turning a fix for one problem into a worse one.
+
+    def begin(self) -> None:
         if not self.resume:
             self._phase("Clearing the document cursor")
             self.repo.clear_ingested()
             self.s.flush()
+
+    def run_reference(self) -> None:
+        """Customers and items — pulled once per sync, not once per window."""
         self._phase("Reading customers")
         self._sync_customers()
         self._phase("Reading items")
         self._sync_products()
         self.s.flush()  # ensure customers/products have ids for FK resolution
-        self._phase("Reading bills")
-        self._sync_bills()
-        self._phase("Reading invoices")
-        self._sync_invoices()
+
+    def run_documents(self, source: Optional[ZohoSource] = None,
+                      label: str = "") -> None:
+        """Bills and invoices for one window. ``label`` names it on screen."""
+        previous, self.source = self.source, (source or self.source)
+        try:
+            suffix = f" · {label}" if label else ""
+            self._phase(f"Reading bills{suffix}")
+            self._sync_bills()
+            self._phase(f"Reading invoices{suffix}")
+            self._sync_invoices()
+            self._count_documents()
+        finally:
+            self.source = previous
+
+    def finish(self) -> None:
+        """Assignments last: they are decided from the newest invoice found,
+        which is only known once every window has been read."""
         self._phase("Assigning accounts")
         self._sync_assignments()
-        self._count_documents()
-        return self.report
 
     def _count_documents(self) -> None:
-        """Carry the source's own fetch/resume tally, when it keeps one."""
-        self.report.documents_fetched = getattr(self.source, "documents_fetched", 0)
-        self.report.documents_resumed = getattr(self.source, "documents_resumed", 0)
+        """Add this source's fetch/resume tally to the running total.
+
+        Accumulated rather than assigned: a sliced pull has one source per
+        window, and overwriting would report only the last slice's calls.
+        """
+        self.report.documents_fetched += getattr(self.source, "documents_fetched", 0)
+        self.report.documents_resumed += getattr(self.source, "documents_resumed", 0)
 
     def _skipper(self, doc_type: str):
         """A predicate the source can use to avoid re-fetching known documents."""

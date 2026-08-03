@@ -15,6 +15,8 @@ from sqlalchemy.pool import StaticPool
 from app.config import settings
 from app.db import Base, get_session
 from app.domain import models
+from datetime import date
+
 from app.ingestion import jobs
 from app.routers import data_status, platform_auth
 from app.seed import SEED_PASSWORD, ensure_org_and_users
@@ -175,7 +177,10 @@ def test_the_operator_chooses_the_start_date(client, monkeypatch):
 
     from app.ingestion import mock_source
 
-    def _capture(session, org, since=None):
+    starts: list = []
+
+    def _capture(session, org, since=None, **kw):
+        starts.append(since)
         seen["since"] = since
         return mock_source.FixtureZohoSource()
 
@@ -184,8 +189,14 @@ def test_the_operator_chooses_the_start_date(client, monkeypatch):
     run = client.post("/api/v1/data/sync", headers=owner,
                       json={"since": "2025-01-01"}).json()["run"]
 
-    assert seen["since"].isoformat() == "2025-01-01", "the date must reach the source"
+    # The pull is read in monthly slices, so there is a source per window and
+    # the operator's date is where the first one starts.
+    assert starts[0].isoformat() == "2025-01-01", "the date must reach the source"
     assert run["since"] == "2025-01-01", "and be recorded, so the window is auditable"
+    assert run["windows_total"] == len(
+        jobs.plan_windows(date(2025, 1, 1))), "every planned window was read from"
+    assert starts[1].isoformat() == "2025-01-01", (
+        "the first slice begins on the requested date, not the month boundary")
 
 
 def test_wrong_organization_id_names_the_right_one(client, monkeypatch):

@@ -20,10 +20,12 @@ analysed together. That is said on the screen, not left to be discovered.
 from __future__ import annotations
 
 import logging
+from datetime import date
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..authz import Principal, require_manager_or_owner, require_owner
@@ -39,9 +41,53 @@ log = logging.getLogger("pie_portal.connections")
 router = APIRouter(prefix="/api/v1/connections", tags=["connections"])
 
 
+#: How far back a first pull reads when nobody has said otherwise. Eighteen
+#: months gives the detectors a full recent window, a full comparison window,
+#: and room above the six-month history floor — so the first sync produces an
+#: analysis rather than a screen full of "not enough history".
+DEFAULT_HISTORY_MONTHS = 18
+
+
+def _default_since() -> date:
+    today = date.today()
+    year, month = divmod(today.year * 12 + (today.month - 1) - DEFAULT_HISTORY_MONTHS, 12)
+    return date(year, month + 1, 1)
+
+
+def _last_run(session: Session, row: models.ZohoConnection) -> Optional[models.SyncRun]:
+    """The most recent pull aimed at this company specifically.
+
+    Runs that covered every connection are excluded on purpose: this answers
+    "when did *this* company last come in", and a company that has never been
+    pulled individually should say so rather than borrow another run's date.
+    """
+    return session.scalars(
+        select(models.SyncRun)
+        .where(models.SyncRun.organization_id == row.organization_id,
+               models.SyncRun.connection_id == row.connection_id)
+        .order_by(models.SyncRun.started_at.desc())
+        .limit(1)).first()
+
+
 def _dict(session: Session, row: models.ZohoConnection) -> dict:
     cred = row.credential
+    last = _last_run(session, row)
     return {
+        # The date this company was last read from, and the date to offer next
+        # time. Carried per connection because the answer genuinely differs:
+        # one entity may have four years of books worth reading and another
+        # four months, and a single date box for all of them either over-reads
+        # or under-reads at least one.
+        "last_sync": None if last is None else {
+            "status": last.status,
+            "started_at": last.started_at.isoformat() if last.started_at else None,
+            "since": last.since.isoformat() if last.since else None,
+            "sales_txns": last.sales_txns,
+            "cost_records": last.cost_records,
+            "error": last.error,
+        },
+        "suggested_since": (last.since.isoformat() if last is not None and last.since
+                            else _default_since().isoformat()),
         "connection_id": row.connection_id,
         "label": row.label or f"Zoho org {row.zoho_organization_id}",
         "zoho_organization_id": row.zoho_organization_id,

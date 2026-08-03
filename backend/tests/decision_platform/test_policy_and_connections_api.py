@@ -7,6 +7,8 @@ numbers already computed without saying so.
 """
 from __future__ import annotations
 
+from datetime import date, datetime, timezone
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -329,3 +331,85 @@ def test_a_credential_from_another_organization_cannot_be_borrowed(client):
     r = client.post("/api/v1/connections", headers=_hdr(client, OWNER),
                     json={"zoho_organization_id": "999", "credential_id": other_id})
     assert r.status_code == 403
+
+
+# ── the window to read, per company ─────────────────────────────────────────
+#
+# One date box for every company either over-reads or under-reads at least one
+# of them: an entity with four years of books and one with four months are not
+# the same pull. The date is therefore carried per connection, and what a
+# company was last read from is what is offered for it next time.
+def _run(client, connection_id, since, *, status="OK", txns=0, started=None):
+    s = client.Maker()
+    s.add(models.SyncRun(
+        organization_id=ORG, connection_id=connection_id, source="fixture",
+        status=status, since=since, sales_txns=txns,
+        started_at=started or datetime(2026, 8, 1, 9, 0, tzinfo=timezone.utc)))
+    s.commit()
+    s.close()
+
+
+def _conns(client):
+    rows = client.get("/api/v1/connections", headers=_hdr(client, OWNER)).json()
+    return {c["label"]: c for c in rows["connections"]}
+
+
+def test_a_company_never_pulled_is_offered_a_first_window_not_nothing(client):
+    _add(client, OWNER, "111", "SLS Engineers")
+    row = _conns(client)["SLS Engineers"]
+
+    assert row["last_sync"] is None, "it has genuinely never been pulled"
+    offered = date.fromisoformat(row["suggested_since"])
+    months = (date.today().year - offered.year) * 12 + date.today().month - offered.month
+    assert 17 <= months <= 19, (
+        f"a first pull should offer about 18 months, got {months} — less than six "
+        f"and the detectors refuse to call a decline at all")
+
+
+def test_the_window_offered_is_the_one_this_company_was_last_read_from(client):
+    _add(client, OWNER, "111", "SLS Engineers")
+    _add(client, OWNER, "222", "4U Precision")
+    rows = _conns(client)
+    _run(client, rows["SLS Engineers"]["connection_id"], date(2021, 4, 1), txns=900)
+
+    rows = _conns(client)
+    assert rows["SLS Engineers"]["suggested_since"] == "2021-04-01"
+    assert rows["SLS Engineers"]["last_sync"]["sales_txns"] == 900
+    # And the other company keeps its own window rather than inheriting it.
+    assert rows["4U Precision"]["suggested_since"] != "2021-04-01"
+    assert rows["4U Precision"]["last_sync"] is None
+
+
+def test_the_latest_pull_wins_not_the_first(client):
+    _add(client, OWNER, "111", "SLS Engineers")
+    cid = _conns(client)["SLS Engineers"]["connection_id"]
+    _run(client, cid, date(2021, 4, 1),
+         started=datetime(2026, 7, 1, tzinfo=timezone.utc))
+    _run(client, cid, date(2025, 1, 1),
+         started=datetime(2026, 8, 2, tzinfo=timezone.utc))
+
+    assert _conns(client)["SLS Engineers"]["suggested_since"] == "2025-01-01"
+
+
+def test_a_run_covering_every_company_is_not_credited_to_any_one_of_them(client):
+    """Otherwise 'last pulled from 2019' would appear on a company whose own
+    books were never read that far back — the date would be another
+    company's."""
+    _add(client, OWNER, "111", "SLS Engineers")
+    _run(client, None, date(2019, 1, 1), txns=5000)
+
+    row = _conns(client)["SLS Engineers"]
+    assert row["last_sync"] is None
+    assert row["suggested_since"] != "2019-01-01"
+
+
+def test_a_failed_pull_is_still_the_last_pull_and_says_so(client):
+    """A failure that vanishes from the card is a failure nobody fixes."""
+    _add(client, OWNER, "111", "SLS Engineers")
+    cid = _conns(client)["SLS Engineers"]["connection_id"]
+    _run(client, cid, date(2025, 1, 1), status="FAILED")
+
+    last = _conns(client)["SLS Engineers"]["last_sync"]
+    assert last["status"] == "FAILED"
+    # Still the window to offer: the intent was right, the pull was not.
+    assert _conns(client)["SLS Engineers"]["suggested_since"] == "2025-01-01"

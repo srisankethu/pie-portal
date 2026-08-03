@@ -437,6 +437,20 @@ export interface ZohoConnection {
   last_check_ok: boolean | null;
   last_check_detail: string | null;
   created_at: string | null;
+  /** The last pull aimed at this company specifically. Null if never. */
+  last_sync: {
+    status: string;
+    started_at: string | null;
+    since: string | null;
+    sales_txns: number;
+    cost_records: number;
+    error: string | null;
+  } | null;
+  /** The date to offer next: what this company was last read from, or a
+   *  first-pull default. Per connection because the answer genuinely differs —
+   *  one entity may have four years of books worth reading and another four
+   *  months. */
+  suggested_since: string;
 }
 
 /** A check result: the row as stored, plus what the grant could actually see. */

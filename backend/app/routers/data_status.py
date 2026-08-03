@@ -41,6 +41,7 @@ def _run_dict(r: Optional[models.SyncRun]) -> Optional[dict[str, Any]]:
         return None
     return {
         "status": r.status, "source": r.source,
+        "connection_id": r.connection_id,
         "started_at": r.started_at.isoformat() if r.started_at else None,
         "finished_at": r.finished_at.isoformat() if r.finished_at else None,
         "customers": r.customers, "products": r.products,
@@ -458,7 +459,8 @@ def run_sync(
     since = req.since or configured_since()
     run = models.SyncRun(organization_id=org, source=settings.ZOHO_SOURCE,
                          status="OK", started_at=datetime.now(timezone.utc),
-                         triggered_by=principal.user_id, since=since)
+                         triggered_by=principal.user_id, since=since,
+                         connection_id=req.connection_id)
     session.add(run)
     demo_removed: dict[str, int] = {}
     commercial_report: Optional[dict] = None

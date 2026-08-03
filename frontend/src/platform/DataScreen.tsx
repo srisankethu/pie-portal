@@ -88,16 +88,21 @@ export function DataScreen({ session, onSynced }: { session: PlatformSession; on
     loadCredentials();
   }, [loadCredentials]);
 
-  /** One pull. `connectionId` names a company; omitted means every enabled one. */
-  async function sync(connectionId?: string) {
+  /** One pull. `connectionId` names a company; omitted means every enabled one.
+   *
+   *  The window is passed in rather than read from a single shared box: each
+   *  company's card carries its own date, because one entity may have four
+   *  years of books worth reading and another four months, and one date for
+   *  all of them either over-reads or under-reads at least one. */
+  async function sync(connectionId?: string, fromDate?: string, reread?: boolean) {
     setSyncing(true);
     setSyncingId(connectionId ?? null);
     setResult(null);
     setError(null);
     try {
       const r = await papi.runSync(session.token, {
-        since: since || undefined,
-        full,
+        since: (fromDate ?? since) || undefined,
+        full: reread ?? full,
         connection_id: connectionId,
       });
       const run = r.run;
@@ -161,7 +166,7 @@ export function DataScreen({ session, onSynced }: { session: PlatformSession; on
       <ConnectionsPanel
         session={session}
         canSync={canSync}
-        onSync={(id) => sync(id)}
+        onSync={(id, from, reread) => sync(id, from, reread)}
         syncingId={syncingId}
       />
 

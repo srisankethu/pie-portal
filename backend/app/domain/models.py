@@ -446,6 +446,11 @@ class SyncRun(Base):
 
     sync_run_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
     organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    # Which company this run pulled. Null means every enabled connection, or a
+    # run from before an organization could have more than one. Without it,
+    # "last synced 2 hours ago" says nothing about *which* of three companies
+    # it covered — the same ambiguity per-connection health was added to fix.
+    connection_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
     source: Mapped[str] = mapped_column(String(16))           # "api" | "fixture"
     status: Mapped[str] = mapped_column(String(16), index=True)  # OK | PARTIAL | FAILED
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, index=True)

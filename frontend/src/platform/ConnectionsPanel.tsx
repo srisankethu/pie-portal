@@ -96,15 +96,20 @@ function ConnectionCard({
   onRename: (id: string, label: string) => Promise<void>;
   onToggle: (id: string, enabled: boolean) => Promise<void>;
   onDelete: (id: string) => Promise<void>;
-  onSync: (id: string) => Promise<void>;
+  onSync: (id: string, since: string, full: boolean) => Promise<void>;
   syncing: boolean;
 }) {
   const [renaming, setRenaming] = useState(false);
   const [label, setLabel] = useState(conn.label);
   const [busy, setBusy] = useState(false);
   const [check, setCheck] = useState<ConnectionCheck | null>(null);
+  // Seeded from what this company was last read from, so a repeat pull offers
+  // the window that was already chosen for it rather than a global default.
+  const [since, setSince] = useState(conn.suggested_since);
+  const [full, setFull] = useState(false);
 
   useEffect(() => setLabel(conn.label), [conn.label]);
+  useEffect(() => setSince(conn.suggested_since), [conn.suggested_since]);
 
   const h = health(conn);
 
@@ -226,6 +231,63 @@ function ConnectionCard({
         </>
       )}
 
+      {/* The date belongs next to the button that uses it. It used to live in
+          a panel further down the page, so pressing "Pull from this company"
+          read as a pull with no date at all — and the date it silently used
+          was whatever had been typed for a different company. */}
+      {canSync && (
+        <div className="cx-pull">
+          {/* The date and the button go when a company is paused, because a
+              paused company is not pulled. What it last brought in does not —
+              that is history, and it is the thing you check before deciding
+              whether to resume it. */}
+          {conn.enabled && (
+            <>
+          <label htmlFor={`cx-since-${conn.connection_id}`}>
+            <Labelled
+              tip={
+                <>
+                  Every invoice and bill dated after this is fetched individually, so an
+                  earlier date means a longer pull. The detectors compare the last 90 days
+                  against the 90 before that and need six months of history before they
+                  will call a decline.
+                  {conn.last_sync?.since && (
+                    <> This company was last read from {conn.last_sync.since}.</>
+                  )}
+                </>
+              }
+            >
+              Read this company's books from
+            </Labelled>
+          </label>
+          <input
+            id={`cx-since-${conn.connection_id}`}
+            type="date"
+            className="input"
+            value={since}
+            max={new Date().toISOString().slice(0, 10)}
+            onChange={(e) => setSince(e.target.value)}
+          />
+          <label className="sync-check">
+            <input type="checkbox" checked={full} onChange={(e) => setFull(e.target.checked)} />
+            Re-read documents already held
+            <Tip text="A repeat pull normally skips documents it already holds, which is what makes it fast. Tick this after granting a scope that was missing — the documents are there, but the fields that scope unlocks are not." />
+          </label>
+            </>
+          )}
+          {conn.last_sync ? (
+            <div className="cx-lastpull">
+              Last pulled {when(conn.last_sync.started_at)} from {conn.last_sync.since ?? "a rolling window"} ·{" "}
+              {conn.last_sync.sales_txns} sales lines, {conn.last_sync.cost_records} cost records
+              {conn.last_sync.status !== "OK" && <> · {conn.last_sync.status.toLowerCase()}</>}
+              {conn.last_sync.error && <div className="cx-detail bad">{conn.last_sync.error}</div>}
+            </div>
+          ) : (
+            <div className="cx-lastpull">This company has never been pulled on its own.</div>
+          )}
+        </div>
+      )}
+
       <div className="cx-actions">
         {canManage && (
           <button
@@ -240,7 +302,7 @@ function ConnectionCard({
           <button
             className="btn btn-primary btn-sm"
             disabled={syncing}
-            onClick={() => onSync(conn.connection_id)}
+            onClick={() => onSync(conn.connection_id, since, full)}
           >
             {syncing ? "Pulling…" : "Pull from this company"}
           </button>
@@ -603,8 +665,8 @@ export function ConnectionsPanel({
 }: {
   session: PlatformSession;
   canSync: boolean;
-  /** Runs a pull for one company and refreshes the surrounding data screen. */
-  onSync: (connectionId: string) => Promise<void>;
+  /** Runs a pull for one company, from the date that company's card chose. */
+  onSync: (connectionId: string, since: string, full: boolean) => Promise<void>;
   syncingId: string | null;
 }) {
   const [view, setView] = useState<ConnectionsView | null>(null);
@@ -731,7 +793,10 @@ export function ConnectionsPanel({
             onRename={rename}
             onToggle={toggle}
             onDelete={remove}
-            onSync={onSync}
+            onSync={async (id, since, full) => {
+              await onSync(id, since, full);
+              await load();   // last pulled / suggested date move with the run
+            }}
             syncing={syncingId === c.connection_id}
           />
         ))}

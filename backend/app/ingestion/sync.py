@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from sqlalchemy.orm import Session
 
@@ -87,25 +87,40 @@ class SyncService:
     """
 
     def __init__(self, session: Session, source: ZohoSource, organization_id: str,
-                 resume: bool = True) -> None:
+                 resume: bool = True,
+                 on_phase: Optional[Callable[[str], None]] = None) -> None:
         self.s = session
         self.source = source
         self.org = organization_id
         self.resume = resume
+        # Reports what the pull is doing, so a job that takes minutes can say
+        # so in words. Optional: a scripted caller that does not care passes
+        # nothing and the stages run exactly as before.
+        self._on_phase = on_phase
         self.repo = ReadModelRepository(session, organization_id)
         self.report = SyncReport(organization_id=organization_id)
         # customer_external_id -> (invoice date, salesperson_id, salesperson_name)
         self._owners: dict[str, tuple[date, str, str]] = {}
 
+    def _phase(self, name: str) -> None:
+        if self._on_phase is not None:
+            self._on_phase(name)
+
     def run(self) -> SyncReport:
         if not self.resume:
+            self._phase("Clearing the document cursor")
             self.repo.clear_ingested()
             self.s.flush()
+        self._phase("Reading customers")
         self._sync_customers()
+        self._phase("Reading items")
         self._sync_products()
         self.s.flush()  # ensure customers/products have ids for FK resolution
+        self._phase("Reading bills")
         self._sync_bills()
+        self._phase("Reading invoices")
         self._sync_invoices()
+        self._phase("Assigning accounts")
         self._sync_assignments()
         self._count_documents()
         return self.report

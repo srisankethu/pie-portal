@@ -88,6 +88,7 @@ function ConnectionCard({
   onDelete,
   onSync,
   syncing,
+  syncBusy,
 }: {
   conn: ZohoConnection;
   canManage: boolean;
@@ -97,7 +98,10 @@ function ConnectionCard({
   onToggle: (id: string, enabled: boolean) => Promise<void>;
   onDelete: (id: string) => Promise<void>;
   onSync: (id: string, since: string, full: boolean) => Promise<void>;
+  /** This card's own company is the one being pulled. */
   syncing: boolean;
+  /** Some sync is running — starting a second would pull the same books twice. */
+  syncBusy: boolean;
 }) {
   const [renaming, setRenaming] = useState(false);
   const [label, setLabel] = useState(conn.label);
@@ -301,10 +305,10 @@ function ConnectionCard({
         {canSync && conn.enabled && (
           <button
             className="btn btn-primary btn-sm"
-            disabled={syncing}
+            disabled={syncBusy}
             onClick={() => onSync(conn.connection_id, since, full)}
           >
-            {syncing ? "Pulling…" : "Pull from this company"}
+            {syncing ? "Pulling this one…" : syncBusy ? "A sync is running" : "Pull from this company"}
           </button>
         )}
         <span className="spacer" />
@@ -661,13 +665,17 @@ export function ConnectionsPanel({
   session,
   canSync,
   onSync,
-  syncingId,
+  syncBusy,
+  activeConnectionId,
 }: {
   session: PlatformSession;
   canSync: boolean;
   /** Runs a pull for one company, from the date that company's card chose. */
   onSync: (connectionId: string, since: string, full: boolean) => Promise<void>;
-  syncingId: string | null;
+  /** True while any sync is in flight — one job at a time per organization. */
+  syncBusy: boolean;
+  /** The company the running job is pulling, when it named one. */
+  activeConnectionId: string | null;
 }) {
   const [view, setView] = useState<ConnectionsView | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -797,7 +805,8 @@ export function ConnectionsPanel({
               await onSync(id, since, full);
               await load();   // last pulled / suggested date move with the run
             }}
-            syncing={syncingId === c.connection_id}
+            syncing={activeConnectionId === c.connection_id}
+            syncBusy={syncBusy}
           />
         ))}
         {view.connections.length === 0 && (

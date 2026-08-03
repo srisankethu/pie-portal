@@ -190,6 +190,23 @@ def test_adding_a_connection_against_a_stale_database_explains_itself(stale_clie
     assert "alembic upgrade head" in r.json()["detail"]
 
 
+def test_the_stale_message_names_the_column_that_is_actually_missing(stale_client):
+    """It used to match the error text for "connection_id", which appears in the
+    SELECT list of every such failure — so a database missing a different column
+    was told to fix one it already had. A diagnostic that names the wrong thing
+    sends someone to check a schema that is fine."""
+    engine = stale_client.Maker.kw["bind"]
+    with engine.begin() as c:
+        c.execute(text("ALTER TABLE sync_runs ADD COLUMN connection_id VARCHAR(64)"))
+        c.execute(text("ALTER TABLE sync_runs DROP COLUMN notes"))
+
+    r = _add(stale_client)
+    assert r.status_code == 503, f"got {r.status_code}: {r.text[:200]}"
+    detail = r.json()["detail"]
+    assert "notes" in detail, detail
+    assert "connection_id" not in detail, "that column is present — do not blame it"
+
+
 def test_syncing_against_a_stale_database_explains_itself(stale_client):
     r = stale_client.post("/api/v1/data/sync", headers=_hdr(stale_client), json={})
     assert r.status_code == 503, f"got {r.status_code}: {r.text[:200]}"

@@ -1,4 +1,4 @@
-import type { Account, ApprovalRequest, ConnectionCheck, ConnectionsView, FixedThresholds, MarginPolicy, MarginPolicyPatch, NewConnectionInput, ZohoConnection, ZohoCredential, ZohoVisibleOrg, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, OrgPolicy, PlatformSession, PlatformUser, QuoteGate, Role, SyncOptions, SyncRun, ThresholdView, ZohoConnectionInput } from "./types";
+import type { Account, ApprovalRequest, ConnectionCheck, ConnectionsView, FixedThresholds, MarginPolicy, MarginPolicyPatch, NewConnectionInput, ZohoConnection, ZohoCredential, ZohoVisibleOrg, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, OrgPolicy, PlatformSession, PlatformUser, QuoteGate, Role, SyncOptions, SyncStartResponse, SyncState, ThresholdView, ZohoConnectionInput } from "./types";
 
 const KEY = "pie_platform_session";
 
@@ -78,10 +78,15 @@ export const papi = {
 
   dataStatus: (t: string) => req<DataStatus>("/api/v1/data/status", {}, t),
 
+  /** Queue a pull. Returns immediately with a job to watch — 202, not a result.
+   *  If one is already running this hands that one back (`started: false`)
+   *  rather than erroring, so the screen shows the live job. */
   runSync: (t: string, opts: SyncOptions = {}) =>
-    req<{ run: SyncRun; connection: DataStatus["connection"];
-         demo_data_removed?: Record<string, number> }>(
-      "/api/v1/data/sync", { method: "POST", body: JSON.stringify(opts) }, t),
+    req<SyncStartResponse>("/api/v1/data/sync",
+      { method: "POST", body: JSON.stringify(opts) }, t),
+
+  /** The current sync state. Polled while a job is in flight. */
+  syncState: (t: string) => req<SyncState>("/api/v1/data/sync", {}, t),
 
   setZohoConnection: (t: string, body: ZohoConnectionInput) =>
     req<{ connection: DataStatus["connection"] }>(

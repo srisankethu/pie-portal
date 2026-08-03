@@ -97,12 +97,17 @@ def _last_run(session: Session, row: models.ZohoConnection) -> Optional[models.S
     "when did *this* company last come in", and a company that has never been
     pulled individually should say so rather than borrow another run's date.
 
-    ``sync_runs.connection_id`` arrived after this table existed, so a
-    deployment running the new code against an un-migrated database fails
-    here — and used to fail as a bare 500 with no body, which is unreadable
-    from a browser console. Worse, it only appeared once a connection existed:
-    with none, the query never ran and the screen looked healthy. Named
-    plainly instead, with the command that fixes it.
+    ``sync_runs`` has gained columns since this table existed, so a deployment
+    running new code against an un-migrated database fails here — and used to
+    fail as a bare 500 with no body, unreadable from a browser console. Worse,
+    it only appeared once a connection existed: with none, the query never ran
+    and the screen looked healthy.
+
+    The missing columns are looked up rather than guessed. An earlier version
+    matched the error text for "connection_id", which appears in the SELECT
+    list of *every* such failure — so a database missing ``notes`` was told to
+    go and fix ``connection_id``, which it already had. A diagnostic that names
+    the wrong thing is worse than a generic one.
     """
     try:
         return session.scalars(
@@ -112,14 +117,16 @@ def _last_run(session: Session, row: models.ZohoConnection) -> Optional[models.S
             .order_by(models.SyncRun.started_at.desc())
             .limit(1)).first()
     except OperationalError as e:
-        if "connection_id" not in str(e):
-            raise
         session.rollback()   # Postgres aborts the whole transaction otherwise
+        from ..schema_check import FIX, missing_columns
+
+        gaps = missing_columns(session.get_bind())
+        if not gaps:
+            raise                      # a real database error, not a stale schema
+        detail = "; ".join(f"{t} ({', '.join(cols)})" for t, cols in sorted(gaps.items()))
         raise SchemaBehind(
-            "This database is missing sync_runs.connection_id, so the platform "
-            "cannot tell which company a sync covered. Run `alembic upgrade "
-            "head` against it and reload — no data is lost, and nothing else "
-            "needs changing.") from e
+            f"This database is behind the code — missing {detail}. Run "
+            f"`{FIX}` against it and reload. No data is lost.") from e
 
 
 def _dict(session: Session, row: models.ZohoConnection) -> dict:

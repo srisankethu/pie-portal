@@ -9,7 +9,7 @@ three calls in the right order.
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, timezone
+from datetime import date
 from typing import Any, Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, status
@@ -22,6 +22,7 @@ from ..config import settings
 from ..db import get_session
 from ..domain import models
 from ..domain.enums import Role
+from ..ingestion import jobs
 
 log = logging.getLogger("pie_portal.data")
 
@@ -40,7 +41,14 @@ def _run_dict(r: Optional[models.SyncRun]) -> Optional[dict[str, Any]]:
     if r is None:
         return None
     return {
+        "sync_run_id": r.sync_run_id,
         "status": r.status, "source": r.source,
+        # Everything the status card renders. Elapsed time is left to the
+        # client: it ticks every second, and a number baked into a response is
+        # stale before it is painted.
+        "phase": r.phase,
+        "active": r.status in jobs.ACTIVE,
+        "heartbeat_at": r.heartbeat_at.isoformat() if r.heartbeat_at else None,
         "connection_id": r.connection_id,
         "started_at": r.started_at.isoformat() if r.started_at else None,
         "finished_at": r.finished_at.isoformat() if r.finished_at else None,
@@ -53,6 +61,7 @@ def _run_dict(r: Optional[models.SyncRun]) -> Optional[dict[str, Any]]:
         "documents_fetched": r.documents_fetched,
         "documents_resumed": r.documents_resumed,
         "assignments": r.assignments,
+        "notes": r.notes or {},
     }
 
 
@@ -156,6 +165,9 @@ def data_status(
     return {
         "connection": _connection(session, org),
         "last_sync": _run_dict(_last_run(session, org)),
+        # Carried here as well so a page opened mid-pull renders the running job
+        # on its first paint, without a second round trip to discover it.
+        "sync": _sync_state(session, org),
         "read_model": counts,
         "can_sync": principal.is_manager_or_owner,
         "can_manage_connection": principal.role is Role.OWNER,
@@ -435,25 +447,60 @@ class SyncRequest(BaseModel):
     connection_id: Optional[str] = None
 
 
-@router.post("/sync")
+def _sync_state(session: Session, org: str) -> dict:
+    """Everything the sync card needs, in one shape, from one place.
+
+    The screen renders from state rather than from the outcome of whatever
+    request it last made — which is the whole point of the redesign. A page
+    opened fresh while a pull is running must show that pull, not an idle
+    button.
+    """
+    active = jobs.active_run(session, org)
+    last = jobs.last_finished_run(session, org)
+    ok = jobs.last_successful_run(session, org)
+    return {
+        # IDLE is the absence of a job, not a stored value — there is no row to
+        # invent for an organization that has never synced.
+        "state": active.status if active is not None else (last.status if last else "IDLE"),
+        "active": _run_dict(active),
+        "last": _run_dict(last),
+        "last_successful_at": (ok.started_at.isoformat()
+                               if ok is not None and ok.started_at else None),
+        "can_start": active is None,
+    }
+
+
+@router.get("/sync")
+def sync_state(
+    principal: Principal = Depends(current_principal),
+    session: Session = Depends(get_session),
+) -> dict:
+    """The current sync state. Polled while a job is in flight.
+
+    Readable by anyone signed in — a salesperson cannot start a sync but is
+    entitled to know the figures they are looking at are mid-refresh.
+    """
+    return _sync_state(session, principal.organization_id)
+
+
+@router.post("/sync", status_code=status.HTTP_202_ACCEPTED)
 def run_sync(
     req: SyncRequest = Body(default_factory=SyncRequest),
     principal: Principal = Depends(require_manager_or_owner),
     session: Session = Depends(get_session),
 ) -> dict:
-    """Pull from Zoho, detect signals, generate decisions — the whole cycle.
+    """Queue a pull and return immediately.
 
-    Recorded whatever happens, and recorded *truthfully*: an interrupted pull is
-    PARTIAL with the rows it did write, not FAILED with zeros. Zoho rate-limits
-    per organization and a pull costs one call per document, so being cut short
-    is an ordinary event, not an exception — the rows already written are kept
-    and the next run resumes from them.
+    A real organization's first sync reads every invoice and bill individually
+    and takes minutes, so this hands back a job to watch rather than holding the
+    request open. 202, not 200: the work is accepted, not done.
+
+    A second request while one is running does not error and does not start a
+    second pull — it returns the job already in flight, so the screen can show
+    that one. "Sync is in progress" without saying which sync, since when, or
+    how far along is the message this replaces.
     """
-    from ..decisions.service import DecisionService
-    from ..ingestion.sync import SyncReport, SyncService, get_source
     from ..ingestion.zoho_client import configured_since
-    from ..seed import ensure_org_and_users
-    from ..signals.engine import run_detectors
 
     org = principal.organization_id
     since = req.since or configured_since()
@@ -464,99 +511,23 @@ def run_sync(
     from ..schema_check import FIX, missing_columns
 
     gap = missing_columns(session.get_bind()).get("sync_runs") or []
-    if "connection_id" in gap:
+    if gap:
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
-            f"This database is missing sync_runs.connection_id, so a pull cannot "
-            f"record which company it covered. Run `{FIX}` against it and try "
+            f"This database is missing sync_runs columns ({', '.join(gap)}), so a "
+            f"pull cannot record its own progress. Run `{FIX}` against it and try "
             f"again. Nothing already synced is affected.")
 
-    run = models.SyncRun(organization_id=org, source=settings.ZOHO_SOURCE,
-                         status="OK", started_at=datetime.now(timezone.utc),
-                         triggered_by=principal.user_id, since=since,
-                         connection_id=req.connection_id)
-    session.add(run)
-    demo_removed: dict[str, int] = {}
-    commercial_report: Optional[dict] = None
-    svc: Optional[SyncService] = None
-    report = SyncReport(organization_id=org)   # placeholder until a source resolves
-    try:
-        ensure_org_and_users(session)
+    run, started = jobs.start_sync(
+        session, org, since=since, full=req.full,
+        connection_id=req.connection_id, triggered_by=principal.user_id)
 
-        if settings.ZOHO_SOURCE == "api":
-            # A real sync means a real Zoho account is linked — any demo/sample
-            # customers, products, or the decisions built from them must not go
-            # on sitting alongside real data. This never touches a real Zoho
-            # record: demo rows are identifiable by fixed ids no live sync ever
-            # produces. Best-effort — a purge problem must not block the pull.
-            try:
-                from ..demo import purge_demo_seed
-                demo_removed = purge_demo_seed(session, org)
-            except Exception:  # noqa: BLE001
-                log.exception("demo-data purge failed; continuing with the sync")
-
-        # Resolved per this org — never another org's connection, and this org
-        # must have one of its own before a pull is attempted at all.
-        # Passed only when set: a caller that never had connections still calls
-        # get_source with the signature it always had.
-        source = (get_source(session, org, since=since,
-                             connection_id=req.connection_id)
-                  if req.connection_id else get_source(session, org, since=since))
-        svc = SyncService(session, source, org, resume=not req.full)
-        svc.run()
-        report = svc.report
-        session.flush()
-
-        detected = run_detectors(session, org)
-        run.signals_emitted = detected.get("signals_emitted", 0)
-
-        # Customer × Item metrics are derived from what just landed, so they are
-        # rebuilt here rather than on the next page load. Targeted at the
-        # relationships this pull actually moved — a full rebuild would scan the
-        # organization's entire history to re-derive rows nothing changed.
-        # Best-effort: a metrics problem must not fail a pull that succeeded.
-        try:
-            from ..commercial.compute import recompute as recompute_commercial
-
-            ci = recompute_commercial(
-                session, org,
-                customer_ids=(report.touched_customer_ids or None),
-            )
-            run.signals_emitted += sum(ci.signals_by_type.values())
-            commercial_report = ci.to_dict()
-        except Exception:  # noqa: BLE001
-            log.exception("customer-item recompute failed; the pull itself is kept")
-
-        generated = DecisionService(session, org).generate()
-        run.decisions_created = generated.get("created", 0)
-        run.status = "OK"
-    except Exception as e:  # noqa: BLE001 — a failed sync must be visible, not silent
-        log.exception("sync failed")
-        if svc is not None:
-            report = svc.report
-        run.status = "PARTIAL" if report.wrote_anything else "FAILED"
-        run.error = f"{type(e).__name__}: {e}"[:1000]
-    finally:
-        # Counters come from the report either way: a run that wrote 336 sales
-        # lines and then died wrote 336 sales lines, and saying zero would make
-        # the database unreadable from its own audit trail.
-        run.customers = report.customers
-        run.products = report.products
-        run.sales_txns = report.sales_txns
-        run.cost_records = report.cost_records
-        run.assignments = report.assignments
-        run.documents_fetched = report.documents_fetched or getattr(
-            svc.source if svc is not None else None, "documents_fetched", 0)
-        run.documents_resumed = report.documents_resumed or getattr(
-            svc.source if svc is not None else None, "documents_resumed", 0)
-        run.skipped_count = len(report.skipped)
-        run.skipped_sample = report.skipped[:20]
-        run.finished_at = datetime.now(timezone.utc)
-        session.flush()
-
-    result = {"run": _run_dict(run), "connection": _connection(session, org)}
-    if any(demo_removed.values()):
-        result["demo_data_removed"] = demo_removed
-    if commercial_report is not None:
-        result["commercial"] = commercial_report
-    return result
+    return {
+        **_sync_state(session, org),
+        "started": started,
+        "run": _run_dict(run),
+        "note": ("The sync is running in the background — you can carry on "
+                 "using the platform and this will keep itself up to date."
+                 if started else
+                 "A sync was already running, so this did not start another."),
+    }

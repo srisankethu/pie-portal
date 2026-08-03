@@ -431,7 +431,7 @@ class AiCallLog(Base):
 
 # ── Outcome (§8) ─────────────────────────────────────────────────────────────
 class SyncRun(Base):
-    """One ingestion run — what was pulled, what was skipped, and whether it worked.
+    """One ingestion run — the job record, from the moment it is queued.
 
     Persisted so the UI can answer "is Zoho connected, and when did data last
     arrive?" without re-hitting the API. A failed run is recorded too: silence
@@ -440,6 +440,19 @@ class SyncRun(Base):
     A run that dies part-way is ``PARTIAL``, not ``FAILED``: rows that did land
     are kept (they are what makes the next attempt cheap), and reporting zero
     for them would misdescribe the database.
+
+    This is also the whole of the job model. A pull takes minutes, so it runs in
+    the background and the row is what the UI polls — which means the row has to
+    exist *before* the work starts, not only after it ends:
+
+        QUEUED -> RUNNING -> OK | PARTIAL | FAILED
+
+    ``heartbeat_at`` is what separates "running" from "died holding the lock".
+    A process killed mid-pull cannot write its own failure, so without a
+    heartbeat its row stays RUNNING forever and every later sync is refused as
+    a duplicate. Staleness is judged from it rather than from ``started_at``,
+    because a legitimate four-hour pull and a job that died after ten seconds
+    look identical by start time.
     """
 
     __tablename__ = "sync_runs"
@@ -452,7 +465,19 @@ class SyncRun(Base):
     # it covered — the same ambiguity per-connection health was added to fix.
     connection_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
     source: Mapped[str] = mapped_column(String(16))           # "api" | "fixture"
-    status: Mapped[str] = mapped_column(String(16), index=True)  # OK | PARTIAL | FAILED
+    # QUEUED | RUNNING | OK | PARTIAL | FAILED
+    status: Mapped[str] = mapped_column(String(16), index=True)
+    # What the run is doing right now, in the words the screen shows —
+    # "Reading invoices", not "phase 4". Null once the run is over.
+    phase: Mapped[Optional[str]] = mapped_column(String(64))
+    # Touched as the work proceeds. A RUNNING row whose heartbeat has gone cold
+    # is a dead job, not a slow one, and must not block the next sync.
+    heartbeat_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    # Things the finished run wants to tell the person who started it — what
+    # sample data it cleared out, what the metric rebuild found. These used to
+    # ride back on the POST response; once the work happens after the response,
+    # the row is the only place they can live.
+    notes: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, index=True)
     finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     customers: Mapped[int] = mapped_column(Integer, default=0)

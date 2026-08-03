@@ -15,12 +15,13 @@ from sqlalchemy.pool import StaticPool
 from app.config import settings
 from app.db import Base, get_session
 from app.domain import models
+from app.ingestion import jobs
 from app.routers import data_status, platform_auth
 from app.seed import SEED_PASSWORD, ensure_org_and_users
 
 
 @pytest.fixture()
-def client():
+def client(monkeypatch):
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False},
                            poolclass=StaticPool, future=True)
     Base.metadata.create_all(engine)
@@ -43,6 +44,23 @@ def client():
             sess.close()
 
     app.dependency_overrides[get_session] = _override
+
+    # The sync now runs in the background. These tests are about the *cycle* —
+    # what a pull writes and what it records — so they run the job inline on the
+    # test's own session rather than racing a thread. This is what the
+    # injectable dispatch in ``jobs.start_sync`` exists for; the asynchronous
+    # path itself is covered in test_sync_jobs.py.
+    def _inline(run_id, since, full, connection_id):
+        js = Maker()
+        try:
+            run = js.get(models.SyncRun, run_id)
+            jobs.execute_sync(js, run, since=since, full=full,
+                              connection_id=connection_id)
+            js.commit()
+        finally:
+            js.close()
+
+    monkeypatch.setattr(jobs, "thread_dispatch", _inline)
     tc = TestClient(app)
     tc.Maker = Maker    # exposed so a test can seed/inspect data outside the API
     return tc
@@ -226,10 +244,13 @@ def test_a_live_sync_removes_leftover_demo_data(client, monkeypatch):
     owner = _hdr(client, "s.menon@sanketh.in")
     body = client.post("/api/v1/data/sync", headers=owner).json()
 
+    # Reported on the run rather than in the response: by the time a real pull
+    # has anything to say, the response that started it is long gone.
     assert body["run"]["status"] == "OK"
-    assert body["demo_data_removed"]["customers"] == 5
-    assert body["demo_data_removed"]["products"] == 4
-    assert body["demo_data_removed"]["decisions"] > 0
+    removed = body["run"]["notes"]["demo_data_removed"]
+    assert removed["customers"] == 5
+    assert removed["products"] == 4
+    assert removed["decisions"] > 0
 
     s = client.Maker()
     assert s.query(models.Customer).filter_by(customer_id="cst_rane").count() == 0

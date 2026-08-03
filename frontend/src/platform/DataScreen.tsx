@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { papi } from "./api";
 import { ConnectionsPanel } from "./ConnectionsPanel";
+import { SyncStatusCard, useSync } from "./SyncStatus";
 import type { DataStatus, PlatformSession, ZohoCredential } from "./types";
 import { Bp, Labelled, Tip } from "./ui";
 
@@ -47,10 +48,7 @@ function when(iso: string | null): string {
 export function DataScreen({ session, onSynced }: { session: PlatformSession; onSynced: () => void }) {
   const [status, setStatus] = useState<DataStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [syncing, setSyncing] = useState(false);
-  const [syncingId, setSyncingId] = useState<string | null>(null);
   const [checking, setChecking] = useState(false);
-  const [result, setResult] = useState<string | null>(null);
   const [since, setSince] = useState<string>(defaultSince());
   const [full, setFull] = useState(false);
   // Grants on file, shown here because rotation is a property of the sign-in
@@ -88,49 +86,25 @@ export function DataScreen({ session, onSynced }: { session: PlatformSession; on
     loadCredentials();
   }, [loadCredentials]);
 
-  /** One pull. `connectionId` names a company; omitted means every enabled one.
-   *
-   *  The window is passed in rather than read from a single shared box: each
-   *  company's card carries its own date, because one entity may have four
-   *  years of books worth reading and another four months, and one date for
-   *  all of them either over-reads or under-reads at least one. */
-  async function sync(connectionId?: string, fromDate?: string, reread?: boolean) {
-    setSyncing(true);
-    setSyncingId(connectionId ?? null);
-    setResult(null);
-    setError(null);
-    try {
-      const r = await papi.runSync(session.token, {
-        since: (fromDate ?? since) || undefined,
-        full: reread ?? full,
-        connection_id: connectionId,
-      });
-      const run = r.run;
-      const pulled =
-        `Pulled ${run.sales_txns} sales lines and ${run.cost_records} cost records` +
-        (run.documents_resumed ? ` (${run.documents_resumed} already held, not re-read)` : "");
-      const demoRemoved = r.demo_data_removed;
-      const demoNote = demoRemoved
-        ? ` Removed the leftover sample data (${demoRemoved.customers ?? 0} customers, ` +
-          `${demoRemoved.decisions ?? 0} decisions) now that real data has arrived.`
-        : "";
-      setResult(
-        (run.status === "OK"
-          ? `${pulled} — ${run.signals_emitted} signals, ${run.decisions_created} new decisions.`
-          : run.status === "PARTIAL"
-            ? `${pulled}, then stopped. Nothing was lost — run it again and it will carry on ` +
-              `from here. Reason: ${run.error}`
-            : `Sync failed before anything was read: ${run.error}`) + demoNote,
-      );
-      setFull(false);
-      await load();
-      onSynced();
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setSyncing(false);
-      setSyncingId(null);
-    }
+  // Starting a sync and watching it are one concern, in one place — see
+  // SyncStatus.tsx. The screen renders from that state rather than from the
+  // response to whatever request it last made, which is what lets a page
+  // opened mid-pull show the pull.
+  const sync = useSync(session.token, useCallback(() => {
+    // A job just finished: the read-model counts on this page are now stale.
+    load();
+    onSynced();
+  }, [load, onSynced]));
+
+  /** Queue a pull. `connectionId` names one company; omitted means every
+   *  enabled one. Returns immediately — the card takes it from there. */
+  async function startSync(connectionId?: string, fromDate?: string, reread?: boolean) {
+    await sync.start({
+      since: (fromDate ?? since) || undefined,
+      full: reread ?? full,
+      connection_id: connectionId,
+    });
+    setFull(false);
   }
 
   async function doRotate(credentialId: string) {
@@ -148,6 +122,9 @@ export function DataScreen({ session, onSynced }: { session: PlatformSession; on
 
   const s = status?.last_sync;
   const canSync = Boolean(status?.can_sync);
+  // One job at a time per organization, so every start button shares one
+  // disabled condition rather than each screen inventing its own.
+  const syncBusy = !(sync.state?.can_start ?? true) || sync.busy;
 
   return (
     <div>
@@ -166,8 +143,9 @@ export function DataScreen({ session, onSynced }: { session: PlatformSession; on
       <ConnectionsPanel
         session={session}
         canSync={canSync}
-        onSync={(id, from, reread) => sync(id, from, reread)}
-        syncingId={syncingId}
+        onSync={(id, from, reread) => startSync(id, from, reread)}
+        syncBusy={syncBusy}
+        activeConnectionId={sync.state?.active?.connection_id ?? null}
       />
 
       {/* ── what to pull ── */}
@@ -206,15 +184,27 @@ export function DataScreen({ session, onSynced }: { session: PlatformSession; on
               <button className="btn btn-secondary btn-sm" onClick={load} disabled={checking}>
                 {checking ? "Checking…" : "Refresh status"}
               </button>
-              <button className="btn btn-primary btn-sm" onClick={() => sync()} disabled={syncing}>
-                {syncing && !syncingId ? "Syncing…" : "Sync every company"}
+              <button
+                className="btn btn-primary btn-sm"
+                onClick={() => startSync()}
+                disabled={syncBusy}
+              >
+                {sync.state?.active ? "Sync running…" : sync.busy ? "Starting…" : "Sync every company"}
               </button>
               <Tip text="Runs one pull per enabled company, in turn. To pull just one, use the button on its card above." />
+              {sync.state?.active && (
+                <span className="st-help">
+                  A sync is already running — starting another would pull the same books twice.
+                </span>
+              )}
             </div>
           </>
         )}
-        {result && <div className="conn-result">{result}</div>}
       </Bp>
+
+      {/* ── the job itself: state first, never the last response ── */}
+      <div className="section-h">Sync status</div>
+      <SyncStatusCard sync={sync} canSync={canSync} onRetry={() => startSync()} />
 
       {/* ── rotation is a property of the sign-in, not of a company ── */}
       {status?.can_manage_connection && credentials.filter((cr) => cr.is_owner).map((cr) => (

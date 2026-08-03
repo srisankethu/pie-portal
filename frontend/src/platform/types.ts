@@ -93,24 +93,57 @@ export interface ZohoConnectionInput {
   api_base?: string;
 }
 
+/* ── sync as a background job ───────────────────────────────────────────────
+ * A pull reads every invoice and bill individually and takes minutes, so it
+ * runs in the background and the screen renders from this state rather than
+ * from whatever the last request happened to return.
+ */
+export type SyncStatus = "IDLE" | "QUEUED" | "RUNNING" | "OK" | "PARTIAL" | "FAILED";
+
 export interface SyncRun {
-  status: string;
+  sync_run_id: string;
+  status: SyncStatus;
+  /** What the run is doing right now, in words. Null once it is over. */
+  phase: string | null;
+  active: boolean;
   source: string;
+  connection_id: string | null;
   started_at: string | null;
   finished_at: string | null;
+  heartbeat_at: string | null;
+  since: string | null;
   customers: number;
   products: number;
   sales_txns: number;
   cost_records: number;
-  skipped_count: number;
-  skipped_sample: { kind?: string; ref?: string; code?: string; detail?: string }[];
-  signals_emitted: number;
-  decisions_created: number;
-  error: string | null;
-  since: string | null;
   documents_fetched: number;
   documents_resumed: number;
   assignments: number;
+  signals_emitted: number;
+  decisions_created: number;
+  skipped_count: number;
+  skipped_sample: { kind: string; ref: string; code: string; detail: string }[];
+  error: string | null;
+  /** What the finished run wants to report — cleared sample data, metric rebuild. */
+  notes: { demo_data_removed?: Record<string, number>; commercial?: Record<string, unknown> };
+}
+
+export interface SyncState {
+  state: SyncStatus;
+  /** The job in flight, or null. Null is what re-enables the button. */
+  active: SyncRun | null;
+  /** The most recent run that actually ended, whatever the outcome. */
+  last: SyncRun | null;
+  /** Excludes PARTIAL — it wrote rows but did not finish. */
+  last_successful_at: string | null;
+  can_start: boolean;
+}
+
+export interface SyncStartResponse extends SyncState {
+  /** False when an existing job was handed back instead of a new one. */
+  started: boolean;
+  run: SyncRun;
+  note: string;
 }
 
 /** What to pull. `since` is the operator's judgement about how far back the

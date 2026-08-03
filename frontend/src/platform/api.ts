@@ -1,4 +1,4 @@
-import type { Account, ApprovalRequest, ZohoCredential, ZohoVisibleOrg, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, OrgPolicy, PlatformSession, PlatformUser, QuoteGate, Role, SyncOptions, SyncRun, ThresholdView, ZohoConnectionInput } from "./types";
+import type { Account, ApprovalRequest, ConnectionCheck, ConnectionsView, FixedThresholds, MarginPolicy, MarginPolicyPatch, NewConnectionInput, ZohoConnection, ZohoCredential, ZohoVisibleOrg, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, OrgPolicy, PlatformSession, PlatformUser, QuoteGate, Role, SyncOptions, SyncRun, ThresholdView, ZohoConnectionInput } from "./types";
 
 const KEY = "pie_platform_session";
 
@@ -161,11 +161,36 @@ export const papi = {
       { method: "POST", body: JSON.stringify({ current_password, new_password }) }, t),
 
   getPolicy: (t: string) =>
-    req<{ policy: OrgPolicy; can_manage: boolean; thresholds: ThresholdView }>(
+    req<{ policy: OrgPolicy; can_manage: boolean; margin_policy: MarginPolicy;
+          fixed: FixedThresholds; thresholds?: ThresholdView }>(
       "/api/v1/admin/policy", {}, t),
 
   updatePolicy: (t: string, body: Partial<OrgPolicy>) =>
     req<OrgPolicy>("/api/v1/admin/policy", { method: "PATCH", body: JSON.stringify(body) }, t),
+
+  /** Owner only. Validated as a whole policy, not as a diff — one edit that is
+   *  fine alone can invert the floor ladder against what is already saved. */
+  updateMarginPolicy: (t: string, body: MarginPolicyPatch) =>
+    req<{ margin_policy: MarginPolicy; note: string }>(
+      "/api/v1/admin/margin-policy", { method: "PATCH", body: JSON.stringify(body) }, t),
+
+  // ── connections: many Zoho companies per organization ─────────────────────
+  listConnections: (t: string) => req<ConnectionsView>("/api/v1/connections", {}, t),
+
+  addConnection: (t: string, body: NewConnectionInput) =>
+    req<ZohoConnection>("/api/v1/connections",
+      { method: "POST", body: JSON.stringify(body) }, t),
+
+  editConnection: (t: string, id: string, body: { label?: string; enabled?: boolean }) =>
+    req<ZohoConnection>(`/api/v1/connections/${id}`,
+      { method: "PATCH", body: JSON.stringify(body) }, t),
+
+  removeConnection: (t: string, id: string) =>
+    req<{ removed: boolean; connection_id: string; note: string }>(
+      `/api/v1/connections/${id}`, { method: "DELETE" }, t),
+
+  checkConnection: (t: string, id: string) =>
+    req<ConnectionCheck>(`/api/v1/connections/${id}/check`, { method: "POST" }, t),
 };
 
 /** True when a request failed because the session is no longer valid. */

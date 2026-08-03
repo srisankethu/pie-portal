@@ -1,5 +1,6 @@
 import type { Line, LineIntelligence } from "../types";
 import { REL_STYLE, statusColor, inr } from "../rel";
+import { Labelled, Tip } from "../Tip";
 
 /** The worst exception on a line, as a chip. Ordered by severity, so the chip
  *  always shows the thing that most needs a decision rather than the first
@@ -9,16 +10,35 @@ function CommercialChip({ intel }: { intel: LineIntelligence | undefined }) {
   const worst = intel.exceptions[0];
   if (!worst) return <span className="qi-chip ok">clear</span>;
   if (worst.severity === "INFO" && intel.exceptions.length === 1) {
-    return <span className="qi-chip info" title={worst.detail}>{worst.title}</span>;
+    return (
+      <span className="qi-chip info">
+        <Labelled tip={worst.detail}>{worst.title}</Labelled>
+      </span>
+    );
   }
   const others = intel.exceptions.length - 1;
   return (
-    <span
-      className={`qi-chip ${worst.severity.toLowerCase()}`}
-      title={intel.exceptions.map((e) => e.title).join(" · ")}
-    >
-      {intel.requires_approval ? "approval" : worst.severity === "WARNING" ? "check price" : worst.title}
-      {others > 0 && <span className="qi-chip-more">+{others}</span>}
+    <span className={`qi-chip ${worst.severity.toLowerCase()}`}>
+      <Labelled
+        tip={
+          <>
+            {intel.requires_approval && (
+              <div style={{ marginBottom: 4 }}>
+                <b>This line cannot be sent without an approval.</b>
+              </div>
+            )}
+            <ul style={{ margin: 0, paddingLeft: 16 }}>
+              {intel.exceptions.map((e) => (
+                <li key={e.code}>{e.title}</li>
+              ))}
+            </ul>
+            <div style={{ marginTop: 4 }}>Open the line for the detail behind each one.</div>
+          </>
+        }
+      >
+        {intel.requires_approval ? "approval" : worst.severity === "WARNING" ? "check price" : worst.title}
+        {others > 0 && <span className="qi-chip-more">+{others}</span>}
+      </Labelled>
     </span>
   );
 }
@@ -58,13 +78,27 @@ export function LineGrid({
           <th>Requested item</th>
           <th className="num">Qty</th>
           <th>Supply product</th>
-          <th>Relationship</th>
+          <th>
+            <Labelled tip="How the supply product relates to what the customer asked for — identical, an equivalent from another maker, or a substitute that differs in some dimension. It is not a judgement about whether to offer it.">
+              Relationship
+            </Labelled>
+          </th>
           <th className="num">Avail.</th>
           <th className="num">Short.</th>
           <th className="num">Quoted ₹</th>
           <th className="num">Line total</th>
-          {mgmt && <th className="num">Margin</th>}
-          <th>Commercial</th>
+          {mgmt && (
+            <th className="num">
+              <Labelled tip="Gross profit ÷ line revenue at the quoted rate. Shown to managers and owners only — a salesperson's response from the server contains no cost and no margin at all.">
+                Margin
+              </Labelled>
+            </th>
+          )}
+          <th>
+            <Labelled tip="The most serious thing the deterministic checks found on this line. “clear” means every check passed, not that the price is optimal.">
+              Commercial
+            </Labelled>
+          </th>
           <th>Status</th>
         </tr>
       </thead>
@@ -192,12 +226,14 @@ export function LineGrid({
               {mgmt && (
                 <td className="num">
                   {authMargin !== null ? (
-                    <span className={li?.blocking ? "warn" : ""} title="From recorded purchase cost">
+                    <span className={li?.blocking ? "warn" : ""}>
                       {(authMargin * 100).toFixed(1)}%
+                      <Tip text="From this item's recorded purchase cost — bill lines actually synced from the books, not a catalogue figure." />
                     </span>
                   ) : econ && econ.margin !== null ? (
-                    <span className={econ.below_floor ? "warn" : ""} title="Catalogue cost — platform not connected">
+                    <span className={econ.below_floor ? "warn" : ""}>
                       {(econ.margin * 100).toFixed(1)}%
+                      <Tip text="Derived from the catalogue cost, because the commercial platform is not connected. Indicative only — the real purchase cost comes from bills and may differ." />
                     </span>
                   ) : (
                     "—"

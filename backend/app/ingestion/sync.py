@@ -275,7 +275,8 @@ class ZohoNotConfiguredError(RuntimeError):
 
 
 def get_source(session: Session, organization_id: str,
-               since: Optional[date] = None) -> ZohoSource:
+               since: Optional[date] = None,
+               connection_id: Optional[str] = None) -> ZohoSource:
     """Select this organization's Zoho source (fixture offline, or its own live
     connection). ``ZOHO_SOURCE=fixture`` is a process-wide dev/test switch and
     applies to every org identically; ``api`` pulls each org's own credentials
@@ -286,7 +287,8 @@ def get_source(session: Session, organization_id: str,
         from .connections import get_zoho_credentials
         from .zoho_client import ZohoApiSource
 
-        creds = get_zoho_credentials(session, organization_id)
+        creds = get_zoho_credentials(session, organization_id,
+                                     connection_id=connection_id)
         if creds is None:
             raise ZohoNotConfiguredError(
                 f"Organization {organization_id!r} has no Zoho connection. "

@@ -7,7 +7,7 @@ import type {
   PeerRow,
   PlatformSession,
 } from "./types";
-import { Bp } from "./ui";
+import { Bp, Labelled } from "./ui";
 
 /**
  * Customer × Item commercial intelligence.
@@ -76,9 +76,30 @@ const EROSION_LABEL: Record<string, string> = {
 function Sufficiency({ level, reasons }: { level: string; reasons?: string[] }) {
   if (level === "SUFFICIENT") return null;
   const label = level === "INSUFFICIENT" ? "Not enough data" : "Limited data";
+  // The reasons used to live in a `title` attribute, which is invisible on a
+  // touch device and to a keyboard — and "Not enough data" without the reason
+  // is unactionable, since too few transactions and no purchase cost need
+  // completely different fixes.
   return (
-    <span className="ci-suff" title={(reasons || []).join("; ")}>
-      {label}
+    <span className="ci-suff">
+      <Labelled
+        tip={
+          <>
+            {level === "INSUFFICIENT"
+              ? "Too thin to draw a conclusion from, so no signal is raised — weak data must not produce confident output."
+              : "Enough to show, not enough to be sure of."}
+            {(reasons || []).length > 0 && (
+              <ul style={{ margin: "6px 0 0", paddingLeft: 16 }}>
+                {(reasons || []).map((r, i) => (
+                  <li key={i}>{r}</li>
+                ))}
+              </ul>
+            )}
+          </>
+        }
+      >
+        {label}
+      </Labelled>
     </span>
   );
 }
@@ -162,14 +183,18 @@ export function CustomerCommercial({
       <div className="ci-kpis">
         <Kpi label="Revenue" value={inr(s.revenue_12m)} />
         <Kpi label="Gross profit" value={inr(s.gross_profit_12m)} />
-        <Kpi label="Gross margin" value={pct(s.gross_margin_12m)} />
+        <Kpi label="Gross margin" value={pct(s.gross_margin_12m)}
+             tip="Total gross profit ÷ total revenue across the account — not the average of the per-item margins, which would let a ₹500 line count as much as a ₹5 lakh one." />
         <Kpi label="Active items" value={num(s.active_items)} />
         <Kpi label="Items eroding" value={num(s.items_with_margin_erosion)}
+             tip="Items whose margin has fallen by more than the erosion threshold between the recent window and the one before it, and where there is enough evidence to say so. Set the threshold in Settings → Margin policy."
              tone={s.items_with_margin_erosion ? "warn" : undefined} />
         <Kpi label="Material gaps" value={num(s.material_gap_items)}
+             tip="Items where the gap is worth more in rupees than the material-gap floor. Ranking by percentage instead is how a team ends up working trivial accounts first."
              tone={s.material_gap_items ? "warn" : undefined} />
         <Kpi label="Historical margin gap" value={inr(s.historical_margin_gap)}
              sub="estimate, not recoverable profit"
+             tip="What recent volume would have earned at the historical margin, minus what it actually earned. An arithmetic gap, not money anyone can go and collect — costs may have risen for reasons no price can undo."
              tone={s.historical_margin_gap ? "warn" : undefined} />
       </div>
 
@@ -223,12 +248,32 @@ export function CustomerCommercial({
                 <tr>
                   <th>Item</th>
                   <th className="num">Revenue 12M</th>
-                  <th className="num">Current</th>
-                  <th className="num">Historical</th>
-                  <th className="num">Peers</th>
-                  <th className="num">Change</th>
+                  <th className="num">
+                    <Labelled tip="Margin over the recent window — the period treated as 'now'. Its length is fixed in configuration and shown in Settings.">
+                      Current
+                    </Labelled>
+                  </th>
+                  <th className="num">
+                    <Labelled tip="Margin over the longer lookback, which is what 'current' is being compared against. A relationship with too little history shows nothing here rather than a number built from two invoices.">
+                      Historical
+                    </Labelled>
+                  </th>
+                  <th className="num">
+                    <Labelled tip="The median margin other customers got on this same item recently. Built from at least the minimum peer count — fewer than that and it would be one customer's price wearing the word 'median', so it is withheld.">
+                      Peers
+                    </Labelled>
+                  </th>
+                  <th className="num">
+                    <Labelled tip="Current minus historical, in percentage points. 24% to 20% is −4 pp, not −17% — a percentage change of a percentage is how a small move gets reported as a crisis.">
+                      Change
+                    </Labelled>
+                  </th>
                   <th className="num">Volume</th>
-                  <th className="num">Margin gap ₹</th>
+                  <th className="num">
+                    <Labelled tip="The historical margin gap in rupees. This column is what the list is ranked by, because a 9-point slide on a ₹4,000 item matters less than a 2-point slide on a ₹40 lakh one.">
+                      Margin gap ₹
+                    </Labelled>
+                  </th>
                   <th>Reason</th>
                 </tr>
               </thead>
@@ -276,12 +321,14 @@ export function CustomerCommercial({
   );
 }
 
-function Kpi({ label, value, sub, tone }: {
-  label: string; value: string; sub?: string; tone?: "warn";
+function Kpi({ label, value, sub, tone, tip }: {
+  label: string; value: string; sub?: string; tone?: "warn"; tip?: React.ReactNode;
 }) {
   return (
     <div className={`ci-kpi${tone ? ` ci-kpi-${tone}` : ""}`}>
-      <div className="ci-kpi-label">{label}</div>
+      <div className="ci-kpi-label">
+        {tip ? <Labelled tip={tip}>{label}</Labelled> : label}
+      </div>
       <div className="ci-kpi-value">{value}</div>
       {sub && <div className="fsrc">{sub}</div>}
     </div>
@@ -350,9 +397,12 @@ export function CustomerItemScreen({
         <Kpi label="Current margin" value={pct(h.current_margin)} />
         <Kpi label="Historical margin" value={pct(h.historical_margin)} />
         <Kpi label="Change" value={pp(h.margin_change_pp)}
+             tip="Percentage points, not percent. A move from 24% to 20% is −4 pp."
              tone={(h.margin_change_pp ?? 0) < 0 ? "warn" : undefined} />
-        <Kpi label="Net selling price" value={inr(h.current_sell_price)} sub="per unit" />
-        <Kpi label="Effective cost" value={inr(h.current_effective_cost)} sub="per unit" />
+        <Kpi label="Net selling price" value={inr(h.current_sell_price)} sub="per unit"
+             tip="What the customer actually paid per unit — the invoice rate after line discounts, not the list price." />
+        <Kpi label="Effective cost" value={inr(h.current_effective_cost)} sub="per unit"
+             tip="Purchase cost per unit from the bills, after landed costs and supplier discounts. Where no bill covers a sale, the margin is absent rather than assumed." />
         <Kpi label="Historical margin gap" value={inr(h.historical_margin_gap)}
              sub={h.annualized_historical_margin_gap
                ? `${inr(h.annualized_historical_margin_gap)} annualized`
@@ -422,12 +472,31 @@ export function CustomerItemScreen({
         ) : (
           <>
             <div className="ci-benchmark">
-              <div><dt>Median selling price</dt><dd>{inr(data.peers.median_price)}</dd></div>
+              <div>
+                <dt>
+                  <Labelled tip="The median, not the mean — one customer who bought at a strange price cannot drag the benchmark on its own.">
+                    Median selling price
+                  </Labelled>
+                </dt>
+                <dd>{inr(data.peers.median_price)}</dd>
+              </div>
               <div><dt>Median margin</dt><dd>{pct(data.peers.median_margin)}</dd></div>
-              <div><dt>This customer's price</dt>
-                   <dd>{signedPct(data.peers.price_deviation_pct)}</dd></div>
-              <div><dt>This customer's margin</dt>
-                   <dd>{pp(data.peers.margin_deviation_pp)}</dd></div>
+              <div>
+                <dt>
+                  <Labelled tip="How far this customer's price sits from the peer median, as a percentage of it. Negative means they pay less than the others.">
+                    This customer's price
+                  </Labelled>
+                </dt>
+                <dd>{signedPct(data.peers.price_deviation_pct)}</dd>
+              </div>
+              <div>
+                <dt>
+                  <Labelled tip="Distance from the peer median margin in percentage points — a difference between two percentages, not a percentage change.">
+                    This customer's margin
+                  </Labelled>
+                </dt>
+                <dd>{pp(data.peers.margin_deviation_pp)}</dd>
+              </div>
               <div><dt>Peer customers</dt><dd>{data.peers.peer_count}</dd></div>
             </div>
             <p className="ci-note" style={{ padding: "0 14px 12px" }}>

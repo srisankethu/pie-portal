@@ -1,5 +1,6 @@
 import type { Quote } from "../types";
 import { inr } from "../rel";
+import { Tip } from "../Tip";
 
 export function SummaryBar({
   quote,
@@ -38,7 +39,10 @@ export function SummaryBar({
       <div className="summary-actions">
         {!hasLines && <span className="summary-help">Paste an RFQ to start building the quote.</span>}
         {hasLines && gateBlockedReason && (
-          <span className="summary-blocked">{gateBlockedReason}</span>
+          <span className="summary-blocked">
+            {gateBlockedReason}
+            <Tip text="The block is enforced when the estimate is created, not merely advised — the request goes nowhere until the approval is answered. An approval covers the price it was granted at, so re-pricing a line lower reopens it." />
+          </span>
         )}
         {selectedCount > 0 && (
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>

@@ -38,41 +38,92 @@ class CredentialNotUsable(PermissionError):
     """A credential this organization has not been given access to."""
 
 
+class ConnectionNotFound(LookupError):
+    """No such connection on this organization."""
+
+
+# ── the Zoho scopes this platform needs, and why ────────────────────────────
+# Surfaced in the UI because a half-granted scope is the single most common
+# reason a connection authenticates and then returns nothing: the token works,
+# the endpoint 401s, and the sync reports zero rows with no obvious cause.
+REQUIRED_SCOPES: tuple[tuple[str, str, bool], ...] = (
+    ("ZohoBooks.contacts.READ", "Customers and vendors", True),
+    ("ZohoBooks.settings.READ", "Items — the product master", True),
+    ("ZohoBooks.invoices.READ", "Invoices — what was sold, and for how much", True),
+    ("ZohoBooks.bills.READ",
+     "Bills — what it cost. Without this there is no margin anywhere in the "
+     "platform, only revenue.", True),
+    ("ZohoBooks.users.READ",
+     "Users — maps a Zoho salesperson to a platform account. Optional: without "
+     "it accounts stay unassigned and every decision routes to management.",
+     False),
+)
+
+SCOPE_STRING = ",".join(s for s, _, _ in REQUIRED_SCOPES)
+
+
 # ── resolution ──────────────────────────────────────────────────────────────
-def get_zoho_credentials(session: Session, organization_id: str) -> Optional[ZohoCredentials]:
-    """This organization's Zoho credentials, or None if it has not connected.
+def list_connections(session: Session, organization_id: str,
+                     enabled_only: bool = False) -> list[models.ZohoConnection]:
+    """Every Zoho company this organization pulls from, oldest first."""
+    stmt = select(models.ZohoConnection).where(
+        models.ZohoConnection.organization_id == organization_id)
+    if enabled_only:
+        stmt = stmt.where(models.ZohoConnection.enabled.is_(True))
+    return list(session.scalars(stmt.order_by(models.ZohoConnection.created_at)))
+
+
+def get_connection(session: Session, organization_id: str,
+                   connection_id: str) -> models.ZohoConnection:
+    row = session.get(models.ZohoConnection, connection_id)
+    if row is None or row.organization_id != organization_id:
+        raise ConnectionNotFound("No such connection")
+    return row
+
+
+def credentials_for(session: Session,
+                    connection: models.ZohoConnection) -> ZohoCredentials:
+    """Turn one connection row into the credentials a pull needs."""
+    cred = connection.credential
+    if cred is not None:
+        if not cred.is_usable_by(connection.organization_id):
+            raise CredentialNotUsable(
+                f"Organization {connection.organization_id!r} is no longer permitted "
+                f"to use credential {cred.credential_id!r}")
+        return ZohoCredentials(
+            organization_id=connection.zoho_organization_id,
+            client_id=cred.client_id,
+            client_secret=crypto.decrypt(cred.client_secret_encrypted),
+            refresh_token=crypto.decrypt(cred.refresh_token_encrypted),
+            accounts_base=cred.accounts_base, api_base=cred.api_base)
+    # Legacy inline row, pre-split.
+    return ZohoCredentials(
+        organization_id=connection.zoho_organization_id,
+        client_id=connection.client_id,
+        client_secret=crypto.decrypt(connection.client_secret_encrypted),
+        refresh_token=crypto.decrypt(connection.refresh_token_encrypted),
+        accounts_base=connection.accounts_base, api_base=connection.api_base)
+
+
+def get_zoho_credentials(session: Session, organization_id: str,
+                         connection_id: Optional[str] = None
+                         ) -> Optional[ZohoCredentials]:
+    """Credentials for one connection, or for the organization's first enabled one.
+
+    The no-argument form is what every existing caller uses and keeps the
+    single-connection behaviour intact. Passing a connection id is how a
+    multi-company organization says which books it means.
 
     Decryption failures (see ``crypto.CredentialDecryptionError``) propagate —
     they mean the stored value cannot be trusted, not that there is none.
     """
-    row = session.get(models.ZohoConnection, organization_id)
-    if row is not None:
-        cred = row.credential
-        if cred is not None:
-            # Re-checked at use, not only at attach time: an organization
-            # removed from the share list must stop syncing immediately, not at
-            # the next time somebody edits the connection.
-            if not cred.is_usable_by(organization_id):
-                raise CredentialNotUsable(
-                    f"Organization {organization_id!r} is no longer permitted to use "
-                    f"credential {cred.credential_id!r}")
-            return ZohoCredentials(
-                organization_id=row.zoho_organization_id,
-                client_id=cred.client_id,
-                client_secret=crypto.decrypt(cred.client_secret_encrypted),
-                refresh_token=crypto.decrypt(cred.refresh_token_encrypted),
-                accounts_base=cred.accounts_base,
-                api_base=cred.api_base,
-            )
-        if row.client_id:                       # legacy inline row, pre-split
-            return ZohoCredentials(
-                organization_id=row.zoho_organization_id,
-                client_id=row.client_id,
-                client_secret=crypto.decrypt(row.client_secret_encrypted),
-                refresh_token=crypto.decrypt(row.refresh_token_encrypted),
-                accounts_base=row.accounts_base,
-                api_base=row.api_base,
-            )
+    if connection_id is not None:
+        return credentials_for(session, get_connection(session, organization_id,
+                                                       connection_id))
+
+    rows = list_connections(session, organization_id, enabled_only=True)
+    if rows:
+        return credentials_for(session, rows[0])
     if organization_id == settings.DEFAULT_ORG_ID and settings.ZOHO_ORGANIZATION_ID:
         return ZohoCredentials.from_settings()
     return None
@@ -214,29 +265,76 @@ def connections_using(session: Session, credential_id: str) -> list[models.ZohoC
 
 
 # ── connections ─────────────────────────────────────────────────────────────
-def connect_with_credential(session: Session, organization_id: str, *,
-                            credential_id: str,
-                            zoho_organization_id: str) -> models.ZohoConnection:
-    """Point this organization at a Zoho company, using an existing grant.
+def add_connection(session: Session, organization_id: str, *, credential_id: str,
+                   zoho_organization_id: str, label: str = "") -> models.ZohoConnection:
+    """Point this organization at another Zoho company through an existing grant.
 
-    The second and third entity go through here: pick the credential already on
-    file, name the company id, done. No secret is re-entered, so there is no
-    second copy to rotate.
+    No secret is re-entered, so there is no second copy for a rotation to miss.
+    A company already connected is updated rather than duplicated: two rows for
+    one Zoho org id would sync it twice and double every figure.
     """
     cred = get_credential(session, organization_id, credential_id)
-    row = session.get(models.ZohoConnection, organization_id)
-    if row is None:
-        row = models.ZohoConnection(organization_id=organization_id)
+    zoho_organization_id = zoho_organization_id.strip()
+
+    existing = session.scalar(select(models.ZohoConnection).where(
+        models.ZohoConnection.organization_id == organization_id,
+        models.ZohoConnection.zoho_organization_id == zoho_organization_id))
+    row = existing or models.ZohoConnection(organization_id=organization_id)
+    if existing is None:
         session.add(row)
+
     row.zoho_organization_id = zoho_organization_id
     row.credential_id = cred.credential_id
-    # Any legacy inline secret is cleared, not left behind: a stale copy that
-    # rotation would miss is exactly the failure this split exists to prevent.
+    row.label = (label or "").strip()[:255]
+    if existing is None:
+        row.enabled = True
+    # Any legacy inline secret is cleared: a stale copy that rotation would miss
+    # is exactly the failure the credential split exists to prevent.
     row.client_id = None
     row.client_secret_encrypted = None
     row.refresh_token_encrypted = None
     row.accounts_base = cred.accounts_base
     row.api_base = cred.api_base
+    session.flush()
+    return row
+
+
+def update_connection(session: Session, organization_id: str, connection_id: str, *,
+                      label: Optional[str] = None,
+                      enabled: Optional[bool] = None) -> models.ZohoConnection:
+    row = get_connection(session, organization_id, connection_id)
+    if label is not None:
+        row.label = label.strip()[:255]
+    if enabled is not None:
+        row.enabled = enabled
+    session.flush()
+    return row
+
+
+def record_check(session: Session, connection: models.ZohoConnection, *, ok: bool,
+                 detail: str = "") -> None:
+    """Remember whether this connection was reachable, and what Zoho said.
+
+    Per connection, because "the organization is connected" stops meaning
+    anything once there are three and one has a revoked token.
+    """
+    connection.last_checked_at = datetime.now(timezone.utc)
+    connection.last_check_ok = ok
+    connection.last_check_detail = (detail or "")[:1024] or None
+    session.flush()
+
+
+def delete_connection(session: Session, organization_id: str,
+                      connection_id: str) -> models.ZohoConnection:
+    """Remove one connection. Data already pulled through it is left alone.
+
+    Deliberately not cascading into the read model: rows already synced are
+    facts about what was invoiced, and deleting a connection is an
+    administrative act about credentials, not a decision to forget trading
+    history. Purging that data is a separate, explicit choice.
+    """
+    row = get_connection(session, organization_id, connection_id)
+    session.delete(row)
     session.flush()
     return row
 
@@ -247,12 +345,18 @@ def set_zoho_credentials(
     accounts_base: str = "https://accounts.zoho.in",
     api_base: str = "https://www.zohoapis.in/books/v3",
     label: str = "",
+    credential_label: str = "",
 ) -> models.ZohoConnection:
     """Connect by supplying the secrets directly.
 
-    Kept as the first-connection path and for compatibility. Identical secrets
-    attach to the credential already on file rather than creating a second copy
-    of it.
+    The first-connection path, and what every existing caller uses. Identical
+    secrets attach to the credential already on file rather than creating a
+    second copy of it.
+
+    ``label`` names the *company*; ``credential_label`` names the *sign-in*.
+    They are separate because one sign-in commonly serves several companies,
+    and a grant named after the first company it happened to connect reads as
+    a lie the moment it also serves the second.
     """
     cred = find_matching_credential(
         session, organization_id, client_id=client_id, client_secret=client_secret,
@@ -260,27 +364,30 @@ def set_zoho_credentials(
     if cred is None:
         cred = create_credential(
             session, organization_id, client_id=client_id, client_secret=client_secret,
-            refresh_token=refresh_token, label=label,
+            refresh_token=refresh_token, label=credential_label or label,
             accounts_base=accounts_base, api_base=api_base)
     else:
         cred.accounts_base = accounts_base
         cred.api_base = api_base
-    return connect_with_credential(
+    return add_connection(
         session, organization_id, credential_id=cred.credential_id,
-        zoho_organization_id=zoho_organization_id)
+        zoho_organization_id=zoho_organization_id, label=label)
+
+
+# Kept under its old name: callers that meant "connect this org" still work.
+connect_with_credential = add_connection
 
 
 def clear_zoho_connection(session: Session, organization_id: str) -> bool:
-    """Remove this organization's connection. Returns whether one existed.
+    """Remove every connection on this organization. Returns whether any existed.
 
-    The credential is deliberately left in place: other organizations may be
-    using it, and even when none are, keeping it means reconnecting does not
-    mean re-entering a secret. The default organization falls back to ``ZOHO_*``
+    Credentials are deliberately left in place: other organizations may be using
+    them, and even when none are, keeping them means reconnecting does not mean
+    re-entering a secret. The default organization falls back to ``ZOHO_*``
     afterwards, same as if it had never connected one.
     """
-    row = session.get(models.ZohoConnection, organization_id)
-    if row is None:
-        return False
-    session.delete(row)
+    rows = list_connections(session, organization_id)
+    for row in rows:
+        session.delete(row)
     session.flush()
-    return True
+    return bool(rows)

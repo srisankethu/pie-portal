@@ -116,14 +116,21 @@ class ZohoCredential(Base):
 
 
 class ZohoConnection(Base):
-    """One platform organization pointed at one Zoho Books company.
+    """One Zoho Books company this organization pulls from.
 
-    A connection is now just that pairing: which grant to authenticate with, and
-    which company id to ask for. Still one row per platform organization —
-    connecting a second Zoho company still means provisioning a second
-    organization (see ``app/provision_org.py``) — but the secret behind it can
-    be shared, so three entities under one Zoho login are three connections over
-    one credential, and one rotation.
+    **Many per organization.** It used to be one — the platform organization was
+    the primary key — which meant a business with three legal entities needed
+    three platform tenants to see three sets of books, and no screen could show
+    them together. Now an owner adds as many companies as they have and chooses
+    which to pull from.
+
+    That has a consequence worth stating rather than burying: rows from every
+    connection on an organization land in *that organization's* read model and
+    are analysed together. Two companies selling to the same customer produce
+    two customer records (different Zoho contact ids), which is right — they are
+    different legal relationships — but revenue and margin roll up across them.
+    Keep entities apart by giving them separate organizations; put them together
+    by giving one organization several connections.
 
     Pull tuning (pacing, retries, page size, history window) is deliberately NOT
     here: it is shared, global operational behaviour in ``config.py``, not part
@@ -136,9 +143,22 @@ class ZohoConnection(Base):
     """
 
     __tablename__ = "zoho_connections"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "zoho_organization_id",
+                         name="uq_zoho_connection_org_company"),
+    )
 
+    connection_id: Mapped[str] = mapped_column(String(64), primary_key=True,
+                                               default=_uuid)
     organization_id: Mapped[str] = mapped_column(
-        String(64), ForeignKey("organizations.organization_id"), primary_key=True)
+        String(64), ForeignKey("organizations.organization_id"), index=True)
+    # What a person calls this company. The Zoho org id is the identity; this is
+    # what makes a list of three connections readable.
+    label: Mapped[str] = mapped_column(String(255), default="")
+    # Off means "keep the credentials, skip it on a sync-all". Deleting is for
+    # connections that are wrong; disabling is for ones that are simply quiet.
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+
     zoho_organization_id: Mapped[str] = mapped_column(String(64))
     credential_id: Mapped[Optional[str]] = mapped_column(
         String(64), ForeignKey("zoho_credentials.credential_id"), index=True)
@@ -152,11 +172,40 @@ class ZohoConnection(Base):
     accounts_base: Mapped[str] = mapped_column(String(255), default="https://accounts.zoho.in")
     api_base: Mapped[str] = mapped_column(String(255),
                                           default="https://www.zohoapis.in/books/v3")
+    # Last time this connection was actually reachable, and what Zoho said.
+    # Held per connection because "the org is connected" stops meaning anything
+    # once there are three of them and one has a revoked token.
+    last_checked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    last_check_ok: Mapped[Optional[bool]] = mapped_column(Boolean)
+    last_check_detail: Mapped[Optional[str]] = mapped_column(String(1024))
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
                                                  onupdate=_now)
 
     credential: Mapped[Optional["ZohoCredential"]] = relationship(lazy="joined")
+
+
+class CommercialPolicy(Base):
+    """One organization's overrides to the commercial thresholds.
+
+    Only the fields ``commercial/policy.py`` marks editable are ever stored, and
+    the whole set is validated as a ladder before it is written. Kept as JSON
+    rather than columns because the editable set is a product decision that will
+    move, and a migration per threshold is a tax on changing one's mind.
+
+    Reproducibility survives editing because ``CommercialThresholds.version`` is
+    a content hash: an edited policy has a different version, and every metric
+    row, signal and quote snapshot already records the version that produced it.
+    """
+
+    __tablename__ = "commercial_policies"
+
+    organization_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    overrides: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    updated_by_user_id: Mapped[Optional[str]] = mapped_column(String(64))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
+                                                 onupdate=_now)
 
 
 class User(Base):

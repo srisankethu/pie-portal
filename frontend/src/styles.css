@@ -969,3 +969,158 @@ table.grid tbody tr:hover td { background: color-mix(in srgb, var(--color-accent
   border-left: 3px solid var(--warn); background: var(--caution-bg);
   padding: 8px 11px; border-radius: 3px; color: var(--caution-fg);
 }
+
+/* ── tooltips ───────────────────────────────────────────────────────────────
+   Attached where a label is accurate but incomplete. The trigger is a button
+   so the text is reachable by keyboard and by tap, not only by hover. */
+.tip-wrap { position: relative; display: inline-flex; align-items: center; }
+.tip-trigger {
+  border: none; background: none; padding: 0 0 0 4px; margin: 0;
+  cursor: help; color: inherit; font: inherit; line-height: 1; display: inline-flex;
+}
+.tip-trigger:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.tip-mark {
+  width: 13px; height: 13px; border-radius: 50%; font-size: 9.5px; font-weight: 700;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--color-neutral-300); color: var(--color-neutral-800);
+  font-family: var(--font-body);
+}
+.tip-trigger:hover .tip-mark, .tip-trigger:focus-visible .tip-mark {
+  background: var(--color-accent); color: #fff;
+}
+/* Fixed, not absolute: the tables this sits in scroll horizontally, and
+   overflow-x clips vertically too — an absolutely positioned bubble on a
+   column header would be cut off exactly where it is needed. */
+.tip-bubble {
+  position: fixed; z-index: 60;
+  width: max-content; max-width: 300px; padding: 8px 11px;
+  background: var(--color-neutral-900); color: #f2f2f3;
+  border-radius: 4px; font-size: 12px; line-height: 1.5; font-weight: 400;
+  font-family: var(--font-body); text-transform: none; letter-spacing: 0;
+  box-shadow: 0 6px 22px rgba(0, 0, 0, .28); white-space: normal; text-align: left;
+  pointer-events: none;
+}
+.tip-bubble ul { margin: 0; }
+.tip-bubble code { background: rgba(255, 255, 255, .14); padding: 0 4px; border-radius: 2px; }
+.labelled { display: inline-flex; align-items: center; gap: 1px; }
+
+/* ── margin policy editor ─────────────────────────────────────────────────── */
+.mp-version {
+  display: flex; gap: 14px; align-items: baseline; flex-wrap: wrap;
+  margin: 10px 0 4px; font-size: 11.5px; color: var(--color-neutral-600);
+}
+.mp-version code { font-size: 12px; color: var(--color-accent-800); }
+.mp-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px 20px; margin: 12px 0 4px; }
+.mp-field { display: flex; flex-direction: column; gap: 3px; }
+.mp-field > label {
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--color-neutral-600); display: inline-flex; align-items: center;
+}
+.mp-input {
+  display: flex; align-items: center; gap: 5px;
+  font-variant-numeric: tabular-nums;
+}
+.mp-input .input { padding: 4px 7px; font-size: 14px; font-weight: 600; width: 100%; }
+.mp-input .unit { font-size: 12px; color: var(--color-neutral-600); }
+.mp-state { font-size: 10.5px; min-height: 14px; display: flex; gap: 8px; align-items: center; }
+.mp-state .mp-overridden { color: var(--color-accent-700); }
+.mp-state .mp-default { color: var(--color-neutral-500); }
+.mp-state button {
+  border: none; background: none; padding: 0; font-size: 10.5px; cursor: pointer;
+  color: var(--color-neutral-700); text-decoration: underline; font-family: var(--font-body);
+}
+.mp-wide { grid-column: 1 / -1; }
+.mp-families { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+.mp-family {
+  display: flex; align-items: center; gap: 5px; padding: 4px 6px 4px 10px;
+  background: var(--color-neutral-100); border: 1px solid var(--color-divider);
+  border-radius: 12px; font-size: 12px;
+}
+.mp-family .input { width: 58px; padding: 2px 5px; font-size: 12.5px; }
+.mp-family button {
+  border: none; background: none; cursor: pointer; color: var(--color-neutral-600);
+  font-size: 14px; line-height: 1; padding: 0 2px;
+}
+.mp-bar {
+  display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+  margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--color-divider);
+}
+.mp-msg { font-size: 12px; }
+.mp-msg.bad { color: var(--danger-fg); }
+.mp-msg.ok { color: var(--color-accent-700); }
+.mp-ladder {
+  margin-top: 10px; padding: 9px 12px; border-radius: 3px; font-size: 12px;
+  background: var(--color-accent-100); color: var(--color-accent-800);
+  border-left: 3px solid var(--color-accent);
+}
+.mp-fixed { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px 18px; margin-top: 10px; }
+.mp-fixed dt { font-size: 10.5px; color: var(--color-neutral-600); }
+.mp-fixed dd { margin: 0; font-size: 13.5px; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+/* ── connections ──────────────────────────────────────────────────────────── */
+.cx-pool {
+  font-size: 12px; padding: 9px 12px; border-radius: 3px; margin-bottom: 12px;
+  background: var(--caution-bg); color: var(--caution-fg);
+  border-left: 3px solid var(--warn);
+}
+.cx-list { display: flex; flex-direction: column; gap: 10px; }
+.cx-card { padding: 13px 15px; border-left: 3px solid var(--color-neutral-400); }
+.cx-card.ok { border-left-color: var(--color-accent); }
+.cx-card.bad { border-left-color: var(--danger-fg); }
+.cx-card.off { border-left-color: var(--color-neutral-400); opacity: .72; }
+.cx-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+.cx-name { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.cx-name h4 { margin: 0; font-size: 15px; }
+.cx-name .input { font-size: 14px; padding: 3px 7px; max-width: 260px; }
+.cx-badge {
+  font-size: 10px; text-transform: uppercase; letter-spacing: .06em;
+  padding: 2px 8px; border-radius: 10px; border: 1px solid currentColor; white-space: nowrap;
+}
+.cx-badge.ok { color: var(--color-accent-700); }
+.cx-badge.bad { color: var(--danger-fg); }
+.cx-badge.unknown { color: var(--color-neutral-600); }
+.cx-badge.off { color: var(--color-neutral-600); }
+.cx-facts {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px 16px; margin: 11px 0 0;
+  padding-top: 10px; border-top: 1px solid var(--color-divider);
+}
+.cx-facts dt { font-size: 10.5px; color: var(--color-neutral-600); display: flex; align-items: center; }
+.cx-facts dd { margin: 0; font-size: 13px; word-break: break-word; }
+.cx-detail { font-size: 12px; color: var(--color-neutral-700); margin: 7px 0 0; }
+.cx-detail.bad { color: var(--danger-fg); }
+.cx-actions { display: flex; gap: 7px; flex-wrap: wrap; margin-top: 12px; }
+.cx-actions .spacer { flex: 1 1 auto; }
+.cx-add { margin-top: 14px; }
+.cx-add form > label {
+  display: block; margin-top: 10px;
+  font-size: 12px; font-weight: 600; color: var(--color-neutral-700);
+}
+.cx-add form > .input, .cx-add form > select.input { width: 100%; max-width: 520px; display: block; }
+.cx-add .fsrc {
+  display: block; font-weight: 400; font-size: 12px; line-height: 1.5;
+  color: var(--color-neutral-500); margin-top: 3px; max-width: 520px;
+}
+/* Its own line: the button belongs to the select above it, not to the label
+   of the field below, and side by side it read as part of the wrong one. */
+.cx-add form > button.btn-ghost { display: block; margin: 8px 0 0; }
+.cx-tabs { display: flex; gap: 6px; margin-bottom: 12px; }
+.cx-tab {
+  font-size: 12px; padding: 4px 11px; border-radius: 12px; cursor: pointer;
+  border: 1px solid var(--color-divider); background: var(--color-surface);
+  font-family: var(--font-body); color: var(--color-neutral-700);
+}
+.cx-tab[aria-pressed="true"] { background: var(--color-accent); color: #fff; border-color: var(--color-accent); }
+.cx-scopes { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 8px; }
+.cx-scopes td { padding: 6px 8px 6px 0; border-bottom: 1px solid var(--color-divider); vertical-align: top; }
+.cx-scopes td.mono { white-space: nowrap; color: var(--color-accent-800); }
+.cx-scopes .req {
+  font-size: 10px; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--color-neutral-600);
+}
+.cx-scopestring {
+  margin-top: 10px; padding: 8px 10px; background: var(--color-neutral-100);
+  border: 1px solid var(--color-divider); border-radius: 3px;
+  font-size: 11.5px; word-break: break-all; display: flex; gap: 10px; align-items: center;
+}
+.cx-scopestring code { flex: 1 1 auto; }
+.cx-empty { padding: 16px; font-size: 13px; color: var(--color-neutral-700); }

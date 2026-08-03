@@ -31,7 +31,8 @@ from ..domain.enums import (
 )
 from ..signals.base import CostRow, SaleRow
 from .benchmark import ItemBenchmark, compute_benchmark
-from .config import CommercialThresholds, load_commercial_thresholds
+from .config import CommercialThresholds
+from .policy import load_for_org
 from .economics import LineEconomics, line_economics
 from .metrics import RelationshipMetrics, compute_relationship
 from .quote_exceptions import CRITICAL, RESTRICTED
@@ -134,7 +135,7 @@ def assess_quote(
     Query count is constant in the number of lines: products (1), the customer's
     sales (1), peer sales for the quoted items (1), costs for those items (1).
     """
-    th = th or load_commercial_thresholds()
+    th = th or load_for_org(session, org)
     customer = resolve_customer(session, org, customer_ref)
     resolved = _resolve_products(session, org, {ln.product_ref for ln in lines})
 

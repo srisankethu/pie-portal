@@ -8,7 +8,7 @@ import {
 } from "./api";
 import type { Account, DecisionDetail, DecisionSummary, PlatformSession, Role } from "./types";
 import { aiState, factLabel, factValue, isPrimaryFact } from "./format";
-import { Bp, Conf, FactChip, Interpretation, Pri, typeLabel } from "./ui";
+import { Bp, Conf, FactChip, Interpretation, Labelled, Pri, Tip, typeLabel } from "./ui";
 import { navigate, parseHash, type Screen } from "./route";
 import { ApprovalsScreen, SettingsScreen } from "./AdminScreens";
 import { DataScreen } from "./DataScreen";
@@ -674,11 +674,19 @@ function ListScreen({
           <table className="dp-table">
             <thead>
               <tr>
-                <th>Priority</th>
+                <th>
+                  <Labelled tip="Computed from what the movement is worth and how certain it is — deterministic first, with any AI adjustment recorded separately and bounded. It is not a model's opinion of urgency.">
+                    Priority
+                  </Labelled>
+                </th>
                 <th>Type</th>
                 <th>Account / subject</th>
                 <th>Why</th>
-                <th>Confidence</th>
+                <th>
+                  <Labelled tip="How much evidence stands behind the reading — not how sure a model is. Where the evidence is too thin, no recommendation is offered at all rather than a hedged one.">
+                    Confidence
+                  </Labelled>
+                </th>
                 <th>Status</th>
               </tr>
             </thead>
@@ -766,7 +774,11 @@ function DetailScreen({
             </Bp>
           )}
 
-          <div className="section-h">Evidence used</div>
+          <div className="section-h">
+            <Labelled tip="The source records this decision was built from, by system. Every fact above traces back to one of them — nothing here is inferred.">
+              Evidence used
+            </Labelled>
+          </div>
           {d.evidence.length === 0 ? (
             <div className="text-muted" style={{ fontSize: 13 }}>
               Source records are recorded with the signal.
@@ -801,6 +813,7 @@ function DetailScreen({
             <span className="text-muted" style={{ fontSize: 11 }}>
               priority {d.priority.score}/100 · base {d.priority.deterministic_base}
               {d.priority.ai_adjustment ? ` · ai ${d.priority.ai_adjustment > 0 ? "+" : ""}${d.priority.ai_adjustment}` : ""}
+              <Tip text="The base is computed from the signal's own figures. Any AI adjustment is shown separately and cannot move the score far — so a model can nudge the ordering of the queue but never invent an urgent item." />
             </span>
           </div>
 

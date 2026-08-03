@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { Line, LineIntelligence, QuoteException } from "../types";
 import { inr } from "../rel";
+import { Labelled, Tip } from "../Tip";
 
 /**
  * Deterministic commercial intelligence for one quote line.
@@ -131,14 +132,22 @@ export function QuoteIntelligence({
   return (
     <div className="qi">
       <div className="qi-head">
-        Commercial intelligence
-        <span className={`qi-conf ${confidence}`}>{confidence} confidence</span>
+        <Labelled tip="Computed by the same engine behind the account analysis, from this customer's own invoice and bill lines. Nothing on this panel is generated or estimated by a model, which is why a figure here can be quoted back to a customer.">
+          Commercial intelligence
+        </Labelled>
+        <span className={`qi-conf ${confidence}`}>
+          {confidence} confidence
+          <Tip text="How much trading history stands behind these figures. Low confidence does not mean the numbers are wrong — it means there are few of them, so the comparisons are thin." />
+        </span>
       </div>
 
       <div className="qi-sub">
         {intel.resolved ? (
           <>
-            Quantity band <strong>{intel.quantity_band.label}</strong> · {dq.transaction_count} past{" "}
+            <Labelled tip="Prices are compared within a bracket. The same item at 5 pieces and 500 is a different commercial question, and comparing a bulk line against an all-quantities average makes every bulk line look under-priced.">
+              Quantity band
+            </Labelled>{" "}
+            <strong>{intel.quantity_band.label}</strong> · {dq.transaction_count} past{" "}
             {dq.transaction_count === 1 ? "order" : "orders"} · as of {intel.as_of}
           </>
         ) : (
@@ -165,7 +174,12 @@ export function QuoteIntelligence({
         <div className="qi-section">
           <div className="qi-section-h">
             What to check
-            {intel.requires_approval && <span className="qi-approval">Approval needed</span>}
+            {intel.requires_approval && (
+              <span className="qi-approval">
+                Approval needed
+                <Tip text="This line crosses a policy boundary, so the quote cannot be sent until someone with the authority answers. An approval covers the price it was granted at — re-pricing lower means asking again." />
+              </span>
+            )}
           </div>
           {intel.exceptions.map((e) => (
             <ExceptionCard key={e.code} e={e} />
@@ -176,7 +190,11 @@ export function QuoteIntelligence({
       {/* References: prices, with the evidence each one rests on. */}
       {intel.references.length > 0 && (
         <div className="qi-section">
-          <div className="qi-section-h">Compared against</div>
+          <div className="qi-section-h">
+            <Labelled tip="Each row is a price this line is measured against, with the evidence it rests on. The right column is how far the quoted price sits from it — negative means the quote is below that reference.">
+              Compared against
+            </Labelled>
+          </div>
           <table className="qi-refs">
             <tbody>
               {intel.references.map((r) => {
@@ -207,6 +225,7 @@ export function QuoteIntelligence({
         <div className="qi-withheld">
           {intel.references_withheld.length} cost-based reference
           {intel.references_withheld.length === 1 ? "" : "s"} not shown for your role.
+          <Tip text="Not hidden in the browser — the server never sends them. Any reference derived from purchase cost would let cost be worked out from it, so they are absent for a salesperson rather than masked." />
         </div>
       )}
 
@@ -216,7 +235,11 @@ export function QuoteIntelligence({
           <div className="qi-section-h">This line at the quoted price</div>
           <dl className="qi-econ">
             <div>
-              <dt>Effective cost</dt>
+              <dt>
+                <Labelled tip="Purchase cost per unit from the bills, after landed costs and supplier discounts. “Not recorded” means no bill covers this item — the margin is then absent rather than assumed to be full.">
+                  Effective cost
+                </Labelled>
+              </dt>
               <dd>{intel.economics.unit_cost === null ? "not recorded" : inr(intel.economics.unit_cost)}</dd>
             </div>
             <div>
@@ -228,7 +251,11 @@ export function QuoteIntelligence({
               <dd>{intel.economics.gross_profit === null ? "—" : inr(intel.economics.gross_profit)}</dd>
             </div>
             <div>
-              <dt>Margin</dt>
+              <dt>
+                <Labelled tip="Gross profit ÷ line revenue. Below the review floor it is flagged; below the approval floor the line cannot be sent without a signature. Both floors are in Settings → Margin policy.">
+                  Margin
+                </Labelled>
+              </dt>
               <dd className={intel.blocking ? "warn" : ""}>
                 {intel.economics.margin === null ? "—" : `${(intel.economics.margin * 100).toFixed(1)}%`}
               </dd>

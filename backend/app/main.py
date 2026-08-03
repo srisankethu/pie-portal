@@ -15,7 +15,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .config import settings
 from .pie_service import pie_service
-from .routers import (accounts, admin, approvals, auth, commercial, data_status,
+from .routers import (accounts, admin, approvals, auth, commercial, connections,
+                      data_status,
                       decisions, internal, platform_auth, quote,
                       quote_intelligence, quote_support)
 
@@ -105,6 +106,7 @@ app.include_router(commercial.router)
 app.include_router(quote_intelligence.router)
 app.include_router(approvals.router)
 app.include_router(admin.router)
+app.include_router(connections.router)
 
 
 @app.get("/api/health")

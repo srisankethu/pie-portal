@@ -29,7 +29,7 @@ from sqlalchemy.orm import Session
 
 from .. import approvals
 from ..authz import Principal, current_principal, require_manager_or_owner, require_owner
-from ..commercial.config import load_commercial_thresholds
+from ..commercial import policy as commercial_policy
 from ..db import get_session
 from ..domain import models
 from ..domain.enums import Role
@@ -264,29 +264,86 @@ def get_policy(
     principal: Principal = Depends(require_manager_or_owner),
     session: Session = Depends(get_session),
 ) -> dict:
-    th = load_commercial_thresholds()
+    """Approval policy (who signs off) and margin policy (what trips it).
+
+    The margin policy is editable by an owner. It used to be read-only on the
+    grounds that a silently-editable threshold cannot be reproduced against —
+    but that is answered by the version hash rather than by refusing to edit:
+    every metric row, signal and quote snapshot records the threshold version
+    that produced it, and editing produces a new one.
+    """
+    org = principal.organization_id
+    th = commercial_policy.load_for_org(session, org)
     return {
-        "policy": _policy_dict(approvals.get_policy(session,
-                                                    principal.organization_id)),
+        "policy": _policy_dict(approvals.get_policy(session, org)),
         "can_manage": principal.role is Role.OWNER,
-        # The margin policy that decides *what* trips an approval, shown
-        # alongside the rules about *who* signs it off. Read-only here: these
-        # are environment configuration, and a threshold silently editable from
-        # a settings screen is a threshold nobody can reproduce a number
-        # against.
-        "thresholds": {
-            "version": th.version,
-            "target_margin_default": th.target_margin_default,
-            "target_margin_by_family": dict(th.target_margin_by_family),
-            "min_margin": th.min_margin,
-            "margin_floor": th.margin_floor,
-            "sales_discretion_band": th.sales_discretion_band,
-            "quantity_band_edges": list(th.quantity_band_edges),
-            "min_quote_exception_impact_rupees": th.min_quote_exception_impact_rupees,
+        "margin_policy": commercial_policy.describe(session, org),
+        # Analysis internals, shown for context and deliberately not editable:
+        # window lengths and evidence floors are not preferences, and moving
+        # them silently changes what "eroding" means.
+        "fixed": {
             "recent_days": th.recent_days,
+            "previous_days": th.previous_days,
+            "historical_lookback_days": th.historical_lookback_days,
             "min_transactions": th.min_transactions,
             "min_peer_customers": th.min_peer_customers,
+            "min_cost_coverage": th.min_cost_coverage,
+            "peer_recency_days": th.peer_recency_days,
         },
+    }
+
+
+class UpdateMarginPolicy(BaseModel):
+    """Any subset of the editable fields. Null clears an override."""
+
+    target_margin_default: Optional[float] = None
+    target_margin_by_family: Optional[dict[str, float]] = None
+    min_margin: Optional[float] = None
+    margin_floor: Optional[float] = None
+    sales_discretion_band: Optional[float] = None
+    quantity_band_edges: Optional[list[int]] = None
+    min_quote_exception_impact_rupees: Optional[float] = None
+    min_material_gap_rupees: Optional[float] = None
+    min_margin_deterioration_pp: Optional[float] = None
+    # Fields sent as null normally mean "leave alone". Listing them here says
+    # "clear this override" instead — otherwise a reset would be impossible.
+    clear: list[str] = Field(default_factory=list)
+
+
+@router.patch("/margin-policy")
+def update_margin_policy(
+    body: UpdateMarginPolicy,
+    principal: Principal = Depends(require_owner),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Edit the margin policy. Owner only.
+
+    Validated as a whole, not as a diff: one edit that is fine alone can invert
+    the floor ladder once combined with what is already saved, and only the
+    combination is what quotes are judged against.
+    """
+    updates: dict = {k: v for k, v in body.model_dump(exclude_none=True).items()
+                     if k != "clear"}
+    for field in body.clear:
+        updates[field] = None
+    if not updates:
+        raise HTTPException(http.HTTP_400_BAD_REQUEST, "Nothing to change")
+
+    try:
+        th = commercial_policy.save_for_org(session, principal.organization_id,
+                                            updates, principal.user_id)
+    except commercial_policy.PolicyError as e:
+        raise HTTPException(http.HTTP_400_BAD_REQUEST, str(e)) from e
+
+    log.info("margin policy updated org=%s by=%s version=%s",
+             principal.organization_id, principal.user_id, th.version)
+    return {
+        "margin_policy": commercial_policy.describe(session,
+                                                    principal.organization_id),
+        # Surfaced because it is the honest consequence of an edit: figures
+        # already computed carry the old version until they are recomputed.
+        "note": ("Saved. Existing metrics keep the version they were computed "
+                 "with until the next recompute."),
     }
 
 

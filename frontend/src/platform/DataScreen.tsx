@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { papi } from "./api";
-import type { DataStatus, PlatformSession, ZohoConnectionInput, ZohoCredential, ZohoVisibleOrg } from "./types";
-import { Bp } from "./ui";
+import { ConnectionsPanel } from "./ConnectionsPanel";
+import type { DataStatus, PlatformSession, ZohoCredential } from "./types";
+import { Bp, Labelled, Tip } from "./ui";
 
 /**
  * Data & connection.
@@ -11,37 +12,11 @@ import { Bp } from "./ui";
  * than left to be inferred from whether numbers look plausible — a demo
  * dataset and a live one are indistinguishable by eye, which is exactly how
  * someone ends up trusting a decision built on fixtures.
+ *
+ * The companies themselves live in ``ConnectionsPanel``: an organization can
+ * read as many Zoho books as the business keeps, and per-company health does
+ * not fit in a single status badge.
  */
-
-const STATE_UI: Record<string, { label: string; tone: "ok" | "warn" | "bad" }> = {
-  CONNECTED: { label: "Connected", tone: "ok" },
-  SAMPLE_DATA: { label: "Sample data", tone: "warn" },
-  NOT_CONFIGURED: { label: "Not connected", tone: "warn" },
-  WRONG_ORG: { label: "Wrong organization", tone: "bad" },
-  ERROR: { label: "Rejected", tone: "bad" },
-  UNREACHABLE: { label: "Unreachable", tone: "bad" },
-};
-
-/** Data-centre presets — a refresh token issued in one is rejected by every
- *  other, so picking the right row up front avoids the single most common
- *  setup failure (see docs/zoho-setup.md). */
-const DC_PRESETS: { label: string; accounts_base: string; api_base: string }[] = [
-  { label: "India (.in)", accounts_base: "https://accounts.zoho.in",
-    api_base: "https://www.zohoapis.in/books/v3" },
-  { label: "United States (.com)", accounts_base: "https://accounts.zoho.com",
-    api_base: "https://www.zohoapis.com/books/v3" },
-  { label: "Europe (.eu)", accounts_base: "https://accounts.zoho.eu",
-    api_base: "https://www.zohoapis.eu/books/v3" },
-  { label: "Australia (.com.au)", accounts_base: "https://accounts.zoho.com.au",
-    api_base: "https://www.zohoapis.com.au/books/v3" },
-  { label: "Japan (.jp)", accounts_base: "https://accounts.zoho.jp",
-    api_base: "https://www.zohoapis.jp/books/v3" },
-];
-
-const EMPTY_CONN_FORM: ZohoConnectionInput = {
-  zoho_organization_id: "", client_id: "", client_secret: "", refresh_token: "",
-  accounts_base: DC_PRESETS[0].accounts_base, api_base: DC_PRESETS[0].api_base,
-};
 
 const RESULT_UI: Record<string, string> = {
   OK: "Succeeded",
@@ -73,22 +48,16 @@ export function DataScreen({ session, onSynced }: { session: PlatformSession; on
   const [status, setStatus] = useState<DataStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
+  const [syncingId, setSyncingId] = useState<string | null>(null);
   const [checking, setChecking] = useState(false);
   const [result, setResult] = useState<string | null>(null);
   const [since, setSince] = useState<string>(defaultSince());
   const [full, setFull] = useState(false);
-  const [connForm, setConnForm] = useState<ZohoConnectionInput>(EMPTY_CONN_FORM);
-  const [connecting, setConnecting] = useState(false);
-  // Grants already on file. Connecting a second or third company should reuse
-  // one of these rather than asking for the same secret again.
+  // Grants on file, shown here because rotation is a property of the sign-in
+  // rather than of any one company: one rotation covers every company it reaches.
   const [credentials, setCredentials] = useState<ZohoCredential[]>([]);
-  const [reuseId, setReuseId] = useState("");
-  const [reuseOrgs, setReuseOrgs] = useState<ZohoVisibleOrg[] | null>(null);
-  const [reuseZohoOrg, setReuseZohoOrg] = useState("");
   const [rotateToken, setRotateToken] = useState("");
   const [credMsg, setCredMsg] = useState<string | null>(null);
-  const [connError, setConnError] = useState<string | null>(null);
-  const [disconnecting, setDisconnecting] = useState(false);
 
   const load = useCallback(async () => {
     setChecking(true);
@@ -106,51 +75,31 @@ export function DataScreen({ session, onSynced }: { session: PlatformSession; on
     load();
   }, [load]);
 
-  async function connect(e: React.FormEvent) {
-    e.preventDefault();
-    setConnecting(true);
-    setConnError(null);
+  const loadCredentials = useCallback(async () => {
+    if (!status?.can_manage_connection) return;
     try {
-      await papi.setZohoConnection(session.token, {
-        ...connForm,
-        zoho_organization_id: connForm.zoho_organization_id.trim(),
-        client_id: connForm.client_id.trim(),
-        client_secret: connForm.client_secret.trim(),
-        refresh_token: connForm.refresh_token.trim(),
-      });
-      setConnForm(EMPTY_CONN_FORM);
-      await load();
-      onSynced();
-    } catch (e) {
-      setConnError((e as Error).message);
-    } finally {
-      setConnecting(false);
+      setCredentials((await papi.listCredentials(session.token)).credentials);
+    } catch {
+      /* an owner without credentials yet is the normal first-run state */
     }
-  }
+  }, [session.token, status?.can_manage_connection]);
 
-  async function disconnect() {
-    if (!window.confirm(
-      "Disconnect this Zoho account? Data already pulled stays put — only the " +
-      "credentials are removed, and syncing stops until reconnected.")) {
-      return;
-    }
-    setDisconnecting(true);
-    try {
-      await papi.clearZohoConnection(session.token);
-      await load();
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setDisconnecting(false);
-    }
-  }
+  useEffect(() => {
+    loadCredentials();
+  }, [loadCredentials]);
 
-  async function sync() {
+  /** One pull. `connectionId` names a company; omitted means every enabled one. */
+  async function sync(connectionId?: string) {
     setSyncing(true);
+    setSyncingId(connectionId ?? null);
     setResult(null);
     setError(null);
     try {
-      const r = await papi.runSync(session.token, { since: since || undefined, full });
+      const r = await papi.runSync(session.token, {
+        since: since || undefined,
+        full,
+        connection_id: connectionId,
+      });
       const run = r.run;
       const pulled =
         `Pulled ${run.sales_txns} sales lines and ${run.cost_records} cost records` +
@@ -175,42 +124,7 @@ export function DataScreen({ session, onSynced }: { session: PlatformSession; on
       setError((e as Error).message);
     } finally {
       setSyncing(false);
-    }
-  }
-
-  const loadCredentials = useCallback(async () => {
-    if (!status?.can_manage_connection) return;
-    try {
-      setCredentials((await papi.listCredentials(session.token)).credentials);
-    } catch {
-      /* an owner without credentials yet is the normal first-run state */
-    }
-  }, [session.token, status?.can_manage_connection]);
-
-  useEffect(() => {
-    loadCredentials();
-  }, [loadCredentials]);
-
-  async function useExisting(e: React.FormEvent) {
-    e.preventDefault();
-    setCredMsg(null);
-    try {
-      await papi.connectWithCredential(session.token, reuseId, reuseZohoOrg.trim());
-      await load();
-      await loadCredentials();
-    } catch (err) {
-      setCredMsg((err as Error).message);
-    }
-  }
-
-  async function showCompanies(credentialId: string) {
-    setCredMsg(null);
-    setReuseOrgs(null);
-    try {
-      const r = await papi.credentialOrganizations(session.token, credentialId);
-      setReuseOrgs(r.visible_organizations);
-    } catch (err) {
-      setCredMsg((err as Error).message);
+      setSyncingId(null);
     }
   }
 
@@ -219,7 +133,7 @@ export function DataScreen({ session, onSynced }: { session: PlatformSession; on
     try {
       await papi.rotateCredential(session.token, credentialId, rotateToken.trim());
       setRotateToken("");
-      setCredMsg("Rotated. Every connection using this grant now uses the new token.");
+      setCredMsg("Rotated. Every company connected through this sign-in now uses the new token.");
       await loadCredentials();
       await load();
     } catch (err) {
@@ -227,9 +141,8 @@ export function DataScreen({ session, onSynced }: { session: PlatformSession; on
     }
   }
 
-  const c = status?.connection;
-  const ui = c ? STATE_UI[c.state] || STATE_UI.ERROR : null;
   const s = status?.last_sync;
+  const canSync = Boolean(status?.can_sync);
 
   return (
     <div>
@@ -245,249 +158,106 @@ export function DataScreen({ session, onSynced }: { session: PlatformSession; on
         </div>
       )}
 
+      <ConnectionsPanel
+        session={session}
+        canSync={canSync}
+        onSync={(id) => sync(id)}
+        syncingId={syncingId}
+      />
+
+      {/* ── what to pull ── */}
+      <Bp className="st-section" style={{ marginTop: 16 }}>
+        <h3>
+          <Labelled tip="One pull reads invoices and bills, rebuilds the Customer × Item metrics from what landed, then runs the detectors. Nothing here is generated — every figure comes from a document Zoho returned.">
+            Pull the books
+          </Labelled>
+        </h3>
+        {!canSync ? (
+          <p className="st-help">Syncing is a manager or owner action.</p>
+        ) : (
+          <>
+            <div className="sync-opts">
+              <label htmlFor="sync-since">
+                <Labelled tip="Every invoice and bill after this date is fetched individually, so an earlier date means a longer pull. The detectors compare the last 90 days against the 90 before that and need six months of history before they will call a decline — eighteen months covers all of it with room to spare.">
+                  Read the books from
+                </Labelled>
+              </label>
+              <input
+                id="sync-since"
+                type="date"
+                className="input"
+                value={since}
+                max={new Date().toISOString().slice(0, 10)}
+                onChange={(e) => setSince(e.target.value)}
+              />
+              <label className="sync-check">
+                <input type="checkbox" checked={full} onChange={(e) => setFull(e.target.checked)} />
+                Re-read everything, including documents already held
+                <Tip text="Normally a pull skips documents it already holds, which is what makes a repeat run fast. Tick this after granting a scope that was missing — the rows are there, but the fields that scope unlocks are not." />
+              </label>
+            </div>
+
+            <div style={{ display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap", alignItems: "center" }}>
+              <button className="btn btn-secondary btn-sm" onClick={load} disabled={checking}>
+                {checking ? "Checking…" : "Refresh status"}
+              </button>
+              <button className="btn btn-primary btn-sm" onClick={() => sync()} disabled={syncing}>
+                {syncing && !syncingId ? "Syncing…" : "Sync every company"}
+              </button>
+              <Tip text="Runs one pull per enabled company, in turn. To pull just one, use the button on its card above." />
+            </div>
+          </>
+        )}
+        {result && <div className="conn-result">{result}</div>}
+      </Bp>
+
+      {/* ── rotation is a property of the sign-in, not of a company ── */}
+      {status?.can_manage_connection && credentials.filter((cr) => cr.is_owner).map((cr) => (
+        <Bp className="st-section" key={cr.credential_id}>
+          <h3>
+            <Labelled tip="A refresh token belongs to a Zoho user, not a company. Rotating it here replaces it once for every company connected through it — which is the whole reason connections and sign-ins are separate things.">
+              Rotate {cr.label || "this sign-in"}
+            </Labelled>
+          </h3>
+          <p className="st-help">
+            Covers {cr.used_by.length}{" "}
+            {cr.used_by.length === 1 ? "company" : "companies"}
+            {cr.rotated_at && <> · last rotated {cr.rotated_at.slice(0, 10)}</>}.
+            Generate a new token in the Zoho API console and paste it here; the old one
+            stops working when you revoke it there.
+          </p>
+          <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+            <input
+              className="input"
+              type="password"
+              placeholder="New refresh token"
+              style={{ maxWidth: 340 }}
+              value={rotateToken}
+              aria-label="New refresh token"
+              onChange={(e) => setRotateToken(e.target.value)}
+            />
+            <button
+              className="btn btn-secondary btn-sm"
+              disabled={!rotateToken.trim()}
+              onClick={() => doRotate(cr.credential_id)}
+            >
+              Rotate
+            </button>
+          </div>
+          {credMsg && <p className="cx-detail">{credMsg}</p>}
+        </Bp>
+      ))}
+
       {!status && !error ? (
         <div className="skeleton" style={{ height: 90 }} />
-      ) : c && ui ? (
+      ) : (
         <>
-          <Bp className={`conn conn-${ui.tone}`} style={{ padding: 18, marginBottom: 14 }}>
-            <div className="conn-top">
-              <span className={`conn-badge ${ui.tone}`}>{ui.label}</span>
-              <span className="conn-src">
-                {c.source === "api" ? "Zoho Books · live" : "Offline sample source"}
-              </span>
-            </div>
-            <div className="conn-headline">{c.headline}</div>
-            {c.detail && <p className="conn-detail">{c.detail}</p>}
-
-            {c.state === "CONNECTED" && (
-              <dl className="conn-facts">
-                <div><dt>Organization</dt><dd>{c.organization_name}</dd></div>
-                <div><dt>Organization id</dt><dd>{c.organization_id}</dd></div>
-                <div><dt>Currency</dt><dd>{c.currency || "—"}</dd></div>
-                <div><dt>Default history</dt><dd>{c.history_days} days</dd></div>
-              </dl>
-            )}
-            {c.state === "WRONG_ORG" && (c.visible_organizations?.length ?? 0) > 0 && (
-              <dl className="conn-facts">
-                {c.visible_organizations!.map((o) => (
-                  <div key={o.organization_id}>
-                    <dt>{o.name}</dt>
-                    <dd>{o.organization_id}</dd>
-                  </div>
-                ))}
-              </dl>
-            )}
-
-            {/* Reuse before re-enter. A Zoho refresh token belongs to a user,
-                not a company, so a grant already on file usually reaches this
-                company too — and a second copy of a secret is a second thing to
-                rotate, which is how one gets missed. */}
-            {c.state === "NOT_CONFIGURED" && status?.can_manage_connection
-              && credentials.length > 0 && (
-              <form className="cred-reuse" onSubmit={useExisting}>
-                <div className="cred-reuse-h">Use a connection you already have</div>
-                <p className="fsrc">
-                  One Zoho sign-in reaches every company it can see. Separate legal
-                  entities do not need separate secrets — reusing one here means one
-                  rotation later instead of one per entity.
-                </p>
-                <select className="input" value={reuseId} required
-                  aria-label="Existing Zoho credential"
-                  onChange={(e) => { setReuseId(e.target.value); setReuseOrgs(null); }}>
-                  <option value="">Choose an existing connection…</option>
-                  {credentials.map((cr) => (
-                    <option key={cr.credential_id} value={cr.credential_id}>
-                      {cr.label} · {cr.client_id.slice(0, 18)}… · used by {cr.used_by.length}
-                    </option>
-                  ))}
-                </select>
-
-                {reuseId && (
-                  <button type="button" className="btn btn-ghost btn-sm"
-                    style={{ marginTop: 8 }} onClick={() => showCompanies(reuseId)}>
-                    Show the companies this reaches
-                  </button>
-                )}
-                {reuseOrgs && (
-                  <ul className="cred-orgs">
-                    {reuseOrgs.length === 0 && <li>Zoho returned no companies for this grant.</li>}
-                    {reuseOrgs.map((o) => (
-                      <li key={o.organization_id}>
-                        <button type="button" className="cred-org"
-                          disabled={o.already_connected}
-                          onClick={() => setReuseZohoOrg(o.organization_id)}>
-                          {o.name} <span className="mono">{o.organization_id}</span>
-                          {o.already_connected && <em> already connected</em>}
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-
-                <label htmlFor="reuse-zoho-org" style={{ marginTop: 10 }}>
-                  Zoho Books organization id
-                </label>
-                <input id="reuse-zoho-org" className="input" required
-                  value={reuseZohoOrg}
-                  onChange={(e) => setReuseZohoOrg(e.target.value)} />
-
-                {credMsg && <p className="conn-detail">{credMsg}</p>}
-                <div style={{ marginTop: 12 }}>
-                  <button type="submit" className="btn btn-primary btn-sm" disabled={!reuseId}>
-                    Connect with this
-                  </button>
-                </div>
-                <div className="cred-or">or enter a different Zoho sign-in below</div>
-              </form>
-            )}
-
-            {c.state === "NOT_CONFIGURED" && status?.can_manage_connection && (
-              <form className="sync-opts" onSubmit={connect}>
-                <label htmlFor="conn-zoho-org">
-                  Zoho Books organization id
-                  <span className="fsrc">
-                    Settings → Organization Profile in Zoho Books, or the id in its URL.
-                  </span>
-                </label>
-                <input id="conn-zoho-org" className="input" required
-                  value={connForm.zoho_organization_id}
-                  onChange={(e) => setConnForm({ ...connForm, zoho_organization_id: e.target.value })} />
-
-                <label htmlFor="conn-dc" style={{ marginTop: 10 }}>
-                  Data centre
-                  <span className="fsrc">
-                    A refresh token issued in one is rejected by every other — this is the
-                    single most common setup failure. Match it to the account.
-                  </span>
-                </label>
-                <select id="conn-dc" className="input"
-                  value={connForm.accounts_base}
-                  onChange={(e) => {
-                    const p = DC_PRESETS.find((d) => d.accounts_base === e.target.value);
-                    if (p) setConnForm({ ...connForm, accounts_base: p.accounts_base, api_base: p.api_base });
-                  }}>
-                  {DC_PRESETS.map((p) => (
-                    <option key={p.accounts_base} value={p.accounts_base}>{p.label}</option>
-                  ))}
-                </select>
-
-                <label htmlFor="conn-client-id" style={{ marginTop: 10 }}>Client ID</label>
-                <input id="conn-client-id" className="input" required
-                  value={connForm.client_id}
-                  onChange={(e) => setConnForm({ ...connForm, client_id: e.target.value })} />
-
-                <label htmlFor="conn-client-secret" style={{ marginTop: 10 }}>Client secret</label>
-                <input id="conn-client-secret" type="password" className="input" required
-                  value={connForm.client_secret}
-                  onChange={(e) => setConnForm({ ...connForm, client_secret: e.target.value })} />
-
-                <label htmlFor="conn-refresh-token" style={{ marginTop: 10 }}>
-                  Refresh token
-                  <span className="fsrc">Encrypted before it is stored; never shown again.</span>
-                </label>
-                <input id="conn-refresh-token" type="password" className="input" required
-                  value={connForm.refresh_token}
-                  onChange={(e) => setConnForm({ ...connForm, refresh_token: e.target.value })} />
-
-                {connError && (
-                  <p className="conn-detail" style={{ color: "var(--color-danger, #b3261e)" }}>
-                    {connError}
-                  </p>
-                )}
-                <div style={{ marginTop: 12 }}>
-                  <button type="submit" className="btn btn-primary btn-sm" disabled={connecting}>
-                    {connecting ? "Connecting…" : "Connect Zoho"}
-                  </button>
-                </div>
-              </form>
-            )}
-            {c.state === "NOT_CONFIGURED" && !status?.can_manage_connection && (
-              <p className="conn-detail" style={{ marginTop: 10 }}>
-                Ask an owner to connect this organization's Zoho account.
-              </p>
-            )}
-
-            {status?.can_manage_connection && c.state !== "NOT_CONFIGURED"
-              && credentials.filter((cr) => cr.is_owner).map((cr) => (
-              <div className="cred-rotate" key={cr.credential_id}>
-                <div className="cred-reuse-h">Rotate this connection</div>
-                <p className="fsrc">
-                  Replaces the refresh token once, for every company connected through
-                  it — {cr.used_by.length}{" "}
-                  {cr.used_by.length === 1 ? "organization" : "organizations"}
-                  {cr.rotated_at && <> · last rotated {cr.rotated_at.slice(0, 10)}</>}.
-                  Generate a new token in the Zoho API console and paste it here; the
-                  old one stops working when you revoke it there.
-                </p>
-                <input className="input" type="password" placeholder="New refresh token"
-                  value={rotateToken} aria-label="New refresh token"
-                  onChange={(e) => setRotateToken(e.target.value)} />
-                {credMsg && <p className="conn-detail">{credMsg}</p>}
-                <div style={{ marginTop: 10 }}>
-                  <button className="btn btn-secondary btn-sm" disabled={!rotateToken.trim()}
-                    onClick={() => doRotate(cr.credential_id)}>
-                    Rotate
-                  </button>
-                </div>
-              </div>
-            ))}
-
-            {status?.can_sync && c.state !== "NOT_CONFIGURED" && (
-              <div className="sync-opts">
-                <label htmlFor="sync-since">
-                  Read the books from
-                  <span className="fsrc">
-                    Every invoice and bill after this date is read individually, so an
-                    earlier date means a longer pull. The detectors compare the last 90
-                    days against the 90 before that, and need six months of history
-                    before they will call a decline — a year and a half covers all of it.
-                  </span>
-                </label>
-                <input
-                  id="sync-since"
-                  type="date"
-                  className="input"
-                  value={since}
-                  max={new Date().toISOString().slice(0, 10)}
-                  onChange={(e) => setSince(e.target.value)}
-                />
-                <label className="sync-check">
-                  <input type="checkbox" checked={full} onChange={(e) => setFull(e.target.checked)} />
-                  Re-read everything, including documents already held
-                </label>
-              </div>
-            )}
-
-            <div style={{ display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" }}>
-              <button className="btn btn-secondary btn-sm" onClick={load} disabled={checking}>
-                {checking ? "Checking…" : "Re-check connection"}
-              </button>
-              {status?.can_sync && c.state !== "NOT_CONFIGURED" && (
-                <button className="btn btn-primary btn-sm" onClick={sync} disabled={syncing}>
-                  {syncing ? "Syncing…" : "Sync now"}
-                </button>
-              )}
-              {status?.can_manage_connection && c.state !== "NOT_CONFIGURED" && c.state !== "SAMPLE_DATA" && (
-                <button className="btn btn-secondary btn-sm" onClick={disconnect} disabled={disconnecting}>
-                  {disconnecting ? "Disconnecting…" : "Disconnect"}
-                </button>
-              )}
-            </div>
-            {status && !status.can_sync && c.state !== "NOT_CONFIGURED" && (
-              <p className="conn-detail" style={{ marginTop: 10 }}>
-                Syncing is a manager or owner action.
-              </p>
-            )}
-            {result && <div className="conn-result">{result}</div>}
-          </Bp>
-
           <div className="dp-split-2">
             <Bp style={{ padding: "8px 14px" }}>
               <div className="section-h" style={{ marginTop: 8 }}>Last sync</div>
               {!s ? (
                 <p className="conn-detail" style={{ padding: "0 0 12px" }}>
-                  No sync has run yet. Press <b>Sync now</b> to pull from{" "}
-                  {c.source === "api" ? "Zoho" : "the sample source"}.
+                  No sync has run yet. Press <b>Sync every company</b> to pull.
                 </p>
               ) : (
                 <table className="facttable">
@@ -504,7 +274,14 @@ export function DataScreen({ session, onSynced }: { session: PlatformSession; on
                     <tr><td>Customers</td><td className="fv">{s.customers}</td></tr>
                     <tr><td>Products</td><td className="fv">{s.products}</td></tr>
                     <tr><td>Sales lines</td><td className="fv">{s.sales_txns}</td></tr>
-                    <tr><td>Cost records</td><td className="fv">{s.cost_records}</td></tr>
+                    <tr>
+                      <td>
+                        <Labelled tip="Bill lines — what the stock cost. Without these there is no margin anywhere in the platform, only revenue. A zero here almost always means the ZohoBooks.bills.READ scope was not granted.">
+                          Cost records
+                        </Labelled>
+                      </td>
+                      <td className="fv">{s.cost_records}</td>
+                    </tr>
                     <tr>
                       <td>
                         Documents read
@@ -518,7 +295,9 @@ export function DataScreen({ session, onSynced }: { session: PlatformSession; on
                     </tr>
                     <tr>
                       <td>
-                        Accounts assigned
+                        <Labelled tip="Maps a Zoho salesperson to a platform account. Needs the ZohoBooks.users.READ scope — without it accounts stay unassigned and every decision routes to management.">
+                          Accounts assigned
+                        </Labelled>
                         <div className="fsrc">from Zoho's salesperson on the latest invoice</div>
                       </td>
                       <td className="fv">{s.assignments}</td>
@@ -527,8 +306,9 @@ export function DataScreen({ session, onSynced }: { session: PlatformSession; on
                     <tr><td>Decisions created</td><td className="fv">{s.decisions_created}</td></tr>
                     <tr>
                       <td>
-                        Rows skipped
-                        <div className="fsrc">recorded with a reason, never dropped silently</div>
+                        <Labelled tip="A row Zoho returned that could not be used — a line with no item, a document in a currency this organization does not trade in. Recorded with a reason so the gap is explainable, never dropped silently.">
+                          Rows skipped
+                        </Labelled>
                       </td>
                       <td className="fv">{s.skipped_count}</td>
                     </tr>
@@ -552,7 +332,11 @@ export function DataScreen({ session, onSynced }: { session: PlatformSession; on
             </Bp>
 
             <Bp style={{ padding: "8px 14px" }}>
-              <div className="section-h" style={{ marginTop: 8 }}>What is in the read model now</div>
+              <div className="section-h" style={{ marginTop: 8 }}>
+                <Labelled tip="Everything currently held for this organization, pooled across every connected company. These are the rows the analysis actually runs on.">
+                  What is in the read model now
+                </Labelled>
+              </div>
               <table className="facttable">
                 <tbody>
                   {Object.entries(status?.read_model || {}).map(([k, v]) => (
@@ -588,7 +372,7 @@ export function DataScreen({ session, onSynced }: { session: PlatformSession; on
             </>
           )}
         </>
-      ) : null}
+      )}
     </div>
   );
 }

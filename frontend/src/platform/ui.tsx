@@ -3,6 +3,9 @@ import type { ReactNode } from "react";
 import type { DecisionDetail, Fact } from "./types";
 import { CONF_LABEL, TYPE_LABEL, aiState, factLabel, factValue } from "./format";
 
+// Shared with the Quote Builder — see src/Tip.tsx.
+export { Tip, Labelled } from "../Tip";
+
 type BpProps = { children: ReactNode; className?: string } & React.HTMLAttributes<HTMLDivElement>;
 
 export function Bp({ children, className = "", ...rest }: BpProps) {

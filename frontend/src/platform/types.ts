@@ -114,10 +114,12 @@ export interface SyncRun {
 }
 
 /** What to pull. `since` is the operator's judgement about how far back the
- *  books are worth reading; `full` discards the resume cursor. */
+ *  books are worth reading; `full` discards the resume cursor. `connection_id`
+ *  names one company; omitted means every enabled connection in turn. */
 export interface SyncOptions {
   since?: string;
   full?: boolean;
+  connection_id?: string;
 }
 
 export interface DataStatus {
@@ -335,6 +337,60 @@ export interface ThresholdView {
   min_peer_customers: number;
 }
 
+/* ── margin policy ─────────────────────────────────────────────────────────
+ * Editable by an owner. It was read-only on the grounds that a silently
+ * editable threshold cannot be reproduced against, which the version hash
+ * answers: every metric row, signal and quote snapshot records the threshold
+ * version that produced it, and an edit produces a new one.
+ *
+ * A `ratio` is a fraction (0.24), never a percentage — the input renders it as
+ * one and converts back, because typing 24 into a field that means 0.24 is the
+ * single easiest way to set a 2400% target.
+ */
+export type PolicyKind = "ratio" | "rupees" | "band_edges" | "family_margins";
+
+export interface PolicyField {
+  field: string;
+  label: string;
+  help: string;
+  value: number | number[] | Record<string, number>;
+  default: number | number[] | Record<string, number>;
+  overridden: boolean;
+  kind: PolicyKind;
+}
+
+export interface MarginPolicy {
+  version: string;
+  default_version: string;
+  fields: PolicyField[];
+  updated_at: string | null;
+}
+
+/** Analysis internals: shown for context, deliberately not editable here. */
+export interface FixedThresholds {
+  recent_days: number;
+  previous_days: number;
+  historical_lookback_days: number;
+  min_transactions: number;
+  min_peer_customers: number;
+  min_cost_coverage: number;
+  peer_recency_days: number;
+}
+
+/** Any subset of the editable fields; `clear` resets a field to its default. */
+export interface MarginPolicyPatch {
+  target_margin_default?: number;
+  target_margin_by_family?: Record<string, number>;
+  min_margin?: number;
+  margin_floor?: number;
+  sales_discretion_band?: number;
+  quantity_band_edges?: number[];
+  min_quote_exception_impact_rupees?: number;
+  min_material_gap_rupees?: number;
+  min_margin_deterioration_pp?: number;
+  clear?: string[];
+}
+
 /* ── Zoho credentials ──────────────────────────────────────────────────────
  * One OAuth grant, usable by several organizations. A refresh token belongs to
  * a Zoho user rather than a company, so one grant already reaches every company
@@ -359,4 +415,79 @@ export interface ZohoVisibleOrg {
   organization_id: string;
   name: string;
   already_connected: boolean;
+}
+
+/* ── connections ───────────────────────────────────────────────────────────
+ * One organization, as many Zoho companies as it has books to read. Health is
+ * per connection, because "the organization is connected" stops meaning
+ * anything once there are three and one has a revoked token.
+ */
+export interface ZohoConnection {
+  connection_id: string;
+  label: string;
+  zoho_organization_id: string;
+  enabled: boolean;
+  credential_id: string | null;
+  client_id: string | null;
+  credential_label: string;
+  credential_rotated_at: string | null;
+  accounts_base: string;
+  api_base: string;
+  last_checked_at: string | null;
+  last_check_ok: boolean | null;
+  last_check_detail: string | null;
+  created_at: string | null;
+}
+
+/** A check result: the row as stored, plus what the grant could actually see. */
+export interface ConnectionCheck extends ZohoConnection {
+  checked: boolean;
+  ok?: boolean;
+  detail?: string;
+  organization_name?: string;
+  currency?: string;
+  visible_organizations?: { organization_id: string; name: string }[];
+}
+
+/** A scope, and what the platform loses without it. */
+export interface RequiredScope {
+  scope: string;
+  why: string;
+  required: boolean;
+}
+
+/** The credential summary carried by the connections view — `used_by` here is
+ *  a count, unlike the fuller `ZohoCredential` returned by the credentials
+ *  endpoint. */
+export interface ConnectionCredential {
+  credential_id: string;
+  label: string;
+  client_id: string;
+  is_owner: boolean;
+  rotated_at: string | null;
+  used_by: number;
+}
+
+export interface ConnectionsView {
+  connections: ZohoConnection[];
+  credentials: ConnectionCredential[];
+  required_scopes: RequiredScope[];
+  scope_string: string;
+  can_manage: boolean;
+  source_mode: string;
+  /** The consequence of sharing an organization between companies, said out loud. */
+  pooling_note: string;
+}
+
+/** What an owner submits to add a company: either a credential already on file,
+ *  or a fresh set of secrets. */
+export interface NewConnectionInput {
+  zoho_organization_id: string;
+  label?: string;
+  credential_id?: string;
+  client_id?: string;
+  client_secret?: string;
+  refresh_token?: string;
+  accounts_base?: string;
+  api_base?: string;
 }

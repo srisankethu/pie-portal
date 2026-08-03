@@ -29,7 +29,7 @@ from sqlalchemy.orm import Session
 from ..config import settings
 from ..domain import models
 from ..domain.enums import EvidenceSufficiency
-from .config import load_commercial_thresholds
+from .policy import load_for_org
 
 _DAYS_PER_MONTH = 30.44
 
@@ -41,7 +41,7 @@ def _count(session: Session, model, org: str) -> int:
 
 def diagnose(session: Session, org: str,
              customer_id: Optional[str] = None) -> dict:
-    th = load_commercial_thresholds()
+    th = load_for_org(session, org)
     out: dict = {"organization_id": org, "customer_id": customer_id,
                  "thresholds_version": th.version, "findings": [], "verdict": ""}
 

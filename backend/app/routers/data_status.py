@@ -428,6 +428,10 @@ class SyncRequest(BaseModel):
 
     since: Optional[date] = None
     full: bool = False
+    # Which company to pull. Omitted means every enabled connection, in turn —
+    # the usual intent once an organization has more than one, and the thing a
+    # person would otherwise do by clicking three times.
+    connection_id: Optional[str] = None
 
 
 @router.post("/sync")
@@ -477,7 +481,11 @@ def run_sync(
 
         # Resolved per this org — never another org's connection, and this org
         # must have one of its own before a pull is attempted at all.
-        source = get_source(session, org, since=since)
+        # Passed only when set: a caller that never had connections still calls
+        # get_source with the signature it always had.
+        source = (get_source(session, org, since=since,
+                             connection_id=req.connection_id)
+                  if req.connection_id else get_source(session, org, since=since))
         svc = SyncService(session, source, org, resume=not req.full)
         svc.run()
         report = svc.report

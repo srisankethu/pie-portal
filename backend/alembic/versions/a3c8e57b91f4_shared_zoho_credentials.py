@@ -133,7 +133,13 @@ def downgrade() -> None:
         "  refresh_token_encrypted = (SELECT refresh_token_encrypted FROM zoho_credentials c "
         "               WHERE c.credential_id = zoho_connections.credential_id) "
         "WHERE credential_id IS NOT NULL"))
-    op.drop_index("ix_zoho_connections_credential_id", table_name="zoho_connections")
+    # The index may already be gone: a later revision recreates this table
+    # wholesale, and dropping an index that is not there fails the downgrade.
+    try:
+        op.drop_index("ix_zoho_connections_credential_id",
+                      table_name="zoho_connections")
+    except Exception:  # noqa: BLE001
+        pass
     with op.batch_alter_table("zoho_connections") as batch:
         batch.drop_column("credential_id")
     op.drop_table("zoho_credentials")

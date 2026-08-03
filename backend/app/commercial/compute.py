@@ -24,7 +24,8 @@ from sqlalchemy.orm import Session
 from ..domain import models
 from ..signals.base import CostRow, SaleRow
 from .benchmark import ItemBenchmark, compute_benchmark, peer_margin_gap
-from .config import CommercialThresholds, load_commercial_thresholds
+from .config import CommercialThresholds
+from .policy import load_for_org
 from .economics import LineEconomics, line_economics
 from .metrics import RelationshipMetrics, compute_relationship
 
@@ -126,7 +127,7 @@ def compute_for(session: Session, org: str, *, customer_ids: Optional[set[str]] 
     from every customer buying the same items, because a benchmark restricted to
     the subject would be self-referential.
     """
-    th = th or load_commercial_thresholds()
+    th = th or load_for_org(session, org)
 
     subject_sales = _sale_rows(session, org, customer_ids=customer_ids)
     if not subject_sales:
@@ -241,7 +242,7 @@ def recompute(session: Session, org: str, *, customer_ids: Optional[set[str]] = 
     from .detectors import detect
 
     started = time.monotonic()
-    th = th or load_commercial_thresholds()
+    th = th or load_for_org(session, org)
     report = RecomputeReport(organization_id=org)
 
     computed, _reference = compute_for(session, org, customer_ids=customer_ids,

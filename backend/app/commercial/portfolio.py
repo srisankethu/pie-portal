@@ -18,7 +18,8 @@ from sqlalchemy.orm import Session
 
 from ..domain import models
 from ..domain.enums import EvidenceSufficiency, SignalType
-from .config import CommercialThresholds, load_commercial_thresholds
+from .config import CommercialThresholds
+from .policy import load_for_org
 
 _ZERO = Decimal("0")
 
@@ -77,7 +78,7 @@ def load_portfolio(session: Session, org: str, customer_id: str,
     Only revenue whose margin is actually known contributes to the denominator,
     so an item with no cost cannot dilute the figure toward zero.
     """
-    th = th or load_commercial_thresholds()
+    th = th or load_for_org(session, org)
     rows = list(session.scalars(
         select(models.CustomerItemMetric).where(
             models.CustomerItemMetric.organization_id == org,

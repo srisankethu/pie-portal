@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session
 
 from ..authz import Principal, require_manager_or_owner
 from ..commercial.compute import compute_for, recompute
-from ..commercial.config import load_commercial_thresholds
+from ..commercial.policy import load_for_org
 from ..commercial.diagnosis import diagnose
 from ..commercial.economics import aggregate, in_window
 from ..commercial.portfolio import items_requiring_attention, load_portfolio
@@ -142,7 +142,7 @@ def customer_item_detail(
     if product is None or product.organization_id != org:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Item not found")
 
-    th = load_commercial_thresholds()
+    th = load_for_org(session, org)
     computed, reference = compute_for(session, org, customer_ids={customer_id}, th=th)
     match = next((c for c in computed if c.metrics.product_id == product_id), None)
     if match is None:

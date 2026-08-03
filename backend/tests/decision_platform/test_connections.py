@@ -15,6 +15,7 @@ from app.ingestion.connections import (
     CredentialNotUsable,
     clear_zoho_connection,
     connect_with_credential,
+    list_connections,
     create_credential,
     delete_credential,
     get_zoho_credentials,
@@ -57,7 +58,7 @@ def test_secrets_are_encrypted_at_rest(session):
     set_zoho_credentials(session, org, zoho_organization_id="1", client_id="cid",
                          client_secret="the-client-secret", refresh_token="the-refresh-token")
 
-    row = session.get(models.ZohoConnection, org)
+    row = list_connections(session, org)[0]
     cred = row.credential
     assert cred is not None, "secrets live on the credential, not the connection"
     assert "the-client-secret" not in cred.client_secret_encrypted
@@ -67,16 +68,31 @@ def test_secrets_are_encrypted_at_rest(session):
     assert row.refresh_token_encrypted is None
 
 
-def test_setting_again_replaces_the_connection_in_place(session):
+def test_a_second_company_is_a_second_connection_not_a_replacement(session):
+    """The restriction that was removed. One organization reads as many sets of
+    books as it has; adding the second must not silently drop the first."""
     org = _org(session)
     set_zoho_credentials(session, org, zoho_organization_id="1", client_id="cid-old",
                          client_secret="s1", refresh_token="r1")
     set_zoho_credentials(session, org, zoho_organization_id="2", client_id="cid-new",
                          client_secret="s2", refresh_token="r2")
 
-    assert session.query(models.ZohoConnection).filter_by(organization_id=org).count() == 1
-    creds = get_zoho_credentials(session, org)
-    assert creds.organization_id == "2" and creds.client_id == "cid-new"
+    rows = list_connections(session, org)
+    assert [r.zoho_organization_id for r in rows] == ["1", "2"]
+
+
+def test_re_adding_the_same_company_updates_it_rather_than_duplicating(session):
+    """Two rows for one Zoho company would sync it twice and double every
+    figure the platform reports."""
+    org = _org(session)
+    set_zoho_credentials(session, org, zoho_organization_id="1", client_id="cid-old",
+                         client_secret="s1", refresh_token="r1")
+    set_zoho_credentials(session, org, zoho_organization_id="1", client_id="cid-new",
+                         client_secret="s2", refresh_token="r2")
+
+    rows = list_connections(session, org)
+    assert len(rows) == 1
+    assert get_zoho_credentials(session, org).client_id == "cid-new"
 
 
 def test_clear_removes_the_connection_and_reports_whether_one_existed(session):
@@ -160,21 +176,21 @@ def test_the_same_grant_entered_twice_does_not_make_two_credentials(session):
     set_zoho_credentials(session, a, zoho_organization_id="AAA", client_id="cid",
                          client_secret="s", refresh_token="r")
     share_credential(session, a,
-                     session.get(models.ZohoConnection, a).credential_id,
+                     list_connections(session, a)[0].credential_id,
                      with_organization_ids=[b])
     set_zoho_credentials(session, b, zoho_organization_id="BBB", client_id="cid",
                          client_secret="s", refresh_token="r")
 
     assert session.query(models.ZohoCredential).count() == 1
-    assert (session.get(models.ZohoConnection, a).credential_id
-            == session.get(models.ZohoConnection, b).credential_id)
+    assert (list_connections(session, a)[0].credential_id
+            == list_connections(session, b)[0].credential_id)
 
 
 def test_a_second_company_connects_without_re_entering_any_secret(session):
     a, b = _org(session, "org_sls"), _org(session, "org_4u")
     set_zoho_credentials(session, a, zoho_organization_id="AAA", client_id="cid",
                          client_secret="s", refresh_token="r")
-    cid = session.get(models.ZohoConnection, a).credential_id
+    cid = list_connections(session, a)[0].credential_id
     share_credential(session, a, cid, with_organization_ids=[b])
 
     connect_with_credential(session, b, credential_id=cid, zoho_organization_id="BBB")
@@ -190,7 +206,7 @@ def test_one_rotation_covers_every_company_on_that_grant(session):
     orgs = [_org(session, f"org_{n}") for n in ("sls", "4u", "ups")]
     set_zoho_credentials(session, orgs[0], zoho_organization_id="A", client_id="cid",
                          client_secret="s", refresh_token="old-token")
-    cid = session.get(models.ZohoConnection, orgs[0]).credential_id
+    cid = list_connections(session, orgs[0])[0].credential_id
     share_credential(session, orgs[0], cid, with_organization_ids=orgs[1:])
     for org, zoho_id in zip(orgs[1:], ("B", "C")):
         connect_with_credential(session, org, credential_id=cid, zoho_organization_id=zoho_id)
@@ -208,7 +224,7 @@ def test_sharing_a_key_does_not_share_a_company(session):
     a, b = _org(session, "org_a"), _org(session, "org_b")
     set_zoho_credentials(session, a, zoho_organization_id="AAA", client_id="cid",
                          client_secret="s", refresh_token="r")
-    cid = session.get(models.ZohoConnection, a).credential_id
+    cid = list_connections(session, a)[0].credential_id
     share_credential(session, a, cid, with_organization_ids=[b])
     connect_with_credential(session, b, credential_id=cid, zoho_organization_id="BBB")
 
@@ -220,7 +236,7 @@ def test_an_unshared_credential_cannot_be_used_by_another_organization(session):
     a, b = _org(session, "org_a"), _org(session, "org_b")
     set_zoho_credentials(session, a, zoho_organization_id="AAA", client_id="cid",
                          client_secret="s", refresh_token="r")
-    cid = session.get(models.ZohoConnection, a).credential_id
+    cid = list_connections(session, a)[0].credential_id
 
     with pytest.raises(CredentialNotUsable):
         connect_with_credential(session, b, credential_id=cid, zoho_organization_id="BBB")
@@ -232,7 +248,7 @@ def test_revoking_a_share_stops_the_sync_immediately(session):
     a, b = _org(session, "org_a"), _org(session, "org_b")
     set_zoho_credentials(session, a, zoho_organization_id="AAA", client_id="cid",
                          client_secret="s", refresh_token="r")
-    cid = session.get(models.ZohoConnection, a).credential_id
+    cid = list_connections(session, a)[0].credential_id
     share_credential(session, a, cid, with_organization_ids=[b])
     connect_with_credential(session, b, credential_id=cid, zoho_organization_id="BBB")
     assert get_zoho_credentials(session, b) is not None
@@ -246,7 +262,7 @@ def test_only_the_owning_organization_may_rotate_or_share(session):
     a, b = _org(session, "org_a"), _org(session, "org_b")
     set_zoho_credentials(session, a, zoho_organization_id="AAA", client_id="cid",
                          client_secret="s", refresh_token="r")
-    cid = session.get(models.ZohoConnection, a).credential_id
+    cid = list_connections(session, a)[0].credential_id
     share_credential(session, a, cid, with_organization_ids=[b])
 
     with pytest.raises(CredentialNotUsable):
@@ -261,7 +277,7 @@ def test_a_credential_in_use_cannot_be_deleted(session):
     a = _org(session, "org_a")
     set_zoho_credentials(session, a, zoho_organization_id="AAA", client_id="cid",
                          client_secret="s", refresh_token="r")
-    cid = session.get(models.ZohoConnection, a).credential_id
+    cid = list_connections(session, a)[0].credential_id
 
     with pytest.raises(ValueError):
         delete_credential(session, a, cid)
@@ -274,7 +290,7 @@ def test_disconnecting_keeps_the_credential_for_the_others(session):
     a, b = _org(session, "org_a"), _org(session, "org_b")
     set_zoho_credentials(session, a, zoho_organization_id="AAA", client_id="cid",
                          client_secret="s", refresh_token="r")
-    cid = session.get(models.ZohoConnection, a).credential_id
+    cid = list_connections(session, a)[0].credential_id
     share_credential(session, a, cid, with_organization_ids=[b])
     connect_with_credential(session, b, credential_id=cid, zoho_organization_id="BBB")
 

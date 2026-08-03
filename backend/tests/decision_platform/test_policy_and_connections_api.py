@@ -1,0 +1,331 @@
+"""An owner edits the margin policy; an owner runs several Zoho companies.
+
+Two restrictions removed. The tests that matter are the ones that stop the
+removal from breaking something: a policy that contradicts itself, a second
+company that silently replaces the first, or a threshold edit that changes
+numbers already computed without saying so.
+"""
+from __future__ import annotations
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+
+from app.commercial import policy
+from app.commercial.config import load_commercial_thresholds
+from app.db import Base, get_session
+from app.domain import models
+from app.ingestion import connections as conn
+from app.routers import admin, connections as connections_router, platform_auth
+from app.seed import SEED_PASSWORD, ensure_org_and_users
+
+ORG = "org_sanketh"
+OWNER = "s.menon@sanketh.in"
+MANAGER = "m.rao@sanketh.in"
+SALES = "r.nair@sanketh.in"
+
+
+@pytest.fixture()
+def client():
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False},
+                           poolclass=StaticPool, future=True)
+    Base.metadata.create_all(engine)
+    Maker = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False,
+                         future=True)
+    s = Maker()
+    ensure_org_and_users(s)
+    s.commit()
+    s.close()
+
+    app = FastAPI()
+    for r in (platform_auth.router, admin.router, connections_router.router):
+        app.include_router(r)
+
+    def _override():
+        sess = Maker()
+        try:
+            yield sess
+            sess.commit()
+        finally:
+            sess.close()
+
+    app.dependency_overrides[get_session] = _override
+    tc = TestClient(app)
+    tc.Maker = Maker
+    return tc
+
+
+def _hdr(c, email):
+    r = c.post("/api/v1/auth/login", json={"email": email, "password": SEED_PASSWORD})
+    assert r.status_code == 200, r.text
+    return {"Authorization": f"Bearer {r.json()['token']}"}
+
+
+def _patch(c, email, body):
+    return c.patch("/api/v1/admin/margin-policy", json=body, headers=_hdr(c, email))
+
+
+# ── the margin policy is now the owner's ────────────────────────────────────
+def test_an_owner_can_change_the_target_margin(client):
+    r = _patch(client, OWNER, {"target_margin_default": 0.30})
+    assert r.status_code == 200, r.text
+    fields = {f["field"]: f for f in r.json()["margin_policy"]["fields"]}
+    assert fields["target_margin_default"]["value"] == 0.30
+    assert fields["target_margin_default"]["overridden"] is True
+
+
+def test_only_an_owner_may_change_it(client):
+    assert _patch(client, MANAGER, {"target_margin_default": 0.30}).status_code == 403
+    assert _patch(client, SALES, {"target_margin_default": 0.30}).status_code == 403
+
+
+def test_a_manager_can_read_it_without_being_able_to_change_it(client):
+    r = client.get("/api/v1/admin/policy", headers=_hdr(client, MANAGER))
+    assert r.status_code == 200
+    assert r.json()["can_manage"] is False
+    assert r.json()["margin_policy"]["fields"]
+
+
+def test_the_edit_actually_reaches_the_engine(client):
+    """A settings screen that saves a number the analysis never reads is worse
+    than one that refuses to edit."""
+    _patch(client, OWNER, {"min_margin": 0.20, "margin_floor": 0.22,
+                           "target_margin_default": 0.30})
+    s = client.Maker()
+    th = policy.load_for_org(s, ORG)
+    s.close()
+    assert th.min_margin == 0.20 and th.margin_floor == 0.22
+
+
+def test_editing_changes_the_version_so_old_numbers_stay_attributable(client):
+    """The reason this can be editable at all: every metric row and quote
+    snapshot records the threshold version that produced it."""
+    before = client.get("/api/v1/admin/policy",
+                        headers=_hdr(client, OWNER)).json()["margin_policy"]["version"]
+    _patch(client, OWNER, {"min_margin": 0.10})
+    after = client.get("/api/v1/admin/policy",
+                       headers=_hdr(client, OWNER)).json()["margin_policy"]["version"]
+    assert before != after
+    assert after.startswith("ci_")
+
+
+def test_the_floor_ladder_cannot_be_inverted(client):
+    """Approval floor above review floor means a line is flagged for review and
+    cleared for sending at the same time."""
+    r = _patch(client, OWNER, {"min_margin": 0.30, "margin_floor": 0.15})
+    assert r.status_code == 400
+    assert "approval floor" in r.json()["detail"].lower()
+
+
+def test_a_review_floor_above_the_target_is_refused(client):
+    r = _patch(client, OWNER, {"margin_floor": 0.40, "target_margin_default": 0.24})
+    assert r.status_code == 400
+
+
+def test_a_family_target_below_the_approval_floor_is_refused(client):
+    """Otherwise every line in that family needs approval by construction."""
+    r = _patch(client, OWNER, {"target_margin_by_family": {"reamer": 0.05}})
+    assert r.status_code == 400
+    assert "reamer" in r.json()["detail"]
+
+
+def test_a_margin_given_as_a_percentage_is_refused(client):
+    """24 instead of 0.24 would make every quote wildly profitable on paper."""
+    assert _patch(client, OWNER, {"target_margin_default": 24}).status_code == 400
+
+
+def test_validation_is_of_the_result_not_the_edit(client):
+    """One edit that is fine alone can invert the ladder against what is
+    already saved, and only the combination is what quotes are judged against."""
+    assert _patch(client, OWNER, {"min_margin": 0.10,
+                                  "margin_floor": 0.12}).status_code == 200
+    # 0.30 is a fine number on its own; against the saved 0.12 review floor it
+    # is not.
+    assert _patch(client, OWNER, {"min_margin": 0.30}).status_code == 400
+
+
+def test_analysis_internals_are_not_editable(client):
+    """Window lengths are not preferences — moving them silently changes what
+    "eroding" means."""
+    r = _patch(client, OWNER, {"recent_days": 30})
+    assert r.status_code == 422 or r.status_code == 400
+
+
+def test_clearing_an_override_returns_the_default(client):
+    base = load_commercial_thresholds().target_margin_default
+    _patch(client, OWNER, {"target_margin_default": 0.31})
+    r = _patch(client, OWNER, {"clear": ["target_margin_default"]})
+    fields = {f["field"]: f for f in r.json()["margin_policy"]["fields"]}
+    assert fields["target_margin_default"]["value"] == base
+    assert fields["target_margin_default"]["overridden"] is False
+
+
+def test_quantity_bands_are_editable_and_normalised(client):
+    r = _patch(client, OWNER, {"quantity_band_edges": [200, 5, 5, 50]})
+    assert r.status_code == 200
+    fields = {f["field"]: f for f in r.json()["margin_policy"]["fields"]}
+    assert fields["quantity_band_edges"]["value"] == [5, 50, 200], "sorted, deduped"
+
+
+def test_every_editable_field_carries_a_label_and_an_explanation(client):
+    """A settings screen full of raw field names is a screen nobody touches."""
+    r = client.get("/api/v1/admin/policy", headers=_hdr(client, OWNER)).json()
+    for f in r["margin_policy"]["fields"]:
+        assert f["label"] and f["help"], f["field"]
+        assert f["kind"] in ("ratio", "rupees", "family_margins", "band_edges")
+
+
+# ── many connections ────────────────────────────────────────────────────────
+def _add(c, email, zoho_org, label="", **kw):
+    body = {"zoho_organization_id": zoho_org, "label": label,
+            "client_id": "1000.APP", "client_secret": "s", "refresh_token": "r"}
+    body.update(kw)
+    return c.post("/api/v1/connections", json=body, headers=_hdr(c, email))
+
+
+def test_an_owner_can_add_several_companies(client):
+    assert _add(client, OWNER, "111", "SLS Engineers").status_code == 201
+    assert _add(client, OWNER, "222", "4U Precision").status_code == 201
+    assert _add(client, OWNER, "333", "UPS").status_code == 201
+
+    rows = client.get("/api/v1/connections", headers=_hdr(client, OWNER)).json()
+    assert [c["zoho_organization_id"] for c in rows["connections"]] == ["111", "222", "333"]
+    assert [c["label"] for c in rows["connections"]] == ["SLS Engineers", "4U Precision", "UPS"]
+
+
+def test_the_second_company_reuses_the_grant_without_re_entering_it(client):
+    _add(client, OWNER, "111")
+    listing = client.get("/api/v1/connections", headers=_hdr(client, OWNER)).json()
+    credential_id = listing["credentials"][0]["credential_id"]
+
+    r = client.post("/api/v1/connections", headers=_hdr(client, OWNER),
+                    json={"zoho_organization_id": "222", "label": "Second",
+                          "credential_id": credential_id})
+    assert r.status_code == 201
+    s = client.Maker()
+    assert s.query(models.ZohoCredential).count() == 1, "one grant, two companies"
+    s.close()
+
+
+def test_the_grant_is_named_after_itself_not_after_the_first_company(client):
+    """One sign-in commonly serves three entities, so naming it after the first
+    company it happened to connect makes the connections list read as a lie:
+    every row would say its sign-in is "SLS Engineers"."""
+    _add(client, OWNER, "111", "SLS Engineers")
+    _add(client, OWNER, "222", "4U Precision",
+         credential_id=None, client_id="1000.APP", client_secret="s", refresh_token="r")
+
+    listing = client.get("/api/v1/connections", headers=_hdr(client, OWNER)).json()
+    assert len(listing["credentials"]) == 1, "identical secrets are one grant"
+    grant = listing["credentials"][0]["label"]
+    assert "SLS" not in grant and "4U" not in grant, grant
+    assert "1000.APP" in grant
+
+    # And every connection reports that same grant, which is what makes one
+    # rotation cover all of them.
+    assert {c["credential_label"] for c in listing["connections"]} == {grant}
+
+
+def test_adding_the_same_company_twice_does_not_duplicate_it(client):
+    """Two rows for one Zoho company would sync it twice and double everything."""
+    _add(client, OWNER, "111", "First")
+    _add(client, OWNER, "111", "Renamed")
+    rows = client.get("/api/v1/connections", headers=_hdr(client, OWNER)).json()
+    assert len(rows["connections"]) == 1
+    assert rows["connections"][0]["label"] == "Renamed"
+
+
+def test_a_connection_can_be_disabled_without_losing_its_credentials(client):
+    r = _add(client, OWNER, "111")
+    cid = r.json()["connection_id"]
+    assert client.patch(f"/api/v1/connections/{cid}", json={"enabled": False},
+                        headers=_hdr(client, OWNER)).json()["enabled"] is False
+
+    s = client.Maker()
+    assert conn.list_connections(s, ORG, enabled_only=True) == []
+    assert len(conn.list_connections(s, ORG)) == 1, "kept, not deleted"
+    s.close()
+
+
+def test_a_connection_can_be_deleted(client):
+    cid = _add(client, OWNER, "111").json()["connection_id"]
+    r = client.delete(f"/api/v1/connections/{cid}", headers=_hdr(client, OWNER))
+    assert r.status_code == 200 and r.json()["removed"] is True
+    assert client.get("/api/v1/connections",
+                      headers=_hdr(client, OWNER)).json()["connections"] == []
+
+
+def test_deleting_a_connection_leaves_the_data_it_pulled(client):
+    """Disconnecting is an administrative act about credentials, not a decision
+    to forget what was invoiced."""
+    cid = _add(client, OWNER, "111").json()["connection_id"]
+    s = client.Maker()
+    s.add(models.Customer(customer_id="c1", organization_id=ORG, external_id="c1",
+                          name="Acme"))
+    s.commit()
+    s.close()
+
+    client.delete(f"/api/v1/connections/{cid}", headers=_hdr(client, OWNER))
+    s = client.Maker()
+    assert s.query(models.Customer).count() == 1
+    s.close()
+
+
+def test_only_an_owner_may_add_or_delete_a_connection(client):
+    assert _add(client, MANAGER, "111").status_code == 403
+    cid = _add(client, OWNER, "111").json()["connection_id"]
+    assert client.delete(f"/api/v1/connections/{cid}",
+                         headers=_hdr(client, MANAGER)).status_code == 403
+
+
+def test_a_manager_may_see_the_connections(client):
+    _add(client, OWNER, "111", "SLS")
+    r = client.get("/api/v1/connections", headers=_hdr(client, MANAGER))
+    assert r.status_code == 200 and r.json()["can_manage"] is False
+
+
+def test_a_salesperson_may_not_see_them_at_all(client):
+    assert client.get("/api/v1/connections",
+                      headers=_hdr(client, SALES)).status_code == 403
+
+
+def test_the_required_scopes_are_published_with_what_each_one_buys(client):
+    """A half-granted scope authenticates and then returns nothing — the token
+    works, the endpoint 401s, and the sync reports zero rows."""
+    r = client.get("/api/v1/connections", headers=_hdr(client, OWNER)).json()
+    scopes = {s["scope"]: s for s in r["required_scopes"]}
+    assert "ZohoBooks.bills.READ" in scopes
+    assert "margin" in scopes["ZohoBooks.bills.READ"]["why"]
+    assert scopes["ZohoBooks.users.READ"]["required"] is False
+    assert "ZohoBooks.bills.READ" in r["scope_string"]
+
+
+def test_the_screen_says_that_connections_pool_into_one_analysis(client):
+    """The consequence of many connections on one organization, stated rather
+    than left to be discovered from a strange margin."""
+    r = client.get("/api/v1/connections", headers=_hdr(client, OWNER)).json()
+    assert "roll up" in r["pooling_note"]
+
+
+def test_adding_a_connection_with_no_credential_and_no_secrets_is_refused(client):
+    r = client.post("/api/v1/connections", headers=_hdr(client, OWNER),
+                    json={"zoho_organization_id": "111"})
+    assert r.status_code == 400
+    assert "client_id" in r.json()["detail"]
+
+
+def test_a_credential_from_another_organization_cannot_be_borrowed(client):
+    s = client.Maker()
+    s.add(models.Organization(organization_id="org_other", name="Other"))
+    other = conn.create_credential(s, "org_other", client_id="x", client_secret="y",
+                                   refresh_token="z")
+    s.commit()
+    other_id = other.credential_id
+    s.close()
+
+    r = client.post("/api/v1/connections", headers=_hdr(client, OWNER),
+                    json={"zoho_organization_id": "999", "credential_id": other_id})
+    assert r.status_code == 403

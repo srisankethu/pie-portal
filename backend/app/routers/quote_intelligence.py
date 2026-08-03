@@ -28,7 +28,7 @@ from sqlalchemy.orm import Session
 
 from .. import approvals
 from ..authz import Principal, current_principal
-from ..commercial.config import load_commercial_thresholds
+from ..commercial.policy import load_for_org
 from ..commercial.quote_service import (
     InvalidTransition,
     QuoteLineInput,
@@ -233,14 +233,15 @@ def quote_outcome(
 
 
 @router.get("/thresholds")
-def thresholds(principal: Principal = Depends(current_principal)) -> dict:
+def thresholds(principal: Principal = Depends(current_principal),
+               session: Session = Depends(get_session)) -> dict:
     """The pricing policy in force, so a flagged price can be argued with.
 
     A salesperson sees the quantity ladder and the tolerance — the shape of the
     rules. The margin numbers themselves are cost policy and stay with managers.
     """
     from ..domain.enums import Role
-    th = load_commercial_thresholds()
+    th = load_for_org(session, principal.organization_id)
     out: dict = {
         "version": th.version,
         "quantity_band_edges": list(th.quantity_band_edges),

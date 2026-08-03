@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 from .. import approvals
 from ..approvals import ApprovalError, NotAuthorized
 from ..authz import Principal, current_principal
-from ..commercial.config import load_commercial_thresholds
+from ..commercial.policy import load_for_org
 from ..commercial.quote_service import QuoteLineInput, assess_quote
 from ..db import get_session
 from ..domain import models
@@ -98,7 +98,7 @@ def request_quote_line_approval(
     for the same reason a quote snapshot is: an approval whose numbers were
     supplied by the requester is a request to approve whatever they typed.
     """
-    th = load_commercial_thresholds()
+    th = load_for_org(session, principal.organization_id)
     result = assess_quote(
         session, principal.organization_id, customer_ref=body.customer.strip(),
         lines=[QuoteLineInput(line_id=body.line_id, product_ref=body.product,

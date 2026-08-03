@@ -1,4 +1,4 @@
-import type { Account, ApprovalRequest, ConnectionCheck, ConnectionsView, FixedThresholds, MarginPolicy, MarginPolicyPatch, NewConnectionInput, ZohoConnection, ZohoCredential, ZohoVisibleOrg, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, OrgPolicy, PlatformSession, PlatformUser, QuoteGate, Role, SyncOptions, SyncStartResponse, SyncState, ThresholdView, ZohoConnectionInput } from "./types";
+import type { Account, ApprovalRequest, EntityKind, Identity, IdentityPolicy, IdentitySuggestion, ConnectionCheck, ConnectionsView, FixedThresholds, MarginPolicy, MarginPolicyPatch, NewConnectionInput, ZohoConnection, ZohoCredential, ZohoVisibleOrg, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, OrgPolicy, PlatformSession, PlatformUser, QuoteGate, Role, SyncOptions, SyncStartResponse, SyncState, ThresholdView, ZohoConnectionInput } from "./types";
 
 const KEY = "pie_platform_session";
 
@@ -191,6 +191,45 @@ export const papi = {
   updateMarginPolicy: (t: string, body: MarginPolicyPatch) =>
     req<{ margin_policy: MarginPolicy; note: string }>(
       "/api/v1/admin/margin-policy", { method: "PATCH", body: JSON.stringify(body) }, t),
+
+  // ── identity: link records across connectors, never merge them ───────────
+  listIdentities: (t: string, kind: EntityKind, q = "", linkedOnly = false) =>
+    req<{ identities: Identity[]; total: number; can_manage: boolean;
+          pending_suggestions: number }>(
+      `/api/v1/identity/${kind}?q=${encodeURIComponent(q)}&linked_only=${linkedOnly}`, {}, t),
+
+  getIdentity: (t: string, kind: EntityKind, id: string) =>
+    req<Identity>(`/api/v1/identity/${kind}/${id}`, {}, t),
+
+  listSuggestions: (t: string, kind: EntityKind) =>
+    req<{ suggestions: IdentitySuggestion[]; can_manage: boolean }>(
+      `/api/v1/identity/${kind}/suggestions/pending`, {}, t),
+
+  decideSuggestion: (t: string, kind: EntityKind, id: string, accept: boolean) =>
+    req<{ suggestion_id: string; status: string }>(
+      `/api/v1/identity/${kind}/suggestions/${id}`,
+      { method: "POST", body: JSON.stringify({ accept }) }, t),
+
+  linkRecord: (t: string, kind: EntityKind, record_id: string, identity_id: string,
+               reason = "") =>
+    req<{ record_id: string; identity_id: string }>(`/api/v1/identity/${kind}/link`,
+      { method: "POST", body: JSON.stringify({ record_id, identity_id, reason }) }, t),
+
+  unlinkRecord: (t: string, kind: EntityKind, record_id: string, reason = "") =>
+    req<{ record_id: string; identity_id: string }>(`/api/v1/identity/${kind}/unlink`,
+      { method: "POST", body: JSON.stringify({ record_id, reason }) }, t),
+
+  relabelIdentity: (t: string, kind: EntityKind, id: string, label: string) =>
+    req<Identity>(`/api/v1/identity/${kind}/${id}`,
+      { method: "PATCH", body: JSON.stringify({ label }) }, t),
+
+  identityPolicy: (t: string) =>
+    req<IdentityPolicy>("/api/v1/identity/settings/policy", {}, t),
+
+  updateIdentityPolicy: (t: string, body: Partial<IdentityPolicy>) =>
+    req<{ auto_link_customers: boolean; auto_link_items: boolean }>(
+      "/api/v1/identity/settings/policy",
+      { method: "PATCH", body: JSON.stringify(body) }, t),
 
   // ── connections: many Zoho companies per organization ─────────────────────
   listConnections: (t: string) => req<ConnectionsView>("/api/v1/connections", {}, t),

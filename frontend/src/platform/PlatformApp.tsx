@@ -11,6 +11,7 @@ import { aiState, factLabel, factValue, isPrimaryFact } from "./format";
 import { Bp, Conf, FactChip, Interpretation, Labelled, Pri, Tip, typeLabel } from "./ui";
 import { navigate, parseHash, type Screen } from "./route";
 import { ApprovalsScreen, SettingsScreen } from "./AdminScreens";
+import { IdentityScreen } from "./IdentityScreen";
 import { DataScreen } from "./DataScreen";
 import { CustomerCommercial, CustomerItemScreen } from "./CommercialScreens";
 
@@ -411,6 +412,7 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
     ["quotes", "Quotes", ""],
     ["approvals", "Approvals", pendingApprovals ? String(pendingApprovals) : ""],
     ["data", "Data & connection", ""],
+    ["identity", "Identities", ""],
     ["states", "AI states", ""],
     ["settings", "Settings", ""],
   ];
@@ -563,6 +565,7 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
         {/* ── DATA & CONNECTION ── */}
         {screen === "data" && <DataScreen session={session} onSynced={load} />}
         {screen === "approvals" && <ApprovalsScreen session={session} />}
+        {screen === "identity" && <IdentityScreen token={session.token} />}
         {screen === "settings" && <SettingsScreen session={session} />}
 
         {/* ── AI STATES (reference) ── */}

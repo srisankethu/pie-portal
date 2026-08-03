@@ -12,15 +12,17 @@ from typing import Any, Iterable, Optional
 from .source import SkipPredicate
 
 _CONTACTS = [
-    {"contact_id": "cst-1001", "contact_name": "Pitti Engineering Ltd", "status": "active"},
-    {"contact_id": "cst-1002", "contact_name": "Bharat Forge", "status": "active"},
+    {"contact_id": "cst-1001", "contact_name": "Pitti Engineering Ltd",
+     "gst_no": "36AAACP1234C1ZP", "status": "active"},
+    {"contact_id": "cst-1002", "contact_name": "Bharat Forge",
+     "gst_no": "27AAACB5678D1ZQ", "status": "active"},
     {"contact_id": "cst-1003", "contact_name": "Kirloskar", "status": "inactive"},
 ]
 
 _ITEMS = [
-    {"item_id": "itm-2001", "name": "CNMG 120408 KCP25", "unit": "pcs",
+    {"item_id": "itm-2001", "name": "CNMG 120408 KCP25", "sku": "CNMG120408KCP25", "unit": "pcs",
      "hsn_or_sac": "82090090", "status": "active"},
-    {"item_id": "itm-2002", "name": "DNMG 150608 KCK15", "unit": "pcs",
+    {"item_id": "itm-2002", "name": "DNMG 150608 KCK15", "sku": "DNMG150608KCK15", "unit": "pcs",
      "hsn_or_sac": "82090090", "status": "active"},
 ]
 

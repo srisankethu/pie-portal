@@ -299,6 +299,10 @@ class ZohoApiSource:
             yield {
                 "contact_id": str(c.get("contact_id")),
                 "contact_name": c.get("contact_name") or c.get("company_name") or "",
+                # The identity layer's strongest customer key. Zoho names it
+                # gst_no on the India edition; other editions omit it entirely,
+                # which the matcher treats as "no evidence", not "no match".
+                "gst_no": c.get("gst_no") or c.get("gst_treatment_gstin"),
                 "status": (c.get("status") or "active"),
             }
 
@@ -307,6 +311,10 @@ class ZohoApiSource:
             yield {
                 "item_id": str(i.get("item_id")),
                 "name": i.get("name") or "",
+                # The identity layer's item key. Often blank in Zoho — an item
+                # with no SKU simply gets no suggestion, which is the honest
+                # outcome rather than a guess from the name.
+                "sku": i.get("sku"),
                 "unit": i.get("unit"),
                 "hsn_or_sac": i.get("hsn_or_sac") or i.get("hsn_code"),
                 "status": (i.get("status") or "active"),

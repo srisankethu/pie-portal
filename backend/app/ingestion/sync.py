@@ -57,6 +57,11 @@ class SyncReport:
     # organization — the difference between seconds and minutes at scale.
     touched_customer_ids: set[str] = field(default_factory=set)
     touched_product_ids: set[str] = field(default_factory=set)
+    # What the identity layer did with what arrived. Suggestions are the number
+    # waiting for a person, which is the figure worth surfacing — a sync that
+    # quietly parks forty decisions has not finished the job.
+    identity_suggestions: int = 0
+    identity_links: int = 0
 
     def skip(self, kind: str, ref: str, code: str, detail: str) -> None:
         self.skipped.append({"kind": kind, "ref": ref, "code": code, "detail": detail})
@@ -88,7 +93,9 @@ class SyncService:
 
     def __init__(self, session: Session, source: ZohoSource, organization_id: str,
                  resume: bool = True,
-                 on_phase: Optional[Callable[[str], None]] = None) -> None:
+                 on_phase: Optional[Callable[[str], None]] = None,
+                 connector: str = "zoho",
+                 connection_id: Optional[str] = None) -> None:
         self.s = session
         self.source = source
         self.org = organization_id
@@ -97,6 +104,11 @@ class SyncService:
         # so in words. Optional: a scripted caller that does not care passes
         # nothing and the stages run exactly as before.
         self._on_phase = on_phase
+        # Which system this pull is reading, and which instance of it. Passed
+        # straight through to the identity layer and used nowhere else here —
+        # the sync knows it is Zoho; the resolver must never need to.
+        self.connector = connector
+        self.connection_id = connection_id
         self.repo = ReadModelRepository(session, organization_id)
         self.report = SyncReport(organization_id=organization_id)
         # customer_external_id -> (invoice date, salesperson_id, salesperson_name)
@@ -180,22 +192,59 @@ class SyncService:
         return already_have
 
     def _sync_customers(self) -> None:
+        from ..identity import service as identity
+
         for raw in self.source.list_contacts():
             ref = str(raw.get("contact_id", "?"))
             try:
-                self.repo.upsert_customer(normalize_customer(raw))
+                row = self.repo.upsert_customer(normalize_customer(raw))
+                # Flushed so the row has its id: the connector record points at
+                # the read-model row, and a null pointer here would silently
+                # decouple the two layers for every newly seen record.
+                self.s.flush()
                 self.report.customers += 1
             except NormalizationError as e:
                 self.report.skip("contact", ref, e.code, e.detail)
+                continue
+            # One call, no branching. Everything the resolver needs is a fact
+            # about the record; nothing about Zoho reaches past this line.
+            result = identity.ingest_customer(
+                self.s, self.org, connector=self.connector,
+                connection_id=self.connection_id, external_id=ref,
+                name=str(raw.get("contact_name") or ""),
+                gstin=raw.get("gst_no"),
+                source_ref={"contact_id": ref, "gst_no": raw.get("gst_no")},
+                local_id=getattr(row, "customer_id", None))
+            self.report.identity_suggestions += len(result.suggestions)
+            if result.linked:
+                self.report.identity_links += 1
 
     def _sync_products(self) -> None:
+        from ..identity import service as identity
+
         for raw in self.source.list_items():
             ref = str(raw.get("item_id", "?"))
             try:
-                self.repo.upsert_product(normalize_product(raw))
+                row = self.repo.upsert_product(normalize_product(raw))
+                # Flushed so the row has its id: the connector record points at
+                # the read-model row, and a null pointer here would silently
+                # decouple the two layers for every newly seen record.
+                self.s.flush()
                 self.report.products += 1
             except NormalizationError as e:
                 self.report.skip("item", ref, e.code, e.detail)
+                continue
+            result = identity.ingest_item(
+                self.s, self.org, connector=self.connector,
+                connection_id=self.connection_id, external_id=ref,
+                name=str(raw.get("name") or ""),
+                sku=raw.get("sku"),
+                description=str(raw.get("name") or ""),
+                source_ref={"item_id": ref, "sku": raw.get("sku")},
+                local_id=getattr(row, "product_id", None))
+            self.report.identity_suggestions += len(result.suggestions)
+            if result.linked:
+                self.report.identity_links += 1
 
     def _sync_invoices(self) -> None:
         for raw in self.source.list_invoices(skip=self._skipper("invoice")):

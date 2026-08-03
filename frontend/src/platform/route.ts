@@ -11,6 +11,8 @@ export type Screen =
   | "home" | "list" | "detail" | "customer" | "quotes" | "states" | "data"
   /** The approval queue, and organization settings (owner is super admin). */
   | "approvals" | "settings"
+  /** Which connector records describe the same customer or item. */
+  | "identity"
   /** One customer's relationship with one item — needs two ids, so it carries
    *  an extra `itemId` alongside the customer in `id`. */
   | "customerItem";
@@ -32,6 +34,7 @@ const PATHS: Record<Screen, string> = {
   data: "/data",
   approvals: "/approvals",
   settings: "/settings",
+  identity: "/identity",
 };
 
 export function toHash(r: Route): string {
@@ -75,6 +78,8 @@ export function parseHash(hash: string): Route {
       return { screen: "approvals" };
     case "settings":
       return { screen: "settings" };
+    case "identity":
+      return { screen: "identity" };
     default:
       return { screen: "home" };
   }

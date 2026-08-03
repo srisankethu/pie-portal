@@ -834,3 +834,218 @@ class Outcome(Base):
     recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
     decision: Mapped["Decision"] = relationship()
+
+
+# ── Identity layer ───────────────────────────────────────────────────────────
+#
+# The platform reads from several ERPs at once — two Zoho companies today, a
+# Tally company and an ERPNext instance tomorrow. The same real customer exists
+# in all of them under different ids, and the same item under different codes.
+#
+# The rule that shapes every table below: **connector data is never merged.**
+# Each connector stays the source of truth for its own records, which are stored
+# exactly as they arrive. An identity is a thin, connector-agnostic node that
+# says "these records are the same business entity" — nothing more. Merging
+# would destroy the one thing an ERP integration must preserve, which is the
+# ability to point at a figure and say which system it came from.
+#
+# Consequently an identity row holds no connector fields at all. Its display
+# name is derived from the records linked to it, or set by a person; it is never
+# copied from whichever connector happened to be read first, because that would
+# quietly make one connector authoritative over the others.
+
+
+class CustomerIdentity(Base):
+    """One real-world customer, across every connector that knows them.
+
+    Deliberately almost empty. Everything about the customer — name, GSTIN,
+    address — belongs to the connector records; this exists only to be pointed
+    at. A ``label`` is the exception: it is what a *person* chose to call this
+    entity, which is not connector data.
+    """
+
+    __tablename__ = "customer_identities"
+
+    identity_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    label: Mapped[Optional[str]] = mapped_column(String(255))
+    # Retired rather than deleted when its last record is unlinked, so the audit
+    # trail keeps pointing at something real.
+    active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
+                                                 onupdate=_now)
+
+
+class CustomerConnectorRecord(Base):
+    """One customer as one connector holds it. Immutable source data.
+
+    Keyed on (connector, connection, external id) rather than on the external id
+    alone: "CUST-102" from ERPNext and contact 12345 from Zoho are different
+    records that may well collide numerically, and two Zoho companies under one
+    organization can each hold their own id space.
+    """
+
+    __tablename__ = "customer_connector_records"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "connector", "connection_id", "external_id",
+                         name="uq_customer_record_source"),
+        Index("ix_customer_record_gstin", "organization_id", "gstin"),
+    )
+
+    record_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    identity_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("customer_identities.identity_id"), index=True)
+
+    # Which system, and which instance of it. ``connection_id`` is null for a
+    # connector that has only one instance; ``connector`` is never null.
+    connector: Mapped[str] = mapped_column(String(32), index=True)
+    connection_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    external_id: Mapped[str] = mapped_column(String(128), index=True)
+
+    name: Mapped[str] = mapped_column(String(255), default="")
+    # Normalised on write (upper, no spaces) so matching never depends on how a
+    # given ERP formats it. The raw value stays in ``source_ref``.
+    gstin: Mapped[Optional[str]] = mapped_column(String(20), index=True)
+    # The read-model row this record projects into, when there is one. The link
+    # is here rather than on Customer so the read model stays a projection.
+    customer_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+
+    source_ref: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    last_synced_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
+                                                 onupdate=_now)
+
+    identity: Mapped["CustomerIdentity"] = relationship()
+
+
+class ItemIdentity(Base):
+    """One real-world item, across every connector that stocks it."""
+
+    __tablename__ = "item_identities"
+
+    identity_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    label: Mapped[Optional[str]] = mapped_column(String(255))
+    active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
+                                                 onupdate=_now)
+
+
+class ItemConnectorRecord(Base):
+    """One item as one connector holds it. Immutable source data."""
+
+    __tablename__ = "item_connector_records"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "connector", "connection_id", "external_id",
+                         name="uq_item_record_source"),
+        Index("ix_item_record_sku", "organization_id", "sku"),
+    )
+
+    record_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    identity_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("item_identities.identity_id"), index=True)
+
+    connector: Mapped[str] = mapped_column(String(32), index=True)
+    connection_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    external_id: Mapped[str] = mapped_column(String(128), index=True)
+
+    sku: Mapped[Optional[str]] = mapped_column(String(128), index=True)
+    description: Mapped[str] = mapped_column(String(512), default="")
+    product_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+
+    source_ref: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    last_synced_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
+                                                 onupdate=_now)
+
+    identity: Mapped["ItemIdentity"] = relationship()
+
+
+class IdentitySuggestion(Base):
+    """A proposed link, awaiting a person.
+
+    Automatic linking is off by default, so an import that finds an exact GSTIN
+    or SKU match does not act on it — it records this and asks. The alternative
+    is a system that silently decides two companies are one, which is
+    unrecoverable by the time anyone notices: the evidence of the mistake is the
+    thing the merge destroyed.
+    """
+
+    __tablename__ = "identity_suggestions"
+    __table_args__ = (
+        UniqueConstraint("record_id", "target_identity_id",
+                         name="uq_suggestion_record_target"),
+        Index("ix_suggestion_open", "organization_id", "entity_type", "status"),
+    )
+
+    suggestion_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    entity_type: Mapped[str] = mapped_column(String(16))     # CUSTOMER | ITEM
+    record_id: Mapped[str] = mapped_column(String(64), index=True)
+    target_identity_id: Mapped[str] = mapped_column(String(64), index=True)
+
+    # Which rule proposed it, and on what value. Named so a reviewer can judge
+    # the suggestion instead of trusting a score: "GSTIN 29ABCDE1234F1Z5" is
+    # reviewable, "0.97" is not.
+    strategy: Mapped[str] = mapped_column(String(32))
+    evidence: Mapped[str] = mapped_column(String(255), default="")
+    status: Mapped[str] = mapped_column(String(16), default="PENDING", index=True)
+
+    decided_by_user_id: Mapped[Optional[str]] = mapped_column(String(64))
+    decided_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class IdentityEvent(Base):
+    """Append-only history of every link, unlink and merge decision.
+
+    Write-once, like ``Signal``. The value of an identity layer is that it can
+    be argued with later, and an audit trail that can be edited cannot settle an
+    argument.
+    """
+
+    __tablename__ = "identity_events"
+
+    event_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    entity_type: Mapped[str] = mapped_column(String(16), index=True)
+    identity_id: Mapped[str] = mapped_column(String(64), index=True)
+    record_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    # CREATED | LINKED | UNLINKED | SUGGESTED | SUGGESTION_ACCEPTED |
+    # SUGGESTION_REJECTED | RELABELLED | RETIRED
+    action: Mapped[str] = mapped_column(String(32), index=True)
+    # AUTO when a rule acted under an explicitly enabled setting; otherwise the
+    # user id. Never blank — "who decided this" is the first question asked of a
+    # link somebody disagrees with.
+    actor: Mapped[str] = mapped_column(String(64), default="SYSTEM")
+    detail: Mapped[str] = mapped_column(String(512), default="")
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, index=True)
+
+
+class IdentityPolicy(Base):
+    """Whether the platform may link without asking.
+
+    Its own row rather than a field on ``OrgPolicy``, whose docstring makes the
+    point itself: that table answers "may this price go out, and whose call is
+    that?". Whether two ERP records describe one company is a data-stewardship
+    question, not an approval one, and the two should not have to move together.
+    """
+
+    __tablename__ = "identity_policies"
+
+    organization_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    # Off by default. An exact GSTIN match is strong evidence, not proof: a
+    # group can register several trading names against one GSTIN, and undoing a
+    # wrong link after three months of analysis has been built on it is far more
+    # expensive than confirming it once.
+    auto_link_customers: Mapped[bool] = mapped_column(Boolean, default=False)
+    auto_link_items: Mapped[bool] = mapped_column(Boolean, default=False)
+    updated_by_user_id: Mapped[Optional[str]] = mapped_column(String(64))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
+                                                 onupdate=_now)

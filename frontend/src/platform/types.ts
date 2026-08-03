@@ -543,3 +543,69 @@ export interface NewConnectionInput {
   accounts_base?: string;
   api_base?: string;
 }
+
+
+/* ── identity layer ─────────────────────────────────────────────────────────
+ * Records from different connectors are linked, never merged. Each connector
+ * stays the source of truth for its own data; an identity only says which
+ * records describe the same business entity.
+ */
+export type EntityKind = "customers" | "items";
+
+export interface ConnectorRecord {
+  record_id: string;
+  connector: string;
+  connection_id: string | null;
+  external_id: string;
+  last_synced_at: string | null;
+  /** Exactly what the connector supplied. Visible because the whole point of
+   *  not merging is being able to see what each system actually said. */
+  source_ref: Record<string, unknown>;
+  name?: string;
+  gstin?: string | null;
+  customer_id?: string | null;
+  sku?: string | null;
+  description?: string;
+  product_id?: string | null;
+}
+
+export interface Identity {
+  identity_id: string;
+  label: string | null;
+  /** Derived from the linked records, not stored — so no one connector becomes
+   *  the authority on what the entity is called. */
+  display_name: string;
+  active: boolean;
+  connector_count: number;
+  record_count: number;
+  created_at: string | null;
+  records: ConnectorRecord[];
+  history?: IdentityEvent[];
+}
+
+export interface IdentityEvent {
+  action: string;
+  actor: string;
+  detail: string;
+  record_id: string | null;
+  at: string | null;
+}
+
+export interface IdentitySuggestion {
+  suggestion_id: string;
+  /** Which rule proposed it — GSTIN, SKU, … */
+  strategy: string;
+  /** The value it matched on, so a reviewer judges the match not a score. */
+  evidence: string;
+  created_at: string | null;
+  incoming: ConnectorRecord;
+  incoming_identity_id: string;
+  target: Identity;
+}
+
+export interface IdentityPolicy {
+  auto_link_customers: boolean;
+  auto_link_items: boolean;
+  can_manage: boolean;
+  note: string;
+}

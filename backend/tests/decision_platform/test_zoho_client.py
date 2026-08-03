@@ -145,7 +145,31 @@ def test_contacts_are_mapped_to_the_normalizer_shape():
         "contacts": [{"contact_id": 123, "contact_name": "4U Customer", "status": "active"}],
         "page_context": {"has_more_page": False}}})
     rows = list(ZohoApiSource(http=http).list_contacts())
-    assert rows == [{"contact_id": "123", "contact_name": "4U Customer", "status": "active"}]
+    # gst_no rides along for the identity layer. Present as None rather than
+    # absent when the edition has no such field, so a caller never has to guess
+    # whether the key was missing or the value was.
+    assert rows == [{"contact_id": "123", "contact_name": "4U Customer",
+                     "gst_no": None, "status": "active"}]
+
+
+def test_a_contacts_gstin_reaches_the_identity_layer():
+    """The strongest customer matching key there is, and it was simply not being
+    read until the identity layer needed it."""
+    http = FakeHttp({"/contacts": {
+        "code": 0,
+        "contacts": [{"contact_id": 1, "contact_name": "ABC",
+                      "gst_no": "29ABCDE1234F1Z5", "status": "active"}],
+        "page_context": {"has_more_page": False}}})
+    assert list(ZohoApiSource(http=http).list_contacts())[0]["gst_no"] == "29ABCDE1234F1Z5"
+
+
+def test_an_items_sku_reaches_the_identity_layer():
+    http = FakeHttp({"/items": {
+        "code": 0,
+        "items": [{"item_id": 7, "name": "KCMT 090304 LF", "sku": "KCMT090304LF",
+                   "status": "active"}],
+        "page_context": {"has_more_page": False}}})
+    assert list(ZohoApiSource(http=http).list_items())[0]["sku"] == "KCMT090304LF"
 
 
 def test_invoice_detail_is_fetched_for_line_items():

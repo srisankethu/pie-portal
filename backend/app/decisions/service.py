@@ -13,7 +13,7 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..ai.interpret import AIResult, interpret
+from ..ai.interpret import interpret
 from ..ai.provider import AIProvider, select_provider
 from ..config import settings
 from ..context.assembler import assemble_from_signal

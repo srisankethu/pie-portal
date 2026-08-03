@@ -9,7 +9,6 @@ say to reprice.
 from __future__ import annotations
 
 from datetime import date
-from decimal import Decimal
 
 from ..domain.enums import EvidenceSufficiency, SignalType, SubjectEntityType
 from . import aggregates as agg

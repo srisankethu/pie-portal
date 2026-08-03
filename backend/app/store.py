@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from . import pricing
-from .pie_service import REL_RANK, Candidate, Resolution, pie_service
+from .pie_service import Candidate, Resolution, pie_service
 from .zoho import ZohoService
 
 _REL_LABELS = {

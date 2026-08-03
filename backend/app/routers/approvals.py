@@ -27,7 +27,6 @@ from ..commercial.quote_service import QuoteLineInput, assess_quote
 from ..db import get_session
 from ..domain import models
 from ..domain.enums import (
-    ApprovalAuthority,
     ApprovalKind,
     ApprovalStatus,
     QuoteOutcomeStatus,

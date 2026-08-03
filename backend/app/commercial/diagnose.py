@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
-from datetime import date
 from typing import Optional
 
 from sqlalchemy import func, select

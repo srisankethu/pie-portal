@@ -60,7 +60,7 @@ def _get_quote(quote_id: str) -> Quote:
 
 
 def _get_line(quote: Quote, line_id: str) -> Line:
-    ln = next((l for l in quote.lines if l.id == line_id), None)
+    ln = next((row for row in quote.lines if row.id == line_id), None)
     if ln is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Line not found")
     return ln

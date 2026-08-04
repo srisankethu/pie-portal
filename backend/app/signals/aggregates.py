@@ -6,9 +6,11 @@ and order-count floors.
 """
 from __future__ import annotations
 
+import statistics
+from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
-from typing import Optional
+from typing import Iterable, Optional
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -76,6 +78,19 @@ def orders_in(sales: list[SaleRow], window: tuple[date, date]) -> set[str]:
             for s in sales if _in_window(s.date, window)}
 
 
+def by_customer(sales: Iterable[SaleRow]) -> dict[str, list[SaleRow]]:
+    """Group lines by customer, preserving order.
+
+    Three insight modules each had their own identical copy of this. Grouping is
+    not a decision any of them owns, and three copies is three places a change
+    to what "a customer" means — a merged identity, say — would have to land.
+    """
+    out: dict[str, list[SaleRow]] = {}
+    for row in sales:
+        out.setdefault(row.customer_id, []).append(row)
+    return out
+
+
 def order_dates(sales: list[SaleRow]) -> list[date]:
     """Sorted distinct order dates (one per source invoice)."""
     by_order: dict[str, date] = {}
@@ -83,6 +98,66 @@ def order_dates(sales: list[SaleRow]) -> list[date]:
         key = str(s.source_ref.get("record_id") or s.external_ref)
         by_order[key] = s.date
     return sorted(by_order.values())
+
+
+@dataclass(frozen=True)
+class Cadence:
+    """How often a customer orders, and whether they are late by their own clock.
+
+    One implementation, because there were three. ``dormancy`` decided whether to
+    raise a signal, ``quote_context`` published the same numbers as facts for the
+    model, and the buying-rhythm screen described the whole population — each with
+    its own copy of "median of the gaps, overdue past a multiple of it". Three
+    copies of one rule is three answers waiting to happen, and the quote copy had
+    already drifted: it accepted two orders as a rhythm and divided by a zero
+    interval, so a customer with two same-day orders was reported overdue on every
+    quote forever.
+
+    ``min_orders`` stays a parameter rather than being unified away, because the
+    two eligibility bars are a real judgement and not an accident — a quote can
+    usefully say "we have seen two orders, roughly N days apart" where a *signal*
+    raised off one gap would be noise in somebody's queue.
+    """
+    order_dates: list[date]
+    typical_interval_days: Optional[float]
+    expected_interval_days: Optional[float]
+    days_since_last: Optional[int]
+    #: Gap ÷ expected. Above 1.0 is overdue; None when there is no rhythm to be
+    #: late against. Never invent one — an unestimable customer is not "fine".
+    overdue_ratio: Optional[float]
+
+    @property
+    def estimable(self) -> bool:
+        return self.typical_interval_days is not None
+
+    @property
+    def overdue(self) -> bool:
+        return self.overdue_ratio is not None and self.overdue_ratio > 1.0
+
+
+def cadence_of(sales: list[SaleRow], as_of: date, *, min_orders: int,
+               multiplier: float) -> Cadence:
+    """Median gap between a customer's orders, and their position in it."""
+    dates = order_dates(sales)
+    if not dates:
+        return Cadence([], None, None, None, None)
+
+    gaps = [(dates[i + 1] - dates[i]).days for i in range(len(dates) - 1)]
+    since = (as_of - dates[-1]).days
+    # A degenerate cadence — same-day orders only — is not a cadence. Guarding
+    # here rather than at each call site is the point of having one function.
+    typical = statistics.median(gaps) if gaps else 0.0
+    if len(dates) < min_orders or not gaps or typical <= 0:
+        return Cadence(dates, None, None, since, None)
+
+    expected = typical * multiplier
+    return Cadence(
+        order_dates=dates,
+        typical_interval_days=round(typical, 1),
+        expected_interval_days=round(expected, 1),
+        days_since_last=since,
+        overdue_ratio=round(since / expected, 2) if expected else None,
+    )
 
 
 def history_span_months(sales: list[SaleRow], as_of: date) -> float:

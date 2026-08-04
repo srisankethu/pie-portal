@@ -16,6 +16,7 @@ import { DataScreen } from "./DataScreen";
 import { CustomerCommercial, CustomerItemScreen } from "./CommercialScreens";
 import { Storyboard } from "./viz/Storyboard";
 import { JourneyScreen, LostRevenueScreen, OpportunityScreen, SimulatorScreen, WeatherScreen } from "./viz/Screens";
+import { CadenceScreen, CompositionScreen, LandscapeScreen } from "./viz/Tier2";
 import "./viz/viz.css";
 
 const ROLE_HOME: Record<Role, { title: string; sub: string; nav: string }> = {
@@ -222,6 +223,9 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
       "revenue-flow": "home",
       data: "data",
       simulate: "simulate",
+      landscape: "landscape",
+      composition: "composition",
+      cadence: "cadence",
     };
     go(map[head] ?? "home");
   }, [go]);
@@ -353,8 +357,15 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
       ? ([["weather", "Weather", ""],
           ["opportunities", "Opportunities", ""],
           ["lostRevenue", "Lost revenue", ""],
+          // Margin is on the vertical axis, and the endpoint is manager-scoped
+          // whichever measure is asked for.
+          ["landscape", "Landscape", ""],
           ["simulate", "Simulator", ""]] as [Screen, string, string][])
       : []),
+    // Mix and rhythm are revenue and dates — no cost anywhere in either — so
+    // both are visible to a salesperson.
+    ["composition", "Mix", ""],
+    ["cadence", "Rhythm", ""],
     ["journey", "Customers", ""],
     // Open, not total: a badge counting closed decisions is a badge that never
     // goes down, and one that never goes down stops being read.
@@ -413,6 +424,9 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
         {screen === "lostRevenue" && <LostRevenueScreen session={session} onNavigate={goViz} />}
         {screen === "journey" && <JourneyScreen session={session} onNavigate={goViz} />}
         {screen === "simulate" && <SimulatorScreen session={session} />}
+        {screen === "landscape" && <LandscapeScreen session={session} onNavigate={goViz} />}
+        {screen === "composition" && <CompositionScreen session={session} onNavigate={goViz} />}
+        {screen === "cadence" && <CadenceScreen session={session} onNavigate={goViz} />}
 
         {/* ── HOME: the Commercial Storyboard ──
             A briefing, not a queue. The decision list it used to show is still

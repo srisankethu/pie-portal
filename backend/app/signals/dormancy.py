@@ -6,7 +6,6 @@ enough orders to estimate cadence. No recommendation.
 """
 from __future__ import annotations
 
-import statistics
 from datetime import date
 
 from ..domain.enums import EvidenceSufficiency, SignalType, SubjectEntityType
@@ -19,30 +18,27 @@ def detect(snapshot: Snapshot, th: SignalThresholds, as_of: date) -> list[Signal
     drafts: list[SignalDraft] = []
     for cid in snapshot.customer_ids():
         sales = snapshot.sales_for_customer(cid)
-        dates = agg.order_dates(sales)
-        # eligibility: need enough orders to establish a cadence (K orders → K-1 gaps)
-        if len(dates) < th.dormancy_min_orders:
+        # Eligibility, the median gap and the overdue test all live in
+        # ``aggregates.cadence_of`` — shared with the buying-rhythm screen and
+        # the quote context, so the three cannot disagree about who is late.
+        cadence = agg.cadence_of(sales, as_of,
+                                 min_orders=th.dormancy_min_orders,
+                                 multiplier=th.dormancy_interval_multiplier)
+        if not cadence.overdue:
             continue
-        gaps = [(dates[i + 1] - dates[i]).days for i in range(len(dates) - 1)]
-        if not gaps:
-            continue
-        typical = statistics.median(gaps)
-        if typical <= 0:
-            continue  # degenerate cadence (same-day orders); not estimable
-        expected = typical * th.dormancy_interval_multiplier
-        last_order = dates[-1]
-        actual_gap = (as_of - last_order).days
-        if actual_gap <= expected:
-            continue  # within their normal pattern — not overdue
 
+        dates = cadence.order_dates
+        last_order = dates[-1]
+        actual_gap = cadence.days_since_last or 0
+        expected = cadence.expected_interval_days or 0.0
         metrics = {
-            "typical_interval_days": round(typical, 1),
-            "expected_interval_days": round(expected, 1),
+            "typical_interval_days": cadence.typical_interval_days,
+            "expected_interval_days": expected,
             "actual_gap_days": actual_gap,
             "order_count": len(dates),
             "last_order_date": last_order.isoformat(),
             "first_order_date": dates[0].isoformat(),
-            "overdue_ratio": round(actual_gap / expected, 2) if expected else None,
+            "overdue_ratio": cadence.overdue_ratio,
         }
         suff = Sufficiency(history_months=agg.history_span_months(sales, as_of),
                            txn_count=len(sales), level=EvidenceSufficiency.SUFFICIENT)

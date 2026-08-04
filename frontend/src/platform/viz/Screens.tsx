@@ -25,39 +25,9 @@ import { Figure, Panel, stateOf } from "./Panel";
 import {
   BAND_COLOR, BUCKET_LABEL, BUCKET_SIGN, CONFIDENCE_LABEL, CONFIDENCE_OPACITY,
 } from "./tokens";
+import { type Envelope, useInsight } from "./useInsight";
 import { compactMoney, thinLabels, useMeasure } from "./useMeasure";
 
-type Envelope = Record<string, unknown>;
-
-/** One loader for every view: same states, same retry, same shape. */
-function useInsight(
-  fetcher: () => Promise<Envelope>,
-  deps: unknown[],
-): {
-  data: Envelope | null; loading: boolean; error: string | null; reload: () => void;
-} {
-  const [data, setData] = useState<Envelope | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      setData(await fetcher());
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setLoading(false);
-    }
-    // The fetcher closes over the deps the caller lists; re-creating it on every
-    // render would loop, so the deps are the contract.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, deps);
-
-  useEffect(() => { void load(); }, [load]);
-  return { data, loading, error, reload: load };
-}
 
 function pct(v: number | null | undefined, digits = 1): string {
   return v == null ? "—" : `${(v * 100).toFixed(digits)}%`;

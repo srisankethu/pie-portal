@@ -123,6 +123,20 @@ export const papi = {
     req<Record<string, unknown>>(
       `/api/v1/insight/customers/${encodeURIComponent(customerId)}/timeline?months=${months}`, {}, t),
 
+  // ── Tier 2: three endpoints covering five specified views, because two
+  // pairs of them are the same chart with a different measure.
+  landscape: (t: string, subject = "relationship", measure = "margin") =>
+    req<Record<string, unknown>>(
+      `/api/v1/insight/landscape?subject=${subject}&measure=${measure}`, {}, t),
+
+  composition: (t: string, dimension = "customer", measure = "revenue", months = 12) =>
+    req<Record<string, unknown>>(
+      `/api/v1/insight/composition?dimension=${dimension}&measure=${measure}&months=${months}`,
+      {}, t),
+
+  cadence: (t: string) =>
+    req<Record<string, unknown>>("/api/v1/insight/cadence", {}, t),
+
   simulationScenarios: (t: string) =>
     req<Record<string, unknown>>("/api/v1/insight/simulate/scenarios", {}, t),
 

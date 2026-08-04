@@ -12,6 +12,10 @@ export type Screen =
   /** The visualization layer. `home` is the Storyboard; these are the screens
    *  its beats link out to, each answering one question in depth. */
   | "weather" | "opportunities" | "lostRevenue" | "journey" | "simulate"
+  /** Tier 2: position, mix and rhythm. Each is one screen serving two of the
+   *  specified views, because the pairs differ only in which measure is on the
+   *  vertical or which quantity is summed. */
+  | "landscape" | "composition" | "cadence"
   /** The approval queue, and organization settings (owner is super admin). */
   | "approvals" | "settings"
   /** Which connector records describe the same customer or item. */
@@ -43,6 +47,9 @@ const PATHS: Record<Screen, string> = {
   lostRevenue: "/lost-revenue",
   journey: "/journey",
   simulate: "/simulate",
+  landscape: "/landscape",
+  composition: "/composition",
+  cadence: "/cadence",
 };
 
 export function toHash(r: Route): string {
@@ -98,6 +105,12 @@ export function parseHash(hash: string): Route {
       return { screen: "journey" };
     case "simulate":
       return { screen: "simulate" };
+    case "landscape":
+      return { screen: "landscape" };
+    case "composition":
+      return { screen: "composition" };
+    case "cadence":
+      return { screen: "cadence" };
     default:
       return { screen: "home" };
   }

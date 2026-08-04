@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Iterable
 
+from ...signals import aggregates as agg
 from ...signals.base import SaleRow
 from .flow import LOST, classify
 from .periods import Comparison, Period, months_back, revenue_in
@@ -50,13 +51,6 @@ class JourneyPoint:
                 "revenue": round(self.revenue, 2)}
 
 
-def _by_customer(sales: Iterable[SaleRow]) -> dict[str, list[SaleRow]]:
-    out: dict[str, list[SaleRow]] = {}
-    for row in sales:
-        out.setdefault(row.customer_id, []).append(row)
-    return out
-
-
 def journey(sales: Iterable[SaleRow], as_of: date, months: int = 12) -> list[JourneyPoint]:
     """Per month, how many customers were in each state.
 
@@ -65,7 +59,7 @@ def journey(sales: Iterable[SaleRow], as_of: date, months: int = 12) -> list[Jou
     about whether a customer grew.
     """
     rows = list(sales)
-    grouped = _by_customer(rows)
+    grouped = agg.by_customer(rows)
     periods = months_back(as_of, months)
     out: list[JourneyPoint] = []
 
@@ -120,7 +114,7 @@ def migration(sales: Iterable[SaleRow], names: dict[str, str],
               comparison: Comparison) -> dict:
     """Which band each customer moved from and to, between the two periods."""
     rows = list(sales)
-    grouped = _by_customer(rows)
+    grouped = agg.by_customer(rows)
 
     current = {cid: revenue_in(r, comparison.current) for cid, r in grouped.items()}
     previous = {cid: revenue_in(r, comparison.previous) for cid, r in grouped.items()}
@@ -164,7 +158,7 @@ def dormancy(sales: Iterable[SaleRow], names: dict[str, str], as_of: date) -> di
     Not a churn prediction — an observation with a date attached. The platform
     has no basis for the former and every basis for the latter.
     """
-    grouped = _by_customer(sales)
+    grouped = agg.by_customer(sales)
     cutoff_month = as_of.year * 12 + as_of.month - DORMANT_AFTER_MONTHS
     dormant = []
     for customer_id, rows in grouped.items():
@@ -192,7 +186,7 @@ def lost_revenue(sales: Iterable[SaleRow], names: dict[str, str],
     rather than distribute across the others to make a pie look complete.
     """
     rows = list(sales)
-    grouped = _by_customer(rows)
+    grouped = agg.by_customer(rows)
     causes: dict[str, dict] = {}
 
     for customer_id, customer_rows in grouped.items():

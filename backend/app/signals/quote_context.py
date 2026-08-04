@@ -13,7 +13,6 @@ does NOT recommend — it states facts with source references, or an explicit
 """
 from __future__ import annotations
 
-import statistics
 from datetime import date
 from typing import Any, Optional
 
@@ -55,19 +54,25 @@ def assemble(snapshot: Snapshot, customer_id: str, product_ids: list[str],
     else:
         unknowns.append({"field": "revenue_trend", "reason": "no baseline-period revenue"})
 
-    dates = agg.order_dates(cust_sales)
-    if len(dates) >= 2:
-        gaps = [(dates[i + 1] - dates[i]).days for i in range(len(dates) - 1)]
-        typical = statistics.median(gaps)
-        gap_now = (as_of - dates[-1]).days
-        facts.append(_fact("typical_interval_days", round(typical, 1), "days", OPERATIONAL,
-                           [], as_of))
-        facts.append(_fact("days_since_last_order", gap_now, "days", OPERATIONAL, [], as_of))
-        facts.append(_fact("is_overdue", gap_now > typical * th.dormancy_interval_multiplier,
-                           None, OPERATIONAL, [], as_of))
+    # Two orders is enough to *describe* a rhythm on a quote, where the reader
+    # sees the order count alongside it — the detector needs four before it will
+    # raise a signal off the same arithmetic. Same function, different bar.
+    cadence = agg.cadence_of(cust_sales, as_of, min_orders=2,
+                             multiplier=th.dormancy_interval_multiplier)
+    if cadence.estimable:
+        facts.append(_fact("typical_interval_days", cadence.typical_interval_days,
+                           "days", OPERATIONAL, [], as_of))
+        facts.append(_fact("days_since_last_order", cadence.days_since_last,
+                           "days", OPERATIONAL, [], as_of))
+        facts.append(_fact("is_overdue", cadence.overdue, None, OPERATIONAL, [], as_of))
     else:
+        # Previously this branch was only taken below two orders, so a customer
+        # whose orders all landed on one day got a typical interval of zero and
+        # `is_overdue` true on every quote thereafter — the shared guard now
+        # reports that as not estimable, which is what it always was.
         unknowns.append({"field": "purchase_cadence",
-                         "reason": "fewer than 2 orders — cadence not estimable"})
+                         "reason": ("fewer than 2 orders, or no measurable gap "
+                                    "between them — cadence not estimable")})
 
     # ── per-item context ─────────────────────────────────────────────────────
     items: list[dict] = []

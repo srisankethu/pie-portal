@@ -24,14 +24,15 @@
   gap: 14px;
 }
 
-@media (prefers-color-scheme: dark) {
-  .viz-panel {
-    --viz-loss: #d3766b;
-    --viz-gain: #5e94d2;
-    --viz-neutral: #7c7c80;
-    --viz-accent: #ad8636;
-  }
-}
+/* The dark steps are keyed to `data-theme`, and deliberately NOT to
+ * `prefers-color-scheme`. The application shell is light-only — nothing in
+ * styles.css has a dark surface — so an OS-dark media query fired the dark marks
+ * onto the still-light `#f5f5f8` panel, where the validator measures loss at
+ * 2.94:1 and gain at 2.91:1 against a 3:1 floor. That is worse than no dark
+ * mode: it degraded the charts for every OS-dark user while looking like a
+ * feature. Keyed to the attribute, this block waits for a shell that actually
+ * sets it, and the steps below are already validated against #1b2025 for when
+ * it does. */
 :root[data-theme="dark"] .viz-panel {
   --viz-loss: #d3766b;
   --viz-gain: #5e94d2;
@@ -397,4 +398,182 @@
 .journey-none {
   display: block; height: 2px; align-self: flex-end; width: 100%;
   background: var(--viz-rule);
+}
+
+/* ══ Tier 2 ═══════════════════════════════════════════════════════════════════
+ *
+ * These screens deliberately use *less* colour than the ones above. A scatter
+ * puts every category next to every other, so a four-hue quadrant scheme has no
+ * "adjacent pairs" to hide behind — it failed the normal-vision floor outright.
+ * The quadrant is therefore a washed region with its own label, and the dots are
+ * one ink. See the comment at the top of Tier2.tsx.
+ */
+
+.viz-panel {
+  /* A single mark ink for scatters — no semantics, high contrast, never
+     competing with the reserved loss/gain pair. */
+  --viz-ink: var(--color-text);
+  --viz-wash: 9%;
+}
+
+/* ── segmented controls ──────────────────────────────────────────────────── */
+.seg-controls { display: flex; flex-wrap: wrap; gap: 14px 20px; align-items: flex-end; }
+.seg { display: grid; gap: 4px; }
+.seg-label {
+  font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--color-neutral-600); font-family: var(--font-heading);
+}
+.seg-buttons { display: inline-flex; border: 1px solid var(--color-divider); border-radius: 3px; }
+.seg-btn {
+  font-family: var(--font-heading); font-size: 13px; padding: 6px 12px;
+  background: transparent; border: 0; cursor: pointer; color: var(--color-text);
+  min-height: 34px; white-space: nowrap;
+}
+.seg-btn + .seg-btn { border-left: 1px solid var(--color-divider); }
+.seg-btn:hover:not(.seg-on) { background: color-mix(in srgb, var(--color-text) 6%, transparent); }
+.seg-btn.seg-on { background: var(--color-accent-100); color: var(--color-accent-800); font-weight: 600; }
+.seg-btn:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -2px; }
+
+/* ── landscape ───────────────────────────────────────────────────────────── */
+.quad-legend {
+  list-style: none; margin: 0; padding: 0;
+  display: grid; gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+}
+.quad {
+  display: flex; gap: 10px; align-items: flex-start;
+  padding: 8px 10px 8px 8px;
+  border-left: 3px solid var(--viz-neutral);
+  background: color-mix(in srgb, var(--color-text) 3%, transparent);
+}
+/* The tone here is decoration that sits *beside its own words* — never a swatch
+   to match against a mark elsewhere, which is the use that failed validation. */
+.quad-bad  { border-left-color: var(--viz-loss); }
+.quad-warn { border-left-color: var(--viz-accent); }
+.quad-good { border-left-color: var(--viz-gain); }
+.quad-flat { border-left-color: var(--viz-neutral); }
+.quad-count {
+  font-family: var(--font-heading); font-size: 22px; line-height: 1;
+  font-variant-numeric: tabular-nums; min-width: 1.6em; text-align: right;
+}
+.quad-body { display: grid; gap: 2px; min-width: 0; }
+.quad-body strong { font-size: 14px; }
+.quad-body .viz-muted { font-size: 12px; line-height: 1.45; }
+
+.quad-wash { pointer-events: none; }
+.quad-wash-bad  { fill: color-mix(in srgb, var(--viz-loss) var(--viz-wash), transparent); }
+.quad-wash-warn { fill: color-mix(in srgb, var(--viz-accent) var(--viz-wash), transparent); }
+.quad-wash-good { fill: color-mix(in srgb, var(--viz-gain) var(--viz-wash), transparent); }
+.quad-wash-flat { fill: transparent; }
+.quad-wash-label {
+  font-family: var(--font-heading); font-size: 11px; letter-spacing: .04em;
+  fill: var(--color-neutral-700); pointer-events: none;
+  /* A dot can land in the same corner. Stroke-first paints a halo of the panel
+     surface behind the glyphs, so the label survives the collision instead of
+     the two becoming one unreadable smudge. */
+  paint-order: stroke fill;
+  stroke: var(--color-neutral-100); stroke-width: 3px; stroke-linejoin: round;
+}
+
+.viz-axis { font-size: 11px; fill: var(--color-neutral-600); font-variant-numeric: tabular-nums; }
+.viz-axis-note {
+  font-size: 10.5px; fill: var(--color-neutral-600); font-style: italic;
+  /* Same halo as the quadrant labels — a reference line sits where the data is. */
+  paint-order: stroke fill;
+  stroke: var(--color-neutral-100); stroke-width: 3px; stroke-linejoin: round;
+}
+
+.dot-mark { fill: var(--viz-ink); fill-opacity: .38; stroke: var(--viz-ink); stroke-width: 1.25; }
+/* No vertical value on record: placed, but not asserted. */
+.dot-unknown { fill: none; stroke-dasharray: 3 3; }
+.dot-clickable { cursor: pointer; }
+.dot-clickable:hover .dot-mark { fill-opacity: .7; }
+.dot-clickable:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+
+/* ── composition, as small multiples ─────────────────────────────────────── */
+.comp-headline {
+  margin: 0; padding: 10px 12px; font-size: 14px;
+  background: color-mix(in srgb, var(--color-accent) 8%, transparent);
+  border-left: 3px solid var(--color-accent);
+}
+.multiples { display: grid; gap: 12px; }
+.multiple { display: grid; gap: 4px; }
+.multiple-head {
+  display: flex; justify-content: space-between; align-items: baseline;
+  gap: 12px; font-size: 13px;
+}
+.multiple-name { text-align: left; font-weight: 600; min-width: 0; }
+.multiple-name:disabled { color: var(--color-neutral-600); cursor: default; text-decoration: none; }
+.multiple-total {
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+  display: inline-flex; gap: 6px; align-items: baseline;
+}
+.multiple-dir { font-size: 10px; }
+.multiple-dir.up { color: var(--viz-gain); }
+.multiple-dir.down { color: var(--viz-loss); }
+.multiple-dir.flat { color: var(--color-neutral-600); }
+/* One shared vertical scale across every row — that is the entire argument for
+   small multiples, and a per-row scale would quietly discard it. */
+.multiple-bars {
+  display: flex; align-items: flex-end; gap: 2px; height: 46px;
+  border-bottom: 1px solid var(--viz-rule);
+}
+.multiple-slot { flex: 1 1 0; min-width: 0; height: 100%; display: flex; align-items: flex-end; }
+.multiple-bar { display: block; width: 100%; background: var(--viz-gain); min-height: 1px; border-radius: 1px 1px 0 0; }
+.multiple-bar.other { background: var(--viz-neutral); }
+.multiple-axis {
+  display: flex; gap: 2px; font-size: 10.5px; color: var(--color-neutral-600);
+  margin-top: 2px;
+}
+.multiple-axis > span { flex: 1 1 0; min-width: 0; text-align: center; overflow: hidden; white-space: nowrap; }
+
+/* ── cadence ─────────────────────────────────────────────────────────────── */
+.cadence-grid {
+  display: grid; gap: 22px;
+  grid-template-columns: minmax(220px, 300px) minmax(0, 1fr);
+  align-items: start;
+}
+@media (max-width: 720px) {
+  .cadence-grid { grid-template-columns: minmax(0, 1fr); }
+}
+.cadence-wheel { display: block; width: 100%; max-width: 300px; height: auto; margin-inline: auto; }
+.wheel-hub { fill: none; stroke: var(--viz-rule); }
+.wheel-rim { fill: none; stroke: var(--viz-rule); stroke-dasharray: 2 5; }
+.wheel-spoke { stroke: var(--viz-gain); }
+.wheel-spoke.empty { stroke: var(--viz-rule); }
+.wheel-label { font-size: 11px; fill: var(--color-neutral-600); font-variant-numeric: tabular-nums; }
+.wheel-centre {
+  font-family: var(--font-heading); font-size: 24px; fill: var(--color-text);
+  font-variant-numeric: tabular-nums;
+}
+.wheel-centre-sub { font-size: 10px; fill: var(--color-neutral-600); letter-spacing: .06em; }
+
+.cadence-list { min-width: 0; }
+.cadence-list h4 { font-family: var(--font-heading); font-size: 16px; margin: 0 0 8px; }
+.cadence-rows { list-style: none; margin: 0; padding: 0; display: grid; gap: 1px; }
+.cadence-row { border-bottom: 1px solid var(--color-divider); }
+.cadence-hit {
+  display: flex; align-items: baseline; gap: 12px; width: 100%;
+  padding: 8px 6px; background: transparent; border: 0; cursor: pointer;
+  text-align: left; color: inherit; font: inherit; min-height: 44px;
+}
+.cadence-hit:hover { background: color-mix(in srgb, var(--color-text) 5%, transparent); }
+.cadence-hit:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -2px; }
+.cadence-name { flex: 1 1 auto; min-width: 0; font-weight: 600; font-size: 14px; }
+.cadence-figures {
+  display: grid; gap: 1px; justify-items: end; text-align: right;
+  font-size: 12.5px; font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+/* "Overdue" is a word, not a colour. The tint is a second cue on top of it. */
+.cadence-row.late { background: color-mix(in srgb, var(--viz-loss) 7%, transparent); }
+.cadence-flag {
+  font-size: 10.5px; letter-spacing: .07em; text-transform: uppercase;
+  font-family: var(--font-heading); color: var(--viz-loss);
+  border: 1px solid currentColor; padding: 1px 5px; white-space: nowrap;
+}
+
+@media (max-width: 520px) {
+  .cadence-hit { flex-wrap: wrap; gap: 4px 10px; }
+  .cadence-figures { justify-items: start; text-align: left; }
+  .quad-legend { grid-template-columns: minmax(0, 1fr); }
 }

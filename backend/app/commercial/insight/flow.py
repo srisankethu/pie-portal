@@ -28,6 +28,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Iterable, Optional
 
+from ...signals import aggregates as agg
 from ...signals.base import SaleRow
 from .periods import Comparison, Period, revenue_in
 
@@ -109,13 +110,6 @@ class Flow:
         }
 
 
-def _by_customer(sales: Iterable[SaleRow]) -> dict[str, list[SaleRow]]:
-    out: dict[str, list[SaleRow]] = {}
-    for row in sales:
-        out.setdefault(row.customer_id, []).append(row)
-    return out
-
-
 def _traded_before(rows: list[SaleRow], before: Period) -> bool:
     return any(r.date < before.start for r in rows)
 
@@ -142,7 +136,7 @@ def compute(sales: Iterable[SaleRow], names: dict[str, str],
             comparison: Comparison) -> Flow:
     """Decompose the movement between the two periods of ``comparison``."""
     rows = list(sales)
-    grouped = _by_customer(rows)
+    grouped = agg.by_customer(rows)
 
     flow = Flow(
         comparison=comparison,

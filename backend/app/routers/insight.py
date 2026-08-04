@@ -27,11 +27,13 @@ from sqlalchemy.orm import Session
 
 from ..authz import Principal, current_principal, require_manager_or_owner
 from ..commercial import policy
-from ..commercial.insight import cohorts, flow, periods, radar, simulate, story, weather
+from ..commercial.insight import (cadence, cohorts, composition, flow, landscape,
+                                  periods, radar, simulate, story, weather)
 from ..db import get_session
 from ..domain import models
 from ..domain.enums import Role
 from ..signals.aggregates import load_snapshot
+from ..signals.config import load_thresholds as load_signal_thresholds
 
 log = logging.getLogger("pie_portal.insight")
 
@@ -317,6 +319,76 @@ def lost_revenue(months: int = Query(3, ge=MIN_MONTHS, le=MAX_MONTHS),
     return _envelope(result, currency=th.currency, as_of=as_of.isoformat(),
                      empty_reason=(None if result["causes"] else
                                    "No customer spent less this period than last."))
+
+
+# ── landscape: two measures per subject, positioned ─────────────────────────
+@router.get("/landscape")
+def commercial_landscape(
+        subject: str = Query("relationship", pattern="^(relationship|product)$"),
+        measure: str = Query("margin", pattern="^(margin|momentum)$"),
+        principal: Principal = Depends(require_manager_or_owner),
+        session: Session = Depends(get_session)) -> dict:
+    """Margin-vs-revenue and product momentum — one chart, two parameters.
+
+    Manager+ when the vertical axis is margin. Momentum is volume and carries no
+    cost, but the endpoint stays manager-scoped rather than switching its own
+    permission on a query parameter: a route whose authorisation depends on an
+    argument is one that will eventually be called with the other argument.
+    """
+    org, snapshot, th = _context(session, principal)
+    result = landscape.build(session, org, th, subject=subject, measure=measure,
+                             customer_names=snapshot.customer_names,
+                             product_names=snapshot.product_names)
+    return _envelope(
+        result, currency=th.currency,
+        empty_reason=(None if result["points"] else
+                      "No relationship has trailing revenue yet. Run a sync, "
+                      "then recompute metrics."))
+
+
+# ── composition: the mix, over time ─────────────────────────────────────────
+@router.get("/composition")
+def revenue_composition(
+        dimension: str = Query("customer", pattern="^(customer|product)$"),
+        measure: str = Query("revenue", pattern="^(revenue|orders)$"),
+        months: int = Query(12, ge=3, le=24),
+        principal: Principal = Depends(current_principal),
+        session: Session = Depends(get_session)) -> dict:
+    """Revenue composition and order flow — one chart, two parameters.
+
+    Neither measure is margin, so this is visible to every role.
+    """
+    _org, snapshot, th = _context(session, principal)
+    as_of = _as_of(snapshot)
+    if as_of is None:
+        return _no_data(th.currency, "the revenue mix")
+
+    names = (snapshot.customer_names if dimension == composition.BY_CUSTOMER
+             else snapshot.product_names)
+    result = composition.build(snapshot.sales, names, as_of,
+                               dimension=dimension, measure=measure, months=months)
+    return _envelope(result, currency=th.currency, as_of=as_of.isoformat(),
+                     empty_reason=(None if result["series"] else
+                                   "Nothing traded in this window."))
+
+
+# ── cadence: the buying rhythm ──────────────────────────────────────────────
+@router.get("/cadence")
+def buying_cadence(principal: Principal = Depends(current_principal),
+                   session: Session = Depends(get_session)) -> dict:
+    """When customers order, and who is off their own rhythm."""
+    _org, snapshot, th = _context(session, principal)
+    as_of = _as_of(snapshot)
+    if as_of is None:
+        return _no_data(th.currency, "buying rhythm")
+
+    # Same thresholds the dormancy detector runs on, so this screen and the
+    # decision queue never disagree about who is overdue.
+    result = cadence.build(snapshot.sales, snapshot.customer_names, as_of,
+                           thresholds=load_signal_thresholds())
+    return _envelope(result, currency=th.currency,
+                     empty_reason=(None if result["customers"] else
+                                   "No customer has ordered yet."))
 
 
 # ── the simulator ───────────────────────────────────────────────────────────

@@ -1,0 +1,163 @@
+/* The visualization layer.
+ *
+ * Dark mode is *selected*, not an inverted filter: the palette steps come from
+ * tokens.ts, where each was validated against its own surface. Flipping light
+ * values automatically produces marks that fail contrast on a dark panel, which
+ * is the usual reason a dark dashboard looks muddy.
+ *
+ * Every interactive mark gets a real focus ring. An SVG bar that is a button
+ * without one is a control keyboard users cannot see.
+ */
+
+.viz-panel {
+  --viz-loss: #b0473d;
+  --viz-gain: #2f6ba8;
+  --viz-neutral: #9a9a9d;
+  --viz-accent: #9a5f14;
+  --viz-rule: color-mix(in srgb, var(--color-text) 14%, transparent);
+
+  background: var(--color-neutral-100);
+  border: 1px solid var(--color-divider);
+  border-radius: 4px;
+  padding: 18px 20px 20px;
+  display: grid;
+  gap: 14px;
+}
+
+@media (prefers-color-scheme: dark) {
+  .viz-panel {
+    --viz-loss: #d3766b;
+    --viz-gain: #5e94d2;
+    --viz-neutral: #7c7c80;
+    --viz-accent: #ad8636;
+  }
+}
+:root[data-theme="dark"] .viz-panel {
+  --viz-loss: #d3766b;
+  --viz-gain: #5e94d2;
+  --viz-neutral: #7c7c80;
+  --viz-accent: #ad8636;
+}
+
+.viz-panel-head {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 16px; flex-wrap: wrap;
+}
+.viz-panel-head h3 {
+  font-family: var(--font-heading); font-size: 19px; margin: 0;
+  letter-spacing: .01em;
+}
+.viz-question {
+  margin: 2px 0 0; font-size: 13px; color: var(--color-neutral-600);
+}
+.viz-muted { color: var(--color-neutral-600); font-size: 13px; margin: 0; }
+.viz-footnote { margin-top: 10px; font-style: italic; }
+
+/* ── states ──────────────────────────────────────────────────────────────── */
+.viz-state { display: grid; gap: 10px; padding: 18px 0; justify-items: start; }
+.viz-state-title { font-weight: 600; margin: 0; }
+.viz-state-error .viz-state-title { color: var(--danger-fg); }
+
+/* A shaped skeleton reserves the chart's height so the page does not jump. */
+.viz-skeleton { display: flex; align-items: flex-end; gap: 8px; height: 120px; width: 100%; }
+.viz-skeleton span {
+  flex: 1; border-radius: 3px 3px 0 0;
+  background: linear-gradient(90deg,
+    var(--color-neutral-200) 0%, var(--color-neutral-300) 50%, var(--color-neutral-200) 100%);
+  background-size: 200% 100%;
+  animation: viz-shimmer 1.4s ease-in-out infinite;
+}
+.viz-skeleton span:nth-child(1) { height: 55%; }
+.viz-skeleton span:nth-child(2) { height: 80%; }
+.viz-skeleton span:nth-child(3) { height: 40%; }
+.viz-skeleton span:nth-child(4) { height: 95%; }
+.viz-skeleton span:nth-child(5) { height: 65%; }
+@keyframes viz-shimmer { to { background-position: -200% 0; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .viz-skeleton span { animation: none; }
+}
+
+/* ── figures ─────────────────────────────────────────────────────────────── */
+.viz-figure { margin: 0; display: grid; gap: 10px; }
+.viz-figure figcaption { font-size: 12.5px; color: var(--color-neutral-600); }
+.viz-table-fallback summary { font-size: 13px; cursor: pointer; color: var(--color-accent-700); }
+.viz-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
+.viz-table th, .viz-table td {
+  text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--color-divider);
+}
+.viz-table td { font-variant-numeric: tabular-nums; }
+
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+
+/* ── waterfall ───────────────────────────────────────────────────────────── */
+.viz-waterfall { overflow: visible; }
+.viz-waterfall rect { rx: 2px; }
+.viz-bar-value {
+  font-size: 8px; fill: var(--color-text); font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  /* The viewBox is non-uniform so text would stretch; this keeps it upright. */
+  transform-box: fill-box;
+}
+.viz-bar-label, .viz-bar-sub { font-size: 7px; fill: var(--color-neutral-600); }
+.viz-bar-clickable { cursor: pointer; }
+.viz-bar-clickable:hover rect { filter: brightness(1.08); }
+.viz-bar-clickable:focus-visible {
+  outline: 2px solid var(--color-accent); outline-offset: 2px;
+}
+
+/* ── storyboard ──────────────────────────────────────────────────────────── */
+.storyboard { display: grid; gap: 18px; max-width: 1100px; }
+.story-head {
+  display: flex; justify-content: space-between; align-items: flex-end;
+  gap: 16px; flex-wrap: wrap;
+}
+.story-head h2 { font-family: var(--font-heading); font-size: 26px; margin: 0; }
+.story-controls { display: flex; align-items: center; gap: 8px; }
+
+.story-hero { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.story-hero-value {
+  font-family: var(--font-heading); font-size: clamp(34px, 6vw, 52px);
+  line-height: 1; font-variant-numeric: tabular-nums;
+}
+.story-hero-value.down { color: var(--viz-loss, #b0473d); }
+.story-hero-value.up { color: var(--viz-gain, #2f6ba8); }
+.story-hero-label { color: var(--color-neutral-600); font-size: 15px; }
+
+.beats { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.beat {
+  display: grid; grid-template-columns: 4px 1fr; gap: 16px;
+  padding: 16px 0; border-bottom: 1px solid var(--color-divider);
+}
+.beat:last-child { border-bottom: 0; }
+.beat-mark { border-radius: 2px; background: var(--color-neutral-400); }
+.beat-high .beat-mark { background: var(--viz-loss); }
+.beat-medium .beat-mark { background: var(--viz-accent); }
+.beat-info .beat-mark { background: var(--viz-gain); }
+.beat-good .beat-mark { background: var(--color-neutral-400); }
+.beat-body h4 {
+  font-family: var(--font-heading); font-size: 18px; margin: 0 0 10px;
+  letter-spacing: .01em;
+}
+
+.beat-answers { margin: 0; display: grid; gap: 8px; }
+.beat-answers > div { display: grid; grid-template-columns: 74px 1fr; gap: 12px; align-items: start; }
+.beat-answers dt {
+  font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase;
+  color: var(--color-neutral-600); font-weight: 600; padding-top: 3px;
+}
+.beat-answers dd { margin: 0; font-size: 14px; }
+.beat-evidence { display: flex; gap: 6px; flex-wrap: wrap; }
+.beat-chip {
+  background: var(--color-neutral-200); border-radius: 3px; padding: 2px 8px;
+  font-size: 12.5px; font-variant-numeric: tabular-nums;
+}
+.beat-answers dd .btn + .btn { margin-left: 8px; }
+
+@media (max-width: 640px) {
+  .beat-answers > div { grid-template-columns: 1fr; gap: 2px; }
+  .beat { grid-template-columns: 3px 1fr; gap: 12px; }
+}

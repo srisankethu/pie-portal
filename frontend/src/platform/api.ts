@@ -94,6 +94,42 @@ export const papi = {
     req<DecisionSummary>(`/api/v1/decisions/${id}/action`,
       { method: "POST", body: JSON.stringify({ action: "REOPEN", note: "Undone by the user" }) }, t),
 
+  // ── the visualization layer ───────────────────────────────────────────────
+  // Every one of these returns the same envelope: data, currency, and an
+  // `empty_reason` written where the query happened. The client never decides
+  // why something is empty — it could only guess, and the server knows.
+  storyboard: (t: string, months = 3) =>
+    req<Record<string, unknown>>(`/api/v1/insight/storyboard?months=${months}`, {}, t),
+
+  revenueFlow: (t: string, months = 3) =>
+    req<Record<string, unknown>>(`/api/v1/insight/revenue-flow?months=${months}`, {}, t),
+
+  weather: (t: string, months = 3) =>
+    req<Record<string, unknown>>(`/api/v1/insight/weather?months=${months}`, {}, t),
+
+  journey: (t: string, months = 12) =>
+    req<Record<string, unknown>>(`/api/v1/insight/journey?months=${months}`, {}, t),
+
+  migration: (t: string, months = 3) =>
+    req<Record<string, unknown>>(`/api/v1/insight/migration?months=${months}`, {}, t),
+
+  opportunities: (t: string, limit = 100) =>
+    req<Record<string, unknown>>(`/api/v1/insight/opportunities?limit=${limit}`, {}, t),
+
+  lostRevenue: (t: string, months = 3) =>
+    req<Record<string, unknown>>(`/api/v1/insight/lost-revenue?months=${months}`, {}, t),
+
+  customerTimeline: (t: string, customerId: string, months = 18) =>
+    req<Record<string, unknown>>(
+      `/api/v1/insight/customers/${encodeURIComponent(customerId)}/timeline?months=${months}`, {}, t),
+
+  simulationScenarios: (t: string) =>
+    req<Record<string, unknown>>("/api/v1/insight/simulate/scenarios", {}, t),
+
+  simulate: (t: string, body: Record<string, unknown>) =>
+    req<Record<string, unknown>>("/api/v1/insight/simulate",
+      { method: "POST", body: JSON.stringify(body) }, t),
+
   dataStatus: (t: string) => req<DataStatus>("/api/v1/data/status", {}, t),
 
   /** Queue a pull. Returns immediately with a job to watch — 202, not a result.

@@ -14,6 +14,8 @@ import { ApprovalsScreen, SettingsScreen } from "./AdminScreens";
 import { IdentityScreen } from "./IdentityScreen";
 import { DataScreen } from "./DataScreen";
 import { CustomerCommercial, CustomerItemScreen } from "./CommercialScreens";
+import { Storyboard } from "./viz/Storyboard";
+import "./viz/viz.css";
 
 const ROLE_HOME: Record<Role, { title: string; sub: string; nav: string }> = {
   SALESPERSON: { title: "Today", sub: "Decisions that need you, most urgent first", nav: "Today" },
@@ -91,96 +93,6 @@ function SignIn({ onIn, notice }: { onIn: (s: PlatformSession) => void; notice?:
         </div>
       </form>
     </div>
-  );
-}
-
-// ── decision card (home) ─────────────────────────────────────────────────────
-function DecisionCard({
-  d,
-  onOpen,
-  onAct,
-}: {
-  d: DecisionDetail;
-  onOpen: () => void;
-  onAct: (kind: string) => void;
-}) {
-  const state = aiState(d.interpretation.status);
-  const chips = d.facts.filter((f) => !f.restricted && isPrimaryFact(f.label)).slice(0, 3);
-  const hasRecommendation = state === "ok" && !!d.interpretation.recommendation;
-  // On a degraded/failed card the panel below already carries the deterministic
-  // sentence; repeating it as the card's summary line printed it twice verbatim.
-  const showSummary = state === "ok" && !!d.interpretation.explanation;
-
-  return (
-    <Bp
-      className="dcard is-open"
-      role="button"
-      tabIndex={0}
-      aria-label={`Open ${typeLabel(d.decision_type)} for ${d.subject_label}`}
-      onClick={onOpen}
-      onKeyDown={(e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          onOpen();
-        }
-      }}
-    >
-      <div className="dcard-top">
-        <span className="dcard-type">{typeLabel(d.decision_type)}</span>
-        <Pri band={d.priority.band} />
-      </div>
-      <div className="dcard-cust">{d.subject_label}</div>
-      {showSummary && <div className="dcard-reason">{d.interpretation.explanation}</div>}
-      {chips.length > 0 && (
-        <div className="dcard-chips">
-          {chips.map((f) => (
-            <FactChip key={f.label} f={f} />
-          ))}
-        </div>
-      )}
-      {state === "ok" ? (
-        <div className="interp" style={{ marginBottom: 12 }}>
-          <div className="interp-mark">AI recommendation</div>
-          <p className="rec">{d.interpretation.recommendation || d.interpretation.explanation}</p>
-        </div>
-      ) : (
-        <div className="state-panel" style={{ marginBottom: 12 }}>
-          <div className="state-mark">
-            {state === "degraded"
-              ? "Deterministic reading · no AI recommendation"
-              : state === "failed"
-                ? "Interpretation unavailable"
-                : "Recommendation withheld"}
-          </div>
-          <p style={{ margin: 0, fontSize: 13.5 }}>
-            {state === "degraded"
-              ? d.interpretation.explanation
-              : state === "failed"
-                ? "Facts are present; the reading is not. You can still act."
-                : "Shown, but no recommendation is offered on this evidence."}
-          </p>
-        </div>
-      )}
-      {/* Actions live inside a clickable card, so each stops propagation. */}
-      <div className="dcard-actions" onClick={(e) => e.stopPropagation()}>
-        {hasRecommendation && (
-          <button className="btn btn-primary btn-sm" onClick={() => onAct("accept")}>
-            Accept recommendation
-          </button>
-        )}
-        <button className="btn btn-secondary btn-sm" onClick={() => onAct("modify")}>
-          {hasRecommendation ? "Do something different" : "Record what you did"}
-        </button>
-        <button className="btn btn-ghost btn-sm" onClick={() => onAct("dismiss")}>
-          Dismiss
-        </button>
-        <button className="btn btn-ghost btn-sm dcard-open" onClick={onOpen}>
-          Open evidence →
-        </button>
-        <span className="dp-spacer" />
-        <Conf level={d.confidence?.evidence_sufficiency} aiStatus={d.interpretation.status} />
-      </div>
-    </Bp>
   );
 }
 
@@ -457,46 +369,26 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
           <LoadFailed error={error} onRetry={load} busy={loading} />
         ) : (
           <>
-        {/* ── HOME (role-aware) ── */}
+        {/* ── HOME: the Commercial Storyboard ──
+            A briefing, not a queue. The decision list it used to show is still
+            one click away at /decisions; what belongs on the first screen is
+            what changed and what to do about it, which the queue alone cannot
+            say — a list of open items answers "what is outstanding", never
+            "what happened". */}
         {screen === "home" && (
-          <>
-            <div className="dp-head">
-              <h1>{rh.title}</h1>
-              <p>{rh.sub}</p>
-            </div>
-            {loading && !summaries ? (
-              <>
-                <div className="skeleton" />
-                <div className="skeleton" />
-              </>
-            ) : openDecisions.length === 0 ? (
-              <Bp style={{ padding: 40, textAlign: "center" }}>
-                <div className="dp-empty" style={{ padding: 0 }}>
-                  Nothing needs a decision right now. When the data raises something, it appears here — newest first.
-                </div>
-              </Bp>
-            ) : (
-              <>
-                <div className="dp-count">
-                  {openDecisions.length} open {openDecisions.length === 1 ? "decision" : "decisions"} · {roleShort} view
-                </div>
-                <div className="dp-cards">
-                  {openDecisions.map((s) => {
-                    const d = details[s.decision_id];
-                    if (!d) return <div className="skeleton" key={s.decision_id} />;
-                    return (
-                      <DecisionCard
-                        key={s.decision_id}
-                        d={d}
-                        onOpen={() => openDetail(s.decision_id)}
-                        onAct={(kind) => setModal({ id: s.decision_id, kind })}
-                      />
-                    );
-                  })}
-                </div>
-              </>
-            )}
-          </>
+          <Storyboard
+            session={session}
+            onNavigate={(route) => {
+              const [head, id] = route.split("/");
+              if (head === "customer" && id) { go("customer", id); return; }
+              if (route.startsWith("simulate")) { go("states"); return; }
+              const map: Record<string, Screen> = {
+                "lost-revenue": "list", "opportunities": "list",
+                "journey": "customer", "revenue-flow": "home", "data": "data",
+              };
+              go(map[route] ?? "list");
+            }}
+          />
         )}
 
         {/* ── DECISION LIST ── */}

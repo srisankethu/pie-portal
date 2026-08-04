@@ -58,29 +58,86 @@ def _alembic_config(database_url: str):
     return cfg
 
 
-def ensure_schema(database_url: Optional[str] = None) -> str:
-    """Bring the schema to head. Returns the strategy actually used.
+class SchemaBootstrapError(RuntimeError):
+    """The schema could not be brought to head, and guessing would make it worse."""
 
-    Prefers Alembic so the migration history is honoured and the version is
-    stamped. Falls back to creating the ORM metadata directly only if Alembic
-    cannot run at all — better a working app than a failed boot — and says so
-    loudly, because that path leaves the database unstamped.
+
+def ensure_schema(database_url: Optional[str] = None) -> str:
+    """Bring the schema to head via Alembic. Returns the action taken.
+
+    **This function used to fall back to ``Base.metadata.create_all`` when
+    Alembic raised, and that fallback was the bug.** ``create_all`` builds every
+    table and writes no ``alembic_version`` row, so the database ends up holding
+    a complete schema that Alembic believes has never been migrated. From then
+    on ``alembic upgrade head`` tries to replay the *first* migration and dies
+    with "table already exists" — meaning the fix printed in every error message
+    could not possibly work. Dropping tables did not help either: the next
+    startup hit the same Alembic failure, took the same fallback, and rebuilt the
+    same unstamped schema. A recoverable error was being converted into a
+    permanently wedged database, once per boot, while the log line describing it
+    scrolled past.
+
+    So there is no fallback now. Alembic is the only thing that may create this
+    schema, and if it cannot, that is reported rather than papered over.
+
+    The one repair kept is narrow and safe: a database whose tables were created
+    outside Alembic *by that old fallback* is stamped to head when its schema
+    already matches the models, because those installations exist and cannot
+    migrate themselves out of it. If the schema does not match, it is left alone
+    and described — a wrong stamp is worse than an unstamped database, since it
+    makes every future migration skip work it needed to do.
     """
     url = database_url or settings.DATABASE_URL
-    try:
-        from alembic import command
+    from alembic import command
 
-        command.upgrade(_alembic_config(url), "head")
-        return "alembic"
-    except Exception:  # noqa: BLE001 - fall back rather than fail to boot
-        log.exception("alembic upgrade failed; creating tables from ORM metadata "
-                      "instead. Run 'alembic upgrade head' manually to stamp the "
-                      "migration version.")
-        from .db import Base, engine
-        from .domain import models  # noqa: F401  (populate metadata)
+    from .db import engine as default_engine
+    from .migration_state import UNSTAMPED, inspect_database
 
-        Base.metadata.create_all(engine)
-        return "metadata"
+    engine = default_engine if url == settings.DATABASE_URL else _engine_for(url)
+    state = inspect_database(engine)
+
+    if state.state == UNSTAMPED:
+        return _adopt_unstamped(engine, url, state)
+
+    command.upgrade(_alembic_config(url), "head")
+    return "alembic"
+
+
+def _engine_for(url: str):
+    from sqlalchemy import create_engine
+
+    kwargs = {"connect_args": {"check_same_thread": False}} if url.startswith("sqlite") else {}
+    return create_engine(url, future=True, **kwargs)
+
+
+def _adopt_unstamped(engine, url: str, state) -> str:
+    """Stamp a schema that Alembic did not create — only if it is already right.
+
+    The legacy of the removed ``create_all`` fallback. Stamping is a claim that
+    every migration up to head has effectively been applied, so it is made only
+    when the schema actually matches the models; otherwise the database is left
+    exactly as it is, with a message saying what to do.
+    """
+    from alembic import command
+
+    from .schema_check import missing_columns
+
+    gaps = missing_columns(engine)
+    if gaps:
+        raise SchemaBootstrapError(
+            f"This database has {state.tables} tables but no alembic_version row, "
+            f"and its schema does not match the models "
+            f"({', '.join(sorted(gaps))} incomplete). It was created outside "
+            f"Alembic — almost certainly by the old create_all fallback. Alembic "
+            f"cannot upgrade it and stamping it would be a lie. Back up anything "
+            f"you need, drop the tables, and run `alembic upgrade head` on the "
+            f"empty database.")
+
+    log.warning(
+        "database has a complete schema but no alembic_version row (created "
+        "outside Alembic); stamping it to head so future migrations apply.")
+    command.stamp(_alembic_config(url), "head")
+    return "stamped"
 
 
 def bootstrap(*, with_demo: Optional[bool] = None,

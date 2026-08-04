@@ -282,8 +282,19 @@ class SalesTxn(Base):
     """Invoice-line grain (§4)."""
 
     __tablename__ = "sales_txns"
-    __table_args__ = (UniqueConstraint("organization_id", "external_ref",
-                                       name="uq_salestxn_org_ref"),)
+    # The two composite indexes existed in the database for a long time without
+    # being declared here, which meant every ``--autogenerate`` wanted to DROP
+    # them: an index nobody declared is an index the next generated migration
+    # deletes, and the only symptom would have been the portfolio and
+    # customer-item screens quietly getting slower.
+    __table_args__ = (
+        UniqueConstraint("organization_id", "external_ref",
+                         name="uq_salestxn_org_ref"),
+        Index("ix_sales_txns_org_customer_product",
+              "organization_id", "customer_id", "product_id"),
+        Index("ix_sales_txns_org_product_date",
+              "organization_id", "product_id", "date"),
+    )
 
     sales_txn_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
     organization_id: Mapped[str] = mapped_column(String(64), index=True)
@@ -309,8 +320,14 @@ class CostRecord(Base):
     """Bill-line grain (§4) — restricted (cost) data."""
 
     __tablename__ = "cost_records"
-    __table_args__ = (UniqueConstraint("organization_id", "external_ref",
-                                       name="uq_costrecord_org_ref"),)
+    __table_args__ = (
+        UniqueConstraint("organization_id", "external_ref",
+                         name="uq_costrecord_org_ref"),
+        # Declared for the same reason as the sales_txns pair above: it is what
+        # makes the effective-cost lookup for a customer-item pair cheap.
+        Index("ix_cost_records_org_product_date",
+              "organization_id", "product_id", "date"),
+    )
 
     cost_record_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
     organization_id: Mapped[str] = mapped_column(String(64), index=True)

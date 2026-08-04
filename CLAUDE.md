@@ -115,8 +115,18 @@ backend/app/
   ai/            Providers, prompts, validation, telemetry. Receives facts;
                  never computes them. Never imports commercial/.
   ingestion/     Zoho adapters, normalisation, connections, credentials.
+  identity/      Cross-connector record linking. Never merges, only links.
+  trust/         Tenant keys, name vault, pseudonyms, break-glass, disclosure,
+                 erasure. Infrastructure — imports neither commercial/ nor ai/.
   routers/       HTTP mapping and role scoping. Thin — no money arithmetic.
   context/       Bundle assembly for interpretation.
+
+  db.py               The one engine, the one Base, the one session factory.
+  config.py           Every setting, including DATABASE_URL. Single source.
+  migration_state.py  Where a database sits in the revision history.
+  schema_check.py     Whether the schema can serve the code.
+  bootstrap.py        Fresh-clone setup. Alembic only — never create_all.
+  clock.py            UTC now, and making a stored timestamp comparable.
 ```
 
 SQLAlchemy is used throughout by design — this is a session-passing codebase, not
@@ -134,10 +144,168 @@ Rules with teeth:
 
 ---
 
-## 4. SOLID, as checks rather than philosophy
+## 4. Database, schema and migrations
+
+This section exists because of an incident. A deployment failed with a 500, the
+client said "the usual cause is a pending `alembic upgrade head`", and running
+that command could not have helped — the database had been built outside Alembic
+and every upgrade died with `table already exists`. Dropping the tables made it
+worse: the next startup rebuilt them the same way. Read the rules; the
+reasoning behind each one is a day somebody lost.
+
+### How the pieces fit
+
+**One URL.** `settings.DATABASE_URL` (`app/config.py`) is the only place a
+database location is decided, for the app and for Alembic alike. `alembic.ini`
+deliberately contains **no** `sqlalchemy.url` line — a URL there is a second
+source of truth and the one that wins by accident on whichever machine forgot
+to set the environment. `alembic/env.py` uses an explicitly supplied URL when a
+caller sets one (that is a deliberate act) and `settings.DATABASE_URL`
+otherwise. Dev and production differ only in the value of that variable.
+
+**One engine, one Base.** `app/db.py` owns the single `create_engine`, the
+single `DeclarativeBase`, and `SessionLocal`. A second declarative base would
+give Alembic a second metadata object it never sees, and half the models would
+silently never get migrations.
+
+**How Alembic finds the models.** `env.py` does `from app.domain import models`
+purely for the import side effect, then sets `target_metadata = Base.metadata`.
+Without that import the metadata is empty and autogenerate cheerfully reports
+that a completely empty database is perfect. Any new model module must be
+imported by `app/domain/models.py` or from `env.py`, or it does not exist as far
+as migrations are concerned.
+
+**Migration philosophy.** Migrations are the schema's history, not a
+convenience. Alembic is the *only* thing permitted to create or alter this
+schema — there is no `create_all` path in application code, and reintroducing
+one is how the incident above happened. The database always knows which
+revision it is at; anything that leaves it unstamped is a defect.
+
+### Migration rules — these are not preferences
+
+- **Never edit a migration that has been released.** Reconcile forward with a
+  new one. An edited migration means two databases that ran "the same" revision
+  have different schemas, and nothing can tell you which is which.
+- **Never call `Base.metadata.create_all` outside a test fixture.** It builds
+  the schema without writing `alembic_version`, which makes the database
+  permanently unmigratable — `upgrade` then replays the first revision and dies
+  on `table already exists`. This is exactly what the removed fallback in
+  `bootstrap.ensure_schema` did, once per boot, while logging it.
+- **Never create a second declarative base.** One `Base`, in `app/db.py`.
+- **Every model must be reachable from `Base.metadata`.** If Alembic cannot see
+  it, its table simply never exists in production.
+- **Every schema change needs a migration in the same commit.** The drift test
+  fails otherwise, which is the point.
+- **Never hardcode a database URL** — not in `alembic.ini`, not in a script, not
+  in a test. Set `DATABASE_URL`.
+- **Verify on a fresh database before merging**, not only against your own
+  already-migrated one. `make migrate` on an existing database proves nothing
+  about the empty case.
+- **A migration must not import application models.** It runs against schemas
+  from months ago; models describe today. Write the columns out literally.
+- **Each revision must stand alone.** A migration that only works when run in
+  the same batch as its neighbour fails on the one deployment that was
+  interrupted halfway.
+- **A schema that is behind must degrade, not lie.** The app starts, `/api/health`
+  returns 503 and names the gap. Silent success on a broken schema is worse than
+  a failed boot.
+
+### Diagnose before you fix
+
+There are four distinguishable states and they need **different** fixes.
+Guessing between them is what turned a ten-minute problem into a wedged
+database. Run this first, always:
+
+```bash
+curl -s localhost:8000/api/health | python3 -m json.tool   # state + what to run
+```
+
+Or, without a running app:
+
+```bash
+cd backend
+python3 -c "
+from app.db import engine
+from app.migration_state import inspect_database
+print(inspect_database(engine).summary)"
+```
+
+| State | What it means | The fix |
+|---|---|---|
+| `EMPTY` | No tables | `alembic upgrade head` |
+| `UNSTAMPED` | Tables exist, no `alembic_version` — built outside Alembic | `alembic stamp head` **only if** the schema is already current; otherwise drop and migrate |
+| `BEHIND` | Stamped, older than head | `alembic upgrade head` — the only case where this is the answer |
+| `UNKNOWN_REV` | Stamped with a revision this code does not have | Deploy the code that owns it. **Do not upgrade** |
+| `CURRENT` | At head | Look elsewhere — this is not a migration problem |
+
+### Troubleshooting
+
+```bash
+cd backend
+python3 -m alembic current        # what the database claims
+python3 -m alembic heads          # what this codebase ends at
+python3 -m alembic history --verbose | head -40
+```
+
+**"Pending `alembic upgrade head`" in an error message.** Do not act on it.
+That sentence used to be printed by the client for *any* undescribed 500,
+without checking. Get the real state from `/api/health` first.
+
+**`table ... already exists` on upgrade.** The database is `UNSTAMPED`. Upgrading
+will never work. Decide whether the schema is genuinely current: if it is,
+`alembic stamp head`; if you are not sure, back up, drop, and migrate an empty
+database. Do not delete individual tables and retry — that is the loop the
+incident was stuck in.
+
+**Missing tables at runtime, or a bare 500 after a deploy.** `/api/health`
+reports both the migration state and the specific missing columns. Usually
+`BEHIND`: run the migration and restart.
+
+**Multiple heads** (`alembic heads` prints more than one). Two branches each
+added a migration. `alembic merge -m "merge" <rev1> <rev2>`, then verify on a
+fresh database. Never resolve it by editing `down_revision` on a released
+revision.
+
+**Stale or unknown revision.** The database ran a migration this checkout does
+not contain — usually a rollback to older code. Deploy the newer code, or
+restore a database matching this one. Upgrading cannot fix it.
+
+**Schema drift** (`test_a_fresh_database_matches_the_models_exactly` fails).
+The models and the migrations disagree. See exactly how:
+
+```bash
+cd backend && rm -f /tmp/drift.db
+DATABASE_URL="sqlite:////tmp/drift.db" python3 -m alembic upgrade head
+python3 -c "
+from alembic.autogenerate import compare_metadata
+from alembic.migration import MigrationContext
+from sqlalchemy import create_engine
+from app.db import Base
+from app.domain import models
+with create_engine('sqlite:////tmp/drift.db').connect() as c:
+    for d in compare_metadata(MigrationContext.configure(c), Base.metadata):
+        print(d)"
+```
+
+Add a migration that reconciles it. Do not edit the released one, and do not
+"fix" it by changing the model to match a wrong schema unless the schema is
+what you actually want.
+
+**Fresh database from nothing.**
+
+```bash
+cd backend
+rm -f data/platform.db          # only in development
+python3 -m app.bootstrap        # migrate + seed, idempotent
+python3 -m pytest tests/decision_platform/test_migrations_integrity.py -q
+```
+
+---
+
+## 5. SOLID, as checks rather than philosophy
 
 Each principle restated as something you can actually look at. **All of them are
-subject to the size floor in §6** — a 40-line helper does not need an interface,
+subject to the size floor in §7** — a 40-line helper does not need an interface,
 and inventing one is itself the defect.
 
 **S — Single responsibility.** A class with methods spanning unrelated verb
@@ -188,7 +356,7 @@ wrapping SQLAlchemy.
 
 ---
 
-## 5. After writing code — the gate
+## 6. After writing code — the gate
 
 Deterministic tools first, judgement second. Never report "no duplication"
 without a tool having actually looked.
@@ -205,25 +373,34 @@ ruff check backend/app
 
 # 4. The invariant checks from §1 — must print nothing.
 
-# 5. Schema drift, if models changed.
-cd backend && DATABASE_URL="sqlite:////tmp/mig.db" python -m alembic upgrade head
+# 5. Migrations, whenever models or migrations changed. Note the `rm` — this
+#    checks the EMPTY case, which is the one that breaks in production and the
+#    one your already-migrated development database can never exercise.
+cd backend && rm -f /tmp/mig.db \
+  && DATABASE_URL="sqlite:////tmp/mig.db" python -m alembic upgrade head \
+  && python -m pytest tests/decision_platform/test_migrations_integrity.py -q
 ```
+
+Step 5 is not optional after a model change. It is the check that would have
+caught the incident in §4: the schema and the models had drifted apart in 130
+places, and the drift was invisible because nobody ran autogenerate against a
+fresh database.
 
 Optional, if you want a real similarity scan and are willing to install it:
 `npx jscpd --min-tokens 30 backend/app frontend/src`. Treat >30 duplicated
 tokens in a contiguous block as a flag, not a failure — some repetition is
 clearer than the abstraction that removes it.
 
-Then fill in §7 against the output.
+Then fill in §8 against the output.
 
 ---
 
-## 6. Size floor — do not over-apply this
+## 7. Size floor — do not over-apply this
 
 Over-applying SOLID to small, honestly-simple code is a defect in its own right,
 and it is the failure mode this document is most likely to cause.
 
-Skip §4 entirely for:
+Skip §5 entirely for:
 
 - Files under ~50 lines, or classes with fewer than 3 public methods.
 - One-off scripts, migrations, fixtures, and `tools/`-style CLI entry points.
@@ -234,7 +411,7 @@ A single implementation with no second one in sight does not need an interface.
 
 ---
 
-## 7. Self-review, per change
+## 8. Self-review, per change
 
 Fill this in against real tool output. Every flag gets a fix or a visible
 trade-off — never a silent pass.
@@ -254,7 +431,7 @@ trade-off — never a silent pass.
   - LSP: [override contract holds | flagged: fixed]
   - ISP: [usage ratio ok | flagged: split]
   - DIP: [deterministic layers clean | flagged: fixed]
-**Below the size floor (§6):** [n/a | yes — checks skipped deliberately]
+**Below the size floor (§7):** [n/a | yes — checks skipped deliberately]
 
 **Verdict:** APPROVED / APPROVED WITH NOTED TRADE-OFF / NEEDS REWORK
 ```
@@ -264,7 +441,7 @@ message too, so the decision stays auditable instead of silent.
 
 ---
 
-## 8. What this is not
+## 9. What this is not
 
 - Not a blocking CI gate. Tests, types and the §1 invariants block; the SOLID
   heuristics advise. Promote a check to blocking only after it has run clean on

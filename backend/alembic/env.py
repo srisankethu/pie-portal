@@ -16,7 +16,31 @@ from app.db import Base  # noqa: E402
 from app.domain import models  # noqa: E402,F401  (import populates metadata)
 
 config = context.config
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+
+
+def _database_url() -> str:
+    """The database these migrations run against.
+
+    Precedence matters, and getting it wrong is how a migration silently edits
+    the wrong database. This module used to overwrite ``sqlalchemy.url`` with
+    ``settings.DATABASE_URL`` unconditionally, which meant a caller doing
+    ``Config.set_main_option("sqlalchemy.url", other_db)`` — the documented way
+    to point Alembic somewhere else, and what ``app.bootstrap`` does — was
+    ignored. Alembic then migrated whatever ``DATABASE_URL`` happened to say
+    while reporting success for the database the caller asked about. In testing
+    this stamped a live development database to head without applying anything
+    to it, leaving it claiming a schema it did not have.
+
+    So: an explicitly supplied URL wins, because supplying one is a deliberate
+    act. Otherwise the application's own setting is used, which keeps
+    ``alembic upgrade head`` from a shell operating on exactly the database the
+    app opens. ``alembic.ini`` deliberately carries no ``sqlalchemy.url`` line,
+    so there is no placeholder that could win by accident.
+    """
+    explicit = config.get_main_option("sqlalchemy.url", None)
+    return explicit or settings.DATABASE_URL
+
+
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
@@ -24,7 +48,7 @@ target_metadata = Base.metadata
 
 
 def run_migrations_offline() -> None:
-    context.configure(url=settings.DATABASE_URL, target_metadata=target_metadata,
+    context.configure(url=_database_url(), target_metadata=target_metadata,
                       literal_binds=True, render_as_batch=True)
     with context.begin_transaction():
         context.run_migrations()
@@ -32,7 +56,7 @@ def run_migrations_offline() -> None:
 
 def run_migrations_online() -> None:
     section = config.get_section(config.config_ini_section) or {}
-    section["sqlalchemy.url"] = settings.DATABASE_URL
+    section["sqlalchemy.url"] = _database_url()
     connectable = engine_from_config(section, prefix="sqlalchemy.",
                                      poolclass=pool.NullPool)
     with connectable.connect() as connection:

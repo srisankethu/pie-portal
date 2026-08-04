@@ -10,7 +10,7 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import settings
@@ -49,7 +49,13 @@ if settings.is_production and settings.CREDENTIAL_ENCRYPTION_KEY == _DEV_CREDENT
 
 #: Filled in at startup when the database is behind the code, so a screen can
 #: say so rather than leaving an operator to read server logs.
-SCHEMA_GAP: dict[str, object] = {"message": None}
+#:
+#: ``migration`` holds the classified migration state (see ``migration_state``)
+#: rather than a guess. The client used to render "the usual cause is a pending
+#: alembic upgrade head" for any undescribed 500, which was a plausible sentence
+#: printed without evidence — and wrong in the case that actually bit, where the
+#: schema was unstamped and upgrading could not work at all.
+SCHEMA_GAP: dict[str, object] = {"message": None, "migration": None}
 
 
 @asynccontextmanager
@@ -79,10 +85,21 @@ async def lifespan(_app: FastAPI):
     # whichever request first touches a column that does not exist yet. A
     # deployment that pulls new code and forgets the migration otherwise looks
     # healthy until someone opens the one screen that reads the new column.
+    #
+    # Two checks, because they answer different questions and either can be the
+    # one that is wrong: the migration state says where this database sits in the
+    # revision history, and the column check says whether the schema can actually
+    # serve the code. A database at head with a hand-edited table fails only the
+    # second; a database built by ``create_all`` fails only the first.
     try:
         from .db import engine
+        from .migration_state import inspect_database
         from .schema_check import check_at_startup
 
+        state = inspect_database(engine)
+        SCHEMA_GAP["migration"] = state.to_dict()
+        if not state.healthy:
+            log.error("%s", state.summary)
         SCHEMA_GAP["message"] = check_at_startup(engine)
     except Exception:  # noqa: BLE001
         log.exception("schema check failed; continuing")
@@ -129,5 +146,40 @@ app.include_router(trust.router)
 
 
 @app.get("/api/health")
-def health() -> dict:
-    return {"ok": True, "service": "pie-portal", "version": app.version}
+def health(response: Response) -> dict:
+    """Liveness plus the two facts that actually decide whether this process can serve.
+
+    It used to return ``{"ok": true}`` unconditionally, which made it useless for
+    the failure it should have caught first: a deployment whose database is
+    behind, or whose schema was built outside Alembic, answers this endpoint
+    perfectly while every real request 500s. A health check that cannot fail is
+    a health check nobody should route on.
+
+    Checked live rather than read from the startup snapshot — an operator who
+    migrates a running deployment wants to see it go green without a restart,
+    and a database that disappears after boot should stop reporting healthy.
+
+    503 when unhealthy, so a load balancer or deploy gate sees it without having
+    to parse the body. The body still explains itself either way; the whole
+    point is that the answer names the state and its fix rather than guessing.
+    """
+    from .db import engine
+    from .migration_state import inspect_database
+    from .schema_check import describe, missing_columns
+
+    body: dict = {"ok": True, "service": "pie-portal", "version": app.version}
+    try:
+        state = inspect_database(engine)
+        body["migration"] = state.to_dict()
+        gap = describe(missing_columns(engine))
+        body["schema_gap"] = gap
+        body["ok"] = state.healthy and gap is None
+    except Exception as exc:  # noqa: BLE001
+        log.exception("health check could not read the database")
+        body["ok"] = False
+        body["error"] = f"{type(exc).__name__}: {exc}"
+        body["migration"] = None
+
+    if not body["ok"]:
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    return body

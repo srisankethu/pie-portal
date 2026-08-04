@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { Line, LineIntelligence, QuoteException } from "../types";
-import { inr } from "../rel";
 import { Labelled, Tip } from "../Tip";
+import { money } from "../money";
 
 /**
  * Deterministic commercial intelligence for one quote line.
@@ -35,8 +35,8 @@ function ExceptionCard({ e }: { e: QuoteException }) {
     <div className={`qi-exc ${severityClass(e.severity)}`}>
       <div className="qi-exc-head">
         <span className="qi-exc-title">{e.title}</span>
-        {e.impact_rupees !== null && e.impact_rupees > 0 && (
-          <span className="qi-exc-impact">{inr(e.impact_rupees)}</span>
+        {e.impact_amount !== null && e.impact_amount > 0 && (
+          <span className="qi-exc-impact">{money(e.impact_amount)}</span>
         )}
       </div>
       <p className="qi-exc-detail">{e.detail}</p>
@@ -54,8 +54,7 @@ export function QuoteIntelligence({
   onOverride,
   onRequestApproval,
   approvalStatus,
-  onDrilldown,
-}: {
+  onDrilldown }: {
   line: Line;
   intel: LineIntelligence | null;
   loading: boolean;
@@ -205,9 +204,9 @@ export function QuoteIntelligence({
                       {r.label}
                       <span className="qi-ref-basis">{r.basis}</span>
                     </th>
-                    <td className="num">{inr(r.value)}</td>
+                    <td className="num">{money(r.value)}</td>
                     <td className={"num qi-delta " + (delta === null ? "" : delta < 0 ? "under" : "over")}>
-                      {delta === null ? "—" : `${delta < 0 ? "−" : "+"}${inr(Math.abs(delta))}`}
+                      {delta === null ? "—" : `${delta < 0 ? "−" : "+"}${money(Math.abs(delta))}`}
                     </td>
                   </tr>
                 );
@@ -240,15 +239,15 @@ export function QuoteIntelligence({
                   Effective cost
                 </Labelled>
               </dt>
-              <dd>{intel.economics.unit_cost === null ? "not recorded" : inr(intel.economics.unit_cost)}</dd>
+              <dd>{intel.economics.unit_cost === null ? "not recorded" : money(intel.economics.unit_cost)}</dd>
             </div>
             <div>
               <dt>Line revenue</dt>
-              <dd>{inr(intel.economics.line_revenue)}</dd>
+              <dd>{money(intel.economics.line_revenue)}</dd>
             </div>
             <div>
               <dt>Gross profit</dt>
-              <dd>{intel.economics.gross_profit === null ? "—" : inr(intel.economics.gross_profit)}</dd>
+              <dd>{intel.economics.gross_profit === null ? "—" : money(intel.economics.gross_profit)}</dd>
             </div>
             <div>
               <dt>

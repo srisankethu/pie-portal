@@ -9,9 +9,9 @@ import type {
   PlatformSession,
   PlatformUser,
   PolicyField,
-  Role,
-} from "./types";
+  Role } from "./types";
 import { Bp, Labelled } from "./ui";
+import { money, moneySymbol } from "../money";
 
 /**
  * The approval queue and organization settings.
@@ -26,24 +26,18 @@ import { Bp, Labelled } from "./ui";
 const ROLE_LABEL: Record<Role, string> = {
   SALESPERSON: "Salesperson",
   SALES_MANAGER: "Sales manager",
-  OWNER: "Owner",
-};
+  OWNER: "Owner" };
 
 const ROLE_HELP: Record<Role, string> = {
   SALESPERSON: "Their own accounts. Never sees cost or margin.",
   SALES_MANAGER: "The whole organization, with full economics. Approves thin prices.",
-  OWNER: "Everything, plus users, roles and policy. Approves selling below cost.",
-};
+  OWNER: "Everything, plus users, roles and policy. Approves selling below cost." };
 
 const KIND_LABEL: Record<string, string> = {
   QUOTE_LINE_PRICE: "Quote price",
   QUOTE_SUBMISSION: "Quote submission",
-  DECISION_ESCALATION: "Escalated decision",
-};
+  DECISION_ESCALATION: "Escalated decision" };
 
-function inr(n: unknown): string {
-  return typeof n === "number" ? "₹" + Math.round(n).toLocaleString("en-IN") : "—";
-}
 
 function pct(n: unknown): string {
   return typeof n === "number" ? (n * 100).toFixed(1) + "%" : "—";
@@ -52,8 +46,7 @@ function pct(n: unknown): string {
 function when(iso: string | null): string {
   if (!iso) return "—";
   return new Date(iso).toLocaleString("en-IN", {
-    day: "numeric", month: "short", hour: "numeric", minute: "2-digit",
-  });
+    day: "numeric", month: "short", hour: "numeric", minute: "2-digit" });
 }
 
 /* ── approvals ────────────────────────────────────────────────────────────── */
@@ -61,8 +54,7 @@ function when(iso: string | null): string {
 function ApprovalCard({
   req,
   session,
-  onDecide,
-}: {
+  onDecide }: {
   req: ApprovalRequest;
   session: PlatformSession;
   onDecide: (id: string, status: string, note: string) => Promise<void>;
@@ -108,14 +100,14 @@ function ApprovalCard({
           whole subject for a salesperson, including on their own request. */}
       {req.subject && req.kind === "QUOTE_LINE_PRICE" && (
         <dl className="ap-econ">
-          <div><dt>Quoted</dt><dd>{inr(s.quoted_unit_price)}</dd></div>
+          <div><dt>Quoted</dt><dd>{money(s.quoted_unit_price)}</dd></div>
           <div>
             <dt>
               <Labelled tip="Purchase cost after landed costs and supplier discounts — what this piece actually cost to put on the shelf, not the list price of the item.">
                 Effective cost
               </Labelled>
             </dt>
-            <dd>{inr(s.unit_cost)}</dd>
+            <dd>{money(s.unit_cost)}</dd>
           </div>
           <div>
             <dt>
@@ -125,7 +117,7 @@ function ApprovalCard({
             </dt>
             <dd className={s.below_cost ? "warn" : ""}>{pct(s.margin)}</dd>
           </div>
-          <div><dt>Line value</dt><dd>{inr(s.line_revenue)}</dd></div>
+          <div><dt>Line value</dt><dd>{money(s.line_revenue)}</dd></div>
           <div>
             <dt>
               <Labelled tip="Which quantity bracket this falls in. Prices are compared within a band — the same item at 5 pieces and 500 is a different commercial question.">
@@ -134,7 +126,7 @@ function ApprovalCard({
             </dt>
             <dd>{String(s.qty ?? "—")} · band {String(s.quantity_band ?? "—")}</dd>
           </div>
-          <div><dt>Gross profit</dt><dd>{inr(s.gross_profit)}</dd></div>
+          <div><dt>Gross profit</dt><dd>{money(s.gross_profit)}</dd></div>
         </dl>
       )}
 
@@ -330,7 +322,7 @@ function num(v: unknown): number {
 /** A stored value rendered into the box the user types in. */
 function toInput(f: PolicyField): string {
   if (f.kind === "ratio") return String(Math.round(num(f.value) * 10000) / 100);
-  if (f.kind === "rupees") return String(num(f.value));
+  if (f.kind === "money") return String(num(f.value));
   if (f.kind === "band_edges") return (f.value as number[]).join(", ");
   return "";
 }
@@ -343,7 +335,8 @@ function toFamilies(f: PolicyField | undefined): Families {
 }
 
 function unitFor(f: PolicyField): string {
-  if (f.kind === "rupees") return "₹";
+  // The symbol follows the organization's currency; it was "₹" regardless.
+  if (f.kind === "money") return moneySymbol();
   if (f.kind === "ratio") return PP_FIELDS.has(f.field) ? "pp" : "%";
   return "";
 }
@@ -353,8 +346,7 @@ function MarginPolicySection({
   policy,
   fixed,
   canManage,
-  onSaved,
-}: {
+  onSaved }: {
   token: string;
   policy: MarginPolicy;
   fixed: FixedThresholds | null;
@@ -528,13 +520,18 @@ function MarginPolicySection({
         {scalars.map((f) => {
           const overridden = cleared.includes(f.field) ? false : f.overridden;
           const unit = unitFor(f);
+          // Currency reads as a prefix (₹1,000), a ratio unit as a suffix
+          // (24%). That is a property of the *kind*, not of the glyph — this
+          // used to compare the unit against a literal "₹", which silently
+          // moved the symbol to the wrong side the moment it stopped being one.
+          const prefixed = f.kind === "money";
           return (
             <div className="mp-field" key={f.field}>
               <label htmlFor={`mp-${f.field}`}>
                 <Labelled tip={f.help}>{f.label}</Labelled>
               </label>
               <div className="mp-input">
-                {unit === "₹" && <span className="unit">₹</span>}
+                {prefixed && <span className="unit">{unit}</span>}
                 <input
                   id={`mp-${f.field}`}
                   className="input"
@@ -548,7 +545,7 @@ function MarginPolicySection({
                     setCleared((c) => c.filter((k) => k !== f.field));
                   }}
                 />
-                {unit && unit !== "₹" && <span className="unit">{unit}</span>}
+                {unit && !prefixed && <span className="unit">{unit}</span>}
               </div>
               <div className="mp-state">
                 {overridden ? (
@@ -557,7 +554,7 @@ function MarginPolicySection({
                     {canManage && (
                       <button type="button" onClick={() => reset(f.field)}>
                         reset to {toInput({ ...f, value: f.default })}
-                        {unit === "₹" ? "" : unit}
+                        {prefixed ? "" : unit}
                       </button>
                     )}
                   </>
@@ -733,8 +730,7 @@ function MarginPolicySection({
 
 function NewUserForm({
   token,
-  onCreated,
-}: {
+  onCreated }: {
   token: string;
   onCreated: (password: string, email: string) => void;
 }) {

@@ -6,6 +6,9 @@ export interface PlatformSession {
   name: string;
   user_id: string;
   organization_id: string;
+  /** ISO code this organization trades in, from the sign-in response. Drives
+   *  every money figure the client renders. */
+  currency: string;
 }
 
 export interface DecisionSummary {
@@ -369,7 +372,7 @@ export interface ThresholdView {
   margin_floor: number;
   sales_discretion_band: number;
   quantity_band_edges: number[];
-  min_quote_exception_impact_rupees: number;
+  min_quote_exception_impact: number;
   recent_days: number;
   min_transactions: number;
   min_peer_customers: number;
@@ -385,7 +388,7 @@ export interface ThresholdView {
  * one and converts back, because typing 24 into a field that means 0.24 is the
  * single easiest way to set a 2400% target.
  */
-export type PolicyKind = "ratio" | "rupees" | "band_edges" | "family_margins";
+export type PolicyKind = "ratio" | "money" | "band_edges" | "family_margins";
 
 export interface PolicyField {
   field: string;
@@ -400,6 +403,10 @@ export interface PolicyField {
 export interface MarginPolicy {
   version: string;
   default_version: string;
+  /** ISO code the money-kind fields are denominated in. The screen is told
+   *  rather than assuming — the same 10,000 means different things in INR and
+   *  USD, which is why it is inside the version hash server-side too. */
+  currency: string;
   fields: PolicyField[];
   updated_at: string | null;
 }
@@ -423,8 +430,8 @@ export interface MarginPolicyPatch {
   margin_floor?: number;
   sales_discretion_band?: number;
   quantity_band_edges?: number[];
-  min_quote_exception_impact_rupees?: number;
-  min_material_gap_rupees?: number;
+  min_quote_exception_impact?: number;
+  min_material_gap?: number;
   min_margin_deterioration_pp?: number;
   clear?: string[];
 }

@@ -211,7 +211,7 @@ def test_the_same_gap_on_a_material_line_does_fire():
     intel = _assess(qty=400, price=195, lines=history)
     assert BELOW_LAST_PRICE in _codes(intel)
     fired = next(e for e in intel.exceptions if e.code == BELOW_LAST_PRICE)
-    assert fired.impact_rupees == Decimal("2000")     # (200 - 195) × 400
+    assert fired.impact_amount == Decimal("2000")     # (200 - 195) × 400
 
 
 def test_the_hard_floor_and_the_review_floor_are_different_severities():
@@ -235,8 +235,8 @@ def test_ranking_is_by_money_not_by_percentage():
     assert severities == sorted(severities, key=lambda s: {"CRITICAL": 0, "WARNING": 1,
                                                            "INFO": 2}[s])
     warnings = [e for e in intel.exceptions if e.severity == WARNING
-                and e.impact_rupees is not None]
-    impacts = [e.impact_rupees for e in warnings]
+                and e.impact_amount is not None]
+    impacts = [e.impact_amount for e in warnings]
     assert impacts == sorted(impacts, reverse=True)
 
 

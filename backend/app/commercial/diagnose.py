@@ -163,7 +163,7 @@ def diagnose(session: Session, org: str,
             f"have enough evidence, but none crossed a detection threshold — "
             f"nothing is deteriorating by more than "
             f"{th.min_margin_deterioration_pp * 100:.0f} pp or "
-            f"{th.min_material_gap_rupees:,.0f} rupees. That is a real answer, "
+            f"{th.min_material_gap:,.0f} rupees. That is a real answer, "
             f"not a fault: the account screen still shows every item under "
             f"'all items'.")
     return out

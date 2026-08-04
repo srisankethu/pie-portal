@@ -72,7 +72,13 @@ export interface Line {
 
 export interface QuoteSummary {
   subtotal: number;
-  gst: number;
+  /** Sales tax on the subtotal, in the organization's currency. */
+  tax: number;
+  /** What the jurisdiction calls it — "GST", "VAT", "Sales Tax". */
+  taxLabel: string;
+  /** The rate it was computed at, as a ratio (0.18), so the screen can state
+   *  the rate it actually used rather than a rate it assumes. */
+  taxRate: number;
   grand: number;
   total: number;
 }
@@ -118,7 +124,7 @@ export interface QuoteException {
   title: string;
   detail: string;
   manager_detail?: string | null;
-  impact_rupees: number | null;
+  impact_amount: number | null;
   impact_data_class: DataClass;
   reference_code: string | null;
   requires_approval: boolean;

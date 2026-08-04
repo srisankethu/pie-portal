@@ -190,7 +190,7 @@ def detect(m: RelationshipMetrics, benchmark: Optional[ItemBenchmark],
 
     # ── 6. the gap is materially large in rupees ────────────────────────────
     if (m.historical_margin_gap is not None
-            and float(m.historical_margin_gap) >= th.min_material_gap_rupees):
+            and float(m.historical_margin_gap) >= th.min_material_gap):
         drafts.append(_draft(
             SignalType.CI_MATERIAL_MARGIN_GAP, m, th,
             {"historical_margin_gap": _money(m.historical_margin_gap),

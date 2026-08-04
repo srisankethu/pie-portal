@@ -53,6 +53,15 @@ def _families() -> tuple[tuple[str, float], ...]:
 
 @dataclass(frozen=True)
 class CommercialThresholds:
+    # ── currency ─────────────────────────────────────────────────────────────
+    # The unit every money threshold below is denominated in, and the unit the
+    # numbers computed against them are reported in. It sits inside the version
+    # hash on purpose: a 10,000 floor in rupees and a 10,000 floor in dollars
+    # are different policies, and without this they would stamp the same
+    # version onto rows that are not comparable. ``policy.load_for_org``
+    # replaces this with the organization's own currency.
+    currency: str = "INR"
+
     # ── periods ──────────────────────────────────────────────────────────────
     # "Recent" is the window a current position is read from; "previous" is the
     # equal-length window immediately before it, so the two are comparable.
@@ -75,7 +84,7 @@ class CommercialThresholds:
     # Rupees. A gap below this is real but not worth anyone's afternoon, and
     # prioritising by percentage instead of dsize is how teams end up working
     # trivial accounts first.
-    min_material_gap_rupees: float = 10_000.0
+    min_material_gap: float = 10_000.0
 
     # ── evidence floors ──────────────────────────────────────────────────────
     min_transactions: int = 3          # below this: nothing is asserted
@@ -115,6 +124,12 @@ class CommercialThresholds:
     min_margin: float = 0.12            # hard floor — below this needs approval
     margin_floor: float = 0.15          # soft floor — below this is flagged
     sales_discretion_band: float = 0.03  # ±band off recommended without approval
+    # A recommended price is rounded to a multiple of this before it is shown,
+    # because quoting ₹1,847.31 invites a conversation about the 31 paise. The
+    # increment is currency-scaled, not universal: ₹5 is a sensible tick on a
+    # ₹2,000 insert and $5 is a 5% distortion on a $100 one. 0 disables
+    # rounding. Denominated in ``currency`` above.
+    price_rounding_increment: float = 5.0
 
     # ── quote-time quantity bands ────────────────────────────────────────────
     # Upper edges, inclusive. (1, 10, 50, 200) gives 1 / 2–10 / 11–50 / 51–200 /
@@ -128,13 +143,14 @@ class CommercialThresholds:
     # ── quote exceptions ─────────────────────────────────────────────────────
     # A gap smaller than this is inside the noise of freight and rounding; a
     # quote screen that flags every ₹40 becomes a screen nobody reads.
-    min_quote_exception_impact_rupees: float = 500.0
+    min_quote_exception_impact: float = 500.0
     # How far below a reference price counts as materially below.
     quote_price_tolerance_pct: float = 0.02
 
     @classmethod
     def from_env(cls) -> "CommercialThresholds":
         return cls(
+            currency=os.environ.get("DEFAULT_CURRENCY", "INR").strip().upper() or "INR",
             recent_days=_i("CI_RECENT_DAYS", 90),
             previous_days=_i("CI_PREVIOUS_DAYS", 90),
             historical_lookback_days=_i("CI_HISTORICAL_LOOKBACK_DAYS", 730),
@@ -142,7 +158,7 @@ class CommercialThresholds:
             meaningful_cost_increase_pct=_f("CI_MEANINGFUL_COST_INCREASE_PCT", 0.05),
             meaningful_price_change_pct=_f("CI_MEANINGFUL_PRICE_CHANGE_PCT", 0.02),
             meaningful_volume_change_pct=_f("CI_MEANINGFUL_VOLUME_CHANGE_PCT", 0.15),
-            min_material_gap_rupees=_f("CI_MIN_MATERIAL_GAP_RUPEES", 10_000.0),
+            min_material_gap=_f("CI_MIN_MATERIAL_GAP", 10_000.0),
             min_transactions=_i("CI_MIN_TRANSACTIONS", 3),
             min_transactions_strong=_i("CI_MIN_TRANSACTIONS_STRONG", 6),
             min_history_months=_f("CI_MIN_HISTORY_MONTHS", 3.0),
@@ -157,9 +173,10 @@ class CommercialThresholds:
             min_margin=_f("CI_MIN_MARGIN", 0.12),
             margin_floor=_f("CI_MARGIN_FLOOR", 0.15),
             sales_discretion_band=_f("CI_SALES_DISCRETION_BAND", 0.03),
+            price_rounding_increment=_f("CI_PRICE_ROUNDING_INCREMENT", 5.0),
             quantity_band_edges=_edges(),
             min_band_transactions=_i("CI_MIN_BAND_TRANSACTIONS", 2),
-            min_quote_exception_impact_rupees=_f("CI_MIN_QUOTE_EXCEPTION_IMPACT", 500.0),
+            min_quote_exception_impact=_f("CI_MIN_QUOTE_EXCEPTION_IMPACT", 500.0),
             quote_price_tolerance_pct=_f("CI_QUOTE_PRICE_TOLERANCE_PCT", 0.02),
         )
 
@@ -171,6 +188,16 @@ class CommercialThresholds:
                 if name == family:
                     return value
         return self.target_margin_default
+
+    def money(self, amount, unknown: str = "unknown") -> str:
+        """An amount spelled in this policy's currency — ``₹4,00,000``.
+
+        Lives here for the same reason ``target_margin`` does: the currency is
+        part of the policy, so the thing that knows the policy is the thing
+        that can spell an amount without being told twice.
+        """
+        from .money import money as _fmt
+        return _fmt(amount, self.currency, unknown=unknown)
 
     @property
     def version(self) -> str:

@@ -32,6 +32,30 @@ _REL_LABELS = {
 _ids = itertools.count(1)
 
 
+def sales_tax_rate() -> float:
+    """The headline sales-tax rate applied to a quote subtotal.
+
+    A single blended rate is a simplification, and an honest one only while a
+    deployment sells one tax treatment: Indian GST splits by HSN and by whether
+    the buyer is in-state, EU VAT varies by member state, and US sales tax
+    varies by county. What matters here is that the rate is *configuration* —
+    the previous literal ``0.18`` made this quote screen an Indian screen in a
+    way no amount of currency plumbing would have fixed.
+
+    Line-level tax from the ERP supersedes this wherever it is available; this
+    is the fallback for a quote built from a pasted RFQ, before any ERP has
+    seen it.
+    """
+    from .config import settings
+    return settings.SALES_TAX_RATE
+
+
+def sales_tax_label() -> str:
+    """What the buyer's jurisdiction calls that tax — GST, VAT, Sales Tax."""
+    from .config import settings
+    return settings.SALES_TAX_LABEL
+
+
 def _split_rfq(text: str) -> List[Dict[str, Any]]:
     """Split pasted RFQ text into (raw, code, qty) rows.
 
@@ -179,7 +203,8 @@ class Quote:
         subtotal = sum(
             (ln.quoted * ln.reqQty) for ln in self.lines if ln.quoted is not None
         )
-        gst = subtotal * 0.18
+        rate = sales_tax_rate()
+        tax = subtotal * rate
         counts = self._filter_counts()
         floor = self._margin_floor() if mgmt else None
         return {
@@ -188,8 +213,14 @@ class Quote:
             "lines": line_dicts,
             "summary": {
                 "subtotal": round(subtotal, 2),
-                "gst": round(gst, 2),
-                "grand": round(subtotal + gst, 2),
+                # The rate and its name travel with the amount. The screen used
+                # to print the literal "GST 18%" beside a number computed from a
+                # literal 0.18 in this file — two hardcoded copies of one fact,
+                # in different languages, either of which could be edited alone.
+                "tax": round(tax, 2),
+                "taxLabel": sales_tax_label(),
+                "taxRate": rate,
+                "grand": round(subtotal + tax, 2),
                 "total": len(self.lines),
             },
             "filterCounts": counts,

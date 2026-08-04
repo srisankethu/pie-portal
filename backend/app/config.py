@@ -109,6 +109,12 @@ class Settings:
     DEFAULT_ORG_ID: str = os.environ.get("DEFAULT_ORG_ID", "org_sanketh")
     DEFAULT_ORG_NAME: str = os.environ.get("DEFAULT_ORG_NAME", "Sanketh")
     DEFAULT_CURRENCY: str = os.environ.get("DEFAULT_CURRENCY", "INR")
+    # Headline sales-tax rate and what the jurisdiction calls it, applied to a
+    # quote subtotal before any ERP has priced it. Defaults are Indian because
+    # the first deployment is; they are settings rather than constants because
+    # the next one will not be. A rate of 0 renders no tax line at all.
+    SALES_TAX_RATE: float = float(os.environ.get("SALES_TAX_RATE", "0.18"))
+    SALES_TAX_LABEL: str = os.environ.get("SALES_TAX_LABEL", "GST")
 
     # Zoho connector credentials (read-only). Unused until live sync is enabled;
     # the fixture source backs dev/test. Never commit real values (.env only).

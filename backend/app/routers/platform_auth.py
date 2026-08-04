@@ -25,6 +25,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..authz import issue_token
+from ..config import settings
 from ..db import get_session
 from ..domain import models
 from ..passwords import hash_password, needs_rehash, verify_password
@@ -49,6 +50,11 @@ class LoginResponse(BaseModel):
     organization_id: str
     role: str
     name: str
+    # The currency this organization trades in. Sent at sign-in because every
+    # screen renders money and none of them should be guessing: the client used
+    # to hardcode a rupee sign in four places, which is correct for exactly one
+    # tenant and silently wrong for the next.
+    currency: str = "INR"
     must_change_password: bool = False
 
 
@@ -70,8 +76,11 @@ def login(body: LoginRequest, session: Session = Depends(get_session)) -> LoginR
     user.last_login_at = datetime.now(timezone.utc)
     session.flush()
 
+    org = session.get(models.Organization, user.organization_id)
+
     return LoginResponse(
         token=issue_token(user.user_id, user.organization_id),
         user_id=user.user_id, organization_id=user.organization_id,
         role=user.role, name=user.name,
+        currency=(getattr(org, "currency", None) or settings.DEFAULT_CURRENCY),
         must_change_password=user.must_change_password)

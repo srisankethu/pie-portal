@@ -1,6 +1,7 @@
 import type { Line, LineIntelligence } from "../types";
-import { REL_STYLE, statusColor, inr } from "../rel";
+import { REL_STYLE, statusColor } from "../rel";
 import { Labelled, Tip } from "../Tip";
+import { money } from "../money";
 
 /** The worst exception on a line, as a chip. Ordered by severity, so the chip
  *  always shows the thing that most needs a decision rather than the first
@@ -53,8 +54,7 @@ export function LineGrid({
   onOpen,
   onSetPrice,
   onDeleteLine,
-  onCreateItem,
-}: {
+  onCreateItem }: {
   lines: Line[];
   mgmt: boolean;
   intel: Record<string, LineIntelligence>;
@@ -222,7 +222,7 @@ export function LineGrid({
                   }}
                 />
               </td>
-              <td className="num">{inr(l.lineTotal)}</td>
+              <td className="num">{money(l.lineTotal)}</td>
               {mgmt && (
                 <td className="num">
                   {authMargin !== null ? (

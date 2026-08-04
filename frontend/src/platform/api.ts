@@ -1,13 +1,23 @@
 import type { Account, ApprovalRequest, EntityKind, Identity, IdentityPolicy, IdentitySuggestion, ConnectionCheck, ConnectionsView, FixedThresholds, MarginPolicy, MarginPolicyPatch, NewConnectionInput, ZohoConnection, ZohoCredential, ZohoVisibleOrg, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, OrgPolicy, PlatformSession, PlatformUser, QuoteGate, Role, SyncOptions, SyncStartResponse, SyncState, ThresholdView, ZohoConnectionInput } from "./types";
 
+import { setMoneyCurrency } from "../money";
+
 const KEY = "pie_platform_session";
 
+// Both entry paths — a fresh sign-in and a restore from storage — go through
+// these two, which is why the currency is applied here rather than in a
+// component: a screen mounted before any policy fetch would otherwise render
+// the first few amounts in the default currency and then change them.
 export function loadPlatformSession(): PlatformSession | null {
   const raw = localStorage.getItem(KEY);
-  return raw ? (JSON.parse(raw) as PlatformSession) : null;
+  if (!raw) return null;
+  const s = JSON.parse(raw) as PlatformSession;
+  setMoneyCurrency(s.currency);
+  return s;
 }
 export function savePlatformSession(s: PlatformSession) {
   localStorage.setItem(KEY, JSON.stringify(s));
+  setMoneyCurrency(s.currency);
 }
 export function clearPlatformSession() {
   localStorage.removeItem(KEY);
@@ -50,6 +60,7 @@ interface LoginResp {
   name: string;
   user_id: string;
   organization_id: string;
+  currency: string;
   must_change_password: boolean;
 }
 

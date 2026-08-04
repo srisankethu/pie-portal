@@ -73,11 +73,18 @@ def target_margin(family: Optional[str],
 
 def recommend_price(cost: Optional[float], family: Optional[str],
                     th: Optional[CommercialThresholds] = None) -> Optional[float]:
-    """Recommended selling price to hit the family target margin, rounded to ₹5."""
+    """Recommended selling price to hit the family target margin, rounded.
+
+    The rounding increment is policy, not a constant: it used to be a literal 5,
+    which reads as "nearest ₹5" and is right for a rupee-priced insert, but the
+    same literal against a $100 tool rounds away 5% of the price. An increment
+    of 0 returns the unrounded figure.
+    """
     if cost is None or cost <= 0:
         return None
     rec = cost / (1 - target_margin(family, th))
-    return round(rec / 5) * 5
+    step = (th or _th()).price_rounding_increment
+    return round(rec / step) * step if step > 0 else rec
 
 
 def margin_pct(price: Optional[float], cost: Optional[float]) -> Optional[float]:

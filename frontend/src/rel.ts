@@ -27,7 +27,3 @@ export function statusColor(kind: string): string {
         : "var(--color-neutral-600)";
 }
 
-export function inr(n: number | null | undefined): string {
-  if (n === null || n === undefined) return "—";
-  return "₹" + Math.round(n).toLocaleString("en-IN");
-}

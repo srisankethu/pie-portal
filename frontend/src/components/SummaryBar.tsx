@@ -1,6 +1,6 @@
 import type { Quote } from "../types";
-import { inr } from "../rel";
 import { Tip } from "../Tip";
+import { money } from "../money";
 
 export function SummaryBar({
   quote,
@@ -8,8 +8,7 @@ export function SummaryBar({
   onDiscount,
   onCreateEstimate,
   busy,
-  gateBlockedReason,
-}: {
+  gateBlockedReason }: {
   quote: Quote;
   selectedCount: number;
   onDiscount: (pct: number) => void;
@@ -25,15 +24,23 @@ export function SummaryBar({
     <div className="summary">
       <div className="stat">
         <div className="label">Subtotal</div>
-        <div className="value">{inr(quote.summary.subtotal)}</div>
+        <div className="value">{money(quote.summary.subtotal)}</div>
       </div>
-      <div className="stat">
-        <div className="label">GST 18%</div>
-        <div className="value">{inr(quote.summary.gst)}</div>
-      </div>
+      {quote.summary.taxRate > 0 && (
+        <div className="stat">
+          {/* Label and rate both come from the server. They used to be a literal
+              "GST 18%" here beside a number computed from a literal 0.18 in
+              store.py — the same fact stated twice, in two languages. */}
+          <div className="label">
+            {quote.summary.taxLabel} {(quote.summary.taxRate * 100).toFixed(
+              Number.isInteger(quote.summary.taxRate * 100) ? 0 : 1)}%
+          </div>
+          <div className="value">{money(quote.summary.tax)}</div>
+        </div>
+      )}
       <div className="stat">
         <div className="label">Quotation total</div>
-        <div className="value">{inr(quote.summary.grand)}</div>
+        <div className="value">{money(quote.summary.grand)}</div>
       </div>
       <div className="spacer" />
       <div className="summary-actions">

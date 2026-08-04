@@ -80,7 +80,7 @@ class QuoteException:
     title: str
     detail: str                              # salesperson-safe: no cost, no margin
     manager_detail: Optional[str] = None     # may name cost and margin
-    impact_rupees: Optional[Decimal] = None
+    impact_amount: Optional[Decimal] = None
     impact_data_class: str = OPERATIONAL
     reference_code: Optional[str] = None
     requires_approval: bool = False
@@ -95,8 +95,8 @@ class QuoteException:
         return {
             "code": self.code, "severity": self.severity, "title": self.title,
             "detail": self.detail, "manager_detail": self.manager_detail,
-            "impact_rupees": (float(round(self.impact_rupees, 2))
-                              if self.impact_rupees is not None else None),
+            "impact_amount": (float(round(self.impact_amount, 2))
+                              if self.impact_amount is not None else None),
             "impact_data_class": self.impact_data_class,
             "reference_code": self.reference_code,
             "requires_approval": self.requires_approval,
@@ -107,10 +107,6 @@ class QuoteException:
 
 def _pct(ratio: Optional[float]) -> str:
     return f"{ratio * 100:.1f}%" if ratio is not None else "unknown"
-
-
-def _rupees(amount: Optional[Decimal]) -> str:
-    return f"₹{float(amount):,.0f}" if amount is not None else "unknown"
 
 
 def _shortfall(reference: Decimal, proposed: Decimal, qty: Decimal) -> Decimal:
@@ -185,10 +181,10 @@ def evaluate(
                 title="This price does not cover what the item costs us",
                 detail=("At this price the line loses money on every unit. It "
                         "needs approval before it can go out."),
-                manager_detail=(f"Quoted {_rupees(price)} against an effective "
-                                f"unit cost of {_rupees(unit_cost)} — "
+                manager_detail=(f"Quoted {th.money(price)} against an effective "
+                                f"unit cost of {th.money(unit_cost)} — "
                                 f"{_pct(margin)} margin on {_qty(qty)} units."),
-                impact_rupees=to_floor, impact_data_class=RESTRICTED,
+                impact_amount=to_floor, impact_data_class=RESTRICTED,
                 reference_code=MIN_MARGIN_PRICE, requires_approval=True,
                 policy=True,
                 inputs={"quoted": float(price), "qty": float(qty)}))
@@ -200,9 +196,9 @@ def evaluate(
                         "at without approval."),
                 manager_detail=(f"Margin {_pct(margin)} against a "
                                 f"{_pct(th.min_margin)} hard minimum — "
-                                f"{_rupees(to_floor)} short across "
+                                f"{th.money(to_floor)} short across "
                                 f"{_qty(qty)} units."),
-                impact_rupees=to_floor, impact_data_class=RESTRICTED,
+                impact_amount=to_floor, impact_data_class=RESTRICTED,
                 reference_code=MIN_MARGIN_PRICE, requires_approval=True,
                 policy=True,
                 inputs={"quoted": float(price), "qty": float(qty)}))
@@ -221,9 +217,9 @@ def evaluate(
                         "reviews. It can go out, but it will be looked at."),
                 manager_detail=(f"Margin {_pct(margin)} against a "
                                 f"{_pct(th.margin_floor)} review floor on a "
-                                f"{_rupees(line_value)} line — "
-                                f"{_rupees(to_review)} short."),
-                impact_rupees=to_review, impact_data_class=RESTRICTED,
+                                f"{th.money(line_value)} line — "
+                                f"{th.money(to_review)} short."),
+                impact_amount=to_review, impact_data_class=RESTRICTED,
                 reference_code=MARGIN_FLOOR_PRICE, policy=True,
                 inputs={"quoted": float(price), "qty": float(qty)}))
 
@@ -234,12 +230,12 @@ def evaluate(
         found.append(QuoteException(
             code=BELOW_LAST_PRICE, severity=WARNING,
             title="Below what this customer last paid",
-            detail=(f"They paid {_rupees(last.value)} on "
+            detail=(f"They paid {th.money(last.value)} on "
                     f"{last.as_of.isoformat() if last.as_of else 'the last order'}. "
-                    f"At {_rupees(price)} you are giving back "
-                    f"{_rupees(gap)} across {_qty(qty)} units — deliberate is "
+                    f"At {th.money(price)} you are giving back "
+                    f"{th.money(gap)} across {_qty(qty)} units — deliberate is "
                     f"fine, accidental is not."),
-            impact_rupees=gap, impact_data_class=OPERATIONAL,
+            impact_amount=gap, impact_data_class=OPERATIONAL,
             reference_code=LAST_PRICE_PAID,
             inputs={"quoted": float(price), "reference": float(last.value),
                     "qty": float(qty)}))
@@ -251,9 +247,9 @@ def evaluate(
             code=BELOW_BAND_PRICE, severity=WARNING,
             title=f"Below their usual price at {band.qty_band} units",
             detail=(f"Across {band.txn_count} past orders of this size they have "
-                    f"paid about {_rupees(band.value)}. This quote is "
-                    f"{_rupees(gap)} below that on the line."),
-            impact_rupees=gap, impact_data_class=OPERATIONAL,
+                    f"paid about {th.money(band.value)}. This quote is "
+                    f"{th.money(gap)} below that on the line."),
+            impact_amount=gap, impact_data_class=OPERATIONAL,
             reference_code=BAND_PRICE,
             inputs={"quoted": float(price), "reference": float(band.value),
                     "qty": float(qty), "band": band.qty_band}))
@@ -270,9 +266,9 @@ def evaluate(
                         "right for this account — volume, terms and freight "
                         "differ — but it is worth knowing before you send it."),
                 manager_detail=(f"Median across {peer.txn_count} other customers "
-                                f"is {_rupees(peer.value)}; this quote is "
-                                f"{_rupees(gap)} below it on the line."),
-                impact_rupees=gap, impact_data_class=RESTRICTED,
+                                f"is {th.money(peer.value)}; this quote is "
+                                f"{th.money(gap)} below it on the line."),
+                impact_amount=gap, impact_data_class=RESTRICTED,
                 reference_code=PEER_MEDIAN_PRICE,
                 inputs={"quoted": float(price), "reference": float(peer.value),
                         "qty": float(qty)}))
@@ -285,9 +281,9 @@ def evaluate(
                         "item. Defensible on service or terms — but expect it "
                         "to be challenged."),
                 manager_detail=(f"Median across {peer.txn_count} other customers "
-                                f"is {_rupees(peer.value)}; this quote is "
-                                f"{_rupees(over)} above it on the line."),
-                impact_rupees=over, impact_data_class=RESTRICTED,
+                                f"is {th.money(peer.value)}; this quote is "
+                                f"{th.money(over)} above it on the line."),
+                impact_amount=over, impact_data_class=RESTRICTED,
                 reference_code=PEER_MEDIAN_PRICE,
                 inputs={"quoted": float(price), "reference": float(peer.value),
                         "qty": float(qty)}))
@@ -330,7 +326,7 @@ def evaluate(
                     else f"Margin {_pct(metrics.historical_margin)} → "
                          f"{_pct(metrics.current_margin)} "
                          f"({abs(metrics.margin_change_pp) * 100:.1f} pp)"),
-                impact_rupees=metrics.historical_margin_gap,
+                impact_amount=metrics.historical_margin_gap,
                 impact_data_class=RESTRICTED,
                 inputs={"margin_change_pp": metrics.margin_change_pp}))
 
@@ -346,16 +342,16 @@ def _rank(found: list[QuoteException], th: CommercialThresholds) -> list[QuoteEx
     small, and neither is a qualitative flag with no rupee figure at all — a
     control that silently disappears below some size is not a control.
     """
-    floor = Decimal(str(th.min_quote_exception_impact_rupees))
+    floor = Decimal(str(th.min_quote_exception_impact))
     kept = [
         e for e in found
         if e.severity == CRITICAL or e.policy
-        or e.impact_rupees is None or e.impact_rupees >= floor
+        or e.impact_amount is None or e.impact_amount >= floor
     ]
     return sorted(
         kept,
         key=lambda e: (_SEVERITY_RANK.get(e.severity, 9),
-                       -float(e.impact_rupees or 0),
+                       -float(e.impact_amount or 0),
                        e.code),
     )
 

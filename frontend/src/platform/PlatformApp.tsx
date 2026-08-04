@@ -39,7 +39,8 @@ function SignIn({ onIn, notice }: { onIn: (s: PlatformSession) => void; notice?:
     setBusy(true);
     try {
       const r = await papi.login(email, password);
-      onIn({ token: r.token, role: r.role, name: r.name, user_id: r.user_id, organization_id: r.organization_id });
+      onIn({ token: r.token, role: r.role, name: r.name, user_id: r.user_id,
+             organization_id: r.organization_id, currency: r.currency });
     } catch (e2) {
       setErr((e2 as Error).message);
     } finally {

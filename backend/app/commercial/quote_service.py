@@ -259,7 +259,7 @@ def project(intel: QuoteLineIntelligence, role: Role, *,
             d.pop("manager_detail", None)
             d.pop("inputs", None)
             if e.impact_data_class == RESTRICTED:
-                d["impact_rupees"] = None
+                d["impact_amount"] = None
         exceptions.append(d)
 
     out: dict[str, Any] = {
@@ -445,7 +445,7 @@ def snapshot_to_dict(row: models.QuoteDecision, role: Role) -> dict:
             e.pop("manager_detail", None)
             e.pop("inputs", None)
             if e.get("impact_data_class") == RESTRICTED:
-                e["impact_rupees"] = None
+                e["impact_amount"] = None
         exceptions.append(e)
 
     out: dict[str, Any] = {

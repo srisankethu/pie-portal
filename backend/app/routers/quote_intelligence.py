@@ -255,6 +255,6 @@ def thresholds(principal: Principal = Depends(current_principal),
             "min_margin": th.min_margin,
             "margin_floor": th.margin_floor,
             "sales_discretion_band": th.sales_discretion_band,
-            "min_quote_exception_impact_rupees": th.min_quote_exception_impact_rupees,
+            "min_quote_exception_impact": th.min_quote_exception_impact,
         })
     return out

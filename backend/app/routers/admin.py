@@ -302,8 +302,8 @@ class UpdateMarginPolicy(BaseModel):
     margin_floor: Optional[float] = None
     sales_discretion_band: Optional[float] = None
     quantity_band_edges: Optional[list[int]] = None
-    min_quote_exception_impact_rupees: Optional[float] = None
-    min_material_gap_rupees: Optional[float] = None
+    min_quote_exception_impact: Optional[float] = None
+    min_material_gap: Optional[float] = None
     min_margin_deterioration_pp: Optional[float] = None
     # Fields sent as null normally mean "leave alone". Listing them here says
     # "clear this override" instead — otherwise a reset would be impossible.

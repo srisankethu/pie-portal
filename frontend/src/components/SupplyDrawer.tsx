@@ -1,7 +1,8 @@
 import type { Line, LineIntelligence } from "../types";
-import { REL_STYLE, inr } from "../rel";
+import { REL_STYLE } from "../rel";
 import { DecisionSupport } from "./DecisionSupport";
 import { QuoteIntelligence } from "./QuoteIntelligence";
+import { money } from "../money";
 
 export function SupplyDrawer({
   line,
@@ -17,8 +18,7 @@ export function SupplyDrawer({
   onOpenPlatform,
   onClose,
   onSelect,
-  onRevert,
-}: {
+  onRevert }: {
   line: Line;
   customer: string;
   mgmt: boolean;
@@ -79,20 +79,20 @@ export function SupplyDrawer({
               <div className="drawer-pricing-grid">
                 <div>
                   <div className="drawer-pricing-label">Current quote</div>
-                  <div className="drawer-pricing-value">{inr(line.quoted)}</div>
+                  <div className="drawer-pricing-value">{money(line.quoted)}</div>
                 </div>
                 <div>
                   <div className="drawer-pricing-label">Recommended</div>
-                  <div className="drawer-pricing-value">{inr(line.economics.recommended)}</div>
+                  <div className="drawer-pricing-value">{money(line.economics.recommended)}</div>
                 </div>
                 <div>
                   <div className="drawer-pricing-label">Cost</div>
-                  <div className="drawer-pricing-value">{inr(line.economics.cost)}</div>
+                  <div className="drawer-pricing-value">{money(line.economics.cost)}</div>
                 </div>
               </div>
               {pricingDelta !== null && (
                 <div className="drawer-pricing-footnote">
-                  Current quoted rate is {pricingDelta > 0 ? "above" : "below"} recommendation by {inr(Math.abs(pricingDelta))}.
+                  Current quoted rate is {pricingDelta > 0 ? "above" : "below"} recommendation by {money(Math.abs(pricingDelta))}.
                 </div>
               )}
             </div>
@@ -100,7 +100,7 @@ export function SupplyDrawer({
           {!mgmt && line.quoted !== null && (
             <div className="drawer-pricing-card">
               <div className="drawer-pricing-header">Current line rate</div>
-              <div className="drawer-pricing-value">{inr(line.quoted)}</div>
+              <div className="drawer-pricing-value">{money(line.quoted)}</div>
               <div className="drawer-pricing-footnote">Adjust the rate inline in the grid when you need to update this line.</div>
             </div>
           )}
@@ -176,7 +176,7 @@ export function SupplyDrawer({
           })}
           {mgmt && exactSelected && line.economics && (
             <div className="text-muted" style={{ fontSize: 11.5, marginTop: 12 }}>
-              Economics — cost {inr(line.economics.cost)} · recommended {inr(line.economics.recommended)}
+              Economics — cost {money(line.economics.cost)} · recommended {money(line.economics.recommended)}
               {line.economics.margin !== null
                 ? ` · margin ${(line.economics.margin * 100).toFixed(1)}%`
                 : ""}

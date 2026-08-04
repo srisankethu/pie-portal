@@ -11,7 +11,6 @@ figure at all, and the platform's grounding gate exists precisely to stop that.
 """
 from __future__ import annotations
 
-from decimal import Decimal
 from typing import Optional
 
 from ..domain.enums import EvidenceSufficiency
@@ -26,10 +25,6 @@ def _pct(ratio: Optional[float]) -> str:
 
 def _pp(points: Optional[float]) -> str:
     return f"{abs(points) * 100:.1f} percentage points" if points is not None else "unknown"
-
-
-def _rupees(amount: Optional[Decimal]) -> str:
-    return f"₹{float(amount):,.0f}" if amount is not None else "unknown"
 
 
 def _change(pct: Optional[float]) -> str:
@@ -120,11 +115,11 @@ def diagnose(m: RelationshipMetrics, benchmark: Optional[ItemBenchmark],
     if m.historical_margin_gap is not None:
         annual = ""
         if m.annualized_historical_margin_gap is not None:
-            annual = (f", roughly {_rupees(m.annualized_historical_margin_gap)} "
+            annual = (f", roughly {th.money(m.annualized_historical_margin_gap)} "
                       f"annualized")
         out.append(
             f"At the historical margin, recent revenue would have earned "
-            f"{_rupees(m.historical_margin_gap)} more{annual}. This is an "
+            f"{th.money(m.historical_margin_gap)} more{annual}. This is an "
             f"estimated gap, not recoverable profit.")
 
     if m.data_sufficiency is EvidenceSufficiency.PARTIAL:

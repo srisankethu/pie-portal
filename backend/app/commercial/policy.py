@@ -37,9 +37,10 @@ EDITABLE: tuple[str, ...] = (
     "margin_floor",
     "sales_discretion_band",
     "quantity_band_edges",
-    "min_quote_exception_impact_rupees",
-    "min_material_gap_rupees",
+    "min_quote_exception_impact",
+    "min_material_gap",
     "min_margin_deterioration_pp",
+    "price_rounding_increment",
 )
 
 #: Human labels + why each one matters, surfaced as tooltips in Settings.
@@ -74,20 +75,26 @@ FIELD_HELP: dict[str, tuple[str, str]] = {
         "pieces and 500 is a different commercial question, and comparing a bulk "
         "line against an all-quantities average makes every bulk line look "
         "under-priced."),
-    "min_quote_exception_impact_rupees": (
+    "min_quote_exception_impact": (
         "Exception floor",
         "Advisory warnings worth less than this are suppressed. Policy breaches "
         "— below cost, below the approval floor — are never suppressed, whatever "
         "this is set to."),
-    "min_material_gap_rupees": (
+    "min_material_gap": (
         "Material gap",
         "A margin gap smaller than this is real but not worth anyone's "
-        "afternoon. Ranking by percentage instead of rupees is how teams end up "
-        "working trivial accounts first."),
+        "afternoon. Ranking by percentage instead of by money is how teams end "
+        "up working trivial accounts first."),
     "min_margin_deterioration_pp": (
         "Erosion threshold",
         "How far margin must fall, in percentage points, before the platform "
         "calls it erosion rather than noise from mix and freight."),
+    "price_rounding_increment": (
+        "Price rounding",
+        "Recommended prices are rounded to a multiple of this, because quoting "
+        "an exact 1,847.31 invites an argument about the 31. Scale it to the "
+        "currency — a tick that is sensible on a ₹2,000 insert is a 5% "
+        "distortion on a $100 one. Set 0 to quote the unrounded number."),
 }
 
 
@@ -149,7 +156,8 @@ def validate(th: CommercialThresholds) -> None:
     if len(th.quantity_band_edges) > 8:
         raise PolicyError("More than eight quantity bands is more than anyone reads")
 
-    for name in ("min_quote_exception_impact_rupees", "min_material_gap_rupees"):
+    for name in ("min_quote_exception_impact", "min_material_gap",
+                 "price_rounding_increment"):
         if getattr(th, name) < 0:
             raise PolicyError(f"{name.replace('_', ' ')} cannot be negative")
     if not (0 <= th.min_margin_deterioration_pp < 1):
@@ -157,6 +165,22 @@ def validate(th: CommercialThresholds) -> None:
 
 
 # ── loading ─────────────────────────────────────────────────────────────────
+def _in_org_currency(session: Session, organization_id: str,
+                     th: CommercialThresholds) -> CommercialThresholds:
+    """Stamp the organization's own currency onto the thresholds.
+
+    The currency belongs to the tenant, not to the deployment: one instance can
+    hold an Indian distributor and a Gulf one, and the environment default is
+    only a fallback for an organization row that has not said. Because the
+    currency is inside the version hash, the same numeric policy in two
+    currencies produces two versions — which is the point, since the rows
+    stamped with them are not comparable.
+    """
+    org = session.get(models.Organization, organization_id)
+    code = (getattr(org, "currency", None) or "").strip().upper()
+    return replace(th, currency=code) if code and code != th.currency else th
+
+
 def load_for_org(session: Session, organization_id: str) -> CommercialThresholds:
     """The thresholds in force for this organization.
 
@@ -164,7 +188,7 @@ def load_for_org(session: Session, organization_id: str) -> CommercialThresholds
     org that has never edited its policy gets exactly what it got before, so
     nothing about existing behaviour depends on a row existing.
     """
-    base = load_commercial_thresholds()
+    base = _in_org_currency(session, organization_id, load_commercial_thresholds())
     row = session.get(models.CommercialPolicy, organization_id)
     if row is None or not row.overrides:
         return base
@@ -189,7 +213,7 @@ def save_for_org(session: Session, organization_id: str, updates: dict,
     that is fine alone can invert the ladder when combined with what is already
     saved, and only the combination is what quotes are judged against.
     """
-    base = load_commercial_thresholds()
+    base = _in_org_currency(session, organization_id, load_commercial_thresholds())
     row = session.get(models.CommercialPolicy, organization_id)
     current = dict(row.overrides or {}) if row is not None else {}
 
@@ -218,7 +242,7 @@ def save_for_org(session: Session, organization_id: str, updates: dict,
 
 def describe(session: Session, organization_id: str) -> dict:
     """The policy for the Settings screen: value, default, whether overridden."""
-    base = load_commercial_thresholds()
+    base = _in_org_currency(session, organization_id, load_commercial_thresholds())
     effective = load_for_org(session, organization_id)
     row = session.get(models.CommercialPolicy, organization_id)
     overrides = (row.overrides or {}) if row is not None else {}
@@ -240,9 +264,25 @@ def describe(session: Session, organization_id: str) -> dict:
     return {
         "version": effective.version,
         "default_version": base.version,
+        # The screen renders money fields with a symbol and has no other way to
+        # know which one; without this it would have to assume, which is how the
+        # rupee sign ended up hardcoded in four components.
+        "currency": effective.currency,
         "fields": fields,
         "updated_at": row.updated_at.isoformat() if row is not None and row.updated_at else None,
     }
+
+
+#: Fields denominated in the organization's currency rather than in a ratio.
+#: An explicit set, not a name suffix: the field names are currency-neutral now,
+#: so there is nothing in ``min_material_gap`` for a suffix test to catch, and a
+#: money field silently rendered as a ratio shows "1000000%" on the settings
+#: screen.
+MONEY_FIELDS: frozenset[str] = frozenset({
+    "min_quote_exception_impact",
+    "min_material_gap",
+    "price_rounding_increment",
+})
 
 
 def _kind(field: str) -> str:
@@ -250,8 +290,8 @@ def _kind(field: str) -> str:
         return "family_margins"
     if field == "quantity_band_edges":
         return "band_edges"
-    if field.endswith("_rupees"):
-        return "rupees"
+    if field in MONEY_FIELDS:
+        return "money"
     return "ratio"
 
 

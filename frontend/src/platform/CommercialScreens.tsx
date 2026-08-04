@@ -5,9 +5,9 @@ import type {
   CustomerItemRow,
   CustomerPortfolio,
   PeerRow,
-  PlatformSession,
-} from "./types";
+  PlatformSession } from "./types";
 import { Bp, Labelled } from "./ui";
+import { money, count } from "../money";
 
 /**
  * Customer × Item commercial intelligence.
@@ -23,7 +23,6 @@ import { Bp, Labelled } from "./ui";
  */
 
 // ── formatting ──────────────────────────────────────────────────────────────
-const nf = new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 });
 
 /** A ratio (0.261) rendered as a percentage. */
 function pct(v: number | null | undefined, digits = 1): string {
@@ -43,12 +42,9 @@ function signedPct(v: number | null | undefined): string {
   return `${sign}${(v * 100).toFixed(1)}%`;
 }
 
-function inr(v: number | null | undefined): string {
-  return v == null ? "—" : `₹${nf.format(Math.round(v))}`;
-}
 
 function num(v: number | null | undefined): string {
-  return v == null ? "—" : nf.format(v);
+  return count(v);
 }
 
 function when(iso: string | null): string {
@@ -61,15 +57,13 @@ const SIGNAL_LABEL: Record<string, string> = {
   CI_LOW_PEER_PRICING: "Below peers",
   CI_MARGIN_DECLINE_NO_VOLUME: "No volume gained",
   CI_MARGIN_DECLINE_WITH_VOLUME: "Volume traded for margin",
-  CI_MATERIAL_MARGIN_GAP: "Material gap",
-};
+  CI_MATERIAL_MARGIN_GAP: "Material gap" };
 
 const EROSION_LABEL: Record<string, string> = {
   COST_DRIVEN: "Cost rose, price didn't follow",
   PRICE_DRIVEN: "Price fell",
   MIXED: "Cost rose and price fell",
-  NONE: "—",
-};
+  NONE: "—" };
 
 /** Data sufficiency, stated plainly. A conclusion drawn from thin data has to
  *  look different from one drawn from years of trading. */
@@ -108,7 +102,7 @@ function Sufficiency({ level, reasons }: { level: string; reasons?: string[] }) 
 type SortKey = "impact" | "deterioration" | "peer_gap" | "revenue" | "volume";
 
 const SORTS: { key: SortKey; label: string }[] = [
-  { key: "impact", label: "Margin gap ₹" },
+  { key: "impact", label: "Margin gap" },
   { key: "deterioration", label: "Margin deterioration" },
   { key: "peer_gap", label: "Peer benchmark gap" },
   { key: "revenue", label: "Revenue" },
@@ -131,8 +125,7 @@ function sortRows(rows: CustomerItemRow[], key: SortKey): CustomerItemRow[] {
 export function CustomerCommercial({
   session,
   customerId,
-  onOpenItem,
-}: {
+  onOpenItem }: {
   session: PlatformSession;
   customerId: string;
   onOpenItem: (productId: string) => void;
@@ -181,10 +174,10 @@ export function CustomerCommercial({
     <div>
       <div className="section-h">Commercial summary · last 12 months</div>
       <div className="ci-kpis">
-        <Kpi label="Revenue" value={inr(s.revenue_12m)} />
-        <Kpi label="Gross profit" value={inr(s.gross_profit_12m)} />
+        <Kpi label="Revenue" value={money(s.revenue_12m)} />
+        <Kpi label="Gross profit" value={money(s.gross_profit_12m)} />
         <Kpi label="Gross margin" value={pct(s.gross_margin_12m)}
-             tip="Total gross profit ÷ total revenue across the account — not the average of the per-item margins, which would let a ₹500 line count as much as a ₹5 lakh one." />
+             tip="Total gross profit ÷ total revenue across the account — not the average of the per-item margins, which would let a trivial line count as much as one a thousand times its size." />
         <Kpi label="Active items" value={num(s.active_items)} />
         <Kpi label="Items eroding" value={num(s.items_with_margin_erosion)}
              tip="Items whose margin has fallen by more than the erosion threshold between the recent window and the one before it, and where there is enough evidence to say so. Set the threshold in Settings → Margin policy."
@@ -192,7 +185,7 @@ export function CustomerCommercial({
         <Kpi label="Material gaps" value={num(s.material_gap_items)}
              tip="Items where the gap is worth more in rupees than the material-gap floor. Ranking by percentage instead is how a team ends up working trivial accounts first."
              tone={s.material_gap_items ? "warn" : undefined} />
-        <Kpi label="Historical margin gap" value={inr(s.historical_margin_gap)}
+        <Kpi label="Historical margin gap" value={money(s.historical_margin_gap)}
              sub="estimate, not recoverable profit"
              tip="What recent volume would have earned at the historical margin, minus what it actually earned. An arithmetic gap, not money anyone can go and collect — costs may have risen for reasons no price can undo."
              tone={s.historical_margin_gap ? "warn" : undefined} />
@@ -270,8 +263,8 @@ export function CustomerCommercial({
                   </th>
                   <th className="num">Volume</th>
                   <th className="num">
-                    <Labelled tip="The historical margin gap in rupees. This column is what the list is ranked by, because a 9-point slide on a ₹4,000 item matters less than a 2-point slide on a ₹40 lakh one.">
-                      Margin gap ₹
+                    <Labelled tip="The historical margin gap in money, not in points. This column is what the list is ranked by, because a 9-point slide on a small item matters less than a 2-point slide on a large one.">
+                      Margin gap
                     </Labelled>
                   </th>
                   <th>Reason</th>
@@ -284,7 +277,7 @@ export function CustomerCommercial({
                       <div style={{ fontWeight: 600 }}>{r.item_name}</div>
                       {r.item_code && <div className="fsrc">{r.item_code}</div>}
                     </td>
-                    <td className="num">{inr(r.revenue_12m)}</td>
+                    <td className="num">{money(r.revenue_12m)}</td>
                     <td className="num">{pct(r.current_margin)}</td>
                     <td className="num">{pct(r.historical_margin)}</td>
                     <td className="num">
@@ -296,7 +289,7 @@ export function CustomerCommercial({
                     </td>
                     <td className="num">{signedPct(r.volume_change_pct)}</td>
                     <td className="num" style={{ fontWeight: 600 }}>
-                      {inr(r.historical_margin_gap)}
+                      {money(r.historical_margin_gap)}
                     </td>
                     <td>
                       <div className="ci-tags">
@@ -340,8 +333,7 @@ export function CustomerItemScreen({
   session,
   customerId,
   productId,
-  onBack,
-}: {
+  onBack }: {
   session: PlatformSession;
   customerId: string;
   productId: string;
@@ -392,20 +384,20 @@ export function CustomerItemScreen({
       </div>
 
       <div className="ci-kpis">
-        <Kpi label="Revenue (recent)" value={inr(h.revenue_recent)} />
-        <Kpi label="Gross profit" value={inr(h.gross_profit_recent)} />
+        <Kpi label="Revenue (recent)" value={money(h.revenue_recent)} />
+        <Kpi label="Gross profit" value={money(h.gross_profit_recent)} />
         <Kpi label="Current margin" value={pct(h.current_margin)} />
         <Kpi label="Historical margin" value={pct(h.historical_margin)} />
         <Kpi label="Change" value={pp(h.margin_change_pp)}
              tip="Percentage points, not percent. A move from 24% to 20% is −4 pp."
              tone={(h.margin_change_pp ?? 0) < 0 ? "warn" : undefined} />
-        <Kpi label="Net selling price" value={inr(h.current_sell_price)} sub="per unit"
+        <Kpi label="Net selling price" value={money(h.current_sell_price)} sub="per unit"
              tip="What the customer actually paid per unit — the invoice rate after line discounts, not the list price." />
-        <Kpi label="Effective cost" value={inr(h.current_effective_cost)} sub="per unit"
+        <Kpi label="Effective cost" value={money(h.current_effective_cost)} sub="per unit"
              tip="Purchase cost per unit from the bills, after landed costs and supplier discounts. Where no bill covers a sale, the margin is absent rather than assumed." />
-        <Kpi label="Historical margin gap" value={inr(h.historical_margin_gap)}
+        <Kpi label="Historical margin gap" value={money(h.historical_margin_gap)}
              sub={h.annualized_historical_margin_gap
-               ? `${inr(h.annualized_historical_margin_gap)} annualized`
+               ? `${money(h.annualized_historical_margin_gap)} annualized`
                : "not enough history to annualize"}
              tone={h.historical_margin_gap ? "warn" : undefined} />
       </div>
@@ -478,7 +470,7 @@ export function CustomerItemScreen({
                     Median selling price
                   </Labelled>
                 </dt>
-                <dd>{inr(data.peers.median_price)}</dd>
+                <dd>{money(data.peers.median_price)}</dd>
               </div>
               <div><dt>Median margin</dt><dd>{pct(data.peers.median_margin)}</dd></div>
               <div>
@@ -522,7 +514,7 @@ export function CustomerItemScreen({
                     <td style={{ fontWeight: p.is_subject ? 700 : 400 }}>
                       {p.name}{p.is_subject && <span className="ci-you"> this customer</span>}
                     </td>
-                    <td className="num">{inr(p.net_sell_price)}</td>
+                    <td className="num">{money(p.net_sell_price)}</td>
                     <td className="num">{pct(p.margin)}</td>
                     <td className="num">{num(p.qty)}</td>
                     <td className="num">{p.txn_count}</td>
@@ -549,7 +541,7 @@ export function CustomerItemScreen({
               <tr key={p.period_start}>
                 <td>{when(p.period_start)} – {when(p.period_end)}</td>
                 <td className="num">{num(p.qty)}</td>
-                <td className="num">{inr(p.revenue)}</td>
+                <td className="num">{money(p.revenue)}</td>
                 <td className="num">{pct(p.margin)}</td>
               </tr>
             ))}
@@ -570,7 +562,7 @@ export function CustomerItemScreen({
                 <th>Date</th><th>Invoice</th><th className="num">Qty</th>
                 <th className="num">Rate</th><th className="num">Disc</th>
                 <th className="num">Net price</th><th className="num">Eff. cost</th>
-                <th className="num">GP ₹</th><th className="num">Margin</th>
+                <th className="num">GP</th><th className="num">Margin</th>
               </tr>
             </thead>
             <tbody>
@@ -579,15 +571,15 @@ export function CustomerItemScreen({
                   <td>{when(t.date)}</td>
                   <td className="mono" style={{ fontSize: 12 }}>{t.invoice_id || "—"}</td>
                   <td className="num">{num(t.qty)}</td>
-                  <td className="num">{inr(t.rate)}</td>
+                  <td className="num">{money(t.rate)}</td>
                   <td className="num">{t.discount_percent ? pct(t.discount_percent / 100) : "—"}</td>
-                  <td className="num">{inr(t.net_sell_price)}</td>
+                  <td className="num">{money(t.net_sell_price)}</td>
                   <td className="num">
                     {t.effective_cost == null
                       ? <span className="fsrc">no cost</span>
-                      : inr(t.effective_cost)}
+                      : money(t.effective_cost)}
                   </td>
-                  <td className="num">{inr(t.gross_profit)}</td>
+                  <td className="num">{money(t.gross_profit)}</td>
                   <td className="num">{pct(t.margin)}</td>
                 </tr>
               ))}
@@ -633,10 +625,10 @@ function PriceCostChart({ series }: { series: CustomerItemDetail["series"] }) {
       <line x1={PAD} y1={H - PAD} x2={W - PAD} y2={H - PAD} className="ci-axis" />
       <line x1={PAD} y1={PAD} x2={PAD} y2={H - PAD} className="ci-axis" />
       <text x={PAD - 6} y={PAD + 4} className="ci-axis-label" textAnchor="end">
-        {inr(max)}
+        {money(max)}
       </text>
       <text x={PAD - 6} y={H - PAD} className="ci-axis-label" textAnchor="end">
-        {inr(min)}
+        {money(min)}
       </text>
       <path d={path((p) => p.net_sell_price)} className="ci-line ci-line-price" />
       <path d={path((p) => p.effective_cost)} className="ci-line ci-line-cost" />
@@ -644,14 +636,14 @@ function PriceCostChart({ series }: { series: CustomerItemDetail["series"] }) {
         p.net_sell_price == null ? null : (
           <circle key={`p${i}`} cx={x(i)} cy={y(p.net_sell_price)} r="2.5"
                   className="ci-dot ci-dot-price">
-            <title>{`${when(p.date)} · price ${inr(p.net_sell_price)}`}</title>
+            <title>{`${when(p.date)} · price ${money(p.net_sell_price)}`}</title>
           </circle>
         ))}
       {points.map((p, i) =>
         p.effective_cost == null ? null : (
           <circle key={`c${i}`} cx={x(i)} cy={y(p.effective_cost)} r="2.5"
                   className="ci-dot ci-dot-cost">
-            <title>{`${when(p.date)} · cost ${inr(p.effective_cost)}`}</title>
+            <title>{`${when(p.date)} · cost ${money(p.effective_cost)}`}</title>
           </circle>
         ))}
       <g className="ci-legend">

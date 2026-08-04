@@ -219,7 +219,7 @@ def test_a_salesperson_still_learns_that_approval_is_needed(client):
     fired = next(e for e in line["exceptions"] if e["code"] == "BELOW_MIN_MARGIN")
     assert line["requires_approval"] is True
     assert "manager_detail" not in fired, "the reasoning names cost — absent, not masked"
-    assert fired["impact_rupees"] is None, "the gap to the floor reveals cost"
+    assert fired["impact_amount"] is None, "the gap to the floor reveals cost"
     assert fired["detail"], "but the salesperson is told, in plain words"
 
 
@@ -227,7 +227,7 @@ def test_a_manager_receives_the_numbers_the_salesperson_does_not(client):
     line = _assess(client, MANAGER, [_line("L1", price=130.0)])["lines"][0]
     fired = next(e for e in line["exceptions"] if e["code"] == "BELOW_MIN_MARGIN")
     assert fired["manager_detail"] and "%" in fired["manager_detail"]
-    assert fired["impact_rupees"] is not None
+    assert fired["impact_amount"] is not None
     assert line["position"]["erosion_kind"] == "COST_DRIVEN"
 
 

@@ -1,24 +1,20 @@
 // Presentation formatting only — NO business logic / calculations (those live in
 // the backend). These map already-computed values to human-readable strings.
 import type { Fact } from "./types";
+import { money } from "../money";
 
 export const TYPE_LABEL: Record<string, string> = {
   CUSTOMER_DECLINE: "Customer decline",
   CUSTOMER_DORMANCY: "Customer dormancy",
   MARGIN_DETERIORATION: "Margin deterioration",
   COST_PASS_THROUGH: "Cost pass-through",
-  QUOTE_CONTEXT: "Quote context",
-};
+  QUOTE_CONTEXT: "Quote context" };
 
 export const CONF_LABEL: Record<string, string> = {
   SUFFICIENT: "High",
   PARTIAL: "Medium",
-  INSUFFICIENT: "Low",
-};
+  INSUFFICIENT: "Low" };
 
-export function inr(n: number): string {
-  return "₹" + Math.round(n).toLocaleString("en-IN");
-}
 
 export function factLabel(label: string): string {
   return label
@@ -37,7 +33,7 @@ export function factValue(label: string, value: Fact["value"]): string {
     if (l.includes("pct") || l.includes("margin") || l.includes("ratio"))
       return (value * 100).toFixed(1) + "%";
     if (l.includes("price") || l.includes("cost") || l.includes("revenue") || l.includes("stake") || l.includes("change"))
-      return inr(value);
+      return money(value);
     if (l.includes("days") || l.includes("count") || l.includes("orders") || l.includes("interval"))
       return String(Math.round(value));
     return String(value);

@@ -273,3 +273,44 @@ def test_concentration_is_measured_not_asserted():
     result = story.concentration_of(moves, {"big": "Big", "small": "Small"})
     assert result["top_customer_share"] == pytest.approx(0.8)
     assert result["top_customer_label"] == "Big"
+
+
+def test_headlines_carry_their_currency():
+    """A number with no unit on the first screen of a commercial product.
+
+    Headlines were built with a bare ``:,.0f`` and rendered "241,141 of revenue
+    stopped" — caught by screenshotting the real page, which is the only way
+    this class of defect shows up.
+    """
+    c = periods.comparison(date(2026, 6, 30), months=1)
+    sales = [_sale("c1", date(2026, 5, 10), 100000),
+             _sale("c1", date(2026, 6, 10), 40000)]
+    movement = flow.compute(sales, {"c1": "Acme"}, c)
+    built = story.build(
+        flow=movement.to_dict(),
+        lost=cohorts.lost_revenue(sales, {"c1": "Acme"}, c, {}),
+        radar=[], radar_totals={"confident_impact": 0, "count": 0},
+        dormant={"count": 0, "customers": []},
+        concentration=story.concentration_of(
+            [m.to_dict() for m in movement.moves], {"c1": "Acme"}),
+        currency="INR")
+
+    money_beats = [b for b in built["beats"] if "revenue stopped" in b["headline"]]
+    assert money_beats, "expected a lost-revenue beat"
+    assert "₹" in money_beats[0]["headline"], money_beats[0]["headline"]
+
+
+def test_a_dollar_tenant_gets_a_dollar_headline():
+    c = periods.comparison(date(2026, 6, 30), months=1)
+    sales = [_sale("c1", date(2026, 5, 10), 100000),
+             _sale("c1", date(2026, 6, 10), 40000)]
+    movement = flow.compute(sales, {"c1": "Acme"}, c)
+    built = story.build(
+        flow=movement.to_dict(),
+        lost=cohorts.lost_revenue(sales, {"c1": "Acme"}, c, {}),
+        radar=[], radar_totals={}, dormant={"count": 0, "customers": []},
+        concentration=story.concentration_of(
+            [m.to_dict() for m in movement.moves], {"c1": "Acme"}),
+        currency="USD")
+    headline = next(b["headline"] for b in built["beats"] if "stopped" in b["headline"])
+    assert "$" in headline and "₹" not in headline

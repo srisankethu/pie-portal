@@ -15,6 +15,7 @@ import { IdentityScreen } from "./IdentityScreen";
 import { DataScreen } from "./DataScreen";
 import { CustomerCommercial, CustomerItemScreen } from "./CommercialScreens";
 import { Storyboard } from "./viz/Storyboard";
+import { JourneyScreen, LostRevenueScreen, OpportunityScreen, SimulatorScreen, WeatherScreen } from "./viz/Screens";
 import "./viz/viz.css";
 
 const ROLE_HOME: Record<Role, { title: string; sub: string; nav: string }> = {
@@ -202,6 +203,29 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
     setRoute({ screen: s, id, itemId });
   }, []);
 
+  /** Resolve a route string emitted by the insight layer onto a screen.
+   *
+   *  The server names a destination for every beat and every weather front —
+   *  `lost-revenue`, `opportunities`, `customer/<id>` — and this is the single
+   *  place those names become navigation. One table rather than a conditional
+   *  per call site, so adding a beat means adding a row here and nothing else.
+   *  An unrecognised route lands on the storyboard rather than nowhere. */
+  const goViz = useCallback((route: string) => {
+    const [head, id] = route.split("/");
+    if (head === "customer" && id) return go("customer", id);
+    if (head === "simulate") return go("simulate");
+    const map: Record<string, Screen> = {
+      "lost-revenue": "lostRevenue",
+      opportunities: "opportunities",
+      journey: "journey",
+      weather: "weather",
+      "revenue-flow": "home",
+      data: "data",
+      simulate: "simulate",
+    };
+    go(map[head] ?? "home");
+  }, [go]);
+
   const flash = (msg: string, undo?: () => void) => {
     setToast({ msg, undo });
     setTimeout(() => setToast(null), undo ? 9000 : 3500);
@@ -318,9 +342,23 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
 
   const rh = ROLE_HOME[session.role];
   const roleShort = session.role === "SALESPERSON" ? "Salesperson" : session.role === "SALES_MANAGER" ? "Manager" : "Owner";
+  const manager = session.role !== "SALESPERSON";
+  // The insight screens sit next to the briefing they are reached from. The two
+  // that are entirely margin are omitted for a salesperson rather than shown and
+  // then refused — a nav item that always 403s is a nav item that teaches people
+  // the product is broken.
   const navItems: [Screen, string, string][] = [
-    ["home", rh.nav, session.role === "SALESPERSON" ? String(openDecisions.length) : ""],
-    ["list", "Decisions", summaries ? String(summaries.length) : ""],
+    ["home", "Storyboard", ""],
+    ...(manager
+      ? ([["weather", "Weather", ""],
+          ["opportunities", "Opportunities", ""],
+          ["lostRevenue", "Lost revenue", ""],
+          ["simulate", "Simulator", ""]] as [Screen, string, string][])
+      : []),
+    ["journey", "Customers", ""],
+    // Open, not total: a badge counting closed decisions is a badge that never
+    // goes down, and one that never goes down stops being read.
+    ["list", rh.nav, openDecisions.length ? String(openDecisions.length) : ""],
     ["customer", "Accounts", ""],
     ["quotes", "Quotes", ""],
     ["approvals", "Approvals", pendingApprovals ? String(pendingApprovals) : ""],
@@ -369,6 +407,13 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
           <LoadFailed error={error} onRetry={load} busy={loading} />
         ) : (
           <>
+        {/* ── the visualization layer ── */}
+        {screen === "weather" && <WeatherScreen session={session} onNavigate={goViz} />}
+        {screen === "opportunities" && <OpportunityScreen session={session} onNavigate={goViz} />}
+        {screen === "lostRevenue" && <LostRevenueScreen session={session} onNavigate={goViz} />}
+        {screen === "journey" && <JourneyScreen session={session} onNavigate={goViz} />}
+        {screen === "simulate" && <SimulatorScreen session={session} />}
+
         {/* ── HOME: the Commercial Storyboard ──
             A briefing, not a queue. The decision list it used to show is still
             one click away at /decisions; what belongs on the first screen is
@@ -376,19 +421,7 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
             say — a list of open items answers "what is outstanding", never
             "what happened". */}
         {screen === "home" && (
-          <Storyboard
-            session={session}
-            onNavigate={(route) => {
-              const [head, id] = route.split("/");
-              if (head === "customer" && id) { go("customer", id); return; }
-              if (route.startsWith("simulate")) { go("states"); return; }
-              const map: Record<string, Screen> = {
-                "lost-revenue": "list", "opportunities": "list",
-                "journey": "customer", "revenue-flow": "home", "data": "data",
-              };
-              go(map[route] ?? "list");
-            }}
-          />
+          <Storyboard session={session} onNavigate={goViz} />
         )}
 
         {/* ── DECISION LIST ── */}

@@ -9,6 +9,9 @@
  */
 export type Screen =
   | "home" | "list" | "detail" | "customer" | "quotes" | "states" | "data"
+  /** The visualization layer. `home` is the Storyboard; these are the screens
+   *  its beats link out to, each answering one question in depth. */
+  | "weather" | "opportunities" | "lostRevenue" | "journey" | "simulate"
   /** The approval queue, and organization settings (owner is super admin). */
   | "approvals" | "settings"
   /** Which connector records describe the same customer or item. */
@@ -35,6 +38,11 @@ const PATHS: Record<Screen, string> = {
   approvals: "/approvals",
   settings: "/settings",
   identity: "/identity",
+  weather: "/weather",
+  opportunities: "/opportunities",
+  lostRevenue: "/lost-revenue",
+  journey: "/journey",
+  simulate: "/simulate",
 };
 
 export function toHash(r: Route): string {
@@ -80,6 +88,16 @@ export function parseHash(hash: string): Route {
       return { screen: "settings" };
     case "identity":
       return { screen: "identity" };
+    case "weather":
+      return { screen: "weather" };
+    case "opportunities":
+      return { screen: "opportunities" };
+    case "lost-revenue":
+      return { screen: "lostRevenue" };
+    case "journey":
+      return { screen: "journey" };
+    case "simulate":
+      return { screen: "simulate" };
     default:
       return { screen: "home" };
   }

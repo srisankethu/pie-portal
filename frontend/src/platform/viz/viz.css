@@ -161,3 +161,240 @@
   .beat-answers > div { grid-template-columns: 1fr; gap: 2px; }
   .beat { grid-template-columns: 3px 1fr; gap: 12px; }
 }
+
+/* ── size-adaptive scaffolding ───────────────────────────────────────────── */
+/* Charts measure their own container, so the only thing CSS has to guarantee is
+   that the container is actually measurable and never forces a horizontal
+   scrollbar on the page. */
+.viz-measure { width: 100%; min-width: 0; }
+.viz-svg { display: block; width: 100%; height: auto; overflow: visible; }
+.viz-bar-value { font-size: 11px; fill: var(--color-text); font-weight: 600;
+                 font-variant-numeric: tabular-nums; }
+.viz-bar-label { font-size: 11px; fill: var(--color-neutral-700); }
+.viz-bar-sub { font-size: 10px; fill: var(--color-neutral-600); }
+
+.viz-legend {
+  list-style: none; margin: 10px 0 0; padding: 0;
+  display: flex; gap: 16px; flex-wrap: wrap; font-size: 12.5px;
+  color: var(--color-neutral-700);
+}
+.viz-legend li { display: flex; align-items: center; gap: 6px; }
+.viz-swatch { width: 12px; height: 12px; border-radius: 2px; display: inline-block; }
+.viz-swatch.pos { background: var(--viz-gain); }
+.viz-swatch.neg { background: var(--viz-loss); }
+.viz-swatch.flat { background: var(--viz-neutral); }
+
+/* ── waterfall, narrow form ──────────────────────────────────────────────── */
+.wf-rows { display: grid; gap: 4px; }
+.wf-anchor {
+  display: flex; justify-content: space-between; align-items: baseline;
+  padding: 8px 0; border-block: 1px solid var(--color-divider);
+  font-size: 13px; color: var(--color-neutral-700);
+}
+.wf-anchor strong { font-variant-numeric: tabular-nums; color: var(--color-text); }
+.wf-row {
+  display: grid; grid-template-columns: 1fr; gap: 4px; padding: 8px 0;
+  border-radius: 3px;
+}
+.wf-row-clickable { cursor: pointer; }
+.wf-row-clickable:hover { background: var(--color-neutral-200); }
+.wf-row-clickable:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.wf-row-label { font-size: 13px; display: flex; gap: 8px; align-items: baseline; }
+.wf-row-label em {
+  font-style: normal; font-size: 11px; color: var(--color-neutral-600);
+}
+.wf-track { position: relative; display: block; height: 12px;
+            background: var(--color-neutral-200); border-radius: 2px; }
+/* A centre rule so the divergence is readable without colour. */
+.wf-track::after {
+  content: ""; position: absolute; left: 50%; top: -2px; bottom: -2px;
+  width: 1px; background: var(--viz-rule);
+}
+.wf-fill { position: absolute; top: 0; bottom: 0; border-radius: 2px; }
+.wf-fill.neg { background: var(--viz-loss); }
+.wf-fill.pos { background: var(--viz-gain); }
+.wf-fill.flat { background: var(--viz-neutral); }
+.wf-row-value { font-size: 13px; font-variant-numeric: tabular-nums; font-weight: 600; }
+.wf-row-value.neg { color: var(--viz-loss); }
+.wf-row-value.pos { color: var(--viz-gain); }
+
+/* ── weather fronts ──────────────────────────────────────────────────────── */
+.fronts { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.front {
+  display: grid; grid-template-columns: 4px 1fr; gap: 16px;
+  padding: 14px 0; border-bottom: 1px solid var(--color-divider);
+}
+.front:last-child { border-bottom: 0; }
+.front-band { border-radius: 2px; }
+.front-top { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.front-top h4 { font-family: var(--font-heading); font-size: 17px; margin: 0; }
+.front-tag {
+  font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--color-neutral-600); border: 1px solid var(--color-divider);
+  border-radius: 2px; padding: 1px 6px;
+}
+.front-headline { margin: 4px 0 2px; font-size: 14.5px; }
+.front-body .btn { margin-top: 8px; }
+
+/* ── opportunity radar ───────────────────────────────────────────────────── */
+.radar-totals {
+  display: flex; justify-content: space-between; align-items: baseline;
+  gap: 16px; flex-wrap: wrap; padding-bottom: 6px;
+}
+.radar-total-value {
+  font-family: var(--font-heading); font-size: 30px;
+  font-variant-numeric: tabular-nums;
+}
+.radar-rows { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.radar-hit {
+  display: grid; grid-template-columns: minmax(120px, 1.4fr) minmax(80px, 2fr) auto;
+  gap: 14px; align-items: center; width: 100%;
+  background: none; border: 0; padding: 10px 8px; border-radius: 3px;
+  text-align: left; cursor: pointer; color: inherit; font: inherit;
+}
+.radar-hit:hover { background: var(--color-neutral-200); }
+.radar-hit:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -2px; }
+.radar-names { display: grid; gap: 1px; min-width: 0; }
+.radar-names strong, .radar-names span {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.radar-names span { font-size: 12.5px; }
+.radar-track { height: 14px; background: var(--color-neutral-200); border-radius: 2px; }
+.radar-fill { display: block; height: 100%; background: var(--viz-accent); border-radius: 2px; }
+.radar-figures { display: grid; gap: 1px; justify-items: end; }
+.radar-figures strong { font-variant-numeric: tabular-nums; }
+.radar-conf { font-size: 11.5px; color: var(--color-neutral-600); white-space: nowrap; }
+
+@media (max-width: 620px) {
+  .radar-hit { grid-template-columns: 1fr auto; }
+  .radar-track { grid-column: 1 / -1; }
+}
+
+/* ── lost revenue ────────────────────────────────────────────────────────── */
+.cause-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 18px; }
+.cause-head { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
+.cause-head h4 { font-family: var(--font-heading); font-size: 16px; margin: 0; }
+.cause-amount { font-variant-numeric: tabular-nums; font-weight: 600; }
+.cause-track {
+  height: 10px; background: var(--color-neutral-200);
+  border-radius: 2px; margin: 6px 0 4px;
+}
+.cause-fill { display: block; height: 100%; background: var(--viz-loss); border-radius: 2px; }
+/* An unexplained bucket is hatched as well as coloured, so it never reads as a
+   measured cause at a glance. */
+.cause-fill.hatched {
+  background: repeating-linear-gradient(
+    45deg, var(--viz-neutral) 0 4px, transparent 4px 8px);
+  border: 1px solid var(--viz-neutral);
+}
+.cause-members { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 3px;
+                 font-size: 13px; }
+.link-btn {
+  background: none; border: 0; padding: 0; font: inherit; color: var(--color-accent-700);
+  cursor: pointer; text-decoration: underline; text-underline-offset: 2px;
+}
+.link-btn:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+
+/* ── journey ─────────────────────────────────────────────────────────────── */
+.journey {
+  display: flex; align-items: flex-end; gap: 3px; height: 190px;
+  overflow-x: auto; padding-bottom: 4px;
+}
+.journey-col { flex: 1 1 0; min-width: 18px; display: grid; gap: 6px;
+               grid-template-rows: 1fr auto; height: 100%; }
+.journey-stack {
+  display: flex; flex-direction: column-reverse; justify-content: flex-start;
+  gap: 2px; height: 100%; align-items: stretch;
+}
+.journey-seg { display: block; border-radius: 1px; min-height: 2px; }
+.journey-seg.pos { background: var(--viz-gain); }
+.journey-seg.neg { background: var(--viz-loss); }
+.journey-seg.flat { background: var(--viz-neutral); }
+.journey-label {
+  font-size: 10.5px; color: var(--color-neutral-600); text-align: center;
+  white-space: nowrap; height: 14px;
+}
+.dormant { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--color-divider); }
+.dormant h4 { font-family: var(--font-heading); font-size: 16px; margin: 0 0 6px; }
+
+/* ── simulator ───────────────────────────────────────────────────────────── */
+.sim-controls { display: grid; gap: 16px; }
+.sim-controls fieldset { border: 0; padding: 0; margin: 0; }
+.sim-controls legend {
+  font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase;
+  color: var(--color-neutral-600); font-weight: 600; padding: 0 0 6px;
+}
+.sim-choices { display: flex; gap: 8px; flex-wrap: wrap; }
+.chip {
+  border: 1px solid var(--color-divider); border-radius: 3px; padding: 6px 12px;
+  font-size: 13px; cursor: pointer; background: var(--color-neutral-100);
+}
+.chip input { position: absolute; opacity: 0; width: 0; height: 0; }
+.chip-on { background: var(--color-accent-100); border-color: var(--color-accent); }
+.chip:focus-within { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+
+.sim-slider { display: grid; gap: 4px; max-width: 460px; }
+.sim-slider label {
+  display: flex; justify-content: space-between; align-items: baseline;
+  font-size: 13.5px; gap: 12px;
+}
+.sim-slider output { font-variant-numeric: tabular-nums; font-weight: 600; }
+.sim-slider input[type="range"] { width: 100%; accent-color: var(--color-accent); }
+
+.sim-headline {
+  display: grid; gap: 2px; padding: 16px 0; margin-top: 4px;
+  border-block: 1px solid var(--color-divider);
+}
+.sim-headline-label {
+  font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase;
+  color: var(--color-neutral-600); font-weight: 600;
+}
+.sim-headline-value {
+  font-family: var(--font-heading); font-size: clamp(30px, 5vw, 44px); line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.sim-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 20px;
+}
+.sim-col h4 {
+  font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase;
+  color: var(--color-neutral-600); font-weight: 600; margin: 0 0 8px;
+}
+.sim-col dl { margin: 0; display: grid; gap: 6px; }
+.sim-col dl > div { display: flex; justify-content: space-between; gap: 12px; font-size: 14px; }
+.sim-col dt { color: var(--color-neutral-600); }
+.sim-col dd { margin: 0; font-variant-numeric: tabular-nums; }
+.sim-value { font-family: var(--font-heading); font-size: 28px; margin: 0;
+             font-variant-numeric: tabular-nums; }
+.sim-col .pos, .wf-row-value.pos { color: var(--viz-gain); }
+.sim-col .neg, .wf-row-value.neg { color: var(--viz-loss); }
+.sim-note {
+  font-size: 13px; color: var(--color-neutral-700); background: var(--color-neutral-200);
+  border-left: 3px solid var(--viz-accent); padding: 10px 12px; border-radius: 0 3px 3px 0;
+  margin: 4px 0 0;
+}
+.sim-blocked summary { font-size: 13px; cursor: pointer; color: var(--color-accent-700); }
+.sim-blocked ul { margin: 8px 0 0; padding-left: 20px; font-size: 13px;
+                  color: var(--color-neutral-700); display: grid; gap: 6px; }
+
+.month-picker { display: flex; align-items: center; gap: 8px; }
+
+/* Nothing on this layer may push the page sideways. */
+.storyboard, .viz-panel { min-width: 0; max-width: 100%; }
+.viz-table-fallback, .journey { overflow-x: auto; }
+
+/* Counts printed inside a band, so the chart carries quantity and not only
+   proportion. Centred, and only rendered where the band is tall enough. */
+.journey-seg { position: relative; display: flex; align-items: center;
+               justify-content: center; }
+.journey-count {
+  font-size: 11px; font-weight: 600; color: #fff; line-height: 1;
+  font-variant-numeric: tabular-nums;
+  /* A dark halo so the numeral holds up on the lighter grey band too. */
+  text-shadow: 0 0 3px rgba(0, 0, 0, .45);
+}
+/* A month nobody traded in is a fact worth drawing, not an absence. */
+.journey-none {
+  display: block; height: 2px; align-self: flex-end; width: 100%;
+  background: var(--viz-rule);
+}

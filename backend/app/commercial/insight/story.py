@@ -54,7 +54,21 @@ class Beat:
 
 
 def _money(v: float) -> float:
+    """Rounded, for the machine-readable ``change`` payload."""
     return round(v, 2)
+
+
+def _spell(v: float, currency: str) -> str:
+    """A headline amount, with its currency symbol.
+
+    Headlines used to be built with a bare ``:,.0f``, which rendered
+    "241,141 of revenue stopped" — a number with no unit, on the first screen
+    of a commercial product. ``commercial.money`` already knows how to spell an
+    amount in a tenant's currency, including the lakh grouping, so it is used
+    here rather than a second format string.
+    """
+    from ..money import money as _fmt
+    return _fmt(v, currency)
 
 
 def build(*, flow: dict, lost: dict, radar: list[dict], radar_totals: dict,
@@ -69,7 +83,7 @@ def build(*, flow: dict, lost: dict, radar: list[dict], radar_totals: dict,
         named = [c for c in lost["causes"] if c["cause"] != "UNEXPLAINED"]
         beats.append(Beat(
             kind=LOST_REVENUE, severity="HIGH",
-            headline=f"{_money(total_lost):,.0f} of revenue stopped",
+            headline=f"{_spell(total_lost, currency)} of revenue stopped",
             change={"amount": _money(total_lost),
                     "comparison": lost.get("comparison"),
                     "direction": "down"},
@@ -95,7 +109,7 @@ def build(*, flow: dict, lost: dict, radar: list[dict], radar_totals: dict,
         cost_driven = [o for o in confident_eroding if o["kind"] == "COST_NOT_PASSED"]
         beats.append(Beat(
             kind=MARGIN_EROSION, severity="HIGH" if amount > 0 else "INFO",
-            headline=f"{_money(amount):,.0f} a year in eroding margin",
+            headline=f"{_spell(amount, currency)} a year in eroding margin",
             change={"amount": _money(amount),
                     "relationships": len(confident_eroding),
                     "direction": "down"},
@@ -155,7 +169,7 @@ def build(*, flow: dict, lost: dict, radar: list[dict], radar_totals: dict,
     if confident > 0:
         beats.append(Beat(
             kind=OPPORTUNITY, severity="INFO",
-            headline=f"{_money(confident):,.0f} recoverable with solid evidence",
+            headline=f"{_spell(confident, currency)} recoverable with solid evidence",
             change={"amount": _money(confident),
                     "count": radar_totals.get("count", 0)},
             cause={"primary": "PRICED_BELOW_REFERENCE",
@@ -174,7 +188,7 @@ def build(*, flow: dict, lost: dict, radar: list[dict], radar_totals: dict,
     if gained > 0:
         beats.append(Beat(
             kind=GROWTH, severity="GOOD",
-            headline=f"{_money(gained):,.0f} gained from growth and new customers",
+            headline=f"{_spell(gained, currency)} gained from growth and new customers",
             change={"amount": _money(gained),
                     "grown": grown["amount"] if grown else 0.0,
                     "new": new["amount"] if new else 0.0},

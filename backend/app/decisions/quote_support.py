@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 
 from ..ai.interpret import interpret
 from ..ai.provider import AIProvider, select_provider
+from ..trust import disclosure, rehydrate
 from ..ai.telemetry import CallTelemetry
 from ..authz import Principal
 from ..context.quote_bundle import _label, build_quote_bundle
@@ -185,7 +186,7 @@ def quote_support(
     bundle = build_quote_bundle(
         assembled, principal.role,
         proposed_price=proposed_price,
-        proposed_product_label=product_models[0].name if len(product_models) == 1 else None,
+        proposed_product_id=product_models[0].product_id if len(product_models) == 1 else None,
     )
 
     # Cost control: if an OPEN decision for this exact (customer, items) already
@@ -214,8 +215,15 @@ def quote_support(
             subject_entity_id=customer.customer_id, recipient_role=principal.role.value,
         ), cache_hit=True)
     else:
+        # The pseudonym goes in — including to the deterministic fallback, so
+        # both paths produce the same shape of text and only one of them has to
+        # be re-hydrated on the way out.
         result = interpret(bundle, provider, signal_type="QUOTE_CONTEXT",
-                           metrics=_flat_metrics(assembled), subject_label=customer.name)
+                           metrics=_flat_metrics(assembled),
+                           subject_label=bundle.subject_ref.get("label", ""))
+        rehydrate.result(result, bundle.display_names)
+        disclosure.log_result(session, organization_id=org,
+                              decision_type="QUOTE_CONTEXT", result=result)
         tel_repo.record(result.telemetry)
         interp = {"status": result.status.value, "title": result.concise_title,
                   "recommendation": result.recommended_action or None,
@@ -321,3 +329,4 @@ def _persist(session: Session, principal: Principal, customer: models.Customer,
         d.status = DecisionStatus.OPEN.value
     session.flush()
     return d.decision_id
+

@@ -160,6 +160,14 @@ class Settings:
     # ── AI Decision Layer ────────────────────────────────────────────────────
     # Provider is swappable; "mock" (deterministic, offline — dev/test default) or
     # "anthropic" (live). A cheap, fast model suits small-bundle interpretation.
+    # Ask the provider not to retain the payload beyond the request. Expressed
+    # as configuration rather than as a sentence on a website so it can be read
+    # back through the disclosure endpoint and asserted by a test. Turning it
+    # off is a deliberate act with a visible consequence.
+    AI_ZERO_RETENTION: bool = os.environ.get("AI_ZERO_RETENTION", "1") != "0"
+    # Keep the exact text sent to a model, encrypted under the tenant's own key,
+    # so "show me what you sent about my business" has an answer.
+    AI_LOG_PAYLOADS: bool = os.environ.get("AI_LOG_PAYLOADS", "1") != "0"
     AI_PROVIDER: str = os.environ.get("AI_PROVIDER", "mock")
     AI_MODEL: str = os.environ.get("AI_MODEL", "claude-haiku-4-5-20251001")
     AI_MAX_TOKENS: int = int(os.environ.get("AI_MAX_TOKENS", "400"))   # bounded output

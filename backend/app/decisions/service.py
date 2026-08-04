@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from ..ai.interpret import interpret
 from ..ai.provider import AIProvider, select_provider
+from ..trust import disclosure, rehydrate
 from ..config import settings
 from ..context.assembler import assemble_from_signal
 from ..domain import models
@@ -110,6 +111,12 @@ class DecisionService:
             result = interpret(bundle, self.provider, signal_type=dtype,
                                metrics=signal.metrics or {},
                                subject_label=bundle.subject_ref.get("label", ""))
+            # The label above is a pseudonym. Names re-enter here, at the seam,
+            # after interpretation and before anything is persisted or shown.
+            rehydrate.result(result, bundle.display_names)
+            disclosure.log_result(self.s,
+                                  organization_id=signal.organization_id,
+                                  decision_type=dtype, result=result)
             self.telemetry.record(result.telemetry)
             base = max(0, min(100, int(signal.severity_base)))
             adj = result.priority_adjustment if result.status is AiStatus.OK else 0
@@ -151,3 +158,4 @@ class DecisionService:
                 "skipped": skipped, "by_type": by_type,
                 "provider": getattr(self.provider, "name", ""),
                 "model": getattr(self.provider, "model", "")}
+

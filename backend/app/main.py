@@ -18,7 +18,7 @@ from .pie_service import pie_service
 from .routers import (accounts, admin, approvals, auth, commercial, connections,
                       data_status,
                       decisions, identity, internal, platform_auth, quote,
-                      quote_intelligence, quote_support)
+                      quote_intelligence, quote_support, trust)
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("pie_portal")
@@ -125,6 +125,7 @@ app.include_router(approvals.router)
 app.include_router(admin.router)
 app.include_router(identity.router)
 app.include_router(connections.router)
+app.include_router(trust.router)
 
 
 @app.get("/api/health")

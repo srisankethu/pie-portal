@@ -31,6 +31,7 @@ from sqlalchemy.orm import Session
 
 from ..config import settings
 from ..repositories import ReadModelRepository
+from ..trust import vault
 from .normalize import (
     NormalizationError,
     normalize_bill,
@@ -146,6 +147,12 @@ class SyncService:
         self._phase("Reading items")
         self._sync_products()
         self.s.flush()  # ensure customers/products have ids for FK resolution
+        # Names go into the tenant's vault here rather than in a separate job:
+        # a name changed in the ERP has to reach the vault on the same pull that
+        # changed it, or the vault becomes a stale second source of truth.
+        self._phase("Securing names")
+        vault.backfill(self.s, self.org)
+        self.s.flush()
 
     def run_documents(self, source: Optional[ZohoSource] = None,
                       label: str = "") -> None:

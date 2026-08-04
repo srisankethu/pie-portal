@@ -41,12 +41,13 @@ from __future__ import annotations
 
 import logging
 import threading
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 from typing import Callable, Optional
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..clock import aware as _aware, now as _now
 from ..config import settings
 from ..domain import models
 
@@ -64,17 +65,6 @@ STALE_AFTER = timedelta(minutes=10)
 #: Serialises the start-a-job decision within this process. See the module
 #: docstring: this is not a cross-process lock and is not claimed to be.
 _start_lock = threading.Lock()
-
-
-def _now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-def _aware(value: Optional[datetime]) -> Optional[datetime]:
-    """SQLite hands back naive datetimes; comparisons need a timezone."""
-    if value is None:
-        return None
-    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
 
 
 def is_stale(run: models.SyncRun, *, now: Optional[datetime] = None) -> bool:

@@ -40,6 +40,13 @@ class AIResult:
     # WS3: exactly one telemetry record per interpretation, including the paths
     # that never call the provider. Purely additive — never affects the decision.
     telemetry: Optional[CallTelemetry] = None
+    #: The exact text handed to the provider, when one was called. Carried out
+    #: so the ``decisions/`` seam can log it against the tenant — this module
+    #: has no session and should not grow one. ``None`` on every path that
+    #: never reached a provider, which is itself the honest record: nothing was
+    #: sent. Deliberately absent from ``to_ai_dict``: this is disclosure
+    #: evidence, not part of the user-facing decision.
+    prompt_payload: Optional[str] = None
 
     def to_ai_dict(self) -> dict[str, Any]:
         """The stored ``decision.ai`` sub-object — concise, user-facing rationale +
@@ -84,11 +91,17 @@ def interpret(bundle: ContextBundle, provider: AIProvider, *, signal_type: str,
         subject_entity_id=(bundle.subject_ref or {}).get("entity_id"),
     )
 
+    # Set only once a provider call is actually attempted; every return path
+    # funnels through ``_done``, so there is one place this can be attached and
+    # no path that sends something without recording it.
+    sent: dict[str, Optional[str]] = {"payload": None}
+
     def _done(result: AIResult, reason: Optional[AiFailureReason] = None) -> AIResult:
         tel.ai_status = result.status.value
         tel.failure_reason = reason.value if reason else None
         tel.input_tokens, tel.output_tokens = usage_of(provider)
         result.telemetry = tel.finalize_cost()
+        result.prompt_payload = sent["payload"]
         return result
 
     # Insufficient evidence → withhold up front (no inference).
@@ -99,6 +112,7 @@ def interpret(bundle: ContextBundle, provider: AIProvider, *, signal_type: str,
         return _done(r)
 
     system, user = SYSTEM, build_user(bundle)
+    sent["payload"] = f"{system}\n\n---\n\n{user}"
     corrections: list[AiFailureReason] = []
     started = time.monotonic()
     for attempt in (1, 2):

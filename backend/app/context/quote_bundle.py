@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from ..domain.enums import EvidenceSufficiency, Role
+from ..trust import pseudonym
 from .bundle import ContextBundle, FactView
 
 OPERATIONAL = "OPERATIONAL"
@@ -60,13 +61,31 @@ def build_quote_bundle(
     recipient_role: Role,
     *,
     proposed_price: Optional[float] = None,
-    proposed_product_label: Optional[str] = None,
+    proposed_product_id: Optional[str] = None,
 ) -> ContextBundle:
-    """Turn ``quote_context.assemble(...)`` output into a role-scoped bundle."""
+    """Turn ``quote_context.assemble(...)`` output into a role-scoped bundle.
+
+    Customer and item names are replaced by pseudonyms here. This function needs
+    no vault lookup to do it: it already holds the organization and every entity
+    id, and the real names arrive alongside in ``assembled``, so the mapping is
+    built from what is in hand and travels beside the bundle rather than inside
+    it.
+    """
     is_sales = recipient_role is Role.SALESPERSON
     subject = assembled.get("subject_ref", {})
     customer_id = subject.get("customer_id", "")
     org = assembled.get("organization_id", "")
+
+    display_names: dict[str, str] = {}
+
+    def _pseudo(entity_type: str, entity_id: str, real: Optional[str]) -> str:
+        label = pseudonym.label_for(org, entity_type, entity_id)
+        if real:
+            display_names[label] = real
+        return label
+
+    customer_label = _pseudo("CUSTOMER", customer_id,
+                             assembled.get("customer_label"))
 
     facts: list[FactView] = []
     redactions: list[str] = []
@@ -91,7 +110,8 @@ def build_quote_bundle(
     items = assembled.get("items", [])
     has_item_history = False
     for item in items:
-        item_label = item.get("label", item.get("product_id", ""))
+        item_label = _pseudo("PRODUCT", item.get("product_id", ""),
+                             item.get("label"))
         item_facts = item.get("facts", [])
         if any(f.get("label") == "last_price_paid" for f in item_facts):
             has_item_history = True
@@ -103,7 +123,9 @@ def build_quote_bundle(
             _emit(f, prefix)
 
     if proposed_price is not None:
-        lbl = "Your proposed price" + (f" ({proposed_product_label})" if proposed_product_label else "")
+        proposed_label = (_pseudo("PRODUCT", proposed_product_id, None)
+                          if proposed_product_id else None)
+        lbl = "Your proposed price" + (f" ({proposed_label})" if proposed_label else "")
         facts.append(FactView(label=lbl, value=round(float(proposed_price), 2), unit="currency"))
 
     # ── evidence sufficiency ────────────────────────────────────────────────
@@ -129,7 +151,8 @@ def build_quote_bundle(
         decision_type="QUOTE_CONTEXT",
         organization_id=org,
         subject_ref={"entity_type": "QUOTE", "customer_id": customer_id,
-                     "label": assembled.get("customer_label", customer_id)},
+                     "label": customer_label},
+        display_names=display_names,
         recipient_role=recipient_role.value,
         permitted_data_classes=(["OPERATIONAL"] if is_sales
                                 else ["OPERATIONAL", "RESTRICTED"]),

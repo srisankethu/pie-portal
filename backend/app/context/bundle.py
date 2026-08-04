@@ -55,6 +55,12 @@ class ContextBundle:
     policies: list[str]
     evidence_refs: list[dict[str, Any]]       # source records (for audit; not prompted)
     generated_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    #: pseudonym → display name, for re-hydrating the model's output at the
+    #: ``decisions/`` seam. Never enters ``to_prompt_json`` and never enters
+    #: ``context_hash``: a renamed customer must not invalidate a cached
+    #: interpretation whose *facts* are unchanged, and the whole point of the
+    #: pseudonym is that this mapping does not leave the building.
+    display_names: dict[str, str] = field(default_factory=dict)
 
     # ── derived ──────────────────────────────────────────────────────────────
     def fact_labels(self) -> set[str]:

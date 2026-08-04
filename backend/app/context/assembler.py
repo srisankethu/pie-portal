@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from ..domain import models
 from ..domain.enums import RESTRICTED_FACT_FIELDS, Role, SubjectEntityType
 from ..signals.config import SignalThresholds, load_thresholds
+from ..trust import pseudonym, vault
 from .bundle import ContextBundle, FactView, SignalView
 
 _MAX_FACTS = 40
@@ -22,6 +23,98 @@ _MAX_FACTS = 40
 def _is_restricted(path: str) -> bool:
     leaf = path.split(".")[-1].split("[")[0]
     return leaf in RESTRICTED_FACT_FIELDS or any(tok in path for tok in ("cost", "margin"))
+
+
+#: Entity-reference keys a detector may embed inside its metrics, and the kind
+#: each one names. A nested dict carrying one of these *and* a display label is
+#: an entity reference, and that label is a name.
+#:
+#: This exists because pseudonymising only the subject was not enough. The
+#: decline detector reports ``top_declining_products`` as
+#: ``{"product_id": …, "label": "25mm shank turning holder", …}``, which flattens
+#: straight into the fact list and carried a real item name to the provider.
+#: Handling it here rather than in that one detector means the next detector to
+#: embed an entity reference is covered without anyone remembering to.
+_ID_KEYS: dict[str, str] = {
+    "product_id": SubjectEntityType.PRODUCT.value,
+    "item_id": SubjectEntityType.PRODUCT.value,
+    "customer_id": SubjectEntityType.CUSTOMER.value,
+}
+_LABEL_KEYS = ("label", "name")
+
+
+def _kind_of(key: str) -> str | None:
+    """Which entity a metrics key is about, from its name."""
+    low = key.lower()
+    if "customer" in low:
+        return SubjectEntityType.CUSTOMER.value
+    if "product" in low or "item" in low:
+        return SubjectEntityType.PRODUCT.value
+    return None
+
+
+def _paired_ids(key: str, holder: dict[str, Any]) -> list[str] | None:
+    """The id list that runs alongside a list of names, if there is one.
+
+    The second shape detectors use: ``affected_customers`` (names) beside
+    ``affected_customer_ids`` (ids), positionally aligned. Singular-plus-``_ids``
+    is the convention in this codebase, so it is the convention matched here.
+    """
+    candidate = f"{key[:-1]}_ids" if key.endswith("s") else f"{key}_ids"
+    ids = holder.get(candidate)
+    return ids if isinstance(ids, list) else None
+
+
+def _pseudonymise(org: str, value: Any, display_names: dict[str, str]) -> Any:
+    """Replace embedded entity names with pseudonyms, recursively.
+
+    Two shapes are handled, because detectors use two: an entity reference as a
+    dict (``{"product_id": …, "label": …}``) and a list of names running
+    alongside a list of ids (``affected_customers`` / ``affected_customer_ids``).
+
+    A name a detector emits with no id anywhere near it cannot be pseudonymised
+    by any rule here, and is deliberately not guessed at. That case is caught
+    instead by ``trust.disclosure.check_names``, which knows the tenant's actual
+    names and records a finding on the payload — visible on the trust screen and
+    asserted by the test suite, rather than silently sent.
+    """
+    if isinstance(value, dict):
+        out = {k: _pseudonymise(org, v, display_names) for k, v in value.items()}
+
+        # Shape 1: this dict is itself an entity reference.
+        for id_key, kind in _ID_KEYS.items():
+            entity_id = value.get(id_key)
+            if not entity_id:
+                continue
+            label = pseudonym.label_for(org, kind, str(entity_id))
+            for label_key in _LABEL_KEYS:
+                real = out.get(label_key)
+                if isinstance(real, str) and real:
+                    display_names[label] = real
+                    out[label_key] = label
+            break
+
+        # Shape 2: a list of names beside a list of ids.
+        for key, names in list(value.items()):
+            if not (isinstance(names, list) and names
+                    and all(isinstance(n, str) for n in names)):
+                continue
+            ids = _paired_ids(key, value)
+            kind = _kind_of(key)
+            if not ids or not kind or len(ids) != len(names):
+                continue
+            swapped = []
+            for entity_id, real in zip(ids, names):
+                label = pseudonym.label_for(org, kind, str(entity_id))
+                if real:
+                    display_names[label] = real
+                swapped.append(label)
+            out[key] = swapped
+        return out
+
+    if isinstance(value, list):
+        return [_pseudonymise(org, v, display_names) for v in value]
+    return value
 
 
 def _flatten(prefix: str, value: Any, out: list[tuple[str, Any]]) -> None:
@@ -57,18 +150,26 @@ def assemble_from_signal(session: Session, signal: models.Signal, recipient_role
     th = thresholds or load_thresholds()
     is_sales = recipient_role is Role.SALESPERSON
 
-    # subject label from the read model (scoped to the signal's org)
-    subject_label = signal.subject_entity_id
-    if signal.subject_entity_type == SubjectEntityType.CUSTOMER.value:
-        row = session.get(models.Customer, signal.subject_entity_id)
-        subject_label = row.name if row else signal.subject_entity_id
-    elif signal.subject_entity_type == SubjectEntityType.PRODUCT.value:
-        row = session.get(models.Product, signal.subject_entity_id)
-        subject_label = row.name if row else signal.subject_entity_id
+    # The subject is referred to by a pseudonym, not by its name. A margin
+    # calculation never needed to know the customer is called Bharat Forge, and
+    # the label is the one field in this bundle that would carry that name to a
+    # model provider. The real name is looked up from the vault and kept beside
+    # the bundle so the seam can put it back before a person reads the output.
+    subject_label = pseudonym.label_for(
+        signal.organization_id, signal.subject_entity_type, signal.subject_entity_id)
+    display_names: dict[str, str] = {}
+    if signal.subject_entity_type in (SubjectEntityType.CUSTOMER.value,
+                                      SubjectEntityType.PRODUCT.value):
+        display_names[subject_label] = vault.resolve(
+            session, signal.organization_id, signal.subject_entity_type,
+            signal.subject_entity_id)
 
-    # flatten metrics → facts, redacting RESTRICTED for a salesperson
+    # flatten metrics → facts, redacting RESTRICTED for a salesperson.
+    # Names nested inside the metrics are swapped for pseudonyms first — the
+    # subject is not the only place a detector can put one.
     flat: list[tuple[str, Any]] = []
-    _flatten("", signal.metrics or {}, flat)
+    _flatten("", _pseudonymise(signal.organization_id, signal.metrics or {},
+                               display_names), flat)
     facts: list[FactView] = [FactView(label="subject", value=subject_label)]
     redactions: list[str] = []
     for label, value in flat:
@@ -90,6 +191,7 @@ def assemble_from_signal(session: Session, signal: models.Signal, recipient_role
         organization_id=signal.organization_id,
         subject_ref={"entity_type": signal.subject_entity_type,
                      "entity_id": signal.subject_entity_id, "label": subject_label},
+        display_names=display_names,
         recipient_role=recipient_role.value,
         permitted_data_classes=(["OPERATIONAL"] if is_sales
                                 else ["OPERATIONAL", "RESTRICTED"]),

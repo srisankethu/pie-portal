@@ -31,6 +31,7 @@ from sqlalchemy import (
     Integer,
     Numeric,
     String,
+    Text,
     UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -1049,3 +1050,126 @@ class IdentityPolicy(Base):
     updated_by_user_id: Mapped[Optional[str]] = mapped_column(String(64))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
                                                  onupdate=_now)
+
+
+# ── Trust controls (per-tenant keys, name vault, access, disclosure) ─────────
+class TenantKey(Base):
+    """One data key per organization, wrapped by the process master key.
+
+    The row outlives its key material. After ``destroy`` the wrapped key is
+    blank and ``destroyed_at`` is set — a tombstone, so "was this tenant erased,
+    when, and who asked for it?" has an answer. Deleting the row instead would
+    make an erasure indistinguishable from a tenant that never existed.
+    """
+
+    __tablename__ = "tenant_keys"
+
+    organization_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    wrapped_dek: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    destroyed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    destroyed_by_user_id: Mapped[Optional[str]] = mapped_column(String(64))
+    destroy_reason: Mapped[Optional[str]] = mapped_column(String(512))
+
+
+class NameVaultEntry(Base):
+    """A display name, encrypted under its own tenant's data key.
+
+    Names are the only identifying data here; everything else is quantities and
+    dates. Holding them apart is what lets the analytical core — and anything
+    leaving for a model — work in pseudonyms.
+    """
+
+    __tablename__ = "name_vault"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "entity_type", "entity_id",
+                         name="uq_name_vault_entity"),
+    )
+
+    entry_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    entity_type: Mapped[str] = mapped_column(String(16), index=True)  # CUSTOMER | PRODUCT
+    entity_id: Mapped[str] = mapped_column(String(64), index=True)
+    name_ciphertext: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
+                                                 onupdate=_now)
+
+
+class AccessGrant(Base):
+    """Break-glass: one staff member, one tenant, one stated reason, time-boxed."""
+
+    __tablename__ = "access_grants"
+
+    grant_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    staff_user_id: Mapped[str] = mapped_column(String(64), index=True)
+    # Shown to the customer verbatim. That it is customer-visible is what makes
+    # it get written honestly.
+    justification: Mapped[str] = mapped_column(String(1024))
+    granted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),
+                                                 default=_now, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+
+class AccessEvent(Base):
+    """Every grant, revocation and individual reach — the customer-visible log.
+
+    Per-use rather than per-grant: opening the door once and opening it fifty
+    times are different facts, and only per-use records tell them apart.
+    """
+
+    __tablename__ = "access_events"
+
+    event_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    access_grant_id: Mapped[str] = mapped_column(String(64), index=True)
+    staff_user_id: Mapped[str] = mapped_column(String(64), index=True)
+    action: Mapped[str] = mapped_column(String(16), index=True)  # GRANTED|ACCESSED|REVOKED
+    detail: Mapped[str] = mapped_column(String(512), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),
+                                                 default=_now, index=True)
+
+
+class ModelPayload(Base):
+    """Exactly what was sent to a model provider, encrypted under the tenant key.
+
+    ``AiCallLog`` records how a call went and holds no content, which is right
+    for operational telemetry and leaves "what did you say about my business?"
+    unanswerable. This answers it. Encrypted because a table of every payload
+    ever sent is precisely the table worth stealing.
+    """
+
+    __tablename__ = "model_payloads"
+
+    payload_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    ai_call_log_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    decision_type: Mapped[str] = mapped_column(String(48), default="")
+    provider: Mapped[str] = mapped_column(String(32), default="")
+    model: Mapped[str] = mapped_column(String(64), default="")
+    payload_ciphertext: Mapped[str] = mapped_column(Text)
+    # Anything the published disclosure forbids that was found in this payload.
+    # Should always be empty; a non-empty list is a defect report.
+    disclosure_findings: Mapped[list[str]] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),
+                                                 default=_now, index=True)
+
+
+class ErasureReceipt(Base):
+    """Proof of what was destroyed, signed, and readable after the fact.
+
+    Stored unencrypted on purpose: a receipt sealed under the key whose
+    destruction it certifies would be unreadable exactly when it is wanted.
+    """
+
+    __tablename__ = "erasure_receipts"
+
+    receipt_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    manifest: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    reason: Mapped[str] = mapped_column(String(512), default="")
+    actor_user_id: Mapped[Optional[str]] = mapped_column(String(64))
+    erased_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),
+                                                default=_now, index=True)
+    signature: Mapped[str] = mapped_column(String(128), default="")

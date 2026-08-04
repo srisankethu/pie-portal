@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from .config import settings
@@ -23,12 +23,49 @@ class Base(DeclarativeBase):
 def _engine_kwargs(url: str) -> dict:
     # SQLite needs check_same_thread off for the FastAPI threadpool.
     if url.startswith("sqlite"):
-        return {"connect_args": {"check_same_thread": False}}
+        return {"connect_args": {"check_same_thread": False, "timeout": 30}}
     return {"pool_pre_ping": True}
 
 
 engine = create_engine(settings.DATABASE_URL, echo=settings.SQL_ECHO, future=True,
                        **_engine_kwargs(settings.DATABASE_URL))
+
+
+@event.listens_for(engine, "connect")
+def _sqlite_pragmas(dbapi_connection, _record) -> None:
+    """Make SQLite survive one process doing a long write while others read.
+
+    Nothing here applies to Postgres, which handles this properly on its own.
+
+    **WAL.** In the default rollback-journal mode a writer that spills its page
+    cache takes an EXCLUSIVE lock and holds it until commit, which blocks every
+    reader for the duration. A background sync writing thousands of rows does
+    exactly that, so while one ran, ordinary requests — including
+    ``/api/health`` — failed with "database is locked". Under WAL, readers never
+    block on a writer; they read the last committed snapshot. This is the single
+    change that makes a single-file database usable with a background job.
+
+    **busy_timeout.** WAL still serialises writer against writer, and the
+    default five seconds is short enough that a normal request colliding with a
+    sync's commit gives up. Thirty seconds waits instead of failing; a lock held
+    longer than that is a bug worth surfacing rather than absorbing.
+
+    Set per connection because a pooled connection is reused for the life of the
+    process. ``journal_mode`` is a property of the database file and persists,
+    but issuing it is idempotent and costs one pragma at connect time.
+    """
+    if not settings.DATABASE_URL.startswith("sqlite"):
+        return
+    cursor = dbapi_connection.cursor()
+    try:
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA busy_timeout=30000")
+        # Ordinary durability with WAL: fsync at checkpoints rather than at
+        # every commit. The commit-per-phase change in ``ingestion/jobs`` makes
+        # commits far more frequent, and FULL would pay a disk sync for each.
+        cursor.execute("PRAGMA synchronous=NORMAL")
+    finally:
+        cursor.close()
 
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False,
                             future=True, class_=Session)

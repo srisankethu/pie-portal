@@ -235,10 +235,33 @@ def execute_sync(session: Session, run: models.SyncRun, *,
     run.since = since
 
     def phase(name: str) -> None:
-        """Record what is happening, and prove the job is still alive."""
+        """Record what is happening, prove the job is alive, and end the write.
+
+        ``commit``, not ``flush``, and the difference is the whole point twice
+        over.
+
+        A flush writes inside the open transaction, so no other connection can
+        see it. The entire pull used to run in one transaction with a single
+        commit at the very end, which meant the progress this function records
+        was invisible until the sync was already over — the window counter sat
+        at 0 for the whole run and then jumped to 18. The screen that polls for
+        it was reading a number that could not move.
+
+        The same single transaction is why a sync made the rest of the app
+        unusable on SQLite. A large write spills its page cache, escalates to an
+        EXCLUSIVE lock, and holds it until commit; in rollback-journal mode that
+        blocks every reader, so requests — including ``/api/health`` — failed
+        with "database is locked" for the duration. Committing at each phase
+        boundary keeps the write windows short.
+
+        Committing part-way also makes an interrupted pull behave the way this
+        module already claimed it did: a run that dies in month 12 has genuinely
+        written months 1–11. That was the documented design and was not true,
+        because nothing had been committed.
+        """
         run.phase = name
         run.heartbeat_at = _now()
-        session.flush()
+        session.commit()
 
     run.status = "RUNNING"
     phase("Starting")

@@ -175,6 +175,22 @@ that a completely empty database is perfect. Any new model module must be
 imported by `app/domain/models.py` or from `env.py`, or it does not exist as far
 as migrations are concerned.
 
+**Concurrency, on SQLite.** One process writes while others read, so the engine
+sets `journal_mode=WAL`, `busy_timeout=30000` and `synchronous=NORMAL` on every
+connection. This is not tuning. In the default rollback-journal mode a writer
+that spills its page cache takes an EXCLUSIVE lock and holds it until commit,
+blocking *every* reader — so while a background sync ran, ordinary requests
+including `/api/health` failed with `database is locked`. Under WAL readers see
+the last committed snapshot and never block.
+
+The other half is transaction length: a job that writes for minutes must not do
+it in one transaction. `ingestion/jobs.execute_sync` commits at each phase
+boundary. That also makes progress *visible* — a flush is invisible outside its
+own transaction, so the window counter the sync screen polls could not move
+until the pull was already over. **On a long-running write, prefer `commit` at a
+natural boundary over `flush`; a flush that nobody else can read is not progress
+reporting.**
+
 **Migration philosophy.** Migrations are the schema's history, not a
 convenience. Alembic is the *only* thing permitted to create or alter this
 schema — there is no `create_all` path in application code, and reintroducing
@@ -256,6 +272,12 @@ will never work. Decide whether the schema is genuinely current: if it is,
 `alembic stamp head`; if you are not sure, back up, drop, and migrate an empty
 database. Do not delete individual tables and retry — that is the loop the
 incident was stuck in.
+
+**`database is locked`.** Not a migration problem. Something holds a long write
+transaction — almost always a background job that flushes instead of committing.
+Check `PRAGMA journal_mode` is `wal`, then look for a transaction spanning more
+than a second or two of work. Raising `busy_timeout` alone only lengthens the
+stall.
 
 **Missing tables at runtime, or a bare 500 after a deploy.** `/api/health`
 reports both the migration state and the specific missing columns. Usually

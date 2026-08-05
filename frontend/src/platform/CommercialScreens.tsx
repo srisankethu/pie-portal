@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { DataGrid, numeric } from "./DataGrid";
 import { formatDate } from "../when";
 import { papi } from "./api";
 import type {
@@ -233,81 +234,84 @@ export function CustomerCommercial({
             : "Nothing on this account is flagged. That is a fact about the data, not a judgement about the relationship."}
         </div>
       ) : (
-        <Bp style={{ padding: 2 }}>
-          <div className="ci-scroll">
-            <table className="dp-table ci-table">
-              <thead>
-                <tr>
-                  <th>Item</th>
-                  <th className="num">Revenue 12M</th>
-                  <th className="num">
-                    <Labelled tip="Margin over the recent window — the period treated as 'now'. Its length is fixed in configuration and shown in Settings.">
-                      Current
-                    </Labelled>
-                  </th>
-                  <th className="num">
-                    <Labelled tip="Margin over the longer lookback, which is what 'current' is being compared against. A relationship with too little history shows nothing here rather than a number built from two invoices.">
-                      Historical
-                    </Labelled>
-                  </th>
-                  <th className="num">
-                    <Labelled tip="The median margin other customers got on this same item recently. Built from at least the minimum peer count — fewer than that and it would be one customer's price wearing the word 'median', so it is withheld.">
-                      Peers
-                    </Labelled>
-                  </th>
-                  <th className="num">
-                    <Labelled tip="Current minus historical, in percentage points. 24% to 20% is −4 pp, not −17% — a percentage change of a percentage is how a small move gets reported as a crisis.">
-                      Change
-                    </Labelled>
-                  </th>
-                  <th className="num">Volume</th>
-                  <th className="num">
-                    <Labelled tip="The historical margin gap in money, not in points. This column is what the list is ranked by, because a 9-point slide on a small item matters less than a 2-point slide on a large one.">
-                      Margin gap
-                    </Labelled>
-                  </th>
-                  <th>Reason</th>
-                </tr>
-              </thead>
-              <tbody>
-                {shown.map((r) => (
-                  <tr key={r.product_id} data-open onClick={() => onOpenItem(r.product_id)}>
-                    <td>
-                      <div style={{ fontWeight: 600 }}>{r.item_name}</div>
-                      {r.item_code && <div className="fsrc">{r.item_code}</div>}
-                    </td>
-                    <td className="num">{money(r.revenue_12m)}</td>
-                    <td className="num">{pct(r.current_margin)}</td>
-                    <td className="num">{pct(r.historical_margin)}</td>
-                    <td className="num">
-                      {r.peer_count > 0 ? pct(r.peer_median_margin) : "—"}
-                      {r.peer_count > 0 && <div className="fsrc">{r.peer_count} peers</div>}
-                    </td>
-                    <td className={`num ${(r.margin_change_pp ?? 0) < 0 ? "ci-bad" : ""}`}>
-                      {pp(r.margin_change_pp)}
-                    </td>
-                    <td className="num">{signedPct(r.volume_change_pct)}</td>
-                    <td className="num" style={{ fontWeight: 600 }}>
-                      {money(r.historical_margin_gap)}
-                    </td>
-                    <td>
-                      <div className="ci-tags">
-                        {r.signals.map((sig) => (
-                          <span key={sig} className="ci-tag">{SIGNAL_LABEL[sig] || sig}</span>
-                        ))}
-                      </div>
-                      {r.erosion_kind && r.erosion_kind !== "NONE" && (
-                        <div className="fsrc">{EROSION_LABEL[r.erosion_kind]}</div>
-                      )}
-                      <Sufficiency level={r.data_sufficiency}
-                                   reasons={r.sufficiency_reasons} />
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </Bp>
+        <DataGrid<CustomerItemRow>
+          ariaLabel="Items on this account"
+          pageSize={25}
+          rows={shown}
+          onRowClick={(r) => onOpenItem(r.product_id)}
+          columns={[
+            {
+              field: "item_name", headerName: "Item", flex: 1.4, minWidth: 220,
+              filter: "agTextColumnFilter",
+              cellRenderer: (p: { data?: CustomerItemRow }) => (
+                <div>
+                  <div style={{ fontWeight: 600 }}>{p.data?.item_name}</div>
+                  {p.data?.item_code && <div className="fsrc">{p.data.item_code}</div>}
+                </div>
+              ),
+            },
+            numeric<CustomerItemRow>("revenue_12m", "Revenue 12M", money,
+                                     { width: 140, flex: 0 }),
+            numeric<CustomerItemRow>("current_margin", "Current", (v) => pct(v), {
+              width: 115, flex: 0,
+              headerTooltip: "Margin over the recent window — the period treated "
+                + "as 'now'. Its length is fixed in configuration.",
+            }),
+            numeric<CustomerItemRow>("historical_margin", "Historical", (v) => pct(v), {
+              width: 125, flex: 0,
+              headerTooltip: "The longer lookback 'current' is compared against. "
+                + "Too little history shows nothing rather than a number built "
+                + "from two invoices.",
+            }),
+            {
+              field: "peer_median_margin", headerName: "Peers", width: 120, flex: 0,
+              type: "numericColumn", cellClass: "ag-num",
+              filter: "agNumberColumnFilter",
+              headerTooltip: "The median margin other customers got on this item "
+                + "recently. Withheld below the minimum peer count — fewer than "
+                + "that is one customer's price wearing the word 'median'.",
+              cellRenderer: (p: { data?: CustomerItemRow }) =>
+                (p.data?.peer_count ?? 0) > 0 ? (
+                  <div>
+                    {pct(p.data?.peer_median_margin)}
+                    <div className="fsrc">{p.data?.peer_count} peers</div>
+                  </div>
+                ) : "—",
+            },
+            numeric<CustomerItemRow>("margin_change_pp", "Change", (v) => pp(v), {
+              width: 115, flex: 0,
+              headerTooltip: "Current minus historical, in percentage POINTS. "
+                + "24% to 20% is −4 pp, not −17%.",
+              cellClassRules: { "ci-bad": (p) => Number(p.value ?? 0) < 0 },
+            }),
+            numeric<CustomerItemRow>("volume_change_pct", "Volume",
+                                     (v) => signedPct(v), { width: 115, flex: 0 }),
+            numeric<CustomerItemRow>("historical_margin_gap", "Margin gap", money, {
+              width: 145, flex: 0,
+              headerTooltip: "The margin gap in money, not points — a 9-point "
+                + "slide on a small item matters less than 2 points on a large one.",
+              cellStyle: { fontWeight: 600 },
+            }),
+            {
+              headerName: "Reason", flex: 1.2, minWidth: 200, sortable: false,
+              filter: false, autoHeight: true, wrapText: true,
+              cellRenderer: (p: { data?: CustomerItemRow }) => p.data ? (
+                <div style={{ padding: "4px 0" }}>
+                  <div className="ci-tags">
+                    {p.data.signals.map((sig) => (
+                      <span key={sig} className="ci-tag">{SIGNAL_LABEL[sig] || sig}</span>
+                    ))}
+                  </div>
+                  {p.data.erosion_kind && p.data.erosion_kind !== "NONE" && (
+                    <div className="fsrc">{EROSION_LABEL[p.data.erosion_kind]}</div>
+                  )}
+                  <Sufficiency level={p.data.data_sufficiency}
+                               reasons={p.data.sufficiency_reasons} />
+                </div>
+              ) : null,
+            },
+          ]}
+        />
       )}
     </div>
   );

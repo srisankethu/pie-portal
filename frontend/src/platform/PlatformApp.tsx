@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { DataGrid, numeric } from "./DataGrid";
 import { formatDate } from "../when";
 import {
   clearPlatformSession,
@@ -622,6 +623,12 @@ function LoadFailed({ error, onRetry, busy }: { error: string; onRetry: () => vo
 }
 
 // ── list screen ──────────────────────────────────────────────────────────────
+/** A summary joined to its detail, which arrives a moment later. Joined here
+ *  rather than looked up inside a cell so the account and the reason are
+ *  *sortable and filterable* — a column resolved in a renderer displays fine
+ *  and sorts on nothing. */
+type DecisionRow = DecisionSummary & { detail?: DecisionDetail };
+
 function ListScreen({
   summaries,
   details,
@@ -664,54 +671,57 @@ function ListScreen({
       ) : rows.length === 0 ? (
         <div className="dp-empty">No decisions match this filter.</div>
       ) : (
-        <Bp style={{ padding: 2 }}>
-          <table className="dp-table">
-            <thead>
-              <tr>
-                <th>
-                  <Labelled tip="Computed from what the movement is worth and how certain it is — deterministic first, with any AI adjustment recorded separately and bounded. It is not a model's opinion of urgency.">
-                    Priority
-                  </Labelled>
-                </th>
-                <th>Type</th>
-                <th>Account / subject</th>
-                <th>Why</th>
-                <th>
-                  <Labelled tip="How much evidence stands behind the reading — not how sure a model is. Where the evidence is too thin, no recommendation is offered at all rather than a hedged one.">
-                    Confidence
-                  </Labelled>
-                </th>
-                <th>Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((s) => {
-                const d = details[s.decision_id];
-                return (
-                  <tr key={s.decision_id} data-open onClick={() => onOpen(s.decision_id)}>
-                    <td>
-                      <Pri band={s.priority_band} />
-                    </td>
-                    <td style={{ fontFamily: "var(--font-heading)" }}>{typeLabel(s.decision_type)}</td>
-                    {/* The label arrives with the detail, a moment after the
-                        summary. Until then this said the raw entity id — a
-                        UUID nobody recognises, in the column people scan to
-                        find their account. An ellipsis is more honest than an
-                        identifier presented as a name. */}
-                    <td>{d ? d.subject_label : <span className="viz-muted">…</span>}</td>
-                    <td className="dp-reason-cell">
-                      <div className="trunc" style={{ maxWidth: "38ch" }}>
-                        {d?.interpretation.explanation || "—"}
-                      </div>
-                    </td>
-                    <td>{d ? <Conf level={d.confidence?.evidence_sufficiency} /> : "—"}</td>
-                    <td style={{ fontSize: 12 }}>{s.status}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </Bp>
+        <DataGrid<DecisionRow>
+          ariaLabel="Decisions"
+          rows={rows.map((r) => ({ ...r, detail: details[r.decision_id] }))}
+          onRowClick={(r) => onOpen(r.decision_id)}
+          columns={[
+            {
+              // Sorted on the score, not the band: three HIGH rows in an
+              // arbitrary order is a list that does not answer "what first?".
+              field: "priority_score", headerName: "Priority", width: 130, flex: 0,
+              filter: "agNumberColumnFilter", sort: "desc",
+              headerTooltip: "Computed from what the movement is worth and how "
+                + "certain it is — deterministic first, with any AI adjustment "
+                + "recorded separately and bounded.",
+              cellRenderer: (p: { data?: DecisionRow }) =>
+                p.data ? <Pri band={p.data.priority_band} /> : null,
+            },
+            {
+              field: "decision_type", headerName: "Type", width: 190, flex: 0,
+              filter: "agTextColumnFilter",
+              cellStyle: { fontFamily: "var(--font-heading)" },
+              valueFormatter: (p) => typeLabel(String(p.value)),
+            },
+            {
+              // The label arrives with the detail, a moment after the summary.
+              // Until then this said the raw entity id — a UUID nobody
+              // recognises, in the column people scan to find their account.
+              headerName: "Account / subject", flex: 1, minWidth: 200,
+              filter: "agTextColumnFilter",
+              valueGetter: (p) => p.data?.detail?.subject_label ?? "",
+              valueFormatter: (p) => p.value || "…",
+            },
+            {
+              headerName: "Why", flex: 1.6, minWidth: 260, filter: "agTextColumnFilter",
+              valueGetter: (p) => p.data?.detail?.interpretation.explanation ?? "",
+              valueFormatter: (p) => p.value || "—",
+              tooltipValueGetter: (p) => String(p.value || ""),
+            },
+            {
+              headerName: "Confidence", width: 150, flex: 0, sortable: false,
+              filter: false,
+              headerTooltip: "How much evidence stands behind the reading — not "
+                + "how sure a model is.",
+              cellRenderer: (p: { data?: DecisionRow }) =>
+                p.data?.detail
+                  ? <Conf level={p.data.detail.confidence?.evidence_sufficiency} />
+                  : <span className="viz-muted">—</span>,
+            },
+            { field: "status", headerName: "Status", width: 120, flex: 0,
+              filter: "agTextColumnFilter" },
+          ]}
+        />
       )}
     </div>
   );
@@ -904,14 +914,20 @@ function CustomerScreen({
   const openCountFor = (id: string) =>
     all.filter((d) => d.subject_entity_id === id && (d.status === "OPEN" || d.status === "VIEWED")).length;
 
+  /** One account as the grid sees it: the directory row plus the open-decision
+   *  count, folded in here so the column can be *sorted* on it. A count
+   *  computed inside a cell renderer is a column that renders correctly and
+   *  sorts on nothing. */
+  type AccountRow = Account & { open_decisions: number };
+
   if (!customerId) {
     const needle = q.trim().toLowerCase();
     // Sorted client-side: the list is one request and a few hundred rows, and
     // a round trip to re-order something already in hand is a round trip the
     // person waits for.
-    const shown = (accounts || [])
+    const shown: AccountRow[] = (accounts || [])
       .filter((a) => !needle || a.name.toLowerCase().includes(needle))
-      .slice()
+      .map((a) => ({ ...a, open_decisions: openCountFor(a.customer_id) }))
       .sort((x, y) => {
         if (sort === "value") return y.revenue_12m - x.revenue_12m;
         if (sort === "recent") {
@@ -977,48 +993,51 @@ function CustomerScreen({
               {status !== "all" && ` marked ${status}`}
               {quiet > 0 && ` · ${quiet} have never ordered`}
             </div>
-            <Bp style={{ padding: 2 }}>
-              <table className="dp-table acct-table">
-                <thead>
-                  <tr>
-                    <th>Customer</th>
-                    <th>Last order</th>
-                    <th className="fv">Orders (12m)</th>
-                    <th className="fv">Value (12m)</th>
-                    <th>Needs you</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {shown.map((a) => {
-                    const n = openCountFor(a.customer_id);
-                    const inactive = (a.status || "").toUpperCase() !== "ACTIVE";
-                    return (
-                      <tr key={a.customer_id} data-open onClick={() => setCustomerId(a.customer_id)}>
-                        <td style={{ fontWeight: 600 }}>
-                          {a.name}
-                          {/* Marked on the row rather than in a column of its
-                              own: it only matters when it is true, and only
-                              when the filter is showing them. */}
-                          {inactive && <span className="acct-flag">inactive</span>}
-                        </td>
-                        <td>
-                          {a.last_order
-                            ? formatDate(a.last_order)
-                            : <span className="text-muted">never ordered</span>}
-                        </td>
-                        <td className="fv">
-                          {a.orders_12m || <span className="text-muted">—</span>}
-                        </td>
-                        <td className="fv">
-                          {a.revenue_12m ? money(a.revenue_12m) : <span className="text-muted">—</span>}
-                        </td>
-                        <td>{n > 0 ? `${n} open` : <span className="text-muted">nothing</span>}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </Bp>
+            <DataGrid<AccountRow>
+              ariaLabel="Customers"
+              pageSize={25}
+              rows={shown}
+              onRowClick={(a) => setCustomerId(a.customer_id)}
+              columns={[
+                {
+                  field: "name", headerName: "Customer", flex: 1, minWidth: 240,
+                  filter: "agTextColumnFilter",
+                  // Marked on the row rather than in a column of its own: it
+                  // only matters when it is true, and only when the filter is
+                  // showing them.
+                  cellRenderer: (p: { data?: AccountRow }) => (
+                    <span style={{ fontWeight: 600 }}>
+                      {p.data?.name}
+                      {(p.data?.status || "").toUpperCase() !== "ACTIVE" && (
+                        <span className="acct-flag">inactive</span>
+                      )}
+                    </span>
+                  ),
+                },
+                {
+                  field: "last_order", headerName: "Last order", width: 150, flex: 0,
+                  context: { minGridWidth: 460 },
+                  // A text filter, not agDateColumnFilter: the value is an ISO
+                  // string, so it already sorts chronologically, and the date
+                  // filter would render a US mm/dd/yy picker on an Indian
+                  // screen and compare it against text.
+                  filter: "agTextColumnFilter",
+                  valueFormatter: (p) =>
+                    p.value ? formatDate(String(p.value)) : "never ordered",
+                },
+                numeric<AccountRow>("orders_12m", "Orders (12m)", (n) => String(n),
+                                    { width: 145, flex: 0,
+                                      context: { minGridWidth: 760 } }),
+                numeric<AccountRow>("revenue_12m", "Value (12m)", money,
+                                    { width: 165, flex: 0,
+                                      context: { minGridWidth: 560 } }),
+                numeric<AccountRow>("open_decisions", "Needs you", (n) => String(n), {
+                  width: 135, flex: 0, context: { minGridWidth: 900 },
+                  valueFormatter: (p) =>
+                    Number(p.value) > 0 ? `${p.value} open` : "nothing",
+                }),
+              ]}
+            />
           </>
         )}
 

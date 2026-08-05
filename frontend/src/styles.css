@@ -1289,3 +1289,22 @@ table.grid tbody tr:hover td { background: color-mix(in srgb, var(--color-accent
   .id-compare { grid-template-columns: 1fr; }
   .id-compare-arrow { display: none; }
 }
+
+/* ── data grid ──────────────────────────────────────────────────────────────
+ * ag-grid, wrapped so it sits in this page rather than on top of it. The
+ * theme itself is configured in DataGridImpl.tsx via the Theming API; what is
+ * left here is the frame around it and the two states the app owns.
+ */
+.ag-shell {
+  width: 100%;
+  border: 1px solid var(--color-divider);
+  background: var(--color-bg);
+}
+.ag-shell .ag-row-clickable { cursor: pointer; }
+/* Tabular figures on every numeric column: a money column whose digits do not
+ * line up cannot be scanned, which is the whole reason it is right-aligned. */
+.ag-shell .ag-num { font-variant-numeric: tabular-nums; }
+.ag-shell .ag-empty { color: var(--color-neutral-600); font-size: 13px; }
+/* The grid measures its own width; the page must never scroll sideways
+ * because of it. */
+.ag-shell .ag-root-wrapper { border: 0; }

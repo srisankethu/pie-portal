@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
+import { DataGrid, numeric } from "./DataGrid";
 import { money } from "../money";
 import { since as when, todayISO } from "../when";
 import { papi } from "./api";
 import { ConnectionsPanel } from "./ConnectionsPanel";
 import { SyncStatusCard, useSync } from "./SyncStatus";
-import type { DataStatus, PlatformSession, ZohoCredential } from "./types";
+import type { DataStatus, PlatformSession, UnresolvedReference, ZohoCredential } from "./types";
 import { Bp, Labelled, Tip } from "./ui";
 
 /**
@@ -379,59 +380,64 @@ export function DataScreen({ session, onSynced }: { session: PlatformSession; on
                   What could not be resolved
                 </Labelled>
               </div>
-              <Bp style={{ padding: 2 }}>
-                <table className="dp-table">
-                  <thead>
-                    <tr>
-                      <th>What is missing</th>
-                      <th className="fv">Lines held up</th>
-                      <th>Seen on</th>
-                      <th>What to do</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {s.unresolved.map((u, i) => (
-                      <tr key={i}>
-                        <td>
-                          <b>{u.label || u.missing_id || u.code}</b>
-                          <div className="fsrc">
-                            {u.sku && <>SKU {u.sku} · </>}
-                            {u.kind.replace(/_/g, " ")} · {u.code}
-                            {u.missing_id && <> · id {u.missing_id}</>}
+              <DataGrid<UnresolvedReference>
+                ariaLabel="Unresolved references"
+                pageSize={10}
+                rows={s.unresolved}
+                columns={[
+                  {
+                    headerName: "What is missing", flex: 1.3, minWidth: 240,
+                    filter: "agTextColumnFilter",
+                    valueGetter: (p) =>
+                      p.data?.label || p.data?.missing_id || p.data?.code || "",
+                    cellRenderer: (p: { data?: UnresolvedReference }) => p.data ? (
+                      <div>
+                        <b>{p.data.label || p.data.missing_id || p.data.code}</b>
+                        <div className="fsrc">
+                          {p.data.sku ? `SKU ${p.data.sku} · ` : ""}
+                          {p.data.kind.replace(/_/g, " ")} · {p.data.code}
+                          {p.data.missing_id ? ` · id ${p.data.missing_id}` : ""}
+                        </div>
+                      </div>
+                    ) : null,
+                  },
+                  numeric<UnresolvedReference>("lines", "Lines held up",
+                                               (n) => String(n), {
+                    width: 145, flex: 0, sort: "desc",
+                    headerTooltip: "How many document lines this one missing "
+                      + "record is blocking. The list is ranked by it.",
+                  }),
+                  numeric<UnresolvedReference>("value", "Value", money,
+                                               { width: 140, flex: 0 }),
+                  {
+                    headerName: "Seen on", flex: 1, minWidth: 190,
+                    sortable: false, filter: false, autoHeight: true,
+                    cellRenderer: (p: { data?: UnresolvedReference }) => p.data ? (
+                      <div style={{ padding: "4px 0" }}>
+                        {p.data.examples.length === 0 ? (
+                          <span className="fsrc">{p.data.first_seen || "—"}</span>
+                        ) : p.data.examples.map((e, j) => (
+                          <div key={j} className="fsrc">
+                            {e.document}{e.date ? ` · ${e.date}` : ""}
+                            {e.party ? ` · ${e.party}` : ""}
                           </div>
-                        </td>
-                        <td className="fv">
-                          {u.lines}
-                          {u.value > 0 && (
-                            <div className="fsrc">{money(u.value)}</div>
-                          )}
-                        </td>
-                        <td>
-                          {u.examples.length === 0 ? (
-                            <span className="fsrc">
-                              {u.first_seen || "—"}
-                            </span>
-                          ) : (
-                            u.examples.map((e, j) => (
-                              <div key={j} className="fsrc">
-                                {e.document}
-                                {e.date && <> · {e.date}</>}
-                                {e.party && <> · {e.party}</>}
-                              </div>
-                            ))
-                          )}
-                          {u.lines > u.examples.length && u.examples.length > 0 && (
-                            <div className="fsrc">
-                              and {u.lines - u.examples.length} more
-                            </div>
-                          )}
-                        </td>
-                        <td style={{ maxWidth: 340 }}>{u.fix}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </Bp>
+                        ))}
+                        {p.data.lines > p.data.examples.length
+                          && p.data.examples.length > 0 && (
+                          <div className="fsrc">
+                            and {p.data.lines - p.data.examples.length} more
+                          </div>
+                        )}
+                      </div>
+                    ) : null,
+                  },
+                  {
+                    field: "fix", headerName: "What to do", flex: 1.6,
+                    minWidth: 280, sortable: false, filter: false,
+                    autoHeight: true, wrapText: true,
+                  },
+                ]}
+              />
             </>
           )}
 

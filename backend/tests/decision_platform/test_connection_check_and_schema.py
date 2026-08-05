@@ -225,3 +225,78 @@ def test_the_stale_failure_is_not_hidden_by_an_empty_connection_list(stale_clien
     # where the truth is told instead.
     assert stale_client.post("/api/v1/data/sync", headers=_hdr(stale_client),
                              json={}).status_code == 503
+
+
+# ── rotating the token, on the connection ───────────────────────────────────
+#
+# Rotation used to be a "credentials" surface of its own, which made a Zoho
+# mechanism — a refresh token that can be revoked and reissued — look like a
+# concept every connector would need, and put the control on a different screen
+# from the connection somebody had just decided to rotate.
+
+def _cred_token(client, cid: str) -> str:
+    from app.crypto import decrypt
+    from app.domain import models as m
+
+    s = client.Maker()
+    try:
+        row = s.get(m.ZohoConnection, cid)
+        cred = s.get(m.ZohoCredential, row.credential_id)
+        return decrypt(cred.refresh_token_encrypted)
+    finally:
+        s.close()
+
+
+def test_rotating_a_connection_replaces_the_token_it_signs_in_with(client):
+    cid = _add(client).json()["connection_id"]
+    assert _cred_token(client, cid) == "r"
+
+    got = client.post(f"/api/v1/connections/{cid}/rotate", headers=_hdr(client),
+                      json={"refresh_token": "1000.new.token"})
+    assert got.status_code == 200, got.text
+    assert got.json()["rotated"] is True
+    assert _cred_token(client, cid) == "1000.new.token"
+
+
+def test_a_rotation_names_every_other_company_it_changed(client):
+    """One Zoho grant usually reaches every company its user can see, so
+    rotating from one connection rotates the others. That is the point of
+    sharing a grant — and a nasty surprise if the response does not say so."""
+    first = _add(client, "60036630626", "4U Precision").json()
+    credential_id = first["credential_id"]
+    second = client.post("/api/v1/connections", headers=_hdr(client), json={
+        "zoho_organization_id": "60036630999", "label": "SLS Engineers",
+        "credential_id": credential_id}).json()
+
+    body = client.post(f"/api/v1/connections/{first['connection_id']}/rotate",
+                       headers=_hdr(client),
+                       json={"refresh_token": "shared-new"}).json()
+    also = body["also_rotated"]
+    assert [c["connection_id"] for c in also] == [second["connection_id"]]
+    assert "1 other company" in body["note"]
+    # And it really did change underneath the other one.
+    assert _cred_token(client, second["connection_id"]) == "shared-new"
+
+
+def test_an_empty_token_is_refused_rather_than_stored(client):
+    """A blank rotation would leave the connection unable to sign in at all,
+    which is a worse outcome than the expired token it replaced."""
+    cid = _add(client).json()["connection_id"]
+    got = client.post(f"/api/v1/connections/{cid}/rotate", headers=_hdr(client),
+                      json={"refresh_token": "   "})
+    assert got.status_code == 400
+    assert _cred_token(client, cid) == "r"
+
+
+def test_rotation_no_longer_has_a_second_home(client):
+    """One way to do it. The old per-credential route is gone, so there is no
+    second path that could drift from this one or be found first."""
+    cid = _add(client).json()["connection_id"]
+    s = client.Maker()
+    from app.domain import models as m
+    credential_id = s.get(m.ZohoConnection, cid).credential_id
+    s.close()
+
+    gone = client.post(f"/api/v1/data/credentials/{credential_id}/rotate",
+                       headers=_hdr(client), json={"refresh_token": "x"})
+    assert gone.status_code == 404

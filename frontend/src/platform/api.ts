@@ -198,11 +198,15 @@ export const papi = {
       "/api/v1/data/connection/use-credential",
       { method: "POST", body: JSON.stringify({ credential_id, zoho_organization_id }) }, t),
 
-  rotateCredential: (t: string, credentialId: string, refresh_token: string,
-                     client_id?: string, client_secret?: string) =>
-    req<{ credential: ZohoCredential }>(
-      `/api/v1/data/credentials/${credentialId}/rotate`,
-      { method: "POST", body: JSON.stringify({ refresh_token, client_id, client_secret }) }, t),
+  /** Replace the Zoho grant one connection signs in with.
+   *
+   *  On the connection rather than on a credential of its own: a revocable
+   *  refresh token is a Zoho mechanism, not something every connector has. The
+   *  response says which other companies share the grant and changed with it. */
+  rotateConnectionToken: (t: string, connectionId: string, refresh_token: string) =>
+    req<Record<string, unknown>>(
+      `/api/v1/connections/${connectionId}/rotate`,
+      { method: "POST", body: JSON.stringify({ refresh_token }) }, t),
 
   shareCredential: (t: string, credentialId: string, organization_ids: string[]) =>
     req<{ credential: ZohoCredential }>(

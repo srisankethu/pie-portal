@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { since, todayISO } from "../when";
+import { formatDate, since, todayISO } from "../when";
 import { papi } from "./api";
 import type {
   ConnectionCheck,
@@ -83,6 +83,7 @@ function ConnectionCard({
   onRename,
   onToggle,
   onDelete,
+  onRotate,
   onSync,
   syncing,
   syncBusy,
@@ -94,6 +95,7 @@ function ConnectionCard({
   onRename: (id: string, label: string) => Promise<void>;
   onToggle: (id: string, enabled: boolean) => Promise<void>;
   onDelete: (id: string) => Promise<void>;
+  onRotate: (id: string, token: string) => Promise<string>;
   onSync: (id: string, since: string, full: boolean) => Promise<void>;
   /** This card's own company is the one being pulled. */
   syncing: boolean;
@@ -108,6 +110,13 @@ function ConnectionCard({
   // the window that was already chosen for it rather than a global default.
   const [since, setSince] = useState(conn.suggested_since);
   const [full, setFull] = useState(false);
+  // Rotation is a property of *this connection's* Zoho sign-in, so it lives on
+  // this card rather than on a credentials panel elsewhere on the page. It is
+  // closed by default: a token box permanently open on a working connection
+  // invites somebody to paste into it.
+  const [rotating, setRotating] = useState(false);
+  const [newToken, setNewToken] = useState("");
+  const [rotateNote, setRotateNote] = useState<string | null>(null);
 
   useEffect(() => setLabel(conn.label), [conn.label]);
   useEffect(() => setSince(conn.suggested_since), [conn.suggested_since]);
@@ -182,7 +191,15 @@ function ConnectionCard({
           <dd>
             {conn.credential_label}
             {conn.credential_rotated_at && (
-              <div className="st-help">rotated {conn.credential_rotated_at.slice(0, 10)}</div>
+              <div className="st-help">
+                rotated {formatDate(conn.credential_rotated_at)}
+              </div>
+            )}
+            {canManage && !rotating && (
+              <button className="btn btn-ghost btn-sm cx-rotate-open"
+                      onClick={() => { setRotating(true); setRotateNote(null); }}>
+                Replace the token
+              </button>
             )}
           </dd>
         </div>
@@ -206,6 +223,50 @@ function ConnectionCard({
           <dd>{when(conn.last_checked_at)}</dd>
         </div>
       </dl>
+
+      {rotating && (
+        <div className="cx-rotate">
+          <label htmlFor={`cx-token-${conn.connection_id}`}>
+            <Labelled tip="Generate a fresh refresh token in the Zoho API console for the same client, then paste it here. The client id and secret are unchanged by a rotation and are not re-entered — re-typing a secret that is already correct is how a working connection gets broken.">
+              New refresh token
+            </Labelled>
+          </label>
+          <input
+            id={`cx-token-${conn.connection_id}`}
+            className="input"
+            value={newToken}
+            autoComplete="off"
+            spellCheck={false}
+            placeholder="1000.xxxxxxxx.xxxxxxxx"
+            onChange={(e) => setNewToken(e.target.value)}
+          />
+          {/* Said before it happens, not after. One Zoho grant usually reaches
+              every company its user can see, so rotating from here rotates
+              those too — which is the point, and a surprise if unstated. */}
+          <p className="st-help">
+            This replaces the sign-in for every company using{" "}
+            <strong>{conn.credential_label}</strong>, not only this one. The
+            connection is re-checked immediately afterwards.
+          </p>
+          <div className="cx-rotate-actions">
+            <button className="btn btn-primary btn-sm"
+                    disabled={busy || !newToken.trim()}
+                    onClick={() => run(async () => {
+                      const note = await onRotate(conn.connection_id, newToken.trim());
+                      setNewToken("");
+                      setRotating(false);
+                      setRotateNote(note);
+                    })}>
+              {busy ? "Rotating…" : "Rotate"}
+            </button>
+            <button className="btn btn-ghost btn-sm"
+                    onClick={() => { setRotating(false); setNewToken(""); }}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+      {rotateNote && <p className="cx-detail">{rotateNote}</p>}
 
       {(check?.detail ?? conn.last_check_detail) && (
         <p className={`cx-detail ${h.tone === "bad" ? "bad" : ""}`}>
@@ -720,6 +781,18 @@ export function ConnectionsPanel({
     }
   }
 
+  /** Replace the Zoho grant this connection signs in with.
+   *
+   *  One call, on the connection, because that is the thing somebody is
+   *  looking at when they decide to rotate. The server names every other
+   *  company that changed underneath, and that sentence is what comes back. */
+  async function rotate(id: string, token: string): Promise<string> {
+    setError(null);
+    const r = await papi.rotateConnectionToken(session.token, id, token);
+    await load();
+    return String(r.note ?? "Rotated.");
+  }
+
   async function remove(id: string) {
     const c = view?.connections.find((x) => x.connection_id === id);
     if (
@@ -795,6 +868,7 @@ export function ConnectionsPanel({
             canManage={view.can_manage}
             canSync={canSync}
             onCheck={check}
+            onRotate={rotate}
             onRename={rename}
             onToggle={toggle}
             onDelete={remove}

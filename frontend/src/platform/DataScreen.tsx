@@ -5,7 +5,7 @@ import { since as when, todayISO } from "../when";
 import { papi } from "./api";
 import { ConnectionsPanel } from "./ConnectionsPanel";
 import { SyncStatusCard, useSync } from "./SyncStatus";
-import type { DataStatus, PlatformSession, UnresolvedReference, ZohoCredential } from "./types";
+import type { DataStatus, PlatformSession, UnresolvedReference } from "./types";
 import { Bp, Labelled, Tip } from "./ui";
 
 /**
@@ -44,11 +44,6 @@ export function DataScreen({ session, onSynced }: { session: PlatformSession; on
   const [checking, setChecking] = useState(false);
   const [since, setSince] = useState<string>(defaultSince());
   const [full, setFull] = useState(false);
-  // Grants on file, shown here because rotation is a property of the sign-in
-  // rather than of any one company: one rotation covers every company it reaches.
-  const [credentials, setCredentials] = useState<ZohoCredential[]>([]);
-  const [rotateToken, setRotateToken] = useState("");
-  const [credMsg, setCredMsg] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setChecking(true);
@@ -65,19 +60,6 @@ export function DataScreen({ session, onSynced }: { session: PlatformSession; on
   useEffect(() => {
     load();
   }, [load]);
-
-  const loadCredentials = useCallback(async () => {
-    if (!status?.can_manage_connection) return;
-    try {
-      setCredentials((await papi.listCredentials(session.token)).credentials);
-    } catch {
-      /* an owner without credentials yet is the normal first-run state */
-    }
-  }, [session.token, status?.can_manage_connection]);
-
-  useEffect(() => {
-    loadCredentials();
-  }, [loadCredentials]);
 
   // Starting a sync and watching it are one concern, in one place — see
   // SyncStatus.tsx. The screen renders from that state rather than from the
@@ -98,19 +80,6 @@ export function DataScreen({ session, onSynced }: { session: PlatformSession; on
       connection_id: connectionId,
     });
     setFull(false);
-  }
-
-  async function doRotate(credentialId: string) {
-    setCredMsg(null);
-    try {
-      await papi.rotateCredential(session.token, credentialId, rotateToken.trim());
-      setRotateToken("");
-      setCredMsg("Rotated. Every company connected through this sign-in now uses the new token.");
-      await loadCredentials();
-      await load();
-    } catch (err) {
-      setCredMsg((err as Error).message);
-    }
   }
 
   const s = status?.last_sync;
@@ -199,42 +168,11 @@ export function DataScreen({ session, onSynced }: { session: PlatformSession; on
       <div className="section-h">Sync status</div>
       <SyncStatusCard sync={sync} canSync={canSync} onRetry={() => startSync()} />
 
-      {/* ── rotation is a property of the sign-in, not of a company ── */}
-      {status?.can_manage_connection && credentials.filter((cr) => cr.is_owner).map((cr) => (
-        <Bp className="st-section" key={cr.credential_id}>
-          <h3>
-            <Labelled tip="A refresh token belongs to a Zoho user, not a company. Rotating it here replaces it once for every company connected through it — which is the whole reason connections and sign-ins are separate things.">
-              Rotate {cr.label || "this sign-in"}
-            </Labelled>
-          </h3>
-          <p className="st-help">
-            Covers {cr.used_by.length}{" "}
-            {cr.used_by.length === 1 ? "company" : "companies"}
-            {cr.rotated_at && <> · last rotated {cr.rotated_at.slice(0, 10)}</>}.
-            Generate a new token in the Zoho API console and paste it here; the old one
-            stops working when you revoke it there.
-          </p>
-          <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
-            <input
-              className="input"
-              type="password"
-              placeholder="New refresh token"
-              style={{ maxWidth: 340 }}
-              value={rotateToken}
-              aria-label="New refresh token"
-              onChange={(e) => setRotateToken(e.target.value)}
-            />
-            <button
-              className="btn btn-secondary btn-sm"
-              disabled={!rotateToken.trim()}
-              onClick={() => doRotate(cr.credential_id)}
-            >
-              Rotate
-            </button>
-          </div>
-          {credMsg && <p className="cx-detail">{credMsg}</p>}
-        </Bp>
-      ))}
+      {/* Rotation used to be a panel of its own here. It has moved onto the
+          connection card above — a revocable refresh token is a Zoho
+          mechanism, not a concept every connector will have, and the control
+          belongs on the thing somebody has just decided to rotate rather than
+          three sections further down the page. */}
 
       {!status && !error ? (
         <div className="skeleton" style={{ height: 90 }} />

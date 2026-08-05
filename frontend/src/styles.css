@@ -1308,3 +1308,15 @@ table.grid tbody tr:hover td { background: color-mix(in srgb, var(--color-accent
 /* The grid measures its own width; the page must never scroll sideways
  * because of it. */
 .ag-shell .ag-root-wrapper { border: 0; }
+
+/* Rotating a connection's Zoho token. Closed until asked for: a token box
+   sitting open on a working connection invites somebody to paste into it. */
+.cx-rotate-open { margin-top: 4px; padding-left: 0; }
+.cx-rotate {
+  margin: 10px 0 4px; padding: 12px 14px;
+  border-left: 3px solid var(--color-accent);
+  background: var(--color-accent-100);
+  display: grid; gap: 6px;
+}
+.cx-rotate .input { max-width: 420px; font-family: var(--font-mono, monospace); }
+.cx-rotate-actions { display: flex; gap: 8px; margin-top: 4px; }

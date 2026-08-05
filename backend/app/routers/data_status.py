@@ -364,39 +364,13 @@ def connect_with_existing_credential(
     return {"connection": _connection(session, principal.organization_id)}
 
 
-class RotateCredential(BaseModel):
-    refresh_token: str
-    client_id: Optional[str] = None
-    client_secret: Optional[str] = None
-
-
-@router.post("/credentials/{credential_id}/rotate")
-def rotate(
-    credential_id: str,
-    body: RotateCredential,
-    principal: Principal = Depends(require_owner),
-    session: Session = Depends(get_session),
-) -> dict:
-    """Replace the secrets on one grant. Every connection using it follows.
-
-    One operation, however many companies are connected through it — which is
-    what makes rotating after a leak, or on a schedule, something a person will
-    actually do rather than put off.
-    """
-    from ..ingestion.connections import CredentialNotUsable, rotate_credential
-
-    if not body.refresh_token.strip():
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "A refresh token is required")
-    try:
-        cred = rotate_credential(
-            session, principal.organization_id, credential_id,
-            refresh_token=body.refresh_token.strip(),
-            client_id=(body.client_id or "").strip() or None,
-            client_secret=(body.client_secret or "").strip() or None)
-    except CredentialNotUsable as e:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, str(e)) from e
-    return {"credential": _credential_dict(session, cred, principal.organization_id),
-            "connection": _connection(session, principal.organization_id)}
+# Rotation used to live here, as a "credentials" surface of its own. It has
+# moved onto the connection — ``POST /api/v1/connections/{id}/rotate`` — because
+# a revocable refresh token is a *Zoho* mechanism, not a platform concept every
+# connector will need, and because the control belonged on the screen showing
+# the thing somebody had just decided to rotate. Sharing a grant between
+# organizations stays here: that is about who may use a credential, which is a
+# platform question and not a connector one.
 
 
 class ShareCredential(BaseModel):

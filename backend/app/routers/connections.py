@@ -303,6 +303,85 @@ def delete_connection(
             "note": "Data already pulled through this connection is unchanged."}
 
 
+class RotateToken(BaseModel):
+    """A fresh Zoho grant. The refresh token is the thing that actually expires
+    or gets revoked; the client pair is optional because it usually has not
+    changed and re-typing a secret that is already correct is how a working
+    connection gets broken."""
+
+    refresh_token: str
+    client_id: Optional[str] = None
+    client_secret: Optional[str] = None
+
+
+@router.post("/{connection_id}/rotate")
+def rotate_connection_token(
+    connection_id: str,
+    body: RotateToken,
+    principal: Principal = Depends(require_owner),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Replace the Zoho grant this connection signs in with.
+
+    **Rotation lives here, on the connection, because it is a Zoho mechanism
+    rather than a platform one.** A refresh token that can be revoked and
+    reissued is how Zoho's OAuth works; another connector might use a static
+    key, a certificate, or nothing that is ever rotated at all. It was
+    previously a "credentials" surface of its own, which made a Zoho detail
+    look like a concept every connector would need — and put the control on a
+    different screen from the thing somebody was looking at when they decided
+    to rotate.
+
+    **One grant can reach several companies, and rotating from any of them
+    rotates it for all of them.** That is deliberate — it is what makes
+    rotating after a leak one operation rather than three — but it must not be
+    a surprise, so the response names every connection that just changed
+    underneath. The arithmetic is not repeated here: this delegates to
+    ``ingestion.connections.rotate_credential``, which is where the ownership
+    rule lives.
+    """
+    if not body.refresh_token.strip():
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            "A refresh token is required")
+    try:
+        row = conn.get_connection(session, principal.organization_id, connection_id)
+    except conn.ConnectionNotFound as e:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(e)) from e
+    if not row.credential_id:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "This connection has no stored grant to rotate. Re-enter it with "
+            "Edit instead.")
+
+    also = [c for c in conn.connections_using(session, row.credential_id)
+            if c.connection_id != row.connection_id]
+    try:
+        conn.rotate_credential(
+            session, principal.organization_id, row.credential_id,
+            refresh_token=body.refresh_token.strip(),
+            client_id=(body.client_id or "").strip() or None,
+            client_secret=(body.client_secret or "").strip() or None)
+    except conn.CredentialNotUsable as e:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(e)) from e
+
+    # Checked immediately: a rotation that silently left the connection broken
+    # is worse than no rotation, because the next failure looks like Zoho's.
+    checked = _check(session, row)
+    return {
+        **checked,
+        "rotated": True,
+        "also_rotated": [
+            {"connection_id": c.connection_id, "label": c.label,
+             "zoho_organization_id": c.zoho_organization_id}
+            for c in also
+        ],
+        "note": ("Rotated." if not also else
+                 f"Rotated. {len(also)} other compan"
+                 f"{'y' if len(also) == 1 else 'ies'} sign in through the same "
+                 f"grant and now use the new token too."),
+    }
+
+
 @router.post("/{connection_id}/check")
 def check_connection(
     connection_id: str,

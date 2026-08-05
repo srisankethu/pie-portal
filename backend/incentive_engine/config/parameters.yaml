@@ -1,0 +1,213 @@
+# Every parameter the engine uses, dated and versioned.
+#
+# NOTHING IS HARDCODED IN THE ENGINE. A historical period recomputes identically
+# because the config version that produced it is recorded on the output, and
+# config blocks carry effective dates — a run for FY25 Q2 loads the block in
+# force on that date, not today's.
+#
+# Governance (I6): these change AT MOST ANNUALLY and are published before the
+# year starts. A mechanism people believe will be re-cut when they win is a
+# discretionary bonus wearing a formula costume.
+
+version: "2026.1"
+effective_from: "2026-04-01"
+effective_to: null                    # open — the block currently in force
+
+# ── collection: the earning condition, not a KPI ────────────────────────────
+# CAF is banked on invoice and EARNED on receipt. This single table replaces an
+# entire "collections KPI" and removes any gain from billing early or selling
+# to a customer who will not pay.
+collection:
+  # Days beyond agreed due date -> conversion factor. `to` is inclusive.
+  # `from: null` means "advance / against delivery" (paid before due date by
+  # more than the advance threshold).
+  bands:
+    - {label: "advance or against delivery", from: null, to: -1, factor: "1.10"}
+    - {label: "on or before due date",       from: 0,    to: 0,  factor: "1.00"}
+    - {label: "1-30 days late",              from: 1,    to: 30, factor: "0.90"}
+    - {label: "31-60 days late",             from: 31,   to: 60, factor: "0.75"}
+    - {label: "61-90 days late",             from: 61,   to: 90, factor: "0.50"}
+    - {label: "91-120 days late",            from: 91,   to: 120, factor: "0.25"}
+    - {label: "beyond 120 days",             from: 121,  to: null, factor: "0.00"}
+  # Beyond this, any provisional payout is clawed back, not merely unearned.
+  clawback_after_days: 120
+
+# ── the currency ────────────────────────────────────────────────────────────
+caf:
+  # Toolkit charged at 50 paise in the rupee. This is the whole S<->C control:
+  # the compliant weapon is priced at HALF the non-compliant one, so S reaches
+  # for it first because it is cheaper, not because they were told to.
+  toolkit_charge_rate: "0.50"
+  # K is charged at 100 paise. Never change this without re-deriving 4.4 — the
+  # 1:1 deduction is what makes S's first-order condition identical to the
+  # owner's.
+  third_party_charge_rate: "1.00"
+  # Vendor yield credited at 1:1 (alpha). Section 12 of the design note offers
+  # 1.25-1.50 as an "over-incentivise" variant; held at 1.0 because the brief's
+  # success criterion is EV maximisation, and alpha > 1 pays out value that was
+  # never contributed on the marginal rupee.
+  vendor_yield_credit: "1.00"
+
+# ── floor prices ────────────────────────────────────────────────────────────
+floor:
+  # F = cost x (1 + m_floor). m_floor is OWNER ZONE and varies by family so F
+  # cannot be inverted to cost from a single observed line.
+  # These are defaults; the per-item FloorPriceSchedule overrides them.
+  m_floor_by_family:
+    inserts: "0.22"
+    solid_carbide: "0.26"
+    holders_toolsystems: "0.30"
+    metrology: "0.34"
+    chemicals: "0.18"
+    machines: "0.12"
+    default: "0.25"
+  # Aged stock: F declines with age so clearing dead stock earns real points.
+  # Expressed as a FRACTION OF THE NORMAL FLOOR, not of cost — the engine never
+  # needs cost to apply it, which keeps the aged path inside the ops zone too.
+  aged_floor_schedule:
+    - {from_days: 0,   to_days: 180,  floor_fraction: "1.00", is_aged: false}
+    - {from_days: 181, to_days: 365,  floor_fraction: "0.85", is_aged: true}
+    - {from_days: 366, to_days: 545,  floor_fraction: "0.70", is_aged: true}
+    - {from_days: 546, to_days: 730,  floor_fraction: "0.55", is_aged: true}
+    - {from_days: 731, to_days: null, floor_fraction: "0.40", is_aged: true}
+  aged_threshold_days: 180
+
+# ── relationship strength ───────────────────────────────────────────────────
+rsi:
+  weights:
+    tenure: 20
+    regularity: 20
+    breadth: 15
+    share_of_wallet: 15
+    payment_behaviour: 15
+    contact_depth: 15
+  # Saturation points: the value at which a component scores 100.
+  tenure_months_full: 60          # 5 years of continuous purchase
+  regularity_months_full: 12
+  breadth_families_full: 6
+  contacts_full: 4                # four live reachable decision-makers
+  # Payment behaviour scores 100 at 0 days beyond terms, 0 at this many.
+  days_beyond_terms_zero: 60
+  bands:
+    - {name: "New",         from: 0,  to: 25,  w_base: null,   w_inc: "1.80", toolkit_cap_pct: "0.15", retention_gate: "none"}
+    - {name: "Developing",  from: 26, to: 50,  w_base: "1.10", w_inc: "1.60", toolkit_cap_pct: "0.10", retention_gate: "soft"}
+    - {name: "Established", from: 51, to: 75,  w_base: "0.95", w_inc: "1.50", toolkit_cap_pct: "0.07", retention_gate: "hard"}
+    - {name: "Anchor",      from: 76, to: 100, w_base: "0.85", w_inc: "1.60", toolkit_cap_pct: "0.05", retention_gate: "hard"}
+  # An Established/Anchor account whose rolling-12 collected CAF falls by more
+  # than this YoY without approved cause collapses ALL of that salesperson's
+  # w_inc to 1.00. Hunting cannot be funded by letting the base rot.
+  retention_gate_drop_pct: "0.20"
+  retention_gate_w_inc: "1.00"
+
+# ── portfolio health ────────────────────────────────────────────────────────
+# Q = q_min + (q_max - q_min) x HealthScore, HealthScore in [0,1].
+health:
+  q_min: "0.85"
+  q_max: "1.15"
+  weights:
+    logo_retention: 25            # was 30 — displaced by trial_conversion
+    contact_depth: 20
+    concentration: 15             # was 20 — displaced by trial_conversion
+    dispute_rate: 15
+    forecast_accuracy: 10         # was 15 — displaced by trial_conversion
+    trial_conversion: 15          # Q2(b): the hold-up control, portfolio-level
+  # Herfindahl penalty begins above this share in a single account.
+  concentration_penalty_above: "0.40"
+  # Credit notes as % of CAF at which the dispute component scores zero.
+  dispute_rate_zero_at: "0.10"
+  contacts_full: 3                # avg live contacts per Established/Anchor
+  # Q2(b): a proven item counts as converted if a repeat order lands within N.
+  trial_conversion_months: 6
+  # Q2(c): a trial carrying >= this many lock-in factors counts full weight in
+  # the numerator; a proven-but-unlocked trial counts at the reduced rate.
+  trial_lockin_factors_for_full_credit: 2
+  trial_unlocked_credit: "0.50"
+
+# ── gates ───────────────────────────────────────────────────────────────────
+# Binary. Failure WITHHOLDS the period; it does not destroy it. Permanent
+# forfeiture drives concealment, deferral drives correction.
+gates:
+  cure_days:
+    G1_compliance: 60
+    G2_data_integrity: 60
+    G3_receivables: 60
+  # G3: an invoice past this many days overdue needs a formally escalated
+  # recovery plan on record or the gate fails.
+  receivables_escalation_days: 120
+  # Q6: discovered undeclared K. 3x makes the expected value of concealment
+  # negative at any detection probability above ~25%.
+  undeclared_k_clawback_multiple: "3.00"
+  undeclared_k_forfeits_bank: true
+
+# ── new accounts ────────────────────────────────────────────────────────────
+bayesian:
+  provisional_rate: "0.50"
+  release_min_invoices: 3
+  release_min_quarters: 2
+
+# ── aged stock recovery (Q1) ────────────────────────────────────────────────
+# A SEPARATE POOL from CAF, deliberately. See DESIGN_DECISIONS.md Q1(a): below
+# some age F_aged < cost, so a cash-losing line would produce positive CAF and
+# corrupt the margin signal S is learning from.
+recovery:
+  # Bounty rate on (realised price - aged write-down floor) x qty.
+  # DECLINES WITH AGE so recovery is front-loaded and nobody profits by waiting.
+  bounty_rate_by_age:
+    - {from_days: 181, to_days: 365,  rate: "0.25"}
+    - {from_days: 366, to_days: 545,  rate: "0.20"}
+    - {from_days: 546, to_days: 730,  rate: "0.15"}
+    - {from_days: 731, to_days: null, rate: "0.10"}
+  # Q1(c): open to ANYONE in the company. Proposer spots the match, closer
+  # carries the customer relationship cost of the substitution.
+  proposer_share: "0.40"
+  closer_share: "0.60"
+  # Q1(d) + Q3(b) THE SAME RULE: whoever caused the stock earns this fraction
+  # of the normal bounty on that specific stock. Not zero — zero makes them
+  # hide it, and hidden dead stock is worse than cheaply-cleared dead stock.
+  causer_bounty_multiplier: "0.25"
+  # Returned or disputed within this window and the bounty reverses.
+  clawback_window_days: 90
+
+# ── vendor sub-game (Q3) ────────────────────────────────────────────────────
+vendor:
+  # Q3(b): commitment-linked Y is credited PROVISIONALLY and released only as
+  # the committed stock actually sells. This is the single loop tying the
+  # vendor sub-game to the inventory sub-game.
+  commitment_release_on_sale: true
+  # Unsold residual at this horizon is charged back under the Q1(d) causer rule.
+  commitment_residual_months: 18
+  # Q3(c) valuation conventions for non-price concessions.
+  valuation:
+    free_tooling: "1.00"          # at standard buy price
+    demo_stock: "0.50"            # it comes back; half credit
+    training_day_cap: "25000"     # per day, market rate cap
+    cost_of_capital_annual: "0.12"  # extended credit: rate x amount x days/365
+  # Vendor SPIFFs: surrendered -> re-credited as Y; retained -> deducted 1:1.
+  spiff_retained_charge_rate: "1.00"
+
+# ── payout ──────────────────────────────────────────────────────────────────
+payout:
+  # r is PER ENTITY. SLS at ~19Cr and 4U at ~37L cannot share a rate.
+  # These are placeholders pending the Phase-1 shadow run (Q4). An unrun
+  # calibration must not silently pay whatever a developer typed.
+  r_by_entity:
+    SLS: "0.0000"
+    4U:  "0.0000"
+    UPS: "0.0000"
+  cash_share: "0.70"
+  relationship_bank_share: "0.30"
+  bank_release_months: 12
+  # Soft accelerator above target — no threshold to game because it applies
+  # only to the excess.
+  accelerator_above_target_pct: "1.30"
+  accelerator_rate_multiple: "1.15"
+
+# ── multi-agent (attribution) ───────────────────────────────────────────────
+attribution:
+  # COMPANY-FUNDED, not deducted from the account owner. That is the detail
+  # that makes knowledge-sharing Pareto-improving.
+  assist_share: "0.15"            # within the 10-20% band
+  assist_company_funded: true
+  handover_tail_share: "0.25"
+  handover_tail_quarters: 2
+  dormancy_quarters_to_pool: 2

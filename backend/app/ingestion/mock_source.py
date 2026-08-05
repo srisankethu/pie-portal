@@ -1,7 +1,7 @@
 """Deterministic, offline Zoho source for dev and tests.
 
 Returns raw payloads shaped like the Zoho Books API (contacts / items /
-invoices / bills) so the normalizer and sync are exercised against realistic
+invoices / bills / vendors / payments / purchase orders) so the normalizer and sync are exercised against realistic
 structures without network or credentials. Data is fixed and small; it is a
 stand-in for a real pull, not seed business data.
 """
@@ -20,10 +20,60 @@ _CONTACTS = [
 ]
 
 _ITEMS = [
+    # Stock mirrors what the live API actually returns, including the two
+    # shapes that matter: a blank reorder_level (the common case — a reorder
+    # point nobody has set), and an actual_available below zero (more committed
+    # to open orders than exists on the shelf).
     {"item_id": "itm-2001", "name": "CNMG 120408 KCP25", "sku": "CNMG120408KCP25", "unit": "pcs",
-     "hsn_or_sac": "82090090", "status": "active"},
+     "hsn_or_sac": "82090090", "status": "active",
+     "stock_on_hand": 40, "available_stock": 40, "actual_available_stock": -5,
+     "reorder_level": "", "purchase_rate": 405, "track_inventory": True,
+     "item_type": "inventory"},
     {"item_id": "itm-2002", "name": "DNMG 150608 KCK15", "sku": "DNMG150608KCK15", "unit": "pcs",
-     "hsn_or_sac": "82090090", "status": "active"},
+     "hsn_or_sac": "82090090", "status": "active",
+     "stock_on_hand": 0, "available_stock": 0, "actual_available_stock": 0,
+     "reorder_level": 10, "purchase_rate": 480, "track_inventory": True,
+     "item_type": "inventory"},
+]
+
+_VENDORS = [
+    {"contact_id": "vnd-5001", "contact_name": "Kennametal India Ltd",
+     "gst_no": "29AAACW1234K1ZR", "pan_no": "AAACW1234K", "payment_terms": 30,
+     "status": "active"},
+    {"contact_id": "vnd-5002", "contact_name": "YG Cutting Tools",
+     "gst_no": "36AAACY5678M1ZT", "pan_no": "AAACY5678M", "payment_terms": 0,
+     "status": "active"},
+]
+
+_PAYMENTS = [
+    # Paid 31 days after the invoice, 1 day after it fell due.
+    {"payment_id": "pay-6001", "customer_id": "cst-1001", "date": "2026-07-11",
+     "amount": 15660, "payment_mode": "Bank Transfer", "is_advance_payment": False,
+     "unused_amount": 0,
+     "invoices": [
+         {"invoice_payment_id": "pa-1", "invoice_id": "inv-3001",
+          "invoice_number": "INV-3001", "date": "2026-06-10",
+          "due_date": "2026-07-10", "amount_applied": 15660},
+     ]},
+    # An advance: money with no invoice behind it, so no days-to-pay exists.
+    {"payment_id": "pay-6002", "customer_id": "cst-1002", "date": "2026-07-05",
+     "amount": 50000, "payment_mode": "Bank Transfer", "is_advance_payment": True,
+     "unused_amount": 50000, "invoices": []},
+]
+
+_PURCHASE_ORDERS = [
+    # Still open, and with no promised date — the common shape in this book.
+    {"purchaseorder_id": "po-7001", "purchaseorder_number": "PO/26/001",
+     "vendor_id": "vnd-5001", "date": "2026-05-20", "expected_delivery_date": "",
+     "status": "open", "received_status": "to_be_received",
+     "total_ordered_quantity": 75, "quantity_yet_to_receive": 75,
+     "total": 58690.13, "receives": []},
+    {"purchaseorder_id": "po-7002", "purchaseorder_number": "PO/26/002",
+     "vendor_id": "vnd-5002", "date": "2026-06-01", "expected_delivery_date": "",
+     "status": "billed", "received_status": "received",
+     "total_ordered_quantity": 10, "quantity_yet_to_receive": 0,
+     "total": 3999.91,
+     "receives": [{"date": "2026-06-15", "receive_id": "rcv-1"}]},
 ]
 
 _USERS = [
@@ -71,3 +121,13 @@ class FixtureZohoSource:
 
     def list_users(self) -> Iterable[dict[str, Any]]:
         return list(_USERS)
+
+    def list_vendors(self) -> Iterable[dict[str, Any]]:
+        return list(_VENDORS)
+
+    def list_customer_payments(
+            self, skip: Optional[SkipPredicate] = None) -> Iterable[dict[str, Any]]:
+        return list(_PAYMENTS)
+
+    def list_purchase_orders(self) -> Iterable[dict[str, Any]]:
+        return list(_PURCHASE_ORDERS)

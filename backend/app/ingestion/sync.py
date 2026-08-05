@@ -29,6 +29,7 @@ from typing import Any, Callable, Optional
 
 from sqlalchemy.orm import Session
 
+from ..clock import now as _clock_now
 from ..config import settings
 from ..repositories import ReadModelRepository
 from ..trust import vault
@@ -37,7 +38,11 @@ from .normalize import (
     normalize_bill,
     normalize_customer,
     normalize_invoice,
+    normalize_payment,
     normalize_product,
+    normalize_purchase_order,
+    normalize_stock,
+    normalize_vendor,
 )
 from .source import ZohoSource
 
@@ -50,6 +55,10 @@ class SyncReport:
     sales_txns: int = 0
     cost_records: int = 0
     assignments: int = 0
+    vendors: int = 0
+    stock_snapshots: int = 0
+    payments: int = 0
+    purchase_orders: int = 0
     documents_fetched: int = 0
     documents_resumed: int = 0
     skipped: list[dict[str, str]] = field(default_factory=list)
@@ -70,7 +79,9 @@ class SyncReport:
     @property
     def wrote_anything(self) -> bool:
         return bool(self.customers or self.products or self.sales_txns
-                    or self.cost_records or self.assignments)
+                    or self.cost_records or self.assignments or self.vendors
+                    or self.stock_snapshots or self.payments
+                    or self.purchase_orders)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -78,6 +89,8 @@ class SyncReport:
             "customers": self.customers, "products": self.products,
             "sales_txns": self.sales_txns, "cost_records": self.cost_records,
             "assignments": self.assignments,
+            "vendors": self.vendors, "stock_snapshots": self.stock_snapshots,
+            "payments": self.payments, "purchase_orders": self.purchase_orders,
             "documents_fetched": self.documents_fetched,
             "documents_resumed": self.documents_resumed,
             "skipped_count": len(self.skipped), "skipped": self.skipped,
@@ -124,6 +137,7 @@ class SyncService:
         self.begin()
         self.run_reference()
         self.run_documents()
+        self.run_supply()
         self.finish()
         return self.report
 
@@ -167,6 +181,98 @@ class SyncService:
             self._count_documents()
         finally:
             self.source = previous
+
+    def run_supply(self) -> None:
+        """Suppliers, stock and money in — the three the book had and we did not.
+
+        Stock is not here: it travels on the item payload, so it is written by
+        ``_sync_products`` in the one pass that already reads the master list.
+
+        A separate stage from ``run_reference`` because these are the only
+        pulls that can be absent: a source written before they existed, or a
+        Zoho plan without Inventory, simply does not offer them. Each is probed
+        rather than assumed, and a source that cannot answer produces no rows
+        and no error — the screens above already say "nothing synced yet" in
+        their own words, which is more useful than a failed pull.
+        """
+        if hasattr(self.source, "list_vendors"):
+            self._phase("Reading suppliers")
+            self._sync_vendors()
+            self.s.flush()
+        if hasattr(self.source, "list_customer_payments"):
+            self._phase("Reading payments")
+            self._sync_payments()
+        if hasattr(self.source, "list_purchase_orders"):
+            self._phase("Reading purchase orders")
+            self._sync_purchase_orders()
+        self.s.flush()
+
+    def _sync_vendors(self) -> None:
+        for raw in self.source.list_vendors():
+            ref = str(raw.get("contact_id", "?"))
+            try:
+                self.repo.upsert_vendor(normalize_vendor(raw))
+                self.report.vendors += 1
+            except NormalizationError as e:
+                self.report.skip("vendor", ref, e.code, e.detail)
+
+    def _record_stock(self, product, raw: dict[str, Any], as_of: date) -> None:
+        """One stock snapshot for this item, if the payload carries stock at all.
+
+        A payload with no stock fields is a *source* that does not report stock
+        — an older fixture, a Zoho plan without Inventory — not an item with
+        none of it. Writing zeros for that case would put the entire catalogue
+        in the out-of-stock list on day one.
+        """
+        if all(raw.get(k) is None for k in
+               ("stock_on_hand", "available_stock", "actual_available_stock")):
+            return
+        try:
+            self.repo.upsert_stock_snapshot(product.product_id,
+                                            normalize_stock(raw, as_of))
+            self.report.stock_snapshots += 1
+        except NormalizationError as e:
+            self.report.skip("stock", str(raw.get("item_id", "?")), e.code, e.detail)
+
+    def _sync_payments(self) -> None:
+        for raw in self.source.list_customer_payments(
+                skip=self._skipper("customerpayment")):
+            ref = str(raw.get("payment_id", "?"))
+            try:
+                payment = normalize_payment(raw)
+            except NormalizationError as e:
+                self.report.skip("payment", ref, e.code, e.detail)
+                continue
+            customer = self.repo.get_customer_by_external(payment.customer_external_id)
+            if customer is None:
+                # Money from somebody the pull has not seen. Skipped and
+                # reported rather than attached to a placeholder customer,
+                # which would put a real payment against a fictional account.
+                self.report.skip("payment", ref, "UNKNOWN_CUSTOMER",
+                                 f"no customer {payment.customer_external_id}")
+                continue
+            self.repo.upsert_payment(customer.customer_id, payment)
+            self.repo.mark_ingested("customerpayment", ref,
+                                    str(raw.get("last_modified_time") or ""))
+            self.report.payments += 1
+
+    def _sync_purchase_orders(self) -> None:
+        for raw in self.source.list_purchase_orders():
+            ref = str(raw.get("purchaseorder_id", "?"))
+            try:
+                po = normalize_purchase_order(raw)
+            except NormalizationError as e:
+                self.report.skip("purchase_order", ref, e.code, e.detail)
+                continue
+            vendor_id = None
+            if po.vendor_external_id:
+                vendor = self.repo.get_vendor_by_external(po.vendor_external_id)
+                # An order against a supplier the vendor pull did not return
+                # still counts as an open order; it just cannot be grouped by
+                # supplier. Kept, with a null vendor, rather than dropped.
+                vendor_id = vendor.vendor_id if vendor else None
+            self.repo.upsert_purchase_order(vendor_id, po)
+            self.report.purchase_orders += 1
 
     def finish(self) -> None:
         """Assignments last: they are decided from the newest invoice found,
@@ -229,6 +335,11 @@ class SyncService:
     def _sync_products(self) -> None:
         from ..identity import service as identity
 
+        # One pass over the item list, two writes. Stock rides on the same
+        # payload, and a second pass to collect it would read the whole master
+        # list twice per sync — the exact cost `run_reference` exists to avoid.
+        stock_as_of = _clock_now().date()
+
         for raw in self.source.list_items():
             ref = str(raw.get("item_id", "?"))
             try:
@@ -241,6 +352,7 @@ class SyncService:
             except NormalizationError as e:
                 self.report.skip("item", ref, e.code, e.detail)
                 continue
+            self._record_stock(row, raw, stock_as_of)
             result = identity.ingest_item(
                 self.s, self.org, connector=self.connector,
                 connection_id=self.connection_id, external_id=ref,

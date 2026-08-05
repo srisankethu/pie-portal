@@ -91,6 +91,105 @@ class CostRecordIn(BaseModel):
 
 
 # ── API read DTOs ────────────────────────────────────────────────────────────
+class VendorIn(BaseModel):
+    external_id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    gstin: Optional[str] = None
+    pan: Optional[str] = None
+    #: 0 is "due on receipt" — a real term. Only ``None`` means unknown.
+    payment_terms_days: Optional[int] = None
+    status: CustomerStatus = CustomerStatus.ACTIVE
+    source_ref: SourceRef
+
+
+class StockSnapshotIn(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    product_external_id: str = Field(min_length=1)
+    as_of: date
+    on_hand: Optional[Decimal] = None
+    available: Optional[Decimal] = None
+    actual_available: Optional[Decimal] = None
+    #: ``None`` where Zoho holds a blank. Never coerced to 0 — "no reorder
+    #: point set" and "reorder at zero" are different statements and only one
+    #: of them is a policy somebody chose.
+    reorder_level: Optional[Decimal] = None
+    purchase_rate: Optional[Decimal] = None
+    tracked: bool = True
+    source_ref: SourceRef
+
+    @field_validator("on_hand", "available", "actual_available", "reorder_level",
+                     "purchase_rate", mode="before")
+    @classmethod
+    def _blank_is_unknown(cls, v: Any) -> Optional[Decimal]:
+        # Zoho sends "" for an unset numeric field. Decimal("") raises, and
+        # float("" or 0) would quietly turn "unset" into zero.
+        if v is None or v == "":
+            return None
+        return Decimal(str(v))
+
+
+class PaymentApplicationIn(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    external_ref: str = Field(min_length=1)
+    invoice_external_ref: str = Field(min_length=1)
+    invoice_number: Optional[str] = None
+    invoice_date: date
+    invoice_due_date: Optional[date] = None
+    amount_applied: Decimal
+
+    @field_validator("amount_applied", mode="before")
+    @classmethod
+    def _to_decimal(cls, v: Any) -> Decimal:
+        return Decimal(str(v if v not in (None, "") else 0))
+
+
+class PaymentReceiptIn(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    external_ref: str = Field(min_length=1)
+    customer_external_id: str = Field(min_length=1)
+    date: date
+    amount: Decimal
+    mode: Optional[str] = None
+    is_advance: bool = False
+    unapplied_amount: Optional[Decimal] = None
+    applications: list[PaymentApplicationIn] = Field(default_factory=list)
+    source_ref: SourceRef
+
+    @field_validator("amount", "unapplied_amount", mode="before")
+    @classmethod
+    def _to_decimal(cls, v: Any) -> Optional[Decimal]:
+        if v is None or v == "":
+            return None
+        return Decimal(str(v))
+
+
+class PurchaseOrderIn(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    external_ref: str = Field(min_length=1)
+    number: Optional[str] = None
+    vendor_external_id: Optional[str] = None
+    date: date
+    expected_date: Optional[date] = None
+    status: str = ""
+    received_status: Optional[str] = None
+    ordered_qty: Optional[Decimal] = None
+    pending_qty: Optional[Decimal] = None
+    total: Optional[Decimal] = None
+    received_on: Optional[date] = None
+    source_ref: SourceRef
+
+    @field_validator("ordered_qty", "pending_qty", "total", mode="before")
+    @classmethod
+    def _to_decimal(cls, v: Any) -> Optional[Decimal]:
+        if v is None or v == "":
+            return None
+        return Decimal(str(v))
+
+
 class DecisionRead(BaseModel):
     """Scope-filtered decision projection returned by the API."""
 

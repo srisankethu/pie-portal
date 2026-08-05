@@ -714,3 +714,48 @@
 }
 
 .screen-stack { display: grid; gap: 18px; }
+
+/* ── Tier 3: the shelf, the suppliers and the cash ───────────────────────── */
+/* Two of the three are lists on purpose — a rank with names attached is read,
+   not estimated. The distribution is the one real chart, because a *shape* is
+   what a distribution shows better than a table. */
+.dist { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.dist-row {
+  display: grid; grid-template-columns: minmax(90px, 190px) 1fr auto;
+  gap: 12px; align-items: center; font-size: 13px;
+}
+.dist-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dist-track { background: var(--color-neutral-200); border-radius: 2px; height: 14px; }
+.dist-fill {
+  display: block; height: 100%; background: var(--viz-gain);
+  border-radius: 2px; min-width: 1px;
+}
+.dist-count { font-variant-numeric: tabular-nums; min-width: 3ch; text-align: right; }
+
+.tier3-list { display: grid; gap: 6px; }
+.tier3-list h4 {
+  font-family: var(--font-heading); font-size: 16px; margin: 0;
+  display: flex; align-items: baseline; gap: 8px;
+}
+.tier3-count {
+  font-family: var(--font-body); font-size: 12px; font-weight: 600;
+  background: var(--color-neutral-200); border-radius: 3px; padding: 1px 7px;
+  font-variant-numeric: tabular-nums;
+}
+/* An empty group is a good outcome and reads as one. Hiding it would leave a
+   reader unsure whether it had been checked at all. */
+.tier3-none {
+  margin: 0; padding: 10px 12px; font-size: 13px; font-style: italic;
+  color: var(--color-neutral-600);
+  background: color-mix(in srgb, var(--color-text) 3%, transparent);
+}
+/* The same row as a cadence row, without the button affordance — these items
+   have nowhere to drill to yet, and a control that looks live and does nothing
+   teaches people to stop trying the ones that work. */
+.cadence-hit.as-row { cursor: default; }
+.cadence-hit.as-row:hover { background: transparent; }
+
+@media (max-width: 520px) {
+  .dist-row { grid-template-columns: 1fr auto; }
+  .dist-track { grid-column: 1 / -1; order: 3; }
+}

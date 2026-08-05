@@ -28,7 +28,8 @@ from sqlalchemy.orm import Session
 from ..authz import Principal, current_principal, require_manager_or_owner
 from ..commercial import policy
 from ..commercial.insight import (cadence, cohorts, composition, flow, landscape,
-                                  periods, radar, simulate, story, weather)
+                                  payments, periods, radar, simulate, stock, story,
+                                  supply, weather)
 from ..db import get_session
 from ..domain import models
 from ..domain.enums import Role
@@ -268,7 +269,14 @@ def customer_timeline(customer_id: str,
             if row.current_effective_cost is not None:
                 costs[row.product_id] = float(row.current_effective_cost)
 
-    result = cohorts.health_timeline(rows, costs, as_of, months=months)
+    # Days-to-pay, where this customer has any settled invoices. Passing None
+    # rather than an empty list matters: none synced is a gap the screen should
+    # name, none settled is a row of blanks it can honestly draw.
+    settled = _settlements(session, org, customer_id)
+    payment_series = (payments.monthly_series(settled, periods.months_back(as_of, months))
+                      if settled else None)
+    result = cohorts.health_timeline(rows, costs, as_of, months=months,
+                                     payment_series=payment_series)
     if not restricted_ok:
         # Absent, not masked: there is no margin field in a salesperson's copy.
         for point in result["series"]:
@@ -410,6 +418,165 @@ def buying_cadence(principal: Principal = Depends(current_principal),
     return _envelope(result, currency=th.currency,
                      empty_reason=(None if result["customers"] else
                                    "No customer has ordered yet."))
+
+
+# ── Tier 3: the shelf, the suppliers and the cash ───────────────────────────
+#
+# Role scope follows the rule the rest of this router already uses, not a new
+# one: no cost and no margin means every role, cost of any kind means manager
+# and above. Payments are receivables — neither — so a salesperson sees them.
+# Stock structure is visible to everyone and the purchase rate is dropped from
+# their copy entirely, exactly as the health timeline drops margin.
+
+
+def _settlements(session: Session, org: str,
+                 customer_id: Optional[str] = None) -> list[payments.Settlement]:
+    """Payment applications as the grain the payment view computes on."""
+    stmt = select(models.PaymentApplication).where(
+        models.PaymentApplication.organization_id == org)
+    if customer_id:
+        stmt = stmt.where(models.PaymentApplication.customer_id == customer_id)
+    return [
+        payments.Settlement(
+            customer_id=row.customer_id,
+            invoice_ref=row.invoice_external_ref,
+            invoice_number=row.invoice_number,
+            invoice_date=row.invoice_date,
+            due_date=row.invoice_due_date,
+            paid_on=row.paid_on,
+            amount=float(row.amount_applied or 0),
+        )
+        for row in session.scalars(stmt).all()
+    ]
+
+
+@router.get("/payments")
+def payment_behaviour(principal: Principal = Depends(current_principal),
+                      session: Session = Depends(get_session)) -> dict:
+    """How long customers take to pay. Receivables — no cost, so every role."""
+    org, snapshot, th = _context(session, principal)
+    as_of = _as_of(snapshot) or date.today()
+
+    receipts = session.scalars(
+        select(models.PaymentReceipt).where(
+            models.PaymentReceipt.organization_id == org)).all()
+    settled = _settlements(session, org)
+    if not receipts and not settled:
+        return _no_data(th.currency, "payment behaviour")
+
+    result = payments.build(
+        settled, snapshot.customer_names, as_of,
+        advances=sum(1 for r in receipts if r.is_advance),
+        unapplied_total=float(sum(r.unapplied_amount or 0 for r in receipts)))
+    return _envelope(
+        result, currency=th.currency,
+        empty_reason=(None if result["customers"] else
+                      "Payments have synced, but none of them is applied to an "
+                      "invoice yet — so there is no invoice date to measure "
+                      "from. Advances are counted separately above."))
+
+
+@router.get("/stock")
+def stock_position(principal: Principal = Depends(current_principal),
+                   session: Session = Depends(get_session)) -> dict:
+    """What is on the shelf, and which of it is a problem."""
+    org, snapshot, th = _context(session, principal)
+    as_of = _as_of(snapshot) or date.today()
+    with_cost = principal.role in (Role.SALES_MANAGER, Role.OWNER)
+
+    # The most recent snapshot per item. Zoho reports stock as a current
+    # number, so "latest" is the only meaningful reading; the older rows are
+    # history for a trend, not alternatives to choose between.
+    latest: dict[str, models.StockSnapshot] = {}
+    for row in session.scalars(
+            select(models.StockSnapshot)
+            .where(models.StockSnapshot.organization_id == org)
+            .order_by(models.StockSnapshot.as_of)).all():
+        latest[row.product_id] = row
+    if not latest:
+        return _no_data(th.currency, "stock")
+
+    sold_qty: dict[str, float] = {}
+    last_sold: dict[str, date] = {}
+    for sale in snapshot.sales:
+        sold_qty[sale.product_id] = sold_qty.get(sale.product_id, 0.0) + float(sale.qty)
+        if sale.date > last_sold.get(sale.product_id, date.min):
+            last_sold[sale.product_id] = sale.date
+
+    lines = [
+        stock.StockLine(
+            product_id=pid,
+            label=snapshot.product_names.get(pid, pid),
+            on_hand=float(row.on_hand or 0),
+            available=(float(row.available) if row.available is not None else None),
+            actual_available=(float(row.actual_available)
+                              if row.actual_available is not None else None),
+            reorder_level=(float(row.reorder_level)
+                           if row.reorder_level is not None else None),
+            last_sold=last_sold.get(pid),
+            sold_qty_window=sold_qty.get(pid, 0.0),
+            purchase_rate=(float(row.purchase_rate)
+                           if row.purchase_rate is not None else None),
+        )
+        for pid, row in latest.items()
+        # A service has no shelf; counting it as zero on hand would put the
+        # whole service catalogue in the out-of-stock list forever.
+        if row.tracked
+    ]
+    result = stock.build(lines, as_of, with_cost=with_cost)
+    if not with_cost:
+        result["unavailable"].append(
+            {"series": "stock_value", "reason": "Stock value is management information."})
+    return _envelope(
+        result, currency=th.currency,
+        empty_reason=(None if lines else
+                      "Nothing in the item master is stock-tracked, so there is "
+                      "no shelf to report on."))
+
+
+@router.get("/supply")
+def supplier_position(principal: Principal = Depends(require_manager_or_owner),
+                      session: Session = Depends(get_session)) -> dict:
+    """Suppliers, open orders and measured lead times.
+
+    Manager and above: supplier spend is purchase cost by another name, and
+    the platform does not put cost in front of a salesperson.
+    """
+    org, _snapshot, th = _context(session, principal)
+    as_of = date.today()
+
+    vendors = {v.vendor_id: v for v in session.scalars(
+        select(models.Vendor).where(models.Vendor.organization_id == org)).all()}
+    rows = session.scalars(
+        select(models.PurchaseOrderDoc)
+        .where(models.PurchaseOrderDoc.organization_id == org)).all()
+    if not rows:
+        return _no_data(th.currency, "supplier orders")
+
+    orders = [
+        supply.SupplierOrder(
+            vendor_id=po.vendor_id,
+            vendor_label=(vendors[po.vendor_id].name if po.vendor_id in vendors
+                          # An order whose supplier the vendor pull did not
+                          # return is still an order. Named honestly rather
+                          # than dropped or attributed to somebody else.
+                          else "Supplier not in the contact list"),
+            number=po.number,
+            ordered_on=po.date,
+            expected_on=po.expected_date,
+            received_on=po.received_on,
+            pending_qty=float(po.pending_qty or 0),
+            ordered_qty=float(po.ordered_qty or 0),
+            total=(float(po.total) if po.total is not None else None),
+            status=po.status or "",
+        )
+        for po in rows
+    ]
+    result = supply.build(
+        orders, as_of,
+        terms_by_vendor={vid: v.payment_terms_days for vid, v in vendors.items()
+                         if v.payment_terms_days is not None})
+    return _envelope(result, currency=th.currency, empty_reason=None)
 
 
 # ── the simulator ───────────────────────────────────────────────────────────

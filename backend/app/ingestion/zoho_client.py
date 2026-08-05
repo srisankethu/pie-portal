@@ -318,6 +318,16 @@ class ZohoApiSource:
                 "unit": i.get("unit"),
                 "hsn_or_sac": i.get("hsn_or_sac") or i.get("hsn_code"),
                 "status": (i.get("status") or "active"),
+                # Stock travels on the item list Zoho already returns, so this
+                # costs nothing extra. Passed through raw — including the blank
+                # reorder_level, which normalisation must not read as zero.
+                "stock_on_hand": i.get("stock_on_hand"),
+                "available_stock": i.get("available_stock"),
+                "actual_available_stock": i.get("actual_available_stock"),
+                "reorder_level": i.get("reorder_level"),
+                "purchase_rate": i.get("purchase_rate"),
+                "track_inventory": i.get("track_inventory"),
+                "item_type": i.get("item_type"),
             }
 
     def _cutoff(self) -> date:
@@ -429,6 +439,113 @@ class ZohoApiSource:
                     for li in (bill.get("line_items") or [])
                     if li.get("item_id")
                 ],
+            }
+
+    def list_vendors(self) -> Iterable[dict[str, Any]]:
+        """Suppliers. The same ``contacts`` endpoint, the other contact_type."""
+        for v in self._paginate("contacts", "contacts", contact_type="vendor"):
+            yield {
+                "contact_id": str(v.get("contact_id")),
+                "contact_name": (v.get("vendor_name") or v.get("contact_name")
+                                 or v.get("company_name") or ""),
+                "gst_no": v.get("gst_no") or v.get("gst_treatment_gstin"),
+                "pan_no": v.get("pan_no"),
+                # 0 is "due on receipt" — a real term, not a missing value, so
+                # it is passed through and only ``None`` means unknown.
+                "payment_terms": v.get("payment_terms"),
+                "status": (v.get("status") or "active"),
+            }
+
+    def list_customer_payments(
+            self, skip: Optional[SkipPredicate] = None) -> Iterable[dict[str, Any]]:
+        """Money in, with the invoices each payment settled.
+
+        The list call alone cannot answer "how long did they take to pay": it
+        carries invoice *numbers* but neither the invoice date nor the amount
+        applied. The detail call carries both, so it is fetched per payment —
+        and ``skip`` makes a resumed pull cost one list call instead of
+        hundreds of detail calls.
+        """
+        cutoff = self._cutoff()
+        until = self._until
+        for row in self._paginate("customerpayments", "customerpayments",
+                                  sort_column="date", sort_order="D", **self._window()):
+            try:
+                paid_on = date.fromisoformat(str(row.get("date") or ""))
+            except ValueError:
+                continue
+            if paid_on < cutoff or (until is not None and paid_on > until):
+                continue
+            payment_id = str(row.get("payment_id"))
+            if skip is not None and skip(payment_id,
+                                         str(row.get("last_modified_time") or "")):
+                self.documents_resumed += 1
+                continue
+            detail = self._get(f"customerpayments/{payment_id}").get("payment") or {}
+            if not detail:
+                continue
+            self.documents_fetched += 1
+            yield {
+                "payment_id": payment_id,
+                "customer_id": str(detail.get("customer_id") or ""),
+                "date": detail.get("date"),
+                "last_modified_time": (detail.get("last_modified_time")
+                                       or row.get("last_modified_time")),
+                "amount": detail.get("amount"),
+                "payment_mode": detail.get("payment_mode"),
+                "is_advance_payment": bool(detail.get("is_advance_payment")),
+                "unused_amount": detail.get("unused_amount"),
+                "invoices": [
+                    {
+                        "invoice_payment_id": str(a.get("invoice_payment_id") or ""),
+                        "invoice_id": str(a.get("invoice_id") or ""),
+                        "invoice_number": a.get("invoice_number"),
+                        # The invoice's own dates, carried on the application:
+                        # an invoice older than the sync window still has to
+                        # produce a days-to-pay, and those are the slow ones.
+                        "date": a.get("date"),
+                        "due_date": a.get("due_date"),
+                        "amount_applied": a.get("amount_applied"),
+                    }
+                    for a in (detail.get("invoices") or [])
+                    if a.get("invoice_id")
+                ],
+            }
+
+    def list_purchase_orders(self) -> Iterable[dict[str, Any]]:
+        """Orders on suppliers. Header grain — the list call carries it all.
+
+        No detail call: the questions this feeds are "what is outstanding, with
+        whom, for how long", and ordered/pending quantity and status are all on
+        the list row. Fetching every PO's lines to answer none of them would be
+        a per-document call bought for nothing.
+        """
+        cutoff = self._cutoff()
+        until = self._until
+        for po in self._paginate("purchaseorders", "purchaseorders",
+                                 sort_column="date", sort_order="D", **self._window()):
+            try:
+                ordered = date.fromisoformat(str(po.get("date") or ""))
+            except ValueError:
+                continue
+            if ordered < cutoff or (until is not None and ordered > until):
+                continue
+            yield {
+                "purchaseorder_id": str(po.get("purchaseorder_id")),
+                "purchaseorder_number": po.get("purchaseorder_number"),
+                "vendor_id": (str(po["vendor_id"]) if po.get("vendor_id") else None),
+                "date": po.get("date"),
+                # Blank on most of this book's orders. Passed through as-is so
+                # normalisation can report "no promised date" rather than
+                # inventing one from an assumed lead time.
+                "expected_delivery_date": (po.get("expected_delivery_date")
+                                           or po.get("delivery_date")),
+                "status": po.get("status") or po.get("order_status") or "",
+                "received_status": po.get("received_status"),
+                "total_ordered_quantity": po.get("total_ordered_quantity"),
+                "quantity_yet_to_receive": po.get("quantity_yet_to_receive"),
+                "total": po.get("total"),
+                "receives": po.get("receives") or [],
             }
 
     def list_users(self) -> Iterable[dict[str, Any]]:

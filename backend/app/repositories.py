@@ -18,7 +18,8 @@ from sqlalchemy.orm import Session
 
 from .domain import models
 from .domain.enums import DecisionStatus, HumanAction
-from .domain.schemas import CostRecordIn, CustomerIn, ProductIn, SalesTxnIn
+from .domain.schemas import (CostRecordIn, CustomerIn, PaymentReceiptIn, ProductIn,
+                            PurchaseOrderIn, SalesTxnIn, StockSnapshotIn, VendorIn)
 
 
 class ReadModelRepository:
@@ -185,6 +186,146 @@ class ReadModelRepository:
         for r in rows:
             self.s.delete(r)
         return len(rows)
+
+
+    # ── supply, stock and cash ───────────────────────────────────────────────
+    #
+    # Same upsert-by-(org, external ref) shape as everything above. Keyed on
+    # Zoho's own ids so a re-pull of the same window updates rather than
+    # duplicating — which is what makes a resumed or overlapping sync safe.
+
+    def upsert_vendor(self, v: VendorIn) -> models.Vendor:
+        row = self.s.scalar(
+            select(models.Vendor).where(
+                models.Vendor.organization_id == self.org,
+                models.Vendor.external_id == v.external_id,
+            )
+        )
+        if row is None:
+            row = models.Vendor(organization_id=self.org, external_id=v.external_id)
+            self.s.add(row)
+        row.name = v.name
+        row.gstin = v.gstin
+        row.pan = v.pan
+        row.payment_terms_days = v.payment_terms_days
+        row.status = v.status.value
+        row.source_ref = v.source_ref.model_dump()
+        return row
+
+    def get_vendor_by_external(self, external_id: str) -> Optional[models.Vendor]:
+        return self.s.scalar(
+            select(models.Vendor).where(
+                models.Vendor.organization_id == self.org,
+                models.Vendor.external_id == external_id,
+            )
+        )
+
+    def upsert_stock_snapshot(self, product_id: str,
+                              snap: StockSnapshotIn) -> models.StockSnapshot:
+        """One row per item per day.
+
+        Upserted rather than appended: a sync run twice in one afternoon is a
+        correction, not two observations, and two rows for one day would make
+        every later average silently weight that day double.
+        """
+        row = self.s.scalar(
+            select(models.StockSnapshot).where(
+                models.StockSnapshot.organization_id == self.org,
+                models.StockSnapshot.product_id == product_id,
+                models.StockSnapshot.as_of == snap.as_of,
+            )
+        )
+        if row is None:
+            row = models.StockSnapshot(organization_id=self.org, product_id=product_id,
+                                       as_of=snap.as_of)
+            self.s.add(row)
+        row.on_hand = snap.on_hand
+        row.available = snap.available
+        row.actual_available = snap.actual_available
+        row.reorder_level = snap.reorder_level
+        row.purchase_rate = snap.purchase_rate
+        row.tracked = snap.tracked
+        row.source_ref = snap.source_ref.model_dump()
+        return row
+
+    def upsert_payment(self, customer_id: str,
+                       p: PaymentReceiptIn) -> models.PaymentReceipt:
+        row = self.s.scalar(
+            select(models.PaymentReceipt).where(
+                models.PaymentReceipt.organization_id == self.org,
+                models.PaymentReceipt.external_ref == p.external_ref,
+            )
+        )
+        if row is None:
+            row = models.PaymentReceipt(organization_id=self.org,
+                                        external_ref=p.external_ref)
+            self.s.add(row)
+        row.customer_id = customer_id
+        row.date = p.date
+        row.amount = p.amount
+        row.mode = p.mode
+        row.is_advance = p.is_advance
+        row.unapplied_amount = p.unapplied_amount
+        row.source_ref = p.source_ref.model_dump()
+        self.s.flush()
+
+        # Applications are replaced wholesale rather than merged: a payment
+        # re-applied in Zoho can drop an invoice, and a merge would leave the
+        # old application behind as a settlement that no longer exists.
+        existing = {
+            a.external_ref: a
+            for a in self.s.scalars(
+                select(models.PaymentApplication).where(
+                    models.PaymentApplication.organization_id == self.org,
+                    models.PaymentApplication.payment_receipt_id == row.payment_receipt_id,
+                )).all()
+        }
+        seen: set[str] = set()
+        for a in p.applications:
+            seen.add(a.external_ref)
+            app_row = existing.get(a.external_ref)
+            if app_row is None:
+                app_row = models.PaymentApplication(
+                    organization_id=self.org, external_ref=a.external_ref,
+                    payment_receipt_id=row.payment_receipt_id)
+                self.s.add(app_row)
+            app_row.customer_id = customer_id
+            app_row.invoice_external_ref = a.invoice_external_ref
+            app_row.invoice_number = a.invoice_number
+            app_row.invoice_date = a.invoice_date
+            app_row.invoice_due_date = a.invoice_due_date
+            app_row.paid_on = p.date
+            app_row.amount_applied = a.amount_applied
+            app_row.source_ref = p.source_ref.model_dump()
+        for ref, stale in existing.items():
+            if ref not in seen:
+                self.s.delete(stale)
+        return row
+
+    def upsert_purchase_order(self, vendor_id: Optional[str],
+                              po: PurchaseOrderIn) -> models.PurchaseOrderDoc:
+        row = self.s.scalar(
+            select(models.PurchaseOrderDoc).where(
+                models.PurchaseOrderDoc.organization_id == self.org,
+                models.PurchaseOrderDoc.external_ref == po.external_ref,
+            )
+        )
+        if row is None:
+            row = models.PurchaseOrderDoc(organization_id=self.org,
+                                          external_ref=po.external_ref)
+            self.s.add(row)
+        row.number = po.number
+        row.vendor_id = vendor_id
+        row.date = po.date
+        row.expected_date = po.expected_date
+        row.status = po.status
+        row.received_status = po.received_status
+        row.ordered_qty = po.ordered_qty
+        row.pending_qty = po.pending_qty
+        row.total = po.total
+        row.received_on = po.received_on
+        row.source_ref = po.source_ref.model_dump()
+        return row
 
 
 class DecisionRepository:

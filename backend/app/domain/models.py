@@ -1190,3 +1190,204 @@ class ErasureReceipt(Base):
     erased_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),
                                                 default=_now, index=True)
     signature: Mapped[str] = mapped_column(String(128), default="")
+
+
+# ── supply, stock and cash: the three things the book knew and the platform ──
+# did not
+#
+# These are *ingested facts*, in the same class as SalesTxn and CostRecord: raw
+# rows from Zoho with a source_ref, no interpretation and no thresholds_version.
+# The Tier 3 views compute from them at request time, the way every other
+# insight module computes from the sales snapshot. Nothing here decides
+# anything; a stock number that has been rounded, banded or judged on its way
+# in is a stock number nobody can reconcile against Zoho.
+
+
+class Vendor(Base):
+    """A supplier. Deliberately the same shape as ``Customer``.
+
+    Zoho holds both in ``contacts`` distinguished by ``contact_type``, and the
+    temptation is to reuse the customers table with a flag. That would put two
+    entities with different lifecycles, different identity keys and different
+    scope rules in one place — and every query in the platform would grow a
+    ``WHERE kind = ...`` that somebody eventually forgets.
+    """
+
+    __tablename__ = "vendors"
+    __table_args__ = (UniqueConstraint("organization_id", "external_id",
+                                       name="uq_vendor_org_external"),)
+
+    vendor_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    external_id: Mapped[str] = mapped_column(String(128), index=True)  # Zoho contact_id
+    name: Mapped[str] = mapped_column(String(255))
+    #: Registration ids, the strongest identity keys available for a supplier.
+    #: Absent on plenty of small vendors, which the matcher reads as "no
+    #: evidence" rather than "no match".
+    gstin: Mapped[Optional[str]] = mapped_column(String(32), index=True)
+    pan: Mapped[Optional[str]] = mapped_column(String(32))
+    #: Agreed payment days, as Zoho holds them. Zero means "due on receipt",
+    #: which is a real term and not a missing value.
+    payment_terms_days: Mapped[Optional[int]] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(32), default="ACTIVE")
+    source_ref: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
+                                                 onupdate=_now)
+
+
+class StockSnapshot(Base):
+    """What Zoho said was on the shelf, on one day.
+
+    Zoho reports stock as a *current* number with no history, so history only
+    exists if something writes it down. One row per item per day, upserted, so a
+    platform that has been running for a month can draw a month and one that
+    started yesterday draws a point — and says so, rather than interpolating a
+    line through a single observation.
+
+    ``committed`` is derived by Zoho, not here: ``available_stock`` is what can
+    still be sold and ``actual_available_stock`` nets off what is already
+    promised, so a negative actual against a positive available is the honest
+    signal that more has been committed than exists.
+    """
+
+    __tablename__ = "stock_snapshots"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "product_id", "as_of",
+                         name="uq_stock_org_product_day"),
+        Index("ix_stock_org_asof", "organization_id", "as_of"),
+    )
+
+    stock_snapshot_id: Mapped[str] = mapped_column(String(64), primary_key=True,
+                                                   default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    product_id: Mapped[str] = mapped_column(String(64), ForeignKey("products.product_id"),
+                                            index=True)
+    as_of: Mapped[date] = mapped_column(Date, index=True)
+    on_hand: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
+    available: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
+    #: Nets off stock already committed to open sales orders. May be negative.
+    actual_available: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
+    #: Zoho's reorder point. Blank on most items in practice, and a blank must
+    #: never be read as zero — "no reorder point set" is a different statement
+    #: from "reorder at zero", and only one of them is a policy.
+    reorder_level: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
+    #: Last purchase price, as Zoho holds it. Cost — manager scope only.
+    purchase_rate: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
+    #: False for services and non-inventory items, which have no stock to speak
+    #: of and must not be counted as "zero on hand".
+    tracked: Mapped[bool] = mapped_column(Boolean, default=True)
+    source_ref: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class PaymentReceipt(Base):
+    """Money in, at the payment grain."""
+
+    __tablename__ = "payment_receipts"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "external_ref",
+                         name="uq_payment_org_external"),
+        Index("ix_payment_org_date", "organization_id", "date"),
+    )
+
+    payment_receipt_id: Mapped[str] = mapped_column(String(64), primary_key=True,
+                                                    default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    external_ref: Mapped[str] = mapped_column(String(128), index=True)  # Zoho payment_id
+    customer_id: Mapped[str] = mapped_column(String(64),
+                                             ForeignKey("customers.customer_id"),
+                                             index=True)
+    date: Mapped[date] = mapped_column(Date, index=True)
+    amount: Mapped[Any] = mapped_column(Numeric(18, 4))
+    mode: Mapped[Optional[str]] = mapped_column(String(64))
+    #: An advance is money against no invoice yet. It must not enter a
+    #: days-to-pay average, because there is no invoice date to subtract.
+    is_advance: Mapped[bool] = mapped_column(Boolean, default=False)
+    #: Received but not yet applied to any invoice.
+    unapplied_amount: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
+    source_ref: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
+                                                 onupdate=_now)
+
+
+class PaymentApplication(Base):
+    """One payment against one invoice — the row days-to-pay is computed from.
+
+    The invoice's own date and due date are stored here rather than joined to
+    ``sales_txns``, because an invoice can predate the sync window: a payment
+    landing today may settle an invoice from before the platform's history
+    starts, and a join would silently drop exactly the slow payments that
+    matter most.
+    """
+
+    __tablename__ = "payment_applications"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "external_ref",
+                         name="uq_payment_application_org_external"),
+        Index("ix_payment_app_org_invoice", "organization_id", "invoice_external_ref"),
+    )
+
+    payment_application_id: Mapped[str] = mapped_column(String(64), primary_key=True,
+                                                        default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    external_ref: Mapped[str] = mapped_column(String(128), index=True)
+    payment_receipt_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("payment_receipts.payment_receipt_id"), index=True)
+    customer_id: Mapped[str] = mapped_column(String(64),
+                                             ForeignKey("customers.customer_id"),
+                                             index=True)
+    invoice_external_ref: Mapped[str] = mapped_column(String(128), index=True)
+    invoice_number: Mapped[Optional[str]] = mapped_column(String(128))
+    invoice_date: Mapped[date] = mapped_column(Date)
+    #: When it was contractually due. Absent on some invoices; a missing due
+    #: date makes "days late" unanswerable, never zero.
+    invoice_due_date: Mapped[Optional[date]] = mapped_column(Date)
+    paid_on: Mapped[date] = mapped_column(Date, index=True)
+    amount_applied: Mapped[Any] = mapped_column(Numeric(18, 4))
+    source_ref: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class PurchaseOrderDoc(Base):
+    """An order placed on a supplier, and how much of it has arrived.
+
+    Header grain only. The line detail matters for a receiving screen and this
+    is not one — the questions here are "what is still outstanding, with whom,
+    and for how long", all of which the header answers.
+    """
+
+    __tablename__ = "purchase_orders"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "external_ref",
+                         name="uq_purchase_order_org_external"),
+        Index("ix_po_org_date", "organization_id", "date"),
+    )
+
+    purchase_order_id: Mapped[str] = mapped_column(String(64), primary_key=True,
+                                                   default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    external_ref: Mapped[str] = mapped_column(String(128), index=True)
+    number: Mapped[Optional[str]] = mapped_column(String(128))
+    vendor_id: Mapped[Optional[str]] = mapped_column(String(64),
+                                                     ForeignKey("vendors.vendor_id"),
+                                                     index=True)
+    date: Mapped[date] = mapped_column(Date, index=True)
+    #: What the supplier promised. Blank on most of this book's orders in
+    #: practice, which makes "late against promise" unanswerable — and that is
+    #: reported rather than replaced with an assumed lead time.
+    expected_date: Mapped[Optional[date]] = mapped_column(Date)
+    status: Mapped[str] = mapped_column(String(48), default="")
+    received_status: Mapped[Optional[str]] = mapped_column(String(48))
+    ordered_qty: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
+    pending_qty: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
+    total: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
+    #: When the order was fully received, where Zoho records it. The only basis
+    #: for an *actual* lead time; absent means the order is still open or the
+    #: receipt was never logged, and those are not the same thing.
+    received_on: Mapped[Optional[date]] = mapped_column(Date)
+    source_ref: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
+                                                 onupdate=_now)

@@ -18,6 +18,7 @@ import { Storyboard } from "./viz/Storyboard";
 import { JourneyScreen, LostRevenueScreen, OpportunityScreen, SimulatorScreen, WeatherScreen } from "./viz/Screens";
 import { CadenceScreen, CompositionScreen, LandscapeScreen } from "./viz/Tier2";
 import { CustomerHealthTimeline, MigrationMatrix } from "./viz/History";
+import { PaymentsScreen, StockScreen, SupplyScreen } from "./viz/Tier3";
 import "./viz/viz.css";
 
 const ROLE_HOME: Record<Role, { title: string; sub: string; nav: string }> = {
@@ -227,6 +228,9 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
       landscape: "landscape",
       composition: "composition",
       cadence: "cadence",
+      payments: "payments",
+      stock: "stock",
+      supply: "supply",
     };
     go(map[head] ?? "home");
   }, [go]);
@@ -361,12 +365,19 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
           // Margin is on the vertical axis, and the endpoint is manager-scoped
           // whichever measure is asked for.
           ["landscape", "Landscape", ""],
+          // Supplier spend is purchase cost by another name, so the endpoint is
+          // manager-scoped and the nav item follows it rather than 403-ing.
+          ["supply", "Suppliers", ""],
           ["simulate", "Simulator", ""]] as [Screen, string, string][])
       : []),
     // Mix and rhythm are revenue and dates — no cost anywhere in either — so
     // both are visible to a salesperson.
     ["composition", "Mix", ""],
     ["cadence", "Rhythm", ""],
+    // Neither carries cost: receivables are money in, and stock structure is
+    // counts. The purchase rate is dropped from a salesperson's stock copy.
+    ["payments", "Cash", ""],
+    ["stock", "Stock", ""],
     ["journey", "Customers", ""],
     // Open, not total: a badge counting closed decisions is a badge that never
     // goes down, and one that never goes down stops being read.
@@ -436,6 +447,9 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
         {screen === "landscape" && <LandscapeScreen session={session} onNavigate={goViz} />}
         {screen === "composition" && <CompositionScreen session={session} onNavigate={goViz} />}
         {screen === "cadence" && <CadenceScreen session={session} onNavigate={goViz} />}
+        {screen === "payments" && <PaymentsScreen session={session} onNavigate={goViz} />}
+        {screen === "stock" && <StockScreen session={session} />}
+        {screen === "supply" && <SupplyScreen session={session} />}
 
         {/* ── HOME: the Commercial Storyboard ──
             A briefing, not a queue. The decision list it used to show is still

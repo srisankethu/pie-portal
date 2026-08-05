@@ -81,6 +81,36 @@ than producing a confusing empty result.
 
 ---
 
+## If a credential has been exposed
+
+**Rotation is the only thing that revokes a leaked secret.** Nothing else does:
+not deleting the line, not rewriting git history, not restricting scopes. Once
+a refresh token has been out of your control, treat it as out of your control
+permanently — it is only a bearer token, and whoever holds it can mint access
+tokens until Zoho is told to stop.
+
+A credential counts as exposed if it has ever been:
+
+- pasted into a chat, an issue, a ticket or an email;
+- committed to a repository, **including in a test file or a comment** — a
+  commit is permanent even after the line is deleted, and a pushed commit is on
+  someone else's disk;
+- printed in a CI log, a crash report or a support bundle.
+
+To rotate:
+
+1. Zoho API console → your Self Client → **Revoke** the refresh token. Anything
+   still using it stops working immediately, which is the point.
+2. Generate a fresh grant code and exchange it (steps 2 and 3 above).
+3. Update the credential **in the app**, under Data & connection — not in a
+   `.env`. The app encrypts `client_secret` and `refresh_token` at rest.
+4. If the client *secret* also leaked, regenerate the Self Client itself; the
+   secret is not rotatable on its own.
+
+`test_no_live_secret_is_committed` fails the build if anything shaped like a
+live Zoho token or client secret appears anywhere in the tree. It scans by
+shape rather than by value, so it catches the next one and not just the last.
+
 ## Data centres
 
 Zoho accounts live in one data centre and **a refresh token from one is

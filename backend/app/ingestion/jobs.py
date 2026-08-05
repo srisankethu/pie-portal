@@ -319,6 +319,10 @@ def execute_sync(session: Session, run: models.SyncRun, *,
             # interrupted pull records how far it actually got.
             phase(f"Read {label}")
 
+        # After the documents, because payments resolve to customers the
+        # document pass may have created, and stock resolves to products.
+        svc.run_supply()
+
         svc.finish()
         report = svc.report
         session.flush()

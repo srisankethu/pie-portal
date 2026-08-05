@@ -16,6 +16,9 @@ export type Screen =
    *  specified views, because the pairs differ only in which measure is on the
    *  vertical or which quantity is summed. */
   | "landscape" | "composition" | "cadence"
+  /** Tier 3: the shelf, the suppliers and the cash — the three things the book
+   *  always knew and the platform did not read until it ingested them. */
+  | "payments" | "stock" | "supply"
   /** The approval queue, and organization settings (owner is super admin). */
   | "approvals" | "settings"
   /** Which connector records describe the same customer or item. */
@@ -50,6 +53,9 @@ const PATHS: Record<Screen, string> = {
   landscape: "/landscape",
   composition: "/composition",
   cadence: "/cadence",
+  payments: "/payments",
+  stock: "/stock",
+  supply: "/supply",
 };
 
 export function toHash(r: Route): string {
@@ -111,6 +117,12 @@ export function parseHash(hash: string): Route {
       return { screen: "composition" };
     case "cadence":
       return { screen: "cadence" };
+    case "payments":
+      return { screen: "payments" };
+    case "stock":
+      return { screen: "stock" };
+    case "supply":
+      return { screen: "supply" };
     default:
       return { screen: "home" };
   }

@@ -724,3 +724,212 @@ def test_orders_in_the_timeline_count_invoices_not_lines():
              for i in range(4)]
     result = cohorts.health_timeline(sales, {}, date(2026, 6, 30), months=2)
     assert next(p for p in result["series"] if p["label"] == "Jun 2026")["orders"] == 1
+
+
+# ── Tier 3: the shelf, the suppliers and the cash ───────────────────────────
+def _settled(customer: str, invoiced: date, paid: date, amount=1000.0,
+             due: date | None = None):
+    from app.commercial.insight.payments import Settlement
+    return Settlement(customer_id=customer, invoice_ref=f"{customer}-{invoiced}",
+                      invoice_number=None, invoice_date=invoiced, due_date=due,
+                      paid_on=paid, amount=amount)
+
+
+def test_days_to_pay_is_measured_per_invoice_not_per_payment():
+    """One transfer settling three invoices is three observations. Averaging
+    the payment instead flatters a customer who batches their remittances."""
+    from datetime import timedelta
+
+    from app.commercial.insight import payments
+
+    base = date(2026, 4, 1)
+    # Three invoices, 10/40/70 days old, all cleared by one transfer.
+    settled = [_settled("c1", base + timedelta(days=d), date(2026, 7, 1))
+               for d in (81, 51, 21)]
+    built = payments.build(settled, {"c1": "Acme"}, date(2026, 7, 31))
+    row = built["customers"][0]
+    assert row["settlements"] == 3
+    assert row["median_days_to_pay"] == pytest.approx(40.0)
+    assert row["worst_days_to_pay"] == 70
+
+
+def test_an_advance_is_not_a_zero_day_payment():
+    """Money with no invoice behind it has no invoice date to subtract.
+    Counting it as same-day would make every prepayer the fastest in the book —
+    the opposite of what a prepayment means for risk."""
+    from app.commercial.insight import payments
+
+    built = payments.build([], {}, date(2026, 7, 31), advances=4,
+                           unapplied_total=250000.0)
+    assert built["customers"] == []
+    assert built["advances"] == 4
+    assert built["unapplied_total"] == 250000.0
+    assert built["median_days_to_pay"] is None
+
+
+def test_an_invoice_with_no_due_date_is_undatable_not_on_time():
+    from app.commercial.insight import payments
+
+    settled = [_settled("c1", date(2026, 5, 1), date(2026, 8, 1), due=None)]
+    built = payments.build(settled, {"c1": "Acme"}, date(2026, 8, 31))
+    assert built["late_share"] is None          # nothing could be judged late
+    assert built["undatable_count"] == 1
+    assert built["customers"][0]["late_share"] is None
+    # 92 days of cash tied up is still answerable without a due date.
+    assert built["customers"][0]["median_days_to_pay"] == pytest.approx(92.0)
+
+
+def test_late_is_against_the_due_date_and_slow_is_against_the_invoice():
+    from app.commercial.insight import payments
+
+    settled = [_settled("c1", date(2026, 5, 1), date(2026, 7, 1),
+                        due=date(2026, 6, 30))]
+    built = payments.build(settled, {"c1": "Acme"}, date(2026, 7, 31))
+    assert built["customers"][0]["median_days_to_pay"] == pytest.approx(61.0)
+    assert built["late_share"] == 1.0          # one day past terms
+    assert built["customers"][0]["late_count"] == 1
+
+
+def test_a_blank_reorder_level_is_never_read_as_zero():
+    """An item with no reorder point cannot be below it. Reading blank as zero
+    would flag the whole catalogue the day somebody leaves the field empty."""
+    from app.commercial.insight import stock
+
+    lines = [
+        stock.StockLine("p1", "No policy", 0.0, 0.0, 0.0, None, date(2026, 7, 1), 5.0),
+        stock.StockLine("p2", "Has policy", 2.0, 2.0, 2.0, 10.0, date(2026, 7, 1), 5.0),
+    ]
+    built = stock.build(lines, date(2026, 7, 31), with_cost=False)
+    below = next(g for g in built["groups"] if g["key"] == "BELOW_REORDER")
+    assert [i["product_id"] for i in below["items"]] == ["p2"]
+    assert built["counts"]["no_reorder_point"] == 1
+    # And the absence is named rather than silently excluded.
+    assert any(u["series"] == "reorder_point" for u in built["unavailable"])
+
+
+def test_committed_beyond_stock_is_zohos_arithmetic_not_ours():
+    from app.commercial.insight import stock
+
+    lines = [stock.StockLine("p1", "CNMG", 40.0, 40.0, -5.0, None,
+                             date(2026, 7, 20), 12.0)]
+    built = stock.build(lines, date(2026, 7, 31), with_cost=False)
+    oversold = next(g for g in built["groups"] if g["key"] == "OVERSOLD")
+    assert oversold["count"] == 1
+    # Positive available with negative actual is exactly the case: sellable on
+    # paper, already promised in reality.
+    assert oversold["items"][0]["available"] == 40.0
+    assert oversold["items"][0]["actual_available"] == -5.0
+
+
+def test_weeks_of_cover_is_refused_rather_than_forecast():
+    """The only forecast this data supports is "recent sales, repeated", which
+    prints as a projection without being one."""
+    from app.commercial.insight import stock
+
+    built = stock.build([stock.StockLine("p1", "X", 5.0, 5.0, 5.0, None, None, 0.0)],
+                        date(2026, 7, 31), with_cost=False)
+    assert any(u["series"] == "weeks_of_cover" for u in built["unavailable"])
+
+
+def test_stock_value_is_absent_without_cost_scope():
+    from app.commercial.insight import stock
+
+    lines = [stock.StockLine("p1", "X", 10.0, 10.0, 10.0, None, None, 0.0,
+                             purchase_rate=400.0)]
+    plain = stock.build(lines, date(2026, 7, 31), with_cost=False)
+    priced = stock.build(lines, date(2026, 7, 31), with_cost=True)
+    assert "stock_value" not in plain["counts"]
+    assert priced["counts"]["stock_value"] == 4000.0
+    for group in plain["groups"]:
+        for item in group["items"]:
+            assert "purchase_rate" not in item and "stock_value" not in item
+
+
+def _order(vendor, ordered, received=None, pending=0.0, total=1000.0):
+    from app.commercial.insight.supply import SupplierOrder
+    return SupplierOrder(vendor_id=vendor, vendor_label=vendor.upper(), number=None,
+                         ordered_on=ordered, expected_on=None, received_on=received,
+                         pending_qty=pending, ordered_qty=10.0, total=total,
+                         status="open" if pending else "billed")
+
+
+def test_lead_time_is_measured_only_where_a_receipt_was_logged():
+    """An average over the orders somebody remembered to close is a statement
+    about admin, not about suppliers."""
+    from datetime import timedelta
+
+    from app.commercial.insight import supply
+
+    base = date(2026, 1, 1)
+    orders = [_order("v1", base + timedelta(days=30 * i),
+                     received=base + timedelta(days=30 * i + 14)) for i in range(3)]
+    orders.append(_order("v1", base, received=None, pending=5.0))   # never received
+    built = supply.build(orders, date(2026, 7, 31))
+    assert built["median_lead_time_days"] == pytest.approx(14.0)
+    assert built["counts"]["orders_with_a_receipt"] == 3
+    assert built["suppliers"][0]["typical_lead_time_days"] == pytest.approx(14.0)
+
+
+def test_too_few_receipts_means_no_typical_lead_time():
+    from app.commercial.insight import supply
+
+    orders = [_order("v1", date(2026, 1, 1), received=date(2026, 1, 15))]
+    built = supply.build(orders, date(2026, 7, 31))
+    assert built["suppliers"][0]["typical_lead_time_days"] is None
+    assert built["suppliers"][0]["receipts_seen"] == 1
+    assert built["median_lead_time_days"] is None
+
+
+def test_a_book_with_no_promised_dates_says_so_rather_than_assuming_one():
+    from app.commercial.insight import supply
+
+    built = supply.build([_order("v1", date(2026, 5, 1), pending=5.0)],
+                         date(2026, 7, 31))
+    assert built["counts"]["orders_with_a_promised_date"] == 0
+    assert any(u["series"] == "delivery_against_promise"
+               for u in built["unavailable"])
+    # Age is answerable and is what the open list ranks by instead.
+    assert built["open_orders"][0]["age_days"] == 91
+
+
+def test_the_supplier_tail_is_not_folded():
+    """A supplier list is short and every name on it has a phone number. An
+    "Other (14)" band would hide exactly the second sources this question
+    exists to find."""
+    from app.commercial.insight import supply
+
+    orders = [_order(f"v{i}", date(2026, 5, 1), total=100.0 * (10 - i))
+              for i in range(9)]
+    built = supply.build(orders, date(2026, 7, 31))
+    assert len(built["suppliers"]) == 9
+    assert not any(s["vendor_id"] is None for s in built["suppliers"])
+
+
+def test_the_timeline_stops_apologising_once_payments_are_synced():
+    """The refusal was honest while the platform held no receipts. It holds
+    them now, so it comes off — but only when a series is actually passed."""
+    sales = [_sale("c1", date(2026, 6, 10), 1000, ref="a")]
+    without = cohorts.health_timeline(sales, {}, date(2026, 6, 30), months=2)
+    assert any(u["series"] == "payment_behaviour" for u in without["unavailable"])
+    assert "median_days_to_pay" not in without["series"][0]
+
+    with_payments = cohorts.health_timeline(
+        sales, {}, date(2026, 6, 30), months=2,
+        payment_series=[{**p, "median_days_to_pay": 31.0, "settled": 1}
+                        for p in [x for x in without["series"]]])
+    assert with_payments["unavailable"] == []
+    assert with_payments["series"][-1]["median_days_to_pay"] == 31.0
+
+
+def test_the_payment_series_is_keyed_by_invoice_month_not_payment_month():
+    """Otherwise January's cash lands on the March row and the three timeline
+    rows stop describing the same month."""
+    from app.commercial.insight import payments
+
+    windows = periods.months_back(date(2026, 6, 30), 3)
+    # Invoiced in April, paid in June.
+    settled = [_settled("c1", date(2026, 4, 10), date(2026, 6, 20))]
+    series = payments.monthly_series(settled, windows)
+    by_label = {p["label"]: p for p in series}
+    assert by_label["Apr 2026"]["settled"] == 1
+    assert by_label["Jun 2026"]["settled"] == 0

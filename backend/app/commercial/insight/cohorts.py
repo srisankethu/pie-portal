@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
-from typing import Iterable
+from typing import Iterable, Optional
 
 from ...signals import aggregates as agg
 from ...signals.base import SaleRow
@@ -238,14 +238,16 @@ def lost_revenue(sales: Iterable[SaleRow], names: dict[str, str],
 
 
 def health_timeline(sales: Iterable[SaleRow], costs_by_product: dict,
-                    as_of: date, months: int = 18) -> dict:
-    """One customer's revenue, order cadence and margin, month by month.
+                    as_of: date, months: int = 18,
+                    payment_series: Optional[list[dict]] = None) -> dict:
+    """One customer's revenue, order cadence, margin and days-to-pay, by month.
 
-    Payment behaviour is in the specification and is deliberately absent here:
-    this platform holds invoice and bill lines, not receipts or ageing, so a
-    payment series would have to be invented. Named in the response so the
-    screen can say what it does not know rather than quietly showing three
-    series where four were promised.
+    Payment behaviour used to be declared unavailable here, because the
+    platform held invoice and bill lines and no receipts. It holds receipts
+    now, so the series is computed and the refusal comes off — but only when
+    the caller actually passes one. An organization that has not synced
+    payments gets the same honest gap it always did, rather than an empty row
+    implying nobody has ever paid.
     """
     rows = list(sales)
     periods = months_back(as_of, months)
@@ -272,13 +274,23 @@ def health_timeline(sales: Iterable[SaleRow], costs_by_product: dict,
             # computed from a third of the lines instead of drawing it solid.
             "cost_coverage": round(covered / len(in_period), 2) if in_period else None,
         })
+    if payment_series is not None:
+        # Keyed by the month the invoice was raised, so the point sits beside
+        # that month's own revenue and orders rather than beside the month the
+        # cash happened to land in.
+        by_label = {p["label"]: p for p in payment_series}
+        for point in series:
+            paid = by_label.get(point["label"])
+            point["median_days_to_pay"] = (paid or {}).get("median_days_to_pay")
+            point["settled"] = (paid or {}).get("settled", 0)
+
     return {
         "months": months,
         "series": series,
-        "unavailable": [
+        "unavailable": ([] if payment_series is not None else [
             {"series": "payment_behaviour",
-             "reason": "This platform holds invoice and bill lines. Receipts and "
-                       "ageing are not synced, so days-to-pay cannot be computed "
-                       "without inventing it."}
-        ],
+             "reason": "No customer payments have synced yet, so days-to-pay "
+                       "cannot be computed without inventing it. Run a sync — "
+                       "the platform reads receipts now."}
+        ]),
     }

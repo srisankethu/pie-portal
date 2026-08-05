@@ -137,6 +137,17 @@ export const papi = {
   cadence: (t: string) =>
     req<Record<string, unknown>>("/api/v1/insight/cadence", {}, t),
 
+  // ── Tier 3: the shelf, the suppliers and the cash. Three things the book
+  // always knew and the platform did not read until now.
+  payments: (t: string) =>
+    req<Record<string, unknown>>("/api/v1/insight/payments", {}, t),
+
+  stock: (t: string) =>
+    req<Record<string, unknown>>("/api/v1/insight/stock", {}, t),
+
+  supply: (t: string) =>
+    req<Record<string, unknown>>("/api/v1/insight/supply", {}, t),
+
   simulationScenarios: (t: string) =>
     req<Record<string, unknown>>("/api/v1/insight/simulate/scenarios", {}, t),
 

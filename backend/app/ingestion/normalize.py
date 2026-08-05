@@ -13,7 +13,9 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Optional
 
 from ..domain.enums import CustomerStatus
-from ..domain.schemas import CostRecordIn, CustomerIn, ProductIn, SalesTxnIn, SourceRef
+from ..domain.schemas import (CostRecordIn, CustomerIn, PaymentApplicationIn,
+                             PaymentReceiptIn, ProductIn, PurchaseOrderIn,
+                             SalesTxnIn, SourceRef, StockSnapshotIn, VendorIn)
 
 _HUNDRED = Decimal("100")
 
@@ -202,3 +204,109 @@ def normalize_bill(raw: dict[str, Any]) -> list[CostRecordIn]:
             source_ref=SourceRef(record_type="bill", record_id=bill_id, line_id=line_id),
         ))
     return out
+
+
+# ── supply, stock and cash ───────────────────────────────────────────────────
+
+
+def normalize_vendor(raw: dict[str, Any]) -> VendorIn:
+    vid = _require(raw, "contact_id", "vendor")
+    status = str(raw.get("status", "active")).lower()
+    terms = raw.get("payment_terms")
+    return VendorIn(
+        external_id=str(vid),
+        name=str(_require(raw, "contact_name", "vendor")),
+        gstin=(str(raw["gst_no"]) if raw.get("gst_no") else None),
+        pan=(str(raw["pan_no"]) if raw.get("pan_no") else None),
+        # 0 days is "due on receipt", a term somebody agreed. Only a genuinely
+        # absent value is unknown, so the test is against None and "" — not
+        # falsiness, which would erase every due-on-receipt supplier.
+        payment_terms_days=(int(terms) if terms not in (None, "") else None),
+        status=CustomerStatus.ACTIVE if status == "active" else CustomerStatus.INACTIVE,
+        source_ref=SourceRef(record_type="vendor", record_id=str(vid)),
+    )
+
+
+def normalize_stock(raw: dict[str, Any], as_of: date) -> StockSnapshotIn:
+    """The stock fields riding along on the item payload.
+
+    ``as_of`` is passed in rather than read from the clock here so a whole pull
+    lands on one date: an item list that takes four minutes must not produce
+    two snapshot days because it crossed midnight halfway through.
+    """
+    iid = _require(raw, "item_id", "item stock")
+    item_type = str(raw.get("item_type") or "").lower()
+    return StockSnapshotIn(
+        product_external_id=str(iid),
+        as_of=as_of,
+        on_hand=raw.get("stock_on_hand"),
+        available=raw.get("available_stock"),
+        actual_available=raw.get("actual_available_stock"),
+        reorder_level=raw.get("reorder_level"),
+        purchase_rate=raw.get("purchase_rate"),
+        # A service has no shelf. Counting it as "zero on hand" would put every
+        # service line in the out-of-stock list forever.
+        tracked=bool(raw.get("track_inventory")) and item_type != "service",
+        source_ref=SourceRef(record_type="item", record_id=str(iid)),
+    )
+
+
+def normalize_payment(raw: dict[str, Any]) -> PaymentReceiptIn:
+    pid = _require(raw, "payment_id", "payment")
+    ctx = f"payment {pid}"
+    applications: list[PaymentApplicationIn] = []
+    for a in raw.get("invoices") or []:
+        invoice_id = str(a.get("invoice_id") or "")
+        if not invoice_id:
+            continue
+        raw_date = a.get("date")
+        if not raw_date:
+            # Without the invoice's own date there is no days-to-pay to
+            # compute. Dropping the application is right; defaulting it to the
+            # payment date would manufacture a book that always pays same-day.
+            continue
+        due = a.get("due_date")
+        applications.append(PaymentApplicationIn(
+            external_ref=str(a.get("invoice_payment_id") or f"{pid}:{invoice_id}"),
+            invoice_external_ref=invoice_id,
+            invoice_number=(str(a["invoice_number"]) if a.get("invoice_number") else None),
+            invoice_date=_parse_date(raw_date, ctx),
+            invoice_due_date=(_parse_date(due, ctx) if due else None),
+            amount_applied=a.get("amount_applied"),
+        ))
+    return PaymentReceiptIn(
+        external_ref=str(pid),
+        customer_external_id=str(_require(raw, "customer_id", ctx)),
+        date=_parse_date(_require(raw, "date", ctx), ctx),
+        amount=raw.get("amount"),
+        mode=(str(raw["payment_mode"]) if raw.get("payment_mode") else None),
+        is_advance=bool(raw.get("is_advance_payment")),
+        unapplied_amount=raw.get("unused_amount"),
+        applications=applications,
+        source_ref=SourceRef(record_type="customerpayment", record_id=str(pid)),
+    )
+
+
+def normalize_purchase_order(raw: dict[str, Any]) -> PurchaseOrderIn:
+    poid = _require(raw, "purchaseorder_id", "purchase order")
+    ctx = f"purchase order {poid}"
+    expected = raw.get("expected_delivery_date")
+    # Zoho records receipts as a list; the last one is when the order finished
+    # arriving. No receives at all means either still open or never logged —
+    # left as None, because those two are different and the screen says so.
+    receives = [r.get("date") for r in (raw.get("receives") or []) if r.get("date")]
+    received_on = _parse_date(max(receives), ctx) if receives else None
+    return PurchaseOrderIn(
+        external_ref=str(poid),
+        number=(str(raw["purchaseorder_number"]) if raw.get("purchaseorder_number") else None),
+        vendor_external_id=(str(raw["vendor_id"]) if raw.get("vendor_id") else None),
+        date=_parse_date(_require(raw, "date", ctx), ctx),
+        expected_date=(_parse_date(expected, ctx) if expected else None),
+        status=str(raw.get("status") or ""),
+        received_status=(str(raw["received_status"]) if raw.get("received_status") else None),
+        ordered_qty=raw.get("total_ordered_quantity"),
+        pending_qty=raw.get("quantity_yet_to_receive"),
+        total=raw.get("total"),
+        received_on=received_on,
+        source_ref=SourceRef(record_type="purchaseorder", record_id=str(poid)),
+    )

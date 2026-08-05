@@ -57,6 +57,15 @@ export function CustomerHealthTimeline({
 
   const traded = series.filter((p) => Number(p.revenue) > 0).length;
 
+  // Days-to-pay, present only once payments have synced. Same rule as margin:
+  // the field is absent rather than null, and the screen renders what it is
+  // given rather than deciding what the server should have sent.
+  const hasPayments = series.some((p) => "median_days_to_pay" in p);
+  const payDays = series.map((p) =>
+    p.median_days_to_pay == null ? null : Number(p.median_days_to_pay));
+  const knownPay = payDays.filter((d): d is number => d != null);
+  const payMax = Math.max(...knownPay, 1);
+
   return (
     <Panel
       title="History"
@@ -174,6 +183,26 @@ export function CustomerHealthTimeline({
                   })}
                 </div>
               </div>
+            )}
+
+            {/* Keyed on the month the invoice was raised, so this row lines up
+                with that month's own revenue and orders. Indexed by payment
+                date instead, January's cash would sit on the March column and
+                the three rows would stop describing the same month. */}
+            {hasPayments && (
+              <TimelineRow
+                label="Days to pay" short
+                peakLabel={knownPay.length
+                  ? `${Math.min(...knownPay)}–${payMax} days`
+                  : "nothing settled yet"}
+                cells={series.map((p, i) => ({
+                  height: payDays[i] == null ? 0 : payDays[i]! / payMax,
+                  title: payDays[i] == null
+                    ? `${p.label}: nothing invoiced this month has been settled`
+                    : `${p.label}: ${payDays[i]} days typical, ${p.settled} settled`,
+                  dim: payDays[i] == null,
+                }))}
+              />
             )}
 
             <div className="viz-time-axis" aria-hidden="true">

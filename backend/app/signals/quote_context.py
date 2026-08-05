@@ -17,6 +17,7 @@ from datetime import date
 from typing import Any, Optional
 
 from . import aggregates as agg
+from .aggregates import label_for
 from .base import Snapshot, evidence_ref
 from .config import SignalThresholds
 
@@ -122,7 +123,7 @@ def assemble(snapshot: Snapshot, customer_id: str, product_ids: list[str],
             unknowns.append({"field": f"cost_basis:{pid}",
                              "reason": "no reliable cost on record for this item"})
 
-        items.append({"product_id": pid, "label": snapshot.product_names.get(pid, pid),
+        items.append({"product_id": pid, "label": label_for(snapshot.product_names, pid, kind="item"),
                       "facts": item_facts})
 
     return {

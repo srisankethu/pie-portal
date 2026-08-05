@@ -27,6 +27,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ...domain import models
+from ...signals.aggregates import label_for
 from ..config import CommercialThresholds
 
 #: Opportunity kinds, in the order a reader should think about them: the ones
@@ -169,8 +170,8 @@ def build(session: Session, org: str, th: CommercialThresholds, *,
             continue
         out.append(Opportunity(
             customer_id=row.customer_id, product_id=row.product_id,
-            customer_label=customer_names.get(row.customer_id, row.customer_id),
-            product_label=product_names.get(row.product_id, row.product_id),
+            customer_label=label_for(customer_names, row.customer_id, kind="customer"),
+            product_label=label_for(product_names, row.product_id, kind="item"),
             kind=kind, impact=impact, annualized=annualized,
             confidence=row.data_sufficiency or "INSUFFICIENT",
             confidence_reasons=list(row.sufficiency_reasons or []),

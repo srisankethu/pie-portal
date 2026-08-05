@@ -445,3 +445,77 @@ def test_ping_confirms_the_configured_org():
                            "currency_code": "INR"}]}})
     out = ZohoApiSource(http=http).ping()
     assert out["organization_found"] is True and out["organization_name"] == "4U Precision"
+
+
+# ── what the pull asks Zoho for ─────────────────────────────────────────────
+def test_the_item_master_is_read_including_inactive_items():
+    """The bug this closes. Zoho's /items defaults to Status.Active, and a
+    distributor deactivates an item the day the line is discontinued — but the
+    bills that reference it do not go away. Without Status.All every historical
+    line for a retired tool is skipped as UNKNOWN_PRODUCT, and because bills are
+    where cost comes from, the visible symptom is missing margin rather than a
+    missing item."""
+    http = FakeHttp({"items": {"code": 0, "items": [],
+                               "page_context": {"has_more_page": False}}})
+    list(ZohoApiSource(http=http).list_items())
+    _url, params = http.gets[0]
+    assert params.get("filter_by") == "Status.All"
+
+
+def test_contacts_are_read_including_inactive_ones():
+    """Already Zoho's default, asked for explicitly so a change to that default
+    cannot quietly start dropping dormant accounts the way /items does."""
+    http = FakeHttp({"contacts": {"code": 0, "contacts": [],
+                                  "page_context": {"has_more_page": False}}})
+    src = ZohoApiSource(http=http)
+    list(src.list_contacts())
+    list(src.list_vendors())
+    assert [p.get("filter_by") for _u, p in http.gets] == ["Status.All", "Status.All"]
+    assert [p.get("contact_type") for _u, p in http.gets] == ["customer", "vendor"]
+
+
+# ── a missing scope is not a bad credential ─────────────────────────────────
+def test_a_scope_refusal_names_the_scope_and_not_the_credentials():
+    """The 401 that made "vendors and payments are not being read" look like an
+    authentication problem. The token is valid — it was just issued — and every
+    other endpoint keeps working; this one endpoint is outside the grant."""
+    from app.ingestion.zoho_client import ZohoScopeError
+
+    refusal = FakeResponse({"code": 57, "message": "You are not authorized to "
+                                                  "perform this operation"}, status=401)
+    http = FakeHttp({})
+    http.get = lambda url, params=None, headers=None, **kw: refusal   # type: ignore[assignment]
+
+    with pytest.raises(ZohoScopeError) as caught:
+        list(ZohoApiSource(http=http).list_customer_payments())
+    assert caught.value.scope == "ZohoBooks.customerpayments.READ"
+    message = str(caught.value)
+    assert "ZohoBooks.customerpayments.READ" in message
+    assert "credentials are valid" in message
+
+
+def test_a_genuine_token_rejection_is_still_reported_as_one():
+    """The distinction has to cut both ways, or a revoked token gets reported as
+    a missing permission and somebody re-authorises with a wider scope and the
+    same dead token."""
+    from app.ingestion.zoho_client import ZohoAuthError, ZohoScopeError
+
+    refusal = FakeResponse({"code": 14, "message": "Invalid oauth token"}, status=401)
+    http = FakeHttp({})
+    http.get = lambda url, params=None, headers=None, **kw: refusal   # type: ignore[assignment]
+
+    with pytest.raises(ZohoAuthError) as caught:
+        list(ZohoApiSource(http=http).list_customer_payments())
+    assert not isinstance(caught.value, ZohoScopeError)
+    assert "data centre" in str(caught.value)
+
+
+def test_every_endpoint_the_pull_uses_has_a_named_scope():
+    """A 401 on an endpoint with no mapping falls back to the credentials
+    message, which is the misleading one. This fails if a new endpoint is added
+    without telling the mapping about it."""
+    from app.ingestion.zoho_client import scope_for_path
+
+    for path in ("contacts", "items", "invoices", "bills", "customerpayments",
+                 "purchaseorders", "users", "customerpayments/12345"):
+        assert scope_for_path(path), path

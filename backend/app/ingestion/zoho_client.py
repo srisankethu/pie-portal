@@ -90,6 +90,45 @@ class ZohoThrottleError(ZohoError):
     different: wait and resume, rather than fix a credential."""
 
 
+class ZohoScopeError(ZohoAuthError):
+    """The credentials are fine; this *endpoint* was not granted.
+
+    A subclass of ``ZohoAuthError`` so nothing that already handles an auth
+    failure stops working, but distinguishable because the remedy is completely
+    different. A revoked token means re-authorise the connection; a missing
+    scope means re-authorise it **asking for one more permission**, and telling
+    somebody to check their client secret when the secret is correct is how an
+    afternoon disappears.
+
+    Zoho signals this as HTTP 401 with body code 57 on one endpoint while every
+    other endpoint keeps working — which is exactly what a fresh, valid token
+    with a narrow grant looks like.
+    """
+
+    def __init__(self, message: str, *, path: str, scope: Optional[str]) -> None:
+        super().__init__(message)
+        self.path = path
+        self.scope = scope
+
+
+#: Which OAuth scope each list endpoint needs, so a 401 can name the missing
+#: permission instead of describing the symptom. Keyed on the first path
+#: segment because detail calls (``customerpayments/12345``) need the same one.
+SCOPE_FOR_PATH: dict[str, str] = {
+    "contacts": "ZohoBooks.contacts.READ",
+    "items": "ZohoBooks.settings.READ",
+    "invoices": "ZohoBooks.invoices.READ",
+    "bills": "ZohoBooks.bills.READ",
+    "customerpayments": "ZohoBooks.customerpayments.READ",
+    "purchaseorders": "ZohoBooks.purchaseorders.READ",
+    "users": "ZohoBooks.users.READ",
+}
+
+
+def scope_for_path(path: str) -> Optional[str]:
+    return SCOPE_FOR_PATH.get(path.lstrip("/").split("/", 1)[0].split("?", 1)[0])
+
+
 class ZohoApiSource:
     """Read-only Zoho Books client.
 
@@ -228,6 +267,17 @@ class ZohoApiSource:
                 last = "401 unauthorized"
                 if attempt == 0:
                     continue
+                # A *second* 401 on a freshly minted token is not a bad token —
+                # the token endpoint just issued it. It is this endpoint being
+                # outside the grant, and Zoho says so in the body.
+                scope = scope_for_path(path)
+                if scope and self._is_scope_refusal(resp):
+                    raise ZohoScopeError(
+                        f"Zoho refused {path}: this connection was not granted "
+                        f"{scope}. The credentials are valid — everything else "
+                        f"is still readable. Re-authorise the connection with "
+                        f"{scope} added to the scope list to enable it.",
+                        path=path, scope=scope)
                 raise ZohoAuthError(
                     "Zoho rejected the access token. Confirm the refresh token, the "
                     "client credentials and the data centre all belong to the same account.")
@@ -262,6 +312,25 @@ class ZohoApiSource:
                 "sync again later and it will resume from where it stopped.")
         raise ZohoError(f"Zoho call to {path} failed after retries ({last}).")
 
+    @staticmethod
+    def _is_scope_refusal(resp: Any) -> bool:
+        """Whether a 401 body says "not authorized for this" rather than "bad token".
+
+        Zoho uses code 57 for an out-of-scope call. The message is also matched
+        because the code has moved between editions before, and treating an
+        unparseable body as a scope problem would mislabel a genuinely revoked
+        token — so this errs towards *not* claiming a scope issue.
+        """
+        try:
+            body = resp.json()
+        except Exception:                                    # noqa: BLE001
+            return False
+        if not isinstance(body, dict):
+            return False
+        if body.get("code") == 57:
+            return True
+        return "not authorized" in str(body.get("message") or "").lower()
+
     def _paginate(self, path: str, key: str, **params: Any) -> Iterator[dict[str, Any]]:
         """Yield every record across pages, bounded by ZOHO_MAX_PAGES."""
         for page in range(1, settings.ZOHO_MAX_PAGES + 1):
@@ -295,7 +364,11 @@ class ZohoApiSource:
 
     # ── pulls (the ZohoSource protocol) ──────────────────────────────────────
     def list_contacts(self) -> Iterable[dict[str, Any]]:
-        for c in self._paginate("contacts", "contacts", contact_type="customer"):
+        # ``Status.All`` is already Zoho's default for contacts — stated
+        # explicitly so a change to that default cannot quietly start dropping
+        # every dormant account, the way ``/items`` drops inactive stock.
+        for c in self._paginate("contacts", "contacts", contact_type="customer",
+                                filter_by="Status.All"):
             yield {
                 "contact_id": str(c.get("contact_id")),
                 "contact_name": c.get("contact_name") or c.get("company_name") or "",
@@ -307,7 +380,24 @@ class ZohoApiSource:
             }
 
     def list_items(self) -> Iterable[dict[str, Any]]:
-        for i in self._paginate("items", "items"):
+        """The whole item master, **including inactive items.**
+
+        ``filter_by`` is not optional here. Zoho's ``/items`` endpoint defaults
+        to ``Status.Active``, and a distributor deactivates an item the moment
+        the line is discontinued — but the bills and invoices that reference it
+        do not disappear with it. Without this parameter every historical line
+        for a retired item is skipped as UNKNOWN_PRODUCT, and because bills are
+        where cost comes from, the effect is silently missing *margin* on real
+        trade rather than a visibly missing item.
+
+        Verified against a live book: ``Status.Inactive`` on 4U Precision
+        returns pages of genuine tooling that ``Status.Active`` does not.
+
+        Inactive items are stored with ``status`` as Zoho reports it, so they
+        are still marked inactive downstream — the point is that they exist to
+        be resolved against, not that they are treated as live.
+        """
+        for i in self._paginate("items", "items", filter_by="Status.All"):
             yield {
                 "item_id": str(i.get("item_id")),
                 "name": i.get("name") or "",
@@ -443,7 +533,8 @@ class ZohoApiSource:
 
     def list_vendors(self) -> Iterable[dict[str, Any]]:
         """Suppliers. The same ``contacts`` endpoint, the other contact_type."""
-        for v in self._paginate("contacts", "contacts", contact_type="vendor"):
+        for v in self._paginate("contacts", "contacts", contact_type="vendor",
+                                filter_by="Status.All"):
             yield {
                 "contact_id": str(v.get("contact_id")),
                 "contact_name": (v.get("vendor_name") or v.get("contact_name")

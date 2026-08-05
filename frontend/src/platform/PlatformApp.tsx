@@ -233,6 +233,10 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
       stock: "stock",
       supply: "supply",
       negotiate: "negotiate",
+      // Bare `customer` — no id — is the Customers screen with its own picker.
+      // It routes here now that Customers is a nav destination in its own right
+      // rather than only ever a link carrying an account.
+      customer: "customer",
     };
     go(map[head] ?? "home");
   }, [go]);
@@ -383,11 +387,15 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
     // Every role: it is the salesperson's own screen, and a manager needs to
     // see what their team is proposing.
     ["negotiate", "Negotiate", ""],
-    ["journey", "Customers", ""],
+    // One "Customers" door, not two. The account picker, the month-by-month
+    // journey and the period-against-period migration answer the same question
+    // at three zoom levels; splitting them across "Customers" and "Accounts"
+    // meant nobody found the second one, and the two names did not say which
+    // held what.
+    ["customer", "Customers", ""],
     // Open, not total: a badge counting closed decisions is a badge that never
     // goes down, and one that never goes down stops being read.
     ["list", rh.nav, openDecisions.length ? String(openDecisions.length) : ""],
-    ["customer", "Accounts", ""],
     ["quotes", "Quotes", ""],
     ["approvals", "Approvals", pendingApprovals ? String(pendingApprovals) : ""],
     ["data", "Data & connection", ""],
@@ -442,6 +450,8 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
         {/* Two answers to one question, stacked rather than split across two
             nav items: the journey chart is month by month, the migration matrix
             is period against period and names who moved. */}
+        {/* "journey" is kept as a route so existing links and the storyboard's
+            own navigation still resolve; it renders the same combined screen. */}
         {screen === "journey" && (
           <div className="screen-stack">
             <JourneyScreen session={session} onNavigate={goViz} />
@@ -490,16 +500,27 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
           />
         )}
 
-        {/* ── ACCOUNTS (customer intelligence) ── */}
+        {/* ── CUSTOMERS ──
+            One screen, three zoom levels: the account in front of you, then
+            the book's month-by-month journey, then which bands customers moved
+            between. These were two nav items — "Customers" and "Accounts" —
+            and the split was arbitrary: both are the customer view, and the
+            names did not say which held what. Stacked in the order somebody
+            actually reads them, with the whole-book views below the account so
+            picking one still lands on the account. */}
         {screen === "customer" && (
-          <CustomerScreen
-            session={session}
-            details={details}
-            customerId={customerId}
-            setCustomerId={(id) => go("customer", id ?? undefined)}
-            onOpen={openDetail}
-            onOpenItem={(pid) => go("customerItem", customerId ?? undefined, pid)}
-          />
+          <div className="screen-stack">
+            <CustomerScreen
+              session={session}
+              details={details}
+              customerId={customerId}
+              setCustomerId={(id) => go("customer", id ?? undefined)}
+              onOpen={openDetail}
+              onOpenItem={(pid) => go("customerItem", customerId ?? undefined, pid)}
+            />
+            <JourneyScreen session={session} onNavigate={goViz} />
+            <MigrationMatrix session={session} months={3} onNavigate={goViz} />
+          </div>
         )}
 
         {/* ── CUSTOMER x ITEM (the grain that names what is eroding) ── */}
@@ -671,7 +692,12 @@ function ListScreen({
                       <Pri band={s.priority_band} />
                     </td>
                     <td style={{ fontFamily: "var(--font-heading)" }}>{typeLabel(s.decision_type)}</td>
-                    <td>{d ? d.subject_label : s.subject_entity_id}</td>
+                    {/* The label arrives with the detail, a moment after the
+                        summary. Until then this said the raw entity id — a
+                        UUID nobody recognises, in the column people scan to
+                        find their account. An ellipsis is more honest than an
+                        identifier presented as a name. */}
+                    <td>{d ? d.subject_label : <span className="viz-muted">…</span>}</td>
                     <td className="dp-reason-cell">
                       <div className="trunc" style={{ maxWidth: "38ch" }}>
                         {d?.interpretation.explanation || "—"}
@@ -876,8 +902,11 @@ function CustomerScreen({
     return (
       <div>
         <div className="dp-head">
-          <h1>Accounts</h1>
-          <p>Every account you cover — search one to see what the data says before you call.</p>
+          <h1>Customers</h1>
+          <p>
+            Every account you cover — search one to see what the data says before
+            you call, or read the whole book's movement below.
+          </p>
         </div>
         <input
           className="input"

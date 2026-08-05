@@ -366,12 +366,19 @@ def execute_sync(session: Session, run: models.SyncRun, *,
         run.sales_txns = report.sales_txns
         run.cost_records = report.cost_records
         run.assignments = report.assignments
+        run.vendors = report.vendors
+        run.stock_snapshots = report.stock_snapshots
+        run.payments = report.payments
+        run.purchase_orders = report.purchase_orders
         run.documents_fetched = report.documents_fetched or getattr(
             svc.source if svc is not None else None, "documents_fetched", 0)
         run.documents_resumed = report.documents_resumed or getattr(
             svc.source if svc is not None else None, "documents_resumed", 0)
         run.skipped_count = len(report.skipped)
         run.skipped_sample = report.skipped[:20]
+        # Capped, but on *distinct problems* rather than on rows: forty things
+        # to fix is a long afternoon, four hundred identical lines is one.
+        run.unresolved = report.unresolved()[:40]
         run.phase = None
         run.finished_at = _now()
         run.heartbeat_at = _now()

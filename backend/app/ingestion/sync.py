@@ -73,8 +73,80 @@ class SyncReport:
     identity_suggestions: int = 0
     identity_links: int = 0
 
-    def skip(self, kind: str, ref: str, code: str, detail: str) -> None:
-        self.skipped.append({"kind": kind, "ref": ref, "code": code, "detail": detail})
+    def skip(self, kind: str, ref: str, code: str, detail: str,
+             context: Optional[dict[str, Any]] = None) -> None:
+        """Record one skipped row, with whatever a person needs to act on it.
+
+        ``context`` exists because ``no product 3452161000001252021`` is a true
+        statement that nobody can do anything with. The id alone means opening
+        Zoho, searching an id that its own UI does not search on, and repeating
+        that per line. The document number, the date, the supplier and the item
+        as it was *written on the bill* turn the same skip into a task.
+        """
+        row: dict[str, Any] = {"kind": kind, "ref": ref, "code": code,
+                               "detail": detail}
+        if context:
+            row["context"] = {k: v for k, v in context.items() if v not in (None, "")}
+        self.skipped.append(row)
+
+    def unresolved(self) -> list[dict[str, Any]]:
+        """Skips folded by what is actually missing, worst first.
+
+        One retired item on four hundred bill lines is **one** problem, and a
+        screen that shows it four hundred times — or, worse, shows the first
+        twenty of them and hides the other two — describes the symptom instead
+        of the cause. Folding on the missing id means the list is as long as the
+        number of things to fix, and the count says how much trade each one is
+        holding up.
+        """
+        groups: dict[tuple[str, str, str], dict[str, Any]] = {}
+        for row in self.skipped:
+            ctx = row.get("context") or {}
+            missing = str(ctx.get("missing_id") or row.get("ref") or "")
+            key = (str(row.get("kind")), str(row.get("code")), missing)
+            g = groups.get(key)
+            if g is None:
+                g = groups[key] = {
+                    "kind": row.get("kind"), "code": row.get("code"),
+                    "missing_id": missing or None,
+                    "label": ctx.get("label"),
+                    "sku": ctx.get("sku"),
+                    "fix": ctx.get("fix"),
+                    "lines": 0,
+                    "value": 0.0,
+                    "first_seen": ctx.get("document_date"),
+                    "last_seen": ctx.get("document_date"),
+                    "examples": [],
+                }
+            g["lines"] += 1
+            # A name is often blank on one line and present on the next; the
+            # first non-empty one wins so the group is nameable.
+            for field_name in ("label", "sku", "fix"):
+                if not g.get(field_name) and ctx.get(field_name):
+                    g[field_name] = ctx[field_name]
+            try:
+                g["value"] += float(ctx.get("line_value") or 0)
+            except (TypeError, ValueError):
+                pass
+            when = ctx.get("document_date")
+            if when:
+                if not g["first_seen"] or when < g["first_seen"]:
+                    g["first_seen"] = when
+                if not g["last_seen"] or when > g["last_seen"]:
+                    g["last_seen"] = when
+            if len(g["examples"]) < 3 and ctx.get("document"):
+                g["examples"].append({
+                    "document": ctx.get("document"),
+                    "date": ctx.get("document_date"),
+                    "party": ctx.get("party"),
+                    "qty": ctx.get("qty"),
+                    "value": ctx.get("line_value"),
+                })
+        # Most lines first: the thing blocking the most trade is the thing to
+        # fix first, and value is the tie-break because a hundred ₹40 lines
+        # matter less than three ₹2 lakh ones.
+        return sorted(groups.values(),
+                      key=lambda g: (g["lines"], g["value"]), reverse=True)
 
     @property
     def wrote_anything(self) -> bool:
@@ -194,18 +266,65 @@ class SyncService:
         rather than assumed, and a source that cannot answer produces no rows
         and no error — the screens above already say "nothing synced yet" in
         their own words, which is more useful than a failed pull.
+
+        **One stage failing must not take the others down with it.** Payments
+        and purchase orders need OAuth scopes that bills and invoices do not,
+        and a connection authorised before those scopes existed returns 401 on
+        exactly those two endpoints. Before this was guarded, that 401 aborted
+        ``run_supply`` mid-way: suppliers had been read, payments raised, and
+        purchase orders were never attempted — so the one missing permission
+        presented as "vendors and payments are not being read at all", with a
+        credentials error pointing at the one thing that was fine.
         """
         if hasattr(self.source, "list_vendors"):
-            self._phase("Reading suppliers")
-            self._sync_vendors()
-            self.s.flush()
+            self._supply_phase("Reading suppliers", "vendor", self._sync_vendors)
         if hasattr(self.source, "list_customer_payments"):
-            self._phase("Reading payments")
-            self._sync_payments()
+            self._supply_phase("Reading payments", "payment", self._sync_payments)
         if hasattr(self.source, "list_purchase_orders"):
-            self._phase("Reading purchase orders")
-            self._sync_purchase_orders()
+            self._supply_phase("Reading purchase orders", "purchase_order",
+                               self._sync_purchase_orders)
         self.s.flush()
+
+    def _supply_phase(self, label: str, kind: str,
+                      run: Callable[[], None]) -> None:
+        """Run one supply pull, recording a refusal instead of propagating it.
+
+        A throttle is deliberately *not* caught: it means the whole pull should
+        stop and resume later, and swallowing it here would spend the rest of
+        the run making calls that are all going to be rejected.
+        """
+        from .zoho_client import ZohoScopeError, ZohoThrottleError
+
+        self._phase(label)
+        try:
+            run()
+            self.s.flush()
+        except ZohoThrottleError:
+            raise
+        except ZohoScopeError as e:
+            # Not rolled back. Whatever this stage managed to read before the
+            # refusal is real data, and discarding it would contradict the rest
+            # of this module — a run that wrote 336 rows wrote 336 rows.
+            self.s.flush()
+            self.report.skip(
+                kind, e.path, "SCOPE_NOT_GRANTED", str(e),
+                context={"scope": e.scope, "endpoint": e.path,
+                         "fix": ("Reconnect this Zoho company from Data & "
+                                 f"connection and include {e.scope} in the "
+                                 "scope list. Nothing else about the "
+                                 "connection needs changing.")})
+        except Exception as e:                               # noqa: BLE001
+            # Everything already written is kept; this one stage is reported as
+            # incomplete. A supplier list that 500s must not discard an invoice
+            # pull that took twenty minutes.
+            self.s.flush()
+            self.report.skip(
+                kind, label, "SUPPLY_STAGE_FAILED",
+                f"{type(e).__name__}: {e}",
+                context={"stage": label,
+                         "fix": ("The rest of the pull completed. Re-run the "
+                                 "sync; if this repeats, the detail here is "
+                                 "what to send on.")})
 
     def _sync_vendors(self) -> None:
         for raw in self.source.list_vendors():
@@ -373,16 +492,40 @@ class SyncService:
             except NormalizationError as e:
                 self.report.skip("invoice", ref, e.code, e.detail)
                 continue
+            by_line = {str(ln.get("line_item_id") or i): ln
+                       for i, ln in enumerate(raw.get("line_items") or [])}
+            number = str(raw.get("invoice_number") or ref)
             for t in lines:
                 cust = self.repo.get_customer_by_external(t.customer_external_id)
                 prod = self.repo.get_product_by_external(t.product_external_id)
                 if cust is None:
-                    self.report.skip("sales_txn", t.external_ref, "UNKNOWN_CUSTOMER",
-                                     f"no customer {t.customer_external_id}")
+                    self.report.skip(
+                        "sales_txn", t.external_ref, "UNKNOWN_CUSTOMER",
+                        f"no customer {t.customer_external_id}",
+                        context={
+                            "missing_id": t.customer_external_id,
+                            "label": str(raw.get("customer_name") or ""),
+                            "document": number,
+                            "document_date": t.date.isoformat(),
+                            "line_value": float(t.line_revenue),
+                            "fix": ("This customer is not in the contact list "
+                                    "this pull read. If they were merged or "
+                                    "deleted in Zoho, the invoice now points at "
+                                    "a contact that no longer exists and needs "
+                                    "reassigning there."),
+                        })
                     continue
                 if prod is None:
-                    self.report.skip("sales_txn", t.external_ref, "UNKNOWN_PRODUCT",
-                                     f"no product {t.product_external_id}")
+                    self.report.skip(
+                        "sales_txn", t.external_ref, "UNKNOWN_PRODUCT",
+                        f"no product {t.product_external_id}",
+                        context=self._missing_item_context(
+                            t.product_external_id,
+                            by_line.get(t.source_ref.line_id or ""),
+                            document=number,
+                            document_date=t.date.isoformat(),
+                            party=str(raw.get("customer_name") or ""),
+                            what="invoice"))
                     continue
                 self.repo.upsert_sales_txn(t, cust.customer_id, prod.product_id)
                 self.report.sales_txns += 1
@@ -421,6 +564,44 @@ class SyncService:
                 customer.source_owner_at = when
         self.s.flush()
 
+    @staticmethod
+    def _missing_item_context(item_id: str, line: Optional[dict[str, Any]], *,
+                              document: str, document_date: str, party: str,
+                              what: str) -> dict[str, Any]:
+        """Everything needed to find and fix one unresolvable item, in one place.
+
+        The name and SKU come off the *document line*, not the item master —
+        the whole problem is that the master has no such item, and the line is
+        the only place its name survives. That is what makes the row findable:
+        nobody can search Zoho by ``item_id``, but everybody can search by
+        "CNMG 120408" or open bill KTI/25-26/0043.
+        """
+        ln = line or {}
+        try:
+            value = float(ln.get("item_total") or ln.get("total")
+                          or (float(ln.get("quantity") or 0) * float(ln.get("rate") or 0)))
+        except (TypeError, ValueError):
+            value = 0.0
+        return {
+            "missing_id": item_id,
+            "label": str(ln.get("name") or ln.get("description") or ""),
+            "sku": str(ln.get("sku") or ""),
+            "document": document,
+            "document_date": document_date,
+            "party": party,
+            "qty": ln.get("quantity"),
+            "line_value": value,
+            "fix": (
+                "This item is on the "
+                f"{what} but not in the item master this pull read. The usual "
+                "cause is an item marked inactive in Zoho: until now the pull "
+                "asked only for active items, so every historical line for a "
+                "discontinued tool was skipped. Re-run a full sync — the item "
+                "list now includes inactive items. If it still does not "
+                "resolve, the item was deleted in Zoho and the document needs "
+                "repointing there."),
+        }
+
     def _sync_bills(self) -> None:
         for raw in self.source.list_bills(skip=self._skipper("bill")):
             ref = str(raw.get("bill_id", "?"))
@@ -429,11 +610,21 @@ class SyncService:
             except NormalizationError as e:
                 self.report.skip("bill", ref, e.code, e.detail)
                 continue
+            by_line = {str(ln.get("line_item_id") or i): ln
+                       for i, ln in enumerate(raw.get("line_items") or [])}
             for r in lines:
                 prod = self.repo.get_product_by_external(r.product_external_id)
                 if prod is None:
-                    self.report.skip("cost_record", r.external_ref, "UNKNOWN_PRODUCT",
-                                     f"no product {r.product_external_id}")
+                    self.report.skip(
+                        "cost_record", r.external_ref, "UNKNOWN_PRODUCT",
+                        f"no product {r.product_external_id}",
+                        context=self._missing_item_context(
+                            r.product_external_id,
+                            by_line.get(r.source_ref.line_id or ""),
+                            document=str(raw.get("bill_number") or ref),
+                            document_date=r.date.isoformat(),
+                            party=str(raw.get("vendor_name") or ""),
+                            what="bill"))
                     continue
                 self.repo.upsert_cost_record(r, prod.product_id)
                 self.report.cost_records += 1

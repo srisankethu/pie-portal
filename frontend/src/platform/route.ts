@@ -40,8 +40,11 @@ const PATHS: Record<Screen, string> = {
   home: "/",
   list: "/decisions",
   detail: "/decision",
-  customer: "/accounts",
-  customerItem: "/accounts",
+  // Renamed with the screen: "Accounts" and "Customers" were two nav items for
+  // one thing, and the surviving name is Customers. `/accounts` still parses,
+  // so links already sent to somebody keep working.
+  customer: "/customers",
+  customerItem: "/customers",
   quotes: "/quotes",
   states: "/states",
   data: "/data",
@@ -80,7 +83,8 @@ export function parseHash(hash: string): Route {
       return { screen: "list" };
     case "decision":
       return parts[1] ? { screen: "detail", id: decodeURIComponent(parts[1]) } : { screen: "list" };
-    case "accounts":
+    case "customers":
+    case "accounts":            // the old path — kept so existing links resolve
       return { screen: "customer" };
     case "account":
       if (!parts[1]) return { screen: "customer" };

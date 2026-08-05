@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { money } from "../money";
 import { papi } from "./api";
 import { ConnectionsPanel } from "./ConnectionsPanel";
 import { SyncStatusCard, useSync } from "./SyncStatus";
@@ -277,6 +278,41 @@ export function DataScreen({ session, onSynced }: { session: PlatformSession; on
                       </td>
                       <td className="fv">{s.cost_records}</td>
                     </tr>
+                    {/* The supply stage. Shown unconditionally, including at
+                        zero: "suppliers 0" with a reason underneath is the
+                        answer to "why are vendors not being read", and an
+                        absent row is not. */}
+                    <tr>
+                      <td>
+                        <Labelled tip="Suppliers, from the same Zoho contact list as customers. Needs no scope beyond ZohoBooks.contacts.READ, so a zero here means the stage did not run rather than that it was refused.">
+                          Suppliers
+                        </Labelled>
+                      </td>
+                      <td className="fv">{s.vendors}</td>
+                    </tr>
+                    <tr>
+                      <td>
+                        <Labelled tip="Money in, with the invoices each receipt settled. Needs ZohoBooks.customerpayments.READ. Without it every invoice looks paid the day it was raised, and the Cash screen is empty.">
+                          Payments
+                        </Labelled>
+                      </td>
+                      <td className="fv">{s.payments}</td>
+                    </tr>
+                    <tr>
+                      <td>
+                        <Labelled tip="What is on the way from suppliers. Needs ZohoBooks.purchaseorders.READ.">
+                          Purchase orders
+                        </Labelled>
+                      </td>
+                      <td className="fv">{s.purchase_orders}</td>
+                    </tr>
+                    <tr>
+                      <td>
+                        Stock snapshots
+                        <div className="fsrc">read from the item list, at no extra cost</div>
+                      </td>
+                      <td className="fv">{s.stock_snapshots}</td>
+                    </tr>
                     <tr>
                       <td>
                         Documents read
@@ -345,9 +381,81 @@ export function DataScreen({ session, onSynced }: { session: PlatformSession; on
             </Bp>
           </div>
 
+          {s && (s.unresolved?.length ?? 0) > 0 && (
+            <>
+              <div className="section-h">
+                <Labelled tip="Grouped by what is missing rather than by row: one discontinued item on four hundred bill lines is one thing to fix, and listing it four hundred times hides the other two.">
+                  What could not be resolved
+                </Labelled>
+              </div>
+              <Bp style={{ padding: 2 }}>
+                <table className="dp-table">
+                  <thead>
+                    <tr>
+                      <th>What is missing</th>
+                      <th className="fv">Lines held up</th>
+                      <th>Seen on</th>
+                      <th>What to do</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {s.unresolved.map((u, i) => (
+                      <tr key={i}>
+                        <td>
+                          <b>{u.label || u.missing_id || u.code}</b>
+                          <div className="fsrc">
+                            {u.sku && <>SKU {u.sku} · </>}
+                            {u.kind.replace(/_/g, " ")} · {u.code}
+                            {u.missing_id && <> · id {u.missing_id}</>}
+                          </div>
+                        </td>
+                        <td className="fv">
+                          {u.lines}
+                          {u.value > 0 && (
+                            <div className="fsrc">{money(u.value)}</div>
+                          )}
+                        </td>
+                        <td>
+                          {u.examples.length === 0 ? (
+                            <span className="fsrc">
+                              {u.first_seen || "—"}
+                            </span>
+                          ) : (
+                            u.examples.map((e, j) => (
+                              <div key={j} className="fsrc">
+                                {e.document}
+                                {e.date && <> · {e.date}</>}
+                                {e.party && <> · {e.party}</>}
+                              </div>
+                            ))
+                          )}
+                          {u.lines > u.examples.length && u.examples.length > 0 && (
+                            <div className="fsrc">
+                              and {u.lines - u.examples.length} more
+                            </div>
+                          )}
+                        </td>
+                        <td style={{ maxWidth: 340 }}>{u.fix}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </Bp>
+            </>
+          )}
+
+          {/* The raw sample is kept below the worklist, not instead of it: the
+              worklist is what to do, this is the evidence it was built from. */}
           {s && s.skipped_count > 0 && (
             <>
-              <div className="section-h">Skipped rows</div>
+              <div className="section-h">
+                Skipped rows
+                {s.skipped_count > s.skipped_sample.length && (
+                  <span className="fsrc">
+                    {" "}first {s.skipped_sample.length} of {s.skipped_count}
+                  </span>
+                )}
+              </div>
               <Bp style={{ padding: 2 }}>
                 <table className="dp-table">
                   <thead>

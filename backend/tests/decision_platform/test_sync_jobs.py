@@ -424,3 +424,45 @@ def test_a_pull_interrupted_part_way_keeps_the_windows_it_finished(client):
     assert last["windows_done"] == 2, "the two windows it got through are recorded"
     assert last["windows_done"] < last["windows_total"]
     assert "rate limit" in last["error"]
+
+
+# ── what a finished run is able to say about itself ─────────────────────────
+def test_the_supply_stage_reports_what_it_read(client):
+    """These counters existed in the report from the day the supply stage was
+    added, but ``SyncRun`` had no columns for them, so nothing the stage did
+    reached the screen. From the Data page that is indistinguishable from the
+    stage never running — which is exactly how it was reported."""
+    class WithSupply(Empty):
+        def list_vendors(self):
+            return [{"contact_id": "v1", "contact_name": "Kennametal India",
+                     "status": "active"}]
+
+        def list_customer_payments(self, skip=None):
+            return [{"payment_id": "p1", "customer_id": "c1",
+                     "date": "2026-06-10", "amount": 1000, "invoices": []}]
+
+        def list_purchase_orders(self):
+            return [{"purchaseorder_id": "po1", "purchaseorder_number": "PO-1",
+                     "date": "2026-05-01", "vendor_id": "v1", "status": "issued",
+                     "line_items": []}]
+
+    client.monkeypatch.setattr("app.ingestion.sync.get_source",
+                               lambda session, org, since=None, **kw: WithSupply())
+    client.monkeypatch.setattr(jobs, "thread_dispatch", client.inline)
+    client.post("/api/v1/data/sync", headers=_hdr(client))
+
+    last = client.get("/api/v1/data/sync", headers=_hdr(client)).json()["last"]
+    assert last["vendors"] == 1
+    assert last["purchase_orders"] == 1
+    # The payment names a customer this empty source never returned, so it is
+    # skipped — reported, not attached to a fictional account.
+    assert last["payments"] == 0
+    assert any(u["code"] == "UNKNOWN_CUSTOMER" for u in last["unresolved"])
+
+
+def test_a_run_with_nothing_to_fix_carries_an_empty_worklist(client):
+    client.monkeypatch.setattr(jobs, "thread_dispatch", client.inline)
+    client.post("/api/v1/data/sync", headers=_hdr(client))
+    last = client.get("/api/v1/data/sync", headers=_hdr(client)).json()["last"]
+    assert last["unresolved"] == []
+    assert last["vendors"] == 0 and last["payments"] == 0

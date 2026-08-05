@@ -18,10 +18,10 @@
 // exists for: give something to the customer, ask something of the vendor, and
 // see immediately what each does to the same figure.
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { money } from "../../money";
 import { papi } from "../api";
-import type { PlatformSession } from "../types";
+import type { Account, AccountItem, PlatformSession } from "../types";
 import { Panel } from "./Panel";
 
 type Envelope = Record<string, unknown>;
@@ -37,6 +37,20 @@ const TIMING: { label: string; days: number }[] = [
   { label: "Up to a month late", days: 30 },
   { label: "One to two months late", days: 60 },
   { label: "Two to three months late", days: 90 },
+];
+
+/** The floor tables published in `parameters.yaml`. A fixed list because these
+ *  are policy, not data: a family only exists here once somebody has set a floor
+ *  markup for it, and a free-text box would let a typo silently fall back to the
+ *  default floor without saying so. */
+const FAMILIES: { value: string; label: string }[] = [
+  { value: "", label: "Use the default floor" },
+  { value: "inserts", label: "Inserts" },
+  { value: "solid_carbide", label: "Solid carbide" },
+  { value: "holders_toolsystems", label: "Holders and tool systems" },
+  { value: "metrology", label: "Metrology" },
+  { value: "chemicals", label: "Chemicals" },
+  { value: "machines", label: "Machines" },
 ];
 
 export function NegotiateScreen({
@@ -61,6 +75,33 @@ export function NegotiateScreen({
   const [data, setData] = useState<Envelope | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // The pickers. A salesperson knows their customer's name and the tool they
+  // are quoting; nobody knows either id, and asking for one means leaving the
+  // screen to go and find it. The account list is already role-scoped server
+  // side, so this dropdown shows exactly the accounts they may negotiate on.
+  const [accounts, setAccounts] = useState<Account[]>([]);
+  const [items, setItems] = useState<AccountItem[]>([]);
+  const [itemsLoading, setItemsLoading] = useState(false);
+
+  useEffect(() => {
+    let live = true;
+    papi.listAccounts(session.token)
+      .then((rows) => { if (live) setAccounts(rows); })
+      .catch(() => { /* the picker degrades to empty; the error surfaces on submit */ });
+    return () => { live = false; };
+  }, [session.token]);
+
+  useEffect(() => {
+    if (!customer) { setItems([]); return; }
+    let live = true;
+    setItemsLoading(true);
+    papi.listAccountItems(session.token, customer)
+      .then((rows) => { if (live) setItems(rows); })
+      .catch(() => { if (live) setItems([]); })
+      .finally(() => { if (live) setItemsLoading(false); });
+    return () => { live = false; };
+  }, [session.token, customer]);
 
   const canPrice = customer.trim() && product.trim()
     && Number(qty) > 0 && Number(price) > 0;
@@ -109,12 +150,32 @@ export function NegotiateScreen({
       wide
     >
       <div className="neg-form">
-        <Field label="Customer id" value={customer} onChange={setCustomer}
-               hint="From the account page URL." />
-        <Field label="Item id" value={product} onChange={setProduct}
-               hint="From the item drill-down." />
-        <Field label="Tool family" value={family} onChange={setFamily}
-               hint="Optional. Sets which floor applies." />
+        <Choice label="Customer" value={customer}
+                onChange={(v) => { setCustomer(v); setProduct(""); }}
+                hint={accounts.length ? undefined : "No accounts are assigned to you yet."}
+                options={[
+                  { value: "", label: "Choose an account…" },
+                  ...accounts.map((a) => ({ value: a.customer_id, label: a.name })),
+                ]} />
+        <Choice label="Item" value={product} onChange={setProduct}
+                disabled={!customer || itemsLoading}
+                hint={!customer
+                  ? "Choose the account first — the list is what they buy."
+                  : itemsLoading
+                    ? "Loading…"
+                    : items.length
+                      ? "What this account has bought, most recent first."
+                      : "This account has no purchase history to price against."}
+                options={[
+                  { value: "", label: "Choose an item…" },
+                  ...items.map((i) => ({
+                    value: i.product_id,
+                    label: i.sku ? `${i.name} · ${i.sku}` : i.name,
+                  })),
+                ]} />
+        <Choice label="Tool family" value={family} onChange={setFamily}
+                options={FAMILIES}
+                hint="Sets which floor applies." />
         <Field label="Quantity" value={qty} onChange={setQty} numeric />
         <Field label="Price you are agreeing" value={price} onChange={setPrice}
                numeric hint="Per unit, before any discount below." />
@@ -136,18 +197,10 @@ export function NegotiateScreen({
         <Field label="Tooling, training or trials for them" value={toolkit}
                onChange={setToolkit} numeric
                hint="A total. Charged at half — the compliant lever is the cheaper one." />
-        <div className="field neg-field">
-          <label htmlFor="neg-timing">When the money arrives</label>
-          <select id="neg-timing" className="input" value={timing}
-                  onChange={(e) => setTiming(Number(e.target.value))}>
-            {TIMING.map((t) => (
-              <option key={t.days} value={t.days}>{t.label}</option>
-            ))}
-          </select>
-          <span className="viz-muted neg-hint">
-            Contribution is banked on the invoice and earned on the receipt.
-          </span>
-        </div>
+        <Choice label="When the money arrives" value={String(timing)}
+                onChange={(v) => setTiming(Number(v))}
+                options={TIMING.map((t) => ({ value: String(t.days), label: t.label }))}
+                hint="Contribution is banked on the invoice and earned on the receipt." />
         <Field label="Contribution you want to hold" value={holdAt} onChange={setHoldAt}
                numeric hint="Optional. Returns the price that leaves exactly this." />
         <div className="neg-actions">
@@ -256,6 +309,38 @@ function termNote(data: Envelope): string {
   if (num(data.vendor_yield_credited) > 0)
     parts.push(`plus ${money(num(data.vendor_yield_credited))} from the vendor`);
   return parts.length ? parts.join(", ") : "nothing given away yet";
+}
+
+/** A labelled dropdown. Same shape as `Field` so the two sit on one grid.
+ *
+ *  Every choice on this screen is from a closed set — the accounts a person may
+ *  negotiate on, the items that account buys, the published floor tables, the
+ *  collection bands — so all of them are selects. A free-text id field on a
+ *  screen used with a customer on the phone is a screen nobody uses twice. */
+function Choice({
+  label, value, onChange, options, hint, disabled,
+}: {
+  label: string; value: string; onChange: (v: string) => void;
+  options: { value: string; label: string }[];
+  hint?: string; disabled?: boolean;
+}) {
+  const id = `neg-${label.replace(/\W+/g, "-").toLowerCase()}`;
+  return (
+    <div className="field neg-field">
+      <label htmlFor={id}>{label}</label>
+      {/* `title` on both: a select clips its own value, and tool names are
+          long enough that "25mm shank turning ho…" is ambiguous between two
+          real items. Hovering gives the whole thing back. */}
+      <select id={id} className="input" value={value} disabled={disabled}
+              title={options.find((o) => o.value === value)?.label}
+              onChange={(e) => onChange(e.target.value)}>
+        {options.map((o) => (
+          <option key={o.value} value={o.value} title={o.label}>{o.label}</option>
+        ))}
+      </select>
+      {hint && <span className="viz-muted neg-hint">{hint}</span>}
+    </div>
+  );
 }
 
 function Field({

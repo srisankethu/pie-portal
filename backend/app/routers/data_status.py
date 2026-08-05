@@ -58,7 +58,11 @@ def _run_dict(r: Optional[models.SyncRun]) -> Optional[dict[str, Any]]:
         "finished_at": r.finished_at.isoformat() if r.finished_at else None,
         "customers": r.customers, "products": r.products,
         "sales_txns": r.sales_txns, "cost_records": r.cost_records,
+        "vendors": r.vendors, "stock_snapshots": r.stock_snapshots,
+        "payments": r.payments, "purchase_orders": r.purchase_orders,
         "skipped_count": r.skipped_count, "skipped_sample": r.skipped_sample or [],
+        # The worklist: one row per thing to fix, not per row skipped.
+        "unresolved": r.unresolved or [],
         "signals_emitted": r.signals_emitted, "decisions_created": r.decisions_created,
         "error": r.error,
         "since": r.since.isoformat() if r.since else None,

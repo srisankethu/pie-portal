@@ -52,6 +52,25 @@ def load_snapshot(session: Session, organization_id: str) -> Snapshot:
                     customer_names=customer_names, product_names=product_names)
 
 
+def label_for(names: dict[str, str], entity_id: str, *, kind: str = "record") -> str:
+    """A name for an id, and a readable phrase when there is no name.
+
+    Every caller used to fall back to the id itself — ``names.get(pid, pid)`` —
+    which puts ``3452161000001252021`` in the column somebody scans to find
+    their account. The id is still carried, because it is what makes the row
+    findable when somebody goes to fix it, but it is labelled as an id rather
+    than presented as a name.
+
+    A missing name means the master has no such row, which is the same gap the
+    sync reports as UNKNOWN_PRODUCT — so this phrasing and that worklist should
+    stay recognisable as the same problem.
+    """
+    name = names.get(entity_id)
+    if name:
+        return name
+    return f"Unnamed {kind} (id {entity_id})"
+
+
 # ── windows ──────────────────────────────────────────────────────────────────
 def recent_window(as_of: date, th: SignalThresholds) -> tuple[date, date]:
     return (as_of - timedelta(days=th.basis_period_days), as_of)

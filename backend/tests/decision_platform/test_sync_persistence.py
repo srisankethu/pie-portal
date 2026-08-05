@@ -404,3 +404,149 @@ def test_two_orgs_sync_from_their_own_credentials_never_the_others(session, monk
 
     assert get_source(session, "org_a")._org == "AAA"
     assert get_source(session, "org_b")._org == "BBB"
+
+
+# ── skips somebody can act on ───────────────────────────────────────────────
+#
+# "no product 3452161000001252021" is a true statement that nobody can do
+# anything with: Zoho's own UI does not search on an item id, so the only route
+# from that message to a fix is opening every bill by hand. These tests pin the
+# context that turns the same skip into a task.
+
+def _bill_for_missing_item() -> _Source:
+    """A bill referencing an item the master does not have — what a retired
+    item looked like before the pull started asking for inactive items."""
+    return _Source(
+        contacts=[{"contact_id": "c1", "contact_name": "Acme", "status": "active"}],
+        items=[],
+        bills=[{"bill_id": "b1", "bill_number": "KTI/25-26/0043",
+                "date": "2026-05-01", "vendor_name": "Kennametal India",
+                "line_items": [{"line_item_id": "l1", "item_id": "itm-gone",
+                                "name": "CNMG 120408-MP TN2000", "sku": "CN120408",
+                                "quantity": 50, "rate": 372, "item_total": 18600}]}],
+    )
+
+
+def test_an_unresolvable_item_is_reported_with_enough_to_find_it(session):
+    report = SyncService(session, _bill_for_missing_item(), "org_a").run()
+    skip = next(s for s in report.skipped if s["code"] == "UNKNOWN_PRODUCT")
+    ctx = skip["context"]
+    # The name comes off the document line, because the master has no such
+    # record — the line is the only place the name survives.
+    assert ctx["label"] == "CNMG 120408-MP TN2000"
+    assert ctx["sku"] == "CN120408"
+    assert ctx["document"] == "KTI/25-26/0043"
+    assert ctx["party"] == "Kennametal India"
+    assert ctx["document_date"] == "2026-05-01"
+    assert ctx["line_value"] == 18600
+    assert "inactive" in ctx["fix"]
+
+
+def test_one_missing_item_on_many_lines_is_one_problem_not_many(session):
+    """A retired item on four hundred bill lines is one thing to fix. A list
+    that shows it four hundred times — or the first twenty of them — describes
+    the symptom and hides everything else."""
+    src = _bill_for_missing_item()
+    src._b = [
+        {"bill_id": f"b{n}", "bill_number": f"KTI/25-26/{n:04d}",
+         "date": f"2026-0{(n % 5) + 1}-01", "vendor_name": "Kennametal India",
+         "line_items": [{"line_item_id": "l1", "item_id": "itm-gone",
+                         "name": "CNMG 120408-MP TN2000", "sku": "CN120408",
+                         "quantity": 50, "rate": 372, "item_total": 18600}]}
+        for n in range(1, 13)
+    ]
+    report = SyncService(session, src, "org_a").run()
+
+    assert len(report.skipped) == 12
+    groups = report.unresolved()
+    assert len(groups) == 1
+    g = groups[0]
+    assert g["missing_id"] == "itm-gone"
+    assert g["label"] == "CNMG 120408-MP TN2000"
+    assert g["lines"] == 12
+    assert g["value"] == pytest.approx(12 * 18600)
+    # Three examples is enough to recognise the pattern; the count carries the
+    # rest. A worklist that pastes twelve identical rows is not a worklist.
+    assert len(g["examples"]) == 3
+    assert g["first_seen"] < g["last_seen"]
+
+
+def test_the_worklist_puts_the_biggest_blockage_first(session):
+    src = _bill_for_missing_item()
+    src._b = (
+        [{"bill_id": f"a{n}", "bill_number": f"A{n}", "date": "2026-05-01",
+          "line_items": [{"line_item_id": "l1", "item_id": "itm-common",
+                          "name": "Common", "quantity": 1, "rate": 10,
+                          "item_total": 10}]} for n in range(5)]
+        + [{"bill_id": "z1", "bill_number": "Z1", "date": "2026-05-01",
+            "line_items": [{"line_item_id": "l1", "item_id": "itm-rare",
+                            "name": "Rare", "quantity": 1, "rate": 900000,
+                            "item_total": 900000}]}]
+    )
+    groups = SyncService(session, src, "org_a").run().unresolved()
+    assert [g["missing_id"] for g in groups] == ["itm-common", "itm-rare"]
+
+
+# ── one supply stage must not take the others down ──────────────────────────
+def test_a_refused_payment_scope_does_not_stop_suppliers_or_orders(session):
+    """The shape of the reported problem. Payments and purchase orders need
+    scopes bills and invoices do not, so a connection authorised before those
+    scopes existed 401s on exactly those endpoints — and that used to abort the
+    whole supply stage after suppliers had been read, leaving purchase orders
+    unattempted and the error blaming the credentials."""
+    from app.ingestion.zoho_client import ZohoScopeError
+
+    class HalfGranted(_Source):
+        def list_vendors(self):
+            return [{"contact_id": "v1", "contact_name": "Kennametal India",
+                     "status": "active"}]
+
+        def list_customer_payments(self, skip=None):
+            raise ZohoScopeError(
+                "Zoho refused customerpayments: this connection was not granted "
+                "ZohoBooks.customerpayments.READ.",
+                path="customerpayments", scope="ZohoBooks.customerpayments.READ")
+
+        def list_purchase_orders(self):
+            return [{"purchaseorder_id": "po1", "purchaseorder_number": "PO-1",
+                     "date": "2026-05-01", "vendor_id": "v1", "status": "issued",
+                     "line_items": [{"line_item_id": "l1", "item_id": "i1",
+                                     "quantity": 10, "rate": 400}]}]
+
+    src = HalfGranted(
+        contacts=[{"contact_id": "c1", "contact_name": "Acme", "status": "active"}],
+        items=[{"item_id": "i1", "name": "Insert", "unit": "pcs", "status": "active"}])
+    report = SyncService(session, src, "org_a").run()
+    session.commit()
+
+    # The two stages that *could* run, did.
+    assert report.vendors == 1
+    assert report.purchase_orders == 1
+    assert report.payments == 0
+    # And the one that could not says which permission is missing.
+    refusal = next(s for s in report.skipped if s["code"] == "SCOPE_NOT_GRANTED")
+    assert refusal["context"]["scope"] == "ZohoBooks.customerpayments.READ"
+    assert "Reconnect" in refusal["context"]["fix"]
+
+
+def test_a_broken_supply_stage_keeps_everything_already_written(session):
+    """A supplier list that 500s must not discard an invoice pull that took
+    twenty minutes."""
+    class BadVendors(_Source):
+        def list_vendors(self):
+            raise RuntimeError("upstream exploded")
+
+    src = BadVendors(**{
+        "contacts": [{"contact_id": "c1", "contact_name": "Acme", "status": "active"}],
+        "items": [{"item_id": "i1", "name": "Insert", "unit": "pcs", "status": "active"}],
+        "invoices": [{"invoice_id": "inv1", "customer_id": "c1", "date": "2026-06-01",
+                      "line_items": [{"line_item_id": "l1", "item_id": "i1",
+                                      "quantity": 10, "rate": 500, "item_total": 5000}]}],
+    })
+    report = SyncService(session, src, "org_a").run()
+    session.commit()
+
+    assert report.sales_txns == 1
+    assert session.query(models.SalesTxn).count() == 1
+    failed = next(s for s in report.skipped if s["code"] == "SUPPLY_STAGE_FAILED")
+    assert "upstream exploded" in failed["detail"]

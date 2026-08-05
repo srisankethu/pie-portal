@@ -514,8 +514,23 @@ class SyncRun(Base):
     products: Mapped[int] = mapped_column(Integer, default=0)
     sales_txns: Mapped[int] = mapped_column(Integer, default=0)
     cost_records: Mapped[int] = mapped_column(Integer, default=0)
+    # The supply stage. ``SyncReport`` has counted these since the stage was
+    # added, but there was nowhere to put them, so a run that read four hundred
+    # suppliers reported nothing about them and the screen could only conclude
+    # that suppliers were not being read at all. A counter that exists only in
+    # memory is not a counter.
+    vendors: Mapped[int] = mapped_column(Integer, default=0)
+    stock_snapshots: Mapped[int] = mapped_column(Integer, default=0)
+    payments: Mapped[int] = mapped_column(Integer, default=0)
+    purchase_orders: Mapped[int] = mapped_column(Integer, default=0)
     skipped_count: Mapped[int] = mapped_column(Integer, default=0)
     skipped_sample: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    # Skips folded by what is actually missing — one row per thing to fix,
+    # with how many lines it blocks and where to find it. Stored alongside the
+    # raw sample rather than replacing it: the sample is the evidence, this is
+    # the worklist, and a truncated sample of four hundred identical rows was
+    # neither.
+    unresolved: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
     signals_emitted: Mapped[int] = mapped_column(Integer, default=0)
     decisions_created: Mapped[int] = mapped_column(Integer, default=0)
     error: Mapped[Optional[str]] = mapped_column(String(1024))

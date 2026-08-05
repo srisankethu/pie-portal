@@ -35,7 +35,7 @@ from ..commercial.insight import (cadence, cohorts, composition, flow, landscape
 from ..db import get_session
 from ..domain import models
 from ..domain.enums import Role
-from ..signals.aggregates import load_snapshot
+from ..signals.aggregates import label_for, load_snapshot
 from ..signals.config import load_thresholds as load_signal_thresholds
 
 log = logging.getLogger("pie_portal.insight")
@@ -288,7 +288,8 @@ def customer_timeline(customer_id: str,
             {"series": "margin", "reason": "Margin is management information."})
     return _envelope(result, currency=th.currency,
                      customer_id=customer_id,
-                     customer_label=snapshot.customer_names.get(customer_id, customer_id),
+                     customer_label=label_for(snapshot.customer_names, customer_id,
+                                              kind="customer"),
                      as_of=as_of.isoformat())
 
 
@@ -508,7 +509,7 @@ def stock_position(principal: Principal = Depends(current_principal),
     lines = [
         stock.StockLine(
             product_id=pid,
-            label=snapshot.product_names.get(pid, pid),
+            label=label_for(snapshot.product_names, pid, kind="item"),
             on_hand=float(row.on_hand or 0),
             available=(float(row.available) if row.available is not None else None),
             actual_available=(float(row.actual_available)

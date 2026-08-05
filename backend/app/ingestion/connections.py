@@ -53,6 +53,14 @@ REQUIRED_SCOPES: tuple[tuple[str, str, bool], ...] = (
     ("ZohoBooks.bills.READ",
      "Bills — what it cost. Without this there is no margin anywhere in the "
      "platform, only revenue.", True),
+    ("ZohoBooks.customerpayments.READ",
+     "Payments — when money actually arrived. The Cash screen, every payment "
+     "pattern, and the collection factor the incentive is earned on all read "
+     "this. Without it an invoice looks paid the day it was raised.", True),
+    ("ZohoBooks.purchaseorders.READ",
+     "Purchase orders — what is on the way from suppliers, and how late. Feeds "
+     "the Supply screen. Optional: without it, stock on hand is still read, "
+     "but nothing knows what has been ordered against it.", False),
     ("ZohoBooks.users.READ",
      "Users — maps a Zoho salesperson to a platform account. Optional: without "
      "it accounts stay unassigned and every decision routes to management.",

@@ -124,16 +124,55 @@ export interface SyncRun {
   products: number;
   sales_txns: number;
   cost_records: number;
+  vendors: number;
+  stock_snapshots: number;
+  payments: number;
+  purchase_orders: number;
   documents_fetched: number;
   documents_resumed: number;
   assignments: number;
   signals_emitted: number;
   decisions_created: number;
   skipped_count: number;
-  skipped_sample: { kind: string; ref: string; code: string; detail: string }[];
+  skipped_sample: { kind: string; ref: string; code: string; detail: string;
+                    context?: Record<string, unknown> }[];
+  /** One row per thing to fix, not per row skipped. See `SyncReport.unresolved`. */
+  unresolved: UnresolvedReference[];
   error: string | null;
   /** What the finished run wants to report — cleared sample data, metric rebuild. */
   notes: { demo_data_removed?: Record<string, number>; commercial?: Record<string, unknown> };
+}
+
+/** A reference the pull could not resolve, folded across every line it blocked.
+ *
+ *  `lines` is the point: one discontinued item on four hundred bill lines is
+ *  one problem, and a list that shows it four hundred times describes the
+ *  symptom instead of the cause. */
+export interface UnresolvedReference {
+  kind: string;
+  code: string;
+  missing_id: string | null;
+  /** The item or customer name as written on the document — the master has no
+   *  such record, so the document line is the only place the name survives. */
+  label?: string | null;
+  sku?: string | null;
+  fix?: string | null;
+  lines: number;
+  value: number;
+  first_seen?: string | null;
+  last_seen?: string | null;
+  examples: { document?: string; date?: string; party?: string;
+              qty?: number | string; value?: number }[];
+}
+
+/** One item an account has bought. Identity only — no price, no cost. The date
+ *  is carried because two inserts with near-identical names are told apart by
+ *  when they were last bought, not by their ids. */
+export interface AccountItem {
+  product_id: string;
+  name: string;
+  sku: string;
+  last_bought: string | null;
 }
 
 export interface SyncState {

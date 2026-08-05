@@ -254,6 +254,12 @@ class Customer(Base):
     source_owner_at: Mapped[Optional[date]] = mapped_column(Date)
     first_seen: Mapped[Optional[date]] = mapped_column(Date)
     status: Mapped[str] = mapped_column(String(32), default="ACTIVE")
+    # Whether a third-party incentive may be paid on this account: "PRIVATE",
+    # "RESTRICTED" (PSU, government, defence supply chain) or NULL for one
+    # nobody has classified yet. NULL is treated exactly like RESTRICTED — see
+    # ``commercial.incentive.may_pay_third_party`` for why it fails closed and
+    # why nothing infers this from the customer's name.
+    incentive_eligibility: Mapped[Optional[str]] = mapped_column(String(16))
     source_ref: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,

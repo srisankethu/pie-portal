@@ -27,7 +27,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..authz import Principal, current_principal, require_manager_or_owner
-from ..commercial import incentive, policy
+from .. import clock
+from ..commercial import floor, incentive, policy
 from ..commercial.insight import (cadence, cohorts, composition, flow, landscape,
                                   payments, periods, radar, simulate, stock, story,
                                   supply, weather)
@@ -585,12 +586,14 @@ def supplier_position(principal: Principal = Depends(require_manager_or_owner),
 # The one screen in this product a salesperson uses to *decide* rather than to
 # read, so the role projection here is doing more work than anywhere else.
 #
-# A salesperson gets: the reference price (what this customer already paid —
-# they have seen it), their incentive, what a discount costs them, and the
-# price that holds their incentive steady. They do NOT get vendor_gain or
-# company_retained, because publishing either alongside a known share rate is
-# publishing the cost by division. The vendor side is a *request* for a
-# per-unit concession, never a view of the buy price.
+# A salesperson gets the floor price, and everything that follows from it: what
+# the line contributes, what a discount costs, what the vendor ask is worth,
+# what price holds a target. They do NOT get cost, margin or ``m_floor`` — and
+# not because this function strips them, but because ``Assessment`` and
+# ``ResolvedFloor`` have no such fields. A manager or owner additionally gets
+# the reconciliation: the cost behind the floor and the margin it implies.
+#
+# The floor is what makes that split possible. See ``commercial/floor.py``.
 
 
 class NegotiationRequest(BaseModel):
@@ -600,20 +603,30 @@ class NegotiationRequest(BaseModel):
     agreed_price: float = Field(ge=0)
     #: Per unit, given back to the customer.
     customer_discount: float = Field(0, ge=0)
-    #: Per unit, asked of the vendor. A request until a manager agrees it.
+    #: Per unit, asked of the vendor. A request until a document exists.
     vendor_concession: float = Field(0, ge=0)
-    #: "What price keeps my incentive at X?" — optional, solved not searched.
-    target_incentive: Optional[float] = None
+    #: K — a declared payment to somebody at the customer. A total, not per
+    #: unit. Blocked outright on a restricted or unclassified account.
+    third_party_incentive: float = Field(0, ge=0)
+    #: The compliant alternative to K: tooling, training, trials. A total.
+    toolkit_spend: float = Field(0, ge=0)
+    #: How late the money is expected. CAF is banked on invoice and earned on
+    #: receipt, so this is a lever the salesperson holds, not a KPI.
+    expected_days_late: int = Field(0, ge=-365, le=730)
+    #: Which floor table applies. Absent means the default multiplier.
+    family: Optional[str] = None
+    #: "What price leaves this line contributing X?" — solved, not searched.
+    target_caf: Optional[float] = None
 
 
-def _reference_price(session: Session, org: str, customer_id: str,
+def _last_price_paid(session: Session, org: str, customer_id: str,
                      product_id: str) -> Optional[Decimal]:
-    """What this customer has actually paid for this item, most recently.
+    """What this customer last paid for this item. Context, not the currency.
 
-    OPERATIONAL by construction: it is a price the customer themselves agreed,
-    so a salesperson seeing it learns nothing they could not read off their own
-    last invoice. Every cost-derived reference in ``references.py`` is
-    RESTRICTED and none of them is used here — that is the whole design.
+    Shown next to the floor because it is the number the customer will quote
+    back in the room, and OPERATIONAL by construction — it is a price they
+    themselves agreed. Nothing is computed from it: the contribution is
+    measured against the floor, which is what the month is paid on.
     """
     row = session.scalars(
         select(models.SalesTxn)
@@ -629,73 +642,97 @@ def _reference_price(session: Session, org: str, customer_id: str,
 def negotiate(body: NegotiationRequest,
               principal: Principal = Depends(current_principal),
               session: Session = Depends(get_session)) -> dict:
-    """Price it, split the pot, and say what needs approving."""
+    """Price the line in the currency it will be paid in, and say what blocks."""
     org, snapshot, th = _context(session, principal)
-    _require_visible_customer(session, org, body.customer_id, principal)
+    customer = _require_visible_customer(session, org, body.customer_id, principal)
     with_cost = principal.role in (Role.SALES_MANAGER, Role.OWNER)
+    as_of = clock.now().date()
 
-    reference = _reference_price(session, org, body.customer_id, body.product_id)
-    if reference is None:
-        return _envelope(
-            {"negotiable": False}, currency=th.currency,
-            empty_reason=("This customer has not bought this item before, so "
-                          "there is no price of theirs to negotiate against. "
-                          "Quote it from the Quote Builder, which prices "
-                          "against peers and cost."))
+    try:
+        resolved = floor.resolve(session, org, body.product_id,
+                                 family=body.family, as_of=as_of)
+    except floor.FloorUnavailable as e:
+        return _envelope({"negotiable": False}, currency=th.currency,
+                         empty_reason=e.reason)
 
-    policy_rates = incentive.IncentivePolicy(
-        salesperson_share=Decimal(str(th.incentive_salesperson_share)),
-        vendor_share=Decimal(str(th.incentive_vendor_share)),
-        self_funding_cap=Decimal(str(th.incentive_self_funding_cap)),
-        minimum_realisation=Decimal(str(th.incentive_minimum_realisation)))
-
-    deal = incentive.Negotiation(
+    deal = incentive.Deal(
         qty=Decimal(str(body.qty)),
-        reference_price=reference,
+        floor_price=resolved.floor_price,
         agreed_price=Decimal(str(body.agreed_price)),
         customer_discount=Decimal(str(body.customer_discount)),
-        vendor_concession=Decimal(str(body.vendor_concession)))
+        third_party_incentive=Decimal(str(body.third_party_incentive)),
+        toolkit_spend=Decimal(str(body.toolkit_spend)),
+        # The vendor ask is quoted per unit in the room and charged as a total.
+        vendor_yield=Decimal(str(body.vendor_concession)) * Decimal(str(body.qty)))
 
-    result = incentive.split(deal, policy_rates)
-    break_even = incentive.break_even_discount(deal, policy_rates)
-    hold_price = (incentive.required_price(deal, policy_rates,
-                                           Decimal(str(body.target_incentive)))
-                  if body.target_incentive is not None else None)
+    # I2. Checked before anything is computed, because the answer to "what
+    # would it be worth?" on a government account is not a number.
+    if deal.third_party_incentive > 0:
+        try:
+            incentive.check_third_party(
+                deal.third_party_incentive, customer_id=body.customer_id,
+                eligibility=customer.incentive_eligibility, as_of=as_of,
+                entity_id=org)
+        except incentive.IncentiveBlocked as e:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                                str(e)) from e
 
-    return _envelope(
-        {
-            "negotiable": True,
-            "reference_price": float(reference),
-            "reference_basis": "what this customer last paid for this item",
-            "product_label": snapshot.product_names.get(body.product_id,
-                                                        body.product_id),
-            "customer_label": snapshot.customer_names.get(body.customer_id,
-                                                          body.customer_id),
-            **result.to_dict(with_cost=with_cost),
-            "break_even_discount_per_unit": (float(break_even)
-                                             if break_even is not None else None),
-            "price_to_hold_incentive": (float(hold_price)
-                                        if hold_price is not None else None),
-            "scheme_configured": policy_rates.configured,
-            # Shown so nobody has to guess what they are paid on. The rate is
-            # already the salesperson's own compensation term, and knowing it
-            # discloses nothing: it multiplies a price gap, not a cost.
-            "salesperson_share": th.incentive_salesperson_share,
-            "self_funding_cap": th.incentive_self_funding_cap,
-            "unavailable": ([] if with_cost else [{
-                "series": "company_margin",
-                "reason": ("What the company keeps depends on cost, which is "
-                           "management information. Your incentive is computed "
-                           "on the price you agreed against what this customer "
-                           "already paid — no cost is involved in it."),
-            }]),
-        },
-        currency=th.currency,
-        thresholds_version=th.version,
-        empty_reason=(None if policy_rates.configured else
-                      "No incentive scheme is configured. An owner sets the "
-                      "rates in Settings; until then the calculator shows the "
-                      "price realisation and pays nothing."))
+    result = incentive.assess(
+        deal, as_of=as_of, customer_id=body.customer_id,
+        product_id=body.product_id, family=body.family, entity_id=org,
+        salesperson_id=principal.user_id,
+        expected_days_late=body.expected_days_late)
+    free_to_give = incentive.discount_to_floor(deal, as_of=as_of)
+    hold_price = (incentive.price_for_target(deal, Decimal(str(body.target_caf)),
+                                             as_of=as_of)
+                  if body.target_caf is not None else None)
+
+    payload = {
+        "negotiable": True,
+        "floor_price": float(resolved.floor_price),
+        "floor_basis": resolved.basis,
+        "last_price_paid": _as_float(_last_price_paid(session, org,
+                                                      body.customer_id,
+                                                      body.product_id)),
+        "product_label": snapshot.product_names.get(body.product_id,
+                                                    body.product_id),
+        "customer_label": snapshot.customer_names.get(body.customer_id,
+                                                      body.customer_id),
+        "third_party_allowed": incentive.may_pay_third_party(
+            customer.incentive_eligibility),
+        **result.to_dict(),
+        "discount_to_floor_per_unit": _as_float(free_to_give),
+        "price_to_hold_target": _as_float(hold_price),
+        "unavailable": [],
+    }
+
+    if with_cost:
+        # The reconciliation, and the only place cost appears. A separate call
+        # rather than a wider return type: the salesperson path never
+        # constructs the object that carries it.
+        rec = floor.reconcile(session, org, body.product_id,
+                              family=body.family, as_of=as_of)
+        payload["unit_cost"] = float(rec.unit_cost)
+        payload["gross_profit"] = float(
+            (deal.net_price - rec.unit_cost) * deal.qty)
+        payload["margin_at_floor"] = round(rec.gross_margin_at_floor, 4)
+    else:
+        payload["unavailable"] = [{
+            "series": "cost_and_margin",
+            "reason": ("What the item costs is management information. You do "
+                       "not need it: the floor already carries it, and "
+                       "everything above is arithmetic you can check yourself "
+                       "— price, less floor, times quantity."),
+        }]
+
+    return _envelope(payload, currency=th.currency,
+                     thresholds_version=th.version,
+                     incentive_config_version=resolved.config_version,
+                     empty_reason=None)
+
+
+def _as_float(v: Optional[Decimal]) -> Optional[float]:
+    return float(v) if v is not None else None
 
 
 # ── the simulator ───────────────────────────────────────────────────────────

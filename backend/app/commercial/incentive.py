@@ -1,291 +1,341 @@
-"""Three-way negotiation: what the customer gets, what the vendor gives, what
-the salesperson earns.
+"""The negotiation desk, in the one currency that gets paid: CAF.
 
-A distributor's deal has two negotiations happening at once. The salesperson
-pushes the *price* up with the customer and the *cost* down with the vendor,
-and both counterparties want something back — a discount, a rebate, a longer
-credit. Whatever is given away comes out of the same pot. This module computes
-that pot and how it splits, deterministically, so the trade-offs are arithmetic
-rather than argument.
+    CAF = q x (P - F) - K - 0.5 x Toolkit + Y
 
-────────────────────────────────────────────────────────────────────────────
-THE INVARIANT THIS MODULE HAD TO BE DESIGNED AROUND
-────────────────────────────────────────────────────────────────────────────
-
-Cost and margin never reach a salesperson. That is not a UI rule — it is the
-first invariant in this codebase, and ``references.py`` already spells out the
-exact way an incentive scheme breaks it:
-
-    "handing a salesperson 'the floor is ₹1,798' alongside a known 12% floor
-     is handing them the cost"
-
-The same division works on an incentive. If a salesperson's payout is *k* × the
-gross margin and they know *k*, then ``cost = price − payout ÷ k``. Publishing
-a margin-linked incentive figure to a salesperson discloses cost exactly, and
-no amount of rounding fixes it — they can solve for cost across two deals.
-
-So the incentive a salesperson sees is **not computed on margin**. It is
-computed on *price realisation against a reference this role may already see*:
-what this customer last paid, or what customers of this size pay. Those are
-OPERATIONAL references — the customer has already seen them — and an incentive
-built on them leaks nothing that was not already on the salesperson's screen.
-
-That turns out to be the better commercial design anyway. Rewarding margin
-rewards a salesperson for a cheap purchase somebody else negotiated; rewarding
-price realisation rewards the thing they actually did.
-
-**The vendor side never shows a salesperson a cost either.** They ask for a
-concession — "I need ₹40 a piece off to win this" — as a *delta*, never against
-a buy price they can see. A manager sees the request against the real cost and
-approves or does not. The salesperson finds out whether they got it, which is
-the only part of the answer they need.
+Contribution above floor, less what was paid to a third party, less half of what
+was spent on the customer's toolkit, plus what was won back from the vendor.
+Every term is a price or a declared amount. Cost appears in none of them, which
+is the only reason the same number can be shown to a salesperson at the desk and
+used to pay them at the end of the month.
 
 ────────────────────────────────────────────────────────────────────────────
-HOW THE POT SPLITS
+WHY THIS REPLACED THE REALISATION CURRENCY
 ────────────────────────────────────────────────────────────────────────────
 
-    realisation = (agreed price − reference price) × qty      [what was won]
-    vendor gain = (reference cost − agreed cost) × qty        [manager view]
+The first version of this module paid on *price realisation*: the gap between
+the price agreed and what this customer last paid. It was safe — the customer
+has already seen their own last price — and it solved the disclosure problem.
+It had two defects that only show up once the mechanism is live:
 
-    pot         = realisation + vendor gain                   [manager view]
+  1. **It rewarded the customer's history, not the line.** Two customers who
+     happened to have paid differently for the same item earned differently for
+     the same commercial result. A customer who once got a bad price became a
+     permanently profitable account to sell to.
 
-    The salesperson's share of *realisation* is their incentive. From it they
-    may fund a customer discount, which is the lever the specification asks
-    for: giving something back without the company paying for it twice.
+  2. **It was not the currency the month is paid in.** Contribution above floor
+     is. A desk that prices a deal in one currency and a payslip that settles in
+     another is a desk nobody trusts twice.
 
-Everything is a ``Decimal``. Margin is a ratio. Nothing here is a percentage of
-a percentage.
+Both are fixed by measuring against a *published floor* instead of a *historical
+price*. See ``commercial/floor.py`` for why F is disclosable when cost is not.
+
+**Nothing here is a share.** The desk reports contribution in rupees. What
+fraction of it becomes money is the monthly computation in ``incentive_engine``
+— relationship weight, portfolio health, entity rate — and it is deliberately
+not re-implemented here. One arithmetic, in one place, is the entire reason the
+desk and the payslip agree.
+
+────────────────────────────────────────────────────────────────────────────
+THE THREE QUESTIONS THIS ANSWERS
+────────────────────────────────────────────────────────────────────────────
+
+    "What can I give them?"     -> ``discount_to_floor``  — exact, closed form
+    "What does that cost me?"   -> ``assess(...).caf``    — recomputed as they move it
+    "What do I have to hold?"   -> ``price_for_target``   — solved, not searched
+
+The first of those needed a fixed-point solve under the old currency, because a
+discount reduced the incentive which reduced what was fundable. Under CAF it is
+subtraction. That is not a coincidence: linearity in rupees (I5) is a designed
+property of the mechanism, and it shows up here as arithmetic a salesperson can
+do on the phone.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 from decimal import ROUND_DOWN, ROUND_HALF_UP, Decimal
 from typing import Optional
 
 _ZERO = Decimal("0")
-_ONE = Decimal("1")
+_PAISE = Decimal("0.01")
+
+#: Values of ``Customer.incentive_eligibility``. Named with the prefix because
+#: ``RESTRICTED`` already means something else in this package — it is the data
+#: class in ``references.py`` — and two unrelated meanings under one name is a
+#: mistake waiting for the import that brings them together.
+#:
+#: ELIGIBILITY_PRIVATE is the only value that permits a third-party incentive.
+#: Everything else, including an unclassified account, is restricted.
+ELIGIBILITY_PRIVATE = "PRIVATE"
+ELIGIBILITY_RESTRICTED = "RESTRICTED"
 
 
 def _money(v: Decimal) -> Decimal:
-    return v.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return v.quantize(_PAISE, rounding=ROUND_HALF_UP)
+
+
+def may_pay_third_party(eligibility: Optional[str]) -> bool:
+    """Whether a third-party incentive may be discussed for this customer.
+
+    **Fails closed.** An account nobody has classified is treated exactly like a
+    PSU, because the downside of the two mistakes is not symmetric: refusing a
+    legitimate incentive costs a conversation, and paying one into a government
+    supply chain is the Prevention of Corruption Act and GeM blacklisting. An
+    owner classifies the account; the desk does not guess from the name.
+    """
+    return eligibility == ELIGIBILITY_PRIVATE
 
 
 @dataclass(frozen=True)
-class IncentivePolicy:
-    """What the organization has decided to pay. Policy, never a default guess.
+class Deal:
+    """One prospective line, as the two negotiations would leave it.
 
-    These rates are somebody's compensation. They are owner-set, versioned with
-    the rest of the commercial policy, and the values below are *placeholders
-    that produce zero* — a scheme nobody configured must pay nothing rather
-    than quietly pay whatever a developer typed while writing the module.
+    Everything is per-unit except the three deal-level amounts, which are
+    totals — that is how they are declared and how they are charged.
     """
-
-    #: Share of price realisation that becomes the salesperson's incentive.
-    salesperson_share: Decimal = _ZERO
-    #: Share of the vendor concession that also accrues to them. Usually lower:
-    #: a buying win is rarely one person's work.
-    vendor_share: Decimal = _ZERO
-    #: The most of their own incentive a salesperson may hand back to a
-    #: customer as a discount without an approval. Above it, a manager decides.
-    self_funding_cap: Decimal = _ZERO
-    #: Realisation below this earns nothing. Stops a scheme paying out on
-    #: rounding noise against a reference price.
-    minimum_realisation: Decimal = _ZERO
-
-    @property
-    def configured(self) -> bool:
-        return self.salesperson_share > _ZERO or self.vendor_share > _ZERO
-
-
-@dataclass
-class Negotiation:
-    """One line, as the two negotiations leave it."""
 
     qty: Decimal
-    #: What the customer has already paid for this item, or the band price.
-    #: OPERATIONAL — the customer has seen it, so the salesperson may too.
-    reference_price: Decimal
+    #: The published floor, from ``commercial.floor``. OPERATIONAL: it is a
+    #: selling price, and the margin behind it is not in this object.
+    floor_price: Decimal
     agreed_price: Decimal
-    #: Given back to the customer, per unit. Funded from the incentive pot
-    #: below before it is ever funded from company margin.
+    #: Per unit, given back to the customer. Reduces the net realised price,
+    #: which is the only place a giveaway can hide.
     customer_discount: Decimal = _ZERO
-    #: Asked of the vendor, per unit, as a *reduction* on what we pay today.
-    #: A request, not a fact, until somebody with cost scope approves it.
-    vendor_concession: Decimal = _ZERO
-    #: Cost figures. RESTRICTED, and simply absent on a salesperson's path —
-    #: every method below works without them.
-    reference_cost: Optional[Decimal] = None
+    #: K — a declared payment to somebody at the customer. Total, not per unit.
+    third_party_incentive: Decimal = _ZERO
+    #: Toolkit — the compliant alternative. Total, not per unit.
+    toolkit_spend: Decimal = _ZERO
+    #: Y — what the vendor is being asked to give back, as a total. A request
+    #: until somebody with buy-side scope agrees it and a document exists.
+    vendor_yield: Decimal = _ZERO
 
     @property
-    def realisation(self) -> Decimal:
-        """What the price negotiation won, net of what was given back.
+    def net_price(self) -> Decimal:
+        return self.agreed_price - self.customer_discount
 
-        Can be negative: a price agreed below the customer's own last paid
-        price is a loss of realisation and is reported as one rather than
-        floored at zero, which would hide exactly the deals worth reviewing.
+
+@dataclass(frozen=True)
+class Assessment:
+    """What the line contributes, with every term kept separately."""
+
+    contribution: Decimal
+    third_party: Decimal
+    toolkit_charged: Decimal
+    vendor_yield: Decimal
+    caf: Decimal
+    #: CAF x c(d) at the payment timing being assumed. CAF is banked on invoice
+    #: and earned on receipt; this is what it is worth if the money arrives when
+    #: the salesperson says it will.
+    collected_caf: Decimal
+    collection_factor: Decimal
+    collection_label: str
+    below_floor: bool
+    warnings: list[str]
+
+    def to_dict(self) -> dict:
+        """The operations projection. There is nothing to strip.
+
+        No cost, no margin, no ``m_floor``, no share rate — none of them is a
+        field on this object, so no future serialiser can add one back by
+        accident.
         """
-        net_price = self.agreed_price - self.customer_discount
-        return _money((net_price - self.reference_price) * self.qty)
-
-    @property
-    def vendor_gain(self) -> Decimal:
-        """What the buying negotiation won, if it is granted. Manager view."""
-        return _money(self.vendor_concession * self.qty)
-
-
-@dataclass
-class Split:
-    """The pot, and who ends up with what."""
-
-    realisation: Decimal
-    vendor_gain: Decimal
-    salesperson_incentive: Decimal
-    customer_given: Decimal
-    company_retained: Decimal
-    self_funded: Decimal
-    requires_approval: bool
-    approval_reasons: list[str]
-
-    def to_dict(self, *, with_cost: bool) -> dict:
-        out = {
-            "realisation": float(self.realisation),
-            "salesperson_incentive": float(self.salesperson_incentive),
-            "customer_given": float(self.customer_given),
-            "self_funded": float(self.self_funded),
-            "requires_approval": self.requires_approval,
-            "approval_reasons": self.approval_reasons,
+        return {
+            "contribution": float(self.contribution),
+            "third_party_charged": float(self.third_party),
+            "toolkit_charged": float(self.toolkit_charged),
+            "vendor_yield_credited": float(self.vendor_yield),
+            "caf": float(self.caf),
+            "collected_caf": float(self.collected_caf),
+            "collection_factor": float(self.collection_factor),
+            "collection_label": self.collection_label,
+            "below_floor": self.below_floor,
+            "warnings": self.warnings,
         }
-        if with_cost:
-            # Only these two involve the buy side. A salesperson's payload
-            # never carries them, which is what keeps the incentive figure
-            # from being divisible back into a cost.
-            out["vendor_gain"] = float(self.vendor_gain)
-            out["company_retained"] = float(self.company_retained)
-        return out
 
 
-def split(n: Negotiation, policy: IncentivePolicy) -> Split:
-    """Divide what the negotiation won. Pure arithmetic on the inputs given.
+def _line(deal: Deal, *, as_of: date, customer_id: str, product_id: str,
+          family: Optional[str], entity_id: str, salesperson_id: str):
+    """A prospective invoice line for the engine's own CAF arithmetic.
 
-    Called from both role paths with the same numbers; the *projection* differs,
-    not the computation. Two code paths computing an incentive two ways is how
-    a salesperson's screen and their payslip end up disagreeing.
+    The desk prices a line that does not exist yet, so the identifiers are
+    placeholders. What matters is that this is the *same* dataclass, validated
+    the same way, that the monthly run will build from the real invoice — the
+    desk cannot drift from the payslip because there is only one calculator.
     """
-    realisation = n.realisation
-    vendor_gain = n.vendor_gain
-    reasons: list[str] = []
-
-    # Below the floor the scheme pays nothing, and negative realisation pays
-    # nothing either — an incentive is a share of a gain, and there is no gain.
-    earning_base = realisation if realisation >= policy.minimum_realisation else _ZERO
-    if earning_base < _ZERO:
-        earning_base = _ZERO
-
-    gross_incentive = _money(earning_base * policy.salesperson_share
-                             + vendor_gain * policy.vendor_share)
-
-    # The lever the specification asks for: fund the customer's discount out of
-    # the salesperson's own incentive rather than out of company margin. Capped
-    # by policy — a salesperson may not zero themselves out to buy a deal, and
-    # they may not fund more than they have earned.
-    wanted = _money(n.customer_discount * n.qty)
-    fundable = _money(gross_incentive * policy.self_funding_cap)
-    self_funded = min(wanted, fundable, gross_incentive)
-    if self_funded < _ZERO:
-        self_funded = _ZERO
-
-    net_incentive = _money(gross_incentive - self_funded)
-    # Whatever the salesperson could not fund, the company is paying for.
-    company_funded = _money(wanted - self_funded)
-
-    if realisation < _ZERO:
-        reasons.append(
-            "The agreed price is below what this customer has already paid for "
-            "this item. That is a price decision, not an incentive one.")
-    if company_funded > _ZERO:
-        reasons.append(
-            f"{float(company_funded):,.2f} of the discount is not covered by "
-            "the salesperson's own incentive, so the company is funding it.")
-    if n.vendor_concession > _ZERO:
-        reasons.append(
-            "A vendor concession has been asked for. It is a request until "
-            "somebody who can see the buy price agrees it.")
-
-    return Split(
-        realisation=realisation,
-        vendor_gain=vendor_gain,
-        salesperson_incentive=net_incentive,
-        customer_given=wanted,
-        company_retained=_money(realisation + vendor_gain - net_incentive - company_funded),
-        self_funded=self_funded,
-        requires_approval=bool(reasons),
-        approval_reasons=reasons,
+    from incentive_engine.models import InvoiceLine
+    return InvoiceLine(
+        entity_id=entity_id,
+        invoice_id="prospective",
+        invoice_date=as_of,
+        customer_id=customer_id,
+        customer_group_id=customer_id,
+        item_id=product_id,
+        item_family=family or "default",
+        brand="",
+        qty=deal.qty,
+        unit_price_net=deal.net_price,
+        floor_price=deal.floor_price,
+        salesperson_id=salesperson_id,
     )
 
 
-def break_even_discount(n: Negotiation, policy: IncentivePolicy) -> Optional[Decimal]:
-    """The largest per-unit discount fundable entirely from the incentive.
+class IncentiveBlocked(ValueError):
+    """This incentive must not be recorded, with the reason.
 
-    The number the salesperson actually wants in a negotiation: "how much can I
-    give away before this starts costing the company anything?".
-
-    **The discount pays for itself twice, and the first version missed it.**
-    Giving ``d`` away reduces realisation by ``d × qty``, which reduces the
-    incentive, which reduces what is fundable — so taking the undiscounted
-    incentive and applying the cap overstates the answer every time. Solved as
-    the fixed point instead:
-
-        d·q = c·(s·(p − d − r)·q + v)
-        d   = [c·s·q·(p − r) + c·v] ÷ [q·(1 + c·s)]
-
-    Rounded *down* to the cent, because a break-even rounded up is not one.
-
-    Returns None when the scheme is unconfigured or nothing was earned — an
-    honest "there is nothing to give away", not zero dressed as an answer.
+    A named type so the router can catch exactly this and map it to a 422. A
+    bare ``except Exception`` around the check would turn a genuine programming
+    error into a polite refusal message, which is the worst of both — the deal
+    is blocked and nobody learns why.
     """
-    if not policy.configured or n.qty <= _ZERO:
-        return None
-    c, s_rate = policy.self_funding_cap, policy.salesperson_share
-    if c <= _ZERO:
-        return None
 
-    gap = n.agreed_price - n.reference_price
-    vendor = n.vendor_gain * policy.vendor_share
-    denominator = n.qty * (_ONE + c * s_rate)
-    if denominator <= _ZERO:
+
+def check_third_party(amount: Decimal, *, customer_id: str,
+                      eligibility: Optional[str], as_of: date,
+                      entity_id: str) -> None:
+    """Raise if this incentive must not be paid. I2, enforced by the engine.
+
+    Delegates to ``ThirdPartyIncentive``, whose constructor is where the block
+    lives, rather than restating the rule. A second copy of a legal hard block
+    is a second place for it to be relaxed by somebody who did not know why it
+    was there. The engine's message is passed through verbatim: it explains the
+    statute and the consequence, and paraphrasing it here would leave two
+    wordings of the same refusal to drift apart.
+    """
+    from incentive_engine.models import ThirdPartyIncentive, ValidationError
+    try:
+        ThirdPartyIncentive(
+            entity_id=entity_id, deal_id="prospective", invoice_id="prospective",
+            customer_id=customer_id, amount=amount, form="declared",
+            declared_at=as_of,
+            customer_is_restricted=not may_pay_third_party(eligibility))
+    except ValidationError as e:
+        raise IncentiveBlocked(str(e)) from e
+
+
+def assess(deal: Deal, *, as_of: date, customer_id: str, product_id: str,
+           family: Optional[str], entity_id: str, salesperson_id: str,
+           expected_days_late: int = 0) -> Assessment:
+    """Price the line. Pure arithmetic on the inputs given.
+
+    Called from every role path with the same numbers; only the *projection*
+    differs. Two code paths computing a contribution two ways is how a screen
+    and a payslip end up disagreeing.
+    """
+    from incentive_engine import caf as caf_mod
+    from incentive_engine import collection
+
+    cfg = _cfg(as_of)
+    line = _line(deal, as_of=as_of, customer_id=customer_id,
+                 product_id=product_id, family=family, entity_id=entity_id,
+                 salesperson_id=salesperson_id)
+    computed = caf_mod.line_caf(
+        cfg, line,
+        third_party=deal.third_party_incentive,
+        toolkit=deal.toolkit_spend,
+        vendor_yield=deal.vendor_yield)
+
+    factor = collection.factor(cfg, expected_days_late)
+    label = _collection_label(cfg, expected_days_late)
+
+    warnings: list[str] = []
+    below = deal.net_price < deal.floor_price
+    if below:
+        warnings.append(
+            "The net price is below the floor. This line takes contribution "
+            "away rather than adding it — that is the price discipline "
+            "working, not an error.")
+    if computed.caf < _ZERO and not below:
+        warnings.append(
+            "What is being given away costs more than the line contributes, "
+            "so this comes out of your month.")
+    if deal.vendor_yield > _ZERO:
+        warnings.append(
+            "The vendor concession is credited here as though it were agreed. "
+            "It is a request until the credit note or the revised PO exists.")
+    if collection.triggers_clawback(cfg, expected_days_late):
+        warnings.append(
+            "At that payment timing this earns nothing at all, and anything "
+            "paid provisionally is clawed back.")
+
+    return Assessment(
+        contribution=_money(computed.price_contribution),
+        third_party=_money(computed.third_party),
+        toolkit_charged=_money(computed.toolkit_charged),
+        vendor_yield=_money(computed.vendor_yield),
+        caf=_money(computed.caf),
+        collected_caf=_money(computed.caf * factor),
+        collection_factor=factor,
+        collection_label=label,
+        below_floor=below,
+        warnings=warnings,
+    )
+
+
+def _net_charges(deal: Deal, as_of: date) -> Decimal:
+    """K + 0.5T - Y, at the rates in force. The deal-level terms, netted.
+
+    Both inversions below need this and both had their own copy until a
+    duplicate scan found them. Two copies of the charge side is one place for a
+    re-cut rate to be applied and one place for it to be missed, and the two
+    answers would disagree about the same deal on the same screen.
+    """
+    cfg = _cfg(as_of)
+    return (deal.third_party_incentive * cfg.dec("caf", "third_party_charge_rate")
+            + deal.toolkit_spend * cfg.dec("caf", "toolkit_charge_rate")
+            - deal.vendor_yield * cfg.dec("caf", "vendor_yield_credit"))
+
+
+def discount_to_floor(deal: Deal, *, as_of: date) -> Optional[Decimal]:
+    """The largest per-unit discount this line can carry and still contribute.
+
+    The number actually wanted in a negotiation: "how much can I give away
+    before this stops being worth doing?". Solving ``CAF = 0`` for the discount:
+
+        q x (P - d - F) - K - 0.5T + Y = 0
+        d = (P - F) + (Y - K - 0.5T) / q
+
+    Rounded *down* to the paise, because a break-even rounded up is not one.
+    Returns ``None`` when there is nothing to give — an honest answer, not zero
+    dressed up as one.
+    """
+    if deal.qty <= _ZERO:
         return None
-    raw = (c * s_rate * n.qty * gap + c * vendor) / denominator
+    charges = _net_charges(deal, as_of)
+    raw = (deal.agreed_price - deal.floor_price) - (charges / deal.qty)
     if raw <= _ZERO:
         return None
-
-    #: Floored to the cent: a break-even that rounds up is one the company ends
-    #: up part-funding, which is the thing this number exists to avoid.
-    candidate = raw.quantize(Decimal("0.01"), rounding=ROUND_DOWN)
-    # The minimum-realisation floor can still bite at the discounted price, and
-    # that is not expressible in the closed form. Verified rather than assumed.
-    probe = Negotiation(qty=n.qty, reference_price=n.reference_price,
-                        agreed_price=n.agreed_price, customer_discount=candidate,
-                        vendor_concession=n.vendor_concession)
-    checked = split(probe, policy)
-    if checked.self_funded < checked.customer_given:
-        return None
-    return candidate
+    return raw.quantize(_PAISE, rounding=ROUND_DOWN)
 
 
-def required_price(n: Negotiation, policy: IncentivePolicy,
-                   target_incentive: Decimal) -> Optional[Decimal]:
-    """The price that leaves the salesperson a given incentive.
+def price_for_target(deal: Deal, target_caf: Decimal, *,
+                     as_of: date) -> Optional[Decimal]:
+    """The agreed price that leaves this line contributing exactly ``target``.
 
-    The other half of the negotiation: "the customer wants ₹40 off — what do I
-    have to hold the price at to keep my incentive?". Solved rather than
-    searched, so the answer is exact and the same every time.
+    The other half of the negotiation: "they want ₹40 a piece off — what do I
+    have to hold the price at?". Solved rather than searched, so the answer is
+    exact and the same every time.
 
-    Only the *price* side is inverted. Inverting the vendor side would require
-    the cost, and this function is on a salesperson's path.
+        P = F + d + (target + K + 0.5T - Y) / q
     """
-    if policy.salesperson_share <= _ZERO or n.qty <= _ZERO:
+    if deal.qty <= _ZERO:
         return None
-    # incentive = ((price − discount − reference) × qty) × share
-    #   ⇒ price = reference + discount + incentive ÷ (qty × share)
-    needed = (target_incentive / (n.qty * policy.salesperson_share))
-    return _money(n.reference_price + n.customer_discount + needed)
+    charges = _net_charges(deal, as_of)
+    return _money(deal.floor_price + deal.customer_discount
+                  + (target_caf + charges) / deal.qty)
+
+
+def _cfg(as_of: date):
+    """The parameter block in force, via the one loader that caches it."""
+    from .floor import parameters
+    return parameters(as_of)
+
+
+def _collection_label(cfg, days_late: int) -> str:
+    for band in cfg.get("collection", "bands"):
+        lo, hi = band["from"], band["to"]
+        if lo is None and days_late <= hi:
+            return str(band["label"])
+        if lo is not None and days_late >= lo and (hi is None or days_late <= hi):
+            return str(band["label"])
+    return "unknown"

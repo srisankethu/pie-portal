@@ -11,26 +11,53 @@ them equally.
 
 ---
 
-## A note on what already exists in this repository
+## The negotiation desk now speaks CAF — the second currency is gone
 
-`backend/app/commercial/incentive.py` is a live *negotiation calculator*, built
-earlier: it computes a salesperson's incentive on price realisation against
-what a customer last paid, so a salesperson can see on the phone what a
-discount costs them.
+`backend/app/commercial/incentive.py` was, until this change, a *negotiation
+calculator* in a different currency: it paid a share of price realisation
+against what the customer last paid. It solved the same I1/I4 tension the brief
+solves, and it was safe, but it had two defects the brief's device does not:
 
-**It is not this mechanism and it uses a different currency.** It measures
-against the customer's own last price; CAF measures against a published Floor
-Price. Both were built to solve the same I1/I4 tension and the brief's solution
-is the better one — a published F with a hidden, family-varying `m_floor` gives
-an exact, self-computable number without a customer-specific reference that
-drifts every time the customer buys.
+1. **It rewarded the customer's history rather than the line.** Two customers
+   who happened to have paid differently for the same item earned differently
+   for the same commercial result, so a customer who once got a bad price became
+   a permanently profitable account to sell to.
+2. **It was not the currency the month settles in.** A desk that prices a deal
+   in one currency and a payslip that settles in another is a desk nobody
+   trusts twice.
 
-The two should not coexist indefinitely. **Recommendation:** once F is
-published for the top 500 SKUs (Phase 0), rebuild the negotiation desk to
-compute in CAF and delete the realisation currency. Until then the desk is
-useful and harmless — it never enters a payout — but two currencies in one
-product is exactly the redundancy the repository's own working agreement warns
-about, and it should not survive Phase 2.
+Both are now resolved. The desk computes `CAF = q x (P - F) - K - 0.5T + Y`
+using `incentive_engine.caf.line_caf` — the *same function*, on the same
+`InvoiceLine` dataclass, that the monthly run will use — so it cannot drift from
+the payout by construction. The realisation currency has been deleted rather
+than deprecated.
+
+**What that required, and what it means operationally.**
+
+| Piece | Where | Note |
+|---|---|---|
+| F, resolved from cost and `m_floor` | `app/commercial/floor.py` | Cost via `economics.cost_basis_asof` — the one existing answer to "what did this cost us". `m_floor` read from `parameters.yaml`, not re-declared. |
+| Ops / owner zone separation | `ResolvedFloor` vs `FloorReconciliation` | Two types, not one type filtered. The salesperson path never constructs the object that carries cost. |
+| I2 hard block | `Customer.incentive_eligibility` | Nullable. NULL means unclassified and is treated exactly like RESTRICTED. |
+| Rates | `parameters.yaml` only | The four `incentive_*` thresholds are removed from `CommercialThresholds` and from the Settings screen. |
+
+**An unmastered item has no floor, and the desk refuses it.** Defaulting a
+missing floor to zero would make the entire selling price contribution — the
+single largest exploit available against this currency — so the response says
+"no purchase record for this item" and computes nothing.
+
+**Two open items this leaves.**
+
+- **F must actually be published.** Today it is derived per request from the
+  latest cost record. That is correct arithmetic but it moves when cost moves,
+  which is not what "published in advance" (I6) means. Phase 0 should freeze a
+  `FloorPriceSchedule` per SKU with effective dates — the engine already has the
+  type (`incentive_engine/floor.py::published_floor`) and it is not yet fed.
+- **Every account is unclassified.** `incentive_eligibility` is NULL across the
+  book and the migration deliberately backfills nothing: writing "PRIVATE"
+  across the customer list to make the field useful would hand every government
+  account an incentive path, which is the one outcome I2 exists to prevent. An
+  owner classifies them, and until then the desk prices the toolkit lever only.
 
 ---
 

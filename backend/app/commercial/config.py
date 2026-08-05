@@ -200,24 +200,19 @@ class CommercialThresholds:
         return _fmt(amount, self.currency, unknown=unknown)
 
     # ── incentive scheme ─────────────────────────────────────────────────────
-    # What the organization pays a salesperson for a negotiation, and how much
-    # of it they may hand back to a customer. Zero by default and deliberately
-    # so: an unconfigured scheme must pay nothing rather than quietly pay
-    # whatever a developer typed. Inside the version hash like every other
-    # policy value, because a payout computed under one set of rates is not
-    # comparable to one computed under another.
+    # There are deliberately no incentive rates here.
     #
-    # The incentive is a share of PRICE REALISATION against a reference the
-    # customer has already seen — never of margin. See ``commercial/incentive``
-    # for why a margin-linked payout shown to a salesperson discloses cost.
-    incentive_salesperson_share: float = 0.0
-    incentive_vendor_share: float = 0.0
-    #: The most of their own incentive a salesperson may fund a discount from
-    #: before a manager has to agree. 1.0 would let them zero themselves out.
-    incentive_self_funding_cap: float = 0.5
-    #: Realisation below this earns nothing, so the scheme does not pay out on
-    #: rounding noise against a reference price.
-    incentive_minimum_realisation: float = 0.0
+    # Four of them used to live in this dataclass, for a scheme paid on price
+    # realisation against what a customer last paid. That scheme has been
+    # replaced by contribution above floor, and its rates now live in exactly
+    # one place: ``incentive_engine/config/parameters.yaml``, which is
+    # versioned, effective-dated, and published before the year it applies to.
+    #
+    # Compensation policy in two homes is the failure this codebase warns about
+    # in CLAUDE.md §2 under "responsibility duplication": the copy that gets
+    # edited is never the copy that pays. A response that reports both a
+    # thresholds version and an incentive-config version is telling the truth
+    # about which parameters produced which numbers.
 
     @property
     def version(self) -> str:

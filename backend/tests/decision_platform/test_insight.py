@@ -935,154 +935,195 @@ def test_the_payment_series_is_keyed_by_invoice_month_not_payment_month():
     assert by_label["Jun 2026"]["settled"] == 0
 
 
-# ── the incentive scheme ────────────────────────────────────────────────────
-def _policy(**kw):
-    from decimal import Decimal
-
-    from app.commercial.incentive import IncentivePolicy
-    base = dict(salesperson_share=Decimal("0.15"), vendor_share=Decimal("0.05"),
-                self_funding_cap=Decimal("0.5"), minimum_realisation=Decimal("0"))
-    base.update({k: Decimal(str(v)) for k, v in kw.items()})
-    return IncentivePolicy(**base)
+# ── the negotiation desk, in CAF ────────────────────────────────────────────
+#
+# The currency changed: the desk used to pay a share of price realisation
+# against what a customer last paid, and now measures contribution above a
+# published floor. These tests are written against the property that made the
+# change worth making — a salesperson can compute every figure here themselves,
+# from a price and a floor, with no cost anywhere in the payload.
+ON = date(2026, 8, 5)
 
 
 def _deal(**kw):
     from decimal import Decimal
 
-    from app.commercial.incentive import Negotiation
-    base = dict(qty=Decimal("100"), reference_price=Decimal("500"),
-                agreed_price=Decimal("560"))
+    from app.commercial.incentive import Deal
+    base = dict(qty=Decimal("100"), floor_price=Decimal("1220"),
+                agreed_price=Decimal("1400"))
     base.update({k: Decimal(str(v)) for k, v in kw.items()})
-    return Negotiation(**base)
+    return Deal(**base)
 
 
-def test_the_incentive_is_computed_on_price_not_on_margin():
-    """The whole design. `references.py` already establishes that handing a
-    salesperson a cost-derived figure alongside a known rate hands them the
-    cost; an incentive is exactly such a figure. This one is a share of the gap
-    against what the customer already paid, and no cost is an input at all."""
+def _assess(deal, **kw):
+    from app.commercial import incentive
+    args = dict(as_of=ON, customer_id="c1", product_id="p1", family="inserts",
+                entity_id="SLS", salesperson_id="u1")
+    args.update(kw)
+    return incentive.assess(deal, **args)
+
+
+def test_contribution_is_measured_against_the_floor_and_nothing_else():
+    """q x (P - F). The arithmetic a salesperson can do on the phone, which is
+    the entire reason the floor is disclosable and the cost is not."""
+    result = _assess(_deal())
+    assert result.contribution == Decimal("18000.00")
+    assert result.caf == Decimal("18000.00")
+
+
+def test_no_cost_no_margin_and_no_floor_margin_is_a_field_on_the_output():
+    """Enforced by type, not by a filter. A projection that forgets to strip a
+    field cannot leak what the object never carried."""
+    from dataclasses import fields
+
+    from app.commercial.incentive import Assessment
+
+    names = {f.name for f in fields(Assessment)} | set(_assess(_deal()).to_dict())
+    for forbidden in ("cost", "unit_cost", "margin", "m_floor", "markup"):
+        assert not any(forbidden in n for n in names), forbidden
+
+
+def test_a_discount_costs_exactly_its_own_rupees():
+    """I5, linearity. ₹4 off a hundred units is ₹400 off the contribution — not
+    a share of it, not a cap, not a fixed point. Anything else and the desk
+    stops being arithmetic somebody can check."""
+    plain = _assess(_deal()).caf
+    discounted = _assess(_deal(customer_discount=4)).caf
+    assert plain - discounted == Decimal("400.00")
+
+
+def test_a_rupee_from_the_vendor_is_worth_a_rupee_held_on_price():
+    """Incentive compatibility on the buy side: the salesperson is indifferent
+    between the two, which is exactly the owner's own indifference."""
+    from_price = _assess(_deal(agreed_price=1410)).caf
+    from_vendor = _assess(_deal(vendor_yield=1000)).caf
+    assert from_price == from_vendor
+
+
+def test_a_third_party_payment_is_charged_in_full_and_a_toolkit_at_half():
+    """The compliant lever is priced at half the non-compliant one, so it is
+    reached for because it is cheaper rather than because anyone said so."""
+    paid_across = _assess(_deal(third_party_incentive=2000))
+    toolkit = _assess(_deal(toolkit_spend=2000))
+    assert paid_across.third_party == Decimal("2000.00")
+    assert toolkit.toolkit_charged == Decimal("1000.00")
+    assert toolkit.caf - paid_across.caf == Decimal("1000.00")
+
+
+def test_a_price_below_the_floor_takes_contribution_away_and_says_so():
+    """Not floored silently at zero. A line under the floor is the thing the
+    whole device exists to charge for."""
+    result = _assess(_deal(agreed_price=1100))
+    assert result.contribution < 0
+    assert result.below_floor
+    assert any("below the floor" in w for w in result.warnings)
+
+
+def test_the_discount_to_the_floor_is_exactly_what_can_be_given_away():
+    from app.commercial.incentive import discount_to_floor
+
+    deal = _deal(third_party_incentive=5000, toolkit_spend=4000, vendor_yield=2000)
+    per_unit = discount_to_floor(deal, as_of=ON)
+    assert per_unit is not None
+    at_limit = _assess(_deal(third_party_incentive=5000, toolkit_spend=4000,
+                             vendor_yield=2000, customer_discount=per_unit))
+    assert at_limit.caf == Decimal("0.00")
+
+
+def test_there_is_nothing_to_give_away_on_a_line_at_the_floor():
+    """An honest "nothing", not zero dressed up as an answer."""
+    from app.commercial.incentive import discount_to_floor
+
+    assert discount_to_floor(_deal(agreed_price=1220), as_of=ON) is None
+    assert discount_to_floor(_deal(agreed_price=1100), as_of=ON) is None
+
+
+def test_the_price_that_holds_a_target_is_solved_not_searched():
+    from app.commercial.incentive import price_for_target
+
+    deal = _deal(third_party_incentive=5000, toolkit_spend=4000, vendor_yield=2000)
+    price = price_for_target(deal, Decimal("9000"), as_of=ON)
+    assert price is not None
+    check = _assess(_deal(agreed_price=price, third_party_incentive=5000,
+                          toolkit_spend=4000, vendor_yield=2000))
+    assert check.caf == Decimal("9000.00")
+
+
+def test_contribution_is_banked_on_invoice_and_earned_on_receipt():
+    """Payment timing is a lever the salesperson holds, which is why there is
+    no separate collections target anywhere in this product."""
+    advance = _assess(_deal(), expected_days_late=-1)
+    on_time = _assess(_deal(), expected_days_late=0)
+    late = _assess(_deal(), expected_days_late=75)
+    assert advance.collected_caf > on_time.collected_caf > late.collected_caf
+    assert on_time.collected_caf == on_time.caf
+
+
+def test_a_third_party_payment_is_unsaveable_on_an_unclassified_account():
+    """I2 fails closed. An account nobody has classified is treated exactly
+    like a PSU, because the two mistakes do not cost the same."""
+    from app.commercial import incentive
+
+    assert incentive.may_pay_third_party("PRIVATE")
+    assert not incentive.may_pay_third_party(None)
+    assert not incentive.may_pay_third_party("RESTRICTED")
+
+    for eligibility in (None, "RESTRICTED"):
+        with pytest.raises(incentive.IncentiveBlocked) as caught:
+            incentive.check_third_party(Decimal("1000"), customer_id="c1",
+                                        eligibility=eligibility, as_of=ON,
+                                        entity_id="SLS")
+        assert "blacklisting" in str(caught.value)
+
+
+def test_the_desk_and_the_payout_run_the_same_calculator():
+    """Not "the same formula" — the same function. Two implementations of CAF
+    is how a screen and a payslip end up disagreeing about a rupee."""
     import inspect
 
     from app.commercial import incentive
 
-    source = inspect.getsource(incentive.split)
-    assert "reference_cost" not in source
-    # A deal with no cost on it at all still produces a full answer.
-    result = incentive.split(_deal(), _policy())
-    assert result.salesperson_incentive > 0
+    source = inspect.getsource(incentive.assess)
+    assert "incentive_engine" in source and "line_caf" in source
 
 
-def test_a_salespersons_payload_carries_nothing_divisible_into_a_cost():
-    """vendor_gain and company_retained both depend on the buy price. With the
-    share rate published — and it is, because it is their own comp term —
-    either one would give up the cost by division."""
-    from app.commercial import incentive
+def test_the_floor_markup_varies_by_family_which_is_what_makes_f_safe():
+    """The premise the whole device rests on. With one global markup, a
+    salesperson holding one line and one floor recovers the cost by division —
+    so if these ever collapse to a single value, F stops being disclosable and
+    this test is the thing that says so."""
+    from app.commercial.floor import _m_floor
 
-    result = incentive.split(_deal(vendor_concession=10), _policy())
-    theirs = result.to_dict(with_cost=False)
-    managers = result.to_dict(with_cost=True)
-    assert "vendor_gain" not in theirs and "company_retained" not in theirs
-    assert "vendor_gain" in managers and "company_retained" in managers
-
-
-def test_an_unconfigured_scheme_pays_nothing():
-    """Somebody's compensation must not default to whatever a developer typed."""
-    from decimal import Decimal
-
-    from app.commercial.incentive import IncentivePolicy, split
-
-    assert split(_deal(), IncentivePolicy()).salesperson_incentive == Decimal("0.00")
-    assert not IncentivePolicy().configured
+    families = ("inserts", "solid_carbide", "holders_toolsystems", "metrology",
+                "chemicals", "machines", None)
+    markups = {_m_floor(f, ON) for f in families}
+    assert len(markups) > 1, "a single markup makes every floor invertible"
 
 
-def test_a_price_below_what_they_already_paid_earns_nothing_and_is_flagged():
-    """Not floored silently at zero — floored, and the reason said out loud."""
-    from app.commercial.incentive import split
+def test_the_operations_floor_and_the_owner_reconciliation_are_two_types():
+    """Not one type filtered on the way out. Section 6 of the brief asks for
+    the separation to be structural, and this is where it is structural."""
+    from dataclasses import fields
 
-    result = split(_deal(agreed_price=460), _policy())
-    assert result.realisation < 0
-    assert result.salesperson_incentive == 0
-    assert result.requires_approval
-    assert any("below what this customer has already paid" in r
-               for r in result.approval_reasons)
+    from app.commercial.floor import FloorReconciliation, ResolvedFloor
 
-
-def test_a_discount_is_funded_from_the_incentive_before_company_margin():
-    """The lever the brief asks for: give something back without the company
-    paying for it twice."""
-    from app.commercial.incentive import split
-
-    result = split(_deal(customer_discount=4), _policy())
-    # 100 units × ₹4 = ₹400 given; the cap allows it, so the company funds none
-    # of it and no approval is needed on that account.
-    assert result.customer_given == 400
-    assert result.self_funded == 400
-    assert not any("company is funding" in r for r in result.approval_reasons)
+    ops = {f.name for f in fields(ResolvedFloor)}
+    owner = {f.name for f in fields(FloorReconciliation)}
+    assert "unit_cost" not in ops and "m_floor" not in ops
+    assert "unit_cost" in owner and "m_floor" in owner
 
 
-def test_a_salesperson_cannot_zero_themselves_out_to_buy_a_deal():
-    """Past the cap the company is funding the difference, and a manager is
-    told so rather than the discount being silently refused."""
-    from app.commercial.incentive import split
+def test_incentive_rates_have_exactly_one_home_and_it_is_not_the_thresholds():
+    """Compensation policy in two places is the copy that gets edited never
+    being the copy that pays."""
+    from dataclasses import fields
 
-    result = split(_deal(customer_discount=40), _policy(self_funding_cap=0.5))
-    assert result.self_funded < result.customer_given
-    assert result.salesperson_incentive > 0        # never driven negative
-    assert result.requires_approval
-    assert any("company is funding" in r for r in result.approval_reasons)
-
-
-def test_the_break_even_discount_is_what_they_can_give_away_for_free():
-    from app.commercial.incentive import break_even_discount, split
-
-    policy = _policy()
-    deal = _deal()
-    per_unit = break_even_discount(deal, policy)
-    assert per_unit is not None
-    # Giving exactly that away must still be fully self-funded.
-    at_limit = split(_deal(customer_discount=float(per_unit)), policy)
-    assert at_limit.self_funded == at_limit.customer_given
-    assert not any("company is funding" in r for r in at_limit.approval_reasons)
-
-
-def test_there_is_no_break_even_discount_when_nothing_was_earned():
-    """An honest "nothing to give away" rather than zero dressed as an answer."""
-    from app.commercial.incentive import IncentivePolicy, break_even_discount
-
-    assert break_even_discount(_deal(agreed_price=490), _policy()) is None
-    assert break_even_discount(_deal(), IncentivePolicy()) is None
-
-
-def test_the_price_that_holds_an_incentive_is_solved_not_searched():
-    from decimal import Decimal
-
-    from app.commercial.incentive import required_price, split
-
-    policy = _policy()
-    wanted = Decimal("900")
-    price = required_price(_deal(customer_discount=4), policy, wanted)
-    assert price is not None
-    # Round-trip: agreeing that price really does leave exactly that incentive.
-    check = split(_deal(agreed_price=float(price), customer_discount=4), policy)
-    assert check.salesperson_incentive + check.self_funded == pytest.approx(
-        float(wanted), abs=0.01)
-
-
-def test_the_vendor_ask_is_a_request_until_someone_with_cost_scope_agrees():
-    from app.commercial.incentive import split
-
-    result = split(_deal(vendor_concession=10), _policy())
-    assert result.requires_approval
-    assert any("request until" in r for r in result.approval_reasons)
-
-
-def test_the_incentive_rates_are_inside_the_thresholds_version():
-    """A payout computed under one set of rates is not comparable to one
-    computed under another, so the version has to move with them."""
+    from app.commercial import policy
     from app.commercial.config import CommercialThresholds
 
-    assert CommercialThresholds().version != CommercialThresholds(
-        incentive_salesperson_share=0.15).version
+    assert not [f.name for f in fields(CommercialThresholds)
+                if "incentive" in f.name]
+    assert not [f for f in policy.EDITABLE if "incentive" in f]
 
 
 # ── payment patterns ────────────────────────────────────────────────────────

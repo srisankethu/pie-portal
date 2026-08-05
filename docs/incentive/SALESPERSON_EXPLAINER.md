@@ -84,6 +84,28 @@ open to anyone in the company who spots the match, split 40/60 between whoever
 proposed it and whoever closed it. If it was your order that created the stock,
 you earn a quarter rate on that particular stock.
 
+## Working it out before you agree it
+
+The **Negotiation desk** in the portal does the arithmetic above while you are
+on the phone. Put in the item, the quantity and the price you are about to
+agree, and it gives you the floor, what the line contributes, what a discount
+costs, what the vendor ask is worth, and the price you would have to hold to
+keep a number you have in mind. Move any figure and it moves.
+
+Nothing there is hidden from you and nothing there is a different sum from the
+one above — it is the same calculator that pays you at the end of the month, so
+if you disagree with the desk, one of us has made an arithmetic mistake and it
+can be found.
+
+Two things the desk will refuse:
+
+- **An item we have no purchase record for has no floor**, so it computes
+  nothing rather than treating the whole price as contribution. Get the item
+  mastered.
+- **A payment to someone at a customer that has not been classified as a
+  private account.** Unclassified is treated as government until an owner says
+  otherwise. Trials and training are open on every account.
+
 ## The short version
 
 Hold your price. Get the vendor to pay for what the customer wants. Use a trial

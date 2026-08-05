@@ -41,34 +41,17 @@ EDITABLE: tuple[str, ...] = (
     "min_material_gap",
     "min_margin_deterioration_pp",
     "price_rounding_increment",
-    "incentive_salesperson_share",
-    "incentive_vendor_share",
-    "incentive_self_funding_cap",
-    "incentive_minimum_realisation",
 )
+#: Incentive rates are deliberately absent. They are not org policy edited from
+#: a settings screen — they are the published mechanism parameters in
+#: ``incentive_engine/config/parameters.yaml``, changed at most annually and
+#: before the year starts. A rate a salesperson can watch move mid-year is a
+#: discretionary bonus wearing a formula costume, and ``load_for_org`` already
+#: ignores a stored override whose field is not listed above, so an
+#: organization that saved one under the old scheme degrades rather than breaks.
 
 #: Human labels + why each one matters, surfaced as tooltips in Settings.
 FIELD_HELP: dict[str, tuple[str, str]] = {
-    "incentive_salesperson_share": (
-        "Salesperson share of price realisation",
-        "What a salesperson earns on the gap between the price they agree and "
-        "what this customer already paid. A share of REALISATION, never of "
-        "margin — a margin-linked payout tells a salesperson the cost by "
-        "division. Zero means the scheme pays nothing."),
-    "incentive_vendor_share": (
-        "Salesperson share of a vendor concession",
-        "What they earn on a buying win, once somebody with cost scope has "
-        "agreed it. Usually lower than the price share: a better buy price is "
-        "rarely one person's work."),
-    "incentive_self_funding_cap": (
-        "How much of their own incentive they may give away",
-        "A salesperson can fund a customer discount out of their own incentive "
-        "instead of out of company margin. This caps that: 0.5 lets them give "
-        "away half of what they earned before a manager has to agree."),
-    "incentive_minimum_realisation": (
-        "Minimum realisation that earns anything",
-        "Below this the scheme pays nothing, so it does not pay out on "
-        "rounding noise against a reference price."),
     "target_margin_default": (
         "Target margin",
         "What a line should earn when nothing else argues otherwise. Used to "
@@ -306,7 +289,6 @@ MONEY_FIELDS: frozenset[str] = frozenset({
     "min_quote_exception_impact",
     "min_material_gap",
     "price_rounding_increment",
-    "incentive_minimum_realisation",
 })
 
 

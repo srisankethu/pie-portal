@@ -20,7 +20,7 @@ of the brief).
 | Sales Order | `cf_k_declared_at` | DateTime | Operations | Auto-stamped on first save with `K > 0` |
 | Sales Order | `cf_customer_po_ref` | Text | Operations | G2 gate |
 | Contact | `cf_customer_group_gstin` | Text | Operations | Q7 group resolution |
-| Contact | `cf_is_restricted` | Checkbox | Operations | **PSU / government / defence.** Drives the I2 hard block |
+| Contact | `cf_incentive_eligibility` | Picklist, no default | Operations | `PRIVATE` / `RESTRICTED`, **blank until classified.** Drives the I2 hard block |
 | Contact | `cf_live_contacts` | Number | Operations | RSI contact depth, verified annually |
 | PO / Bill | `cf_vendor_yield` | Currency | Operations | `Y` |
 | PO / Bill | `cf_y_proof_type` | Picklist | Operations | credit_note / debit_note / vendor_mail / po_price_delta |
@@ -36,13 +36,24 @@ of the brief).
 On **Sales Order**, a validation that blocks save:
 
 ```
-IF (Contact.cf_is_restricted == true && cf_third_party_incentive > 0)
+IF (Contact.cf_incentive_eligibility != "PRIVATE" && cf_third_party_incentive > 0)
     BLOCK SAVE
     "A third-party incentive cannot be recorded against a PSU, government or
-     defence-supply-chain customer. The Prevention of Corruption Act covers the
-     giver, and the realistic consequence is GeM blacklisting. This is a system
-     block, not an approval step — there is no one to escalate to."
+     defence-supply-chain customer, or against a customer nobody has classified.
+     The Prevention of Corruption Act covers the giver, and the realistic
+     consequence is GeM blacklisting. This is a system block, not an approval
+     step — there is no one to escalate to."
 ```
+
+**Note the sense of the test.** This was originally specified as a
+`cf_is_restricted` checkbox, and a checkbox is a defect here: unticked is the
+default state of every contact ever created, so the block would be open on every
+account until somebody remembered to tick it — and the accounts most likely to
+be created in a hurry are exactly the tender accounts. A picklist with no
+default fails closed, which is what `Customer.incentive_eligibility` does in the
+portal (NULL is treated as RESTRICTED) and what
+`models.ThirdPartyIncentive` enforces in the engine. Do not "fix" the blank
+state by backfilling it.
 
 Implement as a **Zoho Books validation rule on the record, not a Deluge warning
 on the form.** A warning can be dismissed and an API write bypasses the form

@@ -380,12 +380,18 @@ def test_the_timeline_names_what_it_cannot_show_for_every_role(client):
 
 
 # ── the negotiation desk: same numbers, different projection ────────────────
-def _configure_scheme(client) -> None:
+#
+# The item costs 124 as of the most recent bill, and the default floor markup
+# is 25%, so the floor is 155.00 and a line of 100 at 200 contributes 4,500.
+# Those three numbers are asserted rather than recomputed in the test, because
+# a test that repeats the implementation's arithmetic verifies nothing.
+FLOOR = 155.0
+
+
+def _classify(client, customer_id: str, eligibility: str) -> None:
     s = client.Maker()
-    s.add(models.CommercialPolicy(organization_id=ORG, overrides={
-        "incentive_salesperson_share": 0.15,
-        "incentive_vendor_share": 0.05,
-        "incentive_self_funding_cap": 0.5}))
+    row = s.get(models.Customer, customer_id)
+    row.incentive_eligibility = eligibility
     s.commit()
     s.close()
 
@@ -393,87 +399,102 @@ def _configure_scheme(client) -> None:
 def _negotiate(client, email, **over):
     body = {"customer_id": "c1", "product_id": "p1", "qty": 100,
             "agreed_price": 200, "customer_discount": 2,
-            "vendor_concession": 10, "target_incentive": 500}
+            "vendor_concession": 10, "target_caf": 5000}
     body.update(over)
     return client.post("/api/v1/insight/negotiate", json=body,
                        headers=_hdr(client, email))
 
 
-def test_a_salespersons_negotiation_carries_nothing_that_divides_into_a_cost(client):
-    """The invariant this whole feature had to be designed around. Their share
-    rate is published — it is their own compensation term — so any figure that
-    depends on the buy price would give the cost up by division."""
-    _configure_scheme(client)
+def test_a_salespersons_negotiation_carries_no_cost_and_no_margin(client):
+    """The invariant this whole feature had to be designed around. The floor is
+    disclosable because the markup behind it is family-varying and unpublished;
+    the cost itself is simply not in the payload."""
     _assign_to_salesperson(client, "c1")
 
     r = _negotiate(client, "r.nair@sanketh.in")
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["negotiable"] is True
-    assert "vendor_gain" not in body
-    assert "company_retained" not in body
+    assert body["floor_price"] == pytest.approx(FLOOR)
+    for field in ("unit_cost", "gross_profit", "margin_at_floor", "m_floor"):
+        assert field not in body, field
     # And the omission is named rather than left as a hole on the screen.
-    assert any(u["series"] == "company_margin" for u in body["unavailable"])
+    assert any(u["series"] == "cost_and_margin" for u in body["unavailable"])
 
 
-def test_a_manager_sees_the_whole_pot(client):
-    _configure_scheme(client)
-    r = _negotiate(client, "m.rao@sanketh.in")
-    assert r.status_code == 200, r.text
-    body = r.json()
-    assert "vendor_gain" in body and "company_retained" in body
+def test_a_manager_gets_the_reconciliation_behind_the_floor(client):
+    """Somebody with cost scope has to be able to check that the floor is sane,
+    which is the one thing a salesperson cannot do for themselves."""
+    body = _negotiate(client, "m.rao@sanketh.in").json()
+    assert body["unit_cost"] == pytest.approx(124.0)
+    assert body["margin_at_floor"] == pytest.approx(0.2, abs=0.001)
+    assert body["gross_profit"] == pytest.approx((200 - 2 - 124) * 100)
 
 
-def test_both_roles_get_the_same_incentive_number(client):
-    """One computation, two projections. Two code paths computing an incentive
-    two ways is how a salesperson's screen and their payslip disagree."""
-    _configure_scheme(client)
+def test_both_roles_get_the_same_contribution(client):
+    """One computation, two projections. Two code paths computing a
+    contribution two ways is how a screen and a payslip disagree."""
     _assign_to_salesperson(client, "c1")
 
     theirs = _negotiate(client, "r.nair@sanketh.in").json()
     managers = _negotiate(client, "m.rao@sanketh.in").json()
-    for field in ("realisation", "salesperson_incentive", "self_funded",
-                  "break_even_discount_per_unit", "price_to_hold_incentive",
-                  "reference_price"):
+    for field in ("floor_price", "contribution", "caf", "collected_caf",
+                  "discount_to_floor_per_unit", "price_to_hold_target"):
         assert theirs[field] == managers[field], field
+    # 100 units at 198 net against a 155 floor, plus the vendor ask at 1:1.
+    assert theirs["contribution"] == pytest.approx(4300.0)
+    assert theirs["caf"] == pytest.approx(5300.0)
 
 
-def test_the_reference_is_a_price_the_customer_has_already_paid(client):
-    """Not a cost-derived floor. references.py classifies every margin-derived
-    price as RESTRICTED for exactly this reason, and none is used here."""
-    _configure_scheme(client)
-    body = _negotiate(client, "m.rao@sanketh.in").json()
-    assert body["reference_basis"] == "what this customer last paid for this item"
-
+def test_an_item_we_have_never_bought_has_no_floor_and_is_refused(client):
+    """A missing floor is not zero. Zero would make the whole selling price
+    contribution and turn every unmastered item into a jackpot."""
     s = client.Maker()
-    last = (s.query(models.SalesTxn)
-            .filter_by(organization_id=ORG, customer_id="c1", product_id="p1")
-            .order_by(models.SalesTxn.date.desc()).first())
-    assert body["reference_price"] == pytest.approx(float(last.unit_price))
+    s.add(models.Product(product_id="p-nocost", organization_id=ORG,
+                         external_id="ITEM-NOCOST", name="Unmastered", uom="pcs"))
+    s.commit()
     s.close()
 
-
-def test_an_item_this_customer_has_never_bought_is_refused_not_guessed(client):
-    """No reference means no negotiation to compute, and the screen is sent to
-    the Quote Builder — which prices against peers and cost — rather than being
-    handed an invented baseline."""
-    _configure_scheme(client)
-    body = _negotiate(client, "m.rao@sanketh.in", product_id="p-never-sold").json()
+    body = _negotiate(client, "m.rao@sanketh.in", product_id="p-nocost").json()
     assert body["negotiable"] is False
-    assert "has not bought this item before" in body["empty_reason"]
+    assert "no purchase record" in body["empty_reason"].lower()
 
 
-def test_an_unconfigured_scheme_says_so_and_pays_nothing(client):
-    """No _configure_scheme call: the org has never set a rate."""
+def test_a_third_party_payment_is_refused_on_an_unclassified_account(client):
+    """I2 fails closed: nobody has said this account is private, so it is
+    treated exactly like a PSU. The response is a refusal, not a number."""
+    r = _negotiate(client, "m.rao@sanketh.in", third_party_incentive=5000)
+    assert r.status_code == 422
+    assert "blacklisting" in r.json()["detail"]
+
+
+def test_a_third_party_payment_is_priced_on_a_private_account(client):
+    """Classified private, it is charged at 100 paise in the rupee — which is
+    what makes the salesperson's decision the owner's decision."""
+    _classify(client, "c1", "PRIVATE")
+    body = _negotiate(client, "m.rao@sanketh.in", third_party_incentive=5000).json()
+    assert body["third_party_allowed"] is True
+    assert body["third_party_charged"] == pytest.approx(5000.0)
+    assert body["caf"] == pytest.approx(300.0)
+
+
+def test_the_toolkit_costs_half_of_what_paying_someone_costs(client):
+    """The compliant lever is reached for because it is cheaper, not because
+    anyone was told to reach for it."""
+    _classify(client, "c1", "PRIVATE")
+    paid = _negotiate(client, "m.rao@sanketh.in", third_party_incentive=4000).json()
+    kit = _negotiate(client, "m.rao@sanketh.in", toolkit_spend=4000).json()
+    assert kit["caf"] - paid["caf"] == pytest.approx(2000.0)
+
+
+def test_the_response_records_both_parameter_versions(client):
+    """Thresholds and the incentive block are cut on different schedules. A row
+    stamped with only one of them cannot be explained later."""
     body = _negotiate(client, "m.rao@sanketh.in").json()
-    assert body["scheme_configured"] is False
-    assert body["salesperson_incentive"] == 0
-    assert "No incentive scheme is configured" in body["empty_reason"]
-    # The realisation is still real — that part needs no policy at all.
-    assert body["realisation"] != 0
+    assert body["thresholds_version"]
+    assert body["incentive_config_version"]
 
 
 def test_the_desk_is_scoped_like_every_other_per_customer_route(client):
-    _configure_scheme(client)
     assert _negotiate(client, "r.nair@sanketh.in",
                       customer_id="c2").status_code == 404

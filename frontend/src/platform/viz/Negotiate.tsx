@@ -1,29 +1,43 @@
 // The negotiation desk — the one screen here a salesperson uses to decide.
 //
 // Everything else in this product is read. This is the screen somebody sits at
-// with a customer on the phone, so it is built around the three questions that
+// with a customer on the phone, so it is built around the questions that
 // actually get asked in that call, in the order they get asked:
 //
-//   "What can I give them?"      → the break-even discount, free to give
-//   "What does that cost me?"    → the incentive, updated as they move it
-//   "What do I have to hold?"    → the price that keeps the incentive intact
+//   "What can I give them?"   → the discount that takes the line to the floor
+//   "What does that cost me?" → the contribution, recomputed as they move it
+//   "What do I have to hold?" → the price that leaves a target contribution
 //
-// **No cost and no margin appear here for a salesperson, by construction.**
-// The server computes their incentive on the gap against what this customer
-// already paid, not on margin — because an incentive of *k* × margin, with *k*
-// published, is the cost by division. What the company keeps is absent from
-// their payload entirely, and the screen says why rather than leaving a hole.
+// **The floor is the whole design.** A salesperson sees F and their own agreed
+// price, and everything else is arithmetic they can do themselves: price, less
+// floor, times quantity. What the item cost is never in the payload — not
+// hidden, absent — and the screen says so rather than leaving a hole where a
+// number should be.
+//
+// The four levers below the price are the two-sided negotiation the desk
+// exists for: give something to the customer, ask something of the vendor, and
+// see immediately what each does to the same figure.
 
 import { useState } from "react";
 import { money } from "../../money";
 import { papi } from "../api";
 import type { PlatformSession } from "../types";
 import { Panel } from "./Panel";
-import { pct } from "./useInsight";
 
 type Envelope = Record<string, unknown>;
 
 const num = (v: unknown): number => Number(v ?? 0);
+
+/** The payment-timing choices, as days past due. Deliberately days rather than
+ *  band names: the server owns the band table, and a second copy here would be
+ *  the copy that disagrees after the next re-cut. */
+const TIMING: { label: string; days: number }[] = [
+  { label: "Advance / against delivery", days: -1 },
+  { label: "On the due date", days: 0 },
+  { label: "Up to a month late", days: 30 },
+  { label: "One to two months late", days: 60 },
+  { label: "Two to three months late", days: 90 },
+];
 
 export function NegotiateScreen({
   session, customerId, productId,
@@ -34,10 +48,14 @@ export function NegotiateScreen({
 }) {
   const [customer, setCustomer] = useState(customerId ?? "");
   const [product, setProduct] = useState(productId ?? "");
+  const [family, setFamily] = useState("");
   const [qty, setQty] = useState("100");
   const [price, setPrice] = useState("");
   const [discount, setDiscount] = useState("0");
   const [vendorAsk, setVendorAsk] = useState("0");
+  const [thirdParty, setThirdParty] = useState("0");
+  const [toolkit, setToolkit] = useState("0");
+  const [timing, setTiming] = useState(0);
   const [holdAt, setHoldAt] = useState("");
 
   const [data, setData] = useState<Envelope | null>(null);
@@ -54,11 +72,15 @@ export function NegotiateScreen({
       setData(await papi.negotiate(session.token, {
         customer_id: customer.trim(),
         product_id: product.trim(),
+        family: family.trim() || null,
         qty: Number(qty),
         agreed_price: Number(price),
         customer_discount: Number(discount) || 0,
         vendor_concession: Number(vendorAsk) || 0,
-        target_incentive: holdAt.trim() ? Number(holdAt) : null,
+        third_party_incentive: Number(thirdParty) || 0,
+        toolkit_spend: Number(toolkit) || 0,
+        expected_days_late: timing,
+        target_caf: holdAt.trim() ? Number(holdAt) : null,
       }));
     } catch (e) {
       setError((e as Error).message);
@@ -68,18 +90,19 @@ export function NegotiateScreen({
   }
 
   const negotiable = data?.negotiable === true;
-  const configured = data?.scheme_configured === true;
-  const reasons = (data?.approval_reasons as string[] | undefined) ?? [];
+  const warnings = (data?.warnings as string[] | undefined) ?? [];
   const unavailable = (data?.unavailable as Record<string, string>[] | undefined) ?? [];
-  const breakEven = data?.break_even_discount_per_unit as number | null | undefined;
-  const holdPrice = data?.price_to_hold_incentive as number | null | undefined;
+  const freeToGive = data?.discount_to_floor_per_unit as number | null | undefined;
+  const holdPrice = data?.price_to_hold_target as number | null | undefined;
+  const lastPaid = data?.last_price_paid as number | null | undefined;
+  const blocked = data != null && data.third_party_allowed === false;
   // Present only for a manager or owner. Its absence is the invariant working.
-  const seesCompany = data != null && "company_retained" in data;
+  const seesCost = data != null && "unit_cost" in data;
 
   return (
     <Panel
       title="Negotiation desk"
-      question="What can I give away, and what does it cost me"
+      question="What can I give away, and what does it leave"
       state={error ? "error" : "ready"}
       error={error}
       onRetry={run}
@@ -90,17 +113,43 @@ export function NegotiateScreen({
                hint="From the account page URL." />
         <Field label="Item id" value={product} onChange={setProduct}
                hint="From the item drill-down." />
+        <Field label="Tool family" value={family} onChange={setFamily}
+               hint="Optional. Sets which floor applies." />
         <Field label="Quantity" value={qty} onChange={setQty} numeric />
         <Field label="Price you are agreeing" value={price} onChange={setPrice}
                numeric hint="Per unit, before any discount below." />
         <Field label="Discount to the customer" value={discount}
                onChange={setDiscount} numeric
-               hint="Per unit. Funded from your incentive first." />
+               hint="Per unit. Comes straight off what the line contributes." />
         <Field label="Concession asked of the vendor" value={vendorAsk}
                onChange={setVendorAsk} numeric
-               hint="Per unit off what we pay today. A request, not a decision." />
-        <Field label="Incentive you want to hold" value={holdAt} onChange={setHoldAt}
-               numeric hint="Optional. Returns the price that leaves you exactly this." />
+               hint="Per unit. Credited in full — a rupee won here is worth a rupee held on price." />
+        {/* Once the server has said this account is restricted the field is
+            closed rather than left open to be refused. A legal block belongs
+            next to the input somebody would have typed in, not in a banner
+            under the results that appears on every deal and gets ignored. */}
+        <Field label="Payment to someone at the customer" value={thirdParty}
+               onChange={setThirdParty} numeric disabled={blocked}
+               hint={blocked
+                 ? "Not available on this account — see below."
+                 : "A total, not per unit. Charged in full. Not permitted on a government, PSU or defence account."} />
+        <Field label="Tooling, training or trials for them" value={toolkit}
+               onChange={setToolkit} numeric
+               hint="A total. Charged at half — the compliant lever is the cheaper one." />
+        <div className="field neg-field">
+          <label htmlFor="neg-timing">When the money arrives</label>
+          <select id="neg-timing" className="input" value={timing}
+                  onChange={(e) => setTiming(Number(e.target.value))}>
+            {TIMING.map((t) => (
+              <option key={t.days} value={t.days}>{t.label}</option>
+            ))}
+          </select>
+          <span className="viz-muted neg-hint">
+            Contribution is banked on the invoice and earned on the receipt.
+          </span>
+        </div>
+        <Field label="Contribution you want to hold" value={holdAt} onChange={setHoldAt}
+               numeric hint="Optional. Returns the price that leaves exactly this." />
         <div className="neg-actions">
           <button type="button" className="btn btn-primary" disabled={!canPrice || busy}
                   onClick={run}>
@@ -122,49 +171,61 @@ export function NegotiateScreen({
         <>
           <p className="viz-muted">
             <strong>{String(data.customer_label)}</strong> ·{" "}
-            {String(data.product_label)} · last paid{" "}
-            <strong>{money(num(data.reference_price))}</strong> a unit.{" "}
-            Everything below is measured against that.
+            {String(data.product_label)} · floor{" "}
+            <strong>{money(num(data.floor_price))}</strong> a unit
+            {lastPaid != null && <> · last paid {money(lastPaid)}</>}.{" "}
+            Everything below is measured against the floor.
           </p>
 
-          {!configured && (
-            <p className="viz-headline">
-              No incentive scheme is configured, so this pays nothing. An owner
-              sets the rates in Settings. The price realisation below is still
-              real.
-            </p>
-          )}
-
           <div className="neg-figures">
-            <Figure3 label="You won" value={money(num(data.realisation))}
-                     note={`${pct(num(data.salesperson_share), 0)} of this is yours`}
-                     tone={num(data.realisation) < 0 ? "bad" : "good"} />
-            <Figure3 label="Your incentive" value={money(num(data.salesperson_incentive))}
-                     note={num(data.self_funded) > 0
-                       ? `after funding ${money(num(data.self_funded))} of the discount`
-                       : "nothing given away yet"} />
+            <Figure3 label="Above the floor" value={money(num(data.contribution))}
+                     note={`${qty} × (price − floor)`}
+                     tone={num(data.contribution) < 0 ? "bad" : "good"} />
+            <Figure3 label="After what you gave" value={money(num(data.caf))}
+                     note={termNote(data)}
+                     tone={num(data.caf) < 0 ? "bad" : undefined} />
+            {/* Deliberately untinted. A line paid at sixty days is worth less,
+                not lost, and the loss colour on a positive figure taught the
+                first reader that a normal credit term was a bad deal. The
+                factor in the note carries it. */}
+            <Figure3 label={`Earned if paid ${String(data.collection_label)}`}
+                     value={money(num(data.collected_caf))}
+                     note={`×${num(data.collection_factor).toFixed(2)} at that timing`} />
             <Figure3 label="Free to give"
-                     value={breakEven == null ? "—" : `${money(breakEven)} a unit`}
-                     note={breakEven == null
-                       ? "nothing earned to give away"
-                       : `up to ${pct(num(data.self_funding_cap), 0)} of your incentive`} />
+                     value={freeToGive == null ? "—" : `${money(freeToGive)} a unit`}
+                     note={freeToGive == null
+                       ? "this line is already at or under the floor"
+                       : "takes the line exactly to the floor"} />
             {holdPrice != null && (
               <Figure3 label="Hold the price at" value={money(holdPrice)}
-                       note="leaves you exactly what you asked for" />
+                       note="leaves exactly what you asked for" />
             )}
             {/* Manager and owner only. A salesperson's payload has no such
                 field, so this simply does not render for them. */}
-            {seesCompany && (
-              <Figure3 label="Company keeps"
-                       value={money(num(data.company_retained))}
-                       note={`incl. ${money(num(data.vendor_gain))} from the vendor ask`} />
+            {seesCost && (
+              <Figure3 label="Gross profit"
+                       value={money(num(data.gross_profit))}
+                       note={`cost ${money(num(data.unit_cost))} a unit · the floor holds ${(num(data.margin_at_floor) * 100).toFixed(1)}%`} />
             )}
           </div>
 
-          {reasons.length > 0 && (
+          {blocked && (
             <div className="neg-approval">
-              <h4>Needs someone to agree</h4>
-              <ul>{reasons.map((r, i) => <li key={i}>{r}</li>)}</ul>
+              <h4>No third-party payment on this account</h4>
+              <p className="viz-muted">
+                This customer is classified as a government, PSU or defence
+                buyer — or has not been classified at all. Until an owner
+                records that it is a private account the desk will not price a
+                payment to anyone there. Tooling, training and trials are the
+                lever that is available, and they cost half.
+              </p>
+            </div>
+          )}
+
+          {warnings.length > 0 && (
+            <div className="neg-approval">
+              <h4>Worth knowing before you agree it</h4>
+              <ul>{warnings.map((r, i) => <li key={i}>{r}</li>)}</ul>
             </div>
           )}
 
@@ -184,17 +245,30 @@ export function NegotiateScreen({
   );
 }
 
+/** What moved the figure between contribution and CAF, named rather than
+ *  implied — three charges netting to a small number reads as an error. */
+function termNote(data: Envelope): string {
+  const parts: string[] = [];
+  if (num(data.third_party_charged) > 0)
+    parts.push(`less ${money(num(data.third_party_charged))} paid across`);
+  if (num(data.toolkit_charged) > 0)
+    parts.push(`less ${money(num(data.toolkit_charged))} of toolkit`);
+  if (num(data.vendor_yield_credited) > 0)
+    parts.push(`plus ${money(num(data.vendor_yield_credited))} from the vendor`);
+  return parts.length ? parts.join(", ") : "nothing given away yet";
+}
+
 function Field({
-  label, value, onChange, hint, numeric,
+  label, value, onChange, hint, numeric, disabled,
 }: {
   label: string; value: string; onChange: (v: string) => void;
-  hint?: string; numeric?: boolean;
+  hint?: string; numeric?: boolean; disabled?: boolean;
 }) {
   const id = `neg-${label.replace(/\W+/g, "-").toLowerCase()}`;
   return (
     <div className="field neg-field">
       <label htmlFor={id}>{label}</label>
-      <input id={id} className="input" value={value}
+      <input id={id} className="input" value={value} disabled={disabled}
              inputMode={numeric ? "decimal" : undefined}
              onChange={(e) => onChange(e.target.value)} />
       {hint && <span className="viz-muted neg-hint">{hint}</span>}

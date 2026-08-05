@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date
+from decimal import Decimal
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -26,7 +27,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..authz import Principal, current_principal, require_manager_or_owner
-from ..commercial import policy
+from ..commercial import incentive, policy
 from ..commercial.insight import (cadence, cohorts, composition, flow, landscape,
                                   payments, periods, radar, simulate, stock, story,
                                   supply, weather)
@@ -577,6 +578,124 @@ def supplier_position(principal: Principal = Depends(require_manager_or_owner),
         terms_by_vendor={vid: v.payment_terms_days for vid, v in vendors.items()
                          if v.payment_terms_days is not None})
     return _envelope(result, currency=th.currency, empty_reason=None)
+
+
+# ── the negotiation desk ────────────────────────────────────────────────────
+#
+# The one screen in this product a salesperson uses to *decide* rather than to
+# read, so the role projection here is doing more work than anywhere else.
+#
+# A salesperson gets: the reference price (what this customer already paid —
+# they have seen it), their incentive, what a discount costs them, and the
+# price that holds their incentive steady. They do NOT get vendor_gain or
+# company_retained, because publishing either alongside a known share rate is
+# publishing the cost by division. The vendor side is a *request* for a
+# per-unit concession, never a view of the buy price.
+
+
+class NegotiationRequest(BaseModel):
+    customer_id: str
+    product_id: str
+    qty: float = Field(gt=0)
+    agreed_price: float = Field(ge=0)
+    #: Per unit, given back to the customer.
+    customer_discount: float = Field(0, ge=0)
+    #: Per unit, asked of the vendor. A request until a manager agrees it.
+    vendor_concession: float = Field(0, ge=0)
+    #: "What price keeps my incentive at X?" — optional, solved not searched.
+    target_incentive: Optional[float] = None
+
+
+def _reference_price(session: Session, org: str, customer_id: str,
+                     product_id: str) -> Optional[Decimal]:
+    """What this customer has actually paid for this item, most recently.
+
+    OPERATIONAL by construction: it is a price the customer themselves agreed,
+    so a salesperson seeing it learns nothing they could not read off their own
+    last invoice. Every cost-derived reference in ``references.py`` is
+    RESTRICTED and none of them is used here — that is the whole design.
+    """
+    row = session.scalars(
+        select(models.SalesTxn)
+        .where(models.SalesTxn.organization_id == org,
+               models.SalesTxn.customer_id == customer_id,
+               models.SalesTxn.product_id == product_id)
+        .order_by(models.SalesTxn.date.desc())
+        .limit(1)).first()
+    return Decimal(str(row.unit_price)) if row else None
+
+
+@router.post("/negotiate")
+def negotiate(body: NegotiationRequest,
+              principal: Principal = Depends(current_principal),
+              session: Session = Depends(get_session)) -> dict:
+    """Price it, split the pot, and say what needs approving."""
+    org, snapshot, th = _context(session, principal)
+    _require_visible_customer(session, org, body.customer_id, principal)
+    with_cost = principal.role in (Role.SALES_MANAGER, Role.OWNER)
+
+    reference = _reference_price(session, org, body.customer_id, body.product_id)
+    if reference is None:
+        return _envelope(
+            {"negotiable": False}, currency=th.currency,
+            empty_reason=("This customer has not bought this item before, so "
+                          "there is no price of theirs to negotiate against. "
+                          "Quote it from the Quote Builder, which prices "
+                          "against peers and cost."))
+
+    policy_rates = incentive.IncentivePolicy(
+        salesperson_share=Decimal(str(th.incentive_salesperson_share)),
+        vendor_share=Decimal(str(th.incentive_vendor_share)),
+        self_funding_cap=Decimal(str(th.incentive_self_funding_cap)),
+        minimum_realisation=Decimal(str(th.incentive_minimum_realisation)))
+
+    deal = incentive.Negotiation(
+        qty=Decimal(str(body.qty)),
+        reference_price=reference,
+        agreed_price=Decimal(str(body.agreed_price)),
+        customer_discount=Decimal(str(body.customer_discount)),
+        vendor_concession=Decimal(str(body.vendor_concession)))
+
+    result = incentive.split(deal, policy_rates)
+    break_even = incentive.break_even_discount(deal, policy_rates)
+    hold_price = (incentive.required_price(deal, policy_rates,
+                                           Decimal(str(body.target_incentive)))
+                  if body.target_incentive is not None else None)
+
+    return _envelope(
+        {
+            "negotiable": True,
+            "reference_price": float(reference),
+            "reference_basis": "what this customer last paid for this item",
+            "product_label": snapshot.product_names.get(body.product_id,
+                                                        body.product_id),
+            "customer_label": snapshot.customer_names.get(body.customer_id,
+                                                          body.customer_id),
+            **result.to_dict(with_cost=with_cost),
+            "break_even_discount_per_unit": (float(break_even)
+                                             if break_even is not None else None),
+            "price_to_hold_incentive": (float(hold_price)
+                                        if hold_price is not None else None),
+            "scheme_configured": policy_rates.configured,
+            # Shown so nobody has to guess what they are paid on. The rate is
+            # already the salesperson's own compensation term, and knowing it
+            # discloses nothing: it multiplies a price gap, not a cost.
+            "salesperson_share": th.incentive_salesperson_share,
+            "self_funding_cap": th.incentive_self_funding_cap,
+            "unavailable": ([] if with_cost else [{
+                "series": "company_margin",
+                "reason": ("What the company keeps depends on cost, which is "
+                           "management information. Your incentive is computed "
+                           "on the price you agreed against what this customer "
+                           "already paid — no cost is involved in it."),
+            }]),
+        },
+        currency=th.currency,
+        thresholds_version=th.version,
+        empty_reason=(None if policy_rates.configured else
+                      "No incentive scheme is configured. An owner sets the "
+                      "rates in Settings; until then the calculator shows the "
+                      "price realisation and pays nothing."))
 
 
 # ── the simulator ───────────────────────────────────────────────────────────

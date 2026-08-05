@@ -32,7 +32,6 @@ from typing import Iterable, Optional
 #: transaction wearing a suit. Matches the spirit of the cadence floor.
 MIN_SETTLEMENTS = 3
 
-
 @dataclass(frozen=True)
 class Settlement:
     """One invoice, settled. The grain everything here is computed at."""
@@ -59,6 +58,134 @@ class Settlement:
     @property
     def late(self) -> bool:
         return (self.days_late or 0) > 0
+
+
+#: A customer whose days-to-pay swing by more than this around their own median
+#: cannot be planned around, and that is a different problem from being slow.
+#: Expressed in days rather than as a coefficient because a distributor thinks
+#: in days: "give or take a fortnight" is a sentence somebody can act on.
+ERRATIC_SPREAD_DAYS = 21
+
+#: How much the second half of a customer's history has to move against the
+#: first before it is called a trend rather than noise.
+TREND_DAYS = 10
+
+#: The named patterns, and what each one means as a job of work. A pattern with
+#: no consequence attached is a label; these are the four different things a
+#: person actually does about a payer.
+PATTERNS: dict[str, dict[str, str]] = {
+    "PROMPT": {
+        "label": "Pays to terms",
+        "meaning": "Settles on or before the due date, consistently. Nothing to "
+                   "do; worth knowing before anyone tightens their terms.",
+    },
+    "PREDICTABLY_LATE": {
+        "label": "Late, but predictable",
+        "meaning": "Consistently over the due date by a similar margin. This is "
+                   "a terms problem, not a collections problem — the terms on "
+                   "record do not describe how this account actually pays.",
+    },
+    "ERRATIC": {
+        "label": "Erratic",
+        "meaning": "The spread is wide enough that no single number describes "
+                   "them. The riskiest of the four: cash from this account "
+                   "cannot be planned, whatever the average says.",
+    },
+    "TOO_FEW": {
+        "label": "Not enough history",
+        "meaning": "Fewer settled invoices than the floor. No pattern is "
+                   "asserted rather than one being read out of two payments.",
+    },
+}
+
+#: Direction of travel, kept separate from the pattern. A customer can be
+#: erratic *and* improving, and collapsing the two would lose one of them.
+TRENDS: dict[str, str] = {
+    "IMPROVING": "Paying faster than they used to",
+    "STEADY": "No material change",
+    "DETERIORATING": "Paying slower than they used to",
+    "UNKNOWN": "Too few settlements to compare two halves",
+}
+
+
+def _spread(days: list[int]) -> Optional[float]:
+    """Median absolute deviation, not standard deviation.
+
+    One invoice settled nine months late is a story about that invoice. A
+    standard deviation would let it redefine the customer; the MAD does not,
+    which is the same reason the headline figure is a median.
+    """
+    if len(days) < 2:
+        return None
+    mid = statistics.median(days)
+    return round(statistics.median([abs(d - mid) for d in days]), 1)
+
+
+def _trend(settled: list[Settlement]) -> str:
+    """Compare the older half of their history against the newer half.
+
+    By invoice date, not payment date: the question is whether the invoices
+    they are raising now get paid faster than the ones they raised before.
+    """
+    if len(settled) < MIN_SETTLEMENTS * 2:
+        return "UNKNOWN"
+    ordered = sorted(settled, key=lambda s: s.invoice_date)
+    mid = len(ordered) // 2
+    before = statistics.median(s.days_to_pay for s in ordered[:mid])
+    after = statistics.median(s.days_to_pay for s in ordered[mid:])
+    if after - before >= TREND_DAYS:
+        return "DETERIORATING"
+    if before - after >= TREND_DAYS:
+        return "IMPROVING"
+    return "STEADY"
+
+
+def classify(settled: list[Settlement]) -> dict:
+    """How this customer pays — a pattern, a direction, and the evidence.
+
+    Deterministic and derived only from settled invoices. Nothing here predicts
+    whether they will pay next time; it describes what they have done, which is
+    the only thing the data supports.
+    """
+    if len(settled) < MIN_SETTLEMENTS:
+        return {"pattern": "TOO_FEW", "trend": "UNKNOWN", "spread_days": None,
+                "median_days_late": None, "part_paid_invoices": 0,
+                "largest_batch": 0}
+
+    days = [s.days_to_pay for s in settled]
+    spread = _spread(days)
+    datable = [s for s in settled if s.days_late is not None]
+    median_late = (statistics.median(s.days_late for s in datable   # type: ignore[misc]
+                                     ) if datable else None)
+
+    if spread is not None and spread > ERRATIC_SPREAD_DAYS:
+        pattern = "ERRATIC"
+    elif median_late is None:
+        # No due date anywhere on record: their punctuality is unanswerable, so
+        # it is not answered. Spread still says whether they are plannable.
+        pattern = "PROMPT" if spread is not None and spread <= ERRATIC_SPREAD_DAYS else "ERRATIC"
+    elif median_late > 0:
+        pattern = "PREDICTABLY_LATE"
+    else:
+        pattern = "PROMPT"
+
+    # Two habits worth naming because they change what a collections call is
+    # about: an invoice settled in several instalments, and one payment
+    # clearing a batch.
+    by_invoice: dict[str, int] = {}
+    by_payment_day: dict[date, int] = {}
+    for s in settled:
+        by_invoice[s.invoice_ref] = by_invoice.get(s.invoice_ref, 0) + 1
+        by_payment_day[s.paid_on] = by_payment_day.get(s.paid_on, 0) + 1
+
+    return {
+        "pattern": pattern,
+        "trend": _trend(settled),
+        "spread_days": spread,
+        "median_days_late": (round(median_late, 1) if median_late is not None else None),
+        "part_paid_invoices": sum(1 for n in by_invoice.values() if n > 1),
+        "largest_batch": max(by_payment_day.values()),
+    }
 
 
 @dataclass
@@ -112,8 +239,10 @@ def build(settlements: Iterable[Settlement], names: dict[str, str],
     for s in rows:
         by_customer.setdefault(s.customer_id, []).append(s)
 
+    patterns: dict[str, dict] = {}
     customers: list[CustomerPayment] = []
     for customer_id, group in by_customer.items():
+        patterns[customer_id] = classify(group)
         datable = [s for s in group if s.days_late is not None]
         customers.append(CustomerPayment(
             customer_id=customer_id,
@@ -139,7 +268,11 @@ def build(settlements: Iterable[Settlement], names: dict[str, str],
 
     return {
         "as_of": as_of.isoformat(),
-        "customers": [c.to_dict() for c in customers],
+        "customers": [{**c.to_dict(), **patterns[c.customer_id]} for c in customers],
+        "patterns": PATTERNS,
+        "trends": TRENDS,
+        "pattern_counts": _counts(patterns),
+        "erratic_spread_days": ERRATIC_SPREAD_DAYS,
         "distribution": _distribution(all_days),
         "median_days_to_pay": round(statistics.median(all_days), 1),
         "settlements": len(rows),
@@ -183,6 +316,13 @@ def _distribution(days: list[int]) -> list[dict]:
     if early:
         out.insert(0, {"label": "paid in advance of the invoice",
                        "from": None, "to": -1, "count": early})
+    return out
+
+
+def _counts(patterns: dict[str, dict]) -> dict[str, int]:
+    out = {key: 0 for key in PATTERNS}
+    for p in patterns.values():
+        out[p["pattern"]] = out.get(p["pattern"], 0) + 1
     return out
 
 

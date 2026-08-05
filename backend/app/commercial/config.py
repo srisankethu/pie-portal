@@ -199,6 +199,26 @@ class CommercialThresholds:
         from .money import money as _fmt
         return _fmt(amount, self.currency, unknown=unknown)
 
+    # ── incentive scheme ─────────────────────────────────────────────────────
+    # What the organization pays a salesperson for a negotiation, and how much
+    # of it they may hand back to a customer. Zero by default and deliberately
+    # so: an unconfigured scheme must pay nothing rather than quietly pay
+    # whatever a developer typed. Inside the version hash like every other
+    # policy value, because a payout computed under one set of rates is not
+    # comparable to one computed under another.
+    #
+    # The incentive is a share of PRICE REALISATION against a reference the
+    # customer has already seen — never of margin. See ``commercial/incentive``
+    # for why a margin-linked payout shown to a salesperson discloses cost.
+    incentive_salesperson_share: float = 0.0
+    incentive_vendor_share: float = 0.0
+    #: The most of their own incentive a salesperson may fund a discount from
+    #: before a manager has to agree. 1.0 would let them zero themselves out.
+    incentive_self_funding_cap: float = 0.5
+    #: Realisation below this earns nothing, so the scheme does not pay out on
+    #: rounding noise against a reference price.
+    incentive_minimum_realisation: float = 0.0
+
     @property
     def version(self) -> str:
         """Stable short hash of the threshold values (reproducibility)."""

@@ -19,6 +19,9 @@ export type Screen =
   /** Tier 3: the shelf, the suppliers and the cash — the three things the book
    *  always knew and the platform did not read until it ingested them. */
   | "payments" | "stock" | "supply"
+  /** The negotiation desk: the one screen a salesperson uses to decide rather
+   *  than to read. */
+  | "negotiate"
   /** The approval queue, and organization settings (owner is super admin). */
   | "approvals" | "settings"
   /** Which connector records describe the same customer or item. */
@@ -56,6 +59,7 @@ const PATHS: Record<Screen, string> = {
   payments: "/payments",
   stock: "/stock",
   supply: "/supply",
+  negotiate: "/negotiate",
 };
 
 export function toHash(r: Route): string {
@@ -123,6 +127,8 @@ export function parseHash(hash: string): Route {
       return { screen: "stock" };
     case "supply":
       return { screen: "supply" };
+    case "negotiate":
+      return { screen: "negotiate" };
     default:
       return { screen: "home" };
   }

@@ -53,6 +53,9 @@ export function PaymentsScreen({
   const lateShare = data?.late_share as number | null | undefined;
   const minSettlements = num(data?.min_settlements);
   const datable = num(data?.settlements) - num(data?.undatable_count);
+  const patterns = (data?.patterns as Record<string, Record<string, string>>) ?? {};
+  const trends = (data?.trends as Record<string, string>) ?? {};
+  const patternCounts = (data?.pattern_counts as Record<string, number>) ?? {};
 
   return (
     <Panel
@@ -109,6 +112,23 @@ export function PaymentsScreen({
         </ul>
       </Figure>
 
+      {/* Slow and unpredictable are different problems, so they are different
+          rows. A customer who always takes 45 days can be planned around; one
+          who takes 5 or 95 cannot, whatever their average says. */}
+      <ul className="quad-legend">
+        {["PROMPT", "PREDICTABLY_LATE", "ERRATIC", "TOO_FEW"].map((key) => (
+          <li key={key} className={`quad quad-${
+            key === "ERRATIC" ? "bad" : key === "PREDICTABLY_LATE" ? "warn"
+              : key === "PROMPT" ? "good" : "flat"}`}>
+            <span className="quad-count">{patternCounts[key] ?? 0}</span>
+            <span className="quad-body">
+              <strong>{patterns[key]?.label ?? key}</strong>
+              <span className="viz-muted">{patterns[key]?.meaning}</span>
+            </span>
+          </li>
+        ))}
+      </ul>
+
       <div className="tier3-list">
         <h4>Slowest payers first</h4>
         <ol className="cadence-rows">
@@ -126,9 +146,12 @@ export function PaymentsScreen({
                       : `only ${c.settlements} settled — no typical yet`}
                   </span>
                   <span className="viz-muted">
-                    {money(num(c.total_settled))} settled
-                    {c.late_share != null && Number(c.late_share) > 0 &&
-                      ` · ${pct(Number(c.late_share), 0)} late`}
+                    {patterns[String(c.pattern)]?.label ?? ""}
+                    {c.spread_days != null && Number(c.spread_days) > 0 &&
+                      ` ±${c.spread_days}d`}
+                    {c.trend !== "STEADY" && c.trend !== "UNKNOWN" &&
+                      ` · ${trends[String(c.trend)]?.toLowerCase()}`}
+                    {" · "}{money(num(c.total_settled))} settled
                   </span>
                 </span>
                 {Number(c.worst_days_to_pay) > 90 ? (
@@ -141,7 +164,9 @@ export function PaymentsScreen({
         <p className="viz-muted viz-footnote">
           Measured per invoice settled, not per payment — one transfer clearing
           ten invoices is ten observations. Fewer than {minSettlements} settled
-          invoices and no typical is reported.
+          invoices and no pattern is asserted. The spread is a median absolute
+          deviation, so one invoice paid nine months late stays a story about
+          that invoice rather than redefining the customer.
         </p>
       </div>
 

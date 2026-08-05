@@ -933,3 +933,247 @@ def test_the_payment_series_is_keyed_by_invoice_month_not_payment_month():
     by_label = {p["label"]: p for p in series}
     assert by_label["Apr 2026"]["settled"] == 1
     assert by_label["Jun 2026"]["settled"] == 0
+
+
+# ── the incentive scheme ────────────────────────────────────────────────────
+def _policy(**kw):
+    from decimal import Decimal
+
+    from app.commercial.incentive import IncentivePolicy
+    base = dict(salesperson_share=Decimal("0.15"), vendor_share=Decimal("0.05"),
+                self_funding_cap=Decimal("0.5"), minimum_realisation=Decimal("0"))
+    base.update({k: Decimal(str(v)) for k, v in kw.items()})
+    return IncentivePolicy(**base)
+
+
+def _deal(**kw):
+    from decimal import Decimal
+
+    from app.commercial.incentive import Negotiation
+    base = dict(qty=Decimal("100"), reference_price=Decimal("500"),
+                agreed_price=Decimal("560"))
+    base.update({k: Decimal(str(v)) for k, v in kw.items()})
+    return Negotiation(**base)
+
+
+def test_the_incentive_is_computed_on_price_not_on_margin():
+    """The whole design. `references.py` already establishes that handing a
+    salesperson a cost-derived figure alongside a known rate hands them the
+    cost; an incentive is exactly such a figure. This one is a share of the gap
+    against what the customer already paid, and no cost is an input at all."""
+    import inspect
+
+    from app.commercial import incentive
+
+    source = inspect.getsource(incentive.split)
+    assert "reference_cost" not in source
+    # A deal with no cost on it at all still produces a full answer.
+    result = incentive.split(_deal(), _policy())
+    assert result.salesperson_incentive > 0
+
+
+def test_a_salespersons_payload_carries_nothing_divisible_into_a_cost():
+    """vendor_gain and company_retained both depend on the buy price. With the
+    share rate published — and it is, because it is their own comp term —
+    either one would give up the cost by division."""
+    from app.commercial import incentive
+
+    result = incentive.split(_deal(vendor_concession=10), _policy())
+    theirs = result.to_dict(with_cost=False)
+    managers = result.to_dict(with_cost=True)
+    assert "vendor_gain" not in theirs and "company_retained" not in theirs
+    assert "vendor_gain" in managers and "company_retained" in managers
+
+
+def test_an_unconfigured_scheme_pays_nothing():
+    """Somebody's compensation must not default to whatever a developer typed."""
+    from decimal import Decimal
+
+    from app.commercial.incentive import IncentivePolicy, split
+
+    assert split(_deal(), IncentivePolicy()).salesperson_incentive == Decimal("0.00")
+    assert not IncentivePolicy().configured
+
+
+def test_a_price_below_what_they_already_paid_earns_nothing_and_is_flagged():
+    """Not floored silently at zero — floored, and the reason said out loud."""
+    from app.commercial.incentive import split
+
+    result = split(_deal(agreed_price=460), _policy())
+    assert result.realisation < 0
+    assert result.salesperson_incentive == 0
+    assert result.requires_approval
+    assert any("below what this customer has already paid" in r
+               for r in result.approval_reasons)
+
+
+def test_a_discount_is_funded_from_the_incentive_before_company_margin():
+    """The lever the brief asks for: give something back without the company
+    paying for it twice."""
+    from app.commercial.incentive import split
+
+    result = split(_deal(customer_discount=4), _policy())
+    # 100 units × ₹4 = ₹400 given; the cap allows it, so the company funds none
+    # of it and no approval is needed on that account.
+    assert result.customer_given == 400
+    assert result.self_funded == 400
+    assert not any("company is funding" in r for r in result.approval_reasons)
+
+
+def test_a_salesperson_cannot_zero_themselves_out_to_buy_a_deal():
+    """Past the cap the company is funding the difference, and a manager is
+    told so rather than the discount being silently refused."""
+    from app.commercial.incentive import split
+
+    result = split(_deal(customer_discount=40), _policy(self_funding_cap=0.5))
+    assert result.self_funded < result.customer_given
+    assert result.salesperson_incentive > 0        # never driven negative
+    assert result.requires_approval
+    assert any("company is funding" in r for r in result.approval_reasons)
+
+
+def test_the_break_even_discount_is_what_they_can_give_away_for_free():
+    from app.commercial.incentive import break_even_discount, split
+
+    policy = _policy()
+    deal = _deal()
+    per_unit = break_even_discount(deal, policy)
+    assert per_unit is not None
+    # Giving exactly that away must still be fully self-funded.
+    at_limit = split(_deal(customer_discount=float(per_unit)), policy)
+    assert at_limit.self_funded == at_limit.customer_given
+    assert not any("company is funding" in r for r in at_limit.approval_reasons)
+
+
+def test_there_is_no_break_even_discount_when_nothing_was_earned():
+    """An honest "nothing to give away" rather than zero dressed as an answer."""
+    from app.commercial.incentive import IncentivePolicy, break_even_discount
+
+    assert break_even_discount(_deal(agreed_price=490), _policy()) is None
+    assert break_even_discount(_deal(), IncentivePolicy()) is None
+
+
+def test_the_price_that_holds_an_incentive_is_solved_not_searched():
+    from decimal import Decimal
+
+    from app.commercial.incentive import required_price, split
+
+    policy = _policy()
+    wanted = Decimal("900")
+    price = required_price(_deal(customer_discount=4), policy, wanted)
+    assert price is not None
+    # Round-trip: agreeing that price really does leave exactly that incentive.
+    check = split(_deal(agreed_price=float(price), customer_discount=4), policy)
+    assert check.salesperson_incentive + check.self_funded == pytest.approx(
+        float(wanted), abs=0.01)
+
+
+def test_the_vendor_ask_is_a_request_until_someone_with_cost_scope_agrees():
+    from app.commercial.incentive import split
+
+    result = split(_deal(vendor_concession=10), _policy())
+    assert result.requires_approval
+    assert any("request until" in r for r in result.approval_reasons)
+
+
+def test_the_incentive_rates_are_inside_the_thresholds_version():
+    """A payout computed under one set of rates is not comparable to one
+    computed under another, so the version has to move with them."""
+    from app.commercial.config import CommercialThresholds
+
+    assert CommercialThresholds().version != CommercialThresholds(
+        incentive_salesperson_share=0.15).version
+
+
+# ── payment patterns ────────────────────────────────────────────────────────
+def _pay(customer, invoiced, paid, due=None, ref=None):
+    from app.commercial.insight.payments import Settlement
+    return Settlement(customer, ref or f"{customer}-{invoiced}", None, invoiced,
+                      due, paid, 1000.0)
+
+
+def test_a_consistent_payer_is_prompt_and_a_wild_one_is_erratic():
+    """Slow and unpredictable are different problems. A customer who always
+    takes 45 days can be planned around; one who takes 5 or 95 cannot."""
+    from datetime import timedelta
+
+    from app.commercial.insight import payments
+
+    base = date(2026, 1, 1)
+    steady = [_pay("a", base + timedelta(days=30 * i),
+                   base + timedelta(days=30 * i + 28),
+                   base + timedelta(days=30 * i + 30)) for i in range(5)]
+    wild = [_pay("c", base + timedelta(days=30 * i),
+                 base + timedelta(days=30 * i + d),
+                 base + timedelta(days=30 * i + 30))
+            for i, d in enumerate([5, 80, 12, 95, 30])]
+
+    assert payments.classify(steady)["pattern"] == "PROMPT"
+    assert payments.classify(wild)["pattern"] == "ERRATIC"
+
+
+def test_consistently_late_is_a_terms_problem_not_a_collections_problem():
+    from datetime import timedelta
+
+    from app.commercial.insight import payments
+
+    base = date(2026, 1, 1)
+    late = [_pay("b", base + timedelta(days=30 * i),
+                 base + timedelta(days=30 * i + 40),
+                 base + timedelta(days=30 * i + 30)) for i in range(5)]
+    got = payments.classify(late)
+    assert got["pattern"] == "PREDICTABLY_LATE"
+    assert got["median_days_late"] == pytest.approx(10.0)
+    assert "terms problem" in payments.PATTERNS["PREDICTABLY_LATE"]["meaning"]
+
+
+def test_no_pattern_is_asserted_below_the_floor():
+    from app.commercial.insight import payments
+
+    thin = [_pay("d", date(2026, 1, 1), date(2026, 2, 1))]
+    assert payments.classify(thin)["pattern"] == "TOO_FEW"
+
+
+def test_the_spread_survives_one_catastrophic_invoice():
+    """Median absolute deviation, not standard deviation: one invoice settled
+    nine months late is a story about that invoice, not about the customer."""
+    from datetime import timedelta
+
+    from app.commercial.insight import payments
+
+    base = date(2026, 1, 1)
+    rows = [_pay("e", base + timedelta(days=30 * i),
+                 base + timedelta(days=30 * i + 30)) for i in range(6)]
+    rows.append(_pay("e", base, base + timedelta(days=280), ref="e-outlier"))
+    got = payments.classify(rows)
+    assert got["spread_days"] <= payments.ERRATIC_SPREAD_DAYS
+    assert got["pattern"] != "ERRATIC"
+
+
+def test_the_trend_compares_halves_by_invoice_date():
+    from datetime import timedelta
+
+    from app.commercial.insight import payments
+
+    base = date(2026, 1, 1)
+    # Older invoices took 60 days, newer ones take 20.
+    rows = [_pay("f", base + timedelta(days=15 * i),
+                 base + timedelta(days=15 * i + (60 if i < 3 else 20)))
+            for i in range(6)]
+    assert payments.classify(rows)["trend"] == "IMPROVING"
+
+
+def test_batching_and_part_payment_are_counted_because_they_change_the_call():
+    from app.commercial.insight import payments
+
+    # One transfer clearing three invoices, and one invoice paid in two parts.
+    rows = [_pay("g", date(2026, 1, i + 1), date(2026, 3, 1), ref=f"g-{i}")
+            for i in range(3)]
+    rows.append(_pay("g", date(2026, 1, 1), date(2026, 4, 1), ref="g-0-part2"))
+    rows[-1] = payments.Settlement("g", "g-inv-0", None, date(2026, 1, 1), None,
+                                   date(2026, 4, 1), 500.0)
+    rows.append(payments.Settlement("g", "g-inv-0", None, date(2026, 1, 1), None,
+                                    date(2026, 5, 1), 500.0))
+    got = payments.classify(rows)
+    assert got["largest_batch"] == 3
+    assert got["part_paid_invoices"] == 1

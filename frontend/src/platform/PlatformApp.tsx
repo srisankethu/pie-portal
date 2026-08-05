@@ -19,6 +19,7 @@ import { JourneyScreen, LostRevenueScreen, OpportunityScreen, SimulatorScreen, W
 import { CadenceScreen, CompositionScreen, LandscapeScreen } from "./viz/Tier2";
 import { CustomerHealthTimeline, MigrationMatrix } from "./viz/History";
 import { PaymentsScreen, StockScreen, SupplyScreen } from "./viz/Tier3";
+import { NegotiateScreen } from "./viz/Negotiate";
 import "./viz/viz.css";
 
 const ROLE_HOME: Record<Role, { title: string; sub: string; nav: string }> = {
@@ -231,6 +232,7 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
       payments: "payments",
       stock: "stock",
       supply: "supply",
+      negotiate: "negotiate",
     };
     go(map[head] ?? "home");
   }, [go]);
@@ -378,6 +380,9 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
     // counts. The purchase rate is dropped from a salesperson's stock copy.
     ["payments", "Cash", ""],
     ["stock", "Stock", ""],
+    // Every role: it is the salesperson's own screen, and a manager needs to
+    // see what their team is proposing.
+    ["negotiate", "Negotiate", ""],
     ["journey", "Customers", ""],
     // Open, not total: a badge counting closed decisions is a badge that never
     // goes down, and one that never goes down stops being read.
@@ -450,6 +455,7 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
         {screen === "payments" && <PaymentsScreen session={session} onNavigate={goViz} />}
         {screen === "stock" && <StockScreen session={session} />}
         {screen === "supply" && <SupplyScreen session={session} />}
+        {screen === "negotiate" && <NegotiateScreen session={session} />}
 
         {/* ── HOME: the Commercial Storyboard ──
             A briefing, not a queue. The decision list it used to show is still

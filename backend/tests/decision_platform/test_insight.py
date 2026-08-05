@@ -19,6 +19,7 @@ import pytest
 from app.commercial.config import CommercialThresholds
 from app.commercial.insight import (cadence, cohorts, composition, flow, landscape,
                                     periods, simulate, story, weather)
+from app.commercial.insight import stock as _stock
 from app.domain import models
 from app.signals.base import SaleRow
 from app.signals.config import SignalThresholds
@@ -790,6 +791,13 @@ def test_late_is_against_the_due_date_and_slow_is_against_the_invoice():
     assert built["customers"][0]["late_count"] == 1
 
 
+#: The carrying policy these stock tests are written against. Explicit rather
+#: than the shipped default, so changing that default cannot silently move what
+#: they assert — 18% a year is 1.5% a month, which keeps the arithmetic legible
+#: in the assertions below.
+CARRYING = _stock.Carrying(annual_pct=0.18, dead_days=365, slow_days=180)
+
+
 def test_a_blank_reorder_level_is_never_read_as_zero():
     """An item with no reorder point cannot be below it. Reading blank as zero
     would flag the whole catalogue the day somebody leaves the field empty."""
@@ -799,7 +807,7 @@ def test_a_blank_reorder_level_is_never_read_as_zero():
         stock.StockLine("p1", "No policy", 0.0, 0.0, 0.0, None, date(2026, 7, 1), 5.0),
         stock.StockLine("p2", "Has policy", 2.0, 2.0, 2.0, 10.0, date(2026, 7, 1), 5.0),
     ]
-    built = stock.build(lines, date(2026, 7, 31), with_cost=False)
+    built = stock.build(lines, date(2026, 7, 31), CARRYING, with_cost=False)
     below = next(g for g in built["groups"] if g["key"] == "BELOW_REORDER")
     assert [i["product_id"] for i in below["items"]] == ["p2"]
     assert built["counts"]["no_reorder_point"] == 1
@@ -812,7 +820,7 @@ def test_committed_beyond_stock_is_zohos_arithmetic_not_ours():
 
     lines = [stock.StockLine("p1", "CNMG", 40.0, 40.0, -5.0, None,
                              date(2026, 7, 20), 12.0)]
-    built = stock.build(lines, date(2026, 7, 31), with_cost=False)
+    built = stock.build(lines, date(2026, 7, 31), CARRYING, with_cost=False)
     oversold = next(g for g in built["groups"] if g["key"] == "OVERSOLD")
     assert oversold["count"] == 1
     # Positive available with negative actual is exactly the case: sellable on
@@ -827,7 +835,7 @@ def test_weeks_of_cover_is_refused_rather_than_forecast():
     from app.commercial.insight import stock
 
     built = stock.build([stock.StockLine("p1", "X", 5.0, 5.0, 5.0, None, None, 0.0)],
-                        date(2026, 7, 31), with_cost=False)
+                        date(2026, 7, 31), CARRYING, with_cost=False)
     assert any(u["series"] == "weeks_of_cover" for u in built["unavailable"])
 
 
@@ -836,8 +844,8 @@ def test_stock_value_is_absent_without_cost_scope():
 
     lines = [stock.StockLine("p1", "X", 10.0, 10.0, 10.0, None, None, 0.0,
                              purchase_rate=400.0)]
-    plain = stock.build(lines, date(2026, 7, 31), with_cost=False)
-    priced = stock.build(lines, date(2026, 7, 31), with_cost=True)
+    plain = stock.build(lines, date(2026, 7, 31), CARRYING, with_cost=False)
+    priced = stock.build(lines, date(2026, 7, 31), CARRYING, with_cost=True)
     assert "stock_value" not in plain["counts"]
     assert priced["counts"]["stock_value"] == 4000.0
     for group in plain["groups"]:
@@ -1256,3 +1264,137 @@ def test_the_timezone_is_inside_the_thresholds_version():
 
     assert (CommercialThresholds(timezone="Asia/Kolkata").version
             != CommercialThresholds(timezone="Asia/Dubai").version)
+
+
+# ── what the shelf costs to keep ────────────────────────────────────────────
+def _shelf(**kw):
+    base = dict(product_id="p1", label="CNMG 120408", on_hand=100.0,
+                available=100.0, actual_available=100.0, reorder_level=None,
+                last_sold=date(2026, 7, 1), sold_qty_window=5.0,
+                purchase_rate=400.0)
+    base.update(kw)
+    return _stock.StockLine(**base)
+
+
+def test_the_monthly_drain_is_value_times_the_rate_over_twelve():
+    """100 pieces at ₹400 is ₹40,000 on the shelf; at 18% a year that is ₹600 a
+    month. Asserted as a number rather than recomputed from the same expression
+    the implementation uses — a test that repeats the formula verifies nothing."""
+    line = _shelf()
+    assert line.inventory_value() == 40_000.0
+    assert line.monthly_holding_cost(CARRYING) == 600.0
+    assert line.annual_holding_cost(CARRYING) == 7_200.0
+
+
+def test_an_item_with_no_purchase_cost_has_no_drain_rather_than_zero():
+    """Zero would sort it to the bottom of a worst-first list, which is exactly
+    where a line nobody has costed must not quietly sit."""
+    line = _shelf(purchase_rate=None)
+    assert line.inventory_value() is None
+    assert line.monthly_holding_cost(CARRYING) is None
+    assert line.priority(date(2026, 8, 5), CARRYING) is None
+
+
+def test_health_is_age_alone_because_value_does_not_make_stock_fresh():
+    as_of = date(2026, 8, 5)
+    assert _shelf(last_sold=date(2026, 7, 1)).health(as_of, CARRYING) == _stock.HEALTHY
+    assert _shelf(last_sold=date(2026, 1, 1)).health(as_of, CARRYING) == _stock.SLOW
+    assert _shelf(last_sold=date(2024, 1, 1)).health(as_of, CARRYING) == _stock.DEAD
+    # Never sold and on the shelf is the strongest version of dead, not a
+    # reason to leave the row out.
+    assert _shelf(last_sold=None).health(as_of, CARRYING) == _stock.DEAD
+    # Nothing on the shelf cannot be dead stock — there is no stock.
+    assert _shelf(on_hand=0.0, last_sold=None).health(as_of, CARRYING) == _stock.HEALTHY
+
+
+def test_the_recommended_action_is_a_band_not_a_judgement():
+    as_of = date(2026, 8, 5)
+    assert _shelf(last_sold=date(2026, 7, 1)).recommended_action(as_of, CARRYING) == "HOLD"
+    assert _shelf(last_sold=date(2026, 1, 1)).recommended_action(as_of, CARRYING) == "PUSH"
+    # Dead, and somebody has bought it before: there is a call to make.
+    assert _shelf(last_sold=date(2025, 1, 1),
+                  buyers=("Brakes India",)).recommended_action(as_of, CARRYING) == "DISCOUNT"
+    # Dead with nobody who has ever bought it: bundling is the remaining lever.
+    assert _shelf(last_sold=date(2025, 1, 1)).recommended_action(as_of, CARRYING) == "BUNDLE"
+    # Never sold once. Nothing here evidences a discount; it is a question for
+    # whoever bought it, so the proposal is a write-off rather than a price.
+    assert _shelf(last_sold=None).recommended_action(as_of, CARRYING) == "WRITE_OFF"
+
+
+def test_priority_is_the_drain_itself_not_an_invented_score():
+    """A weighted 0–100 blend of age, quantity and value is a number nobody can
+    check and whose meaning moves whenever a weight does. Rupees per month is
+    already the right ranking, and it is arithmetic anyone can redo."""
+    line = _shelf()
+    assert line.priority(date(2026, 8, 5), CARRYING) == line.monthly_holding_cost(CARRYING)
+
+
+def test_a_salesperson_gets_the_drain_and_not_the_value_behind_it():
+    """The uncomfortable line on this screen, pinned. The drain is what makes
+    dead stock actionable, so it stays; everything it is computed *from* goes."""
+    row = _shelf().to_dict(date(2026, 8, 5), CARRYING, with_cost=False)
+    assert row["monthly_holding_cost"] == 600.0
+    for banned in ("purchase_rate", "inventory_value", "stock_value",
+                   "annual_holding_cost", "last_purchased"):
+        assert banned not in row, banned
+
+    owner = _shelf().to_dict(date(2026, 8, 5), CARRYING, with_cost=True)
+    assert owner["inventory_value"] == 40_000.0
+    assert owner["annual_holding_cost"] == 7_200.0
+
+
+def test_the_carrying_rate_is_never_in_any_payload():
+    """The one number that makes the drain invertible back into cost. It is
+    owner policy, set in Settings — it must not ride out on the stock response
+    for any role, including an owner's, because the response is what a browser
+    keeps."""
+    built = _stock.build([_shelf()], date(2026, 8, 5), CARRYING, with_cost=True)
+
+    def walk(node):
+        """Every key and every scalar in the response, flattened."""
+        if isinstance(node, dict):
+            for k, v in node.items():
+                yield ("key", k)
+                yield from walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                yield from walk(v)
+        else:
+            yield ("value", node)
+
+    for kind, item in walk(built):
+        if kind == "key":
+            assert "carrying" not in item and "annual_pct" not in item, item
+        elif isinstance(item, (int, float)) and not isinstance(item, bool):
+            # The rate itself, and the monthly rate it divides into. Prose may
+            # mention that a rate exists; the number must not appear.
+            assert item != pytest.approx(CARRYING.annual_pct), item
+            assert item != pytest.approx(CARRYING.monthly_pct), item
+
+
+def test_the_grid_ranks_by_what_each_line_costs_to_keep():
+    lines = [
+        _shelf(product_id="cheap", on_hand=10.0, purchase_rate=100.0),
+        _shelf(product_id="dear", on_hand=500.0, purchase_rate=900.0),
+        _shelf(product_id="unpriced", purchase_rate=None),
+    ]
+    built = _stock.build(lines, date(2026, 8, 5), CARRYING, with_cost=True)
+    # Costliest first; the line nobody has costed sorts last, as unknown.
+    assert [i["product_id"] for i in built["items"]] == ["dear", "cheap", "unpriced"]
+
+
+def test_every_kpi_carries_the_filter_that_produced_it():
+    """A headline figure somebody cannot drill into is a figure they have to
+    take on trust, which is the opposite of what this product is for."""
+    built = _stock.build([_shelf(last_sold=date(2024, 1, 1))], date(2026, 8, 5),
+                         CARRYING, with_cost=True)
+    keys = {f["key"] for f in built["filters"]}
+    for card in built["kpis"]:
+        assert card["filter"] is None or card["filter"] in keys, card
+
+
+def test_a_forecast_is_refused_rather_than_dressed_as_a_probability():
+    built = _stock.build([_shelf()], date(2026, 8, 5), CARRYING, with_cost=True)
+    refused = {u["series"] for u in built["unavailable"]}
+    assert {"recovery_probability", "expected_recovery_value",
+            "branch", "supplier_and_brand"} <= refused

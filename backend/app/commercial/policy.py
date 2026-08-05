@@ -41,6 +41,9 @@ EDITABLE: tuple[str, ...] = (
     "min_material_gap",
     "min_margin_deterioration_pp",
     "price_rounding_increment",
+    "carrying_cost_annual_pct",
+    "dead_stock_days",
+    "slow_stock_days",
 )
 #: Incentive rates are deliberately absent. They are not org policy edited from
 #: a settings screen — they are the published mechanism parameters in
@@ -96,6 +99,24 @@ FIELD_HELP: dict[str, tuple[str, str]] = {
         "Erosion threshold",
         "How far margin must fall, in percentage points, before the platform "
         "calls it erosion rather than noise from mix and freight."),
+    "carrying_cost_annual_pct": (
+        "Annual carrying cost",
+        "What a rupee of stock costs to hold for a year — interest, warehouse, "
+        "insurance, obsolescence — as a fraction. Everything the Stock screen "
+        "says about cash drain is this number times the value on the shelf, so "
+        "it is worth arguing about once rather than guessing at monthly. It is "
+        "never shown to a salesperson: with it, the drain figure they do see "
+        "divides back into the purchase cost."),
+    "dead_stock_days": (
+        "Dead after",
+        "Days with no sale before a line is called dead rather than slow. A "
+        "distributor's specialist tooling is not dead in month two, and a "
+        "threshold set too low turns the whole catalogue red on day one."),
+    "slow_stock_days": (
+        "Slow after",
+        "Days with no sale before a line is marked slow-moving. Sits below the "
+        "dead threshold; the gap between them is the window where a line is "
+        "worth pushing rather than discounting."),
     "price_rounding_increment": (
         "Price rounding",
         "Recommended prices are rounded to a multiple of this, because quoting "

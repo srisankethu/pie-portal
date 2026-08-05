@@ -836,3 +836,77 @@
   .acct-table th:nth-child(4), .acct-table td:nth-child(4) { display: none; }
   .acct-search { max-width: none; }
 }
+
+/* ── stock: the command centre ───────────────────────────────────────────────
+ * Colour carries one meaning on this screen and only one: how long a line has
+ * been sitting. Moving / slow / quiet, in that order, and nothing else on the
+ * page borrows those three colours for a different idea.
+ *
+ * The palette is the existing loss/accent/neutral steps rather than a new
+ * green-amber-red: this shell has no validated green, and inventing one for a
+ * single screen is how a product ends up with two greens that disagree.
+ */
+.kpi-row {
+  list-style: none; margin: 0 0 4px; padding: 0;
+  display: grid; gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+}
+.kpi-card {
+  width: 100%; text-align: left; display: grid; gap: 2px;
+  padding: 11px 13px; border: 1px solid var(--color-divider);
+  border-left: 3px solid var(--color-divider);
+  background: var(--color-bg); font: inherit; cursor: default;
+}
+.kpi-card.clickable { cursor: pointer; }
+.kpi-card.clickable:hover { background: var(--color-accent-100); }
+.kpi-card.on { border-left-color: var(--viz-accent); background: var(--color-accent-100); }
+.kpi-card:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.kpi-label {
+  font-size: 10.5px; letter-spacing: .09em; text-transform: uppercase;
+  color: var(--color-neutral-600); font-family: var(--font-heading);
+}
+.kpi-value {
+  font-family: var(--font-heading); font-size: 22px; line-height: 1.15;
+  font-variant-numeric: tabular-nums;
+}
+
+.stock-filters {
+  display: flex; gap: 7px; align-items: center; flex-wrap: wrap;
+  margin: 2px 0 2px;
+}
+.chip {
+  font: inherit; font-size: 12.5px; padding: 3px 10px;
+  border: 1px solid var(--color-divider); background: var(--color-bg);
+  cursor: pointer; border-radius: 2px;
+}
+.chip:hover { background: var(--color-accent-100); }
+.chip.on {
+  background: var(--color-accent-700); border-color: var(--color-accent-700);
+  color: #fff;
+}
+.chip:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+
+/* The health mark. A dot rather than a coloured row: a whole row tinted red
+   fights every other colour on the page, and at three states it is the mark
+   people learn rather than the fill. */
+.stock-dot {
+  display: inline-block; width: 8px; height: 8px; margin-right: 7px;
+  border-radius: 50%; vertical-align: baseline;
+  background: var(--color-neutral-400);
+}
+.stock-dot.HEALTHY { background: var(--viz-gain); }
+.stock-dot.SLOW { background: var(--viz-accent); }
+.stock-dot.DEAD { background: var(--viz-loss); }
+
+/* The drain column. A bar behind the figure, relative to the worst line in
+   view, because the point of this column is that a handful of lines carry most
+   of the cost — which a column of right-aligned numbers hides until somebody
+   adds them up. */
+.drain { display: inline-flex; align-items: center; gap: 8px; width: 100%; justify-content: flex-end; }
+.drain-bar {
+  flex: 1; height: 6px; min-width: 24px;
+  background: color-mix(in srgb, var(--color-text) 7%, transparent);
+}
+.drain-fill { display: block; height: 100%; background: var(--viz-neutral); }
+.drain-fill.SLOW { background: var(--viz-accent); }
+.drain-fill.DEAD { background: var(--viz-loss); }

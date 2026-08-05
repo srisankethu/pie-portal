@@ -501,10 +501,31 @@ def stock_position(principal: Principal = Depends(current_principal),
 
     sold_qty: dict[str, float] = {}
     last_sold: dict[str, date] = {}
+    # Who has bought this item, most recent buyer first. The answer to "who do
+    # I call about this", which is the only thing that turns a dead-stock row
+    # into a phone call — and it is operational, so every role gets it.
+    buyer_seen: dict[str, dict[str, date]] = {}
     for sale in snapshot.sales:
         sold_qty[sale.product_id] = sold_qty.get(sale.product_id, 0.0) + float(sale.qty)
         if sale.date > last_sold.get(sale.product_id, date.min):
             last_sold[sale.product_id] = sale.date
+        seen = buyer_seen.setdefault(sale.product_id, {})
+        if sale.date > seen.get(sale.customer_id, date.min):
+            seen[sale.customer_id] = sale.date
+
+    def buyers_for(pid: str) -> tuple[str, ...]:
+        seen = buyer_seen.get(pid) or {}
+        ordered = sorted(seen.items(), key=lambda kv: kv[1], reverse=True)
+        return tuple(label_for(snapshot.customer_names, cid, kind="customer")
+                     for cid, _when in ordered[:6])
+
+    # When we last bought it. Owner zone — paired with the purchase rate it is
+    # a supplier's price on a date — so it is only read for those roles.
+    last_purchased: dict[str, date] = {}
+    if with_cost:
+        for cost_row in snapshot.costs:
+            if cost_row.date > last_purchased.get(cost_row.product_id, date.min):
+                last_purchased[cost_row.product_id] = cost_row.date
 
     lines = [
         stock.StockLine(
@@ -520,16 +541,26 @@ def stock_position(principal: Principal = Depends(current_principal),
             sold_qty_window=sold_qty.get(pid, 0.0),
             purchase_rate=(float(row.purchase_rate)
                            if row.purchase_rate is not None else None),
+            last_purchased=last_purchased.get(pid),
+            buyers=buyers_for(pid),
         )
         for pid, row in latest.items()
         # A service has no shelf; counting it as zero on hand would put the
         # whole service catalogue in the out-of-stock list forever.
         if row.tracked
     ]
-    result = stock.build(lines, as_of, with_cost=with_cost)
+    carrying = stock.Carrying(annual_pct=th.carrying_cost_annual_pct,
+                              dead_days=th.dead_stock_days,
+                              slow_days=th.slow_stock_days)
+    result = stock.build(lines, as_of, carrying, with_cost=with_cost)
     if not with_cost:
-        result["unavailable"].append(
-            {"series": "stock_value", "reason": "Stock value is management information."})
+        result["unavailable"].append({
+            "series": "inventory_value_and_carrying_rate",
+            "reason": ("What the stock cost and what rate it is carried at are "
+                       "management information. What it costs you to keep it "
+                       "each month is not — that is the number this screen is "
+                       "for, and it is on every row."),
+        })
     return _envelope(
         result, currency=th.currency,
         empty_reason=(None if lines else

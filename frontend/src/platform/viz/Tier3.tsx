@@ -13,8 +13,10 @@
 // delivery date, stock value for a salesperson — and the discipline that keeps
 // them trustworthy is naming the gap rather than filling it.
 
+import { useMemo, useState } from "react";
 import { money } from "../../money";
 import { papi } from "../api";
+import { DataGrid, numeric } from "../DataGrid";
 import type { PlatformSession } from "../types";
 import { Figure, Panel, stateOf } from "./Panel";
 import { pct, useInsight } from "./useInsight";
@@ -176,61 +178,242 @@ export function PaymentsScreen({
 }
 
 // ── The shelf ───────────────────────────────────────────────────────────────
+/** The quick filters, as the server defines them. Applied client-side because
+ *  the grid already holds every row: a round trip to hide rows the browser has
+ *  is a round trip somebody waits for. The *definitions* stay server-side so a
+ *  label and its predicate cannot drift apart. */
+type StockFilter = {
+  key: string; label: string; field: string; op: string; value: unknown;
+};
+
+function passes(row: Row, f: StockFilter, decile: Record<string, number>): boolean {
+  const v = row[f.field];
+  switch (f.op) {
+    case "eq": return v === f.value;
+    case "is_true": return v === true;
+    case "is_null": return v == null;
+    case "gte_or_null": return v == null || Number(v) >= Number(f.value);
+    // "High" is the top tenth of *this book*, not a fixed rupee amount: the
+    // same cutoff cannot be right for a ₹19 crore book and a ₹37 lakh one.
+    case "top_decile": return v != null && Number(v) >= (decile[f.field] ?? Infinity);
+    default: return true;
+  }
+}
+
+function decileOf(rowsIn: Row[], field: string): number {
+  const values = rowsIn.map((r) => r[field]).filter((v) => v != null).map(Number)
+    .sort((a, b) => a - b);
+  if (values.length === 0) return Infinity;
+  return values[Math.floor(values.length * 0.9)] ?? values[values.length - 1];
+}
+
+const HEALTH_LABEL: Record<string, string> = {
+  HEALTHY: "Moving", SLOW: "Slow", DEAD: "Quiet",
+};
+
 export function StockScreen({ session }: { session: PlatformSession }) {
   const { data, loading, error, reload } = useInsight(
     () => papi.stock(session.token), [session.token]);
+  const [active, setActive] = useState<string[]>([]);
 
-  const groups = rows(data?.groups);
+  const items = rows(data?.items);
   const counts = (data?.counts as Record<string, number>) ?? {};
-  const hasValue = counts.stock_value !== undefined;
+  const kpis = rows(data?.kpis);
+  const filters = (rows(data?.filters) as unknown as StockFilter[]);
+  // A manager or owner gets the value behind the drain; a salesperson does
+  // not, and the presence of the field is how the screen knows which it is.
+  const seesValue = items.some((r) => "inventory_value" in r);
+
+  const deciles = useMemo(() => ({
+    monthly_holding_cost: decileOf(items, "monthly_holding_cost"),
+    on_hand: decileOf(items, "on_hand"),
+  }), [items]);
+
+  // Filters combine, and they combine as AND: picking "Quiet" and "Costliest
+  // to hold" means the rows that are both, which is the question somebody
+  // actually has. Two chips that widened the list would be a search that gets
+  // longer the more you ask of it.
+  const shown = useMemo(() => {
+    const chosen = filters.filter((f) => active.includes(f.key));
+    return chosen.length === 0
+      ? items
+      : items.filter((r) => chosen.every((f) => passes(r, f, deciles)));
+  }, [items, filters, active, deciles]);
+
+  const toggle = (key: string) =>
+    setActive((a) => a.includes(key) ? a.filter((k) => k !== key) : [...a, key]);
+
+  const worst = shown.reduce(
+    (m, r) => Math.max(m, num(r.monthly_holding_cost)), 0);
 
   return (
     <Panel
       title="Stock"
-      question="What is on the shelf, and which of it is a problem"
+      question="What is on the shelf, what it costs to keep, and what to do about it"
       state={stateOf(loading, error, data?.empty_reason as string)}
       error={error} emptyReason={data?.empty_reason as string} onRetry={reload} wide
     >
-      <ul className="quad-legend">
-        <li className="quad quad-bad">
-          <span className="quad-count">{counts.oversold ?? 0}</span>
-          <span className="quad-body"><strong>Committed beyond stock</strong>
-            <span className="viz-muted">Promised more than is on the shelf.</span></span>
-        </li>
-        <li className="quad quad-warn">
-          <span className="quad-count">{counts.below_reorder ?? 0}</span>
-          <span className="quad-body"><strong>At the reorder point</strong>
-            <span className="viz-muted">Of the items that have one set.</span></span>
-        </li>
-        <li className="quad quad-flat">
-          <span className="quad-count">{counts.idle ?? 0}</span>
-          <span className="quad-body"><strong>Sitting still</strong>
-            <span className="viz-muted">
-              On hand, nothing sold in {String(data?.idle_after_days)} days.
-            </span></span>
-        </li>
-        <li className="quad quad-good">
-          <span className="quad-count">{counts.tracked_items ?? 0}</span>
-          <span className="quad-body"><strong>Stock-tracked items</strong>
-            <span className="viz-muted">
-              {hasValue
-                ? `${money(counts.stock_value)} at last purchase price.`
-                : "Services and non-stock lines are excluded."}
-            </span></span>
-        </li>
+      {/* The summary, each card a way into the rows behind it. A headline a
+          person cannot drill into is one they have to take on trust. */}
+      <ul className="kpi-row">
+        {kpis.map((k, i) => {
+          const filterKey = k.filter as string | null;
+          const on = filterKey != null && active.includes(filterKey);
+          return (
+            <li key={i}>
+              <button
+                type="button"
+                className={`kpi-card${on ? " on" : ""}${filterKey ? " clickable" : ""}`}
+                disabled={!filterKey}
+                aria-pressed={filterKey ? on : undefined}
+                onClick={() => filterKey && toggle(filterKey)}
+              >
+                <span className="kpi-label">{String(k.label)}</span>
+                <span className="kpi-value">
+                  {k.unit === "money" ? money(num(k.value))
+                    : k.unit === "ratio" ? pct(k.value as number, 0)
+                      : num(k.value)}
+                </span>
+                <span className="viz-muted">{String(k.note)}</span>
+              </button>
+            </li>
+          );
+        })}
       </ul>
 
-      {groups.map((g, i) => (
+      <div className="stock-filters">
+        <span className="viz-muted">Narrow to</span>
+        {filters.map((f) => (
+          <button
+            key={f.key} type="button"
+            className={`chip${active.includes(f.key) ? " on" : ""}`}
+            aria-pressed={active.includes(f.key)}
+            onClick={() => toggle(f.key)}
+          >
+            {f.label}
+          </button>
+        ))}
+        {active.length > 0 && (
+          <button type="button" className="btn btn-ghost btn-sm"
+                  onClick={() => setActive([])}>
+            Clear
+          </button>
+        )}
+      </div>
+
+      <p className="viz-muted">
+        {shown.length === items.length
+          ? `${items.length} lines on the shelf`
+          : `${shown.length} of ${items.length} lines`}
+        {" "}· ranked by what each costs to keep for a month
+        {counts.value_unpriced_items ? (
+          <> · {counts.value_unpriced_items} have no purchase cost recorded, so
+            their drain is unknown rather than zero</>
+        ) : null}
+      </p>
+
+      <DataGrid<Row>
+        ariaLabel="Stock"
+        pageSize={25}
+        rows={shown}
+        empty={
+          <p className="tier3-none">
+            Nothing matches those filters. That may be the good answer.
+          </p>
+        }
+        columns={[
+          {
+            field: "label", headerName: "Item", flex: 1.5, minWidth: 220,
+            filter: "agTextColumnFilter",
+            cellRenderer: (p: { data?: Row }) => (
+              <span>
+                <span className={`stock-dot ${String(p.data?.health ?? "")}`} />
+                {String(p.data?.label ?? "")}
+              </span>
+            ),
+          },
+          numeric<Row>("on_hand", "On hand", (v) => num(v).toLocaleString("en-IN"),
+                            { width: 120, flex: 0 }),
+          {
+            field: "idle_days", headerName: "Age", width: 120, flex: 0,
+            type: "numericColumn", cellClass: "ag-num",
+            filter: "agNumberColumnFilter",
+            headerTooltip: "Days since this item last sold. Blank means it has "
+              + "never sold at all, which sorts as the oldest.",
+            valueFormatter: (p) =>
+              p.value == null ? "never sold" : `${p.value} d`,
+          },
+          {
+            field: "monthly_holding_cost",
+            // Named for the reader. A manager is deciding where to put the
+            // team; a salesperson is being told what their shelf costs them,
+            // and "holding cost" is an accountant's word for it.
+            headerName: seesValue ? "Costs per month" : "Monthly cash drain",
+            width: 190, flex: 0, sort: "desc",
+            type: "numericColumn", cellClass: "ag-num",
+            filter: "agNumberColumnFilter",
+            headerTooltip: "What keeping this line costs for a month at the "
+              + "organization's carrying rate. The bar is relative to the "
+              + "costliest line in view.",
+            // A bar, not just a figure: the point of this column is that a
+            // handful of lines carry most of the drain, and a column of
+            // right-aligned numbers hides that until somebody adds them up.
+            cellRenderer: (p: { data?: Row; value?: unknown }) => {
+              if (p.value == null) return <span className="viz-muted">unknown</span>;
+              const share = worst > 0 ? Number(p.value) / worst : 0;
+              return (
+                <span className="drain">
+                  <span className="drain-bar" aria-hidden="true">
+                    <span className={`drain-fill ${String(p.data?.health ?? "")}`}
+                          style={{ width: `${Math.max(2, share * 100)}%` }} />
+                  </span>
+                  {money(Number(p.value))}
+                </span>
+              );
+            },
+          },
+          {
+            field: "health", headerName: "State", width: 120, flex: 0,
+            filter: "agTextColumnFilter",
+            valueFormatter: (p) => HEALTH_LABEL[String(p.value)] ?? String(p.value),
+          },
+          {
+            field: "action_label", headerName: "What to do", flex: 1,
+            minWidth: 190, filter: "agTextColumnFilter",
+          },
+          {
+            headerName: "Who buys it", flex: 1.2, minWidth: 200,
+            sortable: false, filter: false, autoHeight: true, wrapText: true,
+            context: { minGridWidth: 1000 },
+            headerTooltip: "Customers who have bought this item before, most "
+              + "recent first. The answer to 'who do I call about this'.",
+            valueGetter: (p) => ((p.data?.buyers as string[]) ?? []).join(", "),
+            valueFormatter: (p) => p.value || "nobody yet",
+          },
+          // Cost-zone columns. Absent from a salesperson's payload entirely,
+          // so these simply do not exist for them.
+          ...(seesValue ? [
+            numeric<Row>("inventory_value", "On the shelf", money,
+                              { width: 155, flex: 0, context: { minGridWidth: 1180 } }),
+            numeric<Row>("annual_holding_cost", "Per year", money,
+                              { width: 145, flex: 0, context: { minGridWidth: 1320 } }),
+          ] : []),
+        ]}
+      />
+
+      {/* The three operational groups keep their place under the grid: they
+          answer different questions from "what is this costing us", and
+          folding them into filters would lose the sentence that says what each
+          one means. */}
+      {rows(data?.groups).map((g, i) => (
         <div className="tier3-list" key={i}>
           <h4>{String(g.label)} <span className="tier3-count">{String(g.count)}</span></h4>
           <p className="viz-muted">{String(g.meaning)}</p>
           {rows(g.items).length === 0 ? (
-            // An empty group is a good outcome and reads as one. Hiding it
-            // would leave a reader unsure whether it was checked.
             <p className="tier3-none">Nothing here. That is the good answer.</p>
           ) : (
             <ol className="cadence-rows">
-              {rows(g.items).map((item, j) => (
+              {rows(g.items).slice(0, 8).map((item, j) => (
                 <li key={j} className="cadence-row">
                   <span className="cadence-hit as-row">
                     <span className="cadence-name">{String(item.label)}</span>
@@ -244,11 +427,6 @@ export function StockScreen({ session }: { session: PlatformSession }) {
                             : item.last_sold
                               ? `last sold ${String(item.last_sold)}`
                               : "never sold"}
-                        {/* Nothing on the shelf has no value worth printing —
-                            "₹0" beside "0 on hand" is noise restating the
-                            column to its left. */}
-                        {item.stock_value != null && num(item.stock_value) > 0 &&
-                          ` · ${money(num(item.stock_value))}`}
                       </span>
                     </span>
                   </span>

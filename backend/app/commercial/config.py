@@ -152,12 +152,37 @@ class CommercialThresholds:
     # How far below a reference price counts as materially below.
     quote_price_tolerance_pct: float = 0.02
 
+    # ── inventory carrying cost ──────────────────────────────────────────────
+    # What a rupee of stock costs to hold for a year, as a fraction: interest on
+    # the money, warehousing, insurance, obsolescence. Owner-set, because it is
+    # a real number about this business and a plausible-looking default would be
+    # a made-up number driving a "write this off" recommendation.
+    #
+    # **This rate is RESTRICTED and must never reach a salesperson.** Monthly
+    # holding cost is inventory value x rate / 12, and inventory value is
+    # quantity x purchase cost — so a salesperson holding the drain, the
+    # quantity and this rate recovers the cost by division. Unlike the floor
+    # markup, which varies by family and takes many observations to unpick, this
+    # is a single organization-wide constant: disclosing it once makes every
+    # cost in the catalogue computable, permanently. See
+    # ``commercial/insight/stock.py`` for how the two zones are kept apart.
+    carrying_cost_annual_pct: float = 0.18
+    # Nothing sold in this many days and the line is *dead* rather than merely
+    # slow. Separate from the slow-moving mark below it so a screen can say
+    # which of the two it means.
+    dead_stock_days: int = 365
+    slow_stock_days: int = 180
+
     @classmethod
     def from_env(cls) -> "CommercialThresholds":
         return cls(
             currency=os.environ.get("DEFAULT_CURRENCY", "INR").strip().upper() or "INR",
             timezone=(os.environ.get("BUSINESS_TIMEZONE", "").strip()
                       or "Asia/Kolkata"),
+            carrying_cost_annual_pct=_f("CI_CARRYING_COST_ANNUAL_PCT",
+                                        _default("carrying_cost_annual_pct")),
+            dead_stock_days=_i("CI_DEAD_STOCK_DAYS", _default("dead_stock_days")),
+            slow_stock_days=_i("CI_SLOW_STOCK_DAYS", _default("slow_stock_days")),
             recent_days=_i("CI_RECENT_DAYS", 90),
             previous_days=_i("CI_PREVIOUS_DAYS", 90),
             historical_lookback_days=_i("CI_HISTORICAL_LOOKBACK_DAYS", 730),

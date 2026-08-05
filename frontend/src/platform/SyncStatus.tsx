@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { formatDateTime, since } from "../when";
 import { papi } from "./api";
 import type { SyncOptions, SyncRun, SyncState } from "./types";
 import { Bp, Labelled, Tip } from "./ui";
@@ -119,20 +120,13 @@ function elapsed(fromIso: string | null, toIso?: string | null): string {
   return `${Math.floor(m / 60)}h ${m % 60}m`;
 }
 
-function at(iso: string | null): string {
-  if (!iso) return "—";
-  return new Date(iso).toLocaleString("en-IN", {
-    day: "numeric", month: "short", hour: "numeric", minute: "2-digit",
-  });
-}
+// Both render in the business's timezone — see src/when.ts. `ago` keeps its
+// own "never", which is the right word for a sync that has not happened and
+// the wrong word for a missing field anywhere else.
+const at = formatDateTime;
 
 function ago(iso: string | null): string {
-  if (!iso) return "never";
-  const mins = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins} min ago`;
-  if (mins < 60 * 24) return `${Math.round(mins / 60)} h ago`;
-  return at(iso);
+  return iso ? since(iso) : "never";
 }
 
 const LABEL: Record<string, string> = {

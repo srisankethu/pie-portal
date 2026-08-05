@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { formatDateTime } from "../when";
 import { papi } from "./api";
 import type {
   ApprovalRequest,
@@ -43,11 +44,7 @@ function pct(n: unknown): string {
   return typeof n === "number" ? (n * 100).toFixed(1) + "%" : "—";
 }
 
-function when(iso: string | null): string {
-  if (!iso) return "—";
-  return new Date(iso).toLocaleString("en-IN", {
-    day: "numeric", month: "short", hour: "numeric", minute: "2-digit" });
-}
+const when = formatDateTime;
 
 /* ── approvals ────────────────────────────────────────────────────────────── */
 

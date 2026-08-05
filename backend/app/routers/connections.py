@@ -341,6 +341,17 @@ def _check(session: Session, row: models.ZohoConnection) -> dict:
                 "detail": f"{type(e).__name__}: {e}"}
 
     found = info.get("organization_found")
+    # Zoho knows which zone the books are kept in. Recorded on the platform's
+    # organization while we have it, so "which day is it for this business?"
+    # stops depending on where the server happens to be hosted. Only ever
+    # filled in, never overwritten — an owner who has set it meant it.
+    zone = str(info.get("time_zone") or "").strip()
+    if found and zone:
+        org = session.get(models.Organization, row.organization_id)
+        if org is not None and not (org.timezone or "").strip():
+            org.timezone = zone
+            session.flush()
+
     detail = ("Reached this company." if found else
               f"Authenticated, but company {row.zoho_organization_id} is not among "
               f"the ones this login can see.")
@@ -352,6 +363,7 @@ def _check(session: Session, row: models.ZohoConnection) -> dict:
         "detail": detail,
         "organization_name": info.get("organization_name"),
         "currency": info.get("currency"),
+        "time_zone": info.get("time_zone"),
         # Every company this grant reaches — the answer to "do I need another
         # credential for the next entity?", which is almost always no.
         "visible_organizations": info.get("visible_organizations", []),

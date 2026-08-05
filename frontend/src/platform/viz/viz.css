@@ -802,3 +802,37 @@
 /* The I2 block is prose, not a list — a legal refusal reads as a paragraph.
    Without this it inherits the document margin and pushes the panel open. */
 .neg-approval p { margin: 0; font-size: 13.5px; line-height: 1.45; }
+
+/* ── the customer directory ──────────────────────────────────────────────── */
+/* Search and the two segmented controls on one line while there is room, and
+   stacked when there is not. The search box grows because a name is the thing
+   people type; the controls keep their natural width because a segmented
+   control that stretches reads as a set of unrelated buttons. */
+.acct-controls {
+  display: flex; flex-wrap: wrap; gap: 12px 20px;
+  align-items: flex-end; margin-bottom: 14px;
+}
+.acct-search { flex: 1 1 220px; max-width: 340px; min-width: 0; }
+/* Only rendered when the row is inactive, so it needs no "active" counterpart
+   and no colour — a badge on every row is a badge nobody reads. */
+.acct-flag {
+  margin-left: 8px; font-size: 10.5px; letter-spacing: .07em;
+  text-transform: uppercase; font-weight: 600;
+  color: var(--color-neutral-600);
+  border: 1px solid var(--color-divider); border-radius: 2px;
+  padding: 1px 5px; vertical-align: 1px;
+}
+/* Money and counts right-aligned and tabular so the column can be compared
+   down rather than read across. */
+.acct-table td.fv, .acct-table th.fv {
+  text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+
+@media (max-width: 720px) {
+  /* The two count columns are the first to go: on a phone the question is
+     "who, and when did they last order", and four numeric columns turn every
+     row into two lines of wrapped digits. */
+  .acct-table th:nth-child(3), .acct-table td:nth-child(3),
+  .acct-table th:nth-child(4), .acct-table td:nth-child(4) { display: none; }
+  .acct-search { max-width: none; }
+}

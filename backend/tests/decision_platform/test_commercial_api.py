@@ -20,7 +20,7 @@ from app.commercial.compute import recompute
 from app.db import Base, get_session
 from app.domain import models
 from app.domain.enums import SignalType
-from app.routers import commercial, insight, platform_auth
+from app.routers import accounts, commercial, insight, platform_auth
 from app.seed import SEED_PASSWORD, ensure_org_and_users
 
 ORG = "org_sanketh"          # the seeded default org the demo users belong to
@@ -84,6 +84,7 @@ def client():
     app.include_router(platform_auth.router)
     app.include_router(commercial.router)
     app.include_router(insight.router)
+    app.include_router(accounts.router)
 
     def _override():
         sess = Maker()
@@ -498,3 +499,81 @@ def test_the_response_records_both_parameter_versions(client):
 def test_the_desk_is_scoped_like_every_other_per_customer_route(client):
     assert _negotiate(client, "r.nair@sanketh.in",
                       customer_id="c2").status_code == 404
+
+
+# ── the directory: active by default, and choosable from ────────────────────
+def _mark_inactive(client, customer_id: str) -> None:
+    s = client.Maker()
+    s.get(models.Customer, customer_id).status = "INACTIVE"
+    s.commit()
+    s.close()
+
+
+def test_the_directory_shows_active_accounts_by_default(client):
+    """The pull reads inactive contacts because their history has to resolve.
+    That is not a reason to put a dormant account in the list somebody scans
+    before a call — so it is one click away, and never more than that."""
+    _mark_inactive(client, "c2")
+    hdr = _hdr(client, "m.rao@sanketh.in")
+
+    default = client.get("/api/v1/accounts", headers=hdr).json()
+    assert "c2" not in [a["customer_id"] for a in default]
+
+    inactive = client.get("/api/v1/accounts?status=inactive", headers=hdr).json()
+    assert [a["customer_id"] for a in inactive] == ["c2"]
+
+    every = client.get("/api/v1/accounts?status=all", headers=hdr).json()
+    assert "c2" in [a["customer_id"] for a in every]
+
+
+def test_the_directory_carries_trade_so_it_can_be_chosen_from(client):
+    """A list of names can only be searched. What somebody actually wants to
+    know before calling is when this account last ordered and whether they are
+    still worth the call."""
+    body = client.get("/api/v1/accounts", headers=_hdr(client, "m.rao@sanketh.in")).json()
+    c1 = next(a for a in body if a["customer_id"] == "c1")
+    assert c1["last_order"], "c1 has invoices in the fixture"
+    assert c1["orders_12m"] >= 1
+    assert c1["revenue_12m"] > 0
+
+
+def test_an_account_that_has_never_ordered_says_so_rather_than_showing_zero(client):
+    """Never ordered and ordered-but-not-this-year are different facts, and a
+    zero in a date column is neither of them."""
+    s = client.Maker()
+    s.add(models.Customer(customer_id="c-new", organization_id=ORG,
+                          external_id="c-new", name="Freshly added"))
+    s.commit()
+    s.close()
+
+    body = client.get("/api/v1/accounts", headers=_hdr(client, "m.rao@sanketh.in")).json()
+    fresh = next(a for a in body if a["customer_id"] == "c-new")
+    assert fresh["last_order"] is None
+    assert fresh["orders_12m"] == 0
+
+
+def test_the_directory_carries_no_cost_and_no_margin(client):
+    """Revenue is operational — a salesperson sees it on every other screen.
+    Cost and margin are not, and this endpoint is on a salesperson's path."""
+    _assign_to_salesperson(client, "c1")
+    body = client.get("/api/v1/accounts", headers=_hdr(client, "r.nair@sanketh.in")).json()
+    for row in body:
+        assert not [k for k in row if "cost" in k or "margin" in k or "profit" in k]
+
+
+def test_a_discontinued_item_is_not_offered_by_default(client):
+    """It is in the master now — the pull reads inactive items so their history
+    resolves — but it should not be the item picked by accident on a live
+    quote."""
+    s = client.Maker()
+    s.get(models.Product, "p1").active = False
+    s.commit()
+    s.close()
+    hdr = _hdr(client, "m.rao@sanketh.in")
+
+    assert client.get("/api/v1/accounts/c1/items", headers=hdr).json() == []
+    offered = client.get("/api/v1/accounts/c1/items?status=all", headers=hdr).json()
+    assert [i["product_id"] for i in offered] == ["p1"]
+    assert offered[0]["active"] is False
+    # Named, not numbered: the picker exists so nobody has to know an item id.
+    assert offered[0]["name"] == "CNMG 120408-MP insert"

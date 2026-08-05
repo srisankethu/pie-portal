@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { formatDate } from "../when";
 import { papi } from "./api";
 import type {
   CustomerItemDetail,
@@ -47,9 +48,7 @@ function num(v: number | null | undefined): string {
   return count(v);
 }
 
-function when(iso: string | null): string {
-  return iso ? new Date(iso).toLocaleDateString("en-IN", { dateStyle: "medium" }) : "—";
-}
+const when = formatDate;
 
 const SIGNAL_LABEL: Record<string, string> = {
   CI_MARGIN_EROSION: "Margin eroding",

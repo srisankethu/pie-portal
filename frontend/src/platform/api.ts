@@ -1,6 +1,7 @@
-import type { Account, AccountItem, ApprovalRequest, EntityKind, Identity, IdentityPolicy, IdentitySuggestion, ConnectionCheck, ConnectionsView, FixedThresholds, MarginPolicy, MarginPolicyPatch, NewConnectionInput, ZohoConnection, ZohoCredential, ZohoVisibleOrg, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, OrgPolicy, PlatformSession, PlatformUser, QuoteGate, Role, SyncOptions, SyncStartResponse, SyncState, ThresholdView, ZohoConnectionInput } from "./types";
+import type { Account, AccountItem, StatusFilter, ApprovalRequest, EntityKind, Identity, IdentityPolicy, IdentitySuggestion, ConnectionCheck, ConnectionsView, FixedThresholds, MarginPolicy, MarginPolicyPatch, NewConnectionInput, ZohoConnection, ZohoCredential, ZohoVisibleOrg, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, OrgPolicy, PlatformSession, PlatformUser, QuoteGate, Role, SyncOptions, SyncStartResponse, SyncState, ThresholdView, ZohoConnectionInput } from "./types";
 
 import { setMoneyCurrency } from "../money";
+import { setBusinessTimezone } from "../when";
 
 const KEY = "pie_platform_session";
 
@@ -13,11 +14,13 @@ export function loadPlatformSession(): PlatformSession | null {
   if (!raw) return null;
   const s = JSON.parse(raw) as PlatformSession;
   setMoneyCurrency(s.currency);
+  setBusinessTimezone(s.timezone);
   return s;
 }
 export function savePlatformSession(s: PlatformSession) {
   localStorage.setItem(KEY, JSON.stringify(s));
   setMoneyCurrency(s.currency);
+  setBusinessTimezone(s.timezone);
 }
 export function clearPlatformSession() {
   localStorage.removeItem(KEY);
@@ -68,6 +71,7 @@ interface LoginResp {
   user_id: string;
   organization_id: string;
   currency: string;
+  timezone: string;
   must_change_password: boolean;
 }
 
@@ -218,14 +222,19 @@ export const papi = {
       `/api/v1/commercial/customers/${encodeURIComponent(customerId)}` +
       `/items/${encodeURIComponent(productId)}`, {}, t),
 
-  listAccounts: (t: string, q = "") =>
-    req<Account[]>(`/api/v1/accounts${q ? `?q=${encodeURIComponent(q)}` : ""}`, {}, t),
+  listAccounts: (t: string, q = "", status: StatusFilter = "active") => {
+    const p = new URLSearchParams({ status });
+    if (q) p.set("q", q);
+    return req<Account[]>(`/api/v1/accounts?${p}`, {}, t);
+  },
 
   /** The items one account has bought, newest first. Lets a screen offer a name
    *  where it would otherwise demand an id nobody can recognise. */
-  listAccountItems: (t: string, customerId: string) =>
+  listAccountItems: (t: string, customerId: string,
+                     status: StatusFilter = "active") =>
     req<AccountItem[]>(
-      `/api/v1/accounts/${encodeURIComponent(customerId)}/items`, {}, t),
+      `/api/v1/accounts/${encodeURIComponent(customerId)}/items?status=${status}`,
+      {}, t),
 
   demoSeed: (t: string) => req<Record<string, unknown>>("/api/v1/internal/demo-seed", { method: "POST" }, t),
 

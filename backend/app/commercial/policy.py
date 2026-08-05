@@ -172,20 +172,26 @@ def validate(th: CommercialThresholds) -> None:
 
 
 # ── loading ─────────────────────────────────────────────────────────────────
-def _in_org_currency(session: Session, organization_id: str,
-                     th: CommercialThresholds) -> CommercialThresholds:
-    """Stamp the organization's own currency onto the thresholds.
+def _in_org_locale(session: Session, organization_id: str,
+                   th: CommercialThresholds) -> CommercialThresholds:
+    """Stamp the organization's own currency and timezone onto the thresholds.
 
-    The currency belongs to the tenant, not to the deployment: one instance can
-    hold an Indian distributor and a Gulf one, and the environment default is
-    only a fallback for an organization row that has not said. Because the
-    currency is inside the version hash, the same numeric policy in two
-    currencies produces two versions — which is the point, since the rows
-    stamped with them are not comparable.
+    Both belong to the tenant, not to the deployment: one instance can hold an
+    Indian distributor and a Gulf one, and the environment default is only a
+    fallback for an organization row that has not said. Because both are inside
+    the version hash, the same numeric policy in two currencies — or two zones,
+    which put a month boundary in two different places — produces two versions,
+    which is the point, since the rows stamped with them are not comparable.
     """
     org = session.get(models.Organization, organization_id)
+    changes: dict = {}
     code = (getattr(org, "currency", None) or "").strip().upper()
-    return replace(th, currency=code) if code and code != th.currency else th
+    if code and code != th.currency:
+        changes["currency"] = code
+    tz = (getattr(org, "timezone", None) or "").strip()
+    if tz and tz != th.timezone:
+        changes["timezone"] = tz
+    return replace(th, **changes) if changes else th
 
 
 def load_for_org(session: Session, organization_id: str) -> CommercialThresholds:
@@ -195,7 +201,7 @@ def load_for_org(session: Session, organization_id: str) -> CommercialThresholds
     org that has never edited its policy gets exactly what it got before, so
     nothing about existing behaviour depends on a row existing.
     """
-    base = _in_org_currency(session, organization_id, load_commercial_thresholds())
+    base = _in_org_locale(session, organization_id, load_commercial_thresholds())
     row = session.get(models.CommercialPolicy, organization_id)
     if row is None or not row.overrides:
         return base
@@ -220,7 +226,7 @@ def save_for_org(session: Session, organization_id: str, updates: dict,
     that is fine alone can invert the ladder when combined with what is already
     saved, and only the combination is what quotes are judged against.
     """
-    base = _in_org_currency(session, organization_id, load_commercial_thresholds())
+    base = _in_org_locale(session, organization_id, load_commercial_thresholds())
     row = session.get(models.CommercialPolicy, organization_id)
     current = dict(row.overrides or {}) if row is not None else {}
 
@@ -249,7 +255,7 @@ def save_for_org(session: Session, organization_id: str, updates: dict,
 
 def describe(session: Session, organization_id: str) -> dict:
     """The policy for the Settings screen: value, default, whether overridden."""
-    base = _in_org_currency(session, organization_id, load_commercial_thresholds())
+    base = _in_org_locale(session, organization_id, load_commercial_thresholds())
     effective = load_for_org(session, organization_id)
     row = session.get(models.CommercialPolicy, organization_id)
     overrides = (row.overrides or {}) if row is not None else {}

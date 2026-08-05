@@ -25,6 +25,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..authz import issue_token
+from .. import clock
 from ..config import settings
 from ..db import get_session
 from ..domain import models
@@ -55,6 +56,12 @@ class LoginResponse(BaseModel):
     # to hardcode a rupee sign in four places, which is correct for exactly one
     # tenant and silently wrong for the next.
     currency: str = "INR"
+    # The zone this business's day is measured in. Sent at sign-in for the same
+    # reason the currency is: every screen renders a timestamp, and a browser
+    # in another zone would otherwise show a sync that ran this morning as
+    # yesterday — or, for an owner travelling, silently shift the whole book by
+    # a day. The business's day is the one worth showing.
+    timezone: str = "Asia/Kolkata"
     must_change_password: bool = False
 
 
@@ -83,4 +90,5 @@ def login(body: LoginRequest, session: Session = Depends(get_session)) -> LoginR
         user_id=user.user_id, organization_id=user.organization_id,
         role=user.role, name=user.name,
         currency=(getattr(org, "currency", None) or settings.DEFAULT_CURRENCY),
+        timezone=(getattr(org, "timezone", None) or clock.DEFAULT_ZONE),
         must_change_password=user.must_change_password)

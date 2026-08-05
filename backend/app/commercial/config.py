@@ -61,6 +61,11 @@ class CommercialThresholds:
     # version onto rows that are not comparable. ``policy.load_for_org``
     # replaces this with the organization's own currency.
     currency: str = "INR"
+    # The zone every period boundary and "as of" date is measured in. Inside
+    # the version hash with everything else: the same numeric policy applied in
+    # two zones puts a month boundary in two different places, so rows stamped
+    # with one are not comparable to rows stamped with the other.
+    timezone: str = "Asia/Kolkata"
 
     # ── periods ──────────────────────────────────────────────────────────────
     # "Recent" is the window a current position is read from; "previous" is the
@@ -151,6 +156,8 @@ class CommercialThresholds:
     def from_env(cls) -> "CommercialThresholds":
         return cls(
             currency=os.environ.get("DEFAULT_CURRENCY", "INR").strip().upper() or "INR",
+            timezone=(os.environ.get("BUSINESS_TIMEZONE", "").strip()
+                      or "Asia/Kolkata"),
             recent_days=_i("CI_RECENT_DAYS", 90),
             previous_days=_i("CI_PREVIOUS_DAYS", 90),
             historical_lookback_days=_i("CI_HISTORICAL_LOOKBACK_DAYS", 730),

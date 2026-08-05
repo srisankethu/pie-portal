@@ -9,6 +9,10 @@ export interface PlatformSession {
   /** ISO code this organization trades in, from the sign-in response. Drives
    *  every money figure the client renders. */
   currency: string;
+  /** IANA zone this organization's *day* is measured in. Drives every
+   *  timestamp the client renders — see `src/when.ts` for why the browser's
+   *  own zone is the wrong answer here. */
+  timezone: string;
 }
 
 export interface DecisionSummary {
@@ -70,7 +74,19 @@ export interface Account {
   name: string;
   status: string;
   assigned_user_id: string | null;
+  /** Operational trade, so the directory can be chosen from rather than only
+   *  searched. No cost, no margin — those live behind the Customer × Item
+   *  surface where the permission gating is. */
+  last_order: string | null;
+  orders_12m: number;
+  revenue_12m: number;
 }
+
+/** Which slice of a master list to show. Active by default everywhere: the
+ *  pull reads inactive rows because their history has to resolve, which is not
+ *  a reason to put a retired item or a dormant 2019 account in front of
+ *  somebody about to quote. */
+export type StatusFilter = "active" | "inactive" | "all";
 
 export interface ConnectionState {
   state: "CONNECTED" | "SAMPLE_DATA" | "ERROR" | "UNREACHABLE" | "WRONG_ORG" | "NOT_CONFIGURED";
@@ -172,6 +188,7 @@ export interface AccountItem {
   product_id: string;
   name: string;
   sku: string;
+  active: boolean;
   last_bought: string | null;
 }
 

@@ -55,6 +55,12 @@ class Organization(Base):
     name: Mapped[str] = mapped_column(String(255))
     erp: Mapped[str] = mapped_column(String(32), default="zoho")
     currency: Mapped[str] = mapped_column(String(8), default="INR")
+    # The zone the business's *day* is measured in. Storage stays UTC; this is
+    # what decides which day a timestamp falls on, and it belongs to the tenant
+    # for the same reason the currency does — one instance can hold an Indian
+    # distributor and a Gulf one. Zoho reports it on the organization record, so
+    # a connected company fills it in rather than being asked.
+    timezone: Mapped[Optional[str]] = mapped_column(String(64))
     config: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 

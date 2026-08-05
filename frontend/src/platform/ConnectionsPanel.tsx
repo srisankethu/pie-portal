@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { since, todayISO } from "../when";
 import { papi } from "./api";
 import type {
   ConnectionCheck,
@@ -59,14 +60,10 @@ const EMPTY_FORM = {
   api_base: DC_PRESETS[0].api_base,
 };
 
+// "never", not "—": a connector that has never been checked is a different
+// state from a missing field, and only one of them is a problem.
 function when(iso: string | null | undefined): string {
-  if (!iso) return "never";
-  const d = new Date(iso);
-  const mins = Math.round((Date.now() - d.getTime()) / 60000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins} min ago`;
-  if (mins < 60 * 24) return `${Math.round(mins / 60)} h ago`;
-  return d.toLocaleDateString("en-IN", { dateStyle: "medium" });
+  return iso ? since(iso) : "never";
 }
 
 function health(c: ZohoConnection): { tone: "ok" | "bad" | "unknown" | "off"; label: string } {
@@ -269,7 +266,7 @@ function ConnectionCard({
             type="date"
             className="input"
             value={since}
-            max={new Date().toISOString().slice(0, 10)}
+            max={todayISO()}
             onChange={(e) => setSince(e.target.value)}
           />
           <label className="sync-check">

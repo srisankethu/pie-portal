@@ -29,8 +29,9 @@ from typing import Any, Callable, Optional
 
 from sqlalchemy.orm import Session
 
-from ..clock import now as _clock_now
+from ..clock import today as _clock_today
 from ..config import settings
+from ..domain import models
 from ..repositories import ReadModelRepository
 from ..trust import vault
 from .normalize import (
@@ -45,6 +46,9 @@ from .normalize import (
     normalize_vendor,
 )
 from .source import ZohoSource
+
+#: Distinct from ``None``, which is a legitimate "this org has no zone set".
+_UNSET = object()
 
 
 @dataclass
@@ -199,10 +203,23 @@ class SyncService:
         self.report = SyncReport(organization_id=organization_id)
         # customer_external_id -> (invoice date, salesperson_id, salesperson_name)
         self._owners: dict[str, tuple[date, str, str]] = {}
+        self._tz: Any = _UNSET
 
     def _phase(self, name: str) -> None:
         if self._on_phase is not None:
             self._on_phase(name)
+
+    def _timezone(self) -> Optional[str]:
+        """The zone this organization's *day* is measured in.
+
+        Read once per pull rather than per row. A missing organization row or a
+        blank value falls through to the configured business zone, which is the
+        same fallback ``clock.zone`` applies — this is not a place to guess UTC.
+        """
+        if self._tz is _UNSET:
+            org = self.s.get(models.Organization, self.org)
+            self._tz = (getattr(org, "timezone", None) or None)
+        return self._tz
 
     def run(self) -> SyncReport:
         """The whole pull in one pass, against this service's own source."""
@@ -457,7 +474,9 @@ class SyncService:
         # One pass over the item list, two writes. Stock rides on the same
         # payload, and a second pass to collect it would read the whole master
         # list twice per sync — the exact cost `run_reference` exists to avoid.
-        stock_as_of = _clock_now().date()
+        # The business's day, not the server's: a sync that runs at 02:00
+        # IST would otherwise stamp yesterday onto today's shelf count.
+        stock_as_of = _clock_today(self._timezone())
 
         for raw in self.source.list_items():
             ref = str(raw.get("item_id", "?"))

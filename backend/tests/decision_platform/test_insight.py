@@ -1218,3 +1218,41 @@ def test_batching_and_part_payment_are_counted_because_they_change_the_call():
     got = payments.classify(rows)
     assert got["largest_batch"] == 3
     assert got["part_paid_invoices"] == 1
+
+
+# ── the business day ────────────────────────────────────────────────────────
+#
+# Storage is UTC and stays UTC. These pin the *other* question — which day is it
+# for this business — which the code used to answer with `date.today()`: the
+# server's zone, and UTC in every container this runs in.
+
+def test_the_business_day_is_not_the_servers_day():
+    """Between 18:30 and 24:00 UTC it is already tomorrow in India. A pull that
+    runs then stamped yesterday onto today's shelf count, and the sync screen
+    said a run that had just finished happened the day before."""
+    from datetime import datetime, timezone as tz
+
+    from app import clock
+
+    instant = datetime(2026, 8, 5, 19, 30, tzinfo=tz.utc)   # 01:00 IST on the 6th
+    assert instant.date() == date(2026, 8, 5)
+    assert clock.to_local(instant, "Asia/Kolkata").date() == date(2026, 8, 6)
+
+
+def test_an_unknown_timezone_falls_back_rather_than_raising():
+    """A bad string in one tenant's row must not take that organization's
+    screens down; the fallback is the zone the deployment already runs on."""
+    from app import clock
+
+    assert str(clock.zone("Not/AZone")) == clock.DEFAULT_ZONE
+    assert str(clock.zone(None)) == clock.DEFAULT_ZONE
+    assert str(clock.zone("Asia/Dubai")) == "Asia/Dubai"
+
+
+def test_the_timezone_is_inside_the_thresholds_version():
+    """Two zones put a month boundary in two different places, so rows computed
+    under one are not comparable to rows computed under the other."""
+    from app.commercial.config import CommercialThresholds
+
+    assert (CommercialThresholds(timezone="Asia/Kolkata").version
+            != CommercialThresholds(timezone="Asia/Dubai").version)

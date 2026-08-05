@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { formatDate } from "../when";
 import {
   clearPlatformSession,
   isAuthError,
@@ -6,7 +7,7 @@ import {
   papi,
   savePlatformSession,
 } from "./api";
-import type { Account, DecisionDetail, DecisionSummary, PlatformSession, Role } from "./types";
+import type { Account, DecisionDetail, DecisionSummary, PlatformSession, Role, StatusFilter } from "./types";
 import { aiState, factLabel, factValue, isPrimaryFact } from "./format";
 import { Bp, Conf, FactChip, Interpretation, Labelled, Pri, Tip, typeLabel } from "./ui";
 import { navigate, parseHash, type Screen } from "./route";
@@ -20,6 +21,8 @@ import { CadenceScreen, CompositionScreen, LandscapeScreen } from "./viz/Tier2";
 import { CustomerHealthTimeline, MigrationMatrix } from "./viz/History";
 import { PaymentsScreen, StockScreen, SupplyScreen } from "./viz/Tier3";
 import { NegotiateScreen } from "./viz/Negotiate";
+import { Seg } from "./viz/Seg";
+import { money } from "../money";
 import "./viz/viz.css";
 
 const ROLE_HOME: Record<Role, { title: string; sub: string; nav: string }> = {
@@ -47,7 +50,8 @@ function SignIn({ onIn, notice }: { onIn: (s: PlatformSession) => void; notice?:
     try {
       const r = await papi.login(email, password);
       onIn({ token: r.token, role: r.role, name: r.name, user_id: r.user_id,
-             organization_id: r.organization_id, currency: r.currency });
+             organization_id: r.organization_id, currency: r.currency,
+             timezone: r.timezone });
     } catch (e2) {
       setErr((e2 as Error).message);
     } finally {
@@ -501,26 +505,23 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
         )}
 
         {/* ── CUSTOMERS ──
-            One screen, three zoom levels: the account in front of you, then
-            the book's month-by-month journey, then which bands customers moved
-            between. These were two nav items — "Customers" and "Accounts" —
-            and the split was arbitrary: both are the customer view, and the
-            names did not say which held what. Stacked in the order somebody
-            actually reads them, with the whole-book views below the account so
-            picking one still lands on the account. */}
+            "Customers" and "Accounts" were two nav items for one thing, and
+            the names did not say which held what. One screen now, and the
+            merge is inside the screen rather than a stack of the two old ones:
+            the directory carries what each account has actually been doing so
+            it can be *chosen from* rather than only searched, and the two
+            whole-book views sit under a heading that says they are the whole
+            book. Picking an account replaces the lot with that account. */}
         {screen === "customer" && (
-          <div className="screen-stack">
-            <CustomerScreen
-              session={session}
-              details={details}
-              customerId={customerId}
-              setCustomerId={(id) => go("customer", id ?? undefined)}
-              onOpen={openDetail}
-              onOpenItem={(pid) => go("customerItem", customerId ?? undefined, pid)}
-            />
-            <JourneyScreen session={session} onNavigate={goViz} />
-            <MigrationMatrix session={session} months={3} onNavigate={goViz} />
-          </div>
+          <CustomerScreen
+            session={session}
+            details={details}
+            customerId={customerId}
+            setCustomerId={(id) => go("customer", id ?? undefined)}
+            onOpen={openDetail}
+            onOpenItem={(pid) => go("customerItem", customerId ?? undefined, pid)}
+            onNavigate={goViz}
+          />
         )}
 
         {/* ── CUSTOMER x ITEM (the grain that names what is eroding) ── */}
@@ -797,7 +798,7 @@ function DetailScreen({
                 <span>
                   {d.human_action.action} · {d.human_action.note || "no note"}
                 </span>
-                <span className="text-muted">{new Date(d.human_action.acted_at).toLocaleDateString("en-IN")}</span>
+                <span className="text-muted">{formatDate(d.human_action.acted_at)}</span>
               </div>
             </>
           )}
@@ -865,6 +866,7 @@ function CustomerScreen({
   setCustomerId,
   onOpen,
   onOpenItem,
+  onNavigate,
 }: {
   session: PlatformSession;
   details: Record<string, DecisionDetail>;
@@ -872,6 +874,9 @@ function CustomerScreen({
   setCustomerId: (id: string | null) => void;
   onOpen: (id: string) => void;
   onOpenItem: (productId: string) => void;
+  /** Where the whole-book views send a click. Same signature every viz screen
+   *  takes, so this screen does not become a second routing table. */
+  onNavigate: (route: string) => void;
 }) {
   const all = Object.values(details);
   // The directory is every account in scope — not only those that happen to
@@ -880,45 +885,76 @@ function CustomerScreen({
   // answered for a quiet customer if quiet customers are invisible.
   const [accounts, setAccounts] = useState<Account[] | null>(null);
   const [q, setQ] = useState("");
+  const [status, setStatus] = useState<StatusFilter>("active");
+  const [sort, setSort] = useState<"name" | "recent" | "value">("name");
   const [accErr, setAccErr] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
+    setAccounts(null);
     papi
-      .listAccounts(session.token)
+      .listAccounts(session.token, "", status)
       .then((a) => !cancelled && setAccounts(a))
       .catch((e) => !cancelled && setAccErr((e as Error).message));
     return () => {
       cancelled = true;
     };
-  }, [session.token]);
+  }, [session.token, status]);
 
   const openCountFor = (id: string) =>
     all.filter((d) => d.subject_entity_id === id && (d.status === "OPEN" || d.status === "VIEWED")).length;
 
   if (!customerId) {
     const needle = q.trim().toLowerCase();
-    const shown = (accounts || []).filter((a) => !needle || a.name.toLowerCase().includes(needle));
+    // Sorted client-side: the list is one request and a few hundred rows, and
+    // a round trip to re-order something already in hand is a round trip the
+    // person waits for.
+    const shown = (accounts || [])
+      .filter((a) => !needle || a.name.toLowerCase().includes(needle))
+      .slice()
+      .sort((x, y) => {
+        if (sort === "value") return y.revenue_12m - x.revenue_12m;
+        if (sort === "recent") {
+          // Never-ordered sorts last rather than first: an empty string would
+          // put every contact-only account above the accounts actually trading.
+          return (y.last_order || "").localeCompare(x.last_order || "");
+        }
+        return x.name.localeCompare(y.name);
+      });
+    const quiet = shown.filter((a) => !a.last_order).length;
+
     return (
       <div>
         <div className="dp-head">
           <h1>Customers</h1>
           <p>
-            Every account you cover — search one to see what the data says before
-            you call, or read the whole book's movement below.
+            Every account you cover, with what they have actually been doing —
+            then the whole book's movement underneath.
           </p>
         </div>
-        <input
-          className="input"
-          style={{ maxWidth: 320, marginBottom: 14 }}
-          placeholder="Search accounts…"
-          aria-label="Search accounts"
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-        />
+
+        <div className="acct-controls">
+          <input
+            className="input acct-search"
+            placeholder="Search customers…"
+            aria-label="Search customers"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+          />
+          {/* Active by default. The pull reads inactive contacts because their
+              history has to resolve, which is not a reason to put a dormant
+              2019 account in the list somebody scans before a call. */}
+          <Seg label="Show" value={status}
+               onChange={(v) => setStatus(v as StatusFilter)}
+               options={[["active", "Active"], ["inactive", "Inactive"], ["all", "All"]]} />
+          <Seg label="Sort by" value={sort}
+               onChange={(v) => setSort(v as "name" | "recent" | "value")}
+               options={[["name", "Name"], ["recent", "Last order"], ["value", "12-month value"]]} />
+        </div>
+
         {accErr ? (
           <div className="state-panel">
-            <div className="state-mark">Accounts could not be loaded</div>
+            <div className="state-mark">Customers could not be loaded</div>
             <p style={{ margin: 0, fontSize: 13.5 }}>{accErr}</p>
           </div>
         ) : accounts === null ? (
@@ -928,33 +964,76 @@ function CustomerScreen({
           </>
         ) : shown.length === 0 ? (
           <div className="dp-empty">
-            {needle ? `No account matches “${q}”.` : "No accounts are assigned to you yet."}
+            {needle
+              ? `No ${status === "all" ? "" : status + " "}customer matches “${q}”.`
+              : status === "inactive"
+                ? "No customer is marked inactive."
+                : "No customers are assigned to you yet."}
           </div>
         ) : (
-          <Bp style={{ padding: 2 }}>
-            <table className="dp-table">
-              <thead>
-                <tr>
-                  <th>Account</th>
-                  <th>Open decisions</th>
-                  <th>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {shown.map((a) => {
-                  const n = openCountFor(a.customer_id);
-                  return (
-                    <tr key={a.customer_id} data-open onClick={() => setCustomerId(a.customer_id)}>
-                      <td style={{ fontWeight: 600 }}>{a.name}</td>
-                      <td>{n > 0 ? `${n} open` : <span className="text-muted">none</span>}</td>
-                      <td style={{ fontSize: 12 }}>{a.status}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </Bp>
+          <>
+            <div className="dp-count">
+              {shown.length} {shown.length === 1 ? "customer" : "customers"}
+              {status !== "all" && ` marked ${status}`}
+              {quiet > 0 && ` · ${quiet} have never ordered`}
+            </div>
+            <Bp style={{ padding: 2 }}>
+              <table className="dp-table acct-table">
+                <thead>
+                  <tr>
+                    <th>Customer</th>
+                    <th>Last order</th>
+                    <th className="fv">Orders (12m)</th>
+                    <th className="fv">Value (12m)</th>
+                    <th>Needs you</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {shown.map((a) => {
+                    const n = openCountFor(a.customer_id);
+                    const inactive = (a.status || "").toUpperCase() !== "ACTIVE";
+                    return (
+                      <tr key={a.customer_id} data-open onClick={() => setCustomerId(a.customer_id)}>
+                        <td style={{ fontWeight: 600 }}>
+                          {a.name}
+                          {/* Marked on the row rather than in a column of its
+                              own: it only matters when it is true, and only
+                              when the filter is showing them. */}
+                          {inactive && <span className="acct-flag">inactive</span>}
+                        </td>
+                        <td>
+                          {a.last_order
+                            ? formatDate(a.last_order)
+                            : <span className="text-muted">never ordered</span>}
+                        </td>
+                        <td className="fv">
+                          {a.orders_12m || <span className="text-muted">—</span>}
+                        </td>
+                        <td className="fv">
+                          {a.revenue_12m ? money(a.revenue_12m) : <span className="text-muted">—</span>}
+                        </td>
+                        <td>{n > 0 ? `${n} open` : <span className="text-muted">nothing</span>}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </Bp>
+          </>
         )}
+
+        {/* The whole book, below the list and named as such. These were a
+            second nav item; the split was arbitrary — both are the customer
+            view — but stacking them unlabelled just moved the confusion. */}
+        <div className="section-h" style={{ marginTop: 26 }}>
+          <Labelled tip="The two whole-book views. The list above is who; these are how the base as a whole is moving.">
+            The book as a whole
+          </Labelled>
+        </div>
+        <div className="screen-stack">
+          <JourneyScreen session={session} onNavigate={onNavigate} />
+          <MigrationMatrix session={session} months={3} onNavigate={onNavigate} />
+        </div>
       </div>
     );
   }

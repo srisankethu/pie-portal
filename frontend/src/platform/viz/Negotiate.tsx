@@ -21,7 +21,7 @@
 import { useEffect, useState } from "react";
 import { money } from "../../money";
 import { papi } from "../api";
-import type { Account, AccountItem, PlatformSession } from "../types";
+import type { Account, AccountItem, PlatformSession, StatusFilter } from "../types";
 import { Panel } from "./Panel";
 
 type Envelope = Record<string, unknown>;
@@ -83,6 +83,11 @@ export function NegotiateScreen({
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [items, setItems] = useState<AccountItem[]>([]);
   const [itemsLoading, setItemsLoading] = useState(false);
+  // Discontinued items are excluded by default. They are in the master now —
+  // the pull reads inactive items so their history resolves — but an item Zoho
+  // says is retired should not be the one picked by accident on a live quote.
+  // "All" is here because a retired item is still sometimes sold off the shelf.
+  const [itemStatus, setItemStatus] = useState<StatusFilter>("active");
 
   useEffect(() => {
     let live = true;
@@ -96,12 +101,12 @@ export function NegotiateScreen({
     if (!customer) { setItems([]); return; }
     let live = true;
     setItemsLoading(true);
-    papi.listAccountItems(session.token, customer)
+    papi.listAccountItems(session.token, customer, itemStatus)
       .then((rows) => { if (live) setItems(rows); })
       .catch(() => { if (live) setItems([]); })
       .finally(() => { if (live) setItemsLoading(false); });
     return () => { live = false; };
-  }, [session.token, customer]);
+  }, [session.token, customer, itemStatus]);
 
   const canPrice = customer.trim() && product.trim()
     && Number(qty) > 0 && Number(price) > 0;
@@ -170,9 +175,19 @@ export function NegotiateScreen({
                   { value: "", label: "Choose an item…" },
                   ...items.map((i) => ({
                     value: i.product_id,
-                    label: i.sku ? `${i.name} · ${i.sku}` : i.name,
+                    label: (i.sku ? `${i.name} · ${i.sku}` : i.name)
+                      + (i.active ? "" : " (discontinued)"),
                   })),
                 ]} />
+        <Choice label="Items to offer" value={itemStatus}
+                onChange={(v) => { setItemStatus(v as StatusFilter); setProduct(""); }}
+                disabled={!customer}
+                options={[
+                  { value: "active", label: "In the current range" },
+                  { value: "inactive", label: "Discontinued only" },
+                  { value: "all", label: "Everything they have bought" },
+                ]}
+                hint="Discontinued items are hidden unless you ask for them." />
         <Choice label="Tool family" value={family} onChange={setFamily}
                 options={FAMILIES}
                 hint="Sets which floor applies." />

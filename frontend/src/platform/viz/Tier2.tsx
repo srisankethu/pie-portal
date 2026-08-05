@@ -18,6 +18,7 @@
 // mix change?") is answered better, not merely differently.
 
 import { useMemo, useState } from "react";
+import { Seg } from "./Seg";
 import { money } from "../../money";
 import { Tip } from "../../Tip";
 import { papi } from "../api";
@@ -567,25 +568,3 @@ export function CadenceScreen({
 }
 
 // ── shared ──────────────────────────────────────────────────────────────────
-function Seg({
-  label, value, onChange, options,
-}: {
-  label: string; value: string; onChange: (v: string) => void;
-  options: [string, string][];
-}) {
-  return (
-    <span className="seg">
-      <span className="seg-label">{label}</span>
-      <span className="seg-buttons" role="group" aria-label={label}>
-        {options.map(([id, text]) => (
-          <button key={id} type="button"
-                  className={value === id ? "seg-btn seg-on" : "seg-btn"}
-                  aria-pressed={value === id}
-                  onClick={() => onChange(id)}>
-            {text}
-          </button>
-        ))}
-      </span>
-    </span>
-  );
-}

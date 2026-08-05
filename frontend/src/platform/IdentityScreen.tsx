@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { since } from "../when";
 import { papi } from "./api";
 import type { ConnectorRecord, EntityKind, Identity, IdentityPolicy, IdentitySuggestion } from "./types";
 import { Bp, Labelled, Tip } from "./ui";
@@ -26,14 +27,10 @@ const KINDS: { key: EntityKind; label: string; hint: string }[] = [
     hint: "Matched on SKU, after punctuation is normalised away." },
 ];
 
+// "never", not "—": a connector that has never been checked is a different
+// state from a missing field, and only one of them is a problem.
 function when(iso: string | null | undefined): string {
-  if (!iso) return "never";
-  const d = new Date(iso);
-  const mins = Math.round((Date.now() - d.getTime()) / 60000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins} min ago`;
-  if (mins < 60 * 24) return `${Math.round(mins / 60)} h ago`;
-  return d.toLocaleDateString("en-IN", { dateStyle: "medium" });
+  return iso ? since(iso) : "never";
 }
 
 /** One connector's record, shown as that connector holds it. */

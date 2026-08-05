@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { money } from "../money";
+import { since as when, todayISO } from "../when";
 import { papi } from "./api";
 import { ConnectionsPanel } from "./ConnectionsPanel";
 import { SyncStatusCard, useSync } from "./SyncStatus";
@@ -30,20 +31,10 @@ const RESULT_UI: Record<string, string> = {
  *  gives the detectors a full recent window, a full comparison window and room
  *  above the six-month history floor. The operator can move it either way. */
 function defaultSince(): string {
-  const d = new Date();
+  const d = new Date(`${todayISO()}T00:00:00`);
   d.setMonth(d.getMonth() - 18);
   d.setDate(1);
-  return d.toISOString().slice(0, 10);
-}
-
-function when(iso: string | null): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  const mins = Math.round((Date.now() - d.getTime()) / 60000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins} min ago`;
-  if (mins < 60 * 24) return `${Math.round(mins / 60)} h ago`;
-  return d.toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" });
+  return d.toLocaleDateString("en-CA");
 }
 
 export function DataScreen({ session, onSynced }: { session: PlatformSession; onSynced: () => void }) {
@@ -171,7 +162,7 @@ export function DataScreen({ session, onSynced }: { session: PlatformSession; on
                 type="date"
                 className="input"
                 value={since}
-                max={new Date().toISOString().slice(0, 10)}
+                max={todayISO()}
                 onChange={(e) => setSince(e.target.value)}
               />
               <label className="sync-check">

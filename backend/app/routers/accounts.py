@@ -12,12 +12,14 @@ where the permission gating for RESTRICTED data lives.
 """
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from .. import clock
 from ..authz import Principal, current_principal
 from ..db import get_session
 from ..domain import models
@@ -25,12 +27,30 @@ from ..domain import models
 router = APIRouter(prefix="/api/v1/accounts", tags=["accounts"])
 
 
+#: What "active" means for an account. Zoho's own word, upper-cased on the way
+#: in by ``normalize_customer``.
+ACTIVE = "ACTIVE"
+
+
 @router.get("")
 def list_accounts(
     q: Optional[str] = None,
+    status: str = Query("active", pattern="^(active|inactive|all)$"),
     principal: Principal = Depends(current_principal),
     session: Session = Depends(get_session),
 ) -> list[dict]:
+    """The account directory, with enough trade on each row to choose from it.
+
+    **``status`` defaults to active.** The pull now reads inactive contacts as
+    well — it has to, or their history cannot be resolved — and a directory that
+    silently mixed a dormant 2019 account into the list somebody scans before a
+    call would be worse than the old behaviour, not better. Inactive accounts
+    are one click away and never more than that.
+
+    Every figure here is OPERATIONAL: when they last ordered, how often, and how
+    much they spent. No cost and no margin — those reach a manager through the
+    Customer × Item surface, which is where the permission gating lives.
+    """
     stmt = select(models.Customer).where(
         models.Customer.organization_id == principal.organization_id)
     if principal.is_salesperson:
@@ -38,25 +58,80 @@ def list_accounts(
         stmt = stmt.where(models.Customer.assigned_user_id == principal.user_id)
     rows = session.scalars(stmt.order_by(models.Customer.name)).all()
 
+    if status != "all":
+        want_active = status == "active"
+        rows = [c for c in rows
+                if ((c.status or ACTIVE).upper() == ACTIVE) == want_active]
+
     needle = (q or "").strip().lower()
     if needle:
         rows = [c for c in rows if needle in c.name.lower()]
 
+    trade = _trade_summary(session, principal.organization_id,
+                           [c.customer_id for c in rows])
     return [
         {
             "customer_id": c.customer_id,
             "name": c.name,
             "status": c.status,
             "assigned_user_id": c.assigned_user_id,
+            **trade.get(c.customer_id, _NO_TRADE),
         }
         for c in rows
     ]
+
+
+#: An account with no invoices at all — a contact created and never sold to.
+#: Zeroes rather than nulls for the counts, because "0 orders" is a fact and a
+#: blank cell is a question.
+_NO_TRADE: dict = {"last_order": None, "orders_12m": 0, "revenue_12m": 0.0}
+
+
+def _trade_summary(session: Session, org: str,
+                   customer_ids: list[str]) -> dict[str, dict]:
+    """Last order, and the rolling twelve months, for a page of accounts.
+
+    One grouped query for the whole list rather than one per row: the directory
+    is the screen most likely to hold four hundred accounts, and an N+1 here is
+    four hundred round trips before anybody has clicked anything.
+    """
+    if not customer_ids:
+        return {}
+    since = clock.today() - timedelta(days=365)
+    rows = session.execute(
+        select(models.SalesTxn.customer_id,
+               func.max(models.SalesTxn.date),
+               func.count(func.distinct(models.SalesTxn.external_ref)),
+               func.sum(models.SalesTxn.line_revenue))
+        .where(models.SalesTxn.organization_id == org,
+               models.SalesTxn.customer_id.in_(customer_ids),
+               models.SalesTxn.date >= since)
+        .group_by(models.SalesTxn.customer_id)).all()
+    recent = {
+        cid: {"last_order": last.isoformat() if last else None,
+              "orders_12m": int(orders or 0),
+              "revenue_12m": float(revenue or 0)}
+        for cid, last, orders, revenue in rows
+    }
+    # An account whose last order predates the window still has a last order,
+    # and "never ordered" and "not for a year" are different things to say.
+    missing = [cid for cid in customer_ids if cid not in recent]
+    if missing:
+        for cid, last in session.execute(
+                select(models.SalesTxn.customer_id, func.max(models.SalesTxn.date))
+                .where(models.SalesTxn.organization_id == org,
+                       models.SalesTxn.customer_id.in_(missing))
+                .group_by(models.SalesTxn.customer_id)).all():
+            recent[cid] = {"last_order": last.isoformat() if last else None,
+                           "orders_12m": 0, "revenue_12m": 0.0}
+    return recent
 
 
 @router.get("/{customer_id}/items")
 def list_account_items(
     customer_id: str,
     q: Optional[str] = None,
+    status: str = Query("active", pattern="^(active|inactive|all)$"),
     principal: Principal = Depends(current_principal),
     session: Session = Depends(get_session),
 ) -> list[dict]:
@@ -113,10 +188,18 @@ def list_account_items(
             name, sku = p.name, (p.source_ref or {}).get("sku") or ""
         if needle and needle not in name.lower() and needle not in str(sku).lower():
             continue
+        # Discontinued items are excluded by default and offered on request.
+        # They are in the master now — the pull reads inactive items so their
+        # history resolves — but an item Zoho says is retired should not be the
+        # one somebody picks by accident on a live quote.
+        is_active = bool(getattr(p, "active", True)) if p is not None else False
+        if status != "all" and is_active != (status == "active"):
+            continue
         out.append({
             "product_id": r.product_id,
             "name": name,
             "sku": sku,
+            "active": is_active,
             "last_bought": r.last_bought.isoformat() if r.last_bought else None,
         })
     return out

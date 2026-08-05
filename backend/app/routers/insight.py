@@ -458,7 +458,7 @@ def payment_behaviour(principal: Principal = Depends(current_principal),
                       session: Session = Depends(get_session)) -> dict:
     """How long customers take to pay. Receivables — no cost, so every role."""
     org, snapshot, th = _context(session, principal)
-    as_of = _as_of(snapshot) or date.today()
+    as_of = _as_of(snapshot) or clock.today(th.timezone)
 
     receipts = session.scalars(
         select(models.PaymentReceipt).where(
@@ -484,7 +484,7 @@ def stock_position(principal: Principal = Depends(current_principal),
                    session: Session = Depends(get_session)) -> dict:
     """What is on the shelf, and which of it is a problem."""
     org, snapshot, th = _context(session, principal)
-    as_of = _as_of(snapshot) or date.today()
+    as_of = _as_of(snapshot) or clock.today(th.timezone)
     with_cost = principal.role in (Role.SALES_MANAGER, Role.OWNER)
 
     # The most recent snapshot per item. Zoho reports stock as a current
@@ -546,7 +546,7 @@ def supplier_position(principal: Principal = Depends(require_manager_or_owner),
     the platform does not put cost in front of a salesperson.
     """
     org, _snapshot, th = _context(session, principal)
-    as_of = date.today()
+    as_of = clock.today(th.timezone)
 
     vendors = {v.vendor_id: v for v in session.scalars(
         select(models.Vendor).where(models.Vendor.organization_id == org)).all()}
@@ -647,7 +647,7 @@ def negotiate(body: NegotiationRequest,
     org, snapshot, th = _context(session, principal)
     customer = _require_visible_customer(session, org, body.customer_id, principal)
     with_cost = principal.role in (Role.SALES_MANAGER, Role.OWNER)
-    as_of = clock.now().date()
+    as_of = clock.today(th.timezone)
 
     try:
         resolved = floor.resolve(session, org, body.product_id,

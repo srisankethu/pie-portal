@@ -356,6 +356,9 @@ class ZohoApiSource:
             "organization_found": match is not None,
             "organization_name": (match or {}).get("name"),
             "currency": (match or {}).get("currency_code"),
+            # Zoho knows which zone the books are kept in; asking the operator
+            # to type it again is asking them to get it wrong.
+            "time_zone": (match or {}).get("time_zone"),
             "visible_organizations": [
                 {"organization_id": str(o.get("organization_id")), "name": o.get("name")}
                 for o in orgs

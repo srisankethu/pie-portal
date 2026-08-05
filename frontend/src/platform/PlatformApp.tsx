@@ -17,6 +17,7 @@ import { CustomerCommercial, CustomerItemScreen } from "./CommercialScreens";
 import { Storyboard } from "./viz/Storyboard";
 import { JourneyScreen, LostRevenueScreen, OpportunityScreen, SimulatorScreen, WeatherScreen } from "./viz/Screens";
 import { CadenceScreen, CompositionScreen, LandscapeScreen } from "./viz/Tier2";
+import { CustomerHealthTimeline, MigrationMatrix } from "./viz/History";
 import "./viz/viz.css";
 
 const ROLE_HOME: Record<Role, { title: string; sub: string; nav: string }> = {
@@ -422,7 +423,15 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
         {screen === "weather" && <WeatherScreen session={session} onNavigate={goViz} />}
         {screen === "opportunities" && <OpportunityScreen session={session} onNavigate={goViz} />}
         {screen === "lostRevenue" && <LostRevenueScreen session={session} onNavigate={goViz} />}
-        {screen === "journey" && <JourneyScreen session={session} onNavigate={goViz} />}
+        {/* Two answers to one question, stacked rather than split across two
+            nav items: the journey chart is month by month, the migration matrix
+            is period against period and names who moved. */}
+        {screen === "journey" && (
+          <div className="screen-stack">
+            <JourneyScreen session={session} onNavigate={goViz} />
+            <MigrationMatrix session={session} months={3} onNavigate={goViz} />
+          </div>
+        )}
         {screen === "simulate" && <SimulatorScreen session={session} />}
         {screen === "landscape" && <LandscapeScreen session={session} onNavigate={goViz} />}
         {screen === "composition" && <CompositionScreen session={session} onNavigate={goViz} />}
@@ -911,15 +920,24 @@ function CustomerScreen({
         <h1>{name}</h1>
         <p>Trading facts and what we read from them.</p>
       </div>
+      {/* How this account has behaved over time. Every role gets this: the
+          server omits the margin field for a salesperson rather than blanking
+          it, so revenue and order cadence still land. It leads because
+          "what has this account been doing" is the question somebody opening
+          an account page has, before "which items are eroding". */}
+      <CustomerHealthTimeline session={session} customerId={customerId} />
+
       {/* Which items are driving this account's margin. Cost/margin throughout,
           so it is shown only to the roles allowed to see economics — a
           salesperson gets the decisions below and nothing from this surface. */}
       {session.role !== "SALESPERSON" && (
-        <CustomerCommercial
-          session={session}
-          customerId={customerId}
-          onOpenItem={onOpenItem}
-        />
+        <div style={{ marginTop: 18 }}>
+          <CustomerCommercial
+            session={session}
+            customerId={customerId}
+            onOpenItem={onOpenItem}
+          />
+        </div>
       )}
 
       <div className="section-h" style={{ marginTop: 20 }}>Open decisions</div>

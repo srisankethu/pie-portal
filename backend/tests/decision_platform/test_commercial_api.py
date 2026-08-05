@@ -20,7 +20,7 @@ from app.commercial.compute import recompute
 from app.db import Base, get_session
 from app.domain import models
 from app.domain.enums import SignalType
-from app.routers import commercial, platform_auth
+from app.routers import commercial, insight, platform_auth
 from app.seed import SEED_PASSWORD, ensure_org_and_users
 
 ORG = "org_sanketh"          # the seeded default org the demo users belong to
@@ -83,6 +83,7 @@ def client():
     app = FastAPI()
     app.include_router(platform_auth.router)
     app.include_router(commercial.router)
+    app.include_router(insight.router)
 
     def _override():
         sess = Maker()
@@ -306,3 +307,73 @@ def test_a_thin_relationship_reports_insufficiency_rather_than_a_conclusion(clie
     row = s.query(models.CustomerItemMetric).filter_by(customer_id="c9").one()
     assert row.signals == [], "no signal may be raised on one transaction"
     s.close()
+
+
+# ── the health timeline: scoped first, then margin absent rather than hidden ─
+def _assign_to_salesperson(client, customer_id: str) -> None:
+    s = client.Maker()
+    s.query(models.Customer).filter_by(customer_id=customer_id).one() \
+        .assigned_user_id = "usr_sales"
+    s.commit()
+    s.close()
+
+
+def test_a_salesperson_cannot_read_the_timeline_of_an_account_that_is_not_theirs(client):
+    """The accounts list already narrows a salesperson to their own accounts.
+    A per-customer route that skips the same check is a way around all of it,
+    because the id is then the only thing in the way and ids travel."""
+    unassigned = client.get("/api/v1/insight/customers/c2/timeline",
+                            headers=_hdr(client, "r.nair@sanketh.in"))
+    assert unassigned.status_code == 404
+    # 404 rather than 403: a 403 would confirm c2 exists, which is most of what
+    # an enumeration wants.
+    assert "not found" in unassigned.text.lower()
+
+    # The same account is readable by a manager, so this is scope and not a
+    # missing customer.
+    assert client.get("/api/v1/insight/customers/c2/timeline",
+                      headers=_hdr(client, "m.rao@sanketh.in")).status_code == 200
+
+    _assign_to_salesperson(client, "c2")
+    assert client.get("/api/v1/insight/customers/c2/timeline",
+                      headers=_hdr(client, "r.nair@sanketh.in")).status_code == 200
+
+
+def test_a_salesperson_s_timeline_has_no_margin_field_anywhere(client):
+    """Absent, not masked. The rule is that there is nothing in the network tab
+    to read — so this asserts on the raw bytes, not on the parsed value being
+    None, because a null still tells a reader the field exists and is theirs to
+    go looking for."""
+    _assign_to_salesperson(client, "c1")
+    r = client.get("/api/v1/insight/customers/c1/timeline",
+                   headers=_hdr(client, "r.nair@sanketh.in"))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["series"], "expected trading months for c1"
+    for point in body["series"]:
+        assert "margin" not in point
+        assert "cost_coverage" not in point
+    assert "margin" in r.text, "the refusal itself should be named in `unavailable`"
+    assert any(u["series"] == "margin" for u in body["unavailable"])
+
+
+def test_a_manager_s_timeline_carries_the_margin_and_its_coverage(client):
+    r = client.get("/api/v1/insight/customers/c1/timeline",
+                   headers=_hdr(client, "m.rao@sanketh.in"))
+    assert r.status_code == 200, r.text
+    series = r.json()["series"]
+    traded = [p for p in series if p["revenue"] > 0]
+    assert traded, "expected trading months for c1"
+    assert all("margin" in p and "cost_coverage" in p for p in series)
+    assert any(p["margin"] is not None for p in traded)
+
+
+def test_the_timeline_names_what_it_cannot_show_for_every_role(client):
+    """Payment behaviour is in the specification and is not in this platform.
+    Both roles are told so, rather than one of them seeing three series where
+    four were promised and being left to wonder."""
+    _assign_to_salesperson(client, "c1")
+    for email in ("r.nair@sanketh.in", "m.rao@sanketh.in"):
+        body = client.get("/api/v1/insight/customers/c1/timeline",
+                          headers=_hdr(client, email)).json()
+        assert any(u["series"] == "payment_behaviour" for u in body["unavailable"])

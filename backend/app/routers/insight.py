@@ -225,6 +225,26 @@ def migration_matrix(months: int = Query(3, ge=MIN_MONTHS, le=MAX_MONTHS),
                                    "No customer traded in either period."))
 
 
+def _require_visible_customer(session: Session, org: str, customer_id: str,
+                              principal: Principal) -> models.Customer:
+    """The account-list scope rule, applied to a per-customer endpoint.
+
+    ``/api/v1/accounts`` narrows a salesperson to their own assigned accounts,
+    and the decision endpoints do the same. A per-customer route that skips the
+    check is a way around all of it: the id is the only thing standing between
+    a salesperson and every relationship in the book, and ids travel.
+
+    404 rather than 403, matching the decisions endpoints — a 403 confirms the
+    customer exists, which is most of what an enumeration is after.
+    """
+    customer = session.get(models.Customer, customer_id)
+    if customer is None or customer.organization_id != org:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Customer not found")
+    if principal.is_salesperson and customer.assigned_user_id != principal.user_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Customer not found")
+    return customer
+
+
 @router.get("/customers/{customer_id}/timeline")
 def customer_timeline(customer_id: str,
                       months: int = Query(18, ge=6, le=36),
@@ -232,6 +252,7 @@ def customer_timeline(customer_id: str,
                       session: Session = Depends(get_session)) -> dict:
     """One customer's revenue, cadence and margin over time."""
     org, snapshot, th = _context(session, principal)
+    _require_visible_customer(session, org, customer_id, principal)
     as_of = _as_of(snapshot)
     rows = [s for s in snapshot.sales if s.customer_id == customer_id]
     if as_of is None or not rows:

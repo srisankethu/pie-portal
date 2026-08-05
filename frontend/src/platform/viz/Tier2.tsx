@@ -346,7 +346,7 @@ export function CompositionScreen({
       }
     >
       {mover && (
-        <p className="comp-headline">
+        <p className="viz-headline">
           Biggest shift: <strong>{String(mover.label)}</strong> held{" "}
           {pct(Number(mover.from), 0)} of the first half of this window and{" "}
           {pct(Number(mover.to), 0)} of the second — {Number(mover.change) >= 0 ? "up" : "down"}{" "}
@@ -423,7 +423,7 @@ export function CompositionScreen({
                 </div>
               );
             })}
-            <div className="multiple-axis" aria-hidden="true">
+            <div className="viz-time-axis" aria-hidden="true">
               {periods.map((p, i) => (
                 <span key={i}>{labels[i] ? p.label.replace(/ \d{4}$/, "") : ""}</span>
               ))}

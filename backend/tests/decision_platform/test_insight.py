@@ -681,3 +681,46 @@ def test_the_eligibility_bar_is_a_parameter_not_a_constant():
     # Three orders: enough to describe on a quote, not enough to raise a signal.
     assert agg.cadence_of(sales, as_of, min_orders=2, multiplier=1.5).estimable
     assert not agg.cadence_of(sales, as_of, min_orders=4, multiplier=1.5).estimable
+
+
+# ── the customer health timeline ────────────────────────────────────────────
+def test_a_quiet_month_has_no_margin_rather_than_a_margin_of_zero():
+    """The screen leaves the slot empty for a None. A zero would be drawn, and
+    a month with no trade would read as a catastrophic month."""
+    sales = [_sale("c1", date(2026, 6, 10), 1000, ref="a")]
+    result = cohorts.health_timeline(sales, {"p1": 700.0}, date(2026, 6, 30), months=3)
+    by_label = {p["label"]: p for p in result["series"]}
+    june = by_label["Jun 2026"]
+    quiet = [p for p in result["series"] if p["revenue"] == 0]
+
+    assert june["margin"] is not None
+    assert quiet and all(p["margin"] is None for p in quiet)
+    assert all(p["orders"] == 0 for p in quiet)
+
+
+def test_margin_needs_a_cost_behind_it_not_just_revenue():
+    """Revenue with no cost on record yields no margin at all — never 100%,
+    which is what (revenue - 0) / revenue would produce."""
+    sales = [_sale("c1", date(2026, 6, 10), 1000, ref="a")]
+    result = cohorts.health_timeline(sales, {}, date(2026, 6, 30), months=2)
+    june = next(p for p in result["series"] if p["label"] == "Jun 2026")
+    assert june["revenue"] == 1000.0
+    assert june["margin"] is None
+
+
+def test_cost_coverage_travels_with_the_margin():
+    """The screen draws a partially-covered month hollow. It can only do that
+    if the coverage arrives beside the number it qualifies."""
+    sales = [_sale("c1", date(2026, 6, 5), 1000, product="p1", ref="a"),
+             _sale("c1", date(2026, 6, 6), 1000, product="p2", ref="b")]
+    result = cohorts.health_timeline(sales, {"p1": 600.0}, date(2026, 6, 30), months=2)
+    june = next(p for p in result["series"] if p["label"] == "Jun 2026")
+    assert june["cost_coverage"] == 0.5
+    assert june["margin"] is not None
+
+
+def test_orders_in_the_timeline_count_invoices_not_lines():
+    sales = [_sale("c1", date(2026, 6, 10), 100, product=f"p{i}", ref="INV-1")
+             for i in range(4)]
+    result = cohorts.health_timeline(sales, {}, date(2026, 6, 30), months=2)
+    assert next(p for p in result["series"] if p["label"] == "Jun 2026")["orders"] == 1

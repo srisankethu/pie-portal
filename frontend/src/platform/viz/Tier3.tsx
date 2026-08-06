@@ -21,6 +21,7 @@ import { formatDate } from "../../when";
 import { papi } from "../api";
 import { abilityFor } from "../ability";
 import { EntityName } from "../EntityName";
+import { VarianceIndicator } from "../kit";
 import { CompanyFilter, useCompanyFilter } from "../CompanyFilter";
 import { DataGrid, numeric } from "../DataGrid";
 import type { EntityOrigin, PlatformSession, Sourced } from "../types";
@@ -171,9 +172,12 @@ function CashProjection({ session }: { session: PlatformSession }) {
               <li key={r.key}>
                 <span className="cash-aside-head">
                   <strong>{r.label}</strong>
+                  {/* "in" and "out" stay as words — they are the direction,
+                      and an arrow alone would leave the reader to work out
+                      which way is which. The colour now comes from the theme. */}
                   <span className="cash-aside-figures">
-                    {r.inflow > 0 && <em className="pos">in {money(r.inflow)}</em>}
-                    {r.outflow > 0 && <em className="neg">out {money(r.outflow)}</em>}
+                    {r.inflow > 0 && <VarianceIndicator value={r.inflow} label="in" />}
+                    {r.outflow > 0 && <VarianceIndicator value={-r.outflow} label="out" />}
                   </span>
                 </span>
                 <span className="viz-muted">{r.why}</span>

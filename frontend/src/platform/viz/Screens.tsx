@@ -21,6 +21,7 @@ import { MonthPicker as SharedMonthPicker } from "./Seg";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { money } from "../../money";
 import { Tip } from "../../Tip";
+import { InlineLink, VarianceIndicator } from "../kit";
 import { papi } from "../api";
 import type { PlatformSession } from "../types";
 import { Figure, Panel, stateOf } from "./Panel";
@@ -239,7 +240,12 @@ export function LostRevenueScreen({
       actions={<MonthPicker value={months} onChange={setMonths} id="lost-months" />}
     >
       <div className="story-hero">
-        <span className="story-hero-value down">−{money(total)}</span>
+        {/* Negated: `total` is the magnitude of what was lost, and the hero has
+            always shown it with a minus. The component needs the sign to pick
+            its direction. */}
+        <span className="story-hero-value">
+          <VarianceIndicator value={-total} sx={{ fontSize: "inherit" }} />
+        </span>
         <span className="story-hero-label">against the previous period</span>
       </div>
 
@@ -275,10 +281,9 @@ export function LostRevenueScreen({
               <ul className="cause-members">
                 {(c.customers as Record<string, unknown>[] ?? []).slice(0, 5).map((m, i) => (
                   <li key={i}>
-                    <button type="button" className="link-btn"
-                            onClick={() => onNavigate(`customer/${String(m.customer_id)}`)}>
+                    <InlineLink onClick={() => onNavigate(`customer/${String(m.customer_id)}`)}>
                       {String(m.label)}
-                    </button>
+                    </InlineLink>
                     <span className="viz-muted"> −{money(Number(m.lost))}</span>
                   </li>
                 ))}
@@ -421,10 +426,9 @@ export function JourneyScreen({
           <ul className="cause-members">
             {(dormant.customers as Record<string, unknown>[] ?? []).slice(0, 8).map((c, i) => (
               <li key={i}>
-                <button type="button" className="link-btn"
-                        onClick={() => onNavigate(`customer/${String(c.customer_id)}`)}>
+                <InlineLink onClick={() => onNavigate(`customer/${String(c.customer_id)}`)}>
                   {String(c.label)}
-                </button>
+                </InlineLink>
                 <span className="viz-muted">
                   {" "}{money(Number(c.lifetime_revenue))} lifetime ·{" "}
                   {String(c.months_quiet)} months quiet
@@ -639,16 +643,12 @@ function SimCol({
       <dl>
         <div><dt>Revenue</dt><dd>{money(revenue ?? 0)}
           {deltaRevenue != null && (
-            <span className={deltaRevenue < 0 ? "neg" : "pos"}>
-              {" "}({deltaRevenue >= 0 ? "+" : "−"}{money(Math.abs(deltaRevenue))})
-            </span>
+            <> <VarianceIndicator value={deltaRevenue} /></>
           )}
         </dd></div>
         <div><dt>Gross profit</dt><dd>{money(profit ?? 0)}
           {deltaProfit != null && (
-            <span className={deltaProfit < 0 ? "neg" : "pos"}>
-              {" "}({deltaProfit >= 0 ? "+" : "−"}{money(Math.abs(deltaProfit))})
-            </span>
+            <> <VarianceIndicator value={deltaProfit} /></>
           )}
         </dd></div>
         <div><dt>Margin</dt><dd>{pct(margin)}</dd></div>

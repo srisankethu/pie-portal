@@ -163,18 +163,27 @@ MUI's — the `.btn` variant system is gone from the stylesheet, so there is
 nothing left to fall back into. `Bp` is a `Paper` (the corner marks survive
 behind a `marks` prop). The uncertainty panel is `ErrorState` or `Alert`
 depending on which kind of not-knowing it is. Loading is `LoadingState`
-everywhere; both hand-rolled shimmers are gone.
+everywhere; both hand-rolled shimmers are gone. Inline names inside charts are
+`InlineLink`. Every figure whose colour came from a `viz.css` literal now takes
+it from the theme, through `VarianceIndicator`.
 
-**Not yet aligned**, in rough order of how often it is seen:
+**Where colour still carries meaning, and why that is correct.** These were
+audited one by one rather than swept:
 
-- **Custom status colour** survives in `viz.css` (`.wf-row-value.pos/.neg`,
-  `.story-hero-value.up/.down`, `.cash-aside-figures`, `.sim-col .pos/.neg`).
-  Charts may keep colour as an *encoding* — a bar is not a status — but a
-  figure in prose must not.
-- **`.link-btn`** — five inline text links inside charts, drawn as bare
-  `<button>`s. They are links in intent; `Link component="button"` says so and
-  brings the focus ring with it.
+| Kept | Because |
+|---|---|
+| `.wf-fill`, `.viz-swatch`, `.journey-seg`, `.quad-*` | Chart marks. Colour is an *encoding* with a legend, which is the deliberate exception. |
+| `.multiple-dir.up/.down` | The ▲/▼ glyph carries the direction; hue only reinforces it. |
+| `.cadence-flag`, `.cadence-row.late` | "Overdue" is written out, and the flag has a border. |
+| `.neg-figure-value` tone | A *level*, not a movement — an arrow would read as "rising". The minus sign in the value carries the sign; the tint is a second cue, and now a theme one. |
 
-The rule while that is true: **new UI follows this document, and any screen
-being changed for another reason moves toward it.** Nobody is asked to stop and
-convert the application in one pass.
+The distinction that decides it: **is the colour the only thing saying what this
+means?** If a reader in greyscale loses the meaning, it is a defect. If they
+lose only emphasis, it is fine.
+
+**Not yet aligned:** nothing this audit could name. That is a statement about
+this pass, not a permanent claim — the next screen someone builds can
+reintroduce any of it.
+
+The rule stands regardless: **new UI follows this document, and any screen being
+changed for another reason moves toward it.**

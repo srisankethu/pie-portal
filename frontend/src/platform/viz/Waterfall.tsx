@@ -18,8 +18,10 @@
 // it drops the per-bar customer count, and below ~420px it turns on its side,
 // because six vertical bars in 380px is six unreadable slivers.
 
+import { scaleBand, scaleLinear } from "d3-scale";
+
 import { money } from "../../money";
-import { Figure } from "./Panel";
+import { Figure, ValueAxis } from "./Panel";
 import { BUCKET_LABEL, BUCKET_SIGN } from "./tokens";
 import { compactMoney, useMeasure } from "./useMeasure";
 
@@ -44,8 +46,15 @@ interface FlowData {
 }
 
 const H = 300;
-const PAD = { top: 30, right: 8, bottom: 54, left: 8 };
+// The left pad holds the value axis. It was 8 when there was no axis to hold,
+// and the chart was the poorer for it: bar heights were comparable to each
+// other and to nothing else, so you could see revenue fall without being able
+// to say roughly how far.
+const PAD = { top: 30, right: 8, bottom: 54, left: 56 };
 const MIN_BAR = 3;
+/** Widest a bar gets however much room there is. Six bars stretched across a
+ *  1200px panel stop reading as a sequence and start reading as a table. */
+const MAX_BAR = 76;
 
 export function Waterfall({
   data,
@@ -159,14 +168,29 @@ function VerticalWaterfall({
   ];
   const max = Math.max(...values);
   const min = Math.min(...values);
-  const span = max - min || 1;
 
   const cols = steps.length + 2;
-  const colW = (w - PAD.left - PAD.right) / cols;
-  const barW = Math.min(colW * 0.62, 76);
-  const y = (v: number) =>
-    PAD.top + (1 - (v - min) / span) * (H - PAD.top - PAD.bottom);
-  const cx = (i: number) => PAD.left + colW * (i + 0.5);
+  // `.nice()` rounds the domain out to whole tick boundaries, which is what
+  // makes the gridlines land on round money rather than on wherever the largest
+  // bar happened to end.
+  const y = scaleLinear()
+    .domain([min, max])
+    .range([H - PAD.bottom, PAD.top])
+    .nice();
+  // paddingInner 0.38 leaves each bar 62% of its column, which is what the
+  // hand-computed layout did; the cap is applied when the bar is drawn, because
+  // the column centres must stay evenly spaced whether or not the cap bites.
+  const band = scaleBand<number>()
+    .domain(Array.from({ length: cols }, (_, i) => i))
+    .range([PAD.left, w - PAD.right])
+    .paddingInner(0.38);
+  const barW = Math.min(band.bandwidth(), MAX_BAR);
+  const cx = (i: number) => (band(i) ?? PAD.left) + band.bandwidth() / 2;
+  // The rule the anchor bars stand on. Zero is forced into `values`, so it is
+  // always inside the domain and always on screen — a bar drawn down to a zero
+  // the scale could not reach would run off the axis.
+  const base = y(0);
+  const plotRight = w - PAD.right;
 
   return (
     <svg
@@ -176,13 +200,22 @@ function VerticalWaterfall({
       className="viz-svg"
       role="presentation"
     >
+      {/* Behind everything: this is how the running balance becomes checkable
+          rather than merely asserted — each bar's top can be read off the
+          scale, not just compared with its neighbour. */}
+      <ValueAxis
+        scale={y}
+        x0={PAD.left}
+        x1={plotRight}
+        format={(v) => compactMoney(v, currency)}
+      />
       <line
-        x1={PAD.left} x2={w - PAD.right} y1={y(min < 0 ? 0 : min)} y2={y(min < 0 ? 0 : min)}
+        x1={PAD.left} x2={plotRight} y1={base} y2={base}
         stroke="var(--viz-rule)" strokeWidth="1"
       />
 
       <Bar
-        cx={cx(0)} w={barW} top={y(data.previous_total)} bottom={y(min < 0 ? 0 : min)}
+        cx={cx(0)} w={barW} top={y(data.previous_total)} bottom={base}
         fill="var(--viz-neutral)" label={data.comparison.previous.label}
         value={compactMoney(data.previous_total, currency)}
         full={money(data.previous_total)}
@@ -225,7 +258,7 @@ function VerticalWaterfall({
         stroke="var(--viz-rule)" strokeWidth="1" strokeDasharray="3 3"
       />
       <Bar
-        cx={cx(cols - 1)} w={barW} top={y(data.current_total)} bottom={y(min < 0 ? 0 : min)}
+        cx={cx(cols - 1)} w={barW} top={y(data.current_total)} bottom={base}
         fill="var(--viz-neutral)" label={data.comparison.current.label}
         value={compactMoney(data.current_total, currency)}
         full={money(data.current_total)}

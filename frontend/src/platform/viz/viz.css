@@ -477,6 +477,10 @@
 }
 
 .viz-axis { font-size: 11px; fill: var(--color-neutral-600); font-variant-numeric: tabular-nums; }
+/* Lighter than the frame rules it runs between. A gridline the same weight as
+   the axis competes with the data for the reader's attention, which is the one
+   thing a gridline must never do. */
+.viz-gridline { stroke: var(--viz-rule); stroke-width: 1px; stroke-opacity: .5; }
 .viz-axis-note {
   font-size: 10.5px; fill: var(--color-neutral-600); font-style: italic;
   /* Same halo as the quadrant labels — a reference line sits where the data is. */

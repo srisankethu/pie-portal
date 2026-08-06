@@ -466,3 +466,46 @@ def test_a_run_with_nothing_to_fix_carries_an_empty_worklist(client):
     last = client.get("/api/v1/data/sync", headers=_hdr(client)).json()["last"]
     assert last["unresolved"] == []
     assert last["vendors"] == 0 and last["payments"] == 0
+
+
+def test_a_sync_leaves_business_state_built_for_today(client):
+    """State is folded at the end of the pull, not on the next page load. A
+    projection nobody builds is a projection nobody can read."""
+    from app.clock import today as clock_today
+    from app.domain import models
+    from app.state.reducers.inventory import INVENTORY
+
+    class WithStock(Empty):
+        def list_items(self):
+            return [{"item_id": "i1", "name": "Insert", "unit": "pcs",
+                     "status": "active", "stock_on_hand": 40,
+                     "available_stock": 35, "purchase_rate": "401.25"}]
+
+    client.monkeypatch.setattr("app.ingestion.sync.get_source",
+                               lambda session, org, since=None, **kw: WithStock())
+    client.monkeypatch.setattr(jobs, "thread_dispatch", client.inline)
+    client.post("/api/v1/data/sync", headers=_hdr(client))
+
+    s = client.Maker()
+    try:
+        rows = s.query(models.BusinessState).filter_by(state=INVENTORY).all()
+        assert rows, "the pull recorded stock but built no inventory state"
+        assert {r.as_of for r in rows} == {clock_today()}
+        # Stamped, like every other computed row in this schema.
+        assert all(r.thresholds_version for r in rows)
+    finally:
+        s.close()
+
+
+def test_a_state_build_that_fails_never_fails_the_pull(client):
+    """The pull is the thing that cannot be redone cheaply; the projection is
+    the thing that can."""
+    def explode(*a, **kw):
+        raise RuntimeError("reducer exploded")
+
+    client.monkeypatch.setattr("app.state.engine.build", explode)
+    client.monkeypatch.setattr(jobs, "thread_dispatch", client.inline)
+    client.post("/api/v1/data/sync", headers=_hdr(client))
+
+    last = client.get("/api/v1/data/sync", headers=_hdr(client)).json()["last"]
+    assert last["status"] == "OK"

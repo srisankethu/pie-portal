@@ -47,7 +47,7 @@ from typing import Callable, Optional
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..clock import aware as _aware, now as _now
+from ..clock import aware as _aware, now as _now, today as _clock_today
 from ..config import settings
 from ..domain import models
 
@@ -346,6 +346,22 @@ def execute_sync(session: Session, run: models.SyncRun, *,
             commercial_report = ci.to_dict()
         except Exception:  # noqa: BLE001
             log.exception("customer-item recompute failed; the pull itself is kept")
+
+        # Business state, folded from the events this pull recorded. Best
+        # effort, and after the metrics: a projection that fails to build must
+        # not fail a pull that succeeded, because the pull is the thing that
+        # cannot be redone cheaply and the projection is the thing that can.
+        phase("Building business state")
+        try:
+            from ..commercial.policy import load_for_org
+            from ..state.engine import build as build_state
+
+            state = build_state(
+                session, org, as_of=_clock_today(svc.timezone() if svc else None),
+                thresholds_version=load_for_org(session, org).version)
+            run.notes = {**(run.notes or {}), "state": state.to_dict()}
+        except Exception:  # noqa: BLE001
+            log.exception("state build failed; the pull itself is kept")
 
         phase("Generating decisions")
         generated = DecisionService(session, org).generate()

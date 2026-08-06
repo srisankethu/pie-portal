@@ -1653,3 +1653,93 @@ class BusinessEvent(Base):
     #: noise into a figure the whole platform is meant to reproduce.
     payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     superseded_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+
+class BusinessState(Base):
+    """One state, for one key, as of one day.
+
+    A *projection*, not a fact: every row is folded from ``BusinessEvent`` rows
+    and can be dropped and rebuilt. What it buys is the thing the platform
+    could not do before — answer "what was this on the 31st of March" without
+    re-scanning the whole history, and without each screen recomputing its own
+    version of the same number in its own module.
+
+    ``as_of`` is part of the key, so a state is a series rather than a current
+    value that overwrites its own history. That is the whole reason inventory
+    value in March is answerable at all.
+
+    ``thresholds_version`` is stamped from ``CommercialThresholds`` by the
+    caller, the same way every computed row in this schema is. Without it a
+    state row computed under one policy is indistinguishable from one computed
+    under another, and a changed threshold makes every past number
+    unexplainable.
+
+    ``value`` is JSON with money as strings and dates as ISO — the same
+    contract as an event payload, for the same reason: a float round-trip puts
+    binary noise into a figure the platform is meant to reproduce exactly.
+    """
+
+    __tablename__ = "business_states"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "state", "key", "as_of",
+                         name="uq_state_org_state_key_asof"),
+        Index("ix_state_org_state_asof", "organization_id", "state", "as_of"),
+    )
+
+    business_state_id: Mapped[str] = mapped_column(String(64), primary_key=True,
+                                                   default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    state: Mapped[str] = mapped_column(String(48), index=True)
+    #: The thing this state is *about* — a product id, a party id. A local id,
+    #: never an external one: two connected companies can number from one, and
+    #: a state keyed on an external id would silently merge them.
+    key: Mapped[str] = mapped_column(String(64), index=True)
+    as_of: Mapped[date] = mapped_column(Date, index=True)
+    value: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    #: How many live events were folded into this row. Not decoration: a state
+    #: computed from three events and one computed from three hundred deserve
+    #: different confidence, and a row with zero is a bug rather than a zero.
+    event_count: Mapped[int] = mapped_column(Integer, default=0)
+    thresholds_version: Mapped[str] = mapped_column(String(64), default="")
+    computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class StateTransition(Base):
+    """One event's effect on one state key — the traceability hop.
+
+    This is what makes "why does this number exist" answerable: from a state
+    row, every event that moved it, and by how much. Without it a projection is
+    a number with a provenance story nobody can check.
+
+    Replaced per (state, as_of) on each rebuild rather than appended forever.
+    The event log is the permanent record; this is the working of one fold, and
+    keeping every historical *rebuild* of the same fold would grow without
+    bound while answering a question nobody asks — a superseded fold is
+    reproducible from the events, which is the point of keeping those.
+    """
+
+    __tablename__ = "state_transitions"
+    __table_args__ = (
+        Index("ix_transition_org_state_key", "organization_id", "state",
+              "as_of", "key"),
+        Index("ix_transition_event", "organization_id", "event_seq"),
+    )
+
+    state_transition_id: Mapped[str] = mapped_column(String(64), primary_key=True,
+                                                     default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    #: The event that caused it. Not a foreign key: events are pruned by a
+    #: complete re-sync while a rebuild is mid-flight in another process, and a
+    #: constraint would turn a re-derivable projection into a blocking failure.
+    event_seq: Mapped[int] = mapped_column(Integer, index=True)
+    event_type: Mapped[str] = mapped_column(String(48))
+    state: Mapped[str] = mapped_column(String(48), index=True)
+    key: Mapped[str] = mapped_column(String(64), index=True)
+    #: Which fold this working belongs to. Two builds at different ``as_of``
+    #: dates are two different arithmetics over the same events, and a
+    #: transition that did not say which would explain the wrong one.
+    as_of: Mapped[date] = mapped_column(Date, index=True)
+    occurred_on: Mapped[date] = mapped_column(Date, index=True)
+    #: The field changes this event made, as ``[[op, field, value], …]``.
+    changes: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)

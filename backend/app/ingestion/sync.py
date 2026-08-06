@@ -231,7 +231,7 @@ class SyncService:
         if self._on_phase is not None:
             self._on_phase(name)
 
-    def _timezone(self) -> Optional[str]:
+    def timezone(self) -> Optional[str]:
         """The zone this organization's *day* is measured in.
 
         Read once per pull rather than per row. A missing organization row or a
@@ -577,7 +577,7 @@ class SyncService:
         # list twice per sync — the exact cost `run_reference` exists to avoid.
         # The business's day, not the server's: a sync that runs at 02:00
         # IST would otherwise stamp yesterday onto today's shelf count.
-        stock_as_of = _clock_today(self._timezone())
+        stock_as_of = _clock_today(self.timezone())
 
         for raw in self.source.list_items():
             ref = str(raw.get("item_id", "?"))

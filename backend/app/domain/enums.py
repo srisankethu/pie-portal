@@ -29,6 +29,25 @@ class SubjectEntityType(str, Enum):
     # One customer's relationship with one item. The id is a composite,
     # ``customer_id::product_id`` — see ``commercial.subject``.
     CUSTOMER_ITEM = "CUSTOMER_ITEM"
+    # A supplier. Its own member rather than borrowing CUSTOMER: the two are
+    # different parties with different screens and different scoping, and a
+    # supplier card filed under CUSTOMER would resolve to the wrong name.
+    VENDOR = "VENDOR"
+
+
+class DecisionOrigin(str, Enum):
+    """Which producer made a decision, and therefore what its score means.
+
+    A decision has always been derived from a ``Signal`` — a detector over
+    sales and cost lines, interpreted by the AI layer. Business State added a
+    second, deterministic producer over folded state, and the two rank on
+    different scales: a signal's severity is a shape-of-the-evidence number,
+    a state opportunity's is money. The queue orders on the deterministic base
+    for exactly this reason (see ``DecisionRepository.list``).
+    """
+
+    SIGNAL = "SIGNAL"
+    STATE = "STATE"
 
 
 class DecisionType(str, Enum):
@@ -50,6 +69,35 @@ class DecisionType(str, Enum):
     CI_MARGIN_DECLINE_WITH_VOLUME = "CI_MARGIN_DECLINE_WITH_VOLUME"
     CI_MATERIAL_MARGIN_GAP = "CI_MATERIAL_MARGIN_GAP"
 
+    # ── derived from Business State, deterministically ──────────────────────
+    #
+    # Seven types for the seven situations the two folded states can actually
+    # describe. Each is a *distinct situation with a distinct action set* —
+    # deliberately not one type per phrase in the brief, because dead stock and
+    # "capital locked" are one situation measured two ways, and two cards for
+    # one situation is two things to dismiss.
+    INV_DEAD_STOCK = "INV_DEAD_STOCK"
+    INV_SLOW_MOVING = "INV_SLOW_MOVING"
+    INV_EXCESS_COVER = "INV_EXCESS_COVER"
+    INV_BELOW_REORDER = "INV_BELOW_REORDER"
+    INV_OVERSOLD = "INV_OVERSOLD"
+    SUP_OPEN_COMMITMENT = "SUP_OPEN_COMMITMENT"
+    CASH_PAYABLE_OVERDUE = "CASH_PAYABLE_OVERDUE"
+
+
+#: Everything derived from Business State. All of them quantify impact from a
+#: purchase rate or a payable balance, which is cost information — so all of
+#: them are management decisions, and none reaches a salesperson.
+STATE_DECISION_TYPES = frozenset({
+    DecisionType.INV_DEAD_STOCK,
+    DecisionType.INV_SLOW_MOVING,
+    DecisionType.INV_EXCESS_COVER,
+    DecisionType.INV_BELOW_REORDER,
+    DecisionType.INV_OVERSOLD,
+    DecisionType.SUP_OPEN_COMMITMENT,
+    DecisionType.CASH_PAYABLE_OVERDUE,
+})
+
 
 # Every Customer × Item decision type. All of them carry cost/margin.
 CUSTOMER_ITEM_DECISION_TYPES = frozenset({
@@ -63,9 +111,11 @@ CUSTOMER_ITEM_DECISION_TYPES = frozenset({
 
 # Decision types that carry RESTRICTED economics and are never routed to a
 # salesperson (§14 decision-type gating).
-RESTRICTED_DECISION_TYPES = frozenset(
-    {DecisionType.MARGIN_DETERIORATION, DecisionType.COST_PASS_THROUGH}
-) | CUSTOMER_ITEM_DECISION_TYPES
+RESTRICTED_DECISION_TYPES = (
+    frozenset({DecisionType.MARGIN_DETERIORATION, DecisionType.COST_PASS_THROUGH})
+    | CUSTOMER_ITEM_DECISION_TYPES
+    | STATE_DECISION_TYPES
+)
 
 
 class SignalType(str, Enum):
@@ -141,6 +191,11 @@ class AiStatus(str, Enum):
     DEGRADED = "DEGRADED"
     FAILED = "FAILED"
     SUPPRESSED = "SUPPRESSED"
+    # No interpretation was ever attempted, and none is coming. A decision
+    # derived from Business State is arithmetic over folded facts; the module
+    # that makes one does not import ``ai/`` at all. Distinct from SUPPRESSED,
+    # which means a model ran and its output was withheld.
+    NOT_APPLICABLE = "NOT_APPLICABLE"
 
 
 class EvidenceSufficiency(str, Enum):

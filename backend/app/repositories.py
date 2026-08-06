@@ -550,7 +550,16 @@ class DecisionRepository:
             stmt = stmt.where(models.Decision.decision_type == decision_type)
         if status is not None:
             stmt = stmt.where(models.Decision.status == status)
-        stmt = stmt.order_by(models.Decision.priority_score.desc(),
+        # Ordered on the *deterministic* base, not the final score.
+        #
+        # A signal decision's score carries an AI adjustment clamped to ±20; a
+        # state decision's is its quantified money and carries none. Ranking
+        # one against the other on ``priority_score`` would let a model's nudge
+        # outrank ₹4 lakh of locked capital, and would mean "priority 72" said
+        # two different things depending on which producer made the row. The
+        # adjustment is still stored and still shown on the card — it just no
+        # longer decides who is read first.
+        stmt = stmt.order_by(models.Decision.priority_deterministic_base.desc(),
                              models.Decision.detected_at.desc())
         return self.s.scalars(stmt).all()
 

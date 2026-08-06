@@ -173,6 +173,24 @@ class CommercialThresholds:
     dead_stock_days: int = 365
     slow_stock_days: int = 180
 
+    # ── the decision queue ───────────────────────────────────────────────────
+    #
+    # How money becomes rank. A decision derived from Business State is scored
+    # from what it is worth, and this is the exchange rate: one priority point
+    # per this many rupees at stake. Absolute rather than relative to the other
+    # rows, so a decision's score does not move when an unrelated one appears —
+    # a queue whose ordering shifts for reasons nobody can point at is a queue
+    # nobody trusts twice.
+    #
+    # Versioned like every other threshold, so re-tuning the queue does not make
+    # last quarter's rankings unexplainable.
+    decision_rupees_per_point: float = 5_000.0
+    # Stock covering more than this many months of its own measured offtake is
+    # excess. Measured, not forecast: it is "you hold N months of what you have
+    # historically sold", which is a ratio of two facts and not a prediction of
+    # what will sell next.
+    excess_cover_months: float = 12.0
+
     @classmethod
     def from_env(cls) -> "CommercialThresholds":
         return cls(
@@ -183,6 +201,10 @@ class CommercialThresholds:
                                         _default("carrying_cost_annual_pct")),
             dead_stock_days=_i("CI_DEAD_STOCK_DAYS", _default("dead_stock_days")),
             slow_stock_days=_i("CI_SLOW_STOCK_DAYS", _default("slow_stock_days")),
+            decision_rupees_per_point=_f("CI_DECISION_RUPEES_PER_POINT",
+                                         _default("decision_rupees_per_point")),
+            excess_cover_months=_f("CI_EXCESS_COVER_MONTHS",
+                                   _default("excess_cover_months")),
             recent_days=_i("CI_RECENT_DAYS", 90),
             previous_days=_i("CI_PREVIOUS_DAYS", 90),
             historical_lookback_days=_i("CI_HISTORICAL_LOOKBACK_DAYS", 730),

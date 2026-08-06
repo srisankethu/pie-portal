@@ -436,6 +436,33 @@ class Decision(Base):
     detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     signal_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
     evidence_refs: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    # ── which producer made this, and what it was made from ─────────────────
+    #
+    # ``SIGNAL`` is the original path: a detector over sales and cost lines,
+    # interpreted by the AI layer. ``STATE`` is the deterministic one: a
+    # detector over folded Business State, which never touches ``ai/``.
+    #
+    # One table on purpose. A second "decision opportunity" table would mean
+    # two lifecycles to keep in step, two queues, and two places a role-scoping
+    # bug can hide — everything below this line already works for both.
+    origin: Mapped[str] = mapped_column(String(16), default="SIGNAL", index=True)
+    #: What the situation is worth, quantified. ``{financial, basis, monthly,
+    #: operational}`` — money as strings, the same contract state values use.
+    #: Empty for a signal-derived decision, which measures shape rather than
+    #: money.
+    impact: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    #: The ``BusinessState`` keys this was computed from, and the day they were
+    #: folded for. This is the join that closes the traceability chain:
+    #: decision → state → transition → event → ERP record. Without it the chain
+    #: exists in two halves that cannot be walked end to end.
+    state_keys: Mapped[list[str]] = mapped_column(JSON, default=list)
+    state_as_of: Mapped[Optional[date]] = mapped_column(Date)
+    #: Why this exists, and what can be done about it. Both deterministic: the
+    #: reason is assembled from the numbers that triggered the detector, and the
+    #: actions are the ones this situation permits — the platform presents them
+    #: and never chooses one.
+    rationale: Mapped[Optional[str]] = mapped_column(String(2048))
+    actions: Mapped[list[str]] = mapped_column(JSON, default=list)
     # AI sub-object (§5). Null/PENDING until the AI phase; never populated here.
     ai: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     priority_band: Mapped[str] = mapped_column(String(16), default="LOW")

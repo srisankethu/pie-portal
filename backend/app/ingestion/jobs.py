@@ -356,10 +356,20 @@ def execute_sync(session: Session, run: models.SyncRun, *,
             from ..commercial.policy import load_for_org
             from ..state.engine import build as build_state
 
+            th = load_for_org(session, org)
             state = build_state(
                 session, org, as_of=_clock_today(svc.timezone() if svc else None),
-                thresholds_version=load_for_org(session, org).version)
+                thresholds_version=th.version)
             run.notes = {**(run.notes or {}), "state": state.to_dict()}
+
+            # Decisions folded straight out of that state — deterministic, no
+            # AI, and inside the same try: a queue built from a state that
+            # failed to build would describe a business as of nothing.
+            from ..decisions.opportunities import generate_from_state
+
+            opportunities = generate_from_state(session, org, thresholds=th)
+            run.notes = {**(run.notes or {}), "opportunities": opportunities}
+            run.decisions_created += opportunities.get("created", 0)
         except Exception:  # noqa: BLE001
             log.exception("state build failed; the pull itself is kept")
 

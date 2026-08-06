@@ -40,7 +40,7 @@ export interface Fact {
 }
 
 export interface Interpretation {
-  status: string; // OK | DEGRADED | FAILED | SUPPRESSED | PENDING
+  status: string; // OK | DEGRADED | FAILED | SUPPRESSED | PENDING | NOT_APPLICABLE
   title: string | null;
   recommendation: string | null;
   explanation: string | null;

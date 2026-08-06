@@ -6,7 +6,9 @@ Keyed by product. Folds three event types and no more:
   count of what is physically there replaces the previous one. It never
   accumulates — adding two stock counts together would be nonsense.
 - ``SALE_LINE_RECORDED`` and ``COST_LINE_RECORDED`` are *movements*, so their
-  quantities ADD and their dates MAX.
+  quantities ADD and their dates MAX. Sales also MIN a first-seen date, because
+  an offtake *rate* needs a period and the only honest one is between the first
+  sale observed and the last.
 
 Deliberately absent, and it matters:
 
@@ -30,7 +32,7 @@ from typing import Any, Iterable
 
 from ...domain import models
 from .. import events as ev
-from ..engine import ADD, MAX, SET, Delta, Masters, as_decimal, register
+from ..engine import ADD, MAX, MIN, SET, Delta, Masters, as_decimal, register
 
 INVENTORY = "INVENTORY"
 
@@ -87,6 +89,10 @@ class InventoryReducer:
             (ADD, "units_sold", qty),
             (ADD, "revenue", revenue),
             (MAX, "last_sold_on", on),
+            # The other end of the window. Without it, "how fast does this
+            # move" has no denominator: a rate needs a period, and the only
+            # honest one is between the first sale observed and the last.
+            (MIN, "first_sold_on", on),
             (ADD, "sale_lines", 1),
         )),)
 

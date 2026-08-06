@@ -241,3 +241,56 @@ def test_detector_output_is_unchanged_by_the_indexing(book):
     b = [(d.signal_type, d.subject_entity_id, d.metrics, d.sufficiency) for d in
          compute_drafts(scanning, th, as_of)]
     assert a == b
+
+
+# ── the structural guard on the names-only bound ────────────────────────────
+def test_no_labels_only_screen_reads_a_line():
+    """``_labels_only`` says: I need names and the reference date, not the
+    lines. That is a claim about code, so it is checked against the code —
+    parsed, not grepped, so a mention in a docstring cannot fail it.
+
+    Without this the bound rots silently: a screen grows a feature, starts
+    reading ``snapshot.sales``, and gets an empty list instead of an error.
+    """
+    import ast
+    import inspect
+
+    from app.routers import insight
+
+    tree = ast.parse(inspect.getsource(insight))
+    forbidden = {"sales", "costs", "sales_for_customer", "sales_for_product",
+                 "costs_for_product", "customer_ids", "product_ids"}
+    offenders: list[str] = []
+    for fn in [n for n in ast.walk(tree)
+               if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]:
+        calls = {getattr(c.func, "id", None) for c in ast.walk(fn)
+                 if isinstance(c, ast.Call)}
+        if "_labels_only" not in calls:
+            continue
+        for node in ast.walk(fn):
+            if (isinstance(node, ast.Attribute)
+                    and isinstance(node.value, ast.Name)
+                    and node.value.id == "snapshot"
+                    and node.attr in forbidden):
+                offenders.append(f"{fn.name} reads snapshot.{node.attr}")
+    assert offenders == [], (
+        "these screens bound the lines away and then read them: "
+        + "; ".join(offenders))
+
+
+def test_the_guard_would_actually_catch_a_violation():
+    """A structural test that cannot fail is worse than no test."""
+    import ast
+
+    source = (
+        "def screen():\n"
+        "    org, snapshot, th = _labels_only(session, principal)\n"
+        "    return [s for s in snapshot.sales]\n"
+    )
+    fn = ast.parse(source).body[0]
+    calls = {getattr(c.func, "id", None) for c in ast.walk(fn)
+             if isinstance(c, ast.Call)}
+    assert "_labels_only" in calls
+    assert any(isinstance(n, ast.Attribute) and n.attr == "sales"
+               and isinstance(n.value, ast.Name) and n.value.id == "snapshot"
+               for n in ast.walk(fn))

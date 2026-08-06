@@ -30,7 +30,7 @@ from datetime import date
 from decimal import Decimal
 from typing import Any, Iterable, Optional, Protocol
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from ..clock import now as utc_now
@@ -363,6 +363,20 @@ def load(session: Session, org: str, state: str, as_of: date,
             models.BusinessState.state == state,
             models.BusinessState.as_of == as_of)).all()
     return {r.key: dict(r.value or {}) for r in rows}
+
+
+def latest_as_of(session: Session, org: str, state: str) -> Optional[date]:
+    """The most recent day this state was built for, or ``None`` if never.
+
+    A reader asks for this rather than assuming today. A state is built at the
+    end of a sync, so "today" is right only until the first day nobody syncs —
+    and a screen that asked for today and got nothing would report an empty
+    shelf rather than a stale one.
+    """
+    return session.scalar(
+        select(func.max(models.BusinessState.as_of))
+        .where(models.BusinessState.organization_id == org,
+               models.BusinessState.state == state))
 
 
 def why(session: Session, org: str, state: str, key: str, as_of: date,

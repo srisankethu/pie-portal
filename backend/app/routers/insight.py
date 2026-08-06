@@ -23,7 +23,7 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..authz import Principal, current_principal, require_manager_or_owner
@@ -36,6 +36,8 @@ from ..db import get_session
 from ..domain import models
 from ..domain.enums import Role
 from ..signals.aggregates import label_for, load_snapshot
+from ..state import engine as state_engine
+from ..state.reducers.inventory import INVENTORY
 from ..signals.config import load_thresholds as load_signal_thresholds
 
 log = logging.getLogger("pie_portal.insight")
@@ -65,6 +67,23 @@ def _context(session: Session, principal: Principal, **bound: Any):
     snapshot = load_snapshot(session, org, **bound)
     th = policy.load_for_org(session, org)
     return org, snapshot, th
+
+
+def _labels_only(session: Session, principal: Principal):
+    """Names and the reference date, with none of the lines.
+
+    Several screens read a snapshot solely to turn an id into a name — the
+    supply screen never touched a line at all. Each of them was loading the
+    organization's entire trading history to do it. The two name dictionaries
+    and the reference date are three small indexed reads; the lines are the
+    expensive part and these screens do not have one.
+
+    ``test_bounded_loads`` asserts structurally that no caller of this touches
+    ``snapshot.sales`` or ``snapshot.costs``, so the claim cannot rot as a
+    screen grows.
+    """
+    return _context(session, principal, sales_for_customers=[],
+                    costs_for_products=[])
 
 
 def _as_of(snapshot) -> Optional[date]:
@@ -318,7 +337,7 @@ def opportunities(limit: int = Query(100, ge=1, le=300),
                   principal: Principal = Depends(require_manager_or_owner),
                   session: Session = Depends(get_session)) -> dict:
     """Ranked by evidence, then by money. Manager+: every field is margin."""
-    org, snapshot, th = _context(session, principal)
+    org, snapshot, th = _labels_only(session, principal)
     rows = radar.build(session, org, th, customer_names=snapshot.customer_names,
                        product_names=snapshot.product_names, limit=limit)
     excluded = radar.below_floor(session, org, th)
@@ -386,7 +405,7 @@ def commercial_landscape(
     permission on a query parameter: a route whose authorisation depends on an
     argument is one that will eventually be called with the other argument.
     """
-    org, snapshot, th = _context(session, principal)
+    org, snapshot, th = _labels_only(session, principal)
     result = landscape.build(session, org, th, subject=subject, measure=measure,
                              customer_names=snapshot.customer_names,
                              product_names=snapshot.product_names)
@@ -476,7 +495,7 @@ def _settlements(session: Session, org: str,
 def payment_behaviour(principal: Principal = Depends(current_principal),
                       session: Session = Depends(get_session)) -> dict:
     """How long customers take to pay. Receivables — no cost, so every role."""
-    org, snapshot, th = _context(session, principal)
+    org, snapshot, th = _labels_only(session, principal)
     as_of = _as_of(snapshot) or clock.today(th.timezone)
 
     receipts = session.scalars(
@@ -498,76 +517,79 @@ def payment_behaviour(principal: Principal = Depends(current_principal),
                       "from. Advances are counted separately above."))
 
 
+#: How many names a dead-stock row can usefully carry. Beyond this the column
+#: stops being a call list and starts being a wall of text.
+_BUYERS_SHOWN = 6
+
+
+def _recent_buyers(session: Session, org: str,
+                   names: dict[str, str]) -> dict[str, tuple[str, ...]]:
+    """Who last bought each item, most recent first.
+
+    One grouped query rather than a scan: the previous version loaded every
+    sale line in the organization and folded them in Python to answer a
+    question the database can answer with an index.
+    """
+    rows = session.execute(
+        select(models.SalesTxn.product_id, models.SalesTxn.customer_id,
+               func.max(models.SalesTxn.date))
+        .where(models.SalesTxn.organization_id == org)
+        .group_by(models.SalesTxn.product_id, models.SalesTxn.customer_id)).all()
+    seen: dict[str, list[tuple[date, str]]] = {}
+    for product_id, customer_id, last in rows:
+        seen.setdefault(product_id, []).append((last, customer_id))
+    return {
+        pid: tuple(label_for(names, cid, kind="customer")
+                   for _when, cid in sorted(pairs, reverse=True)[:_BUYERS_SHOWN])
+        for pid, pairs in seen.items()
+    }
+
+
 @router.get("/stock")
 def stock_position(principal: Principal = Depends(current_principal),
                    session: Session = Depends(get_session)) -> dict:
-    """What is on the shelf, and which of it is a problem."""
-    org, snapshot, th = _context(session, principal)
+    """What is on the shelf, and which of it is a problem.
+
+    Reads the folded INVENTORY state rather than the lines. Every number this
+    screen shows — what is on hand, how much has moved, when it last sold, what
+    it last cost — was computed once by the state fold at the end of the sync,
+    with a thresholds version stamped on it. Before this, the screen loaded the
+    organization's entire trading history on every request and re-derived all of
+    it in Python: the "dashboard as calculation engine" the evolution exists to
+    remove.
+
+    Two dates, and they are different questions. ``as_of`` is the last day the
+    business traded, which is what idle days are measured against and what the
+    screen reports. ``state_on`` is the day the state was last built. A stale
+    build shows stale stock and says when it was taken, which is the honest
+    failure; guessing today would show an empty shelf.
+    """
+    org, snapshot, th = _labels_only(session, principal)
     as_of = _as_of(snapshot) or clock.today(th.timezone)
     with_cost = principal.role in (Role.SALES_MANAGER, Role.OWNER)
 
-    # The most recent snapshot per item. Zoho reports stock as a current
-    # number, so "latest" is the only meaningful reading; the older rows are
-    # history for a trend, not alternatives to choose between.
-    latest: dict[str, models.StockSnapshot] = {}
-    for row in session.scalars(
-            select(models.StockSnapshot)
-            .where(models.StockSnapshot.organization_id == org)
-            .order_by(models.StockSnapshot.as_of)).all():
-        latest[row.product_id] = row
-    if not latest:
-        return _no_data(th.currency, "stock")
+    state_on = state_engine.latest_as_of(session, org, INVENTORY)
+    if state_on is None:
+        return _envelope(
+            {}, currency=th.currency,
+            empty_reason=("Stock has not been folded into business state yet. "
+                          "It is built at the end of every sync — run one, and "
+                          "this screen fills in."))
+    states = state_engine.load(session, org, INVENTORY, state_on)
 
-    sold_qty: dict[str, float] = {}
-    last_sold: dict[str, date] = {}
-    # Who has bought this item, most recent buyer first. The answer to "who do
-    # I call about this", which is the only thing that turns a dead-stock row
-    # into a phone call — and it is operational, so every role gets it.
-    buyer_seen: dict[str, dict[str, date]] = {}
-    for sale in snapshot.sales:
-        sold_qty[sale.product_id] = sold_qty.get(sale.product_id, 0.0) + float(sale.qty)
-        if sale.date > last_sold.get(sale.product_id, date.min):
-            last_sold[sale.product_id] = sale.date
-        seen = buyer_seen.setdefault(sale.product_id, {})
-        if sale.date > seen.get(sale.customer_id, date.min):
-            seen[sale.customer_id] = sale.date
+    lines = stock.lines_from_state(
+        states,
+        labels=snapshot.product_names,
+        # Who has bought this item, most recent buyer first. The answer to "who
+        # do I call about this", which is the only thing that turns a dead-stock
+        # row into a phone call — and it is operational, so every role gets it.
+        #
+        # Not in the state: it is a fact about a (product, customer) pair, and
+        # INVENTORY is keyed by product. Grouped in the database instead of by
+        # loading every line and grouping in Python.
+        buyers=_recent_buyers(session, org, snapshot.customer_names),
+        with_cost=with_cost)
 
-    def buyers_for(pid: str) -> tuple[str, ...]:
-        seen = buyer_seen.get(pid) or {}
-        ordered = sorted(seen.items(), key=lambda kv: kv[1], reverse=True)
-        return tuple(label_for(snapshot.customer_names, cid, kind="customer")
-                     for cid, _when in ordered[:6])
-
-    # When we last bought it. Owner zone — paired with the purchase rate it is
-    # a supplier's price on a date — so it is only read for those roles.
-    last_purchased: dict[str, date] = {}
-    if with_cost:
-        for cost_row in snapshot.costs:
-            if cost_row.date > last_purchased.get(cost_row.product_id, date.min):
-                last_purchased[cost_row.product_id] = cost_row.date
-
-    lines = [
-        stock.StockLine(
-            product_id=pid,
-            label=label_for(snapshot.product_names, pid, kind="item"),
-            on_hand=float(row.on_hand or 0),
-            available=(float(row.available) if row.available is not None else None),
-            actual_available=(float(row.actual_available)
-                              if row.actual_available is not None else None),
-            reorder_level=(float(row.reorder_level)
-                           if row.reorder_level is not None else None),
-            last_sold=last_sold.get(pid),
-            sold_qty_window=sold_qty.get(pid, 0.0),
-            purchase_rate=(float(row.purchase_rate)
-                           if row.purchase_rate is not None else None),
-            last_purchased=last_purchased.get(pid),
-            buyers=buyers_for(pid),
-        )
-        for pid, row in latest.items()
-        # A service has no shelf; counting it as zero on hand would put the
-        # whole service catalogue in the out-of-stock list forever.
-        if row.tracked
-    ]
     carrying = stock.Carrying(annual_pct=th.carrying_cost_annual_pct,
                               dead_days=th.dead_stock_days,
                               slow_days=th.slow_stock_days)
@@ -595,7 +617,7 @@ def supplier_position(principal: Principal = Depends(require_manager_or_owner),
     Manager and above: supplier spend is purchase cost by another name, and
     the platform does not put cost in front of a salesperson.
     """
-    org, _snapshot, th = _context(session, principal)
+    org, _snapshot, th = _labels_only(session, principal)
     as_of = clock.today(th.timezone)
 
     vendors = {v.vendor_id: v for v in session.scalars(
@@ -694,7 +716,7 @@ def negotiate(body: NegotiationRequest,
               principal: Principal = Depends(current_principal),
               session: Session = Depends(get_session)) -> dict:
     """Price the line in the currency it will be paid in, and say what blocks."""
-    org, snapshot, th = _context(session, principal)
+    org, snapshot, th = _labels_only(session, principal)
     customer = _require_visible_customer(session, org, body.customer_id, principal)
     with_cost = principal.role in (Role.SALES_MANAGER, Role.OWNER)
     as_of = clock.today(th.timezone)
@@ -803,7 +825,7 @@ class SimulationRequest(BaseModel):
 def scenarios(principal: Principal = Depends(require_manager_or_owner),
               session: Session = Depends(get_session)) -> dict:
     """What can be simulated, and what cannot — with the reason."""
-    _org, _snapshot, th = _context(session, principal)
+    _org, _snapshot, th = _labels_only(session, principal)
     return _envelope(
         {"available": [
             {"scenario": simulate.PRICE_CHANGE, "label": "Price change",
@@ -822,7 +844,7 @@ def run_simulation(body: SimulationRequest,
                    principal: Principal = Depends(require_manager_or_owner),
                    session: Session = Depends(get_session)) -> dict:
     """Deterministic scenario arithmetic. Same inputs, same answer, every time."""
-    org, snapshot, th = _context(session, principal)
+    org, snapshot, th = _labels_only(session, principal)
     lines = simulate.load_lines(session, org, customer_id=body.customer_id,
                                 product_id=body.product_id,
                                 customer_names=snapshot.customer_names,

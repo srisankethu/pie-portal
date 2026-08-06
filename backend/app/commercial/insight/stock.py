@@ -28,7 +28,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
-from typing import Iterable, Optional
+from typing import Any, Iterable, Optional
 
 #: On hand, and nothing sold in this many days. Long, deliberately: a
 #: distributor's slow-moving tooling line is not dead in month two. The
@@ -249,6 +249,71 @@ class StockLine:
             # it up is how two screens start disagreeing about one number.
             out["stock_value"] = out["inventory_value"]
         return out
+
+
+def lines_from_state(states: dict[str, dict[str, Any]], *,
+                     labels: dict[str, str],
+                     buyers: dict[str, tuple[str, ...]],
+                     with_cost: bool) -> list[StockLine]:
+    """Turn folded INVENTORY state into the rows this module reasons about.
+
+    A projection, not a calculation: every number here was already computed by
+    the state fold, and this puts it in the shape ``build`` reads. That is the
+    point of the exercise — the arithmetic below is correct and tested, and it
+    moves rather than gets rewritten.
+
+    Pure, and it takes dictionaries rather than a session, so this module stays
+    a set of functions of its inputs and the router keeps the database.
+
+    ``with_cost`` gates ``last_purchased`` and nothing else. The purchase rate
+    is always set, because what a line costs to *keep* each month is derived
+    from it and that figure is on every role's screen — it is the number this
+    screen exists for. What leaves is ``to_dict``'s decision, as it already was;
+    withholding the rate here instead silently zeroed a salesperson's monthly
+    cash drain, which a test that only checked the field was present did not
+    notice and a browser did.
+    """
+    rows: list[StockLine] = []
+    for product_id, value in states.items():
+        # A service has no shelf. Counting it as zero on hand would put the
+        # whole service catalogue in the out-of-stock list forever. Absent
+        # means the observation predates the flag, and the safe reading of
+        # "we do not know" is the one that keeps the row visible.
+        if value.get("tracked") is False:
+            continue
+        if "on_hand" not in value:
+            # Nothing has ever observed this item's shelf — it has sales or
+            # cost history and no stock reading. Not a zero.
+            continue
+        rows.append(StockLine(
+            product_id=product_id,
+            label=labels.get(product_id) or f"Unnamed item (id {product_id})",
+            on_hand=_number(value.get("on_hand")) or 0.0,
+            available=_number(value.get("available")),
+            actual_available=_number(value.get("actual_available")),
+            reorder_level=_number(value.get("reorder_level")),
+            last_sold=_day(value.get("last_sold_on")),
+            sold_qty_window=_number(value.get("units_sold")) or 0.0,
+            purchase_rate=_number(value.get("purchase_rate")),
+            # Owner zone: paired with the purchase rate it is a supplier's
+            # price on a date, so it is not even read for other roles.
+            last_purchased=(_day(value.get("last_purchased_on")) if with_cost else None),
+            buyers=buyers.get(product_id, ()),
+        ))
+    return rows
+
+
+def _number(raw: Any) -> Optional[float]:
+    """A state value back to a float. State stores money and quantity as
+    strings so the fold is exact; this module's arithmetic is float, and the
+    conversion happens once, here, at the boundary."""
+    if raw is None or raw == "":
+        return None
+    return float(raw)
+
+
+def _day(raw: Any) -> Optional[date]:
+    return date.fromisoformat(str(raw)) if raw else None
 
 
 def build(lines: Iterable[StockLine], as_of: date, c: Carrying, *,

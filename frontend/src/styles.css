@@ -1020,6 +1020,8 @@ table.grid tbody tr:hover td { background: color-mix(in srgb, var(--color-accent
 }
 .mp-input .input { padding: 4px 7px; font-size: 14px; font-weight: 600; width: 100%; }
 .mp-input .unit { font-size: 12px; color: var(--color-neutral-600); }
+/* Under the box it belongs to, not in a banner at the foot of the form. */
+.mp-problem { margin-top: 4px; font-size: 12px; line-height: 1.4; color: var(--danger-fg); max-width: 46ch; }
 /* A switch has no box to fill, so the row would otherwise collapse to the
    height of the control and sit out of line with the number fields beside it. */
 .mp-flag-state {

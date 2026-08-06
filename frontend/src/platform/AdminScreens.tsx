@@ -17,6 +17,7 @@ import MenuItem from "@mui/material/MenuItem";
 import Switch from "@mui/material/Switch";
 import TextField from "@mui/material/TextField";
 import { abilityFor } from "./ability";
+import { policyProblems } from "./policySchema";
 import { Bp, Labelled } from "./ui";
 import { money, moneySymbol } from "../money";
 
@@ -312,9 +313,6 @@ export function ApprovalsScreen({ session }: { session: PlatformSession }) {
 
 const PP_FIELDS = new Set(["min_margin_deterioration_pp"]);
 
-/** The ladder, in the order it has to hold. */
-const LADDER = ["min_margin", "margin_floor", "target_margin_default"];
-
 type Draft = Record<string, string>;
 type Families = [string, string][];
 
@@ -412,10 +410,13 @@ function MarginPolicySection({
     return out;
   }, [draft, scalars]);
 
-  const ladderOk =
-    LADDER.every((k) => Number.isFinite(live[k])) &&
-    live.min_margin <= live.margin_floor &&
-    live.margin_floor <= live.target_margin_default;
+  // Every rule the draft breaks, keyed by field, recomputed as it is typed.
+  // The form used to validate nothing until Save and then throw on the first
+  // bad field, so somebody who mistyped three boxes learned about them one
+  // round trip at a time.
+  const problems = useMemo(
+    () => policyProblems(scalars, draft), [scalars, draft]);
+  const ladderOk = !problems.min_margin && !problems.margin_floor;
 
   const dirty =
     cleared.length > 0 ||
@@ -600,6 +601,9 @@ function MarginPolicySection({
                   {unit && !prefixed && <span className="unit">{unit}</span>}
                 </div>
               )}
+              {problems[f.field] && (
+                <div className="mp-problem" role="alert">{problems[f.field]}</div>
+              )}
               <div className="mp-state">
                 {overridden ? (
                   <>
@@ -700,7 +704,12 @@ function MarginPolicySection({
 
       {canManage && (
         <div className="mp-bar">
-          <button className="btn btn-primary btn-sm" disabled={!dirty || busy || !ladderOk} onClick={save}>
+          {/* Any problem blocks, not only the ladder. Letting a save through
+              with a bad box meant the server refused it and the message came
+              back as a banner detached from the field that caused it. */}
+          <button className="btn btn-primary btn-sm"
+                  disabled={!dirty || busy || Object.keys(problems).length > 0}
+                  onClick={save}>
             {busy ? "Saving…" : "Save margin policy"}
           </button>
           <button className="btn btn-ghost btn-sm" disabled={!dirty || busy} onClick={reseed}>

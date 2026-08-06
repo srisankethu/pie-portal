@@ -47,6 +47,10 @@ SEND_STATEMENT = "SEND_STATEMENT"
 AGREE_PAYMENT_PLAN = "AGREE_PAYMENT_PLAN"
 HOLD_FURTHER_SUPPLY = "HOLD_FURTHER_SUPPLY"
 TIGHTEN_CREDIT_TERMS = "TIGHTEN_CREDIT_TERMS"
+QUALIFY_SECOND_SOURCE = "QUALIFY_SECOND_SOURCE"
+HOLD_BUFFER_STOCK = "HOLD_BUFFER_STOCK"
+NEGOTIATE_VOLUME_TERMS = "NEGOTIATE_VOLUME_TERMS"
+SPREAD_THE_SPEND = "SPREAD_THE_SPEND"
 
 #: Every action, with what it means on screen. A card renders from this rather
 #: than inventing its own wording, so one action reads identically everywhere.
@@ -72,6 +76,10 @@ ACTIONS: dict[str, str] = {
     AGREE_PAYMENT_PLAN: "Agree a payment plan",
     HOLD_FURTHER_SUPPLY: "Hold further supply until it clears",
     TIGHTEN_CREDIT_TERMS: "Tighten the credit terms",
+    QUALIFY_SECOND_SOURCE: "Qualify a second source",
+    HOLD_BUFFER_STOCK: "Hold buffer stock against a gap",
+    NEGOTIATE_VOLUME_TERMS: "Negotiate on the volume you already give them",
+    SPREAD_THE_SPEND: "Spread the spend across suppliers",
 }
 
 
@@ -166,6 +174,13 @@ class DecisionPolicy:
     #: customer counts as a concentration worth naming. A ratio, like every
     #: other share in this codebase — never a percentage.
     exposure_share: Decimal = Decimal("0.25")
+    #: What share of total purchase spend sitting with one supplier counts as a
+    #: concentration worth naming. Separate from ``exposure_share`` on purpose:
+    #: buying most of your stock from one distributor is ordinary in this trade,
+    #: while being owed most of your money by one customer is not, so the two
+    #: thresholds want different values and one shared number would be tuned for
+    #: neither.
+    supplier_share: Decimal = Decimal("0.40")
     version: str = ""
 
     @property

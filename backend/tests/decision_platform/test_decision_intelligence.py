@@ -50,7 +50,11 @@ class _Source:
                  "status": "active"}]
 
     def list_vendors(self):
+        # Two, so a share is a real fraction rather than trivially 100%, and so
+        # one item can have a second source and correctly NOT be sole-sourced.
         return [{"contact_id": "v1", "contact_name": "Kennametal India",
+                 "status": "active"},
+                {"contact_id": "v2", "contact_name": "Sandvik Asia",
                  "status": "active"}]
 
     def list_users(self):
@@ -134,12 +138,30 @@ class _Source:
 
     def list_bills(self, skip=None):
         return self._over.get("bills", [
-            # Overdue payable: ₹3,00,000, due four months ago.
+            # Overdue payable: ₹3,00,000, due four months ago. v1 also becomes
+            # the sole source of "dead" and of "slow".
             {"bill_id": "b1", "bill_number": "BILL-1", "vendor_id": "v1",
              "date": "2026-03-01", "due_date": "2026-04-01", "status": "open",
              "total": "300000", "balance": "300000",
              "line_items": [{"line_item_id": "l1", "item_id": "dead",
                              "quantity": 1000, "rate": "500"}]},
+            {"bill_id": "b2", "bill_number": "BILL-2", "vendor_id": "v1",
+             "date": "2026-03-05", "due_date": "2026-04-05", "status": "paid",
+             "total": "80000", "balance": "0",
+             "line_items": [{"line_item_id": "l1", "item_id": "slow",
+                             "quantity": 200, "rate": "400"}]},
+            # "excess" is bought from BOTH suppliers, so it is the control:
+            # neither may report it as sole-sourced.
+            {"bill_id": "b3", "bill_number": "BILL-3", "vendor_id": "v1",
+             "date": "2026-04-01", "due_date": "2026-05-01", "status": "paid",
+             "total": "20000", "balance": "0",
+             "line_items": [{"line_item_id": "l1", "item_id": "excess",
+                             "quantity": 400, "rate": "50"}]},
+            {"bill_id": "b4", "bill_number": "BILL-4", "vendor_id": "v2",
+             "date": "2026-04-10", "due_date": "2026-05-10", "status": "paid",
+             "total": "20000", "balance": "0",
+             "line_items": [{"line_item_id": "l1", "item_id": "excess",
+                             "quantity": 400, "rate": "50"}]},
         ])
 
     def list_purchase_orders(self):
@@ -376,6 +398,108 @@ def test_the_oversold_shortfall_is_priced_at_what_the_item_actually_sells_for(se
     assert Decimal(d.impact["financial"]) == (short * per_unit).quantize(Decimal("0.01"))
 
 
+# ── suppliers ───────────────────────────────────────────────────────────────
+def test_the_supplier_state_is_keyed_by_vendor_and_item(session):
+    """The first composite-key state. Vendor and product are stored as fields
+    as well as being in the key, so a detector groups rather than parsing."""
+    from app.state.engine import load
+    from app.state.reducers.supplier import SUPPLIER
+
+    _seed(session)
+    _generate(session)
+    rows = load(session, ORG, SUPPLIER, TODAY)
+    # v1 bought dead, slow and excess; v2 bought excess. Four pairs.
+    assert len(rows) == 4
+    for key, value in rows.items():
+        assert key == f"{value['vendor_id']}:{value['product_id']}"
+
+
+def test_spend_concentration_is_a_share_of_what_was_actually_bought(session):
+    """Recomputed here rather than trusted: this vendor's year over the whole
+    book's year, against the policy threshold."""
+    _seed(session)
+    _generate(session)
+    d = _by_type(session)[DecisionType.SUP_SPEND_CONCENTRATION.value]
+    ev = d.confidence["evidence"]
+    share = Decimal(ev["spend_recent"]) / Decimal(ev["purchase_book"])
+    # Stored to four places, so the card and this test agree on the digits a
+    # reader can actually see.
+    assert share.quantize(Decimal("0.0001")) == Decimal(ev["share_of_spend"])
+    assert share >= Decimal(ev["supplier_share_threshold"])
+    # v1: dead 1000x500 + slow 200x400 + excess 400x50 = 600,000.
+    # v2: excess 400x50 = 20,000. Book = 620,000.
+    assert Decimal(ev["spend_recent"]) == Decimal("600000")
+    assert Decimal(ev["purchase_book"]) == Decimal("620000")
+
+
+def test_an_item_bought_from_two_suppliers_is_not_sole_sourced(session):
+    """The control in the fixture. "excess" comes from both vendors, so neither
+    may claim it — a sole-source rule that counted per bill rather than per
+    distinct supplier would get exactly this case wrong."""
+    _seed(session)
+    _generate(session)
+    d = _by_type(session)[DecisionType.SUP_SOLE_SOURCE.value]
+    # v1 solely supplies dead (500,000) and slow (80,000) — not excess.
+    assert d.confidence["evidence"]["sole_sourced_items"] == 2
+    assert Decimal(d.impact["financial"]) == Decimal("580000")
+    assert d.subject_entity_type == "VENDOR"
+
+
+def test_the_sole_source_card_never_claims_no_alternative_exists(session):
+    """We read a purchase ledger, not a market. The card must say "no
+    alternative in your own purchase history" — stated as a finding rather than
+    a prompt, it asserts something the platform cannot know."""
+    _seed(session)
+    _generate(session)
+    d = _by_type(session)[DecisionType.SUP_SOLE_SOURCE.value]
+    text = d.rationale.lower()
+    assert "purchase history" in text
+    assert "does not mean no alternative exists" in text
+
+
+def test_supplier_spend_is_ranked_on_the_year_not_on_all_time(session):
+    """Every other impact in the queue is a stock. Ranking a lifetime flow
+    against those would put a long-standing supplier on top forever, for no
+    reason but longevity."""
+    from app.state.engine import load
+    from app.state.reducers.supplier import SUPPLIER
+
+    # The same purchases, but dated four years ago — outside the window.
+    old_bills = [
+        {"bill_id": "old1", "bill_number": "OLD-1", "vendor_id": "v1",
+         "date": "2022-03-01", "status": "paid", "total": "500000", "balance": "0",
+         "line_items": [{"line_item_id": "l1", "item_id": "dead",
+                         "quantity": 1000, "rate": "500"}]},
+    ]
+    _seed(session, bills=old_bills)
+    _generate(session)
+    rows = load(session, ORG, SUPPLIER, TODAY)
+    (value,) = rows.values()
+    assert Decimal(value["spend"]) == Decimal("500000"), "lifetime still counts it"
+    assert "spend_recent" not in value, "but the ranked window does not"
+    assert not [d for d in _state_rows(session)
+                if d.decision_type == DecisionType.SUP_SPEND_CONCENTRATION.value], (
+        "a supplier nobody has bought from in a year is not a live concentration")
+
+
+def test_a_cost_line_whose_bill_named_no_supplier_is_skipped_not_bucketed(session):
+    """Attributing it to an "unknown" vendor would create a phantom supplier
+    that accumulates spend and eventually wins the concentration card."""
+    from app.state.engine import load
+    from app.state.reducers.supplier import SUPPLIER
+
+    _seed(session, bills=[
+        {"bill_id": "nov", "bill_number": "NO-VENDOR", "date": "2026-03-01",
+         "status": "open", "total": "900000", "balance": "900000",
+         "line_items": [{"line_item_id": "l1", "item_id": "dead",
+                         "quantity": 1000, "rate": "900"}]},
+    ])
+    _generate(session)
+    assert load(session, ORG, SUPPLIER, TODAY) == {}
+    assert not [d for d in _state_rows(session)
+                if d.decision_type.startswith("SUP_SPEND")]
+
+
 # ── the queue ───────────────────────────────────────────────────────────────
 def test_the_queue_is_ranked_by_money_and_says_so(session):
     _seed(session)
@@ -386,8 +510,24 @@ def test_the_queue_is_ranked_by_money_and_says_so(session):
 
     scores = [d.priority_deterministic_base for d in state_rows]
     assert scores == sorted(scores, reverse=True)
-    # Dead stock at ₹5,00,000 outranks the overdue payable at ₹3,00,000.
-    assert (state_rows[0].decision_type == DecisionType.INV_DEAD_STOCK.value)
+
+    # Money decides the order — but only among rows whose urgency is equal,
+    # because the score is money points plus lateness points and both are
+    # capped. This used to pin a decision type, which made it a hostage to the
+    # fixture: adding a supplier changed which situation was largest, and two
+    # situations above the money cap are then separated by urgency alone, which
+    # is the ranking working rather than breaking.
+    unhurried = [d for d in state_rows
+                 if d.confidence["ranking"]["urgency_points"] == 0]
+    assert len(unhurried) >= 2, "need two comparable rows to compare"
+    for earlier, later in zip(unhurried, unhurried[1:]):
+        assert (earlier.priority_deterministic_base
+                >= later.priority_deterministic_base)
+        # Equal scores mean both hit the money cap; below it, more money must
+        # mean a higher score.
+        if earlier.priority_deterministic_base > later.priority_deterministic_base:
+            assert (Decimal(earlier.impact["financial"])
+                    > Decimal(later.impact["financial"]))
 
 
 def test_every_score_is_reproducible_from_its_published_working(session):

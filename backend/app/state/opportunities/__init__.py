@@ -12,8 +12,8 @@ and never calls the AI layer.
 from .base import (ACTIONS, DETECTORS, DecisionPolicy, Impact,  # noqa: F401
                    OpportunityDetector, OpportunityDraft, UnknownAction,
                    register)
-from . import inventory, receivables, supply  # noqa: F401,E402  — for registration
+from . import inventory, receivables, supplier, supply  # noqa: F401,E402
 
 __all__ = ["ACTIONS", "DETECTORS", "DecisionPolicy", "Impact",
            "OpportunityDetector", "OpportunityDraft", "UnknownAction",
-           "register", "inventory", "receivables", "supply"]
+           "register", "inventory", "receivables", "supplier", "supply"]

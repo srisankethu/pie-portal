@@ -46,6 +46,7 @@ EDITABLE: tuple[str, ...] = (
     "dead_stock_days",
     "slow_stock_days",
     "receivable_exposure_share",
+    "supplier_spend_share",
 )
 #: Incentive rates are deliberately absent. They are not org policy edited from
 #: a settings screen — they are the published mechanism parameters in
@@ -131,6 +132,13 @@ FIELD_HELP: dict[str, tuple[str, str]] = {
         "a customer at this share is flagged even when every invoice is "
         "current, because if that one relationship stops paying, that share of "
         "the book stops with it."),
+    "supplier_spend_share": (
+        "Supplier concentration threshold",
+        "What share of everything you buy may sit with one supplier before it "
+        "is raised. Usually higher than the customer credit threshold — buying "
+        "most of your stock from one principal is normal in distribution, and "
+        "a threshold set at the customer's level would flag your best "
+        "relationship every week."),
     "slow_stock_days": (
         "Slow after",
         "Days with no sale before a line is marked slow-moving. Sits below the "

@@ -89,6 +89,12 @@ class DecisionType(str, Enum):
     # invoice is current.
     CASH_RECEIVABLE_OVERDUE = "CASH_RECEIVABLE_OVERDUE"
     CASH_CREDIT_EXPOSURE = "CASH_CREDIT_EXPOSURE"
+    # The supply side of the same two questions. Concentration is about money
+    # — how much of our purchasing rests on one relationship. Sole source is
+    # about substitutability, which is a different exposure: a small supplier
+    # can be irreplaceable and a large one easy to replace.
+    SUP_SPEND_CONCENTRATION = "SUP_SPEND_CONCENTRATION"
+    SUP_SOLE_SOURCE = "SUP_SOLE_SOURCE"
 
 
 #: Everything derived from Business State. All of them quantify impact from a
@@ -111,6 +117,9 @@ STATE_DECISION_TYPES = frozenset({
     # which is also where collections are run in this business.
     DecisionType.CASH_RECEIVABLE_OVERDUE,
     DecisionType.CASH_CREDIT_EXPOSURE,
+    # Both are sized in purchase spend, which is cost information outright.
+    DecisionType.SUP_SPEND_CONCENTRATION,
+    DecisionType.SUP_SOLE_SOURCE,
 })
 
 

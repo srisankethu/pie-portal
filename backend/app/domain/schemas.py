@@ -75,6 +75,19 @@ class CostRecordIn(BaseModel):
 
     external_ref: str = Field(min_length=1)          # bill_id:line_id
     product_external_id: str = Field(min_length=1)
+    #: Who it was bought from, copied down from the bill header.
+    #:
+    #: A dimension, not a measure — unlike ``balance`` and ``due_date``, which
+    #: live on ``BillIn`` precisely because copying them per line would turn a
+    #: sum into a de-duplication problem. Spend by supplier needs the vendor at
+    #: *this* grain, and without it ``INVENTORY.spend`` could only ever be per
+    #: product, which is why supplier concentration was unanswerable.
+    #:
+    #: Optional because events written before this field existed do not carry
+    #: it. Those lines fold as unattributable rather than being guessed at — the
+    #: same degradation ``CostRecord.rate`` already documents, and the same fix:
+    #: a re-sync from Zoho.
+    vendor_external_id: Optional[str] = None
     date: date
     qty: Decimal
     unit_cost: Decimal        # effective, post-discount — what every cost consumer reads

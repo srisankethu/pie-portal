@@ -186,6 +186,10 @@ def normalize_bill(raw: dict[str, Any]) -> list[CostRecordIn]:
     """
     bill_id = str(_require(raw, "bill_id", "bill"))
     when = _parse_date(_require(raw, "date", f"bill {bill_id}"), f"bill {bill_id}")
+    # From the header, onto every line. Not required: a bill from a supplier the
+    # vendor pull did not return is still a cost, and dropping the line would
+    # understate what an item cost in order to say who sold it.
+    vendor_ext = str(raw["vendor_id"]) if raw.get("vendor_id") else None
     lines = raw.get("line_items") or []
     if not lines:
         raise NormalizationError("NO_LINES", f"bill {bill_id}: no line_items")
@@ -200,6 +204,7 @@ def normalize_bill(raw: dict[str, Any]) -> list[CostRecordIn]:
         out.append(CostRecordIn(
             external_ref=f"{bill_id}:{line_id}",
             product_external_id=product_ext,
+            vendor_external_id=vendor_ext,
             date=when, qty=qty, unit_cost=unit_cost, rate=rate,
             discount_percent=discount_pct,
             source_ref=SourceRef(record_type="bill", record_id=bill_id, line_id=line_id),

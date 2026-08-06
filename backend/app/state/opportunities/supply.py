@@ -12,11 +12,13 @@ and this layer will not undo that by calling *age* lateness. An order open for
 90 days is reported as 90 days old, which is a fact, and never as 30 days late,
 which would be an invention.
 
-**No supplier concentration or dependency.** Both need spend joined to a
-vendor. ``INVENTORY.spend`` is per product and ``COMMITMENTS`` holds open
-commitments rather than historical spend, so nothing can say what share of the
-book one supplier carries. A SUPPLIER reducer would make it computable; until
-one exists the honest output is nothing.
+**No supplier concentration or dependency — they live next door now.** Both
+need spend joined to a vendor, which neither of this module's inputs has:
+``INVENTORY.spend`` is per product and ``COMMITMENTS`` holds open promises
+rather than historical spend. The SUPPLIER reducer this file used to say did
+not exist now does, and ``opportunities/supplier`` reads it. Kept as a pointer
+rather than deleted, because "we cannot do that" outliving the reason is how a
+reader stops asking for something the platform can do.
 
 **No cash pressure or liquidity risk.** Those need a bank balance, and PIE
 reads payments rather than balances. Payables are one side of a ledger, and one

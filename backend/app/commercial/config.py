@@ -213,6 +213,11 @@ class CommercialThresholds:
     # a setting: what counts as too much exposure depends on who the customer is
     # and how long the relationship has run, and the platform cannot know either.
     receivable_exposure_share: float = 0.25
+    # What share of total purchase spend may sit with one supplier before the
+    # concentration is worth naming. Higher than the receivable threshold on
+    # purpose: buying most of your stock from one principal is ordinary in
+    # distribution, while being owed most of your money by one customer is not.
+    supplier_spend_share: float = 0.40
 
     @classmethod
     def from_env(cls) -> "CommercialThresholds":
@@ -233,6 +238,8 @@ class CommercialThresholds:
                                    _default("excess_cover_months")),
             receivable_exposure_share=_f("CI_RECEIVABLE_EXPOSURE_SHARE",
                                          _default("receivable_exposure_share")),
+            supplier_spend_share=_f("CI_SUPPLIER_SPEND_SHARE",
+                                    _default("supplier_spend_share")),
             recent_days=_i("CI_RECENT_DAYS", 90),
             previous_days=_i("CI_PREVIOUS_DAYS", 90),
             historical_lookback_days=_i("CI_HISTORICAL_LOOKBACK_DAYS", 730),

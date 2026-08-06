@@ -73,6 +73,7 @@ def policy_from(th: CommercialThresholds) -> DecisionPolicy:
         rupees_per_point=Decimal(str(th.decision_rupees_per_point)),
         min_impact=Decimal(str(th.min_material_gap)),
         exposure_share=Decimal(str(th.receivable_exposure_share)),
+        supplier_share=Decimal(str(th.supplier_spend_share)),
         version=th.version,
     )
 

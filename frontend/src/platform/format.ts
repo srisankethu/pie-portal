@@ -21,7 +21,9 @@ export const TYPE_LABEL: Record<string, string> = {
   SUP_OPEN_COMMITMENT: "Open supplier commitment",
   CASH_PAYABLE_OVERDUE: "Payables past due",
   CASH_RECEIVABLE_OVERDUE: "Receivables past due",
-  CASH_CREDIT_EXPOSURE: "Credit exposure" };
+  CASH_CREDIT_EXPOSURE: "Credit exposure",
+  SUP_SPEND_CONCENTRATION: "Supplier concentration",
+  SUP_SOLE_SOURCE: "Only source for these items" };
 
 /** The state fields a card shows, in the words a person reads.
  *
@@ -99,7 +101,16 @@ export const STATE_FIELD_LABEL: Record<string, string> = {
   receivables_book: "Owed to the business in total",
   share_of_receivables: "Share of everything owed",
   share_of_receivables_pct: "% of everything owed",
-  exposure_share_threshold: "Exposure threshold" };
+  exposure_share_threshold: "Exposure threshold",
+  // SUPPLIER.
+  purchase_book: "Bought in total",
+  share_of_spend: "Share of all purchasing",
+  share_of_spend_pct: "% of all purchasing",
+  items_supplied: "Items supplied",
+  sole_sourced_items: "Items with no other source",
+  supplier_share_threshold: "Concentration threshold",
+  days_since_last_purchase: "days since the last purchase",
+  first_purchased_on: "First purchased" };
 
 export function stateFieldLabel(name: string): string {
   return STATE_FIELD_LABEL[name] || name.replace(/_/g, " ");
@@ -118,6 +129,7 @@ export const MONEY_STATE_FIELDS = new Set([
   "purchase_rate", "revenue", "spend", "last_unit_cost",
   "open_purchase_value", "open_sales_value", "payables_balance",
   "overdue_balance", "outstanding", "invoiced_value", "receivables_book",
+  "purchase_book",
 ]);
 
 /** A state field's value, in the words and units a person reads.

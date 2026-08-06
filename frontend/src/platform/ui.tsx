@@ -10,6 +10,10 @@ import type { DecisionAction, DecisionImpact, DecisionRanking } from "./types";
 // re-exported: the panels below use it, and a module cannot read its own
 // re-export.
 import { Labelled } from "../Tip";
+import Alert from "@mui/material/Alert";
+import AlertTitle from "@mui/material/AlertTitle";
+import Box from "@mui/material/Box";
+import { PriorityChip, StatusChip } from "./kit";
 export { Tip, Labelled } from "../Tip";
 
 type BpProps = { children: ReactNode; className?: string } & React.HTMLAttributes<HTMLDivElement>;
@@ -27,7 +31,7 @@ export function Bp({ children, className = "", ...rest }: BpProps) {
 }
 
 export function Pri({ band }: { band: string }) {
-  return <span className={`pri ${band}`}>{band}</span>;
+  return <PriorityChip band={band} />;
 }
 
 /** Confidence in the *recommendation*.
@@ -39,10 +43,24 @@ export function Pri({ band }: { band: string }) {
 export function Conf({ level, aiStatus }: { level?: string; aiStatus?: string }) {
   const state = aiStatus ? aiState(aiStatus) : "ok";
   if (state === "degraded" || state === "failed") {
-    return <span className="conf deterministic">Facts only · no AI reading</span>;
+    return (
+      <StatusChip
+        label="Facts only · no AI reading"
+        tone="neutral"
+        tip="The model did not return a usable reading, so this card shows the
+             deterministic signal alone. The figures are unaffected — they were
+             never computed by a model."
+      />
+    );
   }
   const label = (level && CONF_LABEL[level]) || "—";
-  return <span className={`conf ${label}`}>{label} evidence</span>;
+  return (
+    <StatusChip
+      label={`${label} evidence`}
+      tone={label === "High" ? "good" : label === "Medium" ? "warn" : "neutral"}
+      tip="How much evidence stands behind the reading — not how sure a model is."
+    />
+  );
 }
 
 export function FactChip({ f }: { f: Fact }) {
@@ -61,33 +79,35 @@ export function Interpretation({ d }: { d: DecisionDetail }) {
   const suff = d.confidence?.evidence_sufficiency;
 
   if (state === "failed") {
+    // `warning`, not `error`: nothing failed that stops somebody deciding. The
+    // facts are all present and were never computed by a model — only the
+    // reading of them is missing.
     return (
-      <div className="state-panel">
-        <div className="state-mark">Interpretation unavailable</div>
-        <p style={{ margin: 0, fontSize: 14 }}>
-          The reasoning service did not respond. The facts, history and evidence on the left are
-          read straight from your systems and are all present — only the reading of them is missing.
-          You can still act and record a decision.
-        </p>
-      </div>
+      <Alert severity="warning">
+        <AlertTitle>Interpretation unavailable</AlertTitle>
+        The reasoning service did not respond. The facts, history and evidence on
+        the left are read straight from your systems and are all present — only
+        the reading of them is missing. You can still act and record a decision.
+      </Alert>
     );
   }
   if (state === "withheld" || suff === "INSUFFICIENT") {
+    // `info`: a withheld judgement is the system working, not the system
+    // breaking. Rendering it in red would teach people to distrust the refusal,
+    // which is the one behaviour worth protecting.
     return (
-      <div className="state-panel">
-        <div className="state-mark">Recommendation withheld</div>
-        <p style={{ margin: 0, fontSize: 14 }}>
-          {d.interpretation.explanation ||
-            "The evidence does not support a confident recommendation. The movement is shown; a judgement is withheld rather than manufactured."}
-        </p>
+      <Alert severity="info">
+        <AlertTitle>Recommendation withheld</AlertTitle>
+        {d.interpretation.explanation ||
+          "The evidence does not support a confident recommendation. The movement is shown; a judgement is withheld rather than manufactured."}
         {d.confidence?.reasons?.length ? (
-          <ul style={{ margin: "8px 0 0", paddingLeft: 18, fontSize: 13 }}>
+          <Box component="ul" sx={{ m: "8px 0 0", pl: 2.5 }}>
             {d.confidence.reasons.map((r, i) => (
               <li key={i}>{r}</li>
             ))}
-          </ul>
+          </Box>
         ) : null}
-      </div>
+      </Alert>
     );
   }
   // Degraded = the model answered but failed validation, so what follows is the

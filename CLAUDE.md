@@ -8,6 +8,14 @@ Vite + TypeScript on the front.
 Read `docs/architecture.md` for the design and `docs/development.md` for the
 day-to-day loop. This file is the part that constrains how code gets *added*.
 
+**Writing or changing UI? Read `docs/ui-standards.md` first.** It is a standing
+standard, not a style preference: Material UI as the design system, `Paper` for
+dashboard surfaces and `Card` only for a business entity, status as a `Chip`
+rather than coloured text, MUI's own loading components rather than a
+hand-rolled shimmer, theme tokens rather than literals, and a shared component
+in `platform/kit.tsx` wherever a pattern appears twice. New UI follows it;
+existing screens move toward it as they are touched.
+
 ---
 
 ## 1. Invariants — these are not preferences

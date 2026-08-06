@@ -3,6 +3,7 @@ import TextField from "@mui/material/TextField";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { formatDate, since, todayISO } from "../when";
 import { papi } from "./api";
+import { LoadingState } from "./kit";
 import type {
   ConnectionCheck,
   ConnectionsView,
@@ -838,7 +839,7 @@ export function ConnectionsPanel({
         <p style={{ margin: 0, fontSize: 13.5 }}>{error}</p>
       </div>
     ) : (
-      <div className="skeleton" style={{ height: 90 }} />
+      <LoadingState rows={1} height={90} />
     );
   }
 

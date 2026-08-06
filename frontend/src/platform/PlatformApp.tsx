@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { DataGrid, numeric } from "./DataGrid";
 import { EntityName, EntitySource } from "./EntityName";
 import { CompanyFilter, useCompanyFilter } from "./CompanyFilter";
+import { EmptyState, ErrorState, LoadingState, StatusChip } from "./kit";
 import { formatDate } from "../when";
 import {
   clearPlatformSession,
@@ -15,6 +16,7 @@ import { aiState, factLabel, factValue, isPrimaryFact, stateFieldLabel } from ".
 import { ActionsPanel, Bp, Conf, DecisionCard, ImpactPanel, Interpretation, Labelled,
          Pri, RankingPanel, Tip, WhyPanel, typeLabel } from "./ui";
 import Avatar from "@mui/material/Avatar";
+import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Chip from "@mui/material/Chip";
 import Dialog from "@mui/material/Dialog";
@@ -671,22 +673,20 @@ function QuotesDoor({ onOpenQuotes }: { onOpenQuotes: () => void }) {
  * back rather than requiring a manual page reload. */
 function LoadFailed({ error, onRetry, busy }: { error: string; onRetry: () => void; busy: boolean }) {
   return (
-    <div className="dp-head" style={{ maxWidth: 620 }}>
-      <h1>Decisions could not be loaded</h1>
-      <p>
-        This is a loading failure, not an empty queue — there may well be decisions waiting. Nothing
-        has been lost; your data is untouched.
-      </p>
-      <div className="state-panel" style={{ marginTop: 14 }}>
-        <div className="state-mark">What went wrong</div>
-        <p style={{ margin: 0, fontSize: 13.5 }}>{error}</p>
-      </div>
-      <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
-        <button className="btn btn-primary" onClick={onRetry} disabled={busy}>
-          {busy ? "Retrying…" : "Try again"}
-        </button>
-      </div>
-    </div>
+    <Box sx={{ maxWidth: 620 }}>
+      <ErrorState
+        title="Decisions could not be loaded"
+        error={
+          <>
+            This is a loading failure, not an empty queue — there may well be
+            decisions waiting. Nothing has been lost; your data is untouched.
+            <Box sx={{ mt: 1, fontWeight: 600 }}>{error}</Box>
+          </>
+        }
+        onRetry={onRetry}
+        busy={busy}
+      />
+    </Box>
   );
 }
 
@@ -885,7 +885,8 @@ function ListScreen({
           <Skeleton variant="rounded" height={44} />
         </Stack>
       ) : rows.length === 0 ? (
-        <div className="dp-empty">No decisions match this filter.</div>
+        <EmptyState title="No decisions match this filter"
+                    reason="Clear a chip or a company above to widen it." />
       ) : (
         <DataGrid<DecisionRow>
           ariaLabel="Decisions"
@@ -1142,7 +1143,13 @@ function DetailScreen({
   onOpenAccount: (cid: string) => void;
 }) {
   if (loading && !d) return <div className="dp-loading">Loading decision…</div>;
-  if (!d) return <div className="dp-empty">Decision not found in this view.</div>;
+  if (!d) {
+    return (
+      <EmptyState
+        title="Decision not found in this view"
+        reason="It may have been closed, or it may belong to somebody else's queue." />
+    );
+  }
   const state = aiState(d.interpretation.status);
   const closed = d.status !== "OPEN" && d.status !== "VIEWED";
   // Two producers, two kinds of claim, two cards. Read from the row rather
@@ -1157,7 +1164,7 @@ function DetailScreen({
       <div className="dcard-top" style={{ marginBottom: 4 }}>
         <span className="dcard-type">{typeLabel(d.decision_type)}</span>
         <Pri band={d.priority.band} />
-        {closed && <span className="pri LOW">{d.status}</span>}
+        {closed && <StatusChip label={d.status} tone="neutral" />}
       </div>
       {/* The card is where somebody decides, so it has to say which book it is
           about. Two accounts called "Pitti Engineering" raise two cards, and
@@ -1429,14 +1436,10 @@ function CustomerScreen({
         </div>
 
         {accErr ? (
-          <div className="state-panel">
-            <div className="state-mark">Customers could not be loaded</div>
-            <p style={{ margin: 0, fontSize: 13.5 }}>{accErr}</p>
-          </div>
+          <ErrorState title="Customers could not be loaded" error={accErr} />
         ) : accounts === null ? (
           <>
-            <div className="skeleton" style={{ height: 44 }} />
-            <div className="skeleton" style={{ height: 44 }} />
+            <LoadingState rows={2} />
           </>
         ) : rows.length === 0 ? (
           <div className="dp-empty">

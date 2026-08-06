@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 import { DataGrid, numeric, text } from "./DataGrid";
 import { formatDate } from "../when";
 import { papi } from "./api";
+import { LoadingState } from "./kit";
 import type {
   CustomerItemDetail,
   CustomerItemRow,
@@ -158,7 +159,7 @@ export function CustomerCommercial({
       </div>
     );
   }
-  if (!data) return <div className="skeleton" style={{ height: 120 }} />;
+  if (!data) return <LoadingState rows={1} height={120} />;
 
   const s = data.summary;
   if (s.active_items === 0) {
@@ -378,7 +379,7 @@ export function CustomerItemScreen({
       </div>
     );
   }
-  if (!data) return <div className="skeleton" style={{ height: 200 }} />;
+  if (!data) return <LoadingState rows={1} height={200} />;
 
   const h = data.headline;
   const q = data.data_quality;

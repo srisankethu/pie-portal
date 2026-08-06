@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
+import Box from "@mui/material/Box";
 import { DataGrid, numeric } from "./DataGrid";
 import { money } from "../money";
 import { since as when, todayISO } from "../when";
 import { papi } from "./api";
+import { ErrorState } from "./kit";
 import { ConnectionsPanel } from "./ConnectionsPanel";
 import { SyncStatusCard, useSync } from "./SyncStatus";
 import type { DataStatus, PlatformSession, UnresolvedReference } from "./types";
@@ -102,10 +104,9 @@ export function DataScreen({ session, onSynced }: { session: PlatformSession; on
       </div>
 
       {error && (
-        <div className="state-panel" style={{ marginBottom: 14 }}>
-          <div className="state-mark">Could not read the connection status</div>
-          <p style={{ margin: 0, fontSize: 13.5 }}>{error}</p>
-        </div>
+        <Box sx={{ mb: 2 }}>
+          <ErrorState title="Could not read the connection status" error={error} />
+        </Box>
       )}
 
       <ConnectionsPanel

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { formatDateTime, since } from "../when";
 import { papi } from "./api";
+import { LoadingState } from "./kit";
 import type { SyncOptions, SyncRun, SyncState } from "./types";
 import { Bp, Labelled, Tip } from "./ui";
 
@@ -204,7 +205,7 @@ export function SyncStatusCard({
   const active = state?.active ?? null;
   useTick(Boolean(active));
 
-  if (!state) return <div className="skeleton" style={{ height: 88 }} />;
+  if (!state) return <LoadingState rows={1} height={88} />;
 
   const status = state.state;
   const tone = TONE[status] ?? "idle";

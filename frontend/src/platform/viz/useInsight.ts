@@ -5,8 +5,27 @@
 // loading hook is two places a retry, an auth-loss check or a request-cancel
 // would have to be added, and the second copy is the one that gets forgotten.
 // It lives here so every screen's four states come from the same code.
+//
+// It is TanStack Query underneath now, and the interface below is deliberately
+// unchanged so that swap touched no screen. What the twenty-odd callers get for
+// free is exactly the list the comment above was worried about having to write:
+//
+//   **Request cancellation.** Changing the month picker twice in a second used
+//   to leave two requests racing, and whichever answered last won — so a fast
+//   answer to the old question could overwrite a slow answer to the new one.
+//
+//   **Deduplication.** The storyboard mounts several panels that ask for the
+//   same window. Each one used to be its own round trip.
+//
+//   **A cache with a stated lifetime.** Navigating away and back re-ran every
+//   query against a book that changes once a sync, so the screens now show the
+//   last answer immediately and refresh behind it.
+//
+// `staleTime` is the one judgement call. These screens read a projection that
+// is rebuilt at the end of a sync, so anything shorter than a sync interval is
+// re-asking a question whose answer cannot have moved.
 
-import { useCallback, useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 
 /** The common envelope every `/api/v1/insight/*` endpoint returns: the payload,
  *  plus `currency` and `empty_reason`. Untyped on purpose — the payloads differ
@@ -24,27 +43,24 @@ export function useInsight(
   fetcher: () => Promise<Envelope>,
   deps: unknown[],
 ): Loaded {
-  const [data, setData] = useState<Envelope | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const query = useQuery<Envelope, Error>({
+    // The deps the caller already lists are the identity of the request — the
+    // fetcher closes over exactly them. Reusing them as the key means no call
+    // site had to learn a second way to say the same thing.
+    queryKey: ["insight", ...deps],
+    queryFn: fetcher,
+  });
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      setData(await fetcher());
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setLoading(false);
-    }
-    // The fetcher closes over the deps the caller lists; re-creating it on every
-    // render would loop, so the deps are the contract.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, deps);
-
-  useEffect(() => { void load(); }, [load]);
-  return { data, loading, error, reload: load };
+  return {
+    // `null` rather than `undefined`, because every screen already branches on
+    // it and changing that would have been a change to twenty files.
+    data: query.data ?? null,
+    // Not `isFetching`: a background refresh of a cached answer must not put
+    // the screen back into its skeleton state, which is the whole benefit.
+    loading: query.isPending,
+    error: query.error ? query.error.message : null,
+    reload: () => { void query.refetch(); },
+  };
 }
 
 /** A ratio as a percentage, with an em dash for "not known".

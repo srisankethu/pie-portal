@@ -17,6 +17,15 @@
 // server is the authority, and a component deep in a table has no business
 // knowing where the answer came from.
 
+import dayjs from "dayjs";
+import relativeTime from "dayjs/plugin/relativeTime";
+import timezonePlugin from "dayjs/plugin/timezone";
+import utc from "dayjs/plugin/utc";
+
+dayjs.extend(utc);
+dayjs.extend(timezonePlugin);
+dayjs.extend(relativeTime);
+
 let zone = "Asia/Kolkata";
 
 /** Set from the sign-in response, alongside `setMoneyCurrency`. */
@@ -84,11 +93,12 @@ export function formatTime(iso: string | null | undefined): string {
 export function since(iso: string | null | undefined): string {
   const d = parse(iso);
   if (!d) return "—";
-  const mins = Math.round((Date.now() - d.getTime()) / 60000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins} min ago`;
-  if (mins < 60 * 24) return `${Math.round(mins / 60)} h ago`;
-  return formatDateTime(iso);
+  // dayjs's relativeTime, because the hand-rolled ladder stopped at hours and
+  // fell back to an absolute timestamp after a day. On the Data screen — where
+  // this is read as "when did we last sync" — that is precisely the range that
+  // matters: "3 days ago" is the answer somebody is looking for, and
+  // "5 Aug 2026, 9:30 pm" makes them do the subtraction themselves.
+  return dayjs(d).fromNow();
 }
 
 /** Today in the business's zone, as `YYYY-MM-DD` for a date input's `max`.
@@ -96,6 +106,8 @@ export function since(iso: string | null | undefined): string {
  *  `new Date().toISOString().slice(0, 10)` is the UTC date, so before 05:30 IST
  *  it caps a date picker a day early and the operator cannot select today. */
 export function todayISO(): string {
-  // en-CA formats as YYYY-MM-DD, which is what a date input wants.
-  return new Date().toLocaleDateString("en-CA", { timeZone: zone });
+  // Was `toLocaleDateString("en-CA")`, which produces YYYY-MM-DD by coincidence
+  // of that locale's conventions rather than by asking for it. This says what
+  // it means, and says which zone it means it in.
+  return dayjs().tz(zone).format("YYYY-MM-DD");
 }

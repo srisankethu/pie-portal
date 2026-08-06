@@ -2,6 +2,7 @@ import type { Account, AccountItem, StatusFilter, ApprovalRequest, EntityKind, I
 
 import { setMoneyCurrency } from "../money";
 import { setBusinessTimezone } from "../when";
+import { parseStoredSession } from "./schemas";
 
 const KEY = "pie_platform_session";
 
@@ -12,10 +13,23 @@ const KEY = "pie_platform_session";
 export function loadPlatformSession(): PlatformSession | null {
   const raw = localStorage.getItem(KEY);
   if (!raw) return null;
-  const s = JSON.parse(raw) as PlatformSession;
-  setMoneyCurrency(s.currency);
-  setBusinessTimezone(s.timezone);
-  return s;
+  // Validated rather than cast. This value comes out of `localStorage`, which
+  // the type-checker has no view of at all: it may have been written by a
+  // previous version of this app, edited by hand, or left by an extension. The
+  // old `as PlatformSession` believed all of it — a stored session missing its
+  // token booted the shell signed-in and then failed every request with a 401
+  // nobody could explain, and one carrying an unknown role fell through every
+  // role check to the narrowest view.
+  const parsed = parseStoredSession(raw);
+  if (!parsed) {
+    // Not a session. Clear it so the next load is not the same puzzle, and
+    // show the door — which the app already does well.
+    localStorage.removeItem(KEY);
+    return null;
+  }
+  setMoneyCurrency(parsed.currency);
+  setBusinessTimezone(parsed.timezone);
+  return parsed as PlatformSession;
 }
 export function savePlatformSession(s: PlatformSession) {
   localStorage.setItem(KEY, JSON.stringify(s));

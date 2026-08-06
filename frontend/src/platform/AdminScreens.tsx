@@ -16,6 +16,7 @@ import Button from "@mui/material/Button";
 import MenuItem from "@mui/material/MenuItem";
 import Switch from "@mui/material/Switch";
 import TextField from "@mui/material/TextField";
+import { abilityFor } from "./ability";
 import { Bp, Labelled } from "./ui";
 import { money, moneySymbol } from "../money";
 
@@ -899,7 +900,12 @@ export function SettingsScreen({ session }: { session: PlatformSession }) {
     }
   }
 
-  const isSales = session.role === "SALESPERSON";
+  // Reads the same table the nav reads, so "what this role is offered" has one
+  // answer in the app. Note what is deliberately NOT moved here: `canManage`
+  // below comes from the server's own `can_manage` on the users response, and
+  // swapping a server answer for a client guess would be a downgrade however
+  // tidy it looked.
+  const isSales = !abilityFor(session).can("read", "economics");
 
   return (
     <div className="dp-screen">

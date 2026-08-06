@@ -22,13 +22,14 @@ import DialogContent from "@mui/material/DialogContent";
 import DialogContentText from "@mui/material/DialogContentText";
 import DialogTitle from "@mui/material/DialogTitle";
 import Skeleton from "@mui/material/Skeleton";
-import Snackbar from "@mui/material/Snackbar";
+import { useSnackbar } from "notistack";
 import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 import { navigate, parseHash, type Screen } from "./route";
 import AppShell, { type NavItem } from "./AppShell";
 import { SignInCard } from "../SignInCard";
+import { abilityFor } from "./ability";
 import { ApprovalsScreen, SettingsScreen } from "./AdminScreens";
 import { IdentityScreen } from "./IdentityScreen";
 import { DataScreen } from "./DataScreen";
@@ -163,6 +164,7 @@ function ActionModal({
 
 // ── main ─────────────────────────────────────────────────────────────────────
 export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void }) {
+  const { enqueueSnackbar, closeSnackbar } = useSnackbar();
   const [session, setSession] = useState<PlatformSession | null>(loadPlatformSession());
   // Screen lives in the URL hash so Back, reload and shareable links all work.
   const [route, setRoute] = useState(() => parseHash(window.location.hash));
@@ -172,7 +174,6 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [listType, setListType] = useState("");
-  const [toast, setToast] = useState<{ msg: string; undo?: () => void } | null>(null);
   const [modal, setModal] = useState<{ id: string; kind: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -230,10 +231,30 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
     go(map[head] ?? "home");
   }, [go]);
 
-  const flash = (msg: string, undo?: () => void) => {
-    setToast({ msg, undo });
-    setTimeout(() => setToast(null), undo ? 9000 : 3500);
-  };
+  /** Say something, and offer the way back if there is one.
+   *
+   * notistack rather than one piece of state holding one message. The old
+   * version could only ever show the most recent: acting on two decisions in
+   * quick succession replaced the first toast — and with it the only offer to
+   * undo that action — before anybody could read it. The undo window is longer
+   * than a plain acknowledgement for the same reason it always was.
+   */
+  const flash = useCallback((msg: string, undo?: () => void) => {
+    enqueueSnackbar(msg, {
+      autoHideDuration: undo ? 9000 : 3500,
+      action: undo
+        ? (key) => (
+            <Button
+              size="small"
+              sx={{ color: "var(--color-accent-300)" }}
+              onClick={() => { closeSnackbar(key); undo(); }}
+            >
+              Undo
+            </Button>
+          )
+        : undefined,
+    });
+  }, [enqueueSnackbar, closeSnackbar]);
 
   const signOut = useCallback(() => {
     clearPlatformSession();
@@ -346,7 +367,11 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
 
   const rh = ROLE_HOME[session.role];
   const roleShort = session.role === "SALESPERSON" ? "Salesperson" : session.role === "SALES_MANAGER" ? "Manager" : "Owner";
-  const manager = session.role !== "SALESPERSON";
+  // What this role is offered, from one table rather than a ternary per item.
+  // `ability.ts` says plainly what this is and is not: the server decides what
+  // a role may *read*; this decides what the interface bothers to show, so a
+  // nav item that would always 403 is simply absent.
+  const ability = abilityFor(session);
   // The insight screens sit next to the briefing they are reached from. The two
   // that are entirely margin are omitted for a salesperson rather than shown and
   // then refused — a nav item that always 403s is a nav item that teaches people
@@ -370,7 +395,7 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
     // Every role: it is the salesperson's own screen, and a manager needs to
     // see what their team is proposing.
     { key: "negotiate", label: "Negotiate", group: "decide" },
-    ...(manager
+    ...(ability.can("read", "simulation")
       ? ([{ key: "simulate", label: "Simulator", group: "decide" }] as NavItem[])
       : []),
     { key: "quotes", label: "Quotes", group: "decide" },
@@ -381,7 +406,7 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
     // two that are entirely margin are omitted for a salesperson rather than
     // shown and then refused — a nav item that always 403s is a nav item that
     // teaches people the product is broken.
-    ...(manager
+    ...(ability.can("read", "economics")
       ? ([{ key: "weather", label: "Weather", group: "understand" },
           { key: "opportunities", label: "Opportunities", group: "understand" },
           { key: "lostRevenue", label: "Lost revenue", group: "understand" },
@@ -405,7 +430,7 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
     // Neither carries cost: receivables are money in, and stock structure is
     // counts. The purchase rate is dropped from a salesperson's stock copy.
     { key: "stock", label: "Stock", group: "book" },
-    ...(manager
+    ...(ability.can("read", "supply")
       // Supplier spend is purchase cost by another name, so the endpoint is
       // manager-scoped and the nav item follows it rather than 403-ing.
       ? ([{ key: "supply", label: "Suppliers", group: "book" }] as NavItem[])
@@ -574,32 +599,6 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
           onConfirm={(note) => doAction(modal.id, modal.kind, note)}
         />
       )}
-      {/* `role="status"` rather than a bare div: an undo offer nobody is told
-          about expires before it is used. */}
-      <Snackbar
-        open={!!toast}
-        onClose={() => setToast(null)}
-        anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
-        message={toast?.msg}
-        action={
-          toast?.undo ? (
-            <Button
-              size="small"
-              sx={{ color: "var(--color-accent-300)" }}
-              onClick={() => {
-                const u = toast.undo!;
-                setToast(null);
-                u();
-              }}
-            >
-              Undo
-            </Button>
-          ) : null
-        }
-      />
-      {/* Autohide is deliberately not set. The toast already has an explicit
-          lifetime managed by whoever raised it, and two timers racing is how an
-          undo window closes early. */}
     </AppShell>
   );
 }
@@ -1438,7 +1437,7 @@ function CustomerScreen({
       {/* Which items are driving this account's margin. Cost/margin throughout,
           so it is shown only to the roles allowed to see economics — a
           salesperson gets the decisions below and nothing from this surface. */}
-      {session.role !== "SALESPERSON" && (
+      {abilityFor(session).can("read", "economics") && (
         <div style={{ marginTop: 18 }}>
           <CustomerCommercial
             session={session}

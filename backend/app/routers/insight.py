@@ -37,6 +37,7 @@ from ..domain import models
 from ..domain.enums import Role
 from ..signals.aggregates import label_for, load_snapshot
 from ..state import engine as state_engine
+from ..state.reducers.commitments import COMMITMENTS
 from ..state.reducers.inventory import INVENTORY
 from ..signals.config import load_thresholds as load_signal_thresholds
 
@@ -811,7 +812,19 @@ def _as_float(v: Optional[Decimal]) -> Optional[float]:
 
 # ── the simulator ───────────────────────────────────────────────────────────
 class SimulationRequest(BaseModel):
-    scenario: str = Field(..., description="PRICE_CHANGE | MARGIN_FLOOR | CUSTOMER_RECOVERY")
+    scenario: str = Field(
+        ..., description=("PRICE_CHANGE | MARGIN_FLOOR | CUSTOMER_RECOVERY | "
+                          "INVENTORY_CHANGE | SUPPLIER_DELAY"))
+    # ── inventory change ────────────────────────────────────────────────────
+    #: How much of each line moves, and what it takes to move it. Both are the
+    #: user's assumptions; neither is guessed at.
+    share_moved: float = Field(1.0, ge=0.0, le=1.0)
+    discount: float = Field(0.0, ge=0.0, le=1.0)
+    #: Restrict to one band of the shelf — DEAD, SLOW or HEALTHY. Absent means
+    #: the whole shelf.
+    band: Optional[str] = Field(None, pattern="^(DEAD|SLOW|HEALTHY)$")
+    # ── supplier delay ──────────────────────────────────────────────────────
+    delay_days: int = Field(30, ge=1, le=365)
     price_change_pct: Optional[float] = Field(None, ge=-0.9, le=2.0)
     assumed_volume_change: float = Field(0.0, ge=-1.0, le=2.0)
     floor: Optional[float] = Field(None, ge=0.0, lt=1.0)
@@ -831,6 +844,10 @@ def scenarios(principal: Principal = Depends(require_manager_or_owner),
         {"available": [
             {"scenario": simulate.PRICE_CHANGE, "label": "Price change",
              "inputs": ["price_change_pct", "assumed_volume_change"]},
+            {"scenario": simulate.INVENTORY_CHANGE, "label": "Clear stock",
+             "inputs": ["band", "share_moved", "discount"]},
+            {"scenario": simulate.SUPPLIER_DELAY, "label": "Supplier delay",
+             "inputs": ["delay_days"]},
             {"scenario": simulate.MARGIN_FLOOR, "label": "Lift to a margin floor",
              "inputs": ["floor"]},
             {"scenario": simulate.CUSTOMER_RECOVERY, "label": "Win back customers",
@@ -840,12 +857,76 @@ def scenarios(principal: Principal = Depends(require_manager_or_owner),
         currency=th.currency)
 
 
+def _state_scenario(session: Session, org: str, th, body: "SimulationRequest",
+                    snapshot) -> dict:
+    """The two scenarios that read Business State rather than metric rows.
+
+    Loaded here and passed in as plain data, so ``simulate`` stays a set of
+    functions of its inputs — the same arrangement the stock screen has with
+    ``stock.lines_from_state``, and the reason ``commercial/`` still imports
+    neither ``state/`` nor a session.
+    """
+    on = state_engine.latest_as_of(session, org, INVENTORY)
+    if on is None:
+        return {"scenario": body.scenario, "empty_reason": (
+            "Business state has not been folded yet. It is built at the end of "
+            "every sync — run one, and this scenario can be computed.")}
+    as_of = _as_of(snapshot) or clock.today(th.timezone)
+    carrying = stock.Carrying(annual_pct=th.carrying_cost_annual_pct,
+                              dead_days=th.dead_stock_days,
+                              slow_days=th.slow_stock_days,
+                              rate_is_published=th.carrying_rate_is_published)
+
+    if body.scenario == simulate.INVENTORY_CHANGE:
+        states = state_engine.load(session, org, INVENTORY, on)
+        shelf = stock.lines_from_state(
+            states, labels=snapshot.product_names, buyers={}, with_cost=True)
+        # Band the same way the Stock screen does, so a scenario run against
+        # "dead stock" covers exactly the rows that screen calls dead.
+        if body.band:
+            shelf = [ln for ln in shelf if ln.health(as_of, carrying) == body.band]
+        return simulate.inventory_change(
+            [simulate.ShelfLine(product_id=ln.product_id, label=ln.label,
+                                on_hand=ln.on_hand,
+                                purchase_rate=ln.purchase_rate,
+                                idle_days=ln.idle_days(as_of))
+             for ln in shelf],
+            monthly_carrying_pct=carrying.monthly_pct,
+            share=body.share_moved, discount=body.discount)
+
+    commitments = state_engine.load(session, org, COMMITMENTS, on)
+    vendors = {v.vendor_id: v for v in session.scalars(
+        select(models.Vendor).where(models.Vendor.organization_id == org)).all()}
+    return simulate.supplier_delay(
+        [simulate.OpenCommitment(
+            vendor_id=key,
+            label=(vendors[key].name if key in vendors
+                   # An order whose supplier the vendor pull did not return is
+                   # still an order. Named honestly rather than dropped.
+                   else "Supplier not in the contact list"),
+            open_orders=int(value.get("open_purchase_orders") or 0),
+            open_value=float(value.get("open_purchase_value") or 0),
+            oldest_open_on=value.get("oldest_open_purchase_on"),
+            payment_terms_days=getattr(vendors.get(key), "payment_terms_days", None))
+         for key, value in commitments.items()
+         if value.get("direction") == "supplier"],
+        days=body.delay_days, as_of=as_of)
+
+
 @router.post("/simulate")
 def run_simulation(body: SimulationRequest,
                    principal: Principal = Depends(require_manager_or_owner),
                    session: Session = Depends(get_session)) -> dict:
     """Deterministic scenario arithmetic. Same inputs, same answer, every time."""
     org, snapshot, th = _labels_only(session, principal)
+
+    # The two state-backed scenarios come first: they read folded state rather
+    # than CustomerItemMetric, so loading the metric lines for them would be a
+    # scan for nothing.
+    if body.scenario in (simulate.INVENTORY_CHANGE, simulate.SUPPLIER_DELAY):
+        return _envelope(_state_scenario(session, org, th, body, snapshot),
+                         currency=th.currency, thresholds_version=th.version)
+
     lines = simulate.load_lines(session, org, customer_id=body.customer_id,
                                 product_id=body.product_id,
                                 customer_names=snapshot.customer_names,
@@ -874,7 +955,8 @@ def run_simulation(body: SimulationRequest,
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
             f"{body.scenario!r} is not a scenario this platform can compute. "
-            f"Supported: PRICE_CHANGE, MARGIN_FLOOR, CUSTOMER_RECOVERY.")
+            "Supported: PRICE_CHANGE, MARGIN_FLOOR, CUSTOMER_RECOVERY, "
+            "INVENTORY_CHANGE, SUPPLIER_DELAY.")
 
     return _envelope(result, currency=th.currency,
                      thresholds_version=th.version)

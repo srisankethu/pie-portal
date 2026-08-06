@@ -22,19 +22,22 @@ this is worse than doing nothing.* That number is fully determined by cost,
 price and margin, needs no behavioural guess, and is what a distributor actually
 negotiates against.
 
-Two of the four scenarios in the specification are not implemented, because the
-data does not exist and building them would mean fabricating it:
+Both of the scenarios this module used to declare blocked are now implemented.
+They were blocked on data — open purchase orders and stock levels — and the
+Business State work read both. What remains blocked is *narrower* and is stated
+as such rather than left as the old, now-stale sentence: a supplier delay
+cannot be attributed to individual items, because purchase orders are read at
+header grain and nothing links a delayed order to the shelf it would have
+filled.
 
-  * **supplier delay** needs vendor lead times and open purchase orders
-  * **inventory change** needs stock levels
-
-Neither is in the read model. ``UNAVAILABLE`` names them with the reason, so the
-screen can show them as blocked-on-data instead of silently offering three
-options where the specification asked for five.
+That distinction matters. "We cannot do supplier delay" was true and is no
+longer; "we cannot say which items run short" is true now, and a reader who
+believes the first will stop asking for the second.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 from typing import Iterable, Optional
 
 from sqlalchemy import select
@@ -45,17 +48,26 @@ from ...domain import models
 PRICE_CHANGE = "PRICE_CHANGE"
 CUSTOMER_RECOVERY = "CUSTOMER_RECOVERY"
 MARGIN_FLOOR = "MARGIN_FLOOR"
+INVENTORY_CHANGE = "INVENTORY_CHANGE"
+SUPPLIER_DELAY = "SUPPLIER_DELAY"
 
-#: Named, with the missing input, so the UI can explain rather than omit.
+#: What is still refused, and precisely what for. Narrower than it was, because
+#: the data that blocked two whole scenarios now exists — leaving the old
+#: sentence up would tell a reader the platform cannot do something it can.
 UNAVAILABLE: tuple[dict[str, str], ...] = (
-    {"scenario": "SUPPLIER_DELAY",
-     "needs": "vendor lead times and open purchase orders",
-     "why": "The read model holds bill lines, which say what was bought and at "
-            "what cost, not what is on order or when it is due."},
-    {"scenario": "INVENTORY_CHANGE",
-     "needs": "stock on hand per item",
-     "why": "Stock is not synced from Zoho into this platform, so any inventory "
-            "figure here would be fabricated."},
+    {"scenario": "SUPPLIER_DELAY_BY_ITEM",
+     "needs": "purchase order lines",
+     "why": "Purchase orders are read at header grain — what was ordered from "
+            "whom, for how much, and how much is still to come, but not which "
+            "items. So a delay can be costed in cash and in commitment age, "
+            "and cannot be attributed to the shelf it would have filled. "
+            "Reading PO lines would cost one API call per order."},
+    {"scenario": "SUPPLIER_DELAY_AGAINST_PROMISE",
+     "needs": "promised delivery dates",
+     "why": "``expected_delivery_date`` is blank on effectively every order in "
+            "this book, so a delay is measured from today rather than against "
+            "a date somebody committed to. The scenario says how much later, "
+            "not how much late."},
 )
 
 
@@ -286,4 +298,194 @@ def customer_recovery(lines: Iterable[Line], *, customer_ids: list[str],
             "the recovery share you set. It is what the relationship was worth, "
             "not a probability that it returns."),
         "customers": recovered,
+    }
+
+
+# ── inventory change ─────────────────────────────────────────────────────────
+#
+# The question a distributor actually asks about dead stock is not "will it
+# sell" — nothing here can answer that — but "what do I get back, and what do I
+# stop paying, if I move it?" Both halves are arithmetic over facts already
+# folded into INVENTORY state.
+#
+# The behavioural half is elicited exactly as it is for a price change: the
+# share that moves and the discount it takes are the user's assumptions, and
+# the response says so rather than absorbing them into a headline.
+
+@dataclass
+class ShelfLine:
+    """One item on the shelf, as the simulator sees it.
+
+    Built from folded INVENTORY state by the caller, so this module stays a set
+    of functions of its inputs — the same arrangement ``load_lines`` has with
+    ``CustomerItemMetric`` and ``stock.lines_from_state`` has with state.
+    """
+
+    product_id: str
+    label: str
+    on_hand: float
+    purchase_rate: Optional[float]
+    idle_days: Optional[int]
+
+    @property
+    def priced(self) -> bool:
+        return bool(self.purchase_rate and self.on_hand > 0)
+
+    @property
+    def capital(self) -> float:
+        """What this line cost to buy, for the quantity still held."""
+        return (self.on_hand * (self.purchase_rate or 0.0)) if self.priced else 0.0
+
+
+def inventory_change(lines: Iterable[ShelfLine], *, monthly_carrying_pct: float,
+                     share: float = 1.0, discount: float = 0.0) -> dict:
+    """What clearing some of the shelf returns, and what it stops costing.
+
+    ``share`` is how much of each line moves; ``discount`` is what it takes to
+    move it, as a fraction off the purchase cost. Both are the user's
+    assumptions and neither is guessed at — the response names them and reports
+    the result *at* them rather than as a projection.
+
+    A line with no purchase rate is counted separately rather than valued at
+    zero. Nobody has costed it; that is not the same as it being free, and
+    folding it in at zero would understate what is on the shelf by exactly the
+    lines nobody has looked at.
+    """
+    priced = [ln for ln in lines if ln.priced]
+    unpriced = [ln for ln in lines if not ln.priced and ln.on_hand > 0]
+
+    held = sum(ln.capital for ln in priced)
+    moving = held * share
+    # What comes back is the cost of what moves, less the discount it takes.
+    # Never "what it would sell for": this module has no selling price for
+    # stock nothing is currently selling, and inventing one is the whole class
+    # of lie the module docstring refuses.
+    released = moving * (1.0 - discount)
+    written_off = moving - released
+    remaining = held - moving
+
+    rows = sorted(
+        ({"product_id": ln.product_id, "label": ln.label,
+          "on_hand": round(ln.on_hand, 2),
+          "capital": round(ln.capital, 2),
+          "moves": round(ln.capital * share, 2),
+          "releases": round(ln.capital * share * (1.0 - discount), 2),
+          "monthly_saved": round(ln.capital * share * monthly_carrying_pct, 2),
+          "idle_days": ln.idle_days}
+         for ln in priced),
+        key=lambda r: -r["releases"])
+
+    return {
+        "scenario": INVENTORY_CHANGE,
+        "assumptions": {
+            "share_moved": share,
+            "discount": discount,
+            "note": ("Both are yours, not the platform's. The figures below are "
+                     "what follows from them arithmetically — nothing here "
+                     "predicts whether the stock will actually move."),
+        },
+        "capital_held": round(held, 2),
+        "capital_released": round(released, 2),
+        "written_off": round(written_off, 2),
+        "capital_remaining": round(remaining, 2),
+        # The recurring half, and the one a person underestimates: clearing the
+        # shelf stops a payment that repeats every month for as long as the
+        # stock sits.
+        "monthly_carrying_saved": round(moving * monthly_carrying_pct, 2),
+        "annual_carrying_saved": round(moving * monthly_carrying_pct * 12, 2),
+        "lines": rows[:100],
+        "line_count": len(priced),
+        "unpriced_lines": len(unpriced),
+        "unpriced_note": (
+            None if not unpriced else
+            f"{len(unpriced)} line(s) on the shelf have no purchase cost "
+            "recorded, so they are excluded rather than valued at zero. What "
+            "they are worth is unknown, not nothing."),
+    }
+
+
+# ── supplier delay ───────────────────────────────────────────────────────────
+
+@dataclass
+class OpenCommitment:
+    """What one supplier owes us, from folded COMMITMENTS state."""
+
+    vendor_id: str
+    label: str
+    open_orders: int
+    open_value: float
+    oldest_open_on: Optional[str]
+    payment_terms_days: Optional[int]
+
+
+def supplier_delay(commitments: Iterable[OpenCommitment], *, days: int,
+                   as_of: date) -> dict:
+    """What slipping every open order by ``days`` moves, in cash and in age.
+
+    Two effects, both mechanical:
+
+    **Cash stays put.** An order that arrives later is a bill raised later, so
+    the money committed to it is not owed for those extra days. Where the
+    supplier has payment terms recorded, the delay pushes the payable that much
+    further out; where they do not, the response says so instead of assuming
+    a term.
+
+    **Commitment ages.** An order already open for 90 days becomes one open for
+    90 + ``days``. That is the number worth a phone call, and it is a fact
+    rather than lateness — this book records no promised dates, so there is
+    nothing to be late against.
+
+    What this deliberately does not say is which items run short. Purchase
+    orders are read at header grain, so nothing links a delayed order to a
+    shelf. See ``UNAVAILABLE``.
+    """
+    rows = []
+    total_value = 0.0
+    without_terms = 0
+    for c in commitments:
+        if c.open_orders <= 0:
+            continue
+        total_value += c.open_value
+        age = None
+        if c.oldest_open_on:
+            age = (as_of - date.fromisoformat(c.oldest_open_on)).days
+        if c.payment_terms_days is None:
+            without_terms += 1
+        rows.append({
+            "vendor_id": c.vendor_id, "label": c.label,
+            "open_orders": c.open_orders,
+            "open_value": round(c.open_value, 2),
+            "oldest_age_days": age,
+            "oldest_age_after": (age + days) if age is not None else None,
+            "payment_terms_days": c.payment_terms_days,
+            # When the money would have been due, and when it would be instead.
+            # Null where the supplier has no terms recorded: a payable with no
+            # term cannot be pushed out by a number nobody agreed.
+            "payable_deferred_days": (days if c.payment_terms_days is not None
+                                      else None),
+        })
+    rows.sort(key=lambda r: -r["open_value"])
+
+    deferred = sum(r["open_value"] for r in rows
+                   if r["payable_deferred_days"] is not None)
+    return {
+        "scenario": SUPPLIER_DELAY,
+        "assumptions": {
+            "delay_days": days,
+            "note": ("Measured from today, not against a promised date — this "
+                     "book records none. The result says how much later, not "
+                     "how much late."),
+        },
+        "committed_value": round(total_value, 2),
+        "cash_deferred": round(deferred, 2),
+        "cash_deferred_days": days,
+        "suppliers": rows[:100],
+        "supplier_count": len(rows),
+        "suppliers_without_terms": without_terms,
+        "terms_note": (
+            None if not without_terms else
+            f"{without_terms} supplier(s) have no payment terms recorded, so "
+            "the cash effect of delaying their orders cannot be dated. Their "
+            "committed value is counted; the deferral is not."),
+        "unavailable": [dict(u) for u in UNAVAILABLE],
     }

@@ -166,7 +166,7 @@ class CommercialThresholds:
     # is a single organization-wide constant: disclosing it once makes every
     # cost in the catalogue computable, permanently. See
     # ``commercial/insight/stock.py`` for how the two zones are kept apart.
-    carrying_cost_annual_pct: float = 0.18
+    carrying_cost_annual_pct: float = 0.12
     # Nothing sold in this many days and the line is *dead* rather than merely
     # slow. Separate from the slow-moving mark below it so a screen can say
     # which of the two it means.

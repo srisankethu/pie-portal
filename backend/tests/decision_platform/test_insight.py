@@ -193,11 +193,15 @@ def test_unpriceable_lines_are_excluded_rather_than_assumed():
 
 
 def test_scenarios_without_data_are_named_not_silently_dropped():
-    """The spec asked for supplier-delay and inventory scenarios. Neither has a
-    data source, so they are declared blocked rather than quietly omitted."""
+    """Both whole scenarios that used to be blocked are now implemented against
+    Business State. What is still refused is narrower — attribution within a
+    supplier delay — and it is named rather than quietly omitted."""
     names = {u["scenario"] for u in simulate.UNAVAILABLE}
-    assert names == {"SUPPLIER_DELAY", "INVENTORY_CHANGE"}
+    assert names == {"SUPPLIER_DELAY_BY_ITEM", "SUPPLIER_DELAY_AGAINST_PROMISE"}
     assert all(u["needs"] and u["why"] for u in simulate.UNAVAILABLE)
+    # The stale refusal must not outlive the data that lifted it.
+    assert simulate.SUPPLIER_DELAY not in names
+    assert simulate.INVENTORY_CHANGE not in names
 
 
 def test_the_simulator_is_deterministic():

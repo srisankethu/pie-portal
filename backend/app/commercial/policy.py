@@ -42,6 +42,7 @@ EDITABLE: tuple[str, ...] = (
     "min_margin_deterioration_pp",
     "price_rounding_increment",
     "carrying_cost_annual_pct",
+    "carrying_rate_is_published",
     "dead_stock_days",
     "slow_stock_days",
 )
@@ -107,6 +108,16 @@ FIELD_HELP: dict[str, tuple[str, str]] = {
         "it is worth arguing about once rather than guessing at monthly. It is "
         "never shown to a salesperson: with it, the drain figure they do see "
         "divides back into the purchase cost."),
+    "carrying_rate_is_published": (
+        "The carrying rate is public",
+        "Has the rate above been written down anywhere a salesperson could "
+        "read it — a policy document, a training deck, an email? Leave it off "
+        "while it is confidential. Turn it on and the Monthly Cash Drain "
+        "column comes off the salesperson's Stock screen the same moment, "
+        "because the drain is quantity x cost x rate / 12 and the quantity is "
+        "on every row: anyone holding the rate can divide back to the purchase "
+        "cost of everything in the catalogue. An owner keeps the column either "
+        "way."),
     "dead_stock_days": (
         "Dead after",
         "Days with no sale before a line is called dead rather than slow. A "
@@ -126,6 +137,13 @@ FIELD_HELP: dict[str, tuple[str, str]] = {
 }
 
 
+#: Fields that are not numbers. Kept beside ``_coerce`` rather than inferred
+#: from the dataclass, because inferring it would silently start coercing any
+#: future field whose annotation happened to match.
+_BOOLEAN = frozenset({"carrying_rate_is_published"})
+_INTEGER = frozenset({"dead_stock_days", "slow_stock_days"})
+
+
 class PolicyError(ValueError):
     """A policy that would make the screens contradict each other."""
 
@@ -141,6 +159,15 @@ def _coerce(field: str, value: Any) -> Any:
     if field == "quantity_band_edges":
         edges = sorted({int(v) for v in (value or []) if int(v) > 0})
         return tuple(edges)
+    if field in _BOOLEAN:
+        # A checkbox arrives as a bool from the client and as a string from a
+        # form post or a seeded fixture. ``float("true")`` raises and
+        # ``bool("false")`` is True, so both wrong answers are available here.
+        if isinstance(value, str):
+            return value.strip().lower() in ("1", "true", "yes", "on")
+        return bool(value)
+    if field in _INTEGER:
+        return int(value)
     return float(value)
 
 

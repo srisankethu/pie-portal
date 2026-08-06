@@ -768,7 +768,7 @@ export interface NewConnectionInput {
  */
 export type EntityKind = "customers" | "items";
 
-export interface ConnectorRecord {
+export interface ConnectorRecord extends Sourced {
   record_id: string;
   connector: string;
   connection_id: string | null;

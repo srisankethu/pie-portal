@@ -20,8 +20,9 @@ import { formatDate } from "../../when";
 import { papi } from "../api";
 import { abilityFor } from "../ability";
 import { EntityName } from "../EntityName";
+import { CompanyFilter, useCompanyFilter } from "../CompanyFilter";
 import { DataGrid, numeric } from "../DataGrid";
-import type { EntityOrigin, PlatformSession } from "../types";
+import type { EntityOrigin, PlatformSession, Sourced } from "../types";
 import { Figure, Panel, ValueAxis, stateOf } from "./Panel";
 import { Seg } from "./Seg";
 import { pct, useInsight } from "./useInsight";
@@ -477,6 +478,10 @@ export function StockScreen({ session }: { session: PlatformSession }) {
   // column of identical badges is width spent on decoration. The server
   // decides, because it is the only side that knows how many books there are.
   const sourcesDiffer = Boolean(data?.sources_differ);
+  // An item master is per company, so "show me only the 4U shelf" is a real
+  // question. Options come from every item, not from the health filters above,
+  // so narrowing by band never hides a company from the dropdown.
+  const company = useCompanyFilter(items as Sourced[]);
 
   const deciles = useMemo(() => ({
     monthly_holding_cost: decileOf(items, "monthly_holding_cost"),
@@ -487,12 +492,14 @@ export function StockScreen({ session }: { session: PlatformSession }) {
   // to hold" means the rows that are both, which is the question somebody
   // actually has. Two chips that widened the list would be a search that gets
   // longer the more you ask of it.
-  const shown = useMemo(() => {
+  const banded = useMemo(() => {
     const chosen = filters.filter((f) => active.includes(f.key));
     return chosen.length === 0
       ? items
       : items.filter((r) => chosen.every((f) => passes(r, f, deciles)));
   }, [items, filters, active, deciles]);
+  // Company last, so the band chips keep counting the whole shelf.
+  const shown = company.apply(banded as Sourced[]) as Row[];
 
   const toggle = (key: string) =>
     setActive((a) => a.includes(key) ? a.filter((k) => k !== key) : [...a, key]);
@@ -553,6 +560,8 @@ export function StockScreen({ session }: { session: PlatformSession }) {
             Clear
           </button>
         )}
+        <CompanyFilter options={company.options} value={company.company}
+                       onChange={company.setCompany} show={company.show} />
       </div>
 
       <p className="viz-muted">
@@ -713,6 +722,11 @@ export function SupplyScreen({ session }: { session: PlatformSession }) {
 
   const suppliers = rows(data?.suppliers);
   const vendorSourcesDiffer = Boolean(data?.sources_differ);
+  const vendorCompany = useCompanyFilter(suppliers as Sourced[]);
+  // The share each bar draws is the server's, computed over the whole book —
+  // narrowing the list does not renormalise it to 100%, because that would be
+  // this screen inventing a concentration figure the server never computed.
+  const shownSuppliers = vendorCompany.apply(suppliers as Sourced[]) as Row[];
   const open = rows(data?.open_orders);
   const counts = (data?.counts as Record<string, number>) ?? {};
   const topShare = data?.top_supplier_share as number | null | undefined;
@@ -740,8 +754,10 @@ export function SupplyScreen({ session }: { session: PlatformSession }) {
         <h4>Where the spend goes</h4>
         {/* The tail is deliberately not folded — see supply.py. Every name on a
             supplier list is somebody with a phone number. */}
+        <CompanyFilter options={vendorCompany.options} value={vendorCompany.company}
+                       onChange={vendorCompany.setCompany} show={vendorCompany.show} />
         <ul className="dist">
-          {suppliers.map((s, i) => (
+          {shownSuppliers.map((s, i) => (
             <li className="dist-row" key={i}>
               {/* A supplier is per connected company too: the same vendor
                   invoicing two of the books is two rows, and a concentration
@@ -766,7 +782,7 @@ export function SupplyScreen({ session }: { session: PlatformSession }) {
         <p className="viz-muted viz-footnote">
           Typical lead time is shown only where enough orders were actually
           marked received:{" "}
-          {suppliers
+          {shownSuppliers
             .filter((s) => s.typical_lead_time_days != null)
             .map((s) => `${s.label} ${s.typical_lead_time_days}d`)
             .join(" · ") || "no supplier has enough logged receipts yet."}

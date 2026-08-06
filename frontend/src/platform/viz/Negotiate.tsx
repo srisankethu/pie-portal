@@ -24,6 +24,7 @@ import { useEffect, useState } from "react";
 import { money } from "../../money";
 import { papi } from "../api";
 import { optionLabel } from "../EntityName";
+import { distinguishes } from "../CompanyFilter";
 import type { Account, AccountItem, PlatformSession, StatusFilter } from "../types";
 import { Panel } from "./Panel";
 
@@ -86,6 +87,10 @@ export function NegotiateScreen({
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [items, setItems] = useState<AccountItem[]>([]);
   const [itemsLoading, setItemsLoading] = useState(false);
+  // Two tests, both of which have to pass before a source is worth the width:
+  // the organization reads more than one book, AND *these* rows actually come
+  // from more than one of them.
+  const itemsFromSeveralBooks = distinguishes(items) && items.some((i) => i.sources_differ);
   // Discontinued items are excluded by default. They are in the master now —
   // the pull reads inactive items so their history resolves — but an item Zoho
   // says is retired should not be the one picked by accident on a live quote.
@@ -182,10 +187,18 @@ export function NegotiateScreen({
                       : "This account has no purchase history to price against."}
                 options={[
                   { value: "", label: "Choose an item…" },
+                  // The company only when it separates two options. Every item
+                  // here was bought by one account, so they are almost always
+                  // all from that account's book — and a company name repeated
+                  // down every line of a select is noise that pushes the SKU,
+                  // which does distinguish them, off the end.
                   ...items.map((i) => ({
                     value: i.product_id,
-                    label: (i.sku ? `${i.name} · ${i.sku}` : i.name)
-                      + (i.active ? "" : " (discontinued)"),
+                    label: optionLabel(
+                      (i.sku ? `${i.name} · ${i.sku}` : i.name)
+                        + (i.active ? "" : " (discontinued)"),
+                      i.origin,
+                      itemsFromSeveralBooks),
                   })),
                 ]} />
         <Choice label="Items to offer" value={itemStatus}

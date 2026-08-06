@@ -517,5 +517,60 @@ def test_every_endpoint_the_pull_uses_has_a_named_scope():
     from app.ingestion.zoho_client import scope_for_path
 
     for path in ("contacts", "items", "invoices", "bills", "customerpayments",
-                 "purchaseorders", "users", "customerpayments/12345"):
+                 "purchaseorders", "salesorders", "vendorpayments", "users",
+                 "customerpayments/12345"):
         assert scope_for_path(path), path
+
+
+# ── commitments and money out ───────────────────────────────────────────────
+def test_a_draft_order_is_not_a_commitment():
+    """A draft promises nobody anything and can be deleted without trace.
+    Counting one as demand would show a commitment that never existed."""
+    listing = {"code": 0, "salesorders": [
+        {"salesorder_id": "D1", "date": _today(1), "status": "draft"},
+        {"salesorder_id": "S1", "date": _today(1), "status": "open",
+         "customer_id": "c1", "total": 1000},
+    ], "page_context": {"has_more_page": False}}
+    rows = list(ZohoApiSource(http=FakeHttp({"/salesorders": listing})).list_sales_orders())
+    assert [r["salesorder_id"] for r in rows] == ["S1"]
+
+
+def test_an_order_is_read_from_the_list_row_alone():
+    """Header grain: the questions this answers are all on the list row, and a
+    detail call per order would cost one request each to answer none of them."""
+    listing = {"code": 0, "salesorders": [
+        {"salesorder_id": "S1", "salesorder_number": "SO-1", "date": _today(1),
+         "status": "open", "customer_id": "c1", "shipment_date": _today(-10),
+         "invoiced_status": "not_invoiced", "shipped_status": "pending",
+         "total": 1000, "salesperson_id": "u9"},
+    ], "page_context": {"has_more_page": False}}
+    http = FakeHttp({"/salesorders": listing})
+    row = list(ZohoApiSource(http=http).list_sales_orders())[0]
+    assert not any("/salesorders/" in u for u, _ in http.gets)
+    assert row["salesorder_number"] == "SO-1" and row["shipped_status"] == "pending"
+
+
+def test_orders_and_payments_older_than_the_window_are_not_pulled(monkeypatch):
+    monkeypatch.setattr(settings, "ZOHO_HISTORY_DAYS", 30)
+    http = FakeHttp({
+        "/salesorders": {"code": 0, "salesorders": [
+            {"salesorder_id": "OLD", "date": _today(400), "status": "open"}],
+            "page_context": {"has_more_page": False}},
+        "/vendorpayments": {"code": 0, "vendorpayments": [
+            {"payment_id": "OLD", "date": _today(400), "amount": 100}],
+            "page_context": {"has_more_page": False}},
+    })
+    src = ZohoApiSource(http=http)
+    assert list(src.list_sales_orders()) == []
+    assert list(src.list_vendor_payments()) == []
+
+
+def test_a_payment_out_keeps_its_amount_and_reference():
+    listing = {"code": 0, "vendorpayments": [
+        {"payment_id": "P1", "vendor_id": "v1", "date": _today(1),
+         "amount": 80000.25, "payment_mode": "banktransfer",
+         "reference_number": "NEFT-8891"},
+    ], "page_context": {"has_more_page": False}}
+    row = list(ZohoApiSource(http=FakeHttp({"/vendorpayments": listing})).list_vendor_payments())[0]
+    assert row["payment_id"] == "P1" and row["vendor_id"] == "v1"
+    assert row["reference_number"] == "NEFT-8891"

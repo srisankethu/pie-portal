@@ -18,8 +18,9 @@ from sqlalchemy.orm import Session
 
 from .domain import models
 from .domain.enums import DecisionStatus, HumanAction
-from .domain.schemas import (CostRecordIn, CustomerIn, PaymentReceiptIn, ProductIn,
-                            PurchaseOrderIn, SalesTxnIn, StockSnapshotIn, VendorIn)
+from .domain.schemas import (BillIn, CostRecordIn, CustomerIn, PaymentReceiptIn, ProductIn,
+                            PurchaseOrderIn, SalesOrderIn, SalesTxnIn,
+                            StockSnapshotIn, VendorIn, VendorPaymentIn)
 
 
 class ReadModelRepository:
@@ -397,6 +398,83 @@ class ReadModelRepository:
         for ref, stale in existing.items():
             if ref not in seen:
                 self.s.delete(stale)
+        return row
+
+    def upsert_sales_order(self, customer_id: Optional[str],
+                           so: SalesOrderIn) -> models.SalesOrderDoc:
+        """One customer order, keyed on the id its ERP gave it.
+
+        Keyed on ``external_ref`` alone rather than on the source triple, like
+        every other *document* here — documents already carry a globally unique
+        id from their own system and are scoped by the connection that fetched
+        them. The source triple matters for masters (customers, items, vendors),
+        where two connected companies genuinely number from one.
+        """
+        row = self.s.scalar(
+            select(models.SalesOrderDoc).where(
+                models.SalesOrderDoc.organization_id == self.org,
+                models.SalesOrderDoc.external_ref == so.external_ref,
+            )
+        )
+        if row is None:
+            row = models.SalesOrderDoc(organization_id=self.org,
+                                       external_ref=so.external_ref)
+            self.s.add(row)
+        row.number = so.number
+        row.customer_id = customer_id
+        row.date = so.date
+        row.expected_ship_date = so.expected_ship_date
+        row.status = so.status
+        row.invoiced_status = so.invoiced_status
+        row.shipped_status = so.shipped_status
+        row.total = so.total
+        row.salesperson_external_id = so.salesperson_external_id
+        row.source_ref = so.source_ref.model_dump()
+        return row
+
+    def upsert_bill(self, vendor_id: Optional[str], b: BillIn) -> models.BillDoc:
+        """The payable header. Re-read on every pull that touches the bill,
+        because ``status`` and ``balance`` change as it is paid — a bill row
+        written once and never revisited would report every settled bill as
+        still outstanding."""
+        row = self.s.scalar(
+            select(models.BillDoc).where(
+                models.BillDoc.organization_id == self.org,
+                models.BillDoc.external_ref == b.external_ref,
+            )
+        )
+        if row is None:
+            row = models.BillDoc(organization_id=self.org,
+                                 external_ref=b.external_ref)
+            self.s.add(row)
+        row.number = b.number
+        row.vendor_id = vendor_id
+        row.date = b.date
+        row.due_date = b.due_date
+        row.status = b.status
+        row.total = b.total
+        row.balance = b.balance
+        row.source_ref = b.source_ref.model_dump()
+        return row
+
+    def upsert_vendor_payment(self, vendor_id: Optional[str],
+                              vp: VendorPaymentIn) -> models.VendorPaymentDoc:
+        row = self.s.scalar(
+            select(models.VendorPaymentDoc).where(
+                models.VendorPaymentDoc.organization_id == self.org,
+                models.VendorPaymentDoc.external_ref == vp.external_ref,
+            )
+        )
+        if row is None:
+            row = models.VendorPaymentDoc(organization_id=self.org,
+                                          external_ref=vp.external_ref)
+            self.s.add(row)
+        row.vendor_id = vendor_id
+        row.date = vp.date
+        row.amount = vp.amount
+        row.mode = vp.mode
+        row.reference = vp.reference
+        row.source_ref = vp.source_ref.model_dump()
         return row
 
     def upsert_purchase_order(self, vendor_id: Optional[str],

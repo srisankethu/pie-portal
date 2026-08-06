@@ -556,6 +556,12 @@ class SyncRun(Base):
     stock_snapshots: Mapped[int] = mapped_column(Integer, default=0)
     payments: Mapped[int] = mapped_column(Integer, default=0)
     purchase_orders: Mapped[int] = mapped_column(Integer, default=0)
+    # Commitments — what was promised in each direction but has not reached the
+    # ledger. Counted separately from ``purchase_orders`` because a run can read
+    # supplier orders perfectly while the sales-order scope is ungranted, and a
+    # single "orders" figure would hide exactly that.
+    sales_orders: Mapped[int] = mapped_column(Integer, default=0)
+    vendor_payments: Mapped[int] = mapped_column(Integer, default=0)
     skipped_count: Mapped[int] = mapped_column(Integer, default=0)
     skipped_sample: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
     # Skips folded by what is actually missing — one row per thing to fix,
@@ -1405,6 +1411,135 @@ class PaymentApplication(Base):
     invoice_due_date: Mapped[Optional[date]] = mapped_column(Date)
     paid_on: Mapped[date] = mapped_column(Date, index=True)
     amount_applied: Mapped[Any] = mapped_column(Numeric(18, 4))
+    source_ref: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class SalesOrderDoc(Base):
+    """An order from a customer — demand promised, not yet invoiced.
+
+    The mirror of ``PurchaseOrderDoc``, and deliberately the same shape: one is
+    what we promised a supplier, the other what a customer promised us and what
+    we promised to ship. Neither is an accounting entry. Both change what the
+    business is committed to *before* anything reaches the ledger, which is
+    exactly the gap between an ERP's view and a business's.
+
+    Header grain. The line-level split of an open order answers questions this
+    does not ask, and would cost one API call per order to obtain.
+    """
+
+    __tablename__ = "sales_orders"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "external_ref",
+                         name="uq_sales_order_org_ref"),
+    )
+
+    sales_order_id: Mapped[str] = mapped_column(String(64), primary_key=True,
+                                                default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    external_ref: Mapped[str] = mapped_column(String(128), index=True)
+    number: Mapped[Optional[str]] = mapped_column(String(128))
+    customer_id: Mapped[Optional[str]] = mapped_column(String(64),
+                                                       ForeignKey("customers.customer_id"),
+                                                       index=True)
+    date: Mapped[date] = mapped_column(Date, index=True)
+    #: When we said we would ship. Blank on plenty of orders, which makes "late
+    #: against promise" unanswerable for them — reported as such rather than
+    #: replaced with an assumed lead time.
+    expected_ship_date: Mapped[Optional[date]] = mapped_column(Date)
+    status: Mapped[str] = mapped_column(String(48), default="")
+    #: Zoho tracks these separately, and they are genuinely different facts: an
+    #: order can be fully invoiced and unshipped, or shipped and unbilled. One
+    #: combined "fulfilled" flag would lose the distinction that matters to
+    #: cash on one side and to service on the other.
+    invoiced_status: Mapped[Optional[str]] = mapped_column(String(48))
+    shipped_status: Mapped[Optional[str]] = mapped_column(String(48))
+    total: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
+    salesperson_external_id: Mapped[Optional[str]] = mapped_column(String(64))
+    source_ref: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
+                                                 onupdate=_now)
+
+
+class BillDoc(Base):
+    """A supplier bill's payable terms — the header the cost lines came from.
+
+    Bills have been read since the first sync, but only for what the stock
+    cost: each one was normalised into ``CostRecord`` rows at line grain and
+    the header thrown away. So the platform knew what it had paid per insert
+    and nothing at all about what it still *owed*, which is why accounts
+    payable and working capital had no source.
+
+    Header grain, deliberately separate from ``CostRecord`` rather than
+    columns on it: ``due_date`` and ``balance`` are facts about one document,
+    and copying them onto forty cost lines would make "what is outstanding"
+    a de-duplication problem instead of a sum.
+
+    Written from the same payload the cost pull already fetches — no extra API
+    call, no extra scope. ``balance`` is what Zoho says is still owed; it is
+    never derived from ``total`` minus payments read elsewhere, because a
+    credit note against the bill would make that subtraction wrong.
+    """
+
+    __tablename__ = "bills"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "external_ref",
+                         name="uq_bill_org_ref"),
+        Index("ix_bill_org_due", "organization_id", "due_date"),
+    )
+
+    bill_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    external_ref: Mapped[str] = mapped_column(String(128), index=True)
+    number: Mapped[Optional[str]] = mapped_column(String(128))
+    vendor_id: Mapped[Optional[str]] = mapped_column(String(64),
+                                                     ForeignKey("vendors.vendor_id"),
+                                                     index=True)
+    date: Mapped[date] = mapped_column(Date, index=True)
+    #: When it falls due. Blank on bills raised without terms, which makes them
+    #: unageable — reported as such rather than assumed to be due on receipt.
+    due_date: Mapped[Optional[date]] = mapped_column(Date)
+    status: Mapped[str] = mapped_column(String(48), default="")
+    total: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
+    balance: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
+    source_ref: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
+                                                 onupdate=_now)
+
+
+class VendorPaymentDoc(Base):
+    """Money out, at the payment grain.
+
+    ``PaymentReceipt`` has recorded money in since the cash screen was built.
+    Receipts alone are not cash — they are revenue collected — so liquidity and
+    working capital could not be computed from one side of the ledger. This is
+    the other side.
+
+    No application table beside it, deliberately: Zoho's vendor payment carries
+    which bills it settled, but nothing in the platform computes supplier
+    ageing yet, and a table nobody reads is a table that silently rots. It is
+    added when the first reader exists.
+    """
+
+    __tablename__ = "vendor_payments"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "external_ref",
+                         name="uq_vendor_payment_org_ref"),
+    )
+
+    vendor_payment_id: Mapped[str] = mapped_column(String(64), primary_key=True,
+                                                   default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    external_ref: Mapped[str] = mapped_column(String(128), index=True)
+    vendor_id: Mapped[Optional[str]] = mapped_column(String(64),
+                                                     ForeignKey("vendors.vendor_id"),
+                                                     index=True)
+    date: Mapped[date] = mapped_column(Date, index=True)
+    amount: Mapped[Any] = mapped_column(Numeric(18, 4))
+    mode: Mapped[Optional[str]] = mapped_column(String(48))
+    reference: Mapped[Optional[str]] = mapped_column(String(128))
     source_ref: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 

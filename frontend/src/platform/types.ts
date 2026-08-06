@@ -173,6 +173,8 @@ export interface SyncRun {
   stock_snapshots: number;
   payments: number;
   purchase_orders: number;
+  sales_orders: number;
+  vendor_payments: number;
   documents_fetched: number;
   documents_resumed: number;
   assignments: number;

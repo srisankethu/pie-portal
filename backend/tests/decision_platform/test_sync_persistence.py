@@ -738,3 +738,259 @@ def test_nothing_in_the_origin_layer_branches_on_a_connector_name():
                     raise AssertionError(
                         f"origin.py branches on connector {side.value!r} at "
                         f"line {node.lineno}")
+
+
+# ── commitments and money out ───────────────────────────────────────────────
+#
+# Sales orders and vendor payments arrived together because they answer the
+# same class of question: what is the business exposed to *before* an
+# accounting entry exists. An open order is a promise nobody has invoiced; a
+# payment out is the half of cash that receipts alone cannot show.
+
+class _Commitments(_Source):
+    """A source that offers both new stages, on top of the reference pulls."""
+
+    def list_vendors(self):
+        return [{"contact_id": "v1", "contact_name": "Kennametal India",
+                 "status": "active"}]
+
+    def list_sales_orders(self):
+        return [{"salesorder_id": "so1", "salesorder_number": "SO-1",
+                 "customer_id": "c1", "date": "2026-06-10",
+                 "shipment_date": "2026-06-25", "status": "open",
+                 "invoiced_status": "not_invoiced", "shipped_status": "pending",
+                 "total": "125000.50", "salesperson_id": "u9"}]
+
+    def list_vendor_payments(self):
+        return [{"payment_id": "vp1", "vendor_id": "v1", "date": "2026-06-12",
+                 "amount": "80000.25", "payment_mode": "banktransfer",
+                 "reference_number": "NEFT-8891"}]
+
+
+def _committed(cls=_Commitments) -> "_Commitments":
+    """The reference rows the commitment stages resolve against."""
+    return cls(contacts=[{"contact_id": "c1", "contact_name": "Acme",
+                          "status": "active"}],
+               items=[{"item_id": "i1", "name": "Insert", "unit": "pcs",
+                       "status": "active"}])
+
+
+def test_an_open_order_is_stored_with_the_customer_it_was_promised_to(session):
+    report = SyncService(session, _committed(), "org_a").run()
+    session.commit()
+
+    assert report.sales_orders == 1
+    so = session.query(models.SalesOrderDoc).one()
+    customer = session.query(models.Customer).one()
+    assert so.customer_id == customer.customer_id
+    assert so.external_ref == "so1"
+    assert so.total == Decimal("125000.50")
+    # Both fulfilment facts kept apart: an order can be invoiced and unshipped.
+    assert (so.invoiced_status, so.shipped_status) == ("not_invoiced", "pending")
+    assert so.expected_ship_date == date(2026, 6, 25)
+
+
+def test_money_out_is_stored_against_the_supplier_it_was_paid_to(session):
+    report = SyncService(session, _committed(), "org_a").run()
+    session.commit()
+
+    assert report.vendor_payments == 1
+    vp = session.query(models.VendorPaymentDoc).one()
+    vendor = session.query(models.Vendor).one()
+    assert vp.vendor_id == vendor.vendor_id
+    # Parsed through str, so the paise survive intact into a figure cash will
+    # add up.
+    assert vp.amount == Decimal("80000.25")
+    assert vp.mode == "banktransfer"
+
+
+def test_re_reading_the_same_order_updates_it_rather_than_duplicating(session):
+    """Zoho's status moves; the order is still one order. Keyed on
+    (organization, external_ref), so a second pull must overwrite."""
+    SyncService(session, _committed(), "org_a").run()
+    session.commit()
+
+    class Progressed(_Commitments):
+        def list_sales_orders(self):
+            row = dict(super().list_sales_orders()[0])
+            row["shipped_status"] = "shipped"
+            return [row]
+
+    SyncService(session, _committed(Progressed), "org_a").run()
+    session.commit()
+
+    so = session.query(models.SalesOrderDoc).one()   # one, not two
+    assert so.shipped_status == "shipped"
+    assert session.query(models.VendorPaymentDoc).count() == 1
+
+
+def test_an_order_for_an_unknown_customer_is_kept_not_dropped(session):
+    """A promise to somebody the contact pull did not return is still a
+    promise. Dropping it would understate committed demand; keeping it with a
+    null customer only costs the ability to group it."""
+    class Orphan(_Commitments):
+        def list_sales_orders(self):
+            row = dict(super().list_sales_orders()[0])
+            row["customer_id"] = "c-unknown"
+            return [row]
+
+    report = SyncService(session, _committed(Orphan), "org_a").run()
+    session.commit()
+
+    assert report.sales_orders == 1
+    assert session.query(models.SalesOrderDoc).one().customer_id is None
+
+
+def test_a_payment_out_with_no_amount_is_reported_never_treated_as_zero(session):
+    """Defaulting it would understate cash out by exactly what the row was
+    worth, silently, and in the direction that flatters liquidity."""
+    class Malformed(_Commitments):
+        def list_vendor_payments(self):
+            return [{"payment_id": "vp1", "vendor_id": "v1", "date": "2026-06-12"}]
+
+    report = SyncService(session, _committed(Malformed), "org_a").run()
+    session.commit()
+
+    assert report.vendor_payments == 0
+    assert session.query(models.VendorPaymentDoc).count() == 0
+    assert any(s["kind"] == "vendor_payment" and s["ref"] == "vp1"
+               for s in report.skipped)
+
+
+def test_a_refused_sales_order_scope_still_reads_payments_out(session):
+    """The two new stages need two new scopes. A connection authorised before
+    either existed must degrade to a named skip per endpoint, not abort the
+    pull — the same guarantee the older supply stages already have."""
+    from app.ingestion.zoho_client import ZohoScopeError
+
+    class HalfGranted(_Commitments):
+        def list_sales_orders(self):
+            raise ZohoScopeError(
+                "Zoho refused salesorders: this connection was not granted "
+                "ZohoBooks.salesorders.READ.",
+                path="salesorders", scope="ZohoBooks.salesorders.READ")
+
+    report = SyncService(session, _committed(HalfGranted), "org_a").run()
+    session.commit()
+
+    assert report.sales_orders == 0
+    assert report.vendor_payments == 1          # the stage after it still ran
+    refusal = next(s for s in report.skipped
+                   if s["code"] == "SCOPE_NOT_GRANTED" and s["kind"] == "sales_order")
+    assert refusal["context"]["scope"] == "ZohoBooks.salesorders.READ"
+
+
+def test_a_source_that_offers_neither_stage_produces_no_rows_and_no_error(session):
+    """A fixture written before these existed, or a Zoho plan without them.
+    Probed, never assumed."""
+    report = SyncService(session, _good_source(), "org_a").run()
+    session.commit()
+
+    assert (report.sales_orders, report.vendor_payments) == (0, 0)
+    assert [s for s in report.skipped if s["kind"] in ("sales_order", "vendor_payment")] == []
+
+
+# ── what a bill still owes ──────────────────────────────────────────────────
+#
+# Bills were read from the first sync, but only for what the stock cost: each
+# was flattened into cost records at line grain and the header discarded. So
+# the platform knew what it had paid per insert and nothing about what it
+# still owed.
+
+def _billed(bill: dict[str, Any], **kw) -> _Source:
+    return _Source(
+        contacts=[{"contact_id": "c1", "contact_name": "Acme", "status": "active"}],
+        items=[{"item_id": "i1", "name": "Insert", "unit": "pcs", "status": "active"}],
+        bills=[bill], **kw)
+
+
+def _payable(**over) -> dict[str, Any]:
+    row = {"bill_id": "b1", "bill_number": "BILL-1", "vendor_id": "v1",
+           "date": "2026-05-01", "due_date": "2026-05-31", "status": "open",
+           "total": "50000", "balance": "50000",
+           "line_items": [{"line_item_id": "l1", "item_id": "i1",
+                           "quantity": 100, "rate": 400}]}
+    row.update(over)
+    return row
+
+
+class _WithVendor(_Source):
+    def list_vendors(self):
+        return [{"contact_id": "v1", "contact_name": "Kennametal India",
+                 "status": "active"}]
+
+
+def test_a_bill_records_what_is_owed_alongside_what_it_cost(session):
+    src = _WithVendor(
+        contacts=[{"contact_id": "c1", "contact_name": "Acme", "status": "active"}],
+        items=[{"item_id": "i1", "name": "Insert", "unit": "pcs", "status": "active"}],
+        bills=[_payable()])
+    report = SyncService(session, src, "org_a").run()
+    session.commit()
+
+    assert report.cost_records == 1              # the cost side is unchanged
+    bill = session.query(models.BillDoc).one()
+    assert bill.due_date == date(2026, 5, 31)
+    assert (bill.total, bill.balance) == (Decimal("50000"), Decimal("50000"))
+    assert bill.status == "open"
+    # Resolved to the supplier on the first pull, not the second: suppliers are
+    # masters and are read before documents for exactly this reason.
+    assert bill.vendor_id == session.query(models.Vendor).one().vendor_id
+
+
+def test_a_settled_bill_stops_reading_as_outstanding_on_the_next_pull(session):
+    """``balance`` moves as a bill is paid. A row written once and never
+    revisited would report every settled bill as still owed."""
+    SyncService(session, _billed(_payable()), "org_a").run()
+    session.commit()
+
+    paid = _payable(status="paid", balance="0", last_modified_time="2026-06-02T10:00:00+0530")
+    SyncService(session, _billed(paid), "org_a").run()
+    session.commit()
+
+    bill = session.query(models.BillDoc).one()   # one, not two
+    assert (bill.status, bill.balance) == ("paid", Decimal("0"))
+
+
+def test_a_bill_with_no_usable_lines_is_still_money_owed(session):
+    """The cost side rejects it — there is nothing to cost. Dropping the
+    payable too would understate what is owed by exactly the bills that are
+    hardest to see."""
+    report = SyncService(session, _billed(_payable(line_items=[])), "org_a").run()
+    session.commit()
+
+    assert report.cost_records == 0
+    assert any(s["kind"] == "bill" and s["code"] == "NO_LINES" for s in report.skipped)
+    assert session.query(models.BillDoc).one().balance == Decimal("50000")
+
+
+def test_a_bill_with_no_terms_is_left_unageable_not_assumed_due(session):
+    """Defaulting the due date to the bill date would report every untermed
+    bill as overdue from the day it was raised."""
+    SyncService(session, _billed(_payable(due_date=None)), "org_a").run()
+    session.commit()
+
+    assert session.query(models.BillDoc).one().due_date is None
+
+
+def test_the_balance_is_zoho_s_never_total_minus_what_we_have_seen_paid(session):
+    """A credit note applied to the bill makes that subtraction wrong, and
+    wrong in the direction that overstates what is owed."""
+    SyncService(session, _billed(_payable(total="50000", balance="12000")),
+                "org_a").run()
+    session.commit()
+
+    assert session.query(models.BillDoc).one().balance == Decimal("12000")
+
+
+def test_the_payable_is_not_counted_as_a_second_thing_read(session):
+    """A payable is the header of a bill ``cost_records`` already counts. A
+    second counter over the same documents would make the pull look like it did
+    twice the work."""
+    report = SyncService(session, _billed(_payable()), "org_a").run()
+    session.commit()
+
+    assert report.cost_records == 1
+    assert session.query(models.BillDoc).count() == 1
+    assert report.to_dict()["cost_records"] == 1
+    assert "payables" not in report.to_dict()

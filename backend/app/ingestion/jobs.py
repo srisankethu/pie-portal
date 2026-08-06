@@ -370,6 +370,8 @@ def execute_sync(session: Session, run: models.SyncRun, *,
         run.stock_snapshots = report.stock_snapshots
         run.payments = report.payments
         run.purchase_orders = report.purchase_orders
+        run.sales_orders = report.sales_orders
+        run.vendor_payments = report.vendor_payments
         run.documents_fetched = report.documents_fetched or getattr(
             svc.source if svc is not None else None, "documents_fetched", 0)
         run.documents_resumed = report.documents_resumed or getattr(

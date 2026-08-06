@@ -121,6 +121,8 @@ SCOPE_FOR_PATH: dict[str, str] = {
     "bills": "ZohoBooks.bills.READ",
     "customerpayments": "ZohoBooks.customerpayments.READ",
     "purchaseorders": "ZohoBooks.purchaseorders.READ",
+    "salesorders": "ZohoBooks.salesorders.READ",
+    "vendorpayments": "ZohoBooks.vendorpayments.READ",
     "users": "ZohoBooks.users.READ",
 }
 
@@ -516,6 +518,18 @@ class ZohoApiSource:
                 "bill_id": str(bill.get("bill_id")),
                 "date": bill.get("date"),
                 "last_modified_time": bill.get("last_modified_time"),
+                # The payable terms, from the document already fetched: no
+                # extra call, no extra scope. Until these were passed through,
+                # a bill was read purely for what the stock cost and the fact
+                # that the money was still owed was thrown away — so accounts
+                # payable and working capital had no source at all.
+                "bill_number": bill.get("bill_number"),
+                "vendor_id": bill.get("vendor_id"),
+                "vendor_name": bill.get("vendor_name"),
+                "due_date": bill.get("due_date"),
+                "status": bill.get("status"),
+                "total": bill.get("total"),
+                "balance": bill.get("balance"),
                 "line_items": [
                     {
                         "line_item_id": str(li.get("line_item_id")),
@@ -640,6 +654,78 @@ class ZohoApiSource:
                 "quantity_yet_to_receive": po.get("quantity_yet_to_receive"),
                 "total": po.get("total"),
                 "receives": po.get("receives") or [],
+            }
+
+    def list_sales_orders(self) -> Iterable[dict[str, Any]]:
+        """Orders from customers — demand that has been promised, not yet billed.
+
+        The other half of the commitment picture. Purchase orders say what we
+        have promised a supplier; these say what a customer has promised us and
+        what we have promised to ship. Neither is an accounting entry, and both
+        change what the business is exposed to before any invoice exists.
+
+        Header grain, no detail call, for the same reason as purchase orders:
+        "what is open, for whom, for how much, how late" is entirely on the list
+        row. The line-level breakdown would cost one call per order to answer
+        questions this does not ask.
+        """
+        cutoff = self._cutoff()
+        until = self._until
+        for so in self._paginate("salesorders", "salesorders",
+                                 sort_column="date", sort_order="D", **self._window()):
+            try:
+                ordered = date.fromisoformat(str(so.get("date") or ""))
+            except ValueError:
+                continue
+            if ordered < cutoff or (until is not None and ordered > until):
+                continue
+            status = str(so.get("status") or "").lower()
+            # Drafts are not commitments. A draft order promises nobody
+            # anything, and counting one as demand would show a commitment that
+            # can be deleted without trace.
+            if status in _EXCLUDED_INVOICE_STATUS:
+                continue
+            yield {
+                "salesorder_id": str(so.get("salesorder_id")),
+                "salesorder_number": so.get("salesorder_number"),
+                "customer_id": (str(so["customer_id"]) if so.get("customer_id") else None),
+                "date": so.get("date"),
+                "shipment_date": so.get("shipment_date") or so.get("expected_shipment_date"),
+                "status": so.get("status") or "",
+                # Zoho tracks these separately: an order can be fully invoiced
+                # and not shipped, or shipped and not invoiced. Both matter and
+                # they are not the same fact.
+                "invoiced_status": so.get("invoiced_status"),
+                "shipped_status": so.get("shipped_status"),
+                "total": so.get("total"),
+                "salesperson_id": so.get("salesperson_id"),
+            }
+
+    def list_vendor_payments(self) -> Iterable[dict[str, Any]]:
+        """Money out. The half of cash the platform has never read.
+
+        Customer payments have been read since the cash screen was built;
+        without this, "cash" is receipts with nothing subtracted, which is not
+        cash — it is revenue collected. Liquidity and working capital are not
+        computable from one side of the ledger.
+        """
+        cutoff = self._cutoff()
+        until = self._until
+        for p in self._paginate("vendorpayments", "vendorpayments",
+                                sort_column="date", sort_order="D", **self._window()):
+            try:
+                paid_on = date.fromisoformat(str(p.get("date") or ""))
+            except ValueError:
+                continue
+            if paid_on < cutoff or (until is not None and paid_on > until):
+                continue
+            yield {
+                "payment_id": str(p.get("payment_id")),
+                "vendor_id": (str(p["vendor_id"]) if p.get("vendor_id") else None),
+                "date": p.get("date"),
+                "amount": p.get("amount"),
+                "payment_mode": p.get("payment_mode"),
+                "reference_number": p.get("reference_number"),
             }
 
     def list_users(self) -> Iterable[dict[str, Any]]:

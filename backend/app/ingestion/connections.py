@@ -57,6 +57,14 @@ REQUIRED_SCOPES: tuple[tuple[str, str, bool], ...] = (
      "Payments — when money actually arrived. The Cash screen, every payment "
      "pattern, and the collection factor the incentive is earned on all read "
      "this. Without it an invoice looks paid the day it was raised.", True),
+    ("ZohoBooks.salesorders.READ",
+     "Sales orders — what customers have ordered and we have not yet shipped or "
+     "billed. This is demand and a promise, before any accounting entry exists; "
+     "without it the platform sees only what has already been invoiced.", False),
+    ("ZohoBooks.vendorpayments.READ",
+     "Money out. Receipts alone are not cash — they are revenue collected — so "
+     "without this, liquidity and working capital cannot be computed from one "
+     "side of the ledger.", False),
     ("ZohoBooks.purchaseorders.READ",
      "Purchase orders — what is on the way from suppliers, and how late. Feeds "
      "the Supply screen. Optional: without it, stock on hand is still read, "

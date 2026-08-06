@@ -13,9 +13,10 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Optional
 
 from ..domain.enums import CustomerStatus
-from ..domain.schemas import (CostRecordIn, CustomerIn, PaymentApplicationIn,
+from ..domain.schemas import (BillIn, CostRecordIn, CustomerIn, PaymentApplicationIn,
                              PaymentReceiptIn, ProductIn, PurchaseOrderIn,
-                             SalesTxnIn, SourceRef, StockSnapshotIn, VendorIn)
+                             SalesOrderIn, SalesTxnIn, SourceRef, StockSnapshotIn,
+                             VendorIn, VendorPaymentIn)
 
 _HUNDRED = Decimal("100")
 
@@ -284,6 +285,87 @@ def normalize_payment(raw: dict[str, Any]) -> PaymentReceiptIn:
         unapplied_amount=raw.get("unused_amount"),
         applications=applications,
         source_ref=SourceRef(record_type="customerpayment", record_id=str(pid)),
+    )
+
+
+def normalize_sales_order(raw: dict[str, Any]) -> SalesOrderIn:
+    """One customer order. Header grain, mirroring ``normalize_purchase_order``.
+
+    ``expected_ship_date`` is left as ``None`` when Zoho has none rather than
+    derived from the order date plus an assumed lead time: "we did not promise a
+    date" and "we promised this date" are different facts, and only one of them
+    can make an order late.
+    """
+    soid = _require(raw, "salesorder_id", "sales order")
+    ctx = f"sales order {soid}"
+    ship = raw.get("shipment_date")
+    return SalesOrderIn(
+        external_ref=str(soid),
+        number=(str(raw["salesorder_number"]) if raw.get("salesorder_number") else None),
+        customer_external_id=(str(raw["customer_id"]) if raw.get("customer_id") else None),
+        date=_parse_date(_require(raw, "date", ctx), ctx),
+        expected_ship_date=(_parse_date(ship, ctx) if ship else None),
+        status=str(raw.get("status") or ""),
+        invoiced_status=(str(raw["invoiced_status"]) if raw.get("invoiced_status") else None),
+        shipped_status=(str(raw["shipped_status"]) if raw.get("shipped_status") else None),
+        total=raw.get("total"),
+        salesperson_external_id=(str(raw["salesperson_id"])
+                                 if raw.get("salesperson_id") else None),
+        source_ref=SourceRef(record_type="salesorder", record_id=str(soid)),
+    )
+
+
+def normalize_bill_terms(raw: dict[str, Any]) -> BillIn:
+    """The payable header of a bill, from the payload ``normalize_bill``
+    already receives.
+
+    Separate from ``normalize_bill`` rather than folded into it because the two
+    have different grains and different failure modes: a bill with no line
+    items is useless as cost and is rejected there, but it is still money owed
+    and must survive here. Returning a tuple from one function would tie the
+    fates of both together.
+
+    ``balance`` is passed through as Zoho states it. Deriving it from ``total``
+    minus payments read elsewhere would be wrong the moment a credit note is
+    applied to the bill, and wrong in the direction that overstates what is
+    owed.
+    """
+    bill_id = str(_require(raw, "bill_id", "bill"))
+    ctx = f"bill {bill_id}"
+    due = raw.get("due_date")
+    return BillIn(
+        external_ref=bill_id,
+        number=(str(raw["bill_number"]) if raw.get("bill_number") else None),
+        vendor_external_id=(str(raw["vendor_id"]) if raw.get("vendor_id") else None),
+        date=_parse_date(_require(raw, "date", ctx), ctx),
+        # No terms on the bill means it cannot be aged. Left as None rather
+        # than defaulted to the bill date, which would report every untermed
+        # bill as overdue from the day it was raised.
+        due_date=(_parse_date(due, ctx) if due else None),
+        status=str(raw.get("status") or ""),
+        total=raw.get("total"),
+        balance=raw.get("balance"),
+        source_ref=SourceRef(record_type="bill", record_id=bill_id),
+    )
+
+
+def normalize_vendor_payment(raw: dict[str, Any]) -> VendorPaymentIn:
+    """One payment out. The amount is required, never defaulted.
+
+    A payment row with no amount is malformed, not a zero-rupee payment, and
+    defaulting it would understate cash out by exactly as much as the row was
+    worth — silently, and in the direction that flatters liquidity.
+    """
+    pid = _require(raw, "payment_id", "vendor payment")
+    ctx = f"vendor payment {pid}"
+    return VendorPaymentIn(
+        external_ref=str(pid),
+        vendor_external_id=(str(raw["vendor_id"]) if raw.get("vendor_id") else None),
+        date=_parse_date(_require(raw, "date", ctx), ctx),
+        amount=_parse_decimal(_require(raw, "amount", ctx), ctx, "amount"),
+        mode=(str(raw["payment_mode"]) if raw.get("payment_mode") else None),
+        reference=(str(raw["reference_number"]) if raw.get("reference_number") else None),
+        source_ref=SourceRef(record_type="vendorpayment", record_id=str(pid)),
     )
 
 

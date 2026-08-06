@@ -37,13 +37,16 @@ from ..trust import vault
 from .normalize import (
     NormalizationError,
     normalize_bill,
+    normalize_bill_terms,
     normalize_customer,
     normalize_invoice,
     normalize_payment,
     normalize_product,
     normalize_purchase_order,
+    normalize_sales_order,
     normalize_stock,
     normalize_vendor,
+    normalize_vendor_payment,
 )
 from .source import ZohoSource
 
@@ -63,6 +66,8 @@ class SyncReport:
     stock_snapshots: int = 0
     payments: int = 0
     purchase_orders: int = 0
+    sales_orders: int = 0
+    vendor_payments: int = 0
     documents_fetched: int = 0
     documents_resumed: int = 0
     skipped: list[dict[str, str]] = field(default_factory=list)
@@ -157,7 +162,8 @@ class SyncReport:
         return bool(self.customers or self.products or self.sales_txns
                     or self.cost_records or self.assignments or self.vendors
                     or self.stock_snapshots or self.payments
-                    or self.purchase_orders)
+                    or self.purchase_orders or self.sales_orders
+                    or self.vendor_payments)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -167,6 +173,8 @@ class SyncReport:
             "assignments": self.assignments,
             "vendors": self.vendors, "stock_snapshots": self.stock_snapshots,
             "payments": self.payments, "purchase_orders": self.purchase_orders,
+            "sales_orders": self.sales_orders,
+            "vendor_payments": self.vendor_payments,
             "documents_fetched": self.documents_fetched,
             "documents_resumed": self.documents_resumed,
             "skipped_count": len(self.skipped), "skipped": self.skipped,
@@ -250,11 +258,23 @@ class SyncService:
             self.s.flush()
 
     def run_reference(self) -> None:
-        """Customers and items — pulled once per sync, not once per window."""
+        """Customers, items and suppliers — the masters, pulled once per sync
+        rather than once per window.
+
+        Suppliers sit here rather than with the supply *documents* because
+        bills carry a vendor and bills are read in the document stage. Read
+        later, every payable on a first pull would resolve to a null supplier
+        and only acquire one on the next sync — a table that is right the
+        second time is a table nobody can trust the first time. It is still
+        wrapped in ``_supply_phase``: it needs no scope customers do not, but a
+        refusal must degrade the same way rather than abort the masters.
+        """
         self._phase("Reading customers")
         self._sync_customers()
         self._phase("Reading items")
         self._sync_products()
+        if hasattr(self.source, "list_vendors"):
+            self._supply_phase("Reading suppliers", "vendor", self._sync_vendors)
         self.s.flush()  # ensure customers/products have ids for FK resolution
         # Names go into the tenant's vault here rather than in a separate job:
         # a name changed in the ERP has to reach the vault on the same pull that
@@ -278,10 +298,12 @@ class SyncService:
             self.source = previous
 
     def run_supply(self) -> None:
-        """Suppliers, stock and money in — the three the book had and we did not.
+        """Money, orders and commitments — what the book had and we did not.
 
-        Stock is not here: it travels on the item payload, so it is written by
-        ``_sync_products`` in the one pass that already reads the master list.
+        Neither stock nor suppliers is here. Stock travels on the item payload,
+        so it is written by ``_sync_products`` in the one pass that already
+        reads the master list; suppliers moved up to ``run_reference`` because
+        bills resolve against them and bills are read before this stage.
 
         A separate stage from ``run_reference`` because these are the only
         pulls that can be absent: a source written before they existed, or a
@@ -299,13 +321,21 @@ class SyncService:
         presented as "vendors and payments are not being read at all", with a
         credentials error pointing at the one thing that was fine.
         """
-        if hasattr(self.source, "list_vendors"):
-            self._supply_phase("Reading suppliers", "vendor", self._sync_vendors)
         if hasattr(self.source, "list_customer_payments"):
             self._supply_phase("Reading payments", "payment", self._sync_payments)
         if hasattr(self.source, "list_purchase_orders"):
             self._supply_phase("Reading purchase orders", "purchase_order",
                                self._sync_purchase_orders)
+        # Commitments and money out. Both are things the business is exposed to
+        # before any accounting entry exists — an open sales order promises a
+        # customer something, and a vendor payment is the half of cash that
+        # receipts alone cannot show.
+        if hasattr(self.source, "list_sales_orders"):
+            self._supply_phase("Reading sales orders", "sales_order",
+                               self._sync_sales_orders)
+        if hasattr(self.source, "list_vendor_payments"):
+            self._supply_phase("Reading payments out", "vendor_payment",
+                               self._sync_vendor_payments)
         self.s.flush()
 
     def _supply_phase(self, label: str, kind: str,
@@ -415,6 +445,40 @@ class SyncService:
                 vendor_id = vendor.vendor_id if vendor else None
             self.repo.upsert_purchase_order(vendor_id, po)
             self.report.purchase_orders += 1
+
+    def _sync_sales_orders(self) -> None:
+        for raw in self.source.list_sales_orders():
+            ref = str(raw.get("salesorder_id", "?"))
+            try:
+                so = normalize_sales_order(raw)
+            except NormalizationError as e:
+                self.report.skip("sales_order", ref, e.code, e.detail)
+                continue
+            customer_id = None
+            if so.customer_external_id:
+                customer = self.repo.get_customer_by_external(so.customer_external_id)
+                # An order against a customer the contact pull did not return is
+                # still an order — it is a real promise to somebody. Kept with a
+                # null customer rather than dropped, the same way a purchase
+                # order against an unknown supplier is kept.
+                customer_id = customer.customer_id if customer else None
+            self.repo.upsert_sales_order(customer_id, so)
+            self.report.sales_orders += 1
+
+    def _sync_vendor_payments(self) -> None:
+        for raw in self.source.list_vendor_payments():
+            ref = str(raw.get("payment_id", "?"))
+            try:
+                vp = normalize_vendor_payment(raw)
+            except NormalizationError as e:
+                self.report.skip("vendor_payment", ref, e.code, e.detail)
+                continue
+            vendor_id = None
+            if vp.vendor_external_id:
+                vendor = self.repo.get_vendor_by_external(vp.vendor_external_id)
+                vendor_id = vendor.vendor_id if vendor else None
+            self.repo.upsert_vendor_payment(vendor_id, vp)
+            self.report.vendor_payments += 1
 
     def finish(self) -> None:
         """Assignments last: they are decided from the newest invoice found,
@@ -630,6 +694,11 @@ class SyncService:
     def _sync_bills(self) -> None:
         for raw in self.source.list_bills(skip=self._skipper("bill")):
             ref = str(raw.get("bill_id", "?"))
+            # The payable header first, and before the line check: a bill with
+            # no usable cost lines is still money owed, and dropping it here
+            # would understate accounts payable by exactly the bills that are
+            # hardest to see.
+            self._record_payable(raw, ref)
             try:
                 lines = normalize_bill(raw)
             except NormalizationError as e:
@@ -657,6 +726,29 @@ class SyncService:
                 # item, not just the buyer of this bill.
                 self.report.touched_product_ids.add(prod.product_id)
             self.repo.mark_ingested("bill", ref, str(raw.get("last_modified_time") or ""))
+
+    def _record_payable(self, raw: dict[str, Any], ref: str) -> None:
+        """Store what a bill still owes, from the payload the cost pull already
+        holds — no extra call, no extra scope.
+
+        Not counted in its own report figure: a payable is not a separate thing
+        that was read, it is the header of a bill ``cost_records`` already
+        counts. A second counter over the same documents would make the Data
+        screen look like the pull did twice the work.
+        """
+        try:
+            terms = normalize_bill_terms(raw)
+        except NormalizationError as e:
+            self.report.skip("payable", ref, e.code, e.detail)
+            return
+        vendor_id = None
+        if terms.vendor_external_id:
+            vendor = self.repo.get_vendor_by_external(terms.vendor_external_id)
+            # A bill from a supplier the vendor pull did not return is still
+            # owed. Kept with a null vendor rather than dropped — the same
+            # choice purchase orders and payments out make.
+            vendor_id = vendor.vendor_id if vendor else None
+        self.repo.upsert_bill(vendor_id, terms)
 
     def _sync_assignments(self) -> None:
         """Map Zoho's invoice salesperson onto ``customer.assigned_user_id``.

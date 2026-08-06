@@ -166,6 +166,80 @@ class PaymentReceiptIn(BaseModel):
         return Decimal(str(v))
 
 
+class SalesOrderIn(BaseModel):
+    """One customer order, header grain. The demand-side mirror of
+    ``PurchaseOrderIn`` and deliberately the same shape."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    external_ref: str = Field(min_length=1)
+    number: Optional[str] = None
+    customer_external_id: Optional[str] = None
+    date: date
+    expected_ship_date: Optional[date] = None
+    status: str = ""
+    invoiced_status: Optional[str] = None
+    shipped_status: Optional[str] = None
+    total: Optional[Decimal] = None
+    salesperson_external_id: Optional[str] = None
+    source_ref: SourceRef
+
+    @field_validator("total", mode="before")
+    @classmethod
+    def _to_decimal(cls, v: Any) -> Optional[Decimal]:
+        if v is None:
+            return None
+        # Via str, so a float cannot introduce binary noise into a figure the
+        # commitment layer will add up.
+        return v if isinstance(v, Decimal) else Decimal(str(v))
+
+
+class BillIn(BaseModel):
+    """A bill's payable terms, header grain. The companion to the
+    ``CostRecordIn`` list the same document produces."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    external_ref: str = Field(min_length=1)
+    number: Optional[str] = None
+    vendor_external_id: Optional[str] = None
+    date: date
+    due_date: Optional[date] = None
+    status: str = ""
+    total: Optional[Decimal] = None
+    #: What Zoho says is still owed. ``None`` where the field is absent —
+    #: never coerced to 0, which would read as "settled".
+    balance: Optional[Decimal] = None
+    source_ref: SourceRef
+
+    @field_validator("total", "balance", mode="before")
+    @classmethod
+    def _to_decimal(cls, v: Any) -> Optional[Decimal]:
+        if v is None or v == "":
+            return None
+        return v if isinstance(v, Decimal) else Decimal(str(v))
+
+
+class VendorPaymentIn(BaseModel):
+    """One payment out. Amount is required — a payment with no amount is not a
+    payment, and defaulting it to zero would understate cash out silently."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    external_ref: str = Field(min_length=1)
+    vendor_external_id: Optional[str] = None
+    date: date
+    amount: Decimal
+    mode: Optional[str] = None
+    reference: Optional[str] = None
+    source_ref: SourceRef
+
+    @field_validator("amount", mode="before")
+    @classmethod
+    def _to_decimal(cls, v: Any) -> Decimal:
+        return v if isinstance(v, Decimal) else Decimal(str(v))
+
+
 class PurchaseOrderIn(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 

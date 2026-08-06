@@ -60,6 +60,7 @@ def _run_dict(r: Optional[models.SyncRun]) -> Optional[dict[str, Any]]:
         "sales_txns": r.sales_txns, "cost_records": r.cost_records,
         "vendors": r.vendors, "stock_snapshots": r.stock_snapshots,
         "payments": r.payments, "purchase_orders": r.purchase_orders,
+        "sales_orders": r.sales_orders, "vendor_payments": r.vendor_payments,
         "skipped_count": r.skipped_count, "skipped_sample": r.skipped_sample or [],
         # The worklist: one row per thing to fix, not per row skipped.
         "unresolved": r.unresolved or [],

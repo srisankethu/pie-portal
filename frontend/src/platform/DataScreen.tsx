@@ -238,6 +238,22 @@ export function DataScreen({ session, onSynced }: { session: PlatformSession; on
                     </tr>
                     <tr>
                       <td>
+                        <Labelled tip="Orders customers have placed but that have not been invoiced yet — demand already promised. Needs ZohoBooks.salesorders.READ.">
+                          Sales orders
+                        </Labelled>
+                      </td>
+                      <td className="fv">{s.sales_orders}</td>
+                    </tr>
+                    <tr>
+                      <td>
+                        <Labelled tip="Money out, to suppliers. Needs ZohoBooks.vendorpayments.READ. Payments in alone are revenue collected, not cash — both sides are needed before liquidity means anything.">
+                          Payments out
+                        </Labelled>
+                      </td>
+                      <td className="fv">{s.vendor_payments}</td>
+                    </tr>
+                    <tr>
+                      <td>
                         Stock snapshots
                         <div className="fsrc">read from the item list, at no extra cost</div>
                       </td>

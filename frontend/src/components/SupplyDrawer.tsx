@@ -1,3 +1,5 @@
+import Box from "@mui/material/Box";
+import Drawer from "@mui/material/Drawer";
 import type { Line, LineIntelligence } from "../types";
 import { REL_STYLE } from "../rel";
 import { DecisionSupport } from "./DecisionSupport";
@@ -41,8 +43,17 @@ export function SupplyDrawer({
       ? line.quoted - line.economics.recommended
       : null;
   return (
-    <div className="overlay" onClick={onClose}>
-      <div className="drawer" onClick={(e) => e.stopPropagation()}>
+    /* A real Drawer: focus stays inside it, Escape closes it, and focus returns
+       to the grid row that opened it. The hand-rolled overlay did none of those
+       — a keyboard user could tab out into the quote grid it was covering and
+       edit a price they could not see. */
+    <Drawer
+      anchor="right"
+      open
+      onClose={onClose}
+      slotProps={{ paper: { sx: { width: "min(560px, 92vw)" } } }}
+    >
+      <Box sx={{ height: "100%", overflow: "auto" }}>
         <div className="drawer-head">
           <div style={{ flex: 1 }}>
             <h6 className="text-muted" style={{ margin: 0 }}>
@@ -183,7 +194,7 @@ export function SupplyDrawer({
             </div>
           )}
         </div>
-      </div>
-    </div>
+      </Box>
+    </Drawer>
   );
 }

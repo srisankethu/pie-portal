@@ -18,7 +18,7 @@
 // mix change?") is answered better, not merely differently.
 
 import { useMemo, useState } from "react";
-import { Seg } from "./Seg";
+import { MonthPicker, Seg } from "./Seg";
 import { money } from "../../money";
 import { Tip } from "../../Tip";
 import { papi } from "../api";
@@ -336,13 +336,8 @@ export function CompositionScreen({
                options={[["customer", "Customer"], ["product", "Item"]]} />
           <Seg label="Measure" value={measure} onChange={setMeasure}
                options={[["revenue", "Revenue"], ["orders", "Orders"]]} />
-          <span className="month-picker">
-            <label htmlFor="comp-months" className="viz-muted">Months</label>
-            <select id="comp-months" className="input" value={months}
-                    onChange={(e) => setMonths(Number(e.target.value))}>
-              {[6, 12, 24].map((m) => <option key={m} value={m}>{m}</option>)}
-            </select>
-          </span>
+          <MonthPicker id="comp-months" value={months} onChange={setMonths}
+                       options={[6, 12, 24]} />
         </div>
       }
     >

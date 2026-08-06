@@ -313,6 +313,11 @@ export const theme = createTheme({
         root: {
           fontFamily: tokens.fontHeading, fontWeight: 600, fontSize: 21,
           borderBottom: `1px solid ${fade(16)}`, padding: "13.6px 20.4px",
+          // DialogTitle renders with the `h6` variant internally, and in this
+          // ramp `h6` is the uppercase eyebrow style. Without these two lines
+          // every dialog shouts its own title: "DISMISS THIS DECISION".
+          textTransform: "none",
+          letterSpacing: "-0.015em",
         },
       },
     },

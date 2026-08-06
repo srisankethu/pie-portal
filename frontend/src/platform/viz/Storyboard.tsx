@@ -18,6 +18,7 @@
 // money at risk, which outranks money available. Good news comes last and is
 // visually quieter, because it is not an action.
 
+import { MonthPicker } from "./Seg";
 import { useCallback, useEffect, useState } from "react";
 import { money } from "../../money";
 import { Tip } from "../../Tip";
@@ -120,17 +121,8 @@ export function Storyboard({
           )}
         </div>
         <div className="story-controls">
-          <label htmlFor="story-months" className="viz-muted">Compare</label>
-          <select
-            id="story-months"
-            className="input"
-            value={months}
-            onChange={(e) => setMonths(Number(e.target.value))}
-          >
-            <option value={1}>1 month</option>
-            <option value={3}>3 months</option>
-            <option value={6}>6 months</option>
-          </select>
+          <MonthPicker id="story-months" value={months} onChange={setMonths}
+                       options={[1, 3, 6]} label="Compare" long />
         </div>
       </header>
 

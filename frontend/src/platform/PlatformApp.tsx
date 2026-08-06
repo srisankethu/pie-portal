@@ -13,8 +13,22 @@ import type { Account, DecisionDetail, DecisionSummary, DecisionTrace, PlatformS
 import { aiState, factLabel, factValue, isPrimaryFact, stateFieldLabel } from "./format";
 import { ActionsPanel, Bp, Conf, FactChip, ImpactPanel, Interpretation, Labelled, Pri,
          RankingPanel, Tip, WhyPanel, typeLabel } from "./ui";
+import Avatar from "@mui/material/Avatar";
+import Button from "@mui/material/Button";
+import Chip from "@mui/material/Chip";
+import Dialog from "@mui/material/Dialog";
+import DialogActions from "@mui/material/DialogActions";
+import DialogContent from "@mui/material/DialogContent";
+import DialogContentText from "@mui/material/DialogContentText";
+import DialogTitle from "@mui/material/DialogTitle";
+import Skeleton from "@mui/material/Skeleton";
+import Snackbar from "@mui/material/Snackbar";
+import Stack from "@mui/material/Stack";
+import TextField from "@mui/material/TextField";
+import Typography from "@mui/material/Typography";
 import { navigate, parseHash, type Screen } from "./route";
 import AppShell, { type NavItem } from "./AppShell";
+import { SignInCard } from "../SignInCard";
 import { ApprovalsScreen, SettingsScreen } from "./AdminScreens";
 import { IdentityScreen } from "./IdentityScreen";
 import { DataScreen } from "./DataScreen";
@@ -40,72 +54,27 @@ const ROLE_HOME: Record<Role, { title: string; sub: string; nav: string }> = {
 };
 
 // ── sign in ──────────────────────────────────────────────────────────────────
+/** The platform's door. The card itself is `src/SignInCard.tsx`, shared with
+ *  the Quote Builder — the two forms had drifted, and the copy that drifted was
+ *  the one still telling people any password worked. */
 function SignIn({ onIn, notice }: { onIn: (s: PlatformSession) => void; notice?: string | null }) {
-  const [email, setEmail] = useState("r.nair@sanketh.in");
-  const [password, setPassword] = useState("");
-  const [err, setErr] = useState("");
-  const [busy, setBusy] = useState(false);
-
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
-    setErr("");
-    if (!password) return setErr("Enter your password.");
-    setBusy(true);
-    try {
-      const r = await papi.login(email, password);
-      onIn({ token: r.token, role: r.role, name: r.name, user_id: r.user_id,
-             organization_id: r.organization_id, currency: r.currency,
-             timezone: r.timezone });
-    } catch (e2) {
-      setErr((e2 as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  }
   return (
-    <div className="signin-wrap">
-      <form className="signin" onSubmit={submit}>
-        <h6 className="text-muted">Sanketh</h6>
-        <h2>Commercial Decisions</h2>
-        <p className="text-muted" style={{ marginBottom: "var(--space-6)" }}>
-          One product, three doors. Your account decides what you see first and what you may act on.
-        </p>
-        {notice && <div className="signin-notice">{notice}</div>}
-        <div className="field" style={{ marginBottom: "var(--space-3)" }}>
-          <label htmlFor="dp-email">Email</label>
-          <input
-            id="dp-email"
-            name="email"
-            type="email"
-            autoComplete="username"
-            className="input"
-            value={email}
-            autoFocus
-            onChange={(e) => setEmail(e.target.value)}
-          />
-        </div>
-        <div className="field">
-          <label htmlFor="dp-password">Password</label>
-          <input
-            id="dp-password"
-            name="password"
-            className="input"
-            type="password"
-            autoComplete="current-password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-          />
-        </div>
-        {err && <div className="err">{err}</div>}
-        <button className="btn btn-primary" style={{ width: "100%", marginTop: "var(--space-4)" }} disabled={busy}>
-          {busy ? "Signing in…" : "Sign in"}
-        </button>
-        <div className="demo">
-          Your account decides your role. An owner creates accounts and sets roles from
-          Settings; if you have not been given one, ask them.
-        </div>
-      </form>
-    </div>
+    <SignInCard
+      title="Commercial Decisions"
+      blurb="One product, three doors. Your account decides what you see first and what you may act on."
+      submitLabel="Sign in"
+      notice={notice}
+      onSubmit={async (email, password) => {
+        const r = await papi.login(email, password);
+        onIn({ token: r.token, role: r.role, name: r.name, user_id: r.user_id,
+               organization_id: r.organization_id, currency: r.currency,
+               timezone: r.timezone });
+      }}
+      footer={
+        "Your account decides your role. An owner creates accounts and sets roles " +
+        "from Settings; if you have not been given one, ask them."
+      }
+    />
   );
 }
 
@@ -117,6 +86,16 @@ const ACTION_META: Record<string, { title: string; body: string; api: string; ne
   escalate: { title: "Send to management", body: "Routed to someone who can see the full economics and approve a price. They receive the facts, the interpretation and your note.", api: "OVERRIDE" },
 };
 
+/** Record what was decided.
+ *
+ * A `Dialog` rather than the hand-rolled overlay this replaces, for three
+ * things that were missing and are not worth reimplementing: focus is trapped
+ * inside while it is open, the page behind is inert to a screen reader, and
+ * focus returns to whatever opened it on close. The old version also closed on
+ * a click anywhere in the backdrop — including the blueprint corner marks,
+ * which sit outside the element that stopped propagation, so clipping a corner
+ * discarded a half-typed note.
+ */
 function ActionModal({
   kind,
   onClose,
@@ -130,53 +109,55 @@ function ActionModal({
 }) {
   const meta = ACTION_META[kind];
   const [note, setNote] = useState("");
-
-  // Escape closes the dialog — the reflex everyone has, and the only exit for
-  // a keyboard user who opened it by mistake.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  const missingNote = !!meta.needsNote && !note.trim();
 
   return (
-    <div className="dp-modal-back" onClick={onClose}>
-      <Bp className="dp-modal" role="dialog" aria-modal="true" aria-label={meta.title}
-          style={{ background: "var(--color-bg)" }}>
-        <div onClick={(e) => e.stopPropagation()}>
-          <div className="kicker">{kind.toUpperCase()}</div>
-          <h3>{meta.title}</h3>
-          <p className="text-muted" style={{ fontSize: 13.5 }}>
-            {meta.body}
-          </p>
-          <div className="field">
-            <label>{meta.needsNote ? "What you will do / why" : "Anything to add (optional)"}</label>
-            <textarea
-              className="input"
-              style={{ minHeight: 80 }}
-              value={note}
-              autoFocus
-              onChange={(e) => setNote(e.target.value)}
-              placeholder="Kept on the decision. Not sent to the customer."
-            />
-          </div>
-          <div className="foot">
-            <button className="btn btn-secondary" onClick={onClose}>
-              Cancel
-            </button>
-            <button
-              className="btn btn-primary"
-              disabled={busy || (meta.needsNote && !note.trim())}
-              onClick={() => onConfirm(note)}
-            >
-              {busy ? "Logging…" : "Log decision"}
-            </button>
-          </div>
-        </div>
-      </Bp>
-    </div>
+    <Dialog open onClose={onClose} maxWidth="sm" fullWidth>
+      <DialogTitle sx={{ pb: 1 }}>
+        <Typography
+          component="div"
+          variant="overline"
+          sx={{ color: "text.secondary", display: "block", lineHeight: 1.4 }}
+        >
+          {kind.toUpperCase()}
+        </Typography>
+        {meta.title}
+      </DialogTitle>
+      <DialogContent sx={{ pt: 2 }}>
+        <DialogContentText sx={{ fontSize: 13.5, mb: 2 }}>{meta.body}</DialogContentText>
+        <TextField
+          label={meta.needsNote ? "What you will do / why" : "Anything to add (optional)"}
+          placeholder="Kept on the decision. Not sent to the customer."
+          multiline
+          minRows={3}
+          fullWidth
+          autoFocus
+          required={meta.needsNote}
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          // The confirm button below is disabled until this is filled in. Saying
+          // so here is the difference between a form that is waiting and one
+          // that looks broken.
+          helperText={
+            missingNote
+              ? "Required — this is the note the next person reads."
+              : " "
+          }
+        />
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={onClose} color="inherit">
+          Cancel
+        </Button>
+        <Button
+          variant="contained"
+          disabled={busy || missingNote}
+          onClick={() => onConfirm(note)}
+        >
+          {busy ? "Logging…" : "Log decision"}
+        </Button>
+      </DialogActions>
+    </Dialog>
   );
 }
 
@@ -577,12 +558,18 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
           onConfirm={(note) => doAction(modal.id, modal.kind, note)}
         />
       )}
-      {toast && (
-        <div className="toast">
-          <span>{toast.msg}</span>
-          {toast.undo && (
-            <button
-              className="toast-undo"
+      {/* `role="status"` rather than a bare div: an undo offer nobody is told
+          about expires before it is used. */}
+      <Snackbar
+        open={!!toast}
+        onClose={() => setToast(null)}
+        anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
+        message={toast?.msg}
+        action={
+          toast?.undo ? (
+            <Button
+              size="small"
+              sx={{ color: "var(--color-accent-300)" }}
               onClick={() => {
                 const u = toast.undo!;
                 setToast(null);
@@ -590,10 +577,13 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
               }}
             >
               Undo
-            </button>
-          )}
-        </div>
-      )}
+            </Button>
+          ) : null
+        }
+      />
+      {/* Autohide is deliberately not set. The toast already has an explicit
+          lifetime managed by whoever raised it, and two timers racing is how an
+          undo window closes early. */}
     </AppShell>
   );
 }
@@ -666,22 +656,34 @@ function ListScreen({
         <h1>Decisions</h1>
         <p>Every decision raised, open and closed — sorted by priority then recency.</p>
       </div>
-      <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
+      {/* Chips rather than buttons: these select what is shown, they do not
+          perform an action, and a row of things that look like buttons reads as
+          a row of things that will do something. */}
+      <Stack direction="row" spacing={1} useFlexGap sx={{ mb: 2, flexWrap: "wrap" }}>
         {types.map((t) => (
-          <button
+          <Chip
             key={t || "all"}
-            className={`btn btn-sm ${listType === t ? "btn-primary" : "btn-secondary"}`}
+            label={t ? typeLabel(t) : "All"}
+            // The count sits in the avatar slot so it stays legible when the
+            // chip is filled — a count baked into the label loses its contrast
+            // against the selected background.
+            avatar={
+              <Avatar sx={{ bgcolor: "transparent", fontSize: 11, fontWeight: 700 }}>
+                {t ? counts.get(t) : (summaries || []).length}
+              </Avatar>
+            }
+            color={listType === t ? "primary" : "default"}
+            variant={listType === t ? "filled" : "outlined"}
             onClick={() => setListType(t)}
-          >
-            {t ? `${typeLabel(t)} ${counts.get(t)}` : `All ${(summaries || []).length}`}
-          </button>
+          />
         ))}
-      </div>
+      </Stack>
       {loading && !summaries ? (
-        <>
-          <div className="skeleton" style={{ height: 44 }} />
-          <div className="skeleton" style={{ height: 44 }} />
-        </>
+        <Stack spacing={1}>
+          <Skeleton variant="rounded" height={44} />
+          <Skeleton variant="rounded" height={44} />
+          <Skeleton variant="rounded" height={44} />
+        </Stack>
       ) : rows.length === 0 ? (
         <div className="dp-empty">No decisions match this filter.</div>
       ) : (

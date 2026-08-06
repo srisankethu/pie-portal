@@ -9,6 +9,7 @@
 // customer base"), one period-over-period rather than month-by-month, so it
 // sits under it. A sixteenth top-level nav item would have bought nothing.
 
+import { MonthPicker } from "./Seg";
 import { useState } from "react";
 import { money } from "../../money";
 import { Tip } from "../../Tip";
@@ -73,13 +74,8 @@ export function CustomerHealthTimeline({
       state={stateOf(loading, error, data?.empty_reason as string)}
       error={error} emptyReason={data?.empty_reason as string} onRetry={reload} wide
       actions={
-        <span className="month-picker">
-          <label htmlFor="tl-months" className="viz-muted">Months</label>
-          <select id="tl-months" className="input" value={months}
-                  onChange={(e) => setMonths(Number(e.target.value))}>
-            {[12, 18, 24, 36].map((m) => <option key={m} value={m}>{m}</option>)}
-          </select>
-        </span>
+        <MonthPicker id="tl-months" value={months} onChange={setMonths}
+                     options={[12, 18, 24, 36]} />
       }
     >
       <p className="viz-muted">

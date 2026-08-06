@@ -1,72 +1,22 @@
-import { useState } from "react";
 import { api } from "../api";
 import type { Session } from "../types";
+import { SignInCard } from "../SignInCard";
 
 export function SignIn({ onSignedIn }: { onSignedIn: (s: Session) => void }) {
-  const [email, setEmail] = useState("r.nair@sanketh.in");
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
-
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
-    setError("");
-    if (!password) {
-      setError("Enter your password.");
-      return;
-    }
-    setBusy(true);
-    try {
-      const s = await api.login(email, password);
-      onSignedIn(s);
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
   return (
-    <div className="signin-wrap">
-      <form className="signin" onSubmit={submit}>
-        <div className="signin-card" role="presentation">
-          <h6 className="text-muted">Sanketh</h6>
-          <h2>Quote Builder</h2>
-          <p className="text-muted" style={{ marginBottom: "var(--space-6)" }}>
-            Sign in to review RFQs, pick supply options, and create estimates with confidence.
-          </p>
-          <div className="field" style={{ marginBottom: "var(--space-3)" }}>
-            <label htmlFor="email">Email</label>
-            <input
-              id="email"
-              className="input"
-              value={email}
-              autoComplete="email"
-              autoFocus
-              onChange={(e) => setEmail(e.target.value)}
-            />
-          </div>
-          <div className="field">
-            <label htmlFor="password">Password</label>
-            <input
-              id="password"
-              className="input"
-              type="password"
-              value={password}
-              autoComplete="current-password"
-              onChange={(e) => setPassword(e.target.value)}
-            />
-          </div>
-          {error && <div className="err">{error}</div>}
-          <button className="btn btn-primary" style={{ width: "100%", marginTop: "var(--space-4)" }} disabled={busy}>
-            {busy ? "Signing in…" : "Continue to quote builder"}
-          </button>
-        </div>
-        <div className="demo">
-          Demo access — <b>r.nair@sanketh.in</b> (salesperson) · <b>s.menon@sanketh.in</b>{" "}
-          (management). Any password works.
-        </div>
-      </form>
-    </div>
+    <SignInCard
+      title="Quote Builder"
+      blurb="Sign in to review RFQs, pick supply options, and create estimates with confidence."
+      submitLabel="Continue to quote builder"
+      onSubmit={async (email, password) => onSignedIn(await api.login(email, password))}
+      // The footer used to list two accounts and say "Any password works".
+      // That was true of the demo login this replaced and has been false since
+      // real authentication landed — a sentence on the sign-in screen telling
+      // people the password does not matter is worth removing on its own.
+      footer={
+        "Your account decides your role. An owner creates accounts and sets roles " +
+        "from Settings; if you have not been given one, ask them."
+      }
+    />
   );
 }

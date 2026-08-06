@@ -16,6 +16,7 @@
 // **Size-adaptive by measurement, not by media query.** A narrow panel on a wide
 // screen has the same problem a phone does, and only the container knows.
 
+import { MonthPicker as SharedMonthPicker } from "./Seg";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { money } from "../../money";
 import { Tip } from "../../Tip";
@@ -588,21 +589,16 @@ export function SimulatorScreen({ session }: { session: PlatformSession }) {
 }
 
 // ── small shared pieces ─────────────────────────────────────────────────────
+/** This screen's window control. The picker itself now lives in `Seg.tsx`
+ *  alongside the segmented control, because four screens had grown their own. */
 function MonthPicker({
   value, onChange, id, options = [1, 3, 6, 12],
 }: {
   value: number; onChange: (n: number) => void; id: string; options?: number[];
 }) {
   return (
-    <span className="month-picker">
-      <label htmlFor={id} className="viz-muted">Period</label>
-      <select id={id} className="input" value={value}
-              onChange={(e) => onChange(Number(e.target.value))}>
-        {options.map((m) => (
-          <option key={m} value={m}>{m} month{m === 1 ? "" : "s"}</option>
-        ))}
-      </select>
-    </span>
+    <SharedMonthPicker id={id} value={value} onChange={onChange}
+                       options={options} label="Period" long />
   );
 }
 

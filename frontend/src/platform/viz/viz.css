@@ -378,7 +378,8 @@
 .sim-blocked ul { margin: 8px 0 0; padding-left: 20px; font-size: 13px;
                   color: var(--color-neutral-700); display: grid; gap: 6px; }
 
-.month-picker { display: flex; align-items: center; gap: 8px; }
+/* `.month-picker` was the label+select pairing on four screens. The picker
+   is a shared component now (`viz/Seg.tsx`) and carries its own layout. */
 
 /* Nothing on this layer may push the page sideways. */
 .storyboard, .viz-panel { min-width: 0; max-width: 100%; }

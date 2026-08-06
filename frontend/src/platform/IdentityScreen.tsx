@@ -1,3 +1,4 @@
+import Button from "@mui/material/Button";
 import { useCallback, useEffect, useState } from "react";
 import { since } from "../when";
 import { papi } from "./api";
@@ -72,9 +73,9 @@ function RecordRow({
       {canManage && (
         <td className="id-rowactions">
           {onUnlink && !lonely && (
-            <button className="btn btn-ghost btn-sm" onClick={() => onUnlink(r.record_id)}>
+            <Button variant="text" size="small" onClick={() => onUnlink(r.record_id)}>
               Unlink
-            </button>
+            </Button>
           )}
         </td>
       )}
@@ -108,13 +109,13 @@ function IdentityCard({
               <input className="input" value={label} autoFocus
                      aria-label="Identity name"
                      onChange={(e) => setLabel(e.target.value)} />
-              <button className="btn btn-primary btn-sm"
+              <Button variant="contained" size="small"
                       onClick={() => { onRelabel(identity.identity_id, label); setEditing(false); }}>
                 Save
-              </button>
-              <button className="btn btn-ghost btn-sm" onClick={() => setEditing(false)}>
+              </Button>
+              <Button variant="text" size="small" onClick={() => setEditing(false)}>
                 Cancel
-              </button>
+              </Button>
             </>
           ) : (
             <>
@@ -123,9 +124,9 @@ function IdentityCard({
                 <Tip text="Taken from the linked records rather than stored, so no single connector becomes the authority on what this entity is called. Rename it to fix a name of your own." />
               )}
               {canManage && (
-                <button className="btn btn-ghost btn-sm" onClick={() => setEditing(true)}>
+                <Button variant="text" size="small" onClick={() => setEditing(true)}>
                   Rename
-                </button>
+                </Button>
               )}
             </>
           )}
@@ -225,14 +226,14 @@ function SuggestionCard({
 
       {canManage ? (
         <div className="id-sugg-actions">
-          <button className="btn btn-primary btn-sm"
+          <Button variant="contained" size="small"
                   onClick={() => onDecide(s.suggestion_id, true)}>
             Link to this identity
-          </button>
-          <button className="btn btn-secondary btn-sm"
+          </Button>
+          <Button variant="outlined" size="small"
                   onClick={() => onDecide(s.suggestion_id, false)}>
             Keep them separate
-          </button>
+          </Button>
           <Tip text="Keeping them separate is recorded too, and the same pair will not be proposed again. Linking can be undone later — the records themselves are never altered either way." />
         </div>
       ) : (

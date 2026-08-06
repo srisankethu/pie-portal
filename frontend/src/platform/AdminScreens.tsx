@@ -136,9 +136,9 @@ function ApprovalCard({
 
       {req.decision_note && <div className="ap-decision-note">{req.decision_note}</div>}
 
-      <button className="btn btn-ghost btn-sm" onClick={() => setOpen((o) => !o)}>
+      <Button variant="text" size="small" onClick={() => setOpen((o) => !o)}>
         {open ? "Hide history" : `History (${req.thread.length})`}
-      </button>
+      </Button>
       {open && (
         <ol className="ap-thread">
           {req.thread.map((t, i) => (
@@ -160,23 +160,23 @@ function ApprovalCard({
             aria-label="Decision note"
           />
           <div className="ap-buttons">
-            <button className="btn btn-primary btn-sm" disabled={busy} onClick={() => act("APPROVED")}>
+            <Button variant="contained" size="small" disabled={busy} onClick={() => act("APPROVED")}>
               Approve
-            </button>
-            <button
-              className="btn btn-secondary btn-sm"
+            </Button>
+            <Button
+              variant="outlined" size="small"
               disabled={busy || !note.trim()}
               onClick={() => act("CHANGES_REQUESTED")}
             >
               Ask for a different price
-            </button>
-            <button
-              className="btn btn-ghost btn-sm"
+            </Button>
+            <Button
+              variant="text" size="small"
               disabled={busy || !note.trim()}
               onClick={() => act("REJECTED")}
             >
               Reject
-            </button>
+            </Button>
           </div>
         </div>
       )}
@@ -187,9 +187,9 @@ function ApprovalCard({
             ? `Waiting on ${req.required_authority === "OWNER" ? "an owner" : "a manager"}.`
             : "You are not authorized to decide this one."}
           {isMine && (
-            <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => act("WITHDRAWN")}>
+            <Button variant="text" size="small" disabled={busy} onClick={() => act("WITHDRAWN")}>
               Withdraw
-            </button>
+            </Button>
           )}
         </div>
       )}
@@ -669,13 +669,13 @@ function MarginPolicySection({
               </span>
             ))}
             {canManage && (
-              <button
+              <Button
                 type="button"
-                className="btn btn-ghost btn-sm"
+                variant="text" size="small"
                 onClick={() => setFamilies((fs) => [...fs, ["", ""]])}
               >
                 Add a family
-              </button>
+              </Button>
             )}
             {families.length === 0 && !canManage && (
               <span className="st-help">No family overrides — the default applies to everything.</span>
@@ -707,14 +707,14 @@ function MarginPolicySection({
           {/* Any problem blocks, not only the ladder. Letting a save through
               with a bad box meant the server refused it and the message came
               back as a banner detached from the field that caused it. */}
-          <button className="btn btn-primary btn-sm"
+          <Button variant="contained" size="small"
                   disabled={!dirty || busy || Object.keys(problems).length > 0}
                   onClick={save}>
             {busy ? "Saving…" : "Save margin policy"}
-          </button>
-          <button className="btn btn-ghost btn-sm" disabled={!dirty || busy} onClick={reseed}>
+          </Button>
+          <Button variant="text" size="small" disabled={!dirty || busy} onClick={reseed}>
             Discard changes
-          </button>
+          </Button>
           {msg && <span className={`mp-msg ${msg.bad ? "bad" : "ok"}`}>{msg.text}</span>}
         </div>
       )}
@@ -951,7 +951,7 @@ export function SettingsScreen({ session }: { session: PlatformSession }) {
                  autoComplete="new-password" value={pw.next}
                  onChange={(e) => setPw({ ...pw, next: e.target.value })}
                  required aria-label="New password" />
-          <button className="btn btn-secondary">Change password</button>
+          <Button variant="outlined">Change password</Button>
           {pwMsg && <div className="st-span st-help">{pwMsg}</div>}
         </form>
       </Bp>
@@ -989,7 +989,7 @@ export function SettingsScreen({ session }: { session: PlatformSession }) {
                 Shown once — it is stored only as a hash. They are asked to change it at
                 first sign-in.
               </div>
-              <button className="btn btn-ghost btn-sm" onClick={() => setIssued(null)}>Dismiss</button>
+              <Button variant="text" size="small" onClick={() => setIssued(null)}>Dismiss</Button>
             </div>
           )}
 
@@ -1046,14 +1046,14 @@ export function SettingsScreen({ session }: { session: PlatformSession }) {
                     <td className="st-rowactions">
                       {u.user_id !== session.user_id && (
                         <>
-                          <button className="btn btn-ghost btn-sm"
+                          <Button variant="text" size="small"
                                   onClick={() => reset(u.user_id, u.email)}>
                             Reset password
-                          </button>
-                          <button className="btn btn-ghost btn-sm"
+                          </Button>
+                          <Button variant="text" size="small"
                                   onClick={() => patchUser(u.user_id, { active: !u.active })}>
                             {u.active ? "Deactivate" : "Reactivate"}
-                          </button>
+                          </Button>
                         </>
                       )}
                     </td>

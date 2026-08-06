@@ -1,4 +1,5 @@
 // Small shared presentation pieces for the Decision Platform.
+import Button from "@mui/material/Button";
 import type { ReactNode } from "react";
 import type { DecisionDetail, Fact } from "./types";
 import { CONF_LABEL, TYPE_LABEL, aiState, factLabel, factValue, isPrimaryFact,
@@ -13,20 +14,51 @@ import { Labelled } from "../Tip";
 import Alert from "@mui/material/Alert";
 import AlertTitle from "@mui/material/AlertTitle";
 import Box from "@mui/material/Box";
+import Paper from "@mui/material/Paper";
 import { PriorityChip, StatusChip } from "./kit";
 export { Tip, Labelled } from "../Tip";
 
-type BpProps = { children: ReactNode; className?: string } & React.HTMLAttributes<HTMLDivElement>;
+type BpProps = {
+  children: ReactNode;
+  className?: string;
+  /** The blueprint corner marks. On by default — they are how this product has
+   *  looked since it shipped, and turning them off across twenty-nine surfaces
+   *  is a redesign nobody asked for. Off is now one prop away when somebody
+   *  does: `docs/ui-standards.md` ranks density above decoration, and these are
+   *  decoration that happens to cost nothing. */
+  marks?: boolean;
+  sx?: object;
+} & React.HTMLAttributes<HTMLDivElement>;
 
-export function Bp({ children, className = "", ...rest }: BpProps) {
+/** The surface almost everything sits on.
+ *
+ * A `Paper`, per the standard: the border, radius, elevation and background now
+ * come from the theme instead of from a bespoke `.bp` rule that had to be kept
+ * in step with it by hand. Converting the *implementation* rather than the
+ * twenty-nine call sites is deliberate — one edit moved every screen, and a
+ * second surface component beside this one is how a design system forks.
+ *
+ * `Paper`, never `Card`: this holds panels, filters and figures. `Card` is
+ * reserved for something with an identity you could open or act on.
+ */
+export function Bp({ children, className = "", marks = true, sx, ...rest }: BpProps) {
   return (
-    <div className={`bp ${className}`} {...rest}>
-      <i className="corner tl" />
-      <i className="corner tr" />
-      <i className="corner bl" />
-      <i className="corner br" />
+    <Paper
+      variant="outlined"
+      className={`bp ${className}`}
+      sx={{ position: "relative", ...sx }}
+      {...rest}
+    >
+      {marks && (
+        <>
+          <i className="corner tl" />
+          <i className="corner tr" />
+          <i className="corner bl" />
+          <i className="corner br" />
+        </>
+      )}
       {children}
-    </div>
+    </Paper>
   );
 }
 
@@ -114,14 +146,14 @@ export function Interpretation({ d }: { d: DecisionDetail }) {
   // deterministic reading, not a recommendation. Label it for what it is.
   if (state === "degraded") {
     return (
-      <div className="state-panel">
-        <div className="state-mark">Deterministic reading · no AI recommendation</div>
-        <p style={{ margin: 0, fontSize: 14 }}>{d.interpretation.explanation}</p>
-        <p style={{ marginTop: 8, fontSize: 12, color: "var(--color-neutral-700)" }}>
+      <Alert severity="warning">
+        <AlertTitle>Deterministic reading · no AI recommendation</AlertTitle>
+        {d.interpretation.explanation}
+        <Box sx={{ mt: 1, typography: "caption", color: "text.secondary" }}>
           The model responded but its answer failed validation, so it was discarded. The sentence
           above is generated from the signal's own figures.
-        </p>
-      </div>
+        </Box>
+      </Alert>
     );
   }
   return (
@@ -305,9 +337,9 @@ export function DecisionCard({
         <Pri band={d.priority.band} />
         <span className="dcard-subject">{d.subject_label}</span>
         <span className="dp-spacer" />
-        <button className="btn btn-ghost btn-sm" onClick={() => onOpen(d.decision_id)}>
+        <Button variant="text" size="small" onClick={() => onOpen(d.decision_id)}>
           Open →
-        </button>
+        </Button>
       </div>
 
       {fromState ? (

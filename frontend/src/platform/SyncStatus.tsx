@@ -1,3 +1,4 @@
+import Button from "@mui/material/Button";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { formatDateTime, since } from "../when";
 import { papi } from "./api";
@@ -293,9 +294,9 @@ export function SyncStatusCard({
           )}
           <Summary run={shown} />
           {canSync && (status === "FAILED" || status === "PARTIAL") && onRetry && (
-            <button className="btn btn-secondary btn-sm" onClick={onRetry}>
+            <Button variant="outlined" size="small" onClick={onRetry}>
               Try again
-            </button>
+            </Button>
           )}
         </>
       ) : (

@@ -1,3 +1,4 @@
+import Button from "@mui/material/Button";
 import Avatar from "@mui/material/Avatar";
 import Chip from "@mui/material/Chip";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -323,9 +324,9 @@ export default function App({ onOpenPlatform }: { onOpenPlatform?: (path: string
         <span className={"role-badge" + (mgmt ? " mgmt" : "")}>
           {mgmt ? "Management · full economics" : "Sales"} · {session.name}
         </span>
-        <button className="btn btn-secondary btn-sm" onClick={signOut}>
+        <Button variant="outlined" size="small" onClick={signOut}>
           Sign out
-        </button>
+        </Button>
       </div>
 
       <div className="toolbar">
@@ -383,18 +384,18 @@ export default function App({ onOpenPlatform }: { onOpenPlatform?: (path: string
           aria-label="Search quote lines"
           onChange={(e) => setSearch(e.target.value)}
         />
-        <button className="btn btn-secondary btn-sm" onClick={saveDraft}>
+        <Button variant="outlined" size="small" onClick={saveDraft}>
           Save draft
-        </button>
-        <button className="btn btn-secondary btn-sm" onClick={selectVisible} disabled={!visible.length}>
+        </Button>
+        <Button variant="outlined" size="small" onClick={selectVisible} disabled={!visible.length}>
           Select visible
-        </button>
-        <button className="btn btn-secondary btn-sm" onClick={clearSelection} disabled={!selectedCount}>
+        </Button>
+        <Button variant="outlined" size="small" onClick={clearSelection} disabled={!selectedCount}>
           Clear
-        </button>
-        <button className="btn btn-primary btn-sm" onClick={() => setIntakeOpen(true)}>
+        </Button>
+        <Button variant="contained" size="small" onClick={() => setIntakeOpen(true)}>
           Paste RFQ
-        </button>
+        </Button>
       </div>
 
       {mgmt && quote.marginFloor && (
@@ -408,27 +409,27 @@ export default function App({ onOpenPlatform }: { onOpenPlatform?: (path: string
             estimate
           </span>
           <span style={{ flex: 1 }} />
-          <button
-            className="btn btn-ghost btn-sm"
+          <Button
+            variant="text" size="small"
             onClick={() => setFilter(filter === "MFLOOR" ? "ALL" : "MFLOOR")}
           >
             {filter === "MFLOOR" ? "Show all" : "Review these"}
-          </button>
+          </Button>
         </div>
       )}
 
       {selectedCount > 0 && (
         <div className="bulk-actions">
           <span>{selectedCount} selected</span>
-          <button className="btn btn-secondary btn-sm" onClick={() => doDiscount(10)}>
+          <Button variant="outlined" size="small" onClick={() => doDiscount(10)}>
             Apply 10% discount
-          </button>
-          <button className="btn btn-secondary btn-sm" onClick={selectAllVisible}>
+          </Button>
+          <Button variant="outlined" size="small" onClick={selectAllVisible}>
             Select all visible
-          </button>
-          <button className="btn btn-secondary btn-sm" onClick={clearSelection}>
+          </Button>
+          <Button variant="outlined" size="small" onClick={clearSelection}>
             Clear selection
-          </button>
+          </Button>
         </div>
       )}
 
@@ -442,12 +443,12 @@ export default function App({ onOpenPlatform }: { onOpenPlatform?: (path: string
               next action.
             </p>
             <div className="empty-state-actions">
-              <button className="btn btn-primary" onClick={() => setIntakeOpen(true)}>
+              <Button variant="contained" onClick={() => setIntakeOpen(true)}>
                 Paste RFQ
-              </button>
-              <button className="btn btn-secondary" onClick={() => setIntakeOpen(true)}>
+              </Button>
+              <Button variant="outlined" onClick={() => setIntakeOpen(true)}>
                 Load sample RFQ
-              </button>
+              </Button>
             </div>
             <div className="inline-help">
               <span>

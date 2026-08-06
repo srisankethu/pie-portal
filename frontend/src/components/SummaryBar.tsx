@@ -1,3 +1,4 @@
+import Button from "@mui/material/Button";
 import type { Quote } from "../types";
 import { Tip } from "../Tip";
 import { money } from "../money";
@@ -56,13 +57,13 @@ export function SummaryBar({
             <span className="text-muted" style={{ fontSize: 12 }}>
               {selectedCount} selected
             </span>
-            <button className="btn btn-secondary btn-sm" title="Apply a 10% discount to the selected lines" onClick={() => onDiscount(10)}>
+            <Button variant="outlined" size="small" title="Apply a 10% discount to the selected lines" onClick={() => onDiscount(10)}>
               Apply 10% discount
-            </button>
+            </Button>
           </div>
         )}
-        <button
-          className="btn btn-primary"
+        <Button
+          variant="contained"
           title={
             gateBlockedReason ?? (hasLines
               ? "Create a Zoho estimate from the current quote"
@@ -78,7 +79,7 @@ export function SummaryBar({
               : hasLines
                 ? "Create Zoho estimate"
                 : "Add lines to enable"}
-        </button>
+        </Button>
       </div>
     </div>
   );

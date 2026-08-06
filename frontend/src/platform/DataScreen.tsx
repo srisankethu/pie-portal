@@ -1,10 +1,13 @@
+import Alert from "@mui/material/Alert";
+import AlertTitle from "@mui/material/AlertTitle";
+import Button from "@mui/material/Button";
 import { useCallback, useEffect, useState } from "react";
 import Box from "@mui/material/Box";
 import { DataGrid, numeric } from "./DataGrid";
 import { money } from "../money";
 import { since as when, todayISO } from "../when";
 import { papi } from "./api";
-import { ErrorState } from "./kit";
+import { ErrorState, LoadingState } from "./kit";
 import { ConnectionsPanel } from "./ConnectionsPanel";
 import { SyncStatusCard, useSync } from "./SyncStatus";
 import type { DataStatus, PlatformSession, UnresolvedReference } from "./types";
@@ -150,16 +153,16 @@ export function DataScreen({ session, onSynced }: { session: PlatformSession; on
             </div>
 
             <div style={{ display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap", alignItems: "center" }}>
-              <button className="btn btn-secondary btn-sm" onClick={load} disabled={checking}>
+              <Button variant="outlined" size="small" onClick={load} disabled={checking}>
                 {checking ? "Checking…" : "Refresh status"}
-              </button>
-              <button
-                className="btn btn-primary btn-sm"
+              </Button>
+              <Button
+                variant="contained" size="small"
                 onClick={() => startSync()}
                 disabled={allBusy}
               >
                 {sync.state?.active ? "Sync running…" : sync.busy ? "Starting…" : "Sync every company"}
-              </button>
+              </Button>
               <Tip text="Runs one pull per enabled company, in turn. To pull just one, use the button on its card above." />
               {sync.state?.active && (
                 <span className="st-help">
@@ -182,7 +185,7 @@ export function DataScreen({ session, onSynced }: { session: PlatformSession; on
           three sections further down the page. */}
 
       {!status && !error ? (
-        <div className="skeleton" style={{ height: 90 }} />
+        <LoadingState rows={1} height={90} label="Reading the sync status…" />
       ) : (
         <>
           <div className="dp-split-2">
@@ -300,18 +303,24 @@ export function DataScreen({ session, onSynced }: { session: PlatformSession; on
                 </table>
               )}
               {s?.error && (
-                <div className="state-panel" style={{ margin: "0 0 12px" }}>
-                  <div className="state-mark">
+                /* Warning, not error, when the run was PARTIAL: rows were kept
+                   and the next run continues from here, so the severity that
+                   says "nothing survived" would overstate it. */
+                <Alert
+                  severity={s.status === "PARTIAL" ? "warning" : "error"}
+                  sx={{ mb: 1.5 }}
+                >
+                  <AlertTitle>
                     {s.status === "PARTIAL" ? "Why it stopped" : "Why it failed"}
-                  </div>
-                  <p style={{ margin: 0, fontSize: 13 }}>{s.error}</p>
+                  </AlertTitle>
+                  {s.error}
                   {s.status === "PARTIAL" && (
-                    <p style={{ margin: "8px 0 0", fontSize: 13 }}>
+                    <Box sx={{ mt: 1 }}>
                       The rows above were kept. Running the sync again continues from
                       here rather than starting over.
-                    </p>
+                    </Box>
                   )}
-                </div>
+                </Alert>
               )}
             </Bp>
 

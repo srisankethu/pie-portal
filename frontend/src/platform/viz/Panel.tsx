@@ -10,6 +10,9 @@
 // Accessibility is built in rather than bolted on: the panel is a labelled
 // region, loading is announced politely, and errors are assertive.
 
+import Box from "@mui/material/Box";
+import Button from "@mui/material/Button";
+import { LoadingState } from "../kit";
 import type { ReactNode } from "react";
 import type { ScaleLinear } from "d3-scale";
 
@@ -64,15 +67,18 @@ export function Panel({
         {actions && <div className="viz-panel-actions">{actions}</div>}
       </header>
 
+      {/* A skeleton, not a spinner: it reserves the height the chart will take,
+          so the page does not jump when data lands. MUI's own rather than the
+          bar-shaped shimmer that used to live in viz.css — that one was
+          correct, down to its reduced-motion rule, but it was a second answer
+          to a question `LoadingState` already answers everywhere else. */}
+      {/* Not `.viz-state`: that grid is `justify-items: start`, which is right
+          for a sentence and wrong for a skeleton — it would shrink to its
+          content and stop reserving the chart's width. */}
       {state === "loading" && (
-        <div className="viz-state" role="status" aria-live="polite">
-          {/* A shaped skeleton, not a spinner: it reserves the height the chart
-              will take, so the page does not jump when data lands. */}
-          <div className="viz-skeleton" aria-hidden="true">
-            <span /><span /><span /><span /><span />
-          </div>
-          <p className="viz-muted">Loading {title.toLowerCase()}…</p>
-        </div>
+        <Box sx={{ py: 2.25 }}>
+          <LoadingState rows={1} height={120} label={`Loading ${title.toLowerCase()}…`} />
+        </Box>
       )}
 
       {state === "error" && (
@@ -80,9 +86,9 @@ export function Panel({
           <p className="viz-state-title">This did not load.</p>
           <p className="viz-muted">{error}</p>
           {onRetry && (
-            <button type="button" className="btn btn-secondary btn-sm" onClick={onRetry}>
+            <Button type="button" variant="outlined" size="small" onClick={onRetry}>
               Try again
-            </button>
+            </Button>
           )}
         </div>
       )}

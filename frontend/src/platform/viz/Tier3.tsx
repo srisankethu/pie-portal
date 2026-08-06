@@ -13,6 +13,7 @@
 // delivery date, stock value for a salesperson — and the discipline that keeps
 // them trustworthy is naming the gap rather than filling it.
 
+import Button from "@mui/material/Button";
 import { useMemo, useState } from "react";
 import { scaleBand, scaleLinear } from "d3-scale";
 import { money } from "../../money";
@@ -566,10 +567,10 @@ export function StockScreen({ session }: { session: PlatformSession }) {
           </button>
         ))}
         {active.length > 0 && (
-          <button type="button" className="btn btn-ghost btn-sm"
+          <Button type="button" variant="text" size="small"
                   onClick={() => setActive([])}>
             Clear
-          </button>
+          </Button>
         )}
         <CompanyFilter options={company.options} value={company.company}
                        onChange={company.setCompany} show={company.show} />

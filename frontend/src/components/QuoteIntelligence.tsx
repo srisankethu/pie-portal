@@ -1,3 +1,4 @@
+import Button from "@mui/material/Button";
 import MenuItem from "@mui/material/MenuItem";
 import TextField from "@mui/material/TextField";
 import { useState } from "react";
@@ -308,38 +309,38 @@ export function QuoteIntelligence({
             />
             {saveError && <div className="qi-error">{saveError}</div>}
             <div className="qi-actions">
-              <button className="btn btn-primary btn-sm" onClick={save}>
+              <Button variant="contained" size="small" onClick={save}>
                 {needsApproval ? "Send for approval" : "Record this decision"}
-              </button>
-              <button className="btn btn-ghost btn-sm" onClick={() => setCapturing(false)}>
+              </Button>
+              <Button variant="text" size="small" onClick={() => setCapturing(false)}>
                 Cancel
-              </button>
+              </Button>
             </div>
           </div>
         ) : (
           <div className="qi-actions">
-            <button className="btn btn-secondary btn-sm" onClick={() => setCapturing(true)}>
+            <Button variant="outlined" size="small" onClick={() => setCapturing(true)}>
               {needsApproval ? "Request approval" : "Record why this price is right"}
-            </button>
+            </Button>
             {intel.drilldown && (
-              <button
-                className="btn btn-ghost btn-sm"
+              <Button
+                variant="text" size="small"
                 onClick={() => onDrilldown(intel.drilldown!.customer_id, intel.drilldown!.product_id)}
               >
                 Full analysis →
-              </button>
+              </Button>
             )}
           </div>
         ))}
 
       {intel.exceptions.every((e) => e.severity === "INFO") && intel.drilldown && (
         <div className="qi-actions">
-          <button
-            className="btn btn-ghost btn-sm"
+          <Button
+            variant="text" size="small"
             onClick={() => onDrilldown(intel.drilldown!.customer_id, intel.drilldown!.product_id)}
           >
             Full analysis →
-          </button>
+          </Button>
         </div>
       )}
 

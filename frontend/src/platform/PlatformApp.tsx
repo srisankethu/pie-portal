@@ -17,6 +17,7 @@ import { ActionsPanel, Bp, Conf, DecisionCard, ImpactPanel, Interpretation, Labe
          Pri, RankingPanel, Tip, WhyPanel, typeLabel } from "./ui";
 import Avatar from "@mui/material/Avatar";
 import Box from "@mui/material/Box";
+import Paper from "@mui/material/Paper";
 import Button from "@mui/material/Button";
 import Chip from "@mui/material/Chip";
 import Dialog from "@mui/material/Dialog";
@@ -657,9 +658,9 @@ function QuotesDoor({ onOpenQuotes }: { onOpenQuotes: () => void }) {
           Quote context resolves the requested item, shows this customer's own price history and — for
           managers — the cost and margin, then leaves the price in your hands. It never pre-fills the field.
         </p>
-        <button className="btn btn-primary" onClick={onOpenQuotes}>
+        <Button variant="contained" onClick={onOpenQuotes}>
           Open the Quote Builder →
-        </button>
+        </Button>
       </Bp>
     </div>
   );
@@ -1042,9 +1043,9 @@ function TracePanel({ decisionId, token }: { decisionId: string; token: string }
           Where this came from
         </Labelled>
       </div>
-      <button className="btn btn-ghost btn-sm" onClick={() => setOpen(!open)}>
+      <Button variant="text" size="small" onClick={() => setOpen(!open)}>
         {open ? "Hide the chain" : "Trace it to the source →"}
-      </button>
+      </Button>
 
       {open && error && (
         <div className="dp-empty" style={{ padding: 12, textAlign: "left" }}>
@@ -1113,12 +1114,12 @@ function TracePanel({ decisionId, token }: { decisionId: string; token: string }
               </tbody>
             </table>
             {level.has_more && (
-              <button className="btn btn-ghost btn-sm" onClick={more}
+              <Button variant="text" size="small" onClick={more}
                       disabled={loadingMore}>
                 {loadingMore
                   ? "Following further back…"
                   : `Show ${Math.min(40, level.transitions_total - level.transitions.length)} more of ${level.transitions_total}`}
-              </button>
+              </Button>
             )}
           </div>
         </div>
@@ -1158,9 +1159,9 @@ function DetailScreen({
   const fromState = d.origin === "STATE";
   return (
     <div>
-      <button className="btn btn-ghost btn-sm" onClick={onBack} style={{ marginBottom: 10 }}>
+      <Button variant="text" size="small" onClick={onBack} style={{ marginBottom: 10 }}>
         ← All decisions
-      </button>
+      </Button>
       <div className="dcard-top" style={{ marginBottom: 4 }}>
         <span className="dcard-type">{typeLabel(d.decision_type)}</span>
         <Pri band={d.priority.band} />
@@ -1283,30 +1284,30 @@ function DetailScreen({
           {!closed && (
             <div className="action-panel">
               {state === "ok" && (
-                <button className="btn btn-primary" onClick={() => onAct("accept")}>
+                <Button variant="contained" onClick={() => onAct("accept")}>
                   Accept the recommendation
-                </button>
+                </Button>
               )}
-              <button className="btn btn-secondary" onClick={() => onAct("modify")}>
+              <Button variant="outlined" onClick={() => onAct("modify")}>
                 {/* A state decision offers options and recommends none, so
                     there is nothing to "do differently" from. */}
                 {fromState ? "Record what you did" : "Do something different"}
-              </button>
+              </Button>
               <div style={{ display: "flex", gap: 8 }}>
-                <button className="btn btn-ghost btn-sm" onClick={() => onAct("dismiss")}>
+                <Button variant="text" size="small" onClick={() => onAct("dismiss")}>
                   Dismiss with reason
-                </button>
-                <button className="btn btn-ghost btn-sm" onClick={() => onAct("escalate")}>
+                </Button>
+                <Button variant="text" size="small" onClick={() => onAct("escalate")}>
                   Escalate to management
-                </button>
+                </Button>
               </div>
-              <button
-                className="btn btn-ghost btn-sm"
+              <Button
+                variant="text" size="small"
                 style={{ alignSelf: "flex-start" }}
                 onClick={() => onOpenAccount(d.subject_entity_id)}
               >
                 Open the account →
-              </button>
+              </Button>
             </div>
           )}
           {closed && (
@@ -1527,9 +1528,9 @@ function CustomerScreen({
   const name = decs[0]?.subject_label || account?.name || customerId;
   return (
     <div>
-      <button className="btn btn-ghost btn-sm" onClick={() => setCustomerId(null)} style={{ marginBottom: 10 }}>
+      <Button variant="text" size="small" onClick={() => setCustomerId(null)} style={{ marginBottom: 10 }}>
         ← All accounts
-      </button>
+      </Button>
       <div className="dp-head">
         <h1 style={{ marginBottom: 2 }}>{name}</h1>
         <EntitySource origin={account?.origin} show={Boolean(account?.sources_differ)} />
@@ -1596,14 +1597,16 @@ function StatesScreen() {
         <h1>Data &amp; AI states</h1>
         <p>How the product behaves when it does not know — a designed state, never a spinner in place of an answer.</p>
       </div>
-      <div className="dp-cards">
+      <Stack spacing={2}>
         {items.map(([h, b]) => (
-          <div className="state-panel" key={h}>
-            <div className="state-mark">{h}</div>
-            <p style={{ margin: 0, fontSize: 14 }}>{b}</p>
-          </div>
+          <Paper variant="outlined" sx={{ p: 2 }} key={h}>
+            <Typography variant="overline" color="text.secondary" sx={{ display: "block" }}>
+              {h}
+            </Typography>
+            <Typography variant="body2">{b}</Typography>
+          </Paper>
         ))}
-      </div>
+      </Stack>
     </div>
   );
 }

@@ -158,20 +158,22 @@ Honest, so the next person knows what they are walking into rather than
 discovering it. Written after an audit, not from memory.
 
 **Aligned:** the app shell (`AppBar` + `Drawer`), dialogs, snackbars, the grid
-wrapper, the settings and connections forms, the theme itself.
+wrapper, the settings and connections forms, the theme itself. Every button is
+MUI's — the `.btn` variant system is gone from the stylesheet, so there is
+nothing left to fall back into. `Bp` is a `Paper` (the corner marks survive
+behind a `marks` prop). The uncertainty panel is `ErrorState` or `Alert`
+depending on which kind of not-knowing it is. Loading is `LoadingState`
+everywhere; both hand-rolled shimmers are gone.
 
 **Not yet aligned**, in rough order of how often it is seen:
 
-- **~60 hand-rolled `.btn` elements** across `ConnectionsPanel`, `AdminScreens`,
-  `PlatformApp`, `App`, `IdentityScreen` and the quote components. They are
-  styled consistently, so this is a migration rather than a bug.
-- **`Bp`** — the "blueprint panel" with corner marks — is the surface most
-  content sits on. It is a `Paper` with decoration; converting it is the single
-  change that moves the most screens at once.
 - **Custom status colour** survives in `viz.css` (`.wf-row-value.pos/.neg`,
-  `.story-hero-value.up/.down`, `.cash-aside-figures`). Charts may keep colour
-  as an *encoding* — a bar is not a status — but a figure in prose must not.
-- **Custom loading** — `.skeleton` and `.viz-skeleton` divs.
+  `.story-hero-value.up/.down`, `.cash-aside-figures`, `.sim-col .pos/.neg`).
+  Charts may keep colour as an *encoding* — a bar is not a status — but a
+  figure in prose must not.
+- **`.link-btn`** — five inline text links inside charts, drawn as bare
+  `<button>`s. They are links in intent; `Link component="button"` says so and
+  brings the focus ring with it.
 
 The rule while that is true: **new UI follows this document, and any screen
 being changed for another reason moves toward it.** Nobody is asked to stop and

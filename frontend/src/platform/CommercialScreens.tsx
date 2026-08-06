@@ -1,3 +1,4 @@
+import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import MenuItem from "@mui/material/MenuItem";
 import TextField from "@mui/material/TextField";
@@ -5,7 +6,7 @@ import { useCallback, useEffect, useState } from "react";
 import { DataGrid, numeric, text } from "./DataGrid";
 import { formatDate } from "../when";
 import { papi } from "./api";
-import { LoadingState } from "./kit";
+import { ErrorState, LoadingState } from "./kit";
 import type {
   CustomerItemDetail,
   CustomerItemRow,
@@ -153,10 +154,11 @@ export function CustomerCommercial({
 
   if (error) {
     return (
-      <div className="state-panel">
-        <div className="state-mark">Commercial analysis could not be loaded</div>
-        <p style={{ margin: 0, fontSize: 13.5 }}>{error}</p>
-      </div>
+      <ErrorState
+        title="Commercial analysis could not be loaded"
+        error={error}
+        onRetry={load}
+      />
     );
   }
   if (!data) return <LoadingState rows={1} height={120} />;
@@ -371,11 +373,10 @@ export function CustomerItemScreen({
   if (error) {
     return (
       <div>
-        <button className="btn btn-ghost btn-sm" onClick={onBack}>← Back</button>
-        <div className="state-panel" style={{ marginTop: 10 }}>
-          <div className="state-mark">This item view could not be loaded</div>
-          <p style={{ margin: 0, fontSize: 13.5 }}>{error}</p>
-        </div>
+        <Button variant="text" size="small" onClick={onBack}>← Back</Button>
+        <Box sx={{ mt: 1.25 }}>
+          <ErrorState title="This item view could not be loaded" error={error} />
+        </Box>
       </div>
     );
   }
@@ -386,9 +387,9 @@ export function CustomerItemScreen({
 
   return (
     <div>
-      <button className="btn btn-ghost btn-sm" onClick={onBack} style={{ marginBottom: 10 }}>
+      <Button variant="text" size="small" onClick={onBack} style={{ marginBottom: 10 }}>
         ← {data.customer.name}
-      </button>
+      </Button>
       <div className="dp-head">
         <h1>{data.item.name}</h1>
         <p>

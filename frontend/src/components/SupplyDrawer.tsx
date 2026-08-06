@@ -1,3 +1,4 @@
+import Button from "@mui/material/Button";
 import Box from "@mui/material/Box";
 import Drawer from "@mui/material/Drawer";
 import type { Line, LineIntelligence } from "../types";
@@ -76,14 +77,14 @@ export function SupplyDrawer({
             </div>
           )}
           {line.substituted && (
-            <button
-              className="btn btn-ghost btn-sm"
+            <Button
+              variant="text" size="small"
               title="Revert this line to the originally requested product"
               onClick={onRevert}
               style={{ marginBottom: 12 }}
             >
               ↩ Revert to exact / requested
-            </button>
+            </Button>
           )}
           {mgmt && line.economics && (
             <div className="drawer-pricing-card">
@@ -164,13 +165,13 @@ export function SupplyDrawer({
                   )}
                   <span style={{ flex: 1 }} />
                   {!selected && (
-                    <button
-                      className="btn btn-primary btn-sm"
+                    <Button
+                      variant="contained" size="small"
                       title={`Select ${c.code} as the supply product`}
                       onClick={() => onSelect(c.code, false)}
                     >
                       Select
-                    </button>
+                    </Button>
                   )}
                   {selected && (
                     <span className="text-muted" style={{ fontSize: 12 }}>

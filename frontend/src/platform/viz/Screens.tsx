@@ -16,6 +16,7 @@
 // **Size-adaptive by measurement, not by media query.** A narrow panel on a wide
 // screen has the same problem a phone does, and only the container knows.
 
+import Button from "@mui/material/Button";
 import { MonthPicker as SharedMonthPicker } from "./Seg";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { money } from "../../money";
@@ -80,10 +81,10 @@ export function WeatherScreen({
               <p className="front-headline">{String(f.headline)}</p>
               <p className="viz-muted">{String(f.detail)}</p>
               {f.drill_to ? (
-                <button type="button" className="btn btn-secondary btn-sm"
+                <Button type="button" variant="outlined" size="small"
                         onClick={() => onNavigate(String(f.drill_to))}>
                   Look into it
-                </button>
+                </Button>
               ) : null}
             </div>
           </li>

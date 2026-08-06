@@ -1,3 +1,4 @@
+import Button from "@mui/material/Button";
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import App from "./App";
@@ -32,9 +33,9 @@ export default function Root() {
             gap: 12,
           }}
         >
-          <button className="btn btn-ghost btn-sm" onClick={() => setMode("platform")}>
+          <Button variant="text" size="small" onClick={() => setMode("platform")}>
             ← Back to decisions
-          </button>
+          </Button>
           <span className="text-muted" style={{ fontSize: 12 }}>
             Quote intelligence · Quote Builder
           </span>

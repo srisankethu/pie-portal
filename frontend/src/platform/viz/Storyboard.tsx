@@ -18,6 +18,7 @@
 // money at risk, which outranks money available. Good news comes last and is
 // visually quieter, because it is not an action.
 
+import Button from "@mui/material/Button";
 import { MonthPicker } from "./Seg";
 import { useCallback, useEffect, useState } from "react";
 import { money } from "../../money";
@@ -187,22 +188,22 @@ export function Storyboard({
                   <div>
                     <dt>Next</dt>
                     <dd>
-                      <button
+                      <Button
                         type="button"
-                        className="btn btn-secondary btn-sm"
+                        variant="outlined" size="small"
                         onClick={() => onNavigate(beat.action.route)}
                       >
                         {beat.action.label}
                         {beat.action.count ? ` (${beat.action.count})` : ""}
-                      </button>
+                      </Button>
                       {beat.action.simulate && (
-                        <button
+                        <Button
                           type="button"
-                          className="btn btn-secondary btn-sm"
+                          variant="outlined" size="small"
                           onClick={() => onNavigate(`simulate?scenario=${beat.action.simulate}`)}
                         >
                           Model it
-                        </button>
+                        </Button>
                       )}
                     </dd>
                   </div>

@@ -18,6 +18,7 @@
 // exists for: give something to the customer, ask something of the vendor, and
 // see immediately what each does to the same figure.
 
+import Button from "@mui/material/Button";
 import MenuItem from "@mui/material/MenuItem";
 import TextField from "@mui/material/TextField";
 import { useEffect, useState } from "react";
@@ -241,10 +242,10 @@ export function NegotiateScreen({
         <Field label="Contribution you want to hold" value={holdAt} onChange={setHoldAt}
                numeric hint="Optional. Returns the price that leaves exactly this." />
         <div className="neg-actions">
-          <button type="button" className="btn btn-primary" disabled={!canPrice || busy}
+          <Button type="button" variant="contained" disabled={!canPrice || busy}
                   onClick={run}>
             {busy ? "Working…" : "Work it out"}
-          </button>
+          </Button>
           {!canPrice && (
             <span className="viz-muted">
               Needs a customer, an item, a quantity and a price.

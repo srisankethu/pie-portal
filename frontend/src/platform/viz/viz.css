@@ -59,25 +59,9 @@
 .viz-state-title { font-weight: 600; margin: 0; }
 .viz-state-error .viz-state-title { color: var(--danger-fg); }
 
-/* A shaped skeleton reserves the chart's height so the page does not jump. */
-.viz-skeleton { display: flex; align-items: flex-end; gap: 8px; height: 120px; width: 100%; }
-.viz-skeleton span {
-  flex: 1; border-radius: 3px 3px 0 0;
-  background: linear-gradient(90deg,
-    var(--color-neutral-200) 0%, var(--color-neutral-300) 50%, var(--color-neutral-200) 100%);
-  background-size: 200% 100%;
-  animation: viz-shimmer 1.4s ease-in-out infinite;
-}
-.viz-skeleton span:nth-child(1) { height: 55%; }
-.viz-skeleton span:nth-child(2) { height: 80%; }
-.viz-skeleton span:nth-child(3) { height: 40%; }
-.viz-skeleton span:nth-child(4) { height: 95%; }
-.viz-skeleton span:nth-child(5) { height: 65%; }
-@keyframes viz-shimmer { to { background-position: -200% 0; } }
-
-@media (prefers-reduced-motion: reduce) {
-  .viz-skeleton span { animation: none; }
-}
+/* The bar-shaped shimmer that used to reserve the chart's height is now
+   `LoadingState` in platform/kit.tsx — MUI's `Skeleton`, one implementation
+   for every loading surface in the product. */
 
 /* ── figures ─────────────────────────────────────────────────────────────── */
 .viz-figure { margin: 0; display: grid; gap: 10px; }

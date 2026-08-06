@@ -26,24 +26,12 @@ a { color: var(--color-accent); text-underline-offset: 3px; }
 :focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
 ::selection { background: color-mix(in srgb, var(--color-accent) 30%, transparent); }
 
-/* buttons */
-.btn {
-  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
-  cursor: pointer; text-decoration: none;
-  font-family: var(--font-heading); font-weight: var(--font-heading-weight);
-  font-size: 14px; line-height: 1.2; color: var(--color-text);
-  background: transparent; border: 1px solid transparent;
-  padding: var(--space-2) calc(var(--space-3) * 1.2);
-  border-radius: var(--radius-md);
-}
-.btn:disabled { opacity: 0.45; cursor: not-allowed; }
-.btn-primary { background: var(--color-accent); color: var(--color-bg); }
-.btn-primary:hover:not(:disabled) { background: var(--color-accent-600); }
-.btn-secondary { border-color: var(--color-divider); }
-.btn-secondary:hover { background: color-mix(in srgb, var(--color-text) 7%, transparent); }
-.btn-ghost { color: var(--color-accent); padding-inline: var(--space-1); }
-.btn-ghost:hover { background: color-mix(in srgb, var(--color-accent) 10%, transparent); }
-.btn-sm { font-size: 12.5px; padding: 4px 9px; }
+/* Buttons are MUI's `Button` now. `.btn`/`.btn-primary`/`.btn-secondary`/
+   `.btn-ghost`/`.btn-sm` were this file's own variant system, applied to bare
+   `<button>` elements — which meant every disabled state, focus ring and
+   loading affordance had to be remembered by hand at each of the 82 call
+   sites. The variant names map straight across: primary → contained,
+   secondary → outlined, ghost → text, sm → size="small". */
 
 /* forms */
 .field > label {
@@ -277,7 +265,9 @@ table.grid tbody tr:hover td { background: color-mix(in srgb, var(--color-accent
    Decision-first: facts on the paper ground, AI interpretation in a steel panel.
    ════════════════════════════════════════════════════════════════════════ */
 /* blueprint frame: square, hairline, corner registration marks */
-.bp { position: relative; border: 1px solid var(--color-divider); background: transparent; }
+/* `Bp` is a MUI `Paper` now — border, radius and background come from the
+   theme. What is left here is the blueprint corner marks, which Paper has
+   no opinion about. */
 .bp > .corner { position: absolute; width: 9px; height: 9px; color: color-mix(in srgb, var(--color-text) 45%, transparent); }
 .bp > .corner::before, .bp > .corner::after { content: ""; position: absolute; background: currentColor; }
 .bp > .corner::before { left: 4px; top: 0; width: 1px; height: 100%; }
@@ -408,16 +398,16 @@ table.grid tbody tr:hover td { background: color-mix(in srgb, var(--color-accent
 .section-h { font-family: var(--font-heading); font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--color-neutral-600); margin: 22px 0 8px; }
 .action-panel { margin-top: 14px; display: flex; flex-direction: column; gap: 8px; }
 
-/* uncertainty / AI-failure state panel — dashed, neutral grey, NOT steel */
-.state-panel { border: 1px dashed var(--color-neutral-500); background: var(--color-neutral-100); padding: 12px 14px; }
-.state-mark { font-family: var(--font-heading); font-size: 10.5px; letter-spacing: 0.09em; text-transform: uppercase; color: var(--color-neutral-700); display: inline-flex; align-items: center; gap: 6px; margin-bottom: 6px; }
-.state-mark::before { content: ""; width: 7px; height: 7px; border: 1.5px solid var(--color-neutral-600); }
+/* The uncertainty / AI-failure panel was `.state-panel`: a dashed grey box that
+   said "something is not right here" only to someone who had been told what the
+   dashes meant. It is now `Alert` and `ErrorState` in platform/kit.tsx, which
+   carry severity in the component rather than in a border style. */
 
 /* generic states */
 .dp-loading, .dp-empty, .dp-error { padding: 40px; text-align: center; color: var(--color-neutral-600); }
 .dp-error { color: var(--danger-fg); }
-.skeleton { height: 92px; background: linear-gradient(90deg, var(--color-neutral-200), var(--color-neutral-100), var(--color-neutral-200)); background-size: 200% 100%; animation: sk 1.2s infinite; margin-bottom: 14px; }
-@keyframes sk { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+/* `.skeleton` was a second hand-rolled shimmer, and unlike the viz one it had
+   no reduced-motion rule at all. Both are now `LoadingState`. */
 @media (prefers-reduced-motion: reduce) { .skeleton { animation: none; } }
 
 /* outcome */

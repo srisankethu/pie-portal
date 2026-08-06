@@ -1,3 +1,4 @@
+import Button from "@mui/material/Button";
 import type { Line, LineIntelligence } from "../types";
 import { REL_STYLE, statusColor } from "../rel";
 import { Labelled, Tip } from "../Tip";
@@ -174,8 +175,8 @@ export function LineGrid({
                       </div>
                     )}
                     {l.inBooks === false && (
-                      <button
-                        className="btn btn-ghost btn-sm"
+                      <Button
+                        variant="text" size="small"
                         title={`Create ${l.reqCode} in Zoho Books`}
                         onClick={(e) => {
                           e.stopPropagation();
@@ -183,7 +184,7 @@ export function LineGrid({
                         }}
                       >
                         + Create in Zoho
-                      </button>
+                      </Button>
                     )}
                   </>
                 ) : (
@@ -252,8 +253,8 @@ export function LineGrid({
                     {l.status.label}
                   </span>
                   {selected[l.id] && (
-                    <button
-                      className="btn btn-ghost btn-sm"
+                    <Button
+                      variant="text" size="small"
                       onClick={(e) => {
                         e.stopPropagation();
                         onDeleteLine(l.id);
@@ -262,7 +263,7 @@ export function LineGrid({
                       title={`Remove ${l.reqCode} from this quote`}
                     >
                       <span aria-hidden="true">🗑</span>
-                    </button>
+                    </Button>
                   )}
                 </div>
               </td>

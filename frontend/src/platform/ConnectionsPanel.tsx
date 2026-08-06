@@ -1,9 +1,10 @@
+import Button from "@mui/material/Button";
 import MenuItem from "@mui/material/MenuItem";
 import TextField from "@mui/material/TextField";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { formatDate, since, todayISO } from "../when";
 import { papi } from "./api";
-import { LoadingState } from "./kit";
+import { ErrorState, LoadingState } from "./kit";
 import type {
   ConnectionCheck,
   ConnectionsView,
@@ -157,8 +158,8 @@ function ConnectionCard({
                 autoFocus
                 onChange={(e) => setLabel(e.target.value)}
               />
-              <button
-                className="btn btn-primary btn-sm"
+              <Button
+                variant="contained" size="small"
                 disabled={busy}
                 onClick={() => run(async () => {
                   await onRename(conn.connection_id, label.trim());
@@ -166,18 +167,18 @@ function ConnectionCard({
                 })}
               >
                 Save
-              </button>
-              <button className="btn btn-ghost btn-sm" onClick={() => { setLabel(conn.label); setRenaming(false); }}>
+              </Button>
+              <Button variant="text" size="small" onClick={() => { setLabel(conn.label); setRenaming(false); }}>
                 Cancel
-              </button>
+              </Button>
             </>
           ) : (
             <>
               <h4>{conn.label}</h4>
               {canManage && (
-                <button className="btn btn-ghost btn-sm" onClick={() => setRenaming(true)}>
+                <Button variant="text" size="small" onClick={() => setRenaming(true)}>
                   Rename
-                </button>
+                </Button>
               )}
             </>
           )}
@@ -208,10 +209,10 @@ function ConnectionCard({
               </div>
             )}
             {canManage && !rotating && (
-              <button className="btn btn-ghost btn-sm cx-rotate-open"
+              <Button variant="text" size="small" className="cx-rotate-open"
                       onClick={() => { setRotating(true); setRotateNote(null); }}>
                 Replace the token
-              </button>
+              </Button>
             )}
           </dd>
         </div>
@@ -261,7 +262,7 @@ function ConnectionCard({
             connection is re-checked immediately afterwards.
           </p>
           <div className="cx-rotate-actions">
-            <button className="btn btn-primary btn-sm"
+            <Button variant="contained" size="small"
                     disabled={busy || !newToken.trim()}
                     onClick={() => run(async () => {
                       const note = await onRotate(conn.connection_id, newToken.trim());
@@ -270,11 +271,11 @@ function ConnectionCard({
                       setRotateNote(note);
                     })}>
               {busy ? "Rotating…" : "Rotate"}
-            </button>
-            <button className="btn btn-ghost btn-sm"
+            </Button>
+            <Button variant="text" size="small"
                     onClick={() => { setRotating(false); setNewToken(""); }}>
               Cancel
-            </button>
+            </Button>
           </div>
         </div>
       )}
@@ -364,33 +365,33 @@ function ConnectionCard({
 
       <div className="cx-actions">
         {canManage && (
-          <button
-            className="btn btn-secondary btn-sm"
+          <Button
+            variant="outlined" size="small"
             disabled={busy}
             onClick={() => run(async () => setCheck(await onCheck(conn.connection_id)))}
           >
             {busy ? "Checking…" : "Check"}
-          </button>
+          </Button>
         )}
         {canSync && conn.enabled && (
-          <button
-            className="btn btn-primary btn-sm"
+          <Button
+            variant="contained" size="small"
             disabled={syncing || syncBusy}
             onClick={() => onSync(conn.connection_id, since, full)}
           >
             {syncing ? "Pulling this one…" : syncBusy ? "Starting…" : "Pull from this company"}
-          </button>
+          </Button>
         )}
         <span className="spacer" />
         {canManage && (
           <>
-            <button
-              className="btn btn-ghost btn-sm"
+            <Button
+              variant="text" size="small"
               disabled={busy}
               onClick={() => run(() => onToggle(conn.connection_id, !conn.enabled))}
             >
               {conn.enabled ? "Pause" : "Resume"}
-            </button>
+            </Button>
             <Tip
               text={
                 conn.enabled
@@ -398,13 +399,13 @@ function ConnectionCard({
                   : "Resuming puts this company back into the pooled analysis. Its previously synced rows were never removed, so they return with it."
               }
             />
-            <button
-              className="btn btn-ghost btn-sm"
+            <Button
+              variant="text" size="small"
               disabled={busy}
               onClick={() => run(() => onDelete(conn.connection_id))}
             >
               Remove
-            </button>
+            </Button>
             <Tip text="Drops the credentials for this company and stops pulling it. Rows already synced from it stay — they are facts about what was traded, and this is a decision about access, not about history." />
           </>
         )}
@@ -557,15 +558,15 @@ function AddConnection({
               ))}
             </TextField>
 
-            <button
+            <Button
               type="button"
-              className="btn btn-ghost btn-sm"
+              variant="text" size="small"
               style={{ marginTop: 8 }}
               disabled={!credentialId}
               onClick={listCompanies}
             >
               Show the companies this reaches
-            </button>
+            </Button>
             {orgs && (
               <ul className="cred-orgs">
                 {orgs.length === 0 && <li className="st-help">Zoho returned no companies for this sign-in.</li>}
@@ -680,9 +681,9 @@ function AddConnection({
 
         {error && <p className="cx-detail bad">{error}</p>}
         <div style={{ marginTop: 12 }}>
-          <button className="btn btn-primary btn-sm" disabled={busy}>
+          <Button variant="contained" size="small" disabled={busy}>
             {busy ? "Adding…" : "Add company"}
-          </button>
+          </Button>
         </div>
       </form>
     </Bp>
@@ -717,8 +718,8 @@ function Scopes({ view }: { view: ConnectionsView }) {
       </table>
       <div className="cx-scopestring">
         <code>{view.scope_string}</code>
-        <button
-          className="btn btn-ghost btn-sm"
+        <Button
+          variant="text" size="small"
           onClick={() => {
             navigator.clipboard?.writeText(view.scope_string);
             setCopied(true);
@@ -726,7 +727,7 @@ function Scopes({ view }: { view: ConnectionsView }) {
           }}
         >
           {copied ? "Copied" : "Copy"}
-        </button>
+        </Button>
       </div>
     </Bp>
   );
@@ -834,10 +835,7 @@ export function ConnectionsPanel({
 
   if (!view) {
     return error ? (
-      <div className="state-panel">
-        <div className="state-mark">Could not read the connections</div>
-        <p style={{ margin: 0, fontSize: 13.5 }}>{error}</p>
-      </div>
+      <ErrorState title="Could not read the connections" error={error} onRetry={load} />
     ) : (
       <LoadingState rows={1} height={90} />
     );
@@ -872,7 +870,7 @@ export function ConnectionsPanel({
       {note && (
         <div className="cx-pool" style={{ background: "var(--color-accent-100)", color: "var(--color-accent-800)", borderLeftColor: "var(--color-accent)" }}>
           {note}
-          <button className="btn btn-ghost btn-sm" onClick={() => setNote(null)}>Dismiss</button>
+          <Button variant="text" size="small" onClick={() => setNote(null)}>Dismiss</Button>
         </div>
       )}
 

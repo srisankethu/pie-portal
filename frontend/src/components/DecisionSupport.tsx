@@ -1,3 +1,4 @@
+import Button from "@mui/material/Button";
 import { useEffect, useState } from "react";
 import type { Line } from "../types";
 
@@ -263,33 +264,33 @@ export function DecisionSupport({ customer, line }: { customer: string; line: Li
                   aria-label="Reason"
                 />
                 <div className="qs-actions">
-                  <button
-                    className="btn btn-primary btn-sm"
+                  <Button
+                    variant="contained" size="small"
                     onClick={() =>
                       act(modifying === "reject" ? "DISMISS" : "ACT",
                           modifying === "reject" ? "set aside" : "acting differently", note)
                     }
                   >
                     Save decision
-                  </button>
-                  <button className="btn btn-ghost btn-sm" onClick={() => setModifying(null)}>
+                  </Button>
+                  <Button variant="text" size="small" onClick={() => setModifying(null)}>
                     Cancel
-                  </button>
+                  </Button>
                 </div>
               </div>
             ) : (
               <div className="qs-actions">
                 {data.interpretation.status === "OK" && data.interpretation.recommendation && (
-                  <button className="btn btn-primary btn-sm" onClick={() => act("ACT", "accepted")}>
+                  <Button variant="contained" size="small" onClick={() => act("ACT", "accepted")}>
                     Accept recommendation
-                  </button>
+                  </Button>
                 )}
-                <button className="btn btn-secondary btn-sm" onClick={() => setModifying("modify")}>
+                <Button variant="outlined" size="small" onClick={() => setModifying("modify")}>
                   Modify
-                </button>
-                <button className="btn btn-ghost btn-sm" onClick={() => setModifying("reject")}>
+                </Button>
+                <Button variant="text" size="small" onClick={() => setModifying("reject")}>
                   Set aside
-                </button>
+                </Button>
               </div>
             ))}
         </>

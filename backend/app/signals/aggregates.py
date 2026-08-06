@@ -12,44 +12,120 @@ from datetime import date, timedelta
 from decimal import Decimal
 from typing import Iterable, Optional
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..domain import models
-from .base import CostRow, SaleRow, Snapshot
+from .base import CostRow, SaleRow, Snapshot, group_by
 from .config import SignalThresholds
 
 
 # ── DB loader ────────────────────────────────────────────────────────────────
-def load_snapshot(session: Session, organization_id: str) -> Snapshot:
+#
+# Two things this has to get right at scale, and it used to get neither.
+#
+# **Load the columns, not the entities.** ``select(models.SalesTxn)`` builds a
+# full ORM instance per row and parks it in the identity map. A snapshot reads
+# nine columns and never writes, so it asks for nine columns.
+#
+# **Load the rows the caller can actually use.** The bounds below default to
+# unbounded, so an unqualified call behaves exactly as before. A caller that
+# passes one is asserting that the rows it excluded could not have changed its
+# answer — which is a claim ``test_bounded_loads.py`` checks by comparing the
+# bounded result against the unbounded one, rather than taking on trust.
+#
+# What is *not* bounded is ``last_sale_on``. It is the last day the business
+# traded, a fact about the whole book, and every screen hangs its periods off
+# it. Deriving it from whatever happened to be loaded would make a quote screen
+# think the business stopped trading when its own customer did.
+#
+# **There is deliberately no date bound.** It is the obvious one and it is
+# wrong here: the detectors gate on ``history_span_months`` and on the first
+# order date, and ``cost_pass_through`` needs whatever the previous cost was
+# however old. Cutting history would change which signals fire — it would look
+# like a speed-up and behave like a quietly loosened evidence rule, which
+# CLAUDE.md §1 calls a defect rather than a fix. The right answer for the
+# screens that need whole-book aggregates is to read the folded state rows
+# instead of the lines, which is what ``state/`` now makes possible.
+
+_SALE_COLUMNS = (
+    models.SalesTxn.customer_id, models.SalesTxn.product_id, models.SalesTxn.date,
+    models.SalesTxn.qty, models.SalesTxn.unit_price, models.SalesTxn.line_revenue,
+    models.SalesTxn.source_ref, models.SalesTxn.external_ref,
+    models.SalesTxn.rate, models.SalesTxn.discount_percent,
+)
+
+_COST_COLUMNS = (
+    models.CostRecord.product_id, models.CostRecord.date, models.CostRecord.qty,
+    models.CostRecord.unit_cost, models.CostRecord.source_ref,
+    models.CostRecord.external_ref,
+)
+
+
+def last_sale_date(session: Session, organization_id: str) -> Optional[date]:
+    """The organization's most recent sale date, from an index rather than a scan."""
+    return session.scalar(
+        select(func.max(models.SalesTxn.date))
+        .where(models.SalesTxn.organization_id == organization_id))
+
+
+def load_snapshot(session: Session, organization_id: str, *,
+                  sales_for_customers: Optional[Iterable[str]] = None,
+                  costs_for_products: Optional[Iterable[str]] = None) -> Snapshot:
+    """One organization's sale and cost lines, optionally bounded.
+
+    The two bounds are deliberately separate and each names what it restricts.
+    A single ``product_ids`` that narrowed *both* looked tidier and was wrong:
+    the quote screen needs every line its customer ever bought — that is what
+    their buying rhythm is measured from — while needing costs only for the
+    items being quoted. Narrowing the sales by product moved that customer's
+    last order date by a week, which is the kind of error a bound makes and a
+    reader never sees. The equality test caught it; the naming is what stops it
+    coming back.
+
+    Both default to None, meaning everything — the behaviour every existing
+    caller had. A bound is only correct when the excluded rows could not have
+    changed the answer; callers that pass one say why at the call site, and
+    ``test_bounded_loads.py`` runs the real consumer both ways.
+    """
+    sales_q = select(*_SALE_COLUMNS).where(
+        models.SalesTxn.organization_id == organization_id)
+    costs_q = select(*_COST_COLUMNS).where(
+        models.CostRecord.organization_id == organization_id)
+    if sales_for_customers is not None:
+        sales_q = sales_q.where(
+            models.SalesTxn.customer_id.in_(list(sales_for_customers)))
+    if costs_for_products is not None:
+        # An empty list is a real bound, not a mistake: it means this caller
+        # reads no costs from the snapshot at all.
+        costs_q = costs_q.where(
+            models.CostRecord.product_id.in_(list(costs_for_products)))
+
     sales = [
-        SaleRow(customer_id=t.customer_id, product_id=t.product_id, date=t.date,
-                qty=Decimal(t.qty), unit_price=Decimal(t.unit_price),
-                line_revenue=Decimal(t.line_revenue), source_ref=t.source_ref or {},
-                external_ref=t.external_ref,
-                rate=(Decimal(t.rate) if t.rate is not None else None),
-                discount_percent=(Decimal(t.discount_percent)
-                                  if t.discount_percent is not None else None))
-        for t in session.scalars(
-            select(models.SalesTxn).where(models.SalesTxn.organization_id == organization_id))
+        SaleRow(customer_id=r.customer_id, product_id=r.product_id, date=r.date,
+                qty=Decimal(r.qty), unit_price=Decimal(r.unit_price),
+                line_revenue=Decimal(r.line_revenue), source_ref=r.source_ref or {},
+                external_ref=r.external_ref,
+                rate=(Decimal(r.rate) if r.rate is not None else None),
+                discount_percent=(Decimal(r.discount_percent)
+                                  if r.discount_percent is not None else None))
+        for r in session.execute(sales_q)
     ]
     costs = [
-        CostRow(product_id=c.product_id, date=c.date, qty=Decimal(c.qty),
-                unit_cost=Decimal(c.unit_cost), source_ref=c.source_ref or {},
-                external_ref=c.external_ref)
-        for c in session.scalars(
-            select(models.CostRecord).where(models.CostRecord.organization_id == organization_id))
+        CostRow(product_id=r.product_id, date=r.date, qty=Decimal(r.qty),
+                unit_cost=Decimal(r.unit_cost), source_ref=r.source_ref or {},
+                external_ref=r.external_ref)
+        for r in session.execute(costs_q)
     ]
-    customer_names = {
-        c.customer_id: c.name for c in session.scalars(
-            select(models.Customer).where(models.Customer.organization_id == organization_id))
-    }
-    product_names = {
-        p.product_id: p.name for p in session.scalars(
-            select(models.Product).where(models.Product.organization_id == organization_id))
-    }
+    customer_names = dict(session.execute(
+        select(models.Customer.customer_id, models.Customer.name)
+        .where(models.Customer.organization_id == organization_id)).all())
+    product_names = dict(session.execute(
+        select(models.Product.product_id, models.Product.name)
+        .where(models.Product.organization_id == organization_id)).all())
     return Snapshot(organization_id=organization_id, sales=sales, costs=costs,
-                    customer_names=customer_names, product_names=product_names)
+                    customer_names=customer_names, product_names=product_names,
+                    last_sale_on=last_sale_date(session, organization_id))
 
 
 def label_for(names: dict[str, str], entity_id: str, *, kind: str = "record") -> str:
@@ -103,11 +179,11 @@ def by_customer(sales: Iterable[SaleRow]) -> dict[str, list[SaleRow]]:
     Three insight modules each had their own identical copy of this. Grouping is
     not a decision any of them owns, and three copies is three places a change
     to what "a customer" means — a merged identity, say — would have to land.
+
+    Delegates to ``base.group_by``, which is the same grouping ``Snapshot``
+    indexes itself with — so a customer's lines are one list here and there.
     """
-    out: dict[str, list[SaleRow]] = {}
-    for row in sales:
-        out.setdefault(row.customer_id, []).append(row)
-    return out
+    return group_by(sales, lambda row: row.customer_id)
 
 
 def order_dates(sales: list[SaleRow]) -> list[date]:

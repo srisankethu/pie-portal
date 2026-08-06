@@ -52,10 +52,17 @@ def _envelope(data: dict, *, currency: str, empty_reason: Optional[str] = None,
     return {"currency": currency, "empty_reason": empty_reason, **extra, **data}
 
 
-def _context(session: Session, principal: Principal):
-    """Snapshot, thresholds and currency — the three things every view needs."""
+def _context(session: Session, principal: Principal, **bound: Any):
+    """Snapshot, thresholds and currency — the three things every view needs.
+
+    ``bound`` is passed straight to ``load_snapshot``. A screen that reads one
+    customer's lines has no business loading four hundred customers' worth, and
+    an unbounded call here is what made a page load four full scans of the
+    organization's history. A caller that bounds says why at its own call site;
+    the equality tests check the claim.
+    """
     org = principal.organization_id
-    snapshot = load_snapshot(session, org)
+    snapshot = load_snapshot(session, org, **bound)
     th = policy.load_for_org(session, org)
     return org, snapshot, th
 
@@ -66,9 +73,13 @@ def _as_of(snapshot) -> Optional[date]:
     Anchoring on today makes every screen show an empty current month for the
     first days of a month, and makes a demo or a stale sync look like a collapse.
     The data's own last date is what the periods should hang from.
+
+    Delegates to the snapshot, which takes it from the loader's own whole-book
+    query. Scanning the loaded rows for a maximum would give a *bounded* screen
+    a reference date of whenever that one customer last bought — so a quiet
+    account would make its own timeline look like the business had stopped.
     """
-    dates = [s.date for s in snapshot.sales]
-    return max(dates) if dates else None
+    return snapshot.as_of()
 
 
 def _no_data(currency: str, what: str) -> dict:
@@ -254,10 +265,18 @@ def customer_timeline(customer_id: str,
                       principal: Principal = Depends(current_principal),
                       session: Session = Depends(get_session)) -> dict:
     """One customer's revenue, cadence and margin over time."""
-    org, snapshot, th = _context(session, principal)
+    # One customer's screen, one customer's lines. Everything below reads only
+    # ``rows`` and the name dictionaries, and ``as_of`` comes from the loader's
+    # own whole-book query — so the rest of the organization cannot change this
+    # answer, and used to be loaded anyway.
+    # One customer's lines, and no costs at all: the margin series on this
+    # screen is built from ``CustomerItemMetric`` below, not from cost records.
+    org, snapshot, th = _context(session, principal,
+                                 sales_for_customers=[customer_id],
+                                 costs_for_products=[])
     _require_visible_customer(session, org, customer_id, principal)
     as_of = _as_of(snapshot)
-    rows = [s for s in snapshot.sales if s.customer_id == customer_id]
+    rows = snapshot.sales_for_customer(customer_id)
     if as_of is None or not rows:
         return _no_data(th.currency, "this customer's history")
 

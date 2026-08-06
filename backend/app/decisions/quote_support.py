@@ -168,9 +168,19 @@ def quote_support(
             "decision_id": None,
         }
 
-    snapshot: Snapshot = load_snapshot(session, org)
-    ref_date = as_of or snapshot.as_of() or date.today()
     product_ids = [p.product_id for p in product_models]
+    # Bounded to what ``assemble`` actually reads: *every* line this customer
+    # ever bought — their buying rhythm is measured from all of it, not just
+    # the items being quoted — and costs for the quoted items only. Unbounded,
+    # a quote screen loaded the organization's entire trading history on every
+    # keystroke.
+    snapshot: Snapshot = load_snapshot(session, org,
+                                       sales_for_customers=[customer.customer_id],
+                                       costs_for_products=product_ids)
+    # Still the whole book's last trading day: the loader supplies it from its
+    # own query rather than from the rows above, so bounding the load does not
+    # move the reference date to whenever this one customer last bought.
+    ref_date = as_of or snapshot.as_of() or date.today()
 
     assembled = assemble(snapshot, customer.customer_id, product_ids, th, ref_date)
     assembled["customer_label"] = customer.name

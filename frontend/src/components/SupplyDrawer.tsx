@@ -5,6 +5,7 @@ import { REL_STYLE } from "../rel";
 import { DecisionSupport } from "./DecisionSupport";
 import { QuoteIntelligence } from "./QuoteIntelligence";
 import { money } from "../money";
+import { pathFor } from "../platform/route";
 
 export function SupplyDrawer({
   line,
@@ -32,7 +33,7 @@ export function SupplyDrawer({
   onRequestApproval: (lineId: string, reasonCode: string, reason: string) => Promise<void>;
   approvalStatus: { status: string; required_authority: string; decision_note: string | null } | null;
   /** Jump to a platform screen — the Customer × Item analysis drill-down. */
-  onOpenPlatform?: (hash: string) => void;
+  onOpenPlatform?: (path: string) => void;
   onClose: () => void;
   onSelect: (code: string, manual: boolean) => void;
   onRevert: () => void;
@@ -124,8 +125,11 @@ export function SupplyDrawer({
             onOverride={onRecordOverride}
             onRequestApproval={onRequestApproval}
             approvalStatus={approvalStatus}
+            // `pathFor` rather than a template literal: the platform owns where
+            // its screens live, and a second spelling of that path here is the
+            // one that would still say `/account/…` after the platform moved.
             onDrilldown={(customerId, productId) =>
-              onOpenPlatform?.(`#/account/${customerId}/item/${productId}`)
+              onOpenPlatform?.(pathFor("customerItem", customerId, productId))
             }
           />
           <DecisionSupport customer={customer} line={line} />

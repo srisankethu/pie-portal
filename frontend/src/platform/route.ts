@@ -1,12 +1,27 @@
-/** Minimal hash router.
+/** Where each screen lives, and how a screen becomes a link.
  *
- * The app previously held the current screen in component state only, so the
- * URL never changed: the browser Back button left the application entirely,
- * a reload always returned to the home screen, and a decision could not be
- * linked to a colleague. This maps the screen onto `location.hash`, which
- * gives back/forward, reload-in-place and shareable links without pulling in
- * a routing dependency.
+ * This used to be a hand-rolled hash router: a `switch` that parsed
+ * `location.hash` into a `{screen, id}` object, a `toHash` that built it back,
+ * and an assignment to `window.location.hash` to move. It worked, and it cost
+ * one thing that is hard to notice and impossible to work around — **nothing
+ * was a link**. Every nav item was a `<button onClick>`, so ctrl-click,
+ * middle-click and "open in new tab" did nothing at all, and a salesperson who
+ * wanted the queue and one account side by side could not have both. Hovering
+ * showed no destination either, because there was no `href` to show.
+ *
+ * React Router now owns matching and history; this file keeps the one thing
+ * that is genuinely ours — **which URL each screen answers on** — so a path is
+ * still written exactly once, and `<Route path=…>`, `<Link to=…>` and the nav
+ * highlight all read it from here.
+ *
+ * Still hash URLs (`#/decisions`), deliberately. The API and the built bundle
+ * are served by the same FastAPI app, and a browser-path router would need
+ * every unknown path rewritten to `index.html` there — a deployment concern
+ * traded for a cosmetically shorter URL. Hash routing also keeps every link
+ * already sent to somebody working.
  */
+import { matchPath } from "react-router-dom";
+
 export type Screen =
   | "home" | "list" | "detail" | "customer" | "quotes" | "states" | "data"
   /** The visualization layer. `home` is the Storyboard; these are the screens
@@ -30,21 +45,19 @@ export type Screen =
    *  an extra `itemId` alongside the customer in `id`. */
   | "customerItem";
 
-export interface Route {
-  screen: Screen;
-  id?: string;
-  itemId?: string;
-}
-
-const PATHS: Record<Screen, string> = {
+/** The parameterless URL for each screen.
+ *
+ * Two entries are *aliases* rather than addresses: a decision with no id is the
+ * decision list, and a customer-item pair with no ids is the account picker.
+ * That is what the old parser did too, and it is what a link that lost its id
+ * should land on — the place the missing thing is chosen from.
+ */
+export const PATH: Record<Screen, string> = {
   home: "/",
   list: "/decisions",
-  detail: "/decision",
-  // Renamed with the screen: "Accounts" and "Customers" were two nav items for
-  // one thing, and the surviving name is Customers. `/accounts` still parses,
-  // so links already sent to somebody keep working.
+  detail: "/decisions",            // alias — see above
   customer: "/customers",
-  customerItem: "/customers",
+  customerItem: "/customers",      // alias — see above
   quotes: "/quotes",
   states: "/states",
   data: "/data",
@@ -65,80 +78,90 @@ const PATHS: Record<Screen, string> = {
   negotiate: "/negotiate",
 };
 
-export function toHash(r: Route): string {
-  if (r.screen === "detail" && r.id) return `#/decision/${encodeURIComponent(r.id)}`;
-  if (r.screen === "customerItem" && r.id && r.itemId) {
-    return `#/account/${encodeURIComponent(r.id)}/item/${encodeURIComponent(r.itemId)}`;
+/** The three screens whose URL carries an id, as route patterns.
+ *
+ * `useParams` reads these back, and `pathFor` writes them — the pattern and the
+ * link are the same shape stated once, which is the part a string-concatenating
+ * router gets wrong first. */
+export const PATTERN = {
+  detail: "/decision/:id",
+  account: "/account/:id",
+  customerItem: "/account/:id/item/:itemId",
+} as const;
+
+/** The path that used to serve the account picker. Redirected rather than
+ *  quietly aliased, so a link somebody saved lands on the current URL instead
+ *  of showing the right screen under a name the product no longer uses. */
+export const LEGACY_ACCOUNTS = "/accounts";
+
+/** Longest first: `/account/x/item/y` must not be read as `/account/:id`. */
+const PARAMETERISED: readonly (readonly [string, Screen])[] = [
+  [PATTERN.customerItem, "customerItem"],
+  [PATTERN.account, "customer"],
+  [PATTERN.detail, "detail"],
+] as const;
+
+/** Screens whose `PATH` entry is an alias, so they must never be found by a
+ *  reverse lookup — `/decisions` is the list, not a decision. */
+const ALIASED: readonly Screen[] = ["detail", "customerItem"] as const;
+
+/** A screen, and optionally what it is about, as a URL. */
+export function pathFor(screen: Screen, id?: string, itemId?: string): string {
+  const enc = encodeURIComponent;
+  if (screen === "detail" && id) return `/decision/${enc(id)}`;
+  if (screen === "customerItem" && id && itemId) {
+    return `/account/${enc(id)}/item/${enc(itemId)}`;
   }
-  if (r.screen === "customer" && r.id) return `#/account/${encodeURIComponent(r.id)}`;
-  return `#${PATHS[r.screen]}`;
+  if (screen === "customer" && id) return `/account/${enc(id)}`;
+  return PATH[screen];
 }
 
-export function parseHash(hash: string): Route {
-  const raw = (hash || "").replace(/^#/, "") || "/";
-  const parts = raw.split("/").filter(Boolean);
-  if (parts.length === 0) return { screen: "home" };
-  switch (parts[0]) {
-    case "decisions":
-      return { screen: "list" };
-    case "decision":
-      return parts[1] ? { screen: "detail", id: decodeURIComponent(parts[1]) } : { screen: "list" };
-    case "customers":
-    case "accounts":            // the old path — kept so existing links resolve
-      return { screen: "customer" };
-    case "account":
-      if (!parts[1]) return { screen: "customer" };
-      // /account/<customer>/item/<product>
-      if (parts[2] === "item" && parts[3]) {
-        return {
-          screen: "customerItem",
-          id: decodeURIComponent(parts[1]),
-          itemId: decodeURIComponent(parts[3]),
-        };
-      }
-      return { screen: "customer", id: decodeURIComponent(parts[1]) };
-    case "quotes":
-      return { screen: "quotes" };
-    case "states":
-      return { screen: "states" };
-    case "data":
-      return { screen: "data" };
-    case "approvals":
-      return { screen: "approvals" };
-    case "settings":
-      return { screen: "settings" };
-    case "identity":
-      return { screen: "identity" };
-    case "weather":
-      return { screen: "weather" };
-    case "opportunities":
-      return { screen: "opportunities" };
-    case "lost-revenue":
-      return { screen: "lostRevenue" };
-    case "journey":
-      return { screen: "journey" };
-    case "simulate":
-      return { screen: "simulate" };
-    case "landscape":
-      return { screen: "landscape" };
-    case "composition":
-      return { screen: "composition" };
-    case "cadence":
-      return { screen: "cadence" };
-    case "payments":
-      return { screen: "payments" };
-    case "stock":
-      return { screen: "stock" };
-    case "supply":
-      return { screen: "supply" };
-    case "negotiate":
-      return { screen: "negotiate" };
-    default:
-      return { screen: "home" };
+/** Which screen a URL is showing — the nav highlight, and nothing else.
+ *
+ * React Router decides what renders; this decides what looks current, which is
+ * a separate question because two screens share a nav item (a decision belongs
+ * to the queue it was opened from). An unrecognised path reports `home`, the
+ * same place the catch-all route sends it. */
+export function screenAt(pathname: string): Screen {
+  for (const [pattern, screen] of PARAMETERISED) {
+    if (matchPath(pattern, pathname)) return screen;
   }
+  for (const screen of Object.keys(PATH) as Screen[]) {
+    if (!ALIASED.includes(screen) && PATH[screen] === pathname) return screen;
+  }
+  return "home";
 }
 
-export function navigate(r: Route): void {
-  const next = toHash(r);
-  if (window.location.hash !== next) window.location.hash = next;
+/** Resolve a destination named by the insight layer onto a URL.
+ *
+ * The server names a destination for every storyboard beat and every weather
+ * front — `lost-revenue`, `opportunities`, `customer/<id>` — and this is the
+ * single place those names become navigation. One table rather than a
+ * conditional per call site, so adding a beat means adding a row here and
+ * nothing else. A name nobody recognises lands on the storyboard rather than
+ * nowhere. */
+export function vizPath(route: string): string {
+  const [head, id] = route.split("/");
+  if (head === "customer" && id) return pathFor("customer", id);
+  const map: Record<string, Screen> = {
+    "lost-revenue": "lostRevenue",
+    opportunities: "opportunities",
+    journey: "journey",
+    weather: "weather",
+    "revenue-flow": "home",
+    data: "data",
+    simulate: "simulate",
+    landscape: "landscape",
+    composition: "composition",
+    cadence: "cadence",
+    payments: "payments",
+    stock: "stock",
+    supply: "supply",
+    negotiate: "negotiate",
+    // Bare `customer` — no id — is the Customers screen with its own picker.
+    // It routes here now that Customers is a nav destination in its own right
+    // rather than only ever a link carrying an account.
+    customer: "customer",
+  };
+  return pathFor(map[head] ?? "home");
 }

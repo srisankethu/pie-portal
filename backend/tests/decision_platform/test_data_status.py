@@ -447,3 +447,57 @@ def test_two_tenants_sync_from_their_own_zoho_connection_only(client, monkeypatc
     RecordingSource.seen.clear()
     assert client.post("/api/v1/data/sync", headers=other_owner).json()["run"]["status"] == "OK"
     assert set(RecordingSource.seen) == {"OTHER-ORG-ZOHO-ID"}
+
+
+# ── two connected companies pull independently ──────────────────────────────
+SYNC_ORG = "org_two_pulls"
+
+def test_two_connections_can_sync_at_the_same_time(session):
+    """Syncing one Zoho company must not block the others.
+
+    The check was organization-wide, so starting a sync for company B while A
+    was running silently handed back *A's* job — the button appeared to work,
+    the progress bar showed somebody else's pull, and three connected companies
+    could only ever be read one after another.
+    """
+    from app.ingestion import jobs
+
+    started: list[tuple[str, object]] = []
+
+    def record(run_id, since, full, connection_id):
+        started.append((run_id, connection_id))
+
+    a, started_a = jobs.start_sync(session, SYNC_ORG, connection_id="conn_a",
+                                   dispatch=record)
+    b, started_b = jobs.start_sync(session, SYNC_ORG, connection_id="conn_b",
+                                   dispatch=record)
+
+    assert started_a and started_b, "both connections must actually start"
+    assert a.sync_run_id != b.sync_run_id
+    assert {c for _, c in started} == {"conn_a", "conn_b"}
+
+
+def test_the_same_connection_twice_hands_back_the_job_already_running(session):
+    """Still one per connection. Clicking Sync twice on one company should show
+    the pull in flight, not start a second one to fight it for the same rows."""
+    from app.ingestion import jobs
+
+    first, started_first = jobs.start_sync(session, SYNC_ORG, connection_id="conn_a",
+                                           dispatch=lambda *a: None)
+    again, started_again = jobs.start_sync(session, SYNC_ORG, connection_id="conn_a",
+                                           dispatch=lambda *a: None)
+
+    assert started_first is True
+    assert started_again is False, "the second click must not start a second pull"
+    assert again.sync_run_id == first.sync_run_id
+
+
+def test_the_data_screen_still_reports_whatever_is_running(session):
+    """The scoping is for starting a job, not for watching one. Somebody
+    looking at the Data screen wants to see what is actually happening, whoever
+    it belongs to."""
+    from app.ingestion import jobs
+
+    jobs.start_sync(session, SYNC_ORG, connection_id="conn_a", dispatch=lambda *a: None)
+    seen = jobs.active_run(session, SYNC_ORG)
+    assert seen is not None and seen.connection_id == "conn_a"

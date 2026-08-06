@@ -24,6 +24,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.commercial.insight import simulate
+from app import clock
 from app.commercial.policy import load_for_org
 from app.db import Base, get_session
 from app.ingestion.sync import SyncService
@@ -108,7 +109,9 @@ def client():
     ensure_org_and_users(s)
     SyncService(s, _Source(), ORG).run()
     s.commit()
-    build(s, ORG, as_of=date.today(),
+    # The business date the endpoints read, never the machine's — see
+    # test_stock_on_state for what the two hours of disagreement look like.
+    build(s, ORG, as_of=clock.today(load_for_org(s, ORG).timezone),
           thresholds_version=load_for_org(s, ORG).version)
     s.commit()
     s.close()

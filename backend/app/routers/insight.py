@@ -29,16 +29,22 @@ from sqlalchemy.orm import Session
 from ..authz import Principal, current_principal, require_manager_or_owner
 from .. import clock
 from ..commercial import floor, incentive, policy
-from ..commercial.insight import (cadence, cohorts, composition, flow, landscape,
-                                  payments, periods, radar, simulate, stock, story,
-                                  supply, weather)
+from ..commercial.insight import (cadence, cashflow, cohorts, composition, flow,
+                                  landscape, payments, periods, radar, simulate,
+                                  stock, story, supply, weather)
 from ..db import get_session
 from ..domain import models
 from ..domain.enums import Role
+from ..domain.origin import Companies, index_of
 from ..signals.aggregates import label_for, load_snapshot
+from ..commercial.insight import series
+from ..state.engine import latest_as_of, load as load_state
+from ..state.reducers.trade import CUSTOMER_MONTH
 from ..state import engine as state_engine
+from ..state.reducers.cash import CASH_SCHEDULE
 from ..state.reducers.commitments import COMMITMENTS
 from ..state.reducers.inventory import INVENTORY
+from ..state.reducers.receivables import RECEIVABLES
 from ..signals.config import load_thresholds as load_signal_thresholds
 
 log = logging.getLogger("pie_portal.insight")
@@ -85,6 +91,53 @@ def _labels_only(session: Session, principal: Principal):
     """
     return _context(session, principal, sales_for_customers=[],
                     costs_for_products=[])
+
+
+def _flow_from_state(session: Session, principal: Principal):
+    """Monthly totals, or ``None`` when this database has no fold yet.
+
+    Names only from the snapshot — never a line. Kept as its own function
+    rather than a branch inside ``_flow_rows`` so ``test_bounded_loads`` can
+    still see the claim: a function that calls ``_labels_only`` must not read
+    ``snapshot.sales``, and a structural check cannot tell that two branches
+    are exclusive.
+    """
+    org = principal.organization_id
+    on = latest_as_of(session, org, CUSTOMER_MONTH)
+    if on is None:
+        return None
+    rows = series.month_rows(load_state(session, org, CUSTOMER_MONTH, on))
+    if not rows:
+        return None
+    _org, snapshot, _th = _labels_only(session, principal)
+    return rows, snapshot.customer_names, series.last_traded_on(rows)
+
+
+def _flow_from_lines(session: Session, principal: Principal):
+    """The original path: every sale line the organization has recorded."""
+    _org, snapshot, _th = _context(session, principal)
+    return snapshot.sales, snapshot.customer_names, snapshot.as_of()
+
+
+def _flow_rows(session: Session, principal: Principal):
+    """Rows for the period-comparison screens, and which path produced them.
+
+    These screens decompose one period against the one before it, and every
+    period here is a whole calendar month — so a month's total answers the same
+    question the month's lines do, and reading the fold removes an unbounded
+    scan of the organization's entire sales history. ``test_series_equality``
+    runs both paths against one fixture and compares the whole decomposition,
+    not just the totals.
+
+    Falls back to the lines when there is no fold rather than showing an empty
+    screen. A database that has not been re-synced since the monthly states
+    were added has no ``CUSTOMER_MONTH`` rows, and "slower" is a much better
+    failure than "your revenue is zero".
+    """
+    folded = _flow_from_state(session, principal)
+    if folded is not None:
+        return (*folded, True)
+    return (*_flow_from_lines(session, principal), False)
 
 
 def _as_of(snapshot) -> Optional[date]:
@@ -202,15 +255,26 @@ def commercial_weather(months: int = Query(3, ge=MIN_MONTHS, le=MAX_MONTHS),
 def revenue_flow(months: int = Query(3, ge=MIN_MONTHS, le=MAX_MONTHS),
                  principal: Principal = Depends(current_principal),
                  session: Session = Depends(get_session)) -> dict:
-    """Movement between two periods, decomposed so the bars reconcile."""
-    _org, snapshot, th = _context(session, principal)
-    as_of = _as_of(snapshot)
+    """Movement between two periods, decomposed so the bars reconcile.
+
+    Reads the monthly fold rather than the sale lines. This screen wants
+    nothing from a line — not a product, not a quantity, not an invoice
+    reference — only revenue per customer per period, and every period here is
+    a whole calendar month. It was loading the organization's entire trading
+    history to add up twelve numbers.
+    """
+    th = policy.load_for_org(session, principal.organization_id)
+    rows, names, as_of, folded = _flow_rows(session, principal)
     if as_of is None:
         return _no_data(th.currency, "the revenue waterfall")
 
     comparison = periods.comparison(as_of, months=months)
-    movement = flow.compute(snapshot.sales, snapshot.customer_names, comparison)
+    movement = flow.compute(rows, names, comparison)
     result = movement.to_dict()
+    # Which path answered. Not decoration: if this ever reads "lines" on a
+    # synced production database, the fold is missing and the page is quietly
+    # doing the expensive thing it was moved off.
+    result["source"] = "state" if folded else "lines"
     if not movement.reconciles():
         # Loud rather than quiet: a waterfall whose bars do not sum to the
         # movement is wrong, and rendering it anyway teaches people to distrust
@@ -518,6 +582,38 @@ def payment_behaviour(principal: Principal = Depends(current_principal),
                       "from. Advances are counted separately above."))
 
 
+@router.get("/cashflow")
+def cash_projection(weeks: int = Query(cashflow.WEEKS, ge=1, le=26),
+                    principal: Principal = Depends(require_manager_or_owner),
+                    session: Session = Depends(get_session)) -> dict:
+    """What the committed book does to cash, week by week.
+
+    Manager and above. The inflow half is receivables and would be fine for a
+    salesperson, but the outflow half is what we owe suppliers — purchase cost
+    by another name, in exactly the sense that scopes ``/supply``. A projection
+    with one side removed would net to a number that is not the answer to any
+    question, so the whole endpoint is scoped rather than half of it stripped.
+
+    Every figure is an obligation already entered into. Reads three folded
+    states and does no arithmetic here — the money lives in ``insight/cashflow``
+    and the routing lives here.
+    """
+    org, _snapshot, th = _labels_only(session, principal)
+    on = latest_as_of(session, org, CASH_SCHEDULE)
+    if on is None:
+        return _no_data(th.currency, "a cash projection")
+    return _envelope(
+        cashflow.project(
+            state_engine.load(session, org, CASH_SCHEDULE, on),
+            state_engine.load(session, org, COMMITMENTS, on),
+            state_engine.load(session, org, RECEIVABLES, on),
+            # The state's own build date, not today: a projection dated today
+            # from a fold that last ran on Friday would silently age its own
+            # first bucket into the overdue column over the weekend.
+            as_of=on, weeks=weeks),
+        currency=th.currency, thresholds_version=th.version)
+
+
 #: How many names a dead-stock row can usefully carry. Beyond this the column
 #: stops being a call list and starts being a wall of text.
 _BUYERS_SHOWN = 6
@@ -604,6 +700,15 @@ def stock_position(principal: Principal = Depends(current_principal),
                        "each month is not — that is the number this screen is "
                        "for, and it is on every row."),
         })
+    # Which connected company each item belongs to. An item master is per
+    # company — the same part number is a different row in each book — so a
+    # shelf pooled across three companies needs to say which shelf.
+    companies = Companies(session, org)
+    items = index_of(session, org, models.Product)
+    companies.stamp(result.get("items") or [], items, by="product_id")
+    for group in result.get("groups") or []:
+        companies.stamp(group.get("items") or [], items, by="product_id")
+    result["sources_differ"] = companies.count > 1
     return _envelope(
         result, currency=th.currency,
         empty_reason=(None if lines else
@@ -653,6 +758,13 @@ def supplier_position(principal: Principal = Depends(require_manager_or_owner),
         orders, as_of,
         terms_by_vendor={vid: v.payment_terms_days for vid, v in vendors.items()
                          if v.payment_terms_days is not None})
+    # A supplier is per connected company too: the same vendor invoicing two of
+    # the books is two rows, and concentration read across them without saying
+    # so would look like one dependency where there are two relationships.
+    companies = Companies(session, org)
+    companies.stamp(result.get("suppliers") or [], vendors, by="vendor_id")
+    companies.stamp(result.get("open_orders") or [], vendors, by="vendor_id")
+    result["sources_differ"] = companies.count > 1
     return _envelope(result, currency=th.currency, empty_reason=None)
 
 

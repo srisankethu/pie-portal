@@ -18,12 +18,13 @@
 // mix change?") is answered better, not merely differently.
 
 import { useMemo, useState } from "react";
+import { scaleLinear, scaleSqrt } from "d3-scale";
 import { MonthPicker, Seg } from "./Seg";
 import { money } from "../../money";
 import { Tip } from "../../Tip";
 import { papi } from "../api";
 import type { PlatformSession } from "../types";
-import { Figure, Panel, stateOf } from "./Panel";
+import { Figure, Panel, ValueAxis, stateOf } from "./Panel";
 import { pct, useInsight } from "./useInsight";
 import { compactMoney, thinLabels, useMeasure } from "./useMeasure";
 
@@ -60,6 +61,7 @@ export function LandscapeScreen({
   const [subject, setSubject] = useState("relationship");
   const [measure, setMeasure] = useState("margin");
   const { data, loading, error, reload } = useInsight(
+    "landscape",
     () => papi.landscape(session.token, subject, measure),
     [session.token, subject, measure]);
   const [ref, room] = useMeasure<HTMLDivElement>();
@@ -86,8 +88,6 @@ export function LandscapeScreen({
   const yLo = Math.min(...ys, ySplit);
   const yHi = Math.max(...ys, ySplit);
   const yPad = Math.max((yHi - yLo) * 0.18, 0.02);
-  const yMin = yLo - yPad;
-  const yMax = yHi + yPad;
   const sizes = points.map((p) => Number(p.size) || 1);
   const sizeMax = Math.max(...sizes, 1);
 
@@ -102,20 +102,30 @@ export function LandscapeScreen({
   const PLOT_H = room.cramped ? 240 : 320;
   const H = PLOT_H + RAIL;
   const PAD = { t: 18, r: 18, b: 44, l: room.cramped ? 44 : 62 };
-  // Radius by area, not by diameter — scaling the radius makes a point with
-  // twice the transactions look four times as important.
   const rMax = room.cramped ? 11 : 15;
-  const pr = (v: number) => 4 + Math.sqrt(v / sizeMax) * (rMax - 4);
+  // Radius by area, not by diameter — scaling the radius makes a point with
+  // twice the transactions look four times as important. `scaleSqrt` *is* that
+  // rule, which is better than a comment claiming a `Math.sqrt` implements it.
+  const pr = scaleSqrt().domain([0, sizeMax]).range([4, rMax]);
 
   // The plot box, and inside it the box a dot's *centre* may occupy. Without the
   // inset the largest value sits exactly on the frame and half the mark is
-  // clipped away — which is worst for precisely the biggest relationship.
+  // clipped away — which is worst for precisely the biggest relationship. The
+  // `Math.max` keeps the inner box from inverting in a panel too narrow to hold
+  // two radii; a reversed range would mirror every point left-to-right.
   const x0 = PAD.l, x1 = Math.max(PAD.l + 1, room.width - PAD.r);
   const y0 = PAD.t, y1 = PLOT_H - PAD.b;
-  const px = (v: number) =>
-    x0 + rMax + (v / xMax) * Math.max(0, x1 - x0 - rMax * 2);
-  const py = (v: number) =>
-    y0 + rMax + (1 - (v - yMin) / (yMax - yMin || 1)) * Math.max(0, y1 - y0 - rMax * 2);
+  const px = scaleLinear()
+    .domain([0, xMax])
+    .range([x0 + rMax, Math.max(x0 + rMax, x1 - rMax)]);
+  // `.nice()` after the padding, so the gridlines land on round percentages
+  // instead of on wherever 18% of the observed spread happened to fall. It
+  // widens the domain a little and still does not force zero in — which is the
+  // property the padding exists to protect.
+  const py = scaleLinear()
+    .domain([yLo - yPad, yHi + yPad])
+    .range([Math.max(y0 + rMax, y1 - rMax), y0 + rMax])
+    .nice();
   // A split can land on or past an edge — every point above the median, an empty
   // book — and a region rectangle drawn from an unclamped split has a negative
   // width, which browsers refuse to render at all.
@@ -214,6 +224,19 @@ export function LandscapeScreen({
                 );
               })}
 
+              {/* The vertical scale, over the washes and under the marks. This
+                  used to be two labels on the padded domain endpoints — 10% and
+                  23%, numbers nobody chose and that move whenever the data does
+                  — with nothing between them, so a dot's margin could only be
+                  read by hovering it. */}
+              <ValueAxis
+                scale={py}
+                x0={x0}
+                x1={x1}
+                count={room.cramped ? 3 : 4}
+                format={(v) => pct(v, 0)}
+              />
+
               {/* Split lines, labelled. An unlabelled reference line is a line
                   the reader has to guess the meaning of. */}
               <line x1={clampX(px(xSplit))} x2={clampX(px(xSplit))} y1={y0} y2={y1}
@@ -236,10 +259,6 @@ export function LandscapeScreen({
               </text>
               <text x={x1} y={y1 + 18} textAnchor="end"
                     className="viz-axis">{compactMoney(xMax, currency)}</text>
-              <text x={x0 - 6} y={py(yMax) + 4} textAnchor="end"
-                    className="viz-axis">{pct(yMax, 0)}</text>
-              <text x={x0 - 6} y={py(yMin) + 4} textAnchor="end"
-                    className="viz-axis">{pct(yMin, 0)}</text>
 
               {/* The rail for points with no vertical value, fenced off from the
                   plot so nothing about their margin is implied by where they
@@ -307,6 +326,7 @@ export function CompositionScreen({
   const [measure, setMeasure] = useState("revenue");
   const [months, setMonths] = useState(12);
   const { data, loading, error, reload } = useInsight(
+    "composition",
     () => papi.composition(session.token, dimension, measure, months),
     [session.token, dimension, measure, months]);
   const [ref, room] = useMeasure<HTMLDivElement>();
@@ -320,6 +340,12 @@ export function CompositionScreen({
 
   // One shared scale across every row — the whole point of small multiples is
   // that the panels are comparable, and a per-row scale destroys that.
+  //
+  // Deliberately not a d3 scale. These rows are CSS bars whose height is a
+  // percentage of their track, so the "scale" is `v / peak` and the range is
+  // literally 0–100%: a `scaleLinear` here would produce the same number
+  // through an object, which is the abstraction-for-its-own-sake CLAUDE.md §2
+  // names. d3-scale is used where there are pixels and ticks to compute.
   const peak = Math.max(
     ...series.flatMap((s) => (s.values as number[]).map(Number)), 1);
   const mover = movement?.biggest_mover as Record<string, unknown> | undefined;
@@ -446,6 +472,7 @@ export function CadenceScreen({
   session, onNavigate,
 }: { session: PlatformSession; onNavigate: (r: string) => void }) {
   const { data, loading, error, reload } = useInsight(
+    "cadence",
     () => papi.cadence(session.token), [session.token]);
 
   const wheel = (data?.wheel as Record<string, number>[] | undefined) ?? [];

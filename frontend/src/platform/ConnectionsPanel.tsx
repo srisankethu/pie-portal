@@ -99,9 +99,18 @@ function ConnectionCard({
   onDelete: (id: string) => Promise<void>;
   onRotate: (id: string, token: string) => Promise<string>;
   onSync: (id: string, since: string, full: boolean) => Promise<void>;
-  /** This card's own company is the one being pulled. */
+  /** This card's own company is the one being pulled.
+   *
+   *  Only this company's own job blocks this button. The flag it replaces meant
+   *  "some sync is running", which disabled all three companies the moment any
+   *  one of them started — and made the per-connection concurrency the server
+   *  grew unreachable from the only screen that would have used it. Two
+   *  connected Zoho companies are two independent pulls against two different
+   *  APIs. */
   syncing: boolean;
-  /** Some sync is running — starting a second would pull the same books twice. */
+  /** A start request has been posted and not yet answered. Briefly true for
+   *  every card, because until the server replies the screen does not know
+   *  which company the click was for. */
   syncBusy: boolean;
 }) {
   const [renaming, setRenaming] = useState(false);
@@ -365,10 +374,10 @@ function ConnectionCard({
         {canSync && conn.enabled && (
           <button
             className="btn btn-primary btn-sm"
-            disabled={syncBusy}
+            disabled={syncing || syncBusy}
             onClick={() => onSync(conn.connection_id, since, full)}
           >
-            {syncing ? "Pulling this one…" : syncBusy ? "A sync is running" : "Pull from this company"}
+            {syncing ? "Pulling this one…" : syncBusy ? "Starting…" : "Pull from this company"}
           </button>
         )}
         <span className="spacer" />
@@ -728,17 +737,18 @@ export function ConnectionsPanel({
   session,
   canSync,
   onSync,
-  syncBusy,
-  activeConnectionId,
+  busyConnections,
+  starting,
 }: {
   session: PlatformSession;
   canSync: boolean;
   /** Runs a pull for one company, from the date that company's card chose. */
   onSync: (connectionId: string, since: string, full: boolean) => Promise<void>;
-  /** True while any sync is in flight — one job at a time per organization. */
-  syncBusy: boolean;
-  /** The company the running job is pulling, when it named one. */
-  activeConnectionId: string | null;
+  /** Companies with a pull in flight, from the server. Each card gates on its
+   *  own membership here rather than on a single organization-wide flag. */
+  busyConnections: string[];
+  /** A start request has been posted and not yet answered. */
+  starting: boolean;
 }) {
   const [view, setView] = useState<ConnectionsView | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -881,8 +891,8 @@ export function ConnectionsPanel({
               await onSync(id, since, full);
               await load();   // last pulled / suggested date move with the run
             }}
-            syncing={activeConnectionId === c.connection_id}
-            syncBusy={syncBusy}
+            syncing={busyConnections.includes(c.connection_id)}
+            syncBusy={starting}
           />
         ))}
         {view.connections.length === 0 && (

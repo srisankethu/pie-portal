@@ -46,7 +46,7 @@ _INVOICED = {"invoiced"}
 _RECEIVED = {"received"}
 #: Statuses that never were a commitment. A draft promises nobody anything and
 #: a cancelled order promises nobody anything any more.
-_NOT_A_PROMISE = {"draft", "void", "cancelled", "canceled", "rejected"}
+NOT_A_PROMISE = {"draft", "void", "cancelled", "canceled", "rejected"}
 
 
 class CommitmentsReducer:
@@ -57,7 +57,7 @@ class CommitmentsReducer:
     def apply(self, event: models.BusinessEvent, ctx: Masters,
               as_of: date) -> Iterable[Delta]:
         payload = event.payload or {}
-        if str(payload.get("status") or "").lower() in _NOT_A_PROMISE:
+        if str(payload.get("status") or "").lower() in NOT_A_PROMISE:
             return ()
         if event.event_type == ev.SALES_ORDER_PLACED:
             return self._sales_order(event, payload, ctx)

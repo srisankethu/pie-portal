@@ -17,6 +17,7 @@ from datetime import date
 from typing import Iterable, Optional
 
 from ...signals.base import SaleRow
+from .series import TradeRow
 
 
 @dataclass(frozen=True)
@@ -102,7 +103,13 @@ def comparison(as_of: date, months: int = 3) -> Comparison:
         previous=Period(prev_start, prev_end, label_for(prev_start, prev_end)))
 
 
-def revenue_in(sales: Iterable[SaleRow], period: Period) -> float:
+def revenue_in(sales: Iterable[TradeRow], period: Period) -> float:
+    """Revenue inside one window, from lines or from monthly totals.
+
+    Typed on ``TradeRow`` rather than ``SaleRow`` because it reads exactly two
+    fields and every period here is a whole calendar month — so a month's total
+    lands in the same window its lines would. That is what lets the
+    period-comparison screens read the fold instead of scanning the book."""
     return float(sum(s.line_revenue for s in sales if period.contains(s.date)))
 
 

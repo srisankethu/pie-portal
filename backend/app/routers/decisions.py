@@ -19,6 +19,7 @@ from ..authz import Principal, can_view_decision, current_principal, decision_li
 from ..context.assembler import _flatten, _is_restricted
 from ..db import get_session
 from ..domain import models
+from ..domain.origin import Companies, index_of
 from ..domain.enums import (ApprovalKind, DecisionType, HumanAction, Role,
                             SubjectEntityType)
 from .. import approvals
@@ -173,7 +174,30 @@ def list_decisions(
         existing = tuple(scope.get("exclude_types", ()))
         scope["exclude_types"] = existing + (DecisionType.QUOTE_CONTEXT.value,)
     rows = repo.list(decision_type=type, status=status_filter, **scope)
-    return [_to_read(d) for d in rows]
+    # Which company each decision is about. A queue pooled across three
+    # connected books lists "ABC Industries" three times otherwise, and the
+    # three are different customers with different problems.
+    companies = Companies(session, principal.organization_id)
+    masters = {
+        SubjectEntityType.CUSTOMER.value: models.Customer,
+        SubjectEntityType.PRODUCT.value: models.Product,
+        SubjectEntityType.VENDOR.value: models.Vendor,
+    }
+    # One index per entity kind that actually appears, loaded once rather than
+    # per row — and never for a kind this page does not show.
+    indexes = {
+        kind: index_of(session, principal.organization_id, model)
+        for kind, model in masters.items()
+        if any(d.subject_entity_type == kind for d in rows)
+    }
+    out = []
+    for d in rows:
+        read = _to_read(d)
+        record = indexes.get(d.subject_entity_type, {}).get(d.subject_entity_id)
+        read.origin = companies.of(record).to_dict() if record is not None else None
+        read.sources_differ = companies.count > 1
+        out.append(read)
+    return out
 
 
 @router.get("/{decision_id}", response_model=DecisionRead)

@@ -41,6 +41,7 @@ const theme = themeQuartz.withParams({
 
 export default function DataGridImpl<T>({
   rows, columns, onRowClick, pageSize = 25, height, filters = true, ariaLabel,
+  twoLineRows = false,
 }: DataGridProps<T>) {
   const defaultColDef = useMemo<ColDef<T>>(() => ({
     sortable: true,
@@ -76,7 +77,8 @@ export default function DataGridImpl<T>({
   // Grid height: tall enough for the page it is showing, never taller. A grid
   // fixed at 600px under a five-row list is a screenful of ruled blank space.
   const rowsThisPage = Math.min(rows?.length ?? 0, pageSize);
-  const auto = 32 + (filters ? 32 : 0) + rowsThisPage * 34 + 48;
+  const rowHeight = twoLineRows ? 50 : 34;
+  const auto = 32 + (filters ? 32 : 0) + rowsThisPage * rowHeight + 48;
 
   return (
     <div className="ag-shell" style={{ height: height ?? Math.min(auto, 720) }}>
@@ -86,6 +88,7 @@ export default function DataGridImpl<T>({
         columnDefs={columns}
         defaultColDef={defaultColDef}
         pagination
+        rowHeight={rowHeight}
         paginationPageSize={pageSize}
         paginationPageSizeSelector={[10, 25, 50, 100]}
         suppressCellFocus={!onRowClick}

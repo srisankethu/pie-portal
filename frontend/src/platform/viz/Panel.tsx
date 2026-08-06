@@ -11,6 +11,7 @@
 // region, loading is announced politely, and errors are assertive.
 
 import type { ReactNode } from "react";
+import type { ScaleLinear } from "d3-scale";
 
 export type ViewState = "loading" | "error" | "empty" | "ready";
 
@@ -127,5 +128,54 @@ export function Figure({
         </details>
       )}
     </figure>
+  );
+}
+
+/** A vertical scale you can actually read a number off: round gridlines across
+ *  the plot, labelled down the left edge.
+ *
+ * Neither SVG chart here had one. The waterfall drew a single baseline, so a
+ * bar's height was comparable to its neighbours and to nothing else — you could
+ * see that revenue fell without being able to say roughly how far. The
+ * landscape labelled its two *padded domain endpoints*, numbers like 10% and
+ * 23% that nobody chose and that move whenever the data does.
+ *
+ * `scale.ticks()` is the reason `d3-scale` is a dependency at all. Picking tick
+ * values that are round, evenly spaced and inside the domain is a real
+ * algorithm, and the one everybody writes instead — `min + i * (max - min) / n`
+ * — yields 10.4%, 13.6%, 16.8%: worse than no axis, because it looks
+ * deliberate. Everything else d3 offers, this codebase either does not need or
+ * already does correctly by hand.
+ *
+ * Ticks are advisory: `count` is a target, and d3 returns the nearest round
+ * number of them. That is the right trade — a round value at an odd spacing
+ * reads better than an odd value at a round spacing.
+ */
+export function ValueAxis({
+  scale, x0, x1, format, count = 4,
+}: {
+  scale: ScaleLinear<number, number>;
+  /** The gridline spans the plot; the label sits just outside `x0`. */
+  x0: number;
+  x1: number;
+  format: (v: number) => string;
+  count?: number;
+}) {
+  return (
+    // Decoration for a screen reader: `Figure` already carries the summary, and
+    // reading eight tick values aloud before the data is noise.
+    <g aria-hidden="true">
+      {scale.ticks(count).map((t) => {
+        const y = scale(t);
+        return (
+          <g key={t}>
+            <line x1={x0} x2={x1} y1={y} y2={y} className="viz-gridline" />
+            <text x={x0 - 6} y={y + 4} textAnchor="end" className="viz-axis">
+              {format(t)}
+            </text>
+          </g>
+        );
+      })}
+    </g>
   );
 }

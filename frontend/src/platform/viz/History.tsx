@@ -35,6 +35,7 @@ export function CustomerHealthTimeline({
 }: { session: PlatformSession; customerId: string }) {
   const [months, setMonths] = useState(18);
   const { data, loading, error, reload } = useInsight(
+    "customerTimeline",
     () => papi.customerTimeline(session.token, customerId, months),
     [session.token, customerId, months]);
   const [ref, room] = useMeasure<HTMLDivElement>();
@@ -282,6 +283,7 @@ export function MigrationMatrix({
   onNavigate: (route: string) => void;
 }) {
   const { data, loading, error, reload } = useInsight(
+    "migration",
     () => papi.migration(session.token, months), [session.token, months]);
   const [open, setOpen] = useState<string | null>(null);
   const [ref, room] = useMeasure<HTMLDivElement>();

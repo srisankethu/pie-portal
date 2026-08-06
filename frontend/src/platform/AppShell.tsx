@@ -18,6 +18,11 @@
  * whatever items it is handed. A screen a role cannot read is omitted upstream
  * rather than shown and then 403'd, because a nav item that always fails is a
  * nav item that teaches people the product is broken.
+ *
+ * Every item is an anchor, not a button. That is the whole reason the router
+ * moved to React Router: a `<button onClick>` cannot be ctrl-clicked into a new
+ * tab, shows no destination on hover, and gives the browser nothing to restore.
+ * Comparing the queue against one account meant losing one of them.
  */
 import { useState, type ReactNode } from "react";
 import AppBar from "@mui/material/AppBar";
@@ -60,7 +65,9 @@ import FingerprintOutlined from "@mui/icons-material/FingerprintOutlined";
 import PsychologyOutlined from "@mui/icons-material/PsychologyOutlined";
 import TuneOutlined from "@mui/icons-material/TuneOutlined";
 
-import type { Screen } from "./route";
+import { Link as RouterLink } from "react-router-dom";
+
+import { pathFor, type Screen } from "./route";
 
 export const DRAWER_WIDTH = 232;
 
@@ -119,7 +126,6 @@ const ORDER: NavGroup[] = ["decide", "understand", "book", "setup"];
 export default function AppShell({
   items,
   current,
-  onNavigate,
   userName,
   roleLabel,
   onSignOut,
@@ -127,7 +133,6 @@ export default function AppShell({
 }: {
   items: NavItem[];
   current: Screen;
-  onNavigate: (s: Screen) => void;
   userName: string;
   roleLabel: string;
   onSignOut: () => void;
@@ -176,12 +181,14 @@ export default function AppShell({
               return (
                 <ListItemButton
                   key={it.key}
+                  component={RouterLink}
+                  to={pathFor(it.key)}
                   selected={selected}
-                  onClick={() => {
-                    onNavigate(it.key);
-                    setOpen(false);
-                  }}
-                  sx={{ minHeight: 34, py: 0.25, mb: "1px" }}
+                  // Closing the drawer is all that is left for the click to do:
+                  // the anchor navigates on its own, which is what makes
+                  // ctrl-click and middle-click work.
+                  onClick={() => setOpen(false)}
+                  sx={{ minHeight: 34, py: 0.25, mb: "1px", color: "inherit" }}
                 >
                   {Icon && (
                     <ListItemIcon sx={{ minWidth: 30, color: "inherit" }}>

@@ -574,3 +574,155 @@ def test_a_payment_out_keeps_its_amount_and_reference():
     row = list(ZohoApiSource(http=FakeHttp({"/vendorpayments": listing})).list_vendor_payments())[0]
     assert row["payment_id"] == "P1" and row["vendor_id"] == "v1"
     assert row["reference_number"] == "NEFT-8891"
+
+
+def test_the_stamp_stored_is_the_stamp_the_next_run_compares():
+    """The whole of the "every sync re-reads the book" bug.
+
+    The sync stores `last_modified_time` from the document it is handed, and
+    the resume check compares against the one the *list* endpoint reports. Zoho
+    does not promise those two strings are identical — and when they differ by
+    so much as a format, every document compares unequal on every run: nothing
+    is skipped, every document costs its detail call again, and every row is
+    re-upserted.
+
+    So the client hands back the list's stamp, and this asserts it: the detail
+    here deliberately carries a *different* stamp, and it must not survive.
+    """
+    listing = {"code": 0, "invoices": [
+        {"invoice_id": "A", "date": _today(2), "status": "paid",
+         "last_modified_time": "2026-07-02T10:00:00+0530"},
+    ], "page_context": {"has_more_page": False}}
+    detail = {"code": 0, "invoice": {
+        "invoice_id": "A", "customer_id": "9", "date": _today(2),
+        # The same document, stamped differently by the detail endpoint.
+        "last_modified_time": "2026-07-02T04:30:00Z",
+        "line_items": []}}
+    http = FakeHttp({"/invoices/A": detail, "/invoices": listing})
+
+    (row,) = list(ZohoApiSource(http=http).list_invoices())
+    assert row["last_modified_time"] == "2026-07-02T10:00:00+0530", (
+        "the stamp handed to the sync must be the one the resume check will "
+        "see next time, or nothing is ever skipped")
+
+
+def test_a_second_run_skips_everything_when_nothing_changed():
+    """The behaviour the fix above is for, end to end through the predicate the
+    sync actually builds: store what run one reports, feed it back as run two's
+    cursor, and no detail call may be made."""
+    listing = {"code": 0, "invoices": [
+        {"invoice_id": "A", "date": _today(2), "status": "paid",
+         "last_modified_time": "2026-07-02T10:00:00+0530"},
+        {"invoice_id": "B", "date": _today(3), "status": "paid",
+         "last_modified_time": "2026-07-01T10:00:00+0530"},
+    ], "page_context": {"has_more_page": False}}
+    details = {
+        "/invoices/A": {"code": 0, "invoice": {
+            "invoice_id": "A", "customer_id": "9", "date": _today(2),
+            "last_modified_time": "SOMETHING ELSE ENTIRELY", "line_items": []}},
+        "/invoices/B": {"code": 0, "invoice": {
+            "invoice_id": "B", "customer_id": "9", "date": _today(3),
+            "last_modified_time": "ALSO DIFFERENT", "line_items": []}},
+    }
+
+    first = ZohoApiSource(http=FakeHttp({**details, "/invoices": listing}))
+    held = {r["invoice_id"]: r["last_modified_time"] for r in first.list_invoices()}
+    assert len(held) == 2
+
+    # Exactly the predicate `SyncService._skipper` builds from what was stored.
+    def already_have(doc_id: str, modified_at: str) -> bool:
+        if doc_id not in held:
+            return False
+        return not modified_at or modified_at == held[doc_id]
+
+    http = FakeHttp({**details, "/invoices": listing})
+    second = ZohoApiSource(http=http)
+    rows = list(second.list_invoices(skip=already_have))
+
+    assert rows == [], "an unchanged book must cost no detail calls at all"
+    assert not any("/invoices/" in u for u, _ in http.gets)
+    assert (second.documents_fetched, second.documents_resumed) == (0, 2)
+
+
+def test_an_edited_document_is_still_re_read():
+    """The other half: the cursor must not be so sticky that a real edit is
+    missed. A moved stamp means a changed document."""
+    held = {"A": "2026-07-02T10:00:00+0530"}
+    listing = {"code": 0, "invoices": [
+        {"invoice_id": "A", "date": _today(2), "status": "paid",
+         "last_modified_time": "2026-07-09T18:00:00+0530"},   # edited since
+    ], "page_context": {"has_more_page": False}}
+    detail = {"code": 0, "invoice": {"invoice_id": "A", "customer_id": "9",
+                                     "date": _today(2), "line_items": []}}
+    src = ZohoApiSource(http=FakeHttp({"/invoices/A": detail, "/invoices": listing}))
+    rows = list(src.list_invoices(
+        skip=lambda d, m: d in held and (not m or m == held[d])))
+    assert [r["invoice_id"] for r in rows] == ["A"]
+
+
+def test_the_invoice_header_reaches_the_receivables_fold():
+    """The receivables state reads balance, due date and status off the invoice
+    header. They were not passed through at all, so against a real Zoho pull
+    every invoice arrived with nothing owed by anybody — while the fixtures
+    supplied them and every test passed."""
+    listing = {"code": 0, "invoices": [
+        {"invoice_id": "A", "date": _today(2), "status": "overdue",
+         "last_modified_time": "2026-07-02T10:00:00+0530"},
+    ], "page_context": {"has_more_page": False}}
+    detail = {"code": 0, "invoice": {
+        "invoice_id": "A", "invoice_number": "INV-1", "customer_id": "9",
+        "date": _today(2), "due_date": _today(1), "status": "overdue",
+        "total": "16700", "balance": "16700", "line_items": []}}
+    (row,) = list(ZohoApiSource(
+        http=FakeHttp({"/invoices/A": detail, "/invoices": listing})).list_invoices())
+
+    assert row["balance"] == "16700"
+    assert row["total"] == "16700"
+    assert row["status"] == "overdue"
+    assert row["due_date"] == _today(1)
+    assert row["invoice_number"] == "INV-1"
+
+
+# ── the cursor belongs to a connection ──────────────────────────────────────
+def test_two_connections_keep_separate_resume_cursors(session):
+    """Three Zoho companies run under one PIE organization, and a document id
+    is unique only inside the company that issued it. A shared cursor lets one
+    company's invoice id suppress another company's fetch of an unrelated
+    document — and made a full sync of one company clear the cursor for all
+    three, which is a re-read of every document in every company."""
+    from app.repositories import ReadModelRepository
+
+    org = "org_two_conns"
+    a = ReadModelRepository(session, org, connector="zoho", connection_id="conn_a")
+    b = ReadModelRepository(session, org, connector="zoho", connection_id="conn_b")
+
+    a.mark_ingested("invoice", "12345", "STAMP-A")
+    session.flush()
+
+    assert a.ingested_index("invoice") == {"12345": "STAMP-A"}
+    assert b.ingested_index("invoice") == {}, (
+        "connection B has never read document 12345 — the same id in another "
+        "Zoho company is a different document")
+
+    b.mark_ingested("invoice", "12345", "STAMP-B")
+    session.flush()
+    assert a.ingested_index("invoice") == {"12345": "STAMP-A"}
+    assert b.ingested_index("invoice") == {"12345": "STAMP-B"}
+
+
+def test_a_full_sync_of_one_connection_leaves_the_others_cursor_alone(session):
+    """Asking for a full re-read of one company is reasonable. Making the other
+    two re-read their entire history as a side effect is not."""
+    from app.repositories import ReadModelRepository
+
+    org = "org_clear"
+    a = ReadModelRepository(session, org, connector="zoho", connection_id="conn_a")
+    b = ReadModelRepository(session, org, connector="zoho", connection_id="conn_b")
+    a.mark_ingested("invoice", "1", "x")
+    b.mark_ingested("invoice", "2", "y")
+    session.flush()
+
+    assert a.clear_ingested() == 1
+    session.flush()
+    assert a.ingested_index("invoice") == {}
+    assert b.ingested_index("invoice") == {"2": "y"}, "B's history is untouched"

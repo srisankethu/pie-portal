@@ -84,6 +84,11 @@ class SyncReport:
     # quietly parks forty decisions has not finished the job.
     identity_suggestions: int = 0
     identity_links: int = 0
+    # Documents this pull retired because Zoho no longer reports them — deleted
+    # there, or voided, which for a platform that only counts real trade is the
+    # same thing. Reported rather than silent: removing data is the one thing a
+    # sync does that cannot be inferred from what appeared.
+    retired: list[dict[str, str]] = field(default_factory=list)
 
     def skip(self, kind: str, ref: str, code: str, detail: str,
              context: Optional[dict[str, Any]] = None) -> None:
@@ -527,6 +532,62 @@ class SyncService:
         self.report.documents_fetched += getattr(self.source, "documents_fetched", 0)
         self.report.documents_resumed += getattr(self.source, "documents_resumed", 0)
 
+    def _mirror(self, kind: str, doc_type: str) -> None:
+        """Retire what we hold and Zoho no longer reports.
+
+        A sync is supposed to leave PIE a mirror of the source, and until now it
+        only ever added: a document deleted in Zoho, or voided there, stayed in
+        PIE forever and kept counting as revenue, as cost and as a receivable.
+
+        Three guards, because deleting on absence is the one operation here that
+        can destroy real history:
+
+        **Only a listing that finished.** ``listing_complete`` is set at the end
+        of the generator, so a pull thrown out by the rate limiter half way
+        through never reconciles. Otherwise a bad network afternoon would retire
+        whatever the pull had not reached yet.
+
+        **Only inside the window the pull actually covered.** The listing is
+        bounded by ``date_start``/``date_end``; a document older than the window
+        was never looked for, and absence from a search that did not include it
+        says nothing at all.
+
+        **Only this connection's documents.** Another connected company's
+        invoice is not missing merely because this company's listing did not
+        mention it.
+
+        Retirement supersedes the document's events rather than deleting them.
+        The log is what everything else is derived from, so one supersede
+        removes the document from the read model on the next replay, from every
+        folded state on the next build, and from the decisions built on those —
+        without a cascade of deletes to keep in step. The read-model rows are
+        cleared too, because the screens read those directly.
+        """
+        source = self.source
+        listed = getattr(source, "listed", {}).get(kind)
+        if listed is None or kind not in getattr(source, "listing_complete", set()):
+            return
+        window = self._covered_window()
+        if window is None:
+            return
+        start, end = window
+
+        held = self.repo.ingested_in_window(doc_type, start, end)
+        for doc_id in sorted(set(held) - listed):
+            self.log.supersede(doc_type, doc_id)
+            self.repo.retire_document(doc_type, doc_id)
+            self.report.retired.append({"kind": doc_type, "ref": doc_id})
+
+    def _covered_window(self) -> Optional[tuple[date, date]]:
+        """The date range this pull's listing actually asked Zoho for."""
+        cutoff = getattr(self.source, "_since", None)
+        if cutoff is None:
+            cutoff = getattr(self.source, "_cutoff", lambda: None)()
+        if cutoff is None:
+            return None
+        until = getattr(self.source, "_until", None) or date.max
+        return cutoff, until
+
     def _skipper(self, doc_type: str):
         """A predicate the source can use to avoid re-fetching known documents."""
         if not self.resume:
@@ -664,6 +725,9 @@ class SyncService:
                 self.report.touched_product_ids.add(prod.product_id)
             self._note_owner(raw, lines[0].customer_external_id, lines[0].date)
             self.repo.mark_ingested("invoice", ref, str(raw.get("last_modified_time") or ""))
+        # After the loop, so the listing has run to the end and `_mirror` can
+        # tell a finished pull from one the rate limiter cut short.
+        self._mirror("invoice", "invoice")
         self._store_owners()
 
     def _note_owner(self, raw: dict[str, Any], customer_ext: str, when: date) -> None:
@@ -771,6 +835,7 @@ class SyncService:
                 # item, not just the buyer of this bill.
                 self.report.touched_product_ids.add(prod.product_id)
             self.repo.mark_ingested("bill", ref, str(raw.get("last_modified_time") or ""))
+        self._mirror("bill", "bill")
 
     def _read_lines(self, event_type: str, doc_type: str, doc_id: str,
                     raw: dict[str, Any], lines: list[Any]) -> None:

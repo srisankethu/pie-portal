@@ -10,8 +10,8 @@ sync is idempotent and never duplicates a source record.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Optional, Sequence
+from datetime import date, datetime, timezone
+from typing import Any, Optional, Sequence
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -227,36 +227,113 @@ class ReadModelRepository:
 
     # ── resume cursor ────────────────────────────────────────────────────────
     def ingested_index(self, doc_type: str) -> dict[str, str]:
-        """``{doc_id: modified_at}`` for documents already pulled."""
-        return {
-            r.doc_id: (r.modified_at or "")
-            for r in self.s.scalars(
-                select(models.IngestedDocument).where(
-                    models.IngestedDocument.organization_id == self.org,
-                    models.IngestedDocument.doc_type == doc_type,
-                ))
-        }
+        """``{doc_id: modified_at}`` for documents already pulled *by this
+        connection*.
+
+        Scoped to the connection, not just the organization. An external id is
+        unique only inside the system that issued it, and this business runs
+        three Zoho companies under one PIE organization — so an unscoped cursor
+        lets one company's invoice id suppress another company's fetch of a
+        completely different document. It also made a full sync of one
+        connection wipe the cursor for all of them, which is a re-read of every
+        document in every company.
+        """
+        stmt = select(models.IngestedDocument).where(
+            models.IngestedDocument.organization_id == self.org,
+            models.IngestedDocument.doc_type == doc_type,
+            models.IngestedDocument.connection_id == self.connection_id,
+        )
+        return {r.doc_id: (r.modified_at or "") for r in self.s.scalars(stmt)}
 
     def mark_ingested(self, doc_type: str, doc_id: str, modified_at: str) -> None:
+        """Record this document as held, at the stamp we will compare next time.
+
+        ``modified_at`` must be the stamp the *list* endpoint reports, because
+        that is what ``ingested_index`` is compared against. Storing the
+        detail payload's stamp instead is what made every document look changed
+        on every run; ``zoho_client._documents`` now guarantees the two are the
+        same string.
+        """
         row = self.s.scalar(
             select(models.IngestedDocument).where(
                 models.IngestedDocument.organization_id == self.org,
                 models.IngestedDocument.doc_type == doc_type,
                 models.IngestedDocument.doc_id == doc_id,
+                models.IngestedDocument.connection_id == self.connection_id,
             )
         )
         if row is None:
             row = models.IngestedDocument(organization_id=self.org, doc_type=doc_type,
-                                          doc_id=doc_id)
+                                          doc_id=doc_id,
+                                          connection_id=self.connection_id)
             self.s.add(row)
         row.modified_at = modified_at or None
         row.fetched_at = datetime.now(timezone.utc)
 
+    def ingested_in_window(self, doc_type: str, start: date,
+                           end: date) -> list[str]:
+        """Document ids this connection holds whose document date falls inside
+        the pull's window.
+
+        Bounded by the *document's own date*, not by when it was fetched: the
+        listing this is compared against was bounded that way, and comparing
+        against anything else would treat a document the pull never looked for
+        as one Zoho has deleted.
+        """
+        table = _MIRRORED.get(doc_type)
+        if table is None:
+            return []
+        model, ref_col, date_col = table
+        rows = self.s.scalars(
+            select(getattr(model, ref_col)).where(
+                model.organization_id == self.org,
+                getattr(model, date_col) >= start,
+                getattr(model, date_col) <= end,
+            ))
+        return [str(r) for r in rows]
+
+    def retire_document(self, doc_type: str, doc_id: str) -> int:
+        """Remove a document's read-model rows. Returns how many.
+
+        Its events are superseded separately by the caller — that is what makes
+        every *derived* thing (states, decisions, metrics) forget it on the next
+        build. This clears what the screens read directly.
+        """
+        removed = 0
+        for model, ref_col, prefixed in _RETIRE_FROM.get(doc_type, ()):
+            column = getattr(model, ref_col)
+            # Line rows are keyed `{doc_id}:{line_id}`; header rows are the id.
+            match = (column.startswith(f"{doc_id}:") if prefixed
+                     else column == doc_id)
+            rows = self.s.scalars(
+                select(model).where(model.organization_id == self.org, match)).all()
+            for row in rows:
+                self.s.delete(row)
+                removed += 1
+        # The cursor goes too, or the next pull believes it still holds it.
+        cursor = self.s.scalars(
+            select(models.IngestedDocument).where(
+                models.IngestedDocument.organization_id == self.org,
+                models.IngestedDocument.connection_id == self.connection_id,
+                models.IngestedDocument.doc_type == doc_type,
+                models.IngestedDocument.doc_id == doc_id)).all()
+        for row in cursor:
+            self.s.delete(row)
+        return removed
+
     def clear_ingested(self) -> int:
-        """Forget the cursor, so the next pull re-fetches every document."""
+        """Forget this connection's cursor, so its next pull re-fetches
+        everything.
+
+        This connection's, not the organization's. A full re-read of one Zoho
+        company is a reasonable thing to ask for; making the other two companies
+        re-read their entire history as a side effect is not, and that is what
+        an organization-wide clear did.
+        """
         rows = self.s.scalars(
             select(models.IngestedDocument).where(
-                models.IngestedDocument.organization_id == self.org)).all()
+                models.IngestedDocument.organization_id == self.org,
+                models.IngestedDocument.connection_id == self.connection_id)).all()
         for r in rows:
             self.s.delete(r)
         return len(rows)
@@ -698,3 +775,25 @@ class SignalRepository:
                 models.Signal.signal_id == signal_id,
             )
         )
+
+
+#: Which table answers "what do we hold for this document kind, and when was
+#: it dated". Only kinds listed here are ever reconciled against the source —
+#: a kind with no entry is simply never retired, which is the safe default.
+_MIRRORED: dict[str, tuple[Any, str, str]] = {
+    "invoice": (models.InvoiceDoc, "external_ref", "date"),
+    "bill": (models.BillDoc, "external_ref", "date"),
+}
+
+#: What to delete when a document is retired. The boolean says whether the
+#: reference is a line key (``{doc_id}:{line_id}``) or the document id itself.
+#:
+#: Both the header and its lines, because the screens read the lines directly
+#: and a header removed without them would leave revenue with nothing to
+#: attribute it to.
+_RETIRE_FROM: dict[str, tuple[tuple[Any, str, bool], ...]] = {
+    "invoice": ((models.SalesTxn, "external_ref", True),
+                (models.InvoiceDoc, "external_ref", False)),
+    "bill": ((models.CostRecord, "external_ref", True),
+             (models.BillDoc, "external_ref", False)),
+}

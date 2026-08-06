@@ -10,7 +10,7 @@ import statistics
 from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
-from typing import Iterable, Optional
+from typing import Any, Iterable, Optional
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -173,7 +173,7 @@ def orders_in(sales: list[SaleRow], window: tuple[date, date]) -> set[str]:
             for s in sales if _in_window(s.date, window)}
 
 
-def by_customer(sales: Iterable[SaleRow]) -> dict[str, list[SaleRow]]:
+def by_customer(sales: Iterable[Any]) -> dict[str, list[Any]]:
     """Group lines by customer, preserving order.
 
     Three insight modules each had their own identical copy of this. Grouping is

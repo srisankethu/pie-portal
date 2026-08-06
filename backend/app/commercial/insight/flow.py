@@ -29,8 +29,8 @@ from dataclasses import dataclass, field
 from typing import Iterable, Optional
 
 from ...signals import aggregates as agg
-from ...signals.base import SaleRow
 from .periods import Comparison, Period, revenue_in
+from .series import TradeRow
 
 NEW = "NEW"
 LOST = "LOST"
@@ -110,7 +110,7 @@ class Flow:
         }
 
 
-def _traded_before(rows: list[SaleRow], before: Period) -> bool:
+def _traded_before(rows: list[TradeRow], before: Period) -> bool:
     return any(r.date < before.start for r in rows)
 
 
@@ -132,7 +132,7 @@ def classify(previous: float, current: float, traded_earlier: bool) -> str:
     return GROWN if change > 0 else SHRUNK
 
 
-def compute(sales: Iterable[SaleRow], names: dict[str, str],
+def compute(sales: Iterable[TradeRow], names: dict[str, str],
             comparison: Comparison) -> Flow:
     """Decompose the movement between the two periods of ``comparison``."""
     rows = list(sales)

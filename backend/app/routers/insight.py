@@ -36,6 +36,9 @@ from ..db import get_session
 from ..domain import models
 from ..domain.enums import Role
 from ..signals.aggregates import label_for, load_snapshot
+from ..commercial.insight import series
+from ..state.engine import latest_as_of, load as load_state
+from ..state.reducers.trade import CUSTOMER_MONTH
 from ..state import engine as state_engine
 from ..state.reducers.commitments import COMMITMENTS
 from ..state.reducers.inventory import INVENTORY
@@ -85,6 +88,53 @@ def _labels_only(session: Session, principal: Principal):
     """
     return _context(session, principal, sales_for_customers=[],
                     costs_for_products=[])
+
+
+def _flow_from_state(session: Session, principal: Principal):
+    """Monthly totals, or ``None`` when this database has no fold yet.
+
+    Names only from the snapshot — never a line. Kept as its own function
+    rather than a branch inside ``_flow_rows`` so ``test_bounded_loads`` can
+    still see the claim: a function that calls ``_labels_only`` must not read
+    ``snapshot.sales``, and a structural check cannot tell that two branches
+    are exclusive.
+    """
+    org = principal.organization_id
+    on = latest_as_of(session, org, CUSTOMER_MONTH)
+    if on is None:
+        return None
+    rows = series.month_rows(load_state(session, org, CUSTOMER_MONTH, on))
+    if not rows:
+        return None
+    _org, snapshot, _th = _labels_only(session, principal)
+    return rows, snapshot.customer_names, series.last_traded_on(rows)
+
+
+def _flow_from_lines(session: Session, principal: Principal):
+    """The original path: every sale line the organization has recorded."""
+    _org, snapshot, _th = _context(session, principal)
+    return snapshot.sales, snapshot.customer_names, snapshot.as_of()
+
+
+def _flow_rows(session: Session, principal: Principal):
+    """Rows for the period-comparison screens, and which path produced them.
+
+    These screens decompose one period against the one before it, and every
+    period here is a whole calendar month — so a month's total answers the same
+    question the month's lines do, and reading the fold removes an unbounded
+    scan of the organization's entire sales history. ``test_series_equality``
+    runs both paths against one fixture and compares the whole decomposition,
+    not just the totals.
+
+    Falls back to the lines when there is no fold rather than showing an empty
+    screen. A database that has not been re-synced since the monthly states
+    were added has no ``CUSTOMER_MONTH`` rows, and "slower" is a much better
+    failure than "your revenue is zero".
+    """
+    folded = _flow_from_state(session, principal)
+    if folded is not None:
+        return (*folded, True)
+    return (*_flow_from_lines(session, principal), False)
 
 
 def _as_of(snapshot) -> Optional[date]:
@@ -202,15 +252,26 @@ def commercial_weather(months: int = Query(3, ge=MIN_MONTHS, le=MAX_MONTHS),
 def revenue_flow(months: int = Query(3, ge=MIN_MONTHS, le=MAX_MONTHS),
                  principal: Principal = Depends(current_principal),
                  session: Session = Depends(get_session)) -> dict:
-    """Movement between two periods, decomposed so the bars reconcile."""
-    _org, snapshot, th = _context(session, principal)
-    as_of = _as_of(snapshot)
+    """Movement between two periods, decomposed so the bars reconcile.
+
+    Reads the monthly fold rather than the sale lines. This screen wants
+    nothing from a line — not a product, not a quantity, not an invoice
+    reference — only revenue per customer per period, and every period here is
+    a whole calendar month. It was loading the organization's entire trading
+    history to add up twelve numbers.
+    """
+    th = policy.load_for_org(session, principal.organization_id)
+    rows, names, as_of, folded = _flow_rows(session, principal)
     if as_of is None:
         return _no_data(th.currency, "the revenue waterfall")
 
     comparison = periods.comparison(as_of, months=months)
-    movement = flow.compute(snapshot.sales, snapshot.customer_names, comparison)
+    movement = flow.compute(rows, names, comparison)
     result = movement.to_dict()
+    # Which path answered. Not decoration: if this ever reads "lines" on a
+    # synced production database, the fold is missing and the page is quietly
+    # doing the expensive thing it was moved off.
+    result["source"] = "state" if folded else "lines"
     if not movement.reconciles():
         # Loud rather than quiet: a waterfall whose bars do not sum to the
         # movement is wrong, and rendering it anyway teaches people to distrust

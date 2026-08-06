@@ -2,7 +2,7 @@
 import type { ReactNode } from "react";
 import type { DecisionDetail, Fact } from "./types";
 import { CONF_LABEL, TYPE_LABEL, aiState, factLabel, factValue, isPrimaryFact,
-         stateFieldLabel } from "./format";
+         stateFieldLabel, stateFieldValue } from "./format";
 import { money } from "../money";
 import type { DecisionAction, DecisionImpact, DecisionRanking } from "./types";
 
@@ -157,7 +157,7 @@ export function ImpactPanel({ impact }: { impact: DecisionImpact }) {
               rather than the tail of a clause. */}
           {operational.map(([k, v]) => (
             <span key={k}>
-              <b>{String(v)}</b>{" "}
+              <b>{stateFieldValue(k, v)}</b>{" "}
               {(() => { const l = stateFieldLabel(k); return l.charAt(0).toLowerCase() + l.slice(1); })()}
             </span>
           ))}
@@ -188,7 +188,7 @@ export function WhyPanel({ rationale, evidence }:
               {rows.map(([k, v]) => (
                 <tr key={k}>
                   <td>{stateFieldLabel(k)}</td>
-                  <td className="fv">{String(v)}</td>
+                  <td className="fv num">{stateFieldValue(k, v)}</td>
                 </tr>
               ))}
             </tbody>

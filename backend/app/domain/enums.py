@@ -83,6 +83,12 @@ class DecisionType(str, Enum):
     INV_OVERSOLD = "INV_OVERSOLD"
     SUP_OPEN_COMMITMENT = "SUP_OPEN_COMMITMENT"
     CASH_PAYABLE_OVERDUE = "CASH_PAYABLE_OVERDUE"
+    # The receivable side. Two situations, not one measured twice: money past
+    # its date is a collection you can act on today, and a large share of the
+    # book owed by one customer is an exposure that is true even when every
+    # invoice is current.
+    CASH_RECEIVABLE_OVERDUE = "CASH_RECEIVABLE_OVERDUE"
+    CASH_CREDIT_EXPOSURE = "CASH_CREDIT_EXPOSURE"
 
 
 #: Everything derived from Business State. All of them quantify impact from a
@@ -96,6 +102,15 @@ STATE_DECISION_TYPES = frozenset({
     DecisionType.INV_OVERSOLD,
     DecisionType.SUP_OPEN_COMMITMENT,
     DecisionType.CASH_PAYABLE_OVERDUE,
+    # Receivables are not cost information — what a customer owes is revenue
+    # already billed. These are here because of how state decisions are
+    # *routed*, not because of what they disclose: `decisions/opportunities`
+    # assigns every state decision to no individual and to SALES_MANAGER, and
+    # PIE has no model of which salesperson owns a collection. Routing them to
+    # a person needs that model first; until then they sit with management,
+    # which is also where collections are run in this business.
+    DecisionType.CASH_RECEIVABLE_OVERDUE,
+    DecisionType.CASH_CREDIT_EXPOSURE,
 })
 
 

@@ -13,10 +13,10 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Optional
 
 from ..domain.enums import CustomerStatus
-from ..domain.schemas import (BillIn, CostRecordIn, CustomerIn, PaymentApplicationIn,
-                             PaymentReceiptIn, ProductIn, PurchaseOrderIn,
-                             SalesOrderIn, SalesTxnIn, SourceRef, StockSnapshotIn,
-                             VendorIn, VendorPaymentIn)
+from ..domain.schemas import (BillIn, CostRecordIn, CustomerIn, InvoiceIn,
+                             PaymentApplicationIn, PaymentReceiptIn, ProductIn,
+                             PurchaseOrderIn, SalesOrderIn, SalesTxnIn, SourceRef,
+                             StockSnapshotIn, VendorIn, VendorPaymentIn)
 
 _HUNDRED = Decimal("100")
 
@@ -346,6 +346,41 @@ def normalize_bill_terms(raw: dict[str, Any]) -> BillIn:
         total=raw.get("total"),
         balance=raw.get("balance"),
         source_ref=SourceRef(record_type="bill", record_id=bill_id),
+    )
+
+
+def normalize_invoice_terms(raw: dict[str, Any]) -> InvoiceIn:
+    """The receivable header of an invoice, from the payload
+    ``normalize_invoice`` already receives.
+
+    The mirror of ``normalize_bill_terms``, and separate from
+    ``normalize_invoice`` for the same reason: the two have different grains and
+    different failure modes. An invoice with no line items is useless as revenue
+    and is rejected there, but it is still money owed and must survive here.
+
+    ``balance`` is passed through as Zoho states it. Deriving it from ``total``
+    minus receipts read elsewhere would be wrong the moment a credit note is
+    applied to the invoice, and wrong in the direction that overstates what is
+    collectable — which is the direction that gets somebody chased for money
+    they do not owe.
+    """
+    invoice_id = str(_require(raw, "invoice_id", "invoice"))
+    ctx = f"invoice {invoice_id}"
+    due = raw.get("due_date")
+    return InvoiceIn(
+        external_ref=invoice_id,
+        number=(str(raw["invoice_number"]) if raw.get("invoice_number") else None),
+        customer_external_id=(str(raw["customer_id"]) if raw.get("customer_id") else None),
+        date=_parse_date(_require(raw, "date", ctx), ctx),
+        # No terms on the invoice means it cannot be aged. Left as None rather
+        # than defaulted to the invoice date, which would report every untermed
+        # invoice as overdue from the day it was raised — and put a customer on
+        # a collections list for an obligation nobody ever gave them.
+        due_date=(_parse_date(due, ctx) if due else None),
+        status=str(raw.get("status") or ""),
+        total=raw.get("total"),
+        balance=raw.get("balance"),
+        source_ref=SourceRef(record_type="invoice", record_id=invoice_id),
     )
 
 

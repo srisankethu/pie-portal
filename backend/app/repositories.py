@@ -18,9 +18,10 @@ from sqlalchemy.orm import Session
 
 from .domain import models
 from .domain.enums import DecisionStatus, HumanAction
-from .domain.schemas import (BillIn, CostRecordIn, CustomerIn, PaymentReceiptIn, ProductIn,
-                            PurchaseOrderIn, SalesOrderIn, SalesTxnIn,
-                            StockSnapshotIn, VendorIn, VendorPaymentIn)
+from .domain.schemas import (BillIn, CostRecordIn, CustomerIn, InvoiceIn,
+                            PaymentReceiptIn, ProductIn, PurchaseOrderIn,
+                            SalesOrderIn, SalesTxnIn, StockSnapshotIn, VendorIn,
+                            VendorPaymentIn)
 
 
 class ReadModelRepository:
@@ -455,6 +456,33 @@ class ReadModelRepository:
         row.total = b.total
         row.balance = b.balance
         row.source_ref = b.source_ref.model_dump()
+        return row
+
+    def upsert_invoice(self, customer_id: Optional[str],
+                       inv: InvoiceIn) -> models.InvoiceDoc:
+        """The receivable header. Re-read on every pull that touches the
+        invoice, because ``status`` and ``balance`` change as it is collected —
+        an invoice row written once and never revisited would report every
+        settled invoice as still outstanding, which is how a customer who paid
+        on time ends up on a collections list."""
+        row = self.s.scalar(
+            select(models.InvoiceDoc).where(
+                models.InvoiceDoc.organization_id == self.org,
+                models.InvoiceDoc.external_ref == inv.external_ref,
+            )
+        )
+        if row is None:
+            row = models.InvoiceDoc(organization_id=self.org,
+                                    external_ref=inv.external_ref)
+            self.s.add(row)
+        row.number = inv.number
+        row.customer_id = customer_id
+        row.date = inv.date
+        row.due_date = inv.due_date
+        row.status = inv.status
+        row.total = inv.total
+        row.balance = inv.balance
+        row.source_ref = inv.source_ref.model_dump()
         return row
 
     def upsert_vendor_payment(self, vendor_id: Optional[str],

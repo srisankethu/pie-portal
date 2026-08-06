@@ -220,6 +220,42 @@ class BillIn(BaseModel):
         return v if isinstance(v, Decimal) else Decimal(str(v))
 
 
+class InvoiceIn(BaseModel):
+    """An invoice's receivable terms, header grain. The mirror of ``BillIn``.
+
+    Deliberately the same shape: one is what a supplier is owed, the other what
+    a customer owes us, and the two answer the same question in opposite
+    directions. A different shape for the receivable side would mean two ways to
+    ask "what is outstanding and how overdue".
+
+    The companion to the ``SalesTxnIn`` list the same document produces —
+    ``balance`` and ``due_date`` are facts about one invoice, and copying them
+    onto every line would make "what is outstanding" a de-duplication problem
+    instead of a sum.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    external_ref: str = Field(min_length=1)
+    number: Optional[str] = None
+    customer_external_id: Optional[str] = None
+    date: date
+    due_date: Optional[date] = None
+    status: str = ""
+    total: Optional[Decimal] = None
+    #: What Zoho says is still owed on this invoice. ``None`` where the field is
+    #: absent — never coerced to 0, which would read as "collected".
+    balance: Optional[Decimal] = None
+    source_ref: SourceRef
+
+    @field_validator("total", "balance", mode="before")
+    @classmethod
+    def _to_decimal(cls, v: Any) -> Optional[Decimal]:
+        if v is None or v == "":
+            return None
+        return v if isinstance(v, Decimal) else Decimal(str(v))
+
+
 class VendorPaymentIn(BaseModel):
     """One payment out. Amount is required — a payment with no amount is not a
     payment, and defaulting it to zero would understate cash out silently."""

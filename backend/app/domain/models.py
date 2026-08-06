@@ -1536,6 +1536,53 @@ class BillDoc(Base):
                                                  onupdate=_now)
 
 
+class InvoiceDoc(Base):
+    """An invoice at header grain — what a customer owes, and by when.
+
+    The mirror of ``Bill``, and for the same reason. Invoices were normalised
+    into ``SalesTxn`` rows at line grain and the header thrown away, so the
+    platform knew what it had sold per line and nothing at all about what was
+    still *owed*. ``PaymentApplication`` covers only invoices that have been
+    paid, which is precisely the wrong half for a collections question.
+
+    Header grain, deliberately separate from ``SalesTxn`` rather than columns on
+    it: ``due_date`` and ``balance`` are facts about one document, and copying
+    them onto forty revenue lines would make "what is outstanding" a
+    de-duplication problem instead of a sum.
+
+    Written from the same payload the invoice pull already fetches — no extra
+    API call, no extra scope. ``balance`` is what Zoho says is still owed; it is
+    never derived from ``total`` minus receipts read elsewhere, because a credit
+    note against the invoice would make that subtraction wrong in the direction
+    that gets a customer chased for money they do not owe.
+    """
+
+    __tablename__ = "invoices"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "external_ref",
+                         name="uq_invoice_org_ref"),
+        Index("ix_invoice_org_due", "organization_id", "due_date"),
+    )
+
+    invoice_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    external_ref: Mapped[str] = mapped_column(String(128), index=True)
+    number: Mapped[Optional[str]] = mapped_column(String(128))
+    customer_id: Mapped[Optional[str]] = mapped_column(
+        String(64), ForeignKey("customers.customer_id"), index=True)
+    date: Mapped[date] = mapped_column(Date, index=True)
+    #: When it falls due. Blank on invoices raised without terms, which makes
+    #: them unageable — reported as such rather than assumed due on issue.
+    due_date: Mapped[Optional[date]] = mapped_column(Date)
+    status: Mapped[str] = mapped_column(String(48), default="")
+    total: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
+    balance: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
+    source_ref: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
+                                                 onupdate=_now)
+
+
 class VendorPaymentDoc(Base):
     """Money out, at the payment grain.
 

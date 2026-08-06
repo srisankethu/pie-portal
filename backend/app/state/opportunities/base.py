@@ -42,6 +42,11 @@ EXPEDITE_INBOUND = "EXPEDITE_INBOUND"
 PAY_NOW = "PAY_NOW"
 NEGOTIATE_TERMS = "NEGOTIATE_TERMS"
 SET_REORDER_POINT = "SET_REORDER_POINT"
+CHASE_PAYMENT = "CHASE_PAYMENT"
+SEND_STATEMENT = "SEND_STATEMENT"
+AGREE_PAYMENT_PLAN = "AGREE_PAYMENT_PLAN"
+HOLD_FURTHER_SUPPLY = "HOLD_FURTHER_SUPPLY"
+TIGHTEN_CREDIT_TERMS = "TIGHTEN_CREDIT_TERMS"
 
 #: Every action, with what it means on screen. A card renders from this rather
 #: than inventing its own wording, so one action reads identically everywhere.
@@ -62,6 +67,11 @@ ACTIONS: dict[str, str] = {
     PAY_NOW: "Pay it now",
     NEGOTIATE_TERMS: "Negotiate terms with the supplier",
     SET_REORDER_POINT: "Set a reorder point in Zoho",
+    CHASE_PAYMENT: "Chase the payment",
+    SEND_STATEMENT: "Send a statement of account",
+    AGREE_PAYMENT_PLAN: "Agree a payment plan",
+    HOLD_FURTHER_SUPPLY: "Hold further supply until it clears",
+    TIGHTEN_CREDIT_TERMS: "Tighten the credit terms",
 }
 
 
@@ -152,6 +162,10 @@ class DecisionPolicy:
     #: same materiality figure the commercial layer already uses, reused rather
     #: than duplicated as a second constant meaning the same thing.
     min_impact: Decimal
+    #: What share of the book's outstanding receivables sitting with one
+    #: customer counts as a concentration worth naming. A ratio, like every
+    #: other share in this codebase — never a percentage.
+    exposure_share: Decimal = Decimal("0.25")
     version: str = ""
 
     @property

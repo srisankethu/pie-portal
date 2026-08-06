@@ -45,6 +45,7 @@ EDITABLE: tuple[str, ...] = (
     "carrying_rate_is_published",
     "dead_stock_days",
     "slow_stock_days",
+    "receivable_exposure_share",
 )
 #: Incentive rates are deliberately absent. They are not org policy edited from
 #: a settings screen — they are the published mechanism parameters in
@@ -123,6 +124,13 @@ FIELD_HELP: dict[str, tuple[str, str]] = {
         "Days with no sale before a line is called dead rather than slow. A "
         "distributor's specialist tooling is not dead in month two, and a "
         "threshold set too low turns the whole catalogue red on day one."),
+    "receivable_exposure_share": (
+        "Credit exposure threshold",
+        "What share of everything currently owed may sit with one customer "
+        "before it is raised as a standing exposure. It is not about lateness — "
+        "a customer at this share is flagged even when every invoice is "
+        "current, because if that one relationship stops paying, that share of "
+        "the book stops with it."),
     "slow_stock_days": (
         "Slow after",
         "Days with no sale before a line is marked slow-moving. Sits below the "

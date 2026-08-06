@@ -92,25 +92,44 @@ class _Source:
 
     def list_invoices(self, skip=None):
         return self._over.get("invoices", [
+            # Settled long ago: a zero balance must produce no receivable at
+            # all, which is the case a "count every invoice" fold gets wrong.
             {"invoice_id": "inv1", "invoice_number": "INV-1", "customer_id": "c1",
-             "date": "2024-06-01",
+             "date": "2024-06-01", "due_date": "2024-07-01", "status": "paid",
+             "total": "9000", "balance": "0",
              "line_items": [{"line_item_id": "l1", "item_id": "dead",
                              "quantity": 10, "rate": "900", "item_total": "9000"}]},
+            # Overdue: due 2026-02-04, still owed in full on TODAY.
             {"invoice_id": "inv2", "invoice_number": "INV-2", "customer_id": "c1",
-             "date": "2026-01-05",
+             "date": "2026-01-05", "due_date": "2026-02-04", "status": "overdue",
+             "total": "16700", "balance": "16700",
              "line_items": [{"line_item_id": "l1", "item_id": "slow",
                              "quantity": 20, "rate": "700", "item_total": "14000"},
                             {"line_item_id": "l2", "item_id": "excess",
                              "quantity": 30, "rate": "90", "item_total": "2700"}]},
-            # Recent trade, so these lines are healthy rather than idle.
+            # Recent trade, so these lines are healthy rather than idle. Owed,
+            # but not yet due — it belongs in the exposure and not in the
+            # collection.
             {"invoice_id": "inv3", "invoice_number": "INV-3", "customer_id": "c1",
-             "date": "2026-07-20",
+             "date": "2026-07-20", "due_date": "2026-08-19", "status": "sent",
+             "total": "85200", "balance": "85200",
              "line_items": [{"line_item_id": "l1", "item_id": "short",
                              "quantity": 100, "rate": "600", "item_total": "60000"},
                             {"line_item_id": "l2", "item_id": "low",
                              "quantity": 50, "rate": "450", "item_total": "22500"},
                             {"line_item_id": "l3", "item_id": "excess",
                              "quantity": 30, "rate": "90", "item_total": "2700"}]},
+        ])
+
+    def list_customer_payments(self, skip=None):
+        return self._over.get("payments", [
+            # Settles inv1 in full. The only thing the receivables fold takes
+            # from a receipt is the date.
+            {"payment_id": "pay1", "customer_id": "c1", "date": "2024-07-15",
+             "amount": "9000", "payment_mode": "banktransfer",
+             "invoices": [{"invoice_id": "inv1", "invoice_number": "INV-1",
+                           "date": "2024-06-01", "due_date": "2024-07-01",
+                           "amount_applied": "9000"}]},
         ])
 
     def list_bills(self, skip=None):
@@ -184,9 +203,13 @@ def test_every_decision_is_reproducible_from_the_event_log(session):
     assert before, "the fixture must produce decisions to compare"
 
     # Wipe everything derived, keeping only the masters and the event log.
+    # Every derived table, including the ones a new event type adds. A table
+    # left out of this list survives the wipe, and the replay then "reproduces"
+    # rows it never touched — which is how a lossy log passes its own test.
     for model in (models.BusinessState, models.StateTransition, models.Decision,
                   models.SalesTxn, models.CostRecord, models.StockSnapshot,
-                  models.BillDoc, models.PurchaseOrderDoc):
+                  models.BillDoc, models.PurchaseOrderDoc, models.InvoiceDoc,
+                  models.SalesOrderDoc, models.VendorPaymentDoc):
         session.execute(delete(model).where(model.organization_id == ORG))
     session.commit()
 
@@ -240,6 +263,107 @@ def test_the_overdue_payable_figure_is_zoho_s_balance(session):
     assert Decimal(d.impact["financial"]) == Decimal("300000")
     assert d.confidence["evidence"]["overdue_bills"] == 1
     assert d.impact["operational"]["days_past_due"] == (TODAY - date(2026, 4, 1)).days
+
+
+# ── receivables ─────────────────────────────────────────────────────────────
+def test_the_overdue_receivable_figure_is_zoho_s_balance(session):
+    """The mirror of the payable test, and the same rule: what is owed is read,
+    never derived from total minus the receipts we happen to have seen."""
+    _seed(session)
+    _generate(session)
+    d = _by_type(session)[DecisionType.CASH_RECEIVABLE_OVERDUE.value]
+    # inv2 alone: inv1 is settled and inv3 is not due yet.
+    assert Decimal(d.impact["financial"]) == Decimal("16700")
+    assert d.confidence["evidence"]["overdue_invoices"] == 1
+    assert d.impact["operational"]["days_past_due"] == (TODAY - date(2026, 2, 4)).days
+
+
+def test_a_settled_invoice_is_not_a_receivable(session):
+    """A zero balance is collected. Counting every invoice, or deriving the
+    balance from the total, would put a customer who paid two years ago at the
+    top of a collections list."""
+    _seed(session)
+    _generate(session)
+    d = _by_type(session)[DecisionType.CASH_RECEIVABLE_OVERDUE.value]
+    op = d.impact["operational"]
+    # Three invoices exist; two are open, one of those is overdue.
+    assert op["open_invoices"] == 2
+    assert Decimal(op["outstanding"]) == Decimal("101900")   # 16,700 + 85,200
+    assert Decimal(d.impact["financial"]) < Decimal(op["outstanding"]), (
+        "the collection card must be sized on the overdue portion, not the "
+        "whole balance — otherwise it is the exposure card wearing another name")
+
+
+def test_an_invoice_not_yet_due_is_owed_but_not_overdue(session):
+    """inv3 is unpaid and dated before today, but its terms have not expired.
+    Ageing on the invoice date rather than the due date would make it late."""
+    _seed(session)
+    _generate(session)
+    d = _by_type(session)[DecisionType.CASH_RECEIVABLE_OVERDUE.value]
+    assert Decimal(d.impact["financial"]) == Decimal("16700")
+    exposure = _by_type(session)[DecisionType.CASH_CREDIT_EXPOSURE.value]
+    # The same rupees appear in the exposure card, because that card is about
+    # the whole balance. The two `basis` sentences are what stop a reader
+    # adding them together.
+    assert Decimal(exposure.impact["financial"]) == Decimal("101900")
+    assert exposure.impact["basis"] != d.impact["basis"]
+
+
+def test_credit_exposure_is_a_share_of_the_book_not_a_lateness(session):
+    """The share is recomputed here rather than trusted: outstanding over the
+    whole receivables book, against the policy threshold."""
+    _seed(session)
+    _generate(session)
+    d = _by_type(session)[DecisionType.CASH_CREDIT_EXPOSURE.value]
+    ev = d.confidence["evidence"]
+    share = Decimal(ev["outstanding"]) / Decimal(ev["receivables_book"])
+    assert share == Decimal(ev["share_of_receivables"])
+    assert share >= Decimal(ev["exposure_share_threshold"])
+    # One customer in this book, so they are the whole of it.
+    assert Decimal(ev["share_of_receivables"]) == Decimal("1")
+
+
+def test_a_receipt_contributes_its_date_and_never_its_amount(session):
+    """The balance already nets every applied receipt. Folding the amount too
+    would count each payment twice — once as the reduction it caused and once
+    as itself."""
+    from app.state.engine import load
+    from app.state.reducers.receivables import RECEIVABLES
+
+    _seed(session)
+    _generate(session)
+    rows = load(session, ORG, RECEIVABLES, TODAY)
+    (value,) = rows.values()
+    assert value["last_paid_on"] == "2024-07-15"
+    assert value["receipts"] == 1
+    # The ₹9,000 receipt is nowhere in the money. Outstanding is the two open
+    # balances and nothing else.
+    assert Decimal(value["outstanding"]) == Decimal("101900")
+
+
+def test_an_invoice_with_no_terms_is_counted_but_never_aged(session):
+    """Defaulting a missing due date to the invoice date would report every
+    untermed invoice as overdue from the day it was raised."""
+    _seed(session, invoices=[
+        {"invoice_id": "inv9", "invoice_number": "INV-9", "customer_id": "c1",
+         "date": "2025-01-01", "status": "sent",
+         "total": "500000", "balance": "500000",
+         "line_items": [{"line_item_id": "l1", "item_id": "dead",
+                         "quantity": 10, "rate": "50000",
+                         "item_total": "500000"}]},
+    ], payments=[])
+    _generate(session)
+    from app.state.engine import load
+    from app.state.reducers.receivables import RECEIVABLES
+
+    rows = load(session, ORG, RECEIVABLES, TODAY)
+    (value,) = rows.values()
+    assert Decimal(value["outstanding"]) == Decimal("500000")
+    assert value["unageable_invoices"] == 1
+    assert value.get("overdue_balance") in (None, "0")
+    assert not [d for d in _state_rows(session)
+                if d.decision_type == DecisionType.CASH_RECEIVABLE_OVERDUE.value], (
+        "an invoice nobody gave terms for is not overdue")
 
 
 def test_the_oversold_shortfall_is_priced_at_what_the_item_actually_sells_for(session):

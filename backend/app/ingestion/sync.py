@@ -40,6 +40,7 @@ from .normalize import (
     NormalizationError,
     normalize_bill,
     normalize_bill_terms,
+    normalize_invoice_terms,
     normalize_customer,
     normalize_invoice,
     normalize_payment,
@@ -608,6 +609,11 @@ class SyncService:
         for raw in self.source.list_invoices(skip=self._skipper("invoice")):
             ref = str(raw.get("invoice_id", "?"))
             self.log.supersede("invoice", ref)
+            # The receivable header first, and before the line check: an invoice
+            # with no usable revenue lines is still money owed, and dropping it
+            # here would understate receivables by exactly the invoices that are
+            # hardest to see. The same ordering, and the same reason, as bills.
+            self._record_receivable(raw, ref)
             try:
                 lines = normalize_invoice(raw)
             except NormalizationError as e:
@@ -812,6 +818,38 @@ class SyncService:
         self.repo.upsert_bill(vendor_id, terms)
         self.log.record(ev.PAYABLE_RECORDED, terms.date,
                    Source("bill", ref,
+                          modified_at=str(raw.get("last_modified_time") or "")),
+                   terms)
+
+    def _record_receivable(self, raw: dict[str, Any], ref: str) -> None:
+        """The invoice header: what this customer owes and by when.
+
+        The mirror of ``_record_payable``, written from the payload the invoice
+        pull already holds — no extra call, no extra scope.
+
+        Not counted in its own report figure: a receivable is not a separate
+        thing that was read, it is the header of an invoice ``sales_txns``
+        already counts. A second counter over the same documents would make the
+        Data screen look like the pull did twice the work.
+        """
+        try:
+            terms = normalize_invoice_terms(raw)
+        except NormalizationError as e:
+            self.report.skip("receivable", ref, e.code, e.detail)
+            return
+        customer_id = None
+        if terms.customer_external_id:
+            customer = self.repo.get_customer_by_external(terms.customer_external_id)
+            # An invoice to a customer the contact pull did not return is still
+            # owed. Kept with a null customer rather than dropped — the same
+            # choice bills, purchase orders and payments out make. It cannot be
+            # grouped by party, so the receivables fold will skip it, and that
+            # is visible as a total that does not reconcile rather than as a
+            # silently smaller one.
+            customer_id = customer.customer_id if customer else None
+        self.repo.upsert_invoice(customer_id, terms)
+        self.log.record(ev.RECEIVABLE_RECORDED, terms.date,
+                   Source("invoice", ref,
                           modified_at=str(raw.get("last_modified_time") or "")),
                    terms)
 

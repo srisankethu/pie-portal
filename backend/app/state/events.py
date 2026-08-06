@@ -41,6 +41,7 @@ COST_LINE_RECORDED = "COST_LINE_RECORDED"
 PAYMENT_RECEIVED = "PAYMENT_RECEIVED"
 PAYMENT_MADE = "PAYMENT_MADE"
 PAYABLE_RECORDED = "PAYABLE_RECORDED"
+RECEIVABLE_RECORDED = "RECEIVABLE_RECORDED"
 SALES_ORDER_PLACED = "SALES_ORDER_PLACED"
 PURCHASE_ORDER_PLACED = "PURCHASE_ORDER_PLACED"
 STOCK_OBSERVED = "STOCK_OBSERVED"
@@ -52,6 +53,11 @@ EVENT_TYPES: dict[str, str] = {
     SALE_LINE_RECORDED: "invoice",
     COST_LINE_RECORDED: "bill",
     PAYABLE_RECORDED: "bill",
+    # Same document as the sale lines, deliberately: superseding groups on
+    # (doc_type, doc_id), so re-reading an invoice retires its header event
+    # and its line events together and re-records both. A different doc kind
+    # here would leave a stale balance behind every edit.
+    RECEIVABLE_RECORDED: "invoice",
     PAYMENT_RECEIVED: "customer_payment",
     PAYMENT_MADE: "vendor_payment",
     SALES_ORDER_PLACED: "sales_order",

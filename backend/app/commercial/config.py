@@ -205,6 +205,14 @@ class CommercialThresholds:
     # historically sold", which is a ratio of two facts and not a prediction of
     # what will sell next.
     excess_cover_months: float = 12.0
+    # What share of everything currently owed may sit with one customer before
+    # that concentration is worth naming. A ratio (0.25 = a quarter of the
+    # book), never a percentage — the same convention as every other share here.
+    #
+    # A judgement call rather than a derived number, which is exactly why it is
+    # a setting: what counts as too much exposure depends on who the customer is
+    # and how long the relationship has run, and the platform cannot know either.
+    receivable_exposure_share: float = 0.25
 
     @classmethod
     def from_env(cls) -> "CommercialThresholds":
@@ -223,6 +231,8 @@ class CommercialThresholds:
                                          _default("decision_rupees_per_point")),
             excess_cover_months=_f("CI_EXCESS_COVER_MONTHS",
                                    _default("excess_cover_months")),
+            receivable_exposure_share=_f("CI_RECEIVABLE_EXPOSURE_SHARE",
+                                         _default("receivable_exposure_share")),
             recent_days=_i("CI_RECENT_DAYS", 90),
             previous_days=_i("CI_PREVIOUS_DAYS", 90),
             historical_lookback_days=_i("CI_HISTORICAL_LOOKBACK_DAYS", 730),

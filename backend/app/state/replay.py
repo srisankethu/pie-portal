@@ -24,7 +24,7 @@ from typing import Any, Callable, Optional
 from sqlalchemy.orm import Session
 
 from ..domain import models
-from ..domain.schemas import (BillIn, CostRecordIn, PaymentReceiptIn,
+from ..domain.schemas import (BillIn, CostRecordIn, InvoiceIn, PaymentReceiptIn,
                               PurchaseOrderIn, SalesOrderIn, SalesTxnIn,
                               StockSnapshotIn, VendorPaymentIn)
 from ..repositories import ReadModelRepository
@@ -99,6 +99,19 @@ class _Applier:
         self.repo.upsert_bill(self._vendor(b.vendor_external_id), b)
         return True
 
+    def receivable(self, e: models.BusinessEvent) -> bool:
+        inv = InvoiceIn(**e.payload)
+        customer_id = None
+        if inv.customer_external_id:
+            customer = self.repo.get_customer_by_external(inv.customer_external_id)
+            # Unlike a sale line, an invoice whose customer this replay has not
+            # seen is still money owed and is kept with a null customer — the
+            # same choice the sync makes. Not reported as missing, because
+            # nothing was lost: the row exists and simply cannot be grouped.
+            customer_id = customer.customer_id if customer else None
+        self.repo.upsert_invoice(customer_id, inv)
+        return True
+
     def payment_in(self, e: models.BusinessEvent) -> bool:
         p = PaymentReceiptIn(**e.payload)
         customer = self.repo.get_customer_by_external(p.customer_external_id)
@@ -152,6 +165,7 @@ APPLIERS: dict[str, str] = {
     ev.SALE_LINE_RECORDED: "sale_line",
     ev.COST_LINE_RECORDED: "cost_line",
     ev.PAYABLE_RECORDED: "payable",
+    ev.RECEIVABLE_RECORDED: "receivable",
     ev.PAYMENT_RECEIVED: "payment_in",
     ev.PAYMENT_MADE: "payment_out",
     ev.SALES_ORDER_PLACED: "sales_order",

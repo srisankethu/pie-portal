@@ -19,7 +19,9 @@ export const TYPE_LABEL: Record<string, string> = {
   INV_BELOW_REORDER: "Below the reorder point",
   INV_OVERSOLD: "Committed beyond stock",
   SUP_OPEN_COMMITMENT: "Open supplier commitment",
-  CASH_PAYABLE_OVERDUE: "Payables past due" };
+  CASH_PAYABLE_OVERDUE: "Payables past due",
+  CASH_RECEIVABLE_OVERDUE: "Receivables past due",
+  CASH_CREDIT_EXPOSURE: "Credit exposure" };
 
 /** The state fields a card shows, in the words a person reads.
  *
@@ -80,10 +82,59 @@ export const STATE_FIELD_LABEL: Record<string, string> = {
   oldest_open_on: "oldest placed",
   oldest_age_days: "days since the oldest",
   days_past_due: "days past due",
-  units_sold_to_date: "units sold to date" };
+  units_sold_to_date: "units sold to date",
+  // RECEIVABLES. Named from the customer's side of the ledger — "outstanding"
+  // and "past due" mean the opposite thing on a payable, and one screen using
+  // one word for both directions is how a reader ends up chasing a supplier.
+  outstanding: "Owed in total",
+  invoices: "Invoices",
+  invoiced_value: "Invoiced to date",
+  open_invoices: "Invoices unpaid",
+  overdue_invoices: "Invoices past due",
+  unageable_invoices: "Invoices with no terms",
+  oldest_overdue_due_on: "Oldest overdue since",
+  last_paid_on: "Last payment received",
+  days_since_last_receipt: "days since the last payment",
+  receipts: "Payments received",
+  receivables_book: "Owed to the business in total",
+  share_of_receivables: "Share of everything owed",
+  share_of_receivables_pct: "% of everything owed",
+  exposure_share_threshold: "Exposure threshold" };
 
 export function stateFieldLabel(name: string): string {
   return STATE_FIELD_LABEL[name] || name.replace(/_/g, " ");
+}
+
+/** State fields denominated in the organization's currency.
+ *
+ * An explicit set, not a name test — the same choice, for the same reason, as
+ * `policy.MONEY_FIELDS` on the server. "balance" and "value" appear in field
+ * names that are counts, and `outstanding` contains neither word, so any
+ * substring rule gets some of these wrong in both directions. Being wrong here
+ * means a card prints `612300.00` where it means ₹6,12,300, or formats a
+ * quantity as if it were rupees.
+ */
+export const MONEY_STATE_FIELDS = new Set([
+  "purchase_rate", "revenue", "spend", "last_unit_cost",
+  "open_purchase_value", "open_sales_value", "payables_balance",
+  "overdue_balance", "outstanding", "invoiced_value", "receivables_book",
+]);
+
+/** A state field's value, in the words and units a person reads.
+ *
+ * The companion to `stateFieldLabel`, and the reason it exists: the evidence
+ * table and the impact strip both rendered every value with `String(v)`, so a
+ * rupee figure arrived as the raw decimal the fold stored it as. Dates and
+ * counts are already strings that read correctly; only money needed a rule.
+ */
+export function stateFieldValue(name: string, value: unknown): string {
+  if (value === null || value === undefined) return "—";
+  if (typeof value === "boolean") return value ? "yes" : "no";
+  if (MONEY_STATE_FIELDS.has(name)) {
+    const n = Number(value);
+    if (Number.isFinite(n)) return money(n);
+  }
+  return String(value);
 }
 
 export const CONF_LABEL: Record<string, string> = {

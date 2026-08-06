@@ -47,6 +47,7 @@ export function WeatherScreen({
 }: { session: PlatformSession; onNavigate: (r: string) => void }) {
   const [months, setMonths] = useState(3);
   const { data, loading, error, reload } = useInsight(
+    "weather",
     () => papi.weather(session.token, months), [session.token, months]);
 
   const fronts = (data?.fronts as Record<string, unknown>[] | undefined) ?? [];
@@ -101,6 +102,7 @@ export function OpportunityScreen({
   session, onNavigate,
 }: { session: PlatformSession; onNavigate: (r: string) => void }) {
   const { data, loading, error, reload } = useInsight(
+    "opportunities",
     () => papi.opportunities(session.token), [session.token]);
   const [ref, room] = useMeasure<HTMLDivElement>();
 
@@ -211,6 +213,7 @@ export function LostRevenueScreen({
 }: { session: PlatformSession; onNavigate: (r: string) => void }) {
   const [months, setMonths] = useState(3);
   const { data, loading, error, reload } = useInsight(
+    "lostRevenue",
     () => papi.lostRevenue(session.token, months), [session.token, months]);
 
   const causes = (data?.causes as Record<string, unknown>[] | undefined) ?? [];
@@ -296,6 +299,7 @@ export function JourneyScreen({
 }: { session: PlatformSession; onNavigate: (r: string) => void }) {
   const [months, setMonths] = useState(12);
   const { data, loading, error, reload } = useInsight(
+    "journey",
     () => papi.journey(session.token, months), [session.token, months]);
   const [ref, room] = useMeasure<HTMLDivElement>();
 
@@ -447,6 +451,7 @@ export function SimulatorScreen({ session }: { session: PlatformSession }) {
   const [error, setError] = useState<string | null>(null);
 
   const { data: scenarios } = useInsight(
+    "simulationScenarios",
     () => papi.simulationScenarios(session.token), [session.token]);
 
   const run = useCallback(async () => {

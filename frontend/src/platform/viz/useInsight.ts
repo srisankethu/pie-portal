@@ -40,14 +40,31 @@ export interface Loaded {
 }
 
 export function useInsight(
+  /** Which view this is. Part of the cache key, and the reason it exists.
+   *
+   * The first version keyed on `deps` alone, reasoning that "the deps the
+   * caller already lists are the identity of the request". They are not: they
+   * are its *parameters*. Six screens whose only dep was the session token —
+   * stock, supply, payments, cadence, opportunities, the simulator's scenario
+   * list — therefore shared one cache entry, and four more collided on
+   * `[token, months]`.
+   *
+   * That is not a stale-data annoyance. Whichever screen loaded first won, and
+   * the others rendered *its* payload: Suppliers, opened by a salesperson whose
+   * request had correctly 403'd, read the cached Stock envelope, found no
+   * `suppliers` key, and reported "0 suppliers, ₹0 ordered · 0 orders still
+   * open" — a refusal displayed as a fact about the business. Exactly the
+   * failure `LoadFailed` exists to prevent, arriving through the cache instead.
+   *
+   * Required, not optional with a default: a default is a thing the next caller
+   * forgets, and the symptom is a screen quietly showing another screen's data.
+   */
+  view: string,
   fetcher: () => Promise<Envelope>,
   deps: unknown[],
 ): Loaded {
   const query = useQuery<Envelope, Error>({
-    // The deps the caller already lists are the identity of the request — the
-    // fetcher closes over exactly them. Reusing them as the key means no call
-    // site had to learn a second way to say the same thing.
-    queryKey: ["insight", ...deps],
+    queryKey: ["insight", view, ...deps],
     queryFn: fetcher,
   });
 

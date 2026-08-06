@@ -61,6 +61,7 @@ export function LandscapeScreen({
   const [subject, setSubject] = useState("relationship");
   const [measure, setMeasure] = useState("margin");
   const { data, loading, error, reload } = useInsight(
+    "landscape",
     () => papi.landscape(session.token, subject, measure),
     [session.token, subject, measure]);
   const [ref, room] = useMeasure<HTMLDivElement>();
@@ -325,6 +326,7 @@ export function CompositionScreen({
   const [measure, setMeasure] = useState("revenue");
   const [months, setMonths] = useState(12);
   const { data, loading, error, reload } = useInsight(
+    "composition",
     () => papi.composition(session.token, dimension, measure, months),
     [session.token, dimension, measure, months]);
   const [ref, room] = useMeasure<HTMLDivElement>();
@@ -470,6 +472,7 @@ export function CadenceScreen({
   session, onNavigate,
 }: { session: PlatformSession; onNavigate: (r: string) => void }) {
   const { data, loading, error, reload } = useInsight(
+    "cadence",
     () => papi.cadence(session.token), [session.token]);
 
   const wheel = (data?.wheel as Record<string, number>[] | undefined) ?? [];

@@ -70,6 +70,7 @@ const HORIZONS: [string, string][] = [["13", "13 weeks"], ["26", "26 weeks"]];
 function CashProjection({ session }: { session: PlatformSession }) {
   const [weeks, setWeeks] = useState("13");
   const { data, loading, error, reload } = useInsight(
+    "cashflow",
     () => papi.cashflow(session.token, Number(weeks)), [session.token, weeks]);
   const [ref, room] = useMeasure<HTMLDivElement>();
 
@@ -281,6 +282,7 @@ export function PaymentsScreen({
   session, onNavigate,
 }: { session: PlatformSession; onNavigate: (r: string) => void }) {
   const { data, loading, error, reload } = useInsight(
+    "payments",
     () => papi.payments(session.token), [session.token]);
 
   const customers = rows(data?.customers);
@@ -459,6 +461,7 @@ const HEALTH_LABEL: Record<string, string> = {
 
 export function StockScreen({ session }: { session: PlatformSession }) {
   const { data, loading, error, reload } = useInsight(
+    "stock",
     () => papi.stock(session.token), [session.token]);
   const [active, setActive] = useState<string[]>([]);
 
@@ -691,6 +694,7 @@ export function StockScreen({ session }: { session: PlatformSession }) {
 // ── Suppliers ───────────────────────────────────────────────────────────────
 export function SupplyScreen({ session }: { session: PlatformSession }) {
   const { data, loading, error, reload } = useInsight(
+    "supply",
     () => papi.supply(session.token), [session.token]);
 
   const suppliers = rows(data?.suppliers);

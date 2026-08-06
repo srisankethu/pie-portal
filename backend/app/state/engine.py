@@ -76,6 +76,22 @@ class Reducer(Protocol):
     state: str
     handles: frozenset[str]
 
+    #: Whether to record the per-event working for this state.
+    #:
+    #: Transitions answer one question — ``why()``, the drill-down that walks a
+    #: decision card down to the events that made its number — and only a state
+    #: some detector reads can ever be asked. A state that feeds a *screen*
+    #: rather than a decision is never the subject of that question, so its
+    #: working is written and never read: at this book's size the two monthly
+    #: trade states alone accounted for about 90,000 such rows per build, and
+    #: most of the time the fold spent.
+    #:
+    #: Defaults to True, so every existing state keeps the audit trail it has.
+    #: Turning it off is a claim about a state's readers, and it is wrong the
+    #: moment a detector starts reading that state — which is why the flag
+    #: lives beside ``handles`` where the next person will see it.
+    records_transitions: bool = True
+
     def apply(self, event: models.BusinessEvent, ctx: "Masters",
               as_of: date) -> Iterable[Delta]:
         """Deltas this event causes, or nothing if it causes none."""
@@ -279,12 +295,13 @@ def build(session: Session, org: str, *, as_of: date,
                 for op, name, value in d.changes:
                     apply_change(slot, op, name, value)
                 counts[(d.state, d.key)] = counts.get((d.state, d.key), 0) + 1
-                transitions.append(models.StateTransition(
-                    organization_id=org, event_seq=event.seq,
-                    event_type=event.event_type, state=d.state, key=d.key,
-                    as_of=as_of, occurred_on=event.occurred_on,
-                    changes=[[op, name, _serialisable(v)]
-                             for op, name, v in d.changes]))
+                if getattr(reducer, "records_transitions", True):
+                    transitions.append(models.StateTransition(
+                        organization_id=org, event_seq=event.seq,
+                        event_type=event.event_type, state=d.state, key=d.key,
+                        as_of=as_of, occurred_on=event.occurred_on,
+                        changes=[[op, name, _serialisable(v)]
+                                 for op, name, v in d.changes]))
     report.unresolved = masters.unresolved
 
     _persist(session, org, as_of, wanted, acc, counts, thresholds_version,

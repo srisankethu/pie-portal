@@ -192,3 +192,71 @@ would only show up a few months in.
   are the two; if a third time-bucketed state shows up later, that is when the
   shared shape gets extracted — not before, per CLAUDE.md §5's warning about
   abstractions built for a "might need it later."
+
+---
+
+## 9. What building it actually showed — measured, after the fact
+
+Written after the reducers landed. Two things this note asserted turned out to
+be wrong, and one number was worse than assumed. Left as a record rather than
+edited away: the reasoning above was sound and the conclusions still moved.
+
+### 9.1 `build_series()` was not needed
+
+§2 and §4 called for a second engine function. §2 also observed, correctly,
+that `engine.py` "already supports [a composite key] structurally — nothing
+stops a reducer from making its key `f"{customer_id}:{month}"`". That
+observation was the whole answer. `build()` folds every live event in
+`(occurred_on, seq)` order into `(state, key)` accumulators, in one pass, with
+no opinion about what a key means. Putting the month in the key gives the
+incremental monthly fold with **no new engine capability**, and the SUPPLIER
+reducer had exercised the composite-key path in the meantime, so it was no
+longer untested territory either.
+
+A `build_series()` beside `build()` would have been a second way to do one
+thing, and the first divergence between them a bug nobody could see.
+
+### 9.2 `CUSTOMER_ITEM_MONTH` barely compresses
+
+§3 argued the item grain's "cardinality is known" because a `CustomerItemMetric`
+table already exists at that grain. It exists at **(customer, item)** — adding
+the month multiplies it by the months traded, which is the whole difference.
+
+Measured at this book's shape (420 customers, 3,200 items, 40,000 sale lines
+over three years, customers drawing on a ~15-item repeat basket, Pareto-skewed):
+
+| State | Rows | Fold time | Compression vs. 40,000 lines |
+|---|---|---|---|
+| `CUSTOMER_MONTH` | 7,996 | 3.1s | **5:1** |
+| `CUSTOMER_ITEM_MONTH` | 30,046 | 5.0s | 1.3:1 |
+
+`CUSTOMER_MONTH` pays for itself plainly. `CUSTOMER_ITEM_MONTH` is close to a
+copy of the event log with extra steps: a customer buys a given item in a given
+month at most once or twice, so the bucket almost never has more than one line
+in it. It is shipped because it is what was asked for and it does work, but it
+should be judged on whether the composition screen's product dimension is worth
+5 seconds of every sync — and if that screen is the only reader, a
+`PRODUCT_MONTH` state (no customer in the key) would serve it at a fraction of
+the rows.
+
+### 9.3 The working cost more than the fold
+
+The fold with every state registered took **36 seconds**, and most of it was
+writing `StateTransition` rows — about 90,000 of them per build for the two
+monthly states alone.
+
+Transitions answer exactly one question: `why()`, the drill-down from a
+decision card to the events behind its number. Only a state some *detector*
+reads can ever be asked, and the monthly states feed screens. So every one of
+those rows was written and would never be queried.
+
+`Reducer.records_transitions` (default `True`, so no existing state changed)
+lets a screen-only state opt out. The same fold now takes **15 seconds**.
+
+### 9.4 Still outstanding
+
+The reducers exist and are tested; **no screen reads them yet**. Moving the
+seven screens is the remaining work, and §6's equality harness is the way to do
+it — running old and new against one fixture and asserting identical output
+caught two real bugs when the stock screen moved, and there is no reason to
+believe these will be cleaner.

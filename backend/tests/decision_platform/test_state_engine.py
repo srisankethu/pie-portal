@@ -24,6 +24,7 @@ from app.state.engine import (ADD, MAX, MIN, SET, Delta, UnknownOp,
 from app.state.engine import REDUCERS, register
 from app.state.reducers.commitments import COMMITMENTS
 from app.state.reducers.inventory import INVENTORY
+from app.state.reducers.trade import CUSTOMER_ITEM_MONTH, CUSTOMER_MONTH
 
 #: The build date. The real today, because a stock observation is dated on the
 #: day the pull ran — a fixed past date would silently exclude it and make the
@@ -115,6 +116,149 @@ def _synced(session, source=None) -> None:
 def _product(session, external_id: str) -> str:
     return session.query(models.Product).filter_by(
         external_id=external_id).one().product_id
+
+
+# ── the monthly series ───────────────────────────────────────────────────────
+def _customer(session, external_id: str = "c1") -> str:
+    return session.query(models.Customer).filter_by(
+        external_id=external_id).one().customer_id
+
+
+def test_a_month_is_a_key_not_a_second_build_call(session):
+    """The architecture note for this work called for a new ``build_series()``.
+    It is not needed, and this is the test that says why: ``build()`` folds in
+    ``(occurred_on, seq)`` order into ``(state, key)`` accumulators and has no
+    opinion about what a key means, so putting the month in the key gets the
+    monthly series in the same single pass. A second build function beside this
+    one would have been a second way to do one thing."""
+    _synced(session)
+    build(session, "org_a", as_of=TODAY)
+    session.commit()
+
+    rows = load(session, "org_a", CUSTOMER_MONTH, TODAY)
+    cid = _customer(session)
+    assert set(rows) == {f"{cid}:2026-05", f"{cid}:2026-06"}
+    # May: one invoice, 10 x 500. June: one invoice, 2100 + 3000.
+    assert Decimal(rows[f"{cid}:2026-05"]["revenue"]) == Decimal("5000")
+    assert Decimal(rows[f"{cid}:2026-06"]["revenue"]) == Decimal("5100")
+
+
+def test_a_month_in_the_series_equals_a_point_build_at_that_month_end(session):
+    """The equality the architecture note asked for. A series row for month M
+    must agree with what a point build says about M — otherwise the series is a
+    second, differently-wrong answer to a question the engine already answers.
+
+    Point-built up to 31 May, the customer's *entire* trade is May's trade, so
+    a plain revenue total is directly comparable to the series row for May.
+    """
+    _synced(session)
+    may_end = date(2026, 5, 31)
+    build(session, "org_a", as_of=may_end)
+    session.commit()
+    at_may = load(session, "org_a", CUSTOMER_MONTH, may_end)
+    cid = _customer(session)
+
+    # Only May exists in a fold that stops on 31 May — June has not happened.
+    assert set(at_may) == {f"{cid}:2026-05"}
+
+    build(session, "org_a", as_of=TODAY)
+    session.commit()
+    full = load(session, "org_a", CUSTOMER_MONTH, TODAY)
+    # And May's row is identical in both, because a month that has closed
+    # cannot change. This is what makes the series safe to read as history.
+    assert full[f"{cid}:2026-05"] == at_may[f"{cid}:2026-05"]
+
+
+def test_orders_count_documents_and_lines_count_lines(session):
+    """A fold cannot count distinct documents — ADD over sale lines counts
+    lines. Orders come from the invoice header event, which is emitted once per
+    invoice, so a customer who buys three items at once ordered once."""
+    _synced(session)
+    build(session, "org_a", as_of=TODAY)
+    session.commit()
+    rows = load(session, "org_a", CUSTOMER_MONTH, TODAY)
+    june = rows[f"{_customer(session)}:2026-06"]
+    assert june["orders"] == 1, "one invoice"
+    assert june["lines"] == 2, "two items on it"
+
+
+def test_the_item_grain_splits_what_the_customer_grain_totals(session):
+    """The finer state must reconcile to the coarser one, or two screens
+    reading them will disagree about the same month."""
+    _synced(session)
+    build(session, "org_a", as_of=TODAY)
+    session.commit()
+    cid = _customer(session)
+    coarse = load(session, "org_a", CUSTOMER_MONTH, TODAY)
+    fine = load(session, "org_a", CUSTOMER_ITEM_MONTH, TODAY)
+
+    for month in ("2026-05", "2026-06"):
+        per_item = sum(
+            (Decimal(v["revenue"]) for k, v in fine.items()
+             if v["customer_id"] == cid and v["month"] == month),
+            Decimal(0))
+        assert per_item == Decimal(coarse[f"{cid}:{month}"]["revenue"]), month
+
+
+def test_the_item_grain_carries_no_order_count(session):
+    """An invoice is a document about a customer, not about one line of it.
+    Counting it once per item would multiply one order by what was on it."""
+    _synced(session)
+    build(session, "org_a", as_of=TODAY)
+    session.commit()
+    for value in load(session, "org_a", CUSTOMER_ITEM_MONTH, TODAY).values():
+        assert "orders" not in value
+
+
+def test_a_back_dated_correction_lands_in_its_own_month(session):
+    """The reason the month comes from ``occurred_on`` and not from the build
+    date: a July re-read of a May invoice must rewrite May, not add to July."""
+    source = _book()
+    _synced(session, source)
+    # The same invoice, re-read with a different total. Supersession retires
+    # the old reading; the new one is still dated in May.
+    source._rows["invoices"][0]["line_items"] = [_line("i1", 10, "600", "6000")]
+    source._rows["invoices"][0]["last_modified_time"] = "2026-07-01T00:00:00+0530"
+    _synced(session, source)
+    build(session, "org_a", as_of=TODAY)
+    session.commit()
+
+    rows = load(session, "org_a", CUSTOMER_MONTH, TODAY)
+    cid = _customer(session)
+    assert Decimal(rows[f"{cid}:2026-05"]["revenue"]) == Decimal("6000")
+    assert f"{cid}:2026-07" not in rows, "the correction is May's, not July's"
+
+
+def test_a_screen_state_records_no_working_and_a_decision_state_still_does(session):
+    """Transitions answer exactly one question — ``why()``, the drill-down from
+    a decision card to the events behind its number — so only a state some
+    detector reads can ever be asked. The monthly trade states feed screens, and
+    at this book's size their working came to about 90,000 rows per build that
+    nothing would ever query; measured, it was most of what the fold cost.
+
+    The flag is opt-out and defaults to on, so this asserts both halves: the
+    states that carry an audit trail still do."""
+    _synced(session)
+    build(session, "org_a", as_of=TODAY)
+    session.commit()
+
+    def transitions(state):
+        return session.query(models.StateTransition).filter_by(
+            organization_id="org_a", state=state, as_of=TODAY).count()
+
+    assert transitions(CUSTOMER_MONTH) == 0
+    assert transitions(CUSTOMER_ITEM_MONTH) == 0
+    # Untouched: INVENTORY is read by detectors, so its cards can be drilled.
+    assert transitions(INVENTORY) > 0
+
+
+def test_a_state_without_working_still_has_values(session):
+    """The opt-out drops the explanation, never the answer."""
+    _synced(session)
+    build(session, "org_a", as_of=TODAY)
+    session.commit()
+    rows = load(session, "org_a", CUSTOMER_MONTH, TODAY)
+    assert rows and all(r.get("revenue") for r in rows.values())
 
 
 # ── the arithmetic ───────────────────────────────────────────────────────────

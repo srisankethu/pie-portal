@@ -297,6 +297,7 @@ export function PaymentsScreen({
   const patterns = (data?.patterns as Record<string, Record<string, string>>) ?? {};
   const trends = (data?.trends as Record<string, string>) ?? {};
   const patternCounts = (data?.pattern_counts as Record<string, number>) ?? {};
+  const payerSourcesDiffer = Boolean(data?.sources_differ);
   // The projection is manager-and-above because half of it is what we owe
   // suppliers. Omitted rather than rendered and then 403'd — a panel that
   // always fails teaches people the product is broken.
@@ -387,7 +388,17 @@ export function PaymentsScreen({
             <li key={i} className="cadence-row">
               <button type="button" className="cadence-hit"
                       onClick={() => onNavigate(`customer/${String(c.customer_id)}`)}>
-                <span className="cadence-name">{String(c.label)}</span>
+                {/* Who pays slowly is a call list, and two accounts sharing a
+                    name across two books are two different conversations with
+                    two different people. */}
+                <span className="cadence-name">
+                  <EntityName
+                    name={String(c.label)}
+                    origin={c.origin as EntityOrigin | undefined}
+                    show={payerSourcesDiffer}
+                    strong={false}
+                  />
+                </span>
                 <span className="cadence-figures">
                   <span>
                     {/* Below the floor there is no rhythm to report, and the

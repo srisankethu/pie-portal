@@ -14,6 +14,7 @@ import { aiState, factLabel, factValue, isPrimaryFact, stateFieldLabel } from ".
 import { ActionsPanel, Bp, Conf, FactChip, ImpactPanel, Interpretation, Labelled, Pri,
          RankingPanel, Tip, WhyPanel, typeLabel } from "./ui";
 import { navigate, parseHash, type Screen } from "./route";
+import AppShell, { type NavItem } from "./AppShell";
 import { ApprovalsScreen, SettingsScreen } from "./AdminScreens";
 import { IdentityScreen } from "./IdentityScreen";
 import { DataScreen } from "./DataScreen";
@@ -369,79 +370,78 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
   // that are entirely margin are omitted for a salesperson rather than shown and
   // then refused — a nav item that always 403s is a nav item that teaches people
   // the product is broken.
-  const navItems: [Screen, string, string][] = [
-    ["home", "Storyboard", ""],
+  const navItems: NavItem[] = [
+    // ── Decide ──
+    { key: "home", label: "Storyboard", group: "decide" },
+    // Open, not total: a badge counting closed decisions is a badge that never
+    // goes down, and one that never goes down stops being read.
+    { key: "list", label: rh.nav, group: "decide",
+      count: openDecisions.length,
+      // A decision detail page has no nav entry of its own; it belongs to the
+      // queue it was opened from, and the sidebar should say so.
+      alsoCurrentFor: ["detail"] },
+    // Every role: it is the salesperson's own screen, and a manager needs to
+    // see what their team is proposing.
+    { key: "negotiate", label: "Negotiate", group: "decide" },
     ...(manager
-      ? ([["weather", "Weather", ""],
-          ["opportunities", "Opportunities", ""],
-          ["lostRevenue", "Lost revenue", ""],
+      ? ([{ key: "simulate", label: "Simulator", group: "decide" }] as NavItem[])
+      : []),
+    { key: "quotes", label: "Quotes", group: "decide" },
+    { key: "approvals", label: "Approvals", group: "decide", count: pendingApprovals },
+
+    // ── Understand ──
+    // The insight screens sit next to the briefing they are reached from. The
+    // two that are entirely margin are omitted for a salesperson rather than
+    // shown and then refused — a nav item that always 403s is a nav item that
+    // teaches people the product is broken.
+    ...(manager
+      ? ([{ key: "weather", label: "Weather", group: "understand" },
+          { key: "opportunities", label: "Opportunities", group: "understand" },
+          { key: "lostRevenue", label: "Lost revenue", group: "understand" },
           // Margin is on the vertical axis, and the endpoint is manager-scoped
           // whichever measure is asked for.
-          ["landscape", "Landscape", ""],
-          // Supplier spend is purchase cost by another name, so the endpoint is
-          // manager-scoped and the nav item follows it rather than 403-ing.
-          ["supply", "Suppliers", ""],
-          ["simulate", "Simulator", ""]] as [Screen, string, string][])
+          { key: "landscape", label: "Landscape", group: "understand" }] as NavItem[])
       : []),
     // Mix and rhythm are revenue and dates — no cost anywhere in either — so
     // both are visible to a salesperson.
-    ["composition", "Mix", ""],
-    ["cadence", "Rhythm", ""],
-    // Neither carries cost: receivables are money in, and stock structure is
-    // counts. The purchase rate is dropped from a salesperson's stock copy.
-    ["payments", "Cash", ""],
-    ["stock", "Stock", ""],
-    // Every role: it is the salesperson's own screen, and a manager needs to
-    // see what their team is proposing.
-    ["negotiate", "Negotiate", ""],
+    { key: "composition", label: "Mix", group: "understand" },
+    { key: "cadence", label: "Rhythm", group: "understand" },
+
+    // ── The book ──
     // One "Customers" door, not two. The account picker, the month-by-month
     // journey and the period-against-period migration answer the same question
     // at three zoom levels; splitting them across "Customers" and "Accounts"
     // meant nobody found the second one, and the two names did not say which
     // held what.
-    ["customer", "Customers", ""],
-    // Open, not total: a badge counting closed decisions is a badge that never
-    // goes down, and one that never goes down stops being read.
-    ["list", rh.nav, openDecisions.length ? String(openDecisions.length) : ""],
-    ["quotes", "Quotes", ""],
-    ["approvals", "Approvals", pendingApprovals ? String(pendingApprovals) : ""],
-    ["data", "Data & connection", ""],
-    ["identity", "Identities", ""],
-    ["states", "AI states", ""],
-    ["settings", "Settings", ""],
+    { key: "customer", label: "Customers", group: "book",
+      alsoCurrentFor: ["customerItem", "journey"] },
+    // Neither carries cost: receivables are money in, and stock structure is
+    // counts. The purchase rate is dropped from a salesperson's stock copy.
+    { key: "stock", label: "Stock", group: "book" },
+    ...(manager
+      // Supplier spend is purchase cost by another name, so the endpoint is
+      // manager-scoped and the nav item follows it rather than 403-ing.
+      ? ([{ key: "supply", label: "Suppliers", group: "book" }] as NavItem[])
+      : []),
+    { key: "payments", label: "Cash", group: "book" },
+
+    // ── Setup ──
+    { key: "data", label: "Data & connection", group: "setup" },
+    { key: "identity", label: "Identities", group: "setup" },
+    { key: "states", label: "AI states", group: "setup" },
+    { key: "settings", label: "Settings", group: "setup" },
   ];
 
   return (
-    <div className="dp">
-      <div className="dp-top">
-        <span className="dp-brand">Sanketh · Decisions</span>
-        <div className="dp-nav">
-          {navItems.map(([key, label, count]) => (
-            <button
-              key={key}
-              className={screen === key || (key === "list" && screen === "detail") ? "on" : ""}
-              onClick={() => go(key)}
-            >
-              {label}
-              {count && <span className="n-count">{count}</span>}
-            </button>
-          ))}
-        </div>
-        <span className="dp-spacer" />
-        {/* No role switcher. A user has exactly one role, it comes from their
-            account, and a control that swapped it would be a control that lets
-            anyone read the cost of every line in the book. */}
-        <div className="dp-whoami">
-          <b>{session.name}</b>
-          <br />
-          {roleShort}
-        </div>
-        <button className="btn btn-secondary btn-sm" onClick={signOut}>
-          Sign out
-        </button>
-      </div>
-
-      <div className="dp-main">
+    <AppShell
+      items={navItems}
+      current={screen}
+      onNavigate={go}
+      userName={session.name}
+      roleLabel={roleShort}
+      onSignOut={signOut}
+    >
+      <div>
         {/* An unreachable API must never be dressed as "nothing to do". The
             error REPLACES the queue rather than sitting above a reassuring
             empty state — the previous behaviour told a salesperson everything
@@ -594,7 +594,7 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
           )}
         </div>
       )}
-    </div>
+    </AppShell>
   );
 }
 

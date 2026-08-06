@@ -177,7 +177,62 @@ def test_every_editable_field_carries_a_label_and_an_explanation(client):
     r = client.get("/api/v1/admin/policy", headers=_hdr(client, OWNER)).json()
     for f in r["margin_policy"]["fields"]:
         assert f["label"] and f["help"], f["field"]
-        assert f["kind"] in ("ratio", "money", "family_margins", "band_edges")
+        assert f["kind"] in ("ratio", "money", "days", "flag",
+                             "family_margins", "band_edges")
+
+
+def test_a_flag_round_trips_as_a_boolean(client):
+    """The screen sends `true`, not `1`. Before the flag kind existed this field
+    was rendered as a percent box and arrived as the string "0", which
+    ``bool("0")`` would have read as True."""
+    r = _patch(client, OWNER, {"carrying_rate_is_published": True})
+    assert r.status_code == 200, r.text
+    fields = {f["field"]: f for f in r.json()["margin_policy"]["fields"]}
+    assert fields["carrying_rate_is_published"]["value"] is True
+    assert fields["carrying_rate_is_published"]["kind"] == "flag"
+
+    back = _patch(client, OWNER, {"carrying_rate_is_published": False})
+    fields = {f["field"]: f for f in back.json()["margin_policy"]["fields"]}
+    assert fields["carrying_rate_is_published"]["value"] is False
+
+
+def test_a_day_count_round_trips_as_a_whole_number(client):
+    """Not a ratio: the screen must not scale it, and the server must not store
+    a fraction of a day."""
+    r = _patch(client, OWNER, {"dead_stock_days": 400, "slow_stock_days": 150})
+    assert r.status_code == 200, r.text
+    fields = {f["field"]: f for f in r.json()["margin_policy"]["fields"]}
+    assert fields["dead_stock_days"]["value"] == 400
+    assert fields["slow_stock_days"]["value"] == 150
+    assert fields["dead_stock_days"]["kind"] == "days"
+    # A whole number, not 400.0 — the settings box renders the value verbatim.
+    assert isinstance(fields["dead_stock_days"]["value"], int)
+
+
+def test_every_editable_field_can_actually_be_saved(client):
+    """The PATCH body used to be a hand-written list of nine fields while
+    EDITABLE had fourteen. Pydantic drops unknown keys silently, so the other
+    five rendered on the settings screen, accepted an edit, returned 200 and
+    changed nothing — the worst shape of bug, because it looks like success.
+
+    Asserts the schema, not one field: a new EDITABLE entry that the body does
+    not accept fails here rather than in six months on a customer's screen."""
+    from app.routers.admin import UpdateMarginPolicy
+
+    accepted = set(UpdateMarginPolicy.model_fields) - {"clear"}
+    assert accepted == set(policy.EDITABLE)
+
+
+def test_the_carrying_rate_edit_actually_reaches_the_engine(client):
+    """Same check as the margin ladder's: a setting the analysis never reads is
+    worse than one that refuses to edit."""
+    _patch(client, OWNER, {"carrying_cost_annual_pct": 0.15,
+                           "dead_stock_days": 400})
+    s = client.Maker()
+    th = policy.load_for_org(s, ORG)
+    s.close()
+    assert th.carrying_cost_annual_pct == 0.15
+    assert th.dead_stock_days == 400
 
 
 # ── many connections ────────────────────────────────────────────────────────

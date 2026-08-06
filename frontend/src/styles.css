@@ -1,70 +1,14 @@
-/* pie-portal — ported from the "Industry" design system in the source artifact.
-   Tokens are the source of truth for the look; component + app layout classes
-   are built on them. Plain CSS, no preprocessor. */
+/* pie-portal — the "Industry" design system, ported from the source artifact.
+   Component and app-layout classes only.
 
-:root {
-  --color-bg: #f2f2f3;
-  --color-surface: #e9e9ea;
-  --color-text: #1d1f20;
-  --color-accent: #5980a6;
-  --color-accent-2: #728fab;
-  --color-divider: color-mix(in srgb, #1d1f20 16%, transparent);
-
-  --color-neutral-100: #f5f5f8;
-  --color-neutral-200: #e7e7ea;
-  --color-neutral-300: #d4d4d7;
-  --color-neutral-400: #b7b7ba;
-  --color-neutral-500: #98989b;
-  --color-neutral-600: #7a7a7d;
-  --color-neutral-700: #5d5d60;
-  --color-neutral-800: #424244;
-  --color-neutral-900: #2b2b2d;
-
-  --color-accent-100: #eef6ff;
-  --color-accent-200: #d6ebff;
-  --color-accent-300: #b5d9fd;
-  --color-accent-400: #94bce3;
-  --color-accent-500: #749dc4;
-  --color-accent-600: #597ea3;
-  --color-accent-700: #416180;
-  --color-accent-800: #2c455d;
-  --color-accent-900: #1d2d3d;
-
-  --warn: #b7791f;
-  --danger-bg: #f6e6e3;
-  --danger-fg: #b0473d;
-  --caution-bg: #f7ecd6;
-  --caution-fg: #6b4f16;
-
-  --font-heading: "Barlow Condensed", system-ui, sans-serif;
-  --font-heading-weight: 600;
-  --font-body: "Barlow", system-ui, sans-serif;
-
-  --space-1: 3.4px;
-  --space-2: 6.8px;
-  --space-3: 10.2px;
-  --space-4: 13.6px;
-  --space-6: 20.4px;
-  --space-8: 27.2px;
-
-  --radius-sm: 2px;
-  --radius-md: 4px;
-  --radius-lg: 7px;
-
-  --shadow-sm: 0 1px 2px color-mix(in srgb, #2b2b2d 14%, transparent);
-  --shadow-md: 0 3px 10px color-mix(in srgb, #2b2b2d 16%, transparent);
-  --shadow-lg: 0 12px 32px color-mix(in srgb, #2b2b2d 22%, transparent);
-}
+   The tokens these rules read — `--color-accent`, `--space-3`, `--shadow-md`
+   and the rest — are NOT declared here any more. They are emitted onto `:root`
+   by `src/theme.ts`, which is also what the MUI theme is built from, so the
+   palette has one owner instead of a hex code copied into a theme object and
+   drifting from the copy here. Add a token there, not in this file. */
 
 *, *::before, *::after { box-sizing: border-box; }
-body {
-  margin: 0;
-  background: var(--color-bg);
-  color: var(--color-text);
-  font-family: var(--font-body);
-  font-size: 15px;
-  line-height: 1.55;
-}
+body { margin: 0; }
 h1, h2, h3, h4, h5, h6 {
   font-family: var(--font-heading);
   font-weight: var(--font-heading-weight);
@@ -332,8 +276,6 @@ table.grid tbody tr:hover td { background: color-mix(in srgb, var(--color-accent
    Commercial Decision Platform — built on the Industry tokens above.
    Decision-first: facts on the paper ground, AI interpretation in a steel panel.
    ════════════════════════════════════════════════════════════════════════ */
-.dp { min-height: 100vh; display: flex; flex-direction: column; background: var(--color-bg); }
-
 /* blueprint frame: square, hairline, corner registration marks */
 .bp { position: relative; border: 1px solid var(--color-divider); background: transparent; }
 .bp > .corner { position: absolute; width: 9px; height: 9px; color: color-mix(in srgb, var(--color-text) 45%, transparent); }
@@ -345,22 +287,13 @@ table.grid tbody tr:hover td { background: color-mix(in srgb, var(--color-accent
 .bp > .corner.bl { bottom: -5px; left: -5px; }
 .bp > .corner.br { bottom: -5px; right: -5px; }
 
-/* top bar + nav */
-.dp-top { display: flex; align-items: center; gap: var(--space-4); padding: 10px 22px; border-bottom: 1px solid var(--color-divider); background: var(--color-neutral-100); position: sticky; top: 0; z-index: 30; flex-wrap: wrap; }
-.dp-brand { font-family: var(--font-heading); font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; font-size: 15px; }
-.dp-nav { display: flex; gap: 2px; flex-wrap: wrap; }
-.dp-nav button { font-family: var(--font-heading); font-size: 13px; padding: 6px 12px; border: 1px solid transparent; background: transparent; cursor: pointer; color: var(--color-text); display: inline-flex; gap: 6px; align-items: center; }
-.dp-nav button.on { border-color: var(--color-accent); background: var(--color-accent-100); color: var(--color-accent-800); }
-.dp-nav button:hover:not(.on) { background: color-mix(in srgb, var(--color-text) 6%, transparent); }
-.dp-nav .n-count { font-size: 11px; padding: 0 5px; background: color-mix(in srgb, var(--color-text) 10%, transparent); }
+/* The top bar, the nav row and the content column used to live here. They are
+   `src/platform/AppShell.tsx` now — an AppBar and a grouped Drawer — because
+   eighteen peer buttons in a wrapping row are not navigable by reading, and no
+   amount of CSS fixes that. `.dp-spacer` survives; it is a generic flex filler
+   used inside screens, not part of the old bar. */
 .dp-spacer { flex: 1; }
-.dp-role { display: inline-flex; border: 1px solid var(--color-divider); }
-.dp-role button { font-family: var(--font-heading); font-size: 12px; padding: 5px 11px; border: 0; background: transparent; cursor: pointer; color: var(--color-text); }
-.dp-role button.on { background: var(--color-accent); color: var(--color-bg); }
-.dp-whoami { font-size: 12px; text-align: right; line-height: 1.25; }
-.dp-whoami b { font-family: var(--font-heading); }
 
-.dp-main { flex: 1; overflow: auto; padding: 22px; max-width: 1180px; width: 100%; margin: 0 auto; }
 .dp-head h1 { font-size: 30px; margin: 0; }
 .dp-head p { color: var(--color-neutral-700); margin: 2px 0 18px; }
 
@@ -1063,6 +996,12 @@ table.grid tbody tr:hover td { background: color-mix(in srgb, var(--color-accent
 }
 .mp-input .input { padding: 4px 7px; font-size: 14px; font-weight: 600; width: 100%; }
 .mp-input .unit { font-size: 12px; color: var(--color-neutral-600); }
+/* A switch has no box to fill, so the row would otherwise collapse to the
+   height of the control and sit out of line with the number fields beside it. */
+.mp-flag-state {
+  font-family: var(--font-heading); font-size: 12.5px; font-weight: 600;
+  color: var(--color-neutral-700); text-transform: uppercase; letter-spacing: 0.04em;
+}
 .mp-state { font-size: 10.5px; min-height: 14px; display: flex; gap: 8px; align-items: center; }
 .mp-state .mp-overridden { color: var(--color-accent-700); }
 .mp-state .mp-default { color: var(--color-neutral-500); }

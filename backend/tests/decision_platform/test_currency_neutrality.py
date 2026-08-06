@@ -78,6 +78,41 @@ def test_money_fields_are_not_labelled_as_ratios(session):
     assert kinds["target_margin_default"] == "ratio"
 
 
+def test_a_day_count_is_not_labelled_as_a_ratio(session):
+    """The same trap as money, sprung again: ``_kind`` falls through to "ratio",
+    the screen multiplies a ratio by 100, and a 365-day threshold rendered as
+    "36500 %"."""
+    org_id = _org(session)
+    kinds = {f["field"]: f["kind"] for f in policy.describe(session, org_id)["fields"]}
+    assert kinds["dead_stock_days"] == "days"
+    assert kinds["slow_stock_days"] == "days"
+    assert kinds["carrying_rate_is_published"] == "flag"
+    # The rate itself stays a ratio — only the switch that publishes it is a flag.
+    assert kinds["carrying_cost_annual_pct"] == "ratio"
+
+
+def test_every_editable_field_declares_the_kind_it_is_parsed_as(session):
+    """The screen renders on ``kind`` and the server parses on ``_coerce``. When
+    those two disagree the field is either displayed wrong or rejected on save,
+    so this asserts they are derived from the same lists rather than trusting
+    that whoever adds the next field updates both."""
+    org_id = _org(session)
+    expected = {
+        "flag": bool,
+        "days": int,
+        "money": float,
+        "ratio": float,
+    }
+    for f in policy.describe(session, org_id)["fields"]:
+        kind = f["kind"]
+        if kind not in expected:      # family_margins / band_edges are containers
+            continue
+        coerced = policy._coerce(f["field"], f["value"])
+        assert type(coerced) is expected[kind], (
+            f"{f['field']} is rendered as {kind!r} but parses to "
+            f"{type(coerced).__name__}")
+
+
 # ── the rounding increment is policy, not a constant ────────────────────────
 def test_recommended_price_uses_the_configured_increment():
     from app import pricing

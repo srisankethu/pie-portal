@@ -20,10 +20,10 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status as http
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, create_model, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -293,21 +293,48 @@ def get_policy(
     }
 
 
-class UpdateMarginPolicy(BaseModel):
-    """Any subset of the editable fields. Null clears an override."""
+#: The Python type each policy kind arrives as. Keyed on ``policy._kind`` so
+#: there is one answer to "what shape is this field" for the screen that renders
+#: it, the parser that coerces it and the schema that accepts it.
+_PATCH_TYPE: dict[str, type] = {
+    "ratio": float,
+    "money": float,
+    "days": int,
+    "flag": bool,
+    "band_edges": list[int],
+    "family_margins": dict[str, float],
+}
 
-    target_margin_default: Optional[float] = None
-    target_margin_by_family: Optional[dict[str, float]] = None
-    min_margin: Optional[float] = None
-    margin_floor: Optional[float] = None
-    sales_discretion_band: Optional[float] = None
-    quantity_band_edges: Optional[list[int]] = None
-    min_quote_exception_impact: Optional[float] = None
-    min_material_gap: Optional[float] = None
-    min_margin_deterioration_pp: Optional[float] = None
+
+def _update_margin_policy_model() -> type[BaseModel]:
+    """Build the PATCH body from ``policy.EDITABLE``.
+
+    This was a hand-written list of nine fields, and ``EDITABLE`` had grown to
+    fourteen. Pydantic drops unknown keys silently, so the five that were never
+    added — the rounding increment, both carrying-cost fields and both stock-age
+    thresholds — rendered on the settings screen, accepted an edit, reported
+    success and changed nothing. Nothing failed; the value simply did not move.
+
+    Deriving it removes the possibility. Adding a field to ``EDITABLE`` now
+    makes it editable end to end, which is what putting it in a list called
+    EDITABLE was always supposed to mean.
+    """
+    fields: dict[str, Any] = {
+        # Optional means "leave alone", not "clear" — see `clear` below.
+        name: (Optional[_PATCH_TYPE[commercial_policy._kind(name)]], None)
+        for name in commercial_policy.EDITABLE
+    }
     # Fields sent as null normally mean "leave alone". Listing them here says
     # "clear this override" instead — otherwise a reset would be impossible.
-    clear: list[str] = Field(default_factory=list)
+    fields["clear"] = (list[str], Field(default_factory=list))
+    return create_model(
+        "UpdateMarginPolicy",
+        __doc__="Any subset of the editable fields. Null clears an override.",
+        **fields,
+    )
+
+
+UpdateMarginPolicy = _update_margin_policy_model()
 
 
 @router.patch("/margin-policy")

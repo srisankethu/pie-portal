@@ -3,12 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500;600;700&display=swap"
-      rel="stylesheet"
-    />
+    <!-- Barlow and Barlow Condensed are bundled (see src/main.tsx), not fetched
+         from the Google Fonts CDN. The app has to render on a network that
+         cannot reach fonts.gstatic.com. -->
+    <meta name="theme-color" content="#f2f2f3" />
     <title>Sanketh · Commercial Decisions</title>
   </head>
   <body>

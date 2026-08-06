@@ -137,11 +137,15 @@ FIELD_HELP: dict[str, tuple[str, str]] = {
 }
 
 
-#: Fields that are not numbers. Kept beside ``_coerce`` rather than inferred
+#: Fields that are not ratios. Kept beside ``_coerce`` rather than inferred
 #: from the dataclass, because inferring it would silently start coercing any
 #: future field whose annotation happened to match.
+#:
+#: ``_kind`` reads these too, so what the screen renders and what the server
+#: parses come from one list. They were separate for one commit and the screen
+#: showed "36500 %" for a 365-day threshold.
 _BOOLEAN = frozenset({"carrying_rate_is_published"})
-_INTEGER = frozenset({"dead_stock_days", "slow_stock_days"})
+_DAY_COUNTS = frozenset({"dead_stock_days", "slow_stock_days"})
 
 
 class PolicyError(ValueError):
@@ -166,7 +170,7 @@ def _coerce(field: str, value: Any) -> Any:
         if isinstance(value, str):
             return value.strip().lower() in ("1", "true", "yes", "on")
         return bool(value)
-    if field in _INTEGER:
+    if field in _DAY_COUNTS:
         return int(value)
     return float(value)
 
@@ -347,10 +351,28 @@ MONEY_FIELDS: frozenset[str] = frozenset({
 
 
 def _kind(field: str) -> str:
+    """What the settings screen should render this field as.
+
+    ``ratio`` is the fall-through, and that is the trap: the screen multiplies a
+    ratio by 100 and appends a percent sign, so any field that lands here by
+    accident is displayed wrong rather than displayed plainly. ``MONEY_FIELDS``
+    exists because that already happened once. The two sets below are the same
+    guard for the two non-float shapes — a day count rendered as a ratio reads
+    "36500 %", and a boolean reads "0 %" beside a percent sign with no way to
+    turn it on.
+
+    Deliberately keyed off the same sets ``_coerce`` uses. Classification and
+    coercion disagreeing is precisely the bug: a field the screen sends as a
+    checkbox and the server parses with ``float()`` fails on submit.
+    """
     if field == "target_margin_by_family":
         return "family_margins"
     if field == "quantity_band_edges":
         return "band_edges"
+    if field in _BOOLEAN:
+        return "flag"
+    if field in _DAY_COUNTS:
+        return "days"
     if field in MONEY_FIELDS:
         return "money"
     return "ratio"

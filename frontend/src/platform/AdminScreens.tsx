@@ -11,6 +11,7 @@ import type {
   PlatformUser,
   PolicyField,
   Role } from "./types";
+import Switch from "@mui/material/Switch";
 import { Bp, Labelled } from "./ui";
 import { money, moneySymbol } from "../money";
 
@@ -316,10 +317,16 @@ function num(v: unknown): number {
   return typeof v === "number" ? v : Number(v);
 }
 
-/** A stored value rendered into the box the user types in. */
+/** A stored value rendered into the box the user types in.
+ *
+ * Ratios are the only kind that scale — a ratio is stored as 0.24 and typed as
+ * 24. A day count that fell through to this branch was shown as "36500" for a
+ * 365-day threshold, so the kinds are exhaustive here rather than defaulting. */
 function toInput(f: PolicyField): string {
   if (f.kind === "ratio") return String(Math.round(num(f.value) * 10000) / 100);
   if (f.kind === "money") return String(num(f.value));
+  if (f.kind === "days") return String(Math.round(num(f.value)));
+  if (f.kind === "flag") return f.value ? "true" : "false";
   if (f.kind === "band_edges") return (f.value as number[]).join(", ");
   return "";
 }
@@ -335,7 +342,18 @@ function unitFor(f: PolicyField): string {
   // The symbol follows the organization's currency; it was "₹" regardless.
   if (f.kind === "money") return moneySymbol();
   if (f.kind === "ratio") return PP_FIELDS.has(f.field) ? "pp" : "%";
+  if (f.kind === "days") return "days";
   return "";
+}
+
+/** "reset to 24%", "reset to ₹500", "reset to 365 days", "reset to off". */
+function resetLabel(f: PolicyField): string {
+  if (f.kind === "flag") return f.default ? "on" : "off";
+  const value = toInput({ ...f, value: f.default });
+  const unit = unitFor(f);
+  if (f.kind === "money") return `${unit}${value}`;
+  if (f.kind === "days") return `${value} ${unit}`;
+  return `${value}${unit}`;
 }
 
 function MarginPolicySection({
@@ -434,10 +452,18 @@ function MarginPolicySection({
             throw new Error(`${f.label}: only whole numbers, separated by commas.`);
           }
           patch.quantity_band_edges = edges.map((n) => Math.round(n));
+        } else if (f.kind === "flag") {
+          (patch as Record<string, unknown>)[f.field] = raw === "true";
         } else {
           const n = Number(raw);
           if (!Number.isFinite(n)) throw new Error(`${f.label}: not a number.`);
-          (patch as Record<string, unknown>)[f.field] = f.kind === "ratio" ? n / 100 : n;
+          if (f.kind === "days" && !(n >= 1)) {
+            throw new Error(`${f.label}: must be at least one day.`);
+          }
+          (patch as Record<string, unknown>)[f.field] =
+            f.kind === "ratio" ? n / 100
+              : f.kind === "days" ? Math.round(n)
+              : n;
         }
       }
 
@@ -522,36 +548,60 @@ function MarginPolicySection({
           // used to compare the unit against a literal "₹", which silently
           // moved the symbol to the wrong side the moment it stopped being one.
           const prefixed = f.kind === "money";
+          const set = (value: string) => {
+            setDraft((d) => ({ ...d, [f.field]: value }));
+            setCleared((c) => c.filter((k) => k !== f.field));
+          };
           return (
             <div className="mp-field" key={f.field}>
               <label htmlFor={`mp-${f.field}`}>
                 <Labelled tip={f.help}>{f.label}</Labelled>
               </label>
-              <div className="mp-input">
-                {prefixed && <span className="unit">{unit}</span>}
-                <input
-                  id={`mp-${f.field}`}
-                  className="input"
-                  type={f.kind === "band_edges" ? "text" : "number"}
-                  step={f.kind === "ratio" ? "0.5" : "1"}
-                  inputMode={f.kind === "band_edges" ? "text" : "decimal"}
-                  disabled={!canManage}
-                  value={draft[f.field] ?? ""}
-                  onChange={(e) => {
-                    setDraft((d) => ({ ...d, [f.field]: e.target.value }));
-                    setCleared((c) => c.filter((k) => k !== f.field));
-                  }}
-                />
-                {unit && !prefixed && <span className="unit">{unit}</span>}
-              </div>
+              {/* A boolean is a switch, not a number box. Rendered as one it
+                  read "0" beside a percent sign, with no way to turn it on and
+                  nothing to say what 0 meant. */}
+              {f.kind === "flag" ? (
+                <div className="mp-input">
+                  <Switch
+                    id={`mp-${f.field}`}
+                    size="small"
+                    checked={draft[f.field] === "true"}
+                    disabled={!canManage}
+                    onChange={(e) => set(e.target.checked ? "true" : "false")}
+                  />
+                  <span className="mp-flag-state">
+                    {draft[f.field] === "true" ? "on" : "off"}
+                  </span>
+                </div>
+              ) : (
+                <div className="mp-input">
+                  {prefixed && <span className="unit">{unit}</span>}
+                  <input
+                    id={`mp-${f.field}`}
+                    className="input"
+                    type={f.kind === "band_edges" ? "text" : "number"}
+                    step={f.kind === "ratio" ? "0.5" : "1"}
+                    // A day count has no fractional part and the spinner should
+                    // not offer one.
+                    min={f.kind === "days" ? 1 : undefined}
+                    inputMode={
+                      f.kind === "band_edges" ? "text"
+                        : f.kind === "days" ? "numeric" : "decimal"
+                    }
+                    disabled={!canManage}
+                    value={draft[f.field] ?? ""}
+                    onChange={(e) => set(e.target.value)}
+                  />
+                  {unit && !prefixed && <span className="unit">{unit}</span>}
+                </div>
+              )}
               <div className="mp-state">
                 {overridden ? (
                   <>
                     <span className="mp-overridden">overridden</span>
                     {canManage && (
                       <button type="button" onClick={() => reset(f.field)}>
-                        reset to {toInput({ ...f, value: f.default })}
-                        {prefixed ? "" : unit}
+                        reset to {resetLabel(f)}
                       </button>
                     )}
                   </>

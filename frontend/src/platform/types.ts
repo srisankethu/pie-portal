@@ -563,14 +563,21 @@ export interface ThresholdView {
  * one and converts back, because typing 24 into a field that means 0.24 is the
  * single easiest way to set a 2400% target.
  */
-export type PolicyKind = "ratio" | "money" | "band_edges" | "family_margins";
+/** How the settings screen renders a policy field, and how it sends it back.
+ *
+ * Mirrors `commercial/policy._kind`. `ratio` is the server's fall-through, and
+ * anything landing there is scaled by 100 and given a percent sign — which is
+ * why `days` and `flag` are named rather than left to it. A 365-day threshold
+ * rendered as a ratio reads "36500 %". */
+export type PolicyKind =
+  | "ratio" | "money" | "days" | "flag" | "band_edges" | "family_margins";
 
 export interface PolicyField {
   field: string;
   label: string;
   help: string;
-  value: number | number[] | Record<string, number>;
-  default: number | number[] | Record<string, number>;
+  value: number | boolean | number[] | Record<string, number>;
+  default: number | boolean | number[] | Record<string, number>;
   overridden: boolean;
   kind: PolicyKind;
 }

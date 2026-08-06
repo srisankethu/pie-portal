@@ -49,6 +49,75 @@ export interface Interpretation {
   model: string | null;
 }
 
+/** What a situation is worth. Present on a decision folded from Business
+ *  State; empty on one raised from a signal, which measures the shape of the
+ *  evidence rather than money. */
+export interface DecisionImpact {
+  /** The ranking input, as a decimal string — never a float. */
+  financial?: string;
+  /** What the number *is*, in words. ₹4,00,000 of capital locked and ₹4,00,000
+   *  of annual holding cost are different claims, and a figure without this
+   *  sentence invites the reader to assume the wrong one. */
+  basis?: string;
+  /** A recurring bleed, where the situation has one. */
+  monthly?: string | null;
+  operational?: Record<string, unknown>;
+}
+
+/** A business action this situation permits. Presented, never chosen. */
+export interface DecisionAction {
+  key: string;
+  label: string;
+}
+
+/** The ranking, shown working, so a reader can check a row's position rather
+ *  than trusting it. */
+export interface DecisionRanking {
+  score?: number;
+  money_points?: number;
+  urgency_points?: number;
+  financial?: string;
+  rupees_per_point?: string;
+  days_past_due?: number | null;
+  money_cap?: number;
+  urgency_cap?: number;
+}
+
+/** Why a decision exists, all the way down:
+ *  decision → impact → state → transition → event → ERP record. */
+export interface DecisionTrace {
+  decision_id: string;
+  decision_type: string;
+  origin: string;
+  subject_label: string;
+  impact: DecisionImpact;
+  rationale: string | null;
+  ranking: DecisionRanking;
+  states: {
+    state: string;
+    key: string;
+    label: string;
+    as_of: string;
+    value: Record<string, unknown>;
+    event_count: number;
+    thresholds_version: string | null;
+    transitions_total: number;
+    transitions: {
+      event_seq: number;
+      event_type: string;
+      occurred_on: string;
+      /** `[op, field, value]` — the arithmetic this event performed. */
+      changes: [string, string, unknown][];
+      erp: { system: string; record_type: string; record_id: string;
+             line_id: string | null; modified_at: string | null } | null;
+    }[];
+  }[];
+  /** Set when there is no chain to walk, with the reason. A signal decision
+   *  has no state to drill into, and saying so beats an empty list that reads
+   *  like missing data. */
+  unavailable: string | null;
+}
+
 export interface DecisionDetail {
   decision_id: string;
   decision_type: string;
@@ -67,6 +136,19 @@ export interface DecisionDetail {
   confidence: { evidence_sufficiency?: string; reasons?: string[] };
   human_action: DecisionSummary["human_action"];
   outcome: unknown | null;
+  /** Which producer made this. "SIGNAL" is a detector over sales and cost
+   *  lines, interpreted by a model; "STATE" is arithmetic over folded Business
+   *  State with no model involved. The card renders two different things, and
+   *  asking the row beats sniffing which fields are populated. */
+  origin: string;
+  impact: DecisionImpact;
+  rationale: string | null;
+  actions: DecisionAction[];
+  ranking: DecisionRanking;
+  /** The state fields the impact was computed from — the reader's audit trail.
+   *  Every number on the card must be reproducible from these. */
+  state_evidence: Record<string, unknown>;
+  state: { keys: string[]; as_of: string | null; thresholds_version?: string | null };
 }
 
 /** Where an imported record came from.

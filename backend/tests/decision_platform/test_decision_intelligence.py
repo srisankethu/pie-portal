@@ -33,7 +33,9 @@ from app.state.engine import build
 from app.state.opportunities import ACTIONS, DETECTORS
 from app.state.replay import replay
 
-ORG = "org_a"
+#: The seeded organization, so the API fixture below signs in as a real
+#: user of the same book the detectors ran over.
+ORG = "org_sanketh"
 TODAY = date(2026, 8, 6)
 
 
@@ -533,3 +535,197 @@ def test_a_decision_names_the_state_it_came_from(session):
     assert events
     # …and each of those events names the ERP document it was read from.
     assert all(e.source_doc_id for e in events)
+
+
+# ── the card, and the drill-down ────────────────────────────────────────────
+@pytest.fixture()
+def api(session):
+    """The decisions API over a book that has been synced, folded and detected."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from app.db import get_session
+    from app.routers import decisions as decisions_router
+    from app.routers import platform_auth
+    from app.seed import SEED_PASSWORD, ensure_org_and_users
+
+    ensure_org_and_users(session)
+    session.commit()
+    _seed(session)
+    _generate(session)
+
+    app = FastAPI()
+    app.include_router(platform_auth.router)
+    app.include_router(decisions_router.router)
+    app.dependency_overrides[get_session] = lambda: session
+    client = TestClient(app)
+
+    def _hdr(email: str) -> dict:
+        r = client.post("/api/v1/auth/login",
+                        json={"email": email, "password": SEED_PASSWORD})
+        return {"Authorization": f"Bearer {r.json()['token']}"}
+
+    client.hdr = _hdr
+    return client
+
+
+def _card(api, decision_type: str) -> dict:
+    owner = api.hdr("s.menon@sanketh.in")
+    rows = api.get("/api/v1/decisions", headers=owner).json()
+    row = next(r for r in rows if r["decision_type"] == decision_type)
+    return api.get(f"/api/v1/decisions/{row['decision_id']}/detail",
+                   headers=owner).json()
+
+
+def test_the_card_carries_everything_needed_to_act_without_asking(api):
+    card = _card(api, DecisionType.INV_DEAD_STOCK.value)
+
+    assert card["origin"] == DecisionOrigin.STATE.value
+    assert card["subject_label"] == "Reamer 12H7"          # a name, not an id
+    assert Decimal(card["impact"]["financial"]) == Decimal("500000")
+    assert card["impact"]["basis"]                          # what the number IS
+    assert card["impact"]["monthly"]
+    assert "1000" in card["rationale"] and "500" in card["rationale"]
+    assert card["state"]["as_of"] == TODAY.isoformat()
+    assert card["state"]["thresholds_version"]
+
+
+def test_every_action_on_a_card_arrives_with_the_words_a_person_reads(api):
+    card = _card(api, DecisionType.INV_DEAD_STOCK.value)
+    assert card["actions"]
+    for action in card["actions"]:
+        assert action["label"] and action["label"] != action["key"]
+    # Presented, never chosen: the card offers several and picks none.
+    assert len(card["actions"]) > 1
+
+
+def test_the_card_shows_its_own_ranking_working(api):
+    card = _card(api, DecisionType.CASH_PAYABLE_OVERDUE.value)
+    r = card["ranking"]
+    assert r["money_points"] + r["urgency_points"] == card["priority"]["deterministic_base"]
+    assert Decimal(r["financial"]) == Decimal(card["impact"]["financial"])
+    assert r["urgency_points"] > 0                          # it is genuinely late
+
+
+def test_a_state_card_says_no_model_was_involved(api):
+    card = _card(api, DecisionType.INV_OVERSOLD.value)
+    assert card["interpretation"]["status"] == "NOT_APPLICABLE"
+    assert card["priority"]["ai_adjustment"] == 0
+    assert card["confidence"]["evidence_sufficiency"] == "DETERMINISTIC"
+
+
+def test_a_signal_card_is_unchanged_by_any_of_this(api, session):
+    """The existing producer's cards must render exactly as they did."""
+    session.add(models.Decision(
+        organization_id=ORG, decision_key="dk_sig",
+        decision_type=DecisionType.CUSTOMER_DECLINE.value,
+        subject_entity_type="CUSTOMER",
+        subject_entity_id=session.query(models.Customer).first().customer_id,
+        assigned_role="SALES_MANAGER", priority_deterministic_base=40,
+        priority_score=45, priority_band="MEDIUM",
+        status=DecisionStatus.OPEN.value,
+        ai={"status": "OK", "title": "T", "explanation": "E"}))
+    session.commit()
+
+    owner = api.hdr("s.menon@sanketh.in")
+    rows = api.get("/api/v1/decisions", headers=owner).json()
+    row = next(r for r in rows
+               if r["decision_type"] == DecisionType.CUSTOMER_DECLINE.value)
+    card = api.get(f"/api/v1/decisions/{row['decision_id']}/detail",
+                   headers=owner).json()
+    assert card["origin"] == DecisionOrigin.SIGNAL.value
+    assert card["interpretation"]["explanation"] == "E"
+    assert card["impact"] == {}
+    assert card["actions"] == []
+
+
+# ── decision → impact → state → transition → event → ERP ────────────────────
+def test_the_drill_down_walks_all_the_way_to_an_erp_record(api):
+    owner = api.hdr("s.menon@sanketh.in")
+    rows = api.get("/api/v1/decisions", headers=owner).json()
+    row = next(r for r in rows
+               if r["decision_type"] == DecisionType.INV_DEAD_STOCK.value)
+    trace = api.get(f"/api/v1/decisions/{row['decision_id']}/trace",
+                    headers=owner).json()
+
+    assert trace["unavailable"] is None
+    assert trace["impact"] and trace["rationale"]
+
+    level = trace["states"][0]
+    assert level["state"] == "INVENTORY"
+    assert level["label"] == "Reamer 12H7"
+    assert level["as_of"] == TODAY.isoformat()
+    assert level["value"]["on_hand"] == "1000"
+    assert level["thresholds_version"]
+
+    steps = level["transitions"]
+    assert steps, "a state key must lead to the events that moved it"
+    assert level["transitions_total"] >= len(steps)
+    # Newest first: what moved this most recently is what can still be acted on.
+    assert [s["occurred_on"] for s in steps] == sorted(
+        (s["occurred_on"] for s in steps), reverse=True)
+
+    # …and the bottom of the chain is a document somebody can open in Zoho.
+    erp = [s["erp"] for s in steps if s["erp"]]
+    assert erp
+    assert {e["record_type"] for e in erp} <= {"invoice", "bill", "stock"}
+    assert all(e["record_id"] for e in erp)
+
+
+def test_the_drill_down_reaches_the_bill_the_purchase_rate_came_from(api):
+    """The claim the whole chain exists to support: the ₹5,00,000 on the card
+    is 1,000 × 500, and the 500 came from a bill with a number on it."""
+    owner = api.hdr("s.menon@sanketh.in")
+    rows = api.get("/api/v1/decisions", headers=owner).json()
+    row = next(r for r in rows
+               if r["decision_type"] == DecisionType.INV_DEAD_STOCK.value)
+    trace = api.get(f"/api/v1/decisions/{row['decision_id']}/trace",
+                    headers=owner).json()
+
+    steps = trace["states"][0]["transitions"]
+    cost = next(s for s in steps if s["event_type"] == "COST_LINE_RECORDED")
+    assert cost["erp"]["record_type"] == "bill"
+    assert cost["erp"]["record_id"] == "b1"
+    assert any(field == "last_unit_cost" and value == "500"
+               for _op, field, value in cost["changes"])
+
+
+def test_a_signal_decision_says_it_has_no_state_rather_than_showing_a_gap(api, session):
+    session.add(models.Decision(
+        organization_id=ORG, decision_key="dk_sig2",
+        decision_type=DecisionType.CUSTOMER_DORMANCY.value,
+        subject_entity_type="CUSTOMER",
+        subject_entity_id=session.query(models.Customer).first().customer_id,
+        assigned_role="SALES_MANAGER", status=DecisionStatus.OPEN.value))
+    session.commit()
+
+    owner = api.hdr("s.menon@sanketh.in")
+    rows = api.get("/api/v1/decisions", headers=owner).json()
+    row = next(r for r in rows
+               if r["decision_type"] == DecisionType.CUSTOMER_DORMANCY.value)
+    trace = api.get(f"/api/v1/decisions/{row['decision_id']}/trace",
+                    headers=owner).json()
+    assert trace["states"] == []
+    assert "signal" in trace["unavailable"].lower()
+
+
+def test_a_salesperson_cannot_reach_a_state_card_or_its_trace(api):
+    """404 rather than 403, so scope is not probeable."""
+    owner = api.hdr("s.menon@sanketh.in")
+    sales = api.hdr("r.nair@sanketh.in")
+    rows = api.get("/api/v1/decisions", headers=owner).json()
+    row = next(r for r in rows
+               if r["decision_type"] == DecisionType.INV_DEAD_STOCK.value)
+
+    assert api.get("/api/v1/decisions", headers=sales).json() == []
+    for path in ("detail", "trace"):
+        r = api.get(f"/api/v1/decisions/{row['decision_id']}/{path}", headers=sales)
+        assert r.status_code == 404
+
+
+def test_a_supplier_card_is_named_after_the_supplier(api):
+    """A vendor is its own kind of subject; borrowing CUSTOMER would resolve to
+    the wrong party's name or to a bare uuid."""
+    card = _card(api, DecisionType.SUP_OPEN_COMMITMENT.value)
+    assert card["subject_entity_type"] == "VENDOR"
+    assert card["subject_label"] == "Kennametal India"

@@ -141,13 +141,21 @@ class _Idle:
                         "last_sold_on": last_sold.isoformat() if last_sold else None,
                         "units_sold_to_date": str(number(value, "units_sold") or 0),
                     }),
+                # The sentence explains the situation; the money lives in the
+                # impact beside it. Repeating the figures here would print them
+                # unformatted — the server does not know how this organization
+                # renders currency — and would give the reader two versions of
+                # one number to reconcile.
                 rationale=(
                     f"{on_hand} on the shelf, "
-                    + (f"nothing sold for {idle} days" if idle is not None
-                       else "never sold since the platform has been reading this book")
-                    + f". At {rate} each that is {capital} of capital, "
-                      f"costing {monthly} a month to keep at the "
-                      f"{policy.carrying_annual_pct} annual carrying rate."),
+                    + (f"and nothing sold for {idle} days" if idle is not None
+                       else "and never sold since the platform has been reading "
+                            "this book")
+                    + f". Bought at {rate} each and carried at "
+                      # normalize(), because Decimal("0.18") * 100 is
+                      # Decimal("18.00") and "18.00%" reads like a precision
+                      # the rate does not have.
+                      f"{(policy.carrying_annual_pct * 100).normalize()}% a year."),
                 evidence={
                     "state": INVENTORY, "key": product_id,
                     "on_hand": str(on_hand), "purchase_rate": str(rate),
@@ -263,8 +271,8 @@ class ExcessCoverDetector:
                     f"{on_hand} on the shelf against {sold} sold in "
                     f"{observed_days} days — "
                     f"{cover_months.quantize(Decimal('0.1'))} months of cover at "
-                    "the rate this item has actually moved. Holding beyond "
-                    f"{policy.excess_cover_months} months ties up {excess_value}."),
+                    "the rate this item has actually moved, where the policy "
+                    f"allows {policy.excess_cover_months:g}."),
                 evidence={
                     "state": INVENTORY, "key": product_id,
                     "on_hand": str(on_hand), "units_sold": str(sold),
@@ -326,10 +334,9 @@ class BelowReorderDetector:
                         "shortfall": str(shortfall),
                     }),
                 rationale=(
-                    f"{on_hand} on hand against a reorder point of {reorder}. "
-                    f"This item has earned {revenue} across {sold} units, so "
-                    f"the {shortfall} units below the point represent "
-                    f"{at_risk} of trade at the price it has actually sold at."),
+                    f"{on_hand} on hand against a reorder point of {reorder}, "
+                    f"so it is {shortfall} short. Sized at the price this item "
+                    f"has actually sold at across {sold} units."),
                 evidence={
                     "state": INVENTORY, "key": product_id,
                     "on_hand": str(on_hand), "reorder_level": str(reorder),

@@ -9,9 +9,10 @@ import {
   papi,
   savePlatformSession,
 } from "./api";
-import type { Account, DecisionDetail, DecisionSummary, PlatformSession, Role, StatusFilter } from "./types";
-import { aiState, factLabel, factValue, isPrimaryFact } from "./format";
-import { Bp, Conf, FactChip, Interpretation, Labelled, Pri, Tip, typeLabel } from "./ui";
+import type { Account, DecisionDetail, DecisionSummary, DecisionTrace, PlatformSession, Role, StatusFilter } from "./types";
+import { aiState, factLabel, factValue, isPrimaryFact, stateFieldLabel } from "./format";
+import { ActionsPanel, Bp, Conf, FactChip, ImpactPanel, Interpretation, Labelled, Pri,
+         RankingPanel, Tip, WhyPanel, typeLabel } from "./ui";
 import { navigate, parseHash, type Screen } from "./route";
 import { ApprovalsScreen, SettingsScreen } from "./AdminScreens";
 import { IdentityScreen } from "./IdentityScreen";
@@ -499,6 +500,7 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
         {screen === "detail" && detailId && (
           <DetailScreen
             d={details[detailId]}
+            token={session.token}
             loading={loading}
             onBack={() => go("list")}
             onAct={(kind) => setModal({ id: detailId, kind })}
@@ -645,7 +647,18 @@ function ListScreen({
   setListType: (t: string) => void;
   onOpen: (id: string) => void;
 }) {
-  const types = ["", "CUSTOMER_DECLINE", "CUSTOMER_DORMANCY", "MARGIN_DETERIORATION", "COST_PASS_THROUGH", "QUOTE_CONTEXT"];
+  // Derived from what is actually in the queue rather than hardcoded. There
+  // are twelve decision types now and a fixed list of five silently hid seven
+  // of them — while a fixed list of twelve would put chips on screen for
+  // categories this book has never raised. Ordered by how many rows each has,
+  // so the busiest filter is the easiest to reach.
+  const counts = new Map<string, number>();
+  for (const s of summaries || []) {
+    counts.set(s.decision_type, (counts.get(s.decision_type) || 0) + 1);
+  }
+  const types = ["", ...[...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([t]) => t)];
   const rows = (summaries || []).filter((s) => !listType || s.decision_type === listType);
   return (
     <div>
@@ -660,7 +673,7 @@ function ListScreen({
             className={`btn btn-sm ${listType === t ? "btn-primary" : "btn-secondary"}`}
             onClick={() => setListType(t)}
           >
-            {t ? typeLabel(t) : "All"}
+            {t ? `${typeLabel(t)} ${counts.get(t)}` : `All ${(summaries || []).length}`}
           </button>
         ))}
       </div>
@@ -704,20 +717,41 @@ function ListScreen({
               valueFormatter: (p) => p.value || "…",
             },
             {
+              // Two producers, two answers to "why". A signal decision has a
+              // reading of the evidence; a state one has the arithmetic that
+              // produced it. Showing the AI field for both left every state
+              // row with an em dash in the column people scan to decide what
+              // to open.
               headerName: "Why", flex: 1.6, minWidth: 260, filter: "agTextColumnFilter",
-              valueGetter: (p) => p.data?.detail?.interpretation.explanation ?? "",
+              valueGetter: (p) =>
+                (p.data?.detail?.origin === "STATE"
+                  ? p.data?.detail?.rationale
+                  : p.data?.detail?.interpretation.explanation) ?? "",
               valueFormatter: (p) => p.value || "—",
               tooltipValueGetter: (p) => String(p.value || ""),
             },
             {
-              headerName: "Confidence", width: 150, flex: 0, sortable: false,
+              // Likewise: a state decision is worth a number of rupees, and a
+              // signal decision is backed by an amount of evidence. Neither
+              // column can carry both, so the cell renders whichever the row
+              // actually has.
+              headerName: "Worth / confidence", width: 165, flex: 0, sortable: false,
               filter: false,
-              headerTooltip: "How much evidence stands behind the reading — not "
-                + "how sure a model is.",
-              cellRenderer: (p: { data?: DecisionRow }) =>
-                p.data?.detail
-                  ? <Conf level={p.data.detail.confidence?.evidence_sufficiency} />
-                  : <span className="viz-muted">—</span>,
+              headerTooltip: "For a decision folded from business state, what it "
+                + "is worth. For one raised from a signal, how much evidence "
+                + "stands behind the reading — not how sure a model is.",
+              cellRenderer: (p: { data?: DecisionRow }) => {
+                const d = p.data?.detail;
+                if (!d) return <span className="viz-muted">—</span>;
+                if (d.origin === "STATE") {
+                  return d.impact?.financial
+                    ? <b style={{ fontVariantNumeric: "tabular-nums" }}>
+                        {money(d.impact.financial)}
+                      </b>
+                    : <span className="viz-muted">not sizeable</span>;
+                }
+                return <Conf level={d.confidence?.evidence_sufficiency} />;
+              },
             },
             { field: "status", headerName: "Status", width: 120, flex: 0,
               filter: "agTextColumnFilter" },
@@ -729,14 +763,129 @@ function ListScreen({
 }
 
 // ── detail screen ────────────────────────────────────────────────────────────
+/** The drill-down: decision → state → transition → event → ERP record.
+ *
+ *  Collapsed by default and fetched only when opened. Almost nobody opens it —
+ *  but the people who do are the ones asking "where did this number come
+ *  from", and until now the honest answer was a shrug. Paying for the chain on
+ *  every card view would be paying for the exception.
+ */
+function TracePanel({ decisionId, token }: { decisionId: string; token: string }) {
+  const [open, setOpen] = useState(false);
+  const [trace, setTrace] = useState<DecisionTrace | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    // Reset when the card changes, or the panel would show the last
+    // decision's chain under this one's heading.
+    setOpen(false);
+    setTrace(null);
+    setError(null);
+  }, [decisionId]);
+
+  useEffect(() => {
+    if (!open || trace) return;
+    let live = true;
+    papi.getTrace(token, decisionId)
+      .then((t) => { if (live) setTrace(t); })
+      .catch((e) => { if (live) setError(String(e?.message || e)); });
+    return () => { live = false; };
+  }, [open, trace, token, decisionId]);
+
+  return (
+    <>
+      <div className="section-h">
+        <Labelled tip="Every hop from this decision down to the document in Zoho it was ultimately read from. Nothing in the chain is stored twice — each step is a lookup along a key that already exists, so it cannot disagree with the card above it.">
+          Where this came from
+        </Labelled>
+      </div>
+      <button className="btn btn-ghost btn-sm" onClick={() => setOpen(!open)}>
+        {open ? "Hide the chain" : "Trace it to the source →"}
+      </button>
+
+      {open && error && (
+        <div className="dp-empty" style={{ padding: 12, textAlign: "left" }}>
+          The chain could not be loaded: {error}
+        </div>
+      )}
+      {open && !trace && !error && <div className="dp-loading">Following the chain…</div>}
+      {open && trace?.unavailable && (
+        <div className="dp-empty" style={{ padding: 12, textAlign: "left" }}>
+          {trace.unavailable}
+        </div>
+      )}
+
+      {open && trace?.states.map((level) => (
+        <div className="trace" key={`${level.state}:${level.key}`}>
+          <div className="trace-level">
+            <span className="trace-mark">Business state</span>
+            <b>{level.state}</b> · {level.label} · as of {formatDate(level.as_of)}
+            <div className="text-muted" style={{ fontSize: 11 }}>
+              folded from {level.event_count} event{level.event_count === 1 ? "" : "s"}
+              {level.thresholds_version ? ` · policy ${level.thresholds_version}` : ""}
+            </div>
+          </div>
+
+          <div className="trace-level">
+            <span className="trace-mark">
+              State transitions · what moved it
+              {level.transitions_total > level.transitions.length &&
+                ` (newest ${level.transitions.length} of ${level.transitions_total})`}
+            </span>
+            <table className="facttable trace-table">
+              <tbody>
+                {level.transitions.map((t) => (
+                  <tr key={t.event_seq}>
+                    <td>
+                      {formatDate(t.occurred_on)}
+                      <div className="fsrc">{t.event_type.toLowerCase().replace(/_/g, " ")}</div>
+                    </td>
+                    <td>
+                      {t.changes.map(([op, field, value], i) => (
+                        <div key={i} className="trace-change">
+                          <span className="op">{op}</span> {stateFieldLabel(field)}
+                          {" → "}<b>{String(value)}</b>
+                        </div>
+                      ))}
+                    </td>
+                    {/* The bottom of the chain: a document somebody can open.
+                        A stock reading is the exception — it rides on the item
+                        list rather than being a document of its own, and
+                        printing a synthetic id would send somebody looking in
+                        Zoho for something that is not there. */}
+                    <td className="fv">
+                      {!t.erp ? (
+                        <span className="text-muted">event no longer held</span>
+                      ) : t.erp.record_type === "stock" ? (
+                        <span className="text-muted">counted from the item list</span>
+                      ) : (
+                        <span title={t.erp.system}>
+                          {t.erp.record_type} {t.erp.record_id}
+                          {t.erp.line_id ? ` · line ${t.erp.line_id}` : ""}
+                        </span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ))}
+    </>
+  );
+}
+
 function DetailScreen({
   d,
+  token,
   loading,
   onBack,
   onAct,
   onOpenAccount,
 }: {
   d: DecisionDetail | undefined;
+  token: string;
   loading: boolean;
   onBack: () => void;
   onAct: (kind: string) => void;
@@ -746,6 +895,10 @@ function DetailScreen({
   if (!d) return <div className="dp-empty">Decision not found in this view.</div>;
   const state = aiState(d.interpretation.status);
   const closed = d.status !== "OPEN" && d.status !== "VIEWED";
+  // Two producers, two kinds of claim, two cards. Read from the row rather
+  // than sniffed from which fields are populated — a signal decision with an
+  // empty impact must not render as a state one worth nothing.
+  const fromState = d.origin === "STATE";
   return (
     <div>
       <button className="btn btn-ghost btn-sm" onClick={onBack} style={{ marginBottom: 10 }}>
@@ -759,8 +912,27 @@ function DetailScreen({
       <h1 style={{ margin: "2px 0 18px" }}>{d.subject_label}</h1>
 
       <div className="dp-split">
-        {/* LEFT — facts */}
+        {/* LEFT — what the data shows. For a state decision that is the
+            impact, the reason and the evidence it was computed from; for a
+            signal decision it is the facts the detector measured. */}
         <div>
+          {fromState ? (
+            <>
+              <ImpactPanel impact={d.impact} />
+              <WhyPanel rationale={d.rationale} evidence={d.state_evidence} />
+              <TracePanel decisionId={d.decision_id} token={token} />
+              {d.human_action && (
+                <>
+                  <div className="section-h">Human log</div>
+                  <div className="evi">
+                    <span>{d.human_action.action} · {d.human_action.note || "no note"}</span>
+                    <span className="text-muted">{formatDate(d.human_action.acted_at)}</span>
+                  </div>
+                </>
+              )}
+            </>
+          ) : (
+          <>
           <div className="facts-mark">Facts · what the data shows</div>
           {d.facts.length === 0 ? (
             <div className="dp-empty" style={{ padding: 16, textAlign: "left" }}>
@@ -813,19 +985,35 @@ function DetailScreen({
               </div>
             </>
           )}
+          </>
+          )}
         </div>
 
-        {/* RIGHT — interpretation + action */}
+        {/* RIGHT — what to do about it */}
         <div>
+          {fromState ? (
+            <>
+              <ActionsPanel actions={d.actions} />
+              <RankingPanel ranking={d.ranking} />
+              <div className="text-muted" style={{ fontSize: 11, marginTop: 8 }}>
+                Computed from business state as of {d.state.as_of || "—"} ·
+                no model was involved
+                <Tip text="This decision is arithmetic over folded business state. Nothing about it was written or scored by a model, which is why it carries no confidence percentage — it carries its working instead." />
+              </div>
+            </>
+          ) : (
+          <>
           <Interpretation d={d} />
           <div style={{ display: "flex", gap: 8, alignItems: "center", margin: "10px 0 4px" }}>
             <Conf level={d.confidence?.evidence_sufficiency} aiStatus={d.interpretation.status} />
             <span className="text-muted" style={{ fontSize: 11 }}>
               priority {d.priority.score}/100 · base {d.priority.deterministic_base}
               {d.priority.ai_adjustment ? ` · ai ${d.priority.ai_adjustment > 0 ? "+" : ""}${d.priority.ai_adjustment}` : ""}
-              <Tip text="The base is computed from the signal's own figures. Any AI adjustment is shown separately and cannot move the score far — so a model can nudge the ordering of the queue but never invent an urgent item." />
+              <Tip text="The base is computed from the signal's own figures. Any AI adjustment is shown separately and cannot move the score far — and the queue orders on the base, so a model can colour a card but never move it up the list." />
             </span>
           </div>
+          </>
+          )}
 
           {!closed && (
             <div className="action-panel">
@@ -835,7 +1023,9 @@ function DetailScreen({
                 </button>
               )}
               <button className="btn btn-secondary" onClick={() => onAct("modify")}>
-                Do something different
+                {/* A state decision offers options and recommends none, so
+                    there is nothing to "do differently" from. */}
+                {fromState ? "Record what you did" : "Do something different"}
               </button>
               <div style={{ display: "flex", gap: 8 }}>
                 <button className="btn btn-ghost btn-sm" onClick={() => onAct("dismiss")}>

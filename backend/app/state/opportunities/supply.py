@@ -92,8 +92,8 @@ class OpenCommitmentDetector:
                         "pending_qty": (str(pending) if pending is not None else None),
                     }),
                 rationale=(
-                    f"{open_orders} order(s) worth {money(committed)} placed "
-                    "with this supplier and still unreceived"
+                    f"{open_orders} order(s) placed with this supplier and "
+                    "still unreceived"
                     + (f", the oldest open for {age} days" if age is not None else "")
                     + ". This book records no promised delivery dates, so the "
                       "age is reported rather than measured against a promise."),
@@ -150,8 +150,8 @@ class OverduePayableDetector:
                             number(value, "payables_balance") or Decimal(0)),
                     }),
                 rationale=(
-                    f"{money(overdue)} is past due with this supplier across "
-                    f"{value.get('overdue_bills') or 0} bill(s)"
+                    f"{value.get('overdue_bills') or 0} bill(s) past due with "
+                    "this supplier"
                     + (f", the earliest by {days_past} days" if days_past else "")
                     + (f". A further {unageable} bill(s) carry no payment terms "
                        "and cannot be aged." if unageable else ".")),

@@ -1,4 +1,4 @@
-import type { Account, AccountItem, StatusFilter, ApprovalRequest, EntityKind, Identity, IdentityPolicy, IdentitySuggestion, ConnectionCheck, ConnectionsView, FixedThresholds, MarginPolicy, MarginPolicyPatch, NewConnectionInput, ZohoConnection, ZohoCredential, ZohoVisibleOrg, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, OrgPolicy, PlatformSession, PlatformUser, QuoteGate, Role, SyncOptions, SyncStartResponse, SyncState, ThresholdView, ZohoConnectionInput } from "./types";
+import type { Account, AccountItem, StatusFilter, ApprovalRequest, EntityKind, Identity, IdentityPolicy, IdentitySuggestion, ConnectionCheck, ConnectionsView, FixedThresholds, MarginPolicy, MarginPolicyPatch, NewConnectionInput, ZohoConnection, ZohoCredential, ZohoVisibleOrg, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, DecisionTrace, OrgPolicy, PlatformSession, PlatformUser, QuoteGate, Role, SyncOptions, SyncStartResponse, SyncState, ThresholdView, ZohoConnectionInput } from "./types";
 
 import { setMoneyCurrency } from "../money";
 import { setBusinessTimezone } from "../when";
@@ -88,6 +88,13 @@ export const papi = {
   },
 
   getDetail: (t: string, id: string) => req<DecisionDetail>(`/api/v1/decisions/${id}/detail`, {}, t),
+
+  /** Why a decision exists, all the way down to the ERP record.
+   *
+   *  Fetched on demand rather than with the card: the chain can run to
+   *  hundreds of transitions and almost nobody opens it, so paying for it on
+   *  every card view would be paying for the exception. */
+  getTrace: (t: string, id: string) => req<DecisionTrace>(`/api/v1/decisions/${id}/trace`, {}, t),
 
   act: (t: string, id: string, body: { action: string; note?: string; reason?: string }) =>
     req<DecisionSummary>(`/api/v1/decisions/${id}/action`, { method: "POST", body: JSON.stringify(body) }, t),

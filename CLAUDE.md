@@ -18,13 +18,17 @@ deterministically, from persisted rows. A model may *read* those numbers and
 phrase them. It may never produce one. This is what makes an output auditable
 and reproducible, and it is the reason the platform is trusted at all.
 
-Mechanically: `commercial/`, `signals/` and `ingestion/` must not import `ai/`,
-and `ai/` must not import `commercial/`. `decisions/` is the single seam where
-deterministic facts meet interpretation.
+Mechanically: `commercial/`, `signals/`, `ingestion/` and `state/` must not
+import `ai/`, and `ai/` must not import `commercial/`. `decisions/` is the
+single seam where deterministic facts meet interpretation.
+
+This is enforced by `tests/decision_platform/test_layer_boundaries.py`, which
+parses the imports rather than grepping them, so a package named in a comment
+cannot fail the build. The greps below are the same check by hand:
 
 ```bash
 # Must print nothing. If it prints, the invariant is broken — fix, don't explain.
-rg -n '^\s*(from|import)\s+\.*\.?ai[\. ]' backend/app/commercial backend/app/signals backend/app/ingestion
+rg -n '^\s*(from|import)\s+\.*\.?ai[\. ]' backend/app/commercial backend/app/signals backend/app/ingestion backend/app/state
 rg -n '^\s*(from|import)\s+.*commercial' backend/app/ai
 ```
 
@@ -111,6 +115,10 @@ backend/app/
   commercial/    Deterministic computation: metrics, thresholds, policy,
                  quote assessment. The numbers live here. Never imports ai/.
   signals/       Detectors over persisted rows. Never imports ai/.
+  state/         The event log, and what is derived from it. Append-only,
+                 superseded-not-mutated, and *derived* — Zoho is the system of
+                 record, so a complete re-sync rebuilds it from nothing.
+                 Never imports ai/.
   decisions/     The seam: deterministic signal in, AI reading out. May import ai/.
   ai/            Providers, prompts, validation, telemetry. Receives facts;
                  never computes them. Never imports commercial/.

@@ -33,6 +33,8 @@ from ..clock import today as _clock_today
 from ..config import settings
 from ..domain import models
 from ..repositories import ReadModelRepository
+from ..state import events as ev
+from ..state.events import EventLog, Source
 from ..trust import vault
 from .normalize import (
     NormalizationError,
@@ -214,6 +216,12 @@ class SyncService:
         self.repo = ReadModelRepository(session, organization_id,
                                         connector=connector,
                                         connection_id=connection_id)
+        # The event log is written in this same pass, from the same normalised
+        # DTOs. Not a second traversal: a log assembled later from the read
+        # model could only ever record what survived, which is the one thing an
+        # event log is supposed to be able to contradict.
+        self.log = EventLog(session, organization_id, connector=connector,
+                            connection_id=connection_id)
         self.report = SyncReport(organization_id=organization_id)
         # customer_external_id -> (invoice date, salesperson_id, salesperson_name)
         self._owners: dict[str, tuple[date, str, str]] = {}
@@ -399,12 +407,21 @@ class SyncService:
         if all(raw.get(k) is None for k in
                ("stock_on_hand", "available_stock", "actual_available_stock")):
             return
+        item_id = str(raw.get("item_id", "?"))
         try:
-            self.repo.upsert_stock_snapshot(product.product_id,
-                                            normalize_stock(raw, as_of))
-            self.report.stock_snapshots += 1
+            snap = normalize_stock(raw, as_of)
         except NormalizationError as e:
-            self.report.skip("stock", str(raw.get("item_id", "?")), e.code, e.detail)
+            self.report.skip("stock", item_id, e.code, e.detail)
+            return
+        self.repo.upsert_stock_snapshot(product.product_id, snap)
+        # An observation, not a change: the same item observed again tomorrow
+        # is a second event, and the day it was taken on is the key. Superseded
+        # per (item, day) so a sync run twice in one afternoon is a correction.
+        observation = f"{item_id}:{as_of.isoformat()}"
+        self.log.supersede("stock", observation)
+        self.log.record(ev.STOCK_OBSERVED, snap.as_of,
+                        Source("stock", observation), snap)
+        self.report.stock_snapshots += 1
 
     def _sync_payments(self) -> None:
         for raw in self.source.list_customer_payments(
@@ -424,6 +441,11 @@ class SyncService:
                                  f"no customer {payment.customer_external_id}")
                 continue
             self.repo.upsert_payment(customer.customer_id, payment)
+            self.log.supersede("customer_payment", ref)
+            self.log.record(ev.PAYMENT_RECEIVED, payment.date,
+                       Source("customer_payment", ref,
+                              modified_at=str(raw.get("last_modified_time") or "")),
+                       payment)
             self.repo.mark_ingested("customerpayment", ref,
                                     str(raw.get("last_modified_time") or ""))
             self.report.payments += 1
@@ -444,6 +466,9 @@ class SyncService:
                 # supplier. Kept, with a null vendor, rather than dropped.
                 vendor_id = vendor.vendor_id if vendor else None
             self.repo.upsert_purchase_order(vendor_id, po)
+            self.log.supersede("purchase_order", po.external_ref)
+            self.log.record(ev.PURCHASE_ORDER_PLACED, po.date,
+                       Source("purchase_order", po.external_ref), po)
             self.report.purchase_orders += 1
 
     def _sync_sales_orders(self) -> None:
@@ -463,6 +488,9 @@ class SyncService:
                 # order against an unknown supplier is kept.
                 customer_id = customer.customer_id if customer else None
             self.repo.upsert_sales_order(customer_id, so)
+            self.log.supersede("sales_order", so.external_ref)
+            self.log.record(ev.SALES_ORDER_PLACED, so.date,
+                       Source("sales_order", so.external_ref), so)
             self.report.sales_orders += 1
 
     def _sync_vendor_payments(self) -> None:
@@ -478,6 +506,9 @@ class SyncService:
                 vendor = self.repo.get_vendor_by_external(vp.vendor_external_id)
                 vendor_id = vendor.vendor_id if vendor else None
             self.repo.upsert_vendor_payment(vendor_id, vp)
+            self.log.supersede("vendor_payment", vp.external_ref)
+            self.log.record(ev.PAYMENT_MADE, vp.date,
+                       Source("vendor_payment", vp.external_ref), vp)
             self.report.vendor_payments += 1
 
     def finish(self) -> None:
@@ -576,6 +607,7 @@ class SyncService:
     def _sync_invoices(self) -> None:
         for raw in self.source.list_invoices(skip=self._skipper("invoice")):
             ref = str(raw.get("invoice_id", "?"))
+            self.log.supersede("invoice", ref)
             try:
                 lines = normalize_invoice(raw)
             except NormalizationError as e:
@@ -584,6 +616,7 @@ class SyncService:
             by_line = {str(ln.get("line_item_id") or i): ln
                        for i, ln in enumerate(raw.get("line_items") or [])}
             number = str(raw.get("invoice_number") or ref)
+            self._read_lines(ev.SALE_LINE_RECORDED, "invoice", ref, raw, lines)
             for t in lines:
                 cust = self.repo.get_customer_by_external(t.customer_external_id)
                 prod = self.repo.get_product_by_external(t.product_external_id)
@@ -694,6 +727,11 @@ class SyncService:
     def _sync_bills(self) -> None:
         for raw in self.source.list_bills(skip=self._skipper("bill")):
             ref = str(raw.get("bill_id", "?"))
+            # One supersede per document, before anything is recorded from it.
+            # A bill produces two kinds of event — the payable and its cost
+            # lines — and superseding inside either emitter would retire the
+            # other's freshly written events.
+            self.log.supersede("bill", ref)
             # The payable header first, and before the line check: a bill with
             # no usable cost lines is still money owed, and dropping it here
             # would understate accounts payable by exactly the bills that are
@@ -704,6 +742,7 @@ class SyncService:
             except NormalizationError as e:
                 self.report.skip("bill", ref, e.code, e.detail)
                 continue
+            self._read_lines(ev.COST_LINE_RECORDED, "bill", ref, raw, lines)
             by_line = {str(ln.get("line_item_id") or i): ln
                        for i, ln in enumerate(raw.get("line_items") or [])}
             for r in lines:
@@ -727,6 +766,28 @@ class SyncService:
                 self.report.touched_product_ids.add(prod.product_id)
             self.repo.mark_ingested("bill", ref, str(raw.get("last_modified_time") or ""))
 
+    def _read_lines(self, event_type: str, doc_type: str, doc_id: str,
+                    raw: dict[str, Any], lines: list[Any]) -> None:
+        """Record one event per normalised line of a document.
+
+        Recorded before resolution, and regardless of it. An invoice line for a
+        retired item is still a sale that happened — the platform simply cannot
+        place it yet — and a log that only kept what resolved could never let
+        that line reappear when somebody un-retires the item in Zoho. The read
+        model's skip and the event stay consistent because both are derived
+        from the same DTO.
+
+        Superseding is the caller's, once per document: a bill emits two kinds
+        of event, and retiring inside here would take the other kind with it.
+        """
+        modified_at = str(raw.get("last_modified_time") or "")
+        for line in lines:
+            self.log.record(
+                event_type, line.date,
+                Source(doc_type, doc_id, line_id=line.source_ref.line_id,
+                       modified_at=modified_at),
+                line)
+
     def _record_payable(self, raw: dict[str, Any], ref: str) -> None:
         """Store what a bill still owes, from the payload the cost pull already
         holds — no extra call, no extra scope.
@@ -749,6 +810,10 @@ class SyncService:
             # choice purchase orders and payments out make.
             vendor_id = vendor.vendor_id if vendor else None
         self.repo.upsert_bill(vendor_id, terms)
+        self.log.record(ev.PAYABLE_RECORDED, terms.date,
+                   Source("bill", ref,
+                          modified_at=str(raw.get("last_modified_time") or "")),
+                   terms)
 
     def _sync_assignments(self) -> None:
         """Map Zoho's invoice salesperson onto ``customer.assigned_user_id``.

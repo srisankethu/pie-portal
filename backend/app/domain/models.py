@@ -1585,3 +1585,71 @@ class PurchaseOrderDoc(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
                                                  onupdate=_now)
+
+
+class BusinessEvent(Base):
+    """One thing that happened to the business, as this platform read it.
+
+    Append-only and ordered. It is **derived, not canonical**: Zoho is the
+    system of record and the platform never writes back, so an event is our
+    *reading* of a document, and an accountant correcting an invoice in Zoho
+    must win. Everything here is rebuildable from a complete re-sync, which is
+    what keeps replay honest — if the log and Zoho ever disagree, Zoho is right
+    and the log is re-derived, never reconciled by hand.
+
+    **Nothing mutates.** A document edited upstream does not update its events;
+    the old ones are stamped ``superseded_at`` and the new reading is appended
+    after them. So the log records what the platform believed *and when it
+    stopped believing it*, which is the whole point of keeping one.
+
+    ``superseded_at`` rather than a ``superseded_by`` pointer, deliberately: a
+    re-read replaces a document's events with a *set* of new ones, not one for
+    one — a nine-line invoice edited down to seven has no honest pairing. The
+    replacements are the live events sharing the same document reference, and a
+    single pointer would have to lie about which.
+
+    Two times, because they are different questions. ``occurred_on`` is when
+    the business fact happened — the invoice date, what every commercial
+    calculation must use. ``recorded_at`` is when this platform learned it.
+    Collapsing them would make a bill entered three weeks late look like it
+    happened three weeks late.
+
+    ``seq`` is a single global sequence rather than one per organization. It is
+    still a total order within any organization, it is the only thing that
+    survives two documents sharing a date, and one counter cannot drift from
+    another the way two can.
+    """
+
+    __tablename__ = "business_events"
+    __table_args__ = (
+        Index("ix_event_org_seq", "organization_id", "seq"),
+        # The supersede lookup: every re-read of a document asks this exact
+        # question before appending anything.
+        Index("ix_event_org_doc", "organization_id", "source_doc_type",
+              "source_doc_id"),
+        Index("ix_event_org_type_on", "organization_id", "event_type",
+              "occurred_on"),
+    )
+
+    seq: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    #: Which connected company this reading came from. Same provenance triple
+    #: the masters carry — an event with no source cannot be re-derived, and a
+    #: log that cannot be re-derived is not replayable.
+    connector: Mapped[Optional[str]] = mapped_column(String(32))
+    connection_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    event_type: Mapped[str] = mapped_column(String(48), index=True)
+    occurred_on: Mapped[date] = mapped_column(Date, index=True)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    #: The document this was read from, and the stamp it was read at. The same
+    #: triple ``IngestedDocument`` resumes on, so idempotency here reuses a
+    #: mechanism that already works rather than inventing a second one.
+    source_doc_type: Mapped[str] = mapped_column(String(32))
+    source_doc_id: Mapped[str] = mapped_column(String(128))
+    source_line_id: Mapped[Optional[str]] = mapped_column(String(128))
+    source_modified_at: Mapped[str] = mapped_column(String(64), default="")
+    #: The normalised DTO, JSON-encoded. Decimals and dates travel as strings
+    #: so replay parses them back exactly — a float round-trip would put binary
+    #: noise into a figure the whole platform is meant to reproduce.
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    superseded_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))

@@ -23,6 +23,7 @@ import { MonthPicker } from "./Seg";
 import { useCallback, useEffect, useState } from "react";
 import { money } from "../../money";
 import { Tip } from "../../Tip";
+import { VarianceIndicator } from "../kit";
 import { papi } from "../api";
 import type { PlatformSession } from "../types";
 import { Panel, stateOf } from "./Panel";
@@ -127,13 +128,15 @@ export function Storyboard({
         </div>
       </header>
 
-      {/* The single number, stated once, with its sign carried by a word as
-          well as a colour. */}
+      {/* The single number, stated once, with its sign carried by an arrow and
+          by the word beside it as well as a colour. `.story-hero-value` still
+          owns the display type scale; the component owns the direction and
+          reads its two colours from the theme rather than from a hex literal
+          in viz.css. */}
       {state === "ready" && data?.net_change !== undefined && (
         <div className="story-hero">
-          <span className={`story-hero-value ${data.net_change < 0 ? "down" : "up"}`}>
-            {data.net_change < 0 ? "−" : "+"}
-            {money(Math.abs(data.net_change))}
+          <span className="story-hero-value">
+            <VarianceIndicator value={data.net_change} sx={{ fontSize: "inherit" }} />
           </span>
           <span className="story-hero-label">
             {data.net_change < 0 ? "less" : "more"} than the period before

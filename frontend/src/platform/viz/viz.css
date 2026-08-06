@@ -108,8 +108,9 @@
   font-family: var(--font-heading); font-size: clamp(34px, 6vw, 52px);
   line-height: 1; font-variant-numeric: tabular-nums;
 }
-.story-hero-value.down { color: var(--viz-loss, #b0473d); }
-.story-hero-value.up { color: var(--viz-gain, #2f6ba8); }
+/* `.up`/`.down` are gone: the hero renders a `VarianceIndicator`, which
+   supplies the arrow and takes its two colours from the theme. This rule
+   keeps only the display type scale, which is genuinely a layout concern. */
 .story-hero-label { color: var(--color-neutral-600); font-size: 15px; }
 
 .beats { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
@@ -140,7 +141,6 @@
   background: var(--color-neutral-200); border-radius: 3px; padding: 2px 8px;
   font-size: 12.5px; font-variant-numeric: tabular-nums;
 }
-.beat-answers dd .btn + .btn { margin-left: 8px; }
 
 @media (max-width: 640px) {
   .beat-answers > div { grid-template-columns: 1fr; gap: 2px; }
@@ -199,9 +199,7 @@
 .wf-fill.neg { background: var(--viz-loss); }
 .wf-fill.pos { background: var(--viz-gain); }
 .wf-fill.flat { background: var(--viz-neutral); }
-.wf-row-value { font-size: 13px; font-variant-numeric: tabular-nums; font-weight: 600; }
-.wf-row-value.neg { color: var(--viz-loss); }
-.wf-row-value.pos { color: var(--viz-gain); }
+.wf-row-value { font-size: 13px; }
 
 /* ── weather fronts ──────────────────────────────────────────────────────── */
 .fronts { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
@@ -274,11 +272,7 @@
 }
 .cause-members { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 3px;
                  font-size: 13px; }
-.link-btn {
-  background: none; border: 0; padding: 0; font: inherit; color: var(--color-accent-700);
-  cursor: pointer; text-decoration: underline; text-underline-offset: 2px;
-}
-.link-btn:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+/* `.link-btn` and its focus ring are now `InlineLink` in platform/kit.tsx. */
 
 /* ── journey ─────────────────────────────────────────────────────────────── */
 .journey {
@@ -351,8 +345,6 @@
 .sim-col dd { margin: 0; font-variant-numeric: tabular-nums; }
 .sim-value { font-family: var(--font-heading); font-size: 28px; margin: 0;
              font-variant-numeric: tabular-nums; }
-.sim-col .pos, .wf-row-value.pos { color: var(--viz-gain); }
-.sim-col .neg, .wf-row-value.neg { color: var(--viz-loss); }
 .sim-note {
   font-size: 13px; color: var(--color-neutral-700); background: var(--color-neutral-200);
   border-left: 3px solid var(--viz-accent); padding: 10px 12px; border-radius: 0 3px 3px 0;
@@ -497,8 +489,6 @@
 .cash-aside-figures em {
   font-style: normal; font-variant-numeric: tabular-nums; font-weight: 600;
 }
-.cash-aside-figures .pos { color: var(--viz-gain); }
-.cash-aside-figures .neg { color: var(--viz-loss); }
 .viz-axis-note {
   font-size: 10.5px; fill: var(--color-neutral-600); font-style: italic;
   /* Same halo as the quadrant labels — a reference line sits where the data is. */
@@ -520,8 +510,6 @@
   background: color-mix(in srgb, var(--color-accent) 8%, transparent);
   border-left: 3px solid var(--color-accent);
 }
-.viz-headline .neg { color: var(--viz-loss); font-weight: 600; }
-.viz-headline .pos { color: var(--viz-gain); font-weight: 600; }
 
 /* A time axis shared by rows that each keep their own scale. The slot geometry
    has to match the tracks above it exactly or the labels stop pointing at the
@@ -542,8 +530,6 @@
   display: flex; justify-content: space-between; align-items: baseline;
   gap: 12px; font-size: 13px;
 }
-.multiple-name { text-align: left; font-weight: 600; min-width: 0; }
-.multiple-name:disabled { color: var(--color-neutral-600); cursor: default; text-decoration: none; }
 .multiple-total {
   font-variant-numeric: tabular-nums; white-space: nowrap;
   display: inline-flex; gap: 6px; align-items: baseline;
@@ -814,8 +800,6 @@
   font-family: var(--font-heading); font-size: 26px; line-height: 1.1;
   font-variant-numeric: tabular-nums;
 }
-.neg-figure-value.good { color: var(--viz-gain); }
-.neg-figure-value.bad { color: var(--viz-loss); }
 .neg-approval {
   padding: 10px 12px; border-left: 3px solid var(--viz-accent);
   background: color-mix(in srgb, var(--viz-accent) 8%, transparent);

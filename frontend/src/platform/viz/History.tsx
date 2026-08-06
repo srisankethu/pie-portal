@@ -12,6 +12,7 @@
 import { MonthPicker } from "./Seg";
 import { useState } from "react";
 import { money } from "../../money";
+import { InlineLink, VarianceIndicator } from "../kit";
 import { Tip } from "../../Tip";
 import { papi } from "../api";
 import type { PlatformSession } from "../types";
@@ -319,9 +320,7 @@ export function MigrationMatrix({
       <p className="viz-headline">
         <strong>{count(down)}</strong> moved down, <strong>{count(up)}</strong>{" "}
         moved up, <strong>{stayed}</strong> stayed. Net{" "}
-        <span className={netDelta < 0 ? "neg" : "pos"}>
-          {netDelta < 0 ? "−" : "+"}{money(Math.abs(netDelta))}
-        </span>{" "}
+        <VarianceIndicator value={netDelta} />{" "}
         across the two periods.
       </p>
 
@@ -437,10 +436,9 @@ export function MigrationMatrix({
             <ul>
               {members.map((m, i) => (
                 <li key={i}>
-                  <button type="button" className="link-btn"
-                          onClick={() => onNavigate(`customer/${String(m.customer_id)}`)}>
+                  <InlineLink onClick={() => onNavigate(`customer/${String(m.customer_id)}`)}>
                     {String(m.label)}
-                  </button>
+                  </InlineLink>
                   <span className="viz-muted">
                     {money(Number(m.previous))} → {money(Number(m.current))}
                   </span>
@@ -488,10 +486,9 @@ function MoveButton({
         <ul className="mig-members-inline">
           {members.map((m, i) => (
             <li key={i}>
-              <button type="button" className="link-btn"
-                      onClick={() => onNavigate(`customer/${String(m.customer_id)}`)}>
+              <InlineLink onClick={() => onNavigate(`customer/${String(m.customer_id)}`)}>
                 {String(m.label)}
-              </button>
+              </InlineLink>
               <span className="viz-muted">
                 {money(Number(m.previous))} → {money(Number(m.current))}
               </span>

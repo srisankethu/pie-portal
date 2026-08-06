@@ -22,6 +22,7 @@ import { scaleLinear, scaleSqrt } from "d3-scale";
 import { MonthPicker, Seg } from "./Seg";
 import { money } from "../../money";
 import { Tip } from "../../Tip";
+import { InlineLink } from "../kit";
 import { papi } from "../api";
 import type { PlatformSession } from "../types";
 import { Figure, Panel, ValueAxis, stateOf } from "./Panel";
@@ -416,14 +417,13 @@ export function CompositionScreen({
               return (
                 <div className="multiple" key={i}>
                   <div className="multiple-head">
-                    <button
-                      type="button"
-                      className="link-btn multiple-name"
+                    <InlineLink
+                      bold
                       disabled={!openable}
                       onClick={() => onNavigate(`customer/${String(s.key)}`)}
                     >
                       {String(s.label)}
-                    </button>
+                    </InlineLink>
                     <span className="multiple-total">
                       {measure === "orders" ? `${total} orders` : money(total)}
                       <span className={`multiple-dir ${dir}`}>

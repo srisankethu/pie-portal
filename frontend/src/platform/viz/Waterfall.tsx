@@ -21,6 +21,7 @@
 import { scaleBand, scaleLinear } from "d3-scale";
 
 import { money } from "../../money";
+import { VarianceIndicator } from "../kit";
 import { Figure, ValueAxis } from "./Panel";
 import { BUCKET_LABEL, BUCKET_SIGN } from "./tokens";
 import { compactMoney, useMeasure } from "./useMeasure";
@@ -365,9 +366,11 @@ function HorizontalBars({
                 }
               />
             </span>
-            <span className={`wf-row-value ${sign < 0 ? "neg" : "pos"}`}>
-              {s.amount >= 0 ? "+" : "−"}
-              {money(Math.abs(s.amount))}
+            {/* The bar above keeps its colour — that is an encoding, and it has
+                a legend. This figure had the same two colours and nothing else,
+                so in greyscale a gain and a loss read identically. */}
+            <span className="wf-row-value">
+              <VarianceIndicator value={s.amount} />
             </span>
           </div>
         );

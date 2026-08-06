@@ -23,6 +23,7 @@ import AlertTitle from "@mui/material/AlertTitle";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Chip from "@mui/material/Chip";
+import Link from "@mui/material/Link";
 import Paper from "@mui/material/Paper";
 import Skeleton from "@mui/material/Skeleton";
 import Stack from "@mui/material/Stack";
@@ -143,7 +144,7 @@ export function PercentageValue({
  *  the meaning, because up is good for revenue and bad for days-to-pay and the
  *  component cannot know which. */
 export function VarianceIndicator({
-  value, label, format = "currency", digits = 1, invert = false,
+  value, label, format = "currency", digits = 1, invert = false, sx,
 }: {
   value: number | null | undefined;
   /** e.g. "against last quarter". Optional, and worth writing. */
@@ -152,6 +153,9 @@ export function VarianceIndicator({
   digits?: number;
   /** True when down is the good direction — days late, cost, idle stock. */
   invert?: boolean;
+  /** For the display-sized heroes, which pass `fontSize: "inherit"` so the
+   *  surrounding type scale wins. The arrow already inherits. */
+  sx?: object;
 }) {
   if (value == null) return <Typography variant="body2" color="text.secondary">—</Typography>;
   const flat = value === 0;
@@ -173,6 +177,7 @@ export function VarianceIndicator({
           fontVariantNumeric: "tabular-nums",
           fontWeight: 600,
           color: flat ? "text.secondary" : good ? "success.main" : "error.main",
+          ...sx,
         }}
       >
         {format === "currency"
@@ -185,6 +190,52 @@ export function VarianceIndicator({
         <Typography variant="caption" color="text.secondary">{label}</Typography>
       )}
     </Stack>
+  );
+}
+
+/** A name inside a sentence or a chart that opens the thing it names.
+ *
+ *  Replaces the `.link-btn` buttons in `viz.css`. They were `<button>`s dressed
+ *  as links: correct semantics for something that navigates within a SPA, but
+ *  every one of them had to re-declare its own underline, colour and focus
+ *  ring, and the disabled state was a second class (`.multiple-name:disabled`)
+ *  that only one of the five had. `Link component="button"` keeps the button
+ *  semantics and brings the rest from the theme. */
+export function InlineLink({
+  children, onClick, disabled = false, bold = false, sx,
+}: {
+  children: ReactNode;
+  onClick: () => void;
+  disabled?: boolean;
+  /** For a name that heads its own row rather than sitting mid-sentence. */
+  bold?: boolean;
+  sx?: object;
+}) {
+  return (
+    <Link
+      component="button"
+      type="button"
+      variant="body2"
+      underline={disabled ? "none" : "always"}
+      disabled={disabled}
+      onClick={onClick}
+      sx={{
+        font: "inherit",
+        textAlign: "left",
+        minWidth: 0,
+        // A `<button>` is `vertical-align: middle` by default, which lifts the
+        // name off the baseline of the amount sitting next to it.
+        verticalAlign: "baseline",
+        fontWeight: bold ? 600 : undefined,
+        // A disabled name is still worth reading — it is a customer who cannot
+        // be opened, not an absent one.
+        color: disabled ? "text.secondary" : undefined,
+        cursor: disabled ? "default" : "pointer",
+        ...sx,
+      }}
+    >
+      {children}
+    </Link>
   );
 }
 

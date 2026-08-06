@@ -18,6 +18,7 @@
 // exists for: give something to the customer, ask something of the vendor, and
 // see immediately what each does to the same figure.
 
+import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import MenuItem from "@mui/material/MenuItem";
 import TextField from "@mui/material/TextField";
@@ -422,7 +423,18 @@ function Figure3({
   return (
     <div className="neg-figure">
       <span className="neg-figure-label">{label}</span>
-      <span className={`neg-figure-value${tone ? ` ${tone}` : ""}`}>{value}</span>
+      {/* These are levels, not movements, so no arrow: an arrow beside "above
+          the floor" would read as "rising", which is not what it means. The
+          tint stays because the minus sign in the value already carries the
+          sign — it is reinforcement, not the only cue — but it now comes from
+          the theme instead of a hex literal in viz.css. */}
+      <Box
+        component="span"
+        className="neg-figure-value"
+        sx={{ color: tone === "bad" ? "error.main" : tone === "good" ? "success.main" : undefined }}
+      >
+        {value}
+      </Box>
       {note && <span className="viz-muted">{note}</span>}
     </div>
   );

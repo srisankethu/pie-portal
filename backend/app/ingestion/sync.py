@@ -199,7 +199,13 @@ class SyncService:
         # the sync knows it is Zoho; the resolver must never need to.
         self.connector = connector
         self.connection_id = connection_id
-        self.repo = ReadModelRepository(session, organization_id)
+        # The repository writes on behalf of this connected company, so every
+        # row it upserts carries where it came from. Without this the read
+        # model keys customers and items on an external id alone, which is
+        # unique only inside the system that issued it.
+        self.repo = ReadModelRepository(session, organization_id,
+                                        connector=connector,
+                                        connection_id=connection_id)
         self.report = SyncReport(organization_id=organization_id)
         # customer_external_id -> (invoice date, salesperson_id, salesperson_name)
         self._owners: dict[str, tuple[date, str, str]] = {}

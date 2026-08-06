@@ -25,9 +25,31 @@ from .domain.schemas import (CostRecordIn, CustomerIn, PaymentReceiptIn, Product
 class ReadModelRepository:
     """Upsert + lookup for the canonical read model, scoped to one org."""
 
-    def __init__(self, session: Session, organization_id: str) -> None:
+    def __init__(self, session: Session, organization_id: str, *,
+                 connector: Optional[str] = None,
+                 connection_id: Optional[str] = None) -> None:
         self.s = session
         self.org = organization_id
+        # Which connected company this repository is writing on behalf of.
+        # An imported record's identity is (connector, connection, that
+        # system's id) — an external id alone is unique only inside the system
+        # that issued it, and two connected companies are two systems.
+        #
+        # Optional so every existing caller that only *reads* keeps working.
+        # A writer that has not said where its rows come from writes NULLs,
+        # which read back as "source not recorded" rather than as a guess.
+        self.connector = connector
+        self.connection_id = connection_id
+
+    def _source(self, model) -> list:
+        """The clauses that pin a lookup to this repository's own source.
+
+        Written once because it is easy to get subtly wrong per call site: a
+        NULL ``connection_id`` has to match a NULL, and ``== None`` does that
+        in SQLAlchemy while a Python ``is None`` comparison silently does not.
+        """
+        return [model.connector == self.connector,
+                model.connection_id == self.connection_id]
 
     # ── customers ────────────────────────────────────────────────────────────
     def upsert_customer(self, c: CustomerIn) -> models.Customer:
@@ -35,10 +57,13 @@ class ReadModelRepository:
             select(models.Customer).where(
                 models.Customer.organization_id == self.org,
                 models.Customer.external_id == c.external_id,
+                *self._source(models.Customer),
             )
         )
         if row is None:
-            row = models.Customer(organization_id=self.org, external_id=c.external_id)
+            row = models.Customer(organization_id=self.org, external_id=c.external_id,
+                               connector=self.connector,
+                               connection_id=self.connection_id)
             self.s.add(row)
         row.name = c.name
         row.status = c.status.value
@@ -49,10 +74,32 @@ class ReadModelRepository:
         return row
 
     def get_customer_by_external(self, external_id: str) -> Optional[models.Customer]:
+        """Resolve within this repository's own source.
+
+        Scoped deliberately: an invoice from one connected company must resolve
+        against that company's customers and not against a same-numbered record
+        in another. Falls back to an unsourced match so a pull against rows
+        imported before provenance existed still resolves them.
+        """
+        row = self.s.scalar(
+            select(models.Customer).where(
+                models.Customer.organization_id == self.org,
+                models.Customer.external_id == external_id,
+                *self._source(models.Customer),
+            )
+        )
+        if row is not None:
+            return row
+        # Fall back to a row whose source was never recorded. Rows written
+        # before provenance existed are unattributed by definition and nothing
+        # can attribute them after the fact, so a pull that now knows its
+        # company must still find them — otherwise the first sync after this
+        # change orphans every document those rows support.
         return self.s.scalar(
             select(models.Customer).where(
                 models.Customer.organization_id == self.org,
                 models.Customer.external_id == external_id,
+                models.Customer.connection_id.is_(None),
             )
         )
 
@@ -67,10 +114,13 @@ class ReadModelRepository:
             select(models.Product).where(
                 models.Product.organization_id == self.org,
                 models.Product.external_id == p.external_id,
+                *self._source(models.Product),
             )
         )
         if row is None:
-            row = models.Product(organization_id=self.org, external_id=p.external_id)
+            row = models.Product(organization_id=self.org, external_id=p.external_id,
+                               connector=self.connector,
+                               connection_id=self.connection_id)
             self.s.add(row)
         row.name = p.name
         row.uom = p.uom
@@ -80,10 +130,32 @@ class ReadModelRepository:
         return row
 
     def get_product_by_external(self, external_id: str) -> Optional[models.Product]:
+        """Resolve within this repository's own source.
+
+        Scoped deliberately: an invoice from one connected company must resolve
+        against that company's products and not against a same-numbered record
+        in another. Falls back to an unsourced match so a pull against rows
+        imported before provenance existed still resolves them.
+        """
+        row = self.s.scalar(
+            select(models.Product).where(
+                models.Product.organization_id == self.org,
+                models.Product.external_id == external_id,
+                *self._source(models.Product),
+            )
+        )
+        if row is not None:
+            return row
+        # Fall back to a row whose source was never recorded. Rows written
+        # before provenance existed are unattributed by definition and nothing
+        # can attribute them after the fact, so a pull that now knows its
+        # company must still find them — otherwise the first sync after this
+        # change orphans every document those rows support.
         return self.s.scalar(
             select(models.Product).where(
                 models.Product.organization_id == self.org,
                 models.Product.external_id == external_id,
+                models.Product.connection_id.is_(None),
             )
         )
 
@@ -199,10 +271,13 @@ class ReadModelRepository:
             select(models.Vendor).where(
                 models.Vendor.organization_id == self.org,
                 models.Vendor.external_id == v.external_id,
+                *self._source(models.Vendor),
             )
         )
         if row is None:
-            row = models.Vendor(organization_id=self.org, external_id=v.external_id)
+            row = models.Vendor(organization_id=self.org, external_id=v.external_id,
+                               connector=self.connector,
+                               connection_id=self.connection_id)
             self.s.add(row)
         row.name = v.name
         row.gstin = v.gstin
@@ -213,10 +288,32 @@ class ReadModelRepository:
         return row
 
     def get_vendor_by_external(self, external_id: str) -> Optional[models.Vendor]:
+        """Resolve within this repository's own source.
+
+        Scoped deliberately: an invoice from one connected company must resolve
+        against that company's vendors and not against a same-numbered record
+        in another. Falls back to an unsourced match so a pull against rows
+        imported before provenance existed still resolves them.
+        """
+        row = self.s.scalar(
+            select(models.Vendor).where(
+                models.Vendor.organization_id == self.org,
+                models.Vendor.external_id == external_id,
+                *self._source(models.Vendor),
+            )
+        )
+        if row is not None:
+            return row
+        # Fall back to a row whose source was never recorded. Rows written
+        # before provenance existed are unattributed by definition and nothing
+        # can attribute them after the fact, so a pull that now knows its
+        # company must still find them — otherwise the first sync after this
+        # change orphans every document those rows support.
         return self.s.scalar(
             select(models.Vendor).where(
                 models.Vendor.organization_id == self.org,
                 models.Vendor.external_id == external_id,
+                models.Vendor.connection_id.is_(None),
             )
         )
 

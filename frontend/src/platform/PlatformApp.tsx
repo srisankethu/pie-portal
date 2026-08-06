@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { DataGrid, numeric } from "./DataGrid";
+import { EntityName } from "./EntityName";
 import { formatDate } from "../when";
 import {
   clearPlatformSession,
@@ -1006,12 +1007,14 @@ function CustomerScreen({
                   // only matters when it is true, and only when the filter is
                   // showing them.
                   cellRenderer: (p: { data?: AccountRow }) => (
-                    <span style={{ fontWeight: 600 }}>
-                      {p.data?.name}
-                      {(p.data?.status || "").toUpperCase() !== "ACTIVE" && (
-                        <span className="acct-flag">inactive</span>
-                      )}
-                    </span>
+                    <EntityName
+                      name={p.data?.name ?? ""}
+                      origin={p.data?.origin}
+                      show={Boolean(p.data?.sources_differ)}
+                      sub={(p.data?.status || "").toUpperCase() !== "ACTIVE"
+                        ? <span className="acct-flag">inactive</span>
+                        : undefined}
+                    />
                   ),
                 },
                 {

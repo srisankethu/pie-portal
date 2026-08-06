@@ -21,6 +21,7 @@
 import { useEffect, useState } from "react";
 import { money } from "../../money";
 import { papi } from "../api";
+import { optionLabel } from "../EntityName";
 import type { Account, AccountItem, PlatformSession, StatusFilter } from "../types";
 import { Panel } from "./Panel";
 
@@ -160,7 +161,13 @@ export function NegotiateScreen({
                 hint={accounts.length ? undefined : "No accounts are assigned to you yet."}
                 options={[
                   { value: "", label: "Choose an account…" },
-                  ...accounts.map((a) => ({ value: a.customer_id, label: a.name })),
+                  // The company is in the label, not only in a tooltip: a
+                  // native select shows one line, and "ABC Industries" alone
+                  // is ambiguous in exactly the case this exists for.
+                  ...accounts.map((a) => ({
+                    value: a.customer_id,
+                    label: optionLabel(a.name, a.origin, Boolean(a.sources_differ)),
+                  })),
                 ]} />
         <Choice label="Item" value={product} onChange={setProduct}
                 disabled={!customer || itemsLoading}

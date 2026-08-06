@@ -69,7 +69,36 @@ export interface DecisionDetail {
   outcome: unknown | null;
 }
 
-export interface Account {
+/** Where an imported record came from.
+ *
+ *  The hierarchy is connector → connected company → record, and it is the same
+ *  for customers, items, vendors and everything a future connector imports.
+ *  One shape, so a customer picker and an item picker cannot describe their
+ *  source two different ways. See `backend/app/domain/origin.py`. */
+export interface EntityOrigin {
+  connector: string | null;
+  connector_label: string;
+  connector_short: string;
+  /** A text mark, not a colour: a colour-only badge is unreadable to a
+   *  substantial minority of users and meaningless in print. */
+  icon: string;
+  connection_id: string | null;
+  company: string;
+  /** The id the source system gave this record — a lookup key, not a name. */
+  external_id: string;
+  /** Nothing recorded where this came from. Rendered as such, never guessed. */
+  unknown: boolean;
+}
+
+/** Carried on every list of imported entities. Provenance is only *information*
+ *  when there is more than one source; below that every badge says the same
+ *  thing and costs width on every screen. */
+export interface Sourced {
+  origin?: EntityOrigin | null;
+  sources_differ?: boolean;
+}
+
+export interface Account extends Sourced {
   customer_id: string;
   name: string;
   status: string;
@@ -184,7 +213,7 @@ export interface UnresolvedReference {
 /** One item an account has bought. Identity only — no price, no cost. The date
  *  is carried because two inserts with near-identical names are told apart by
  *  when they were last bought, not by their ids. */
-export interface AccountItem {
+export interface AccountItem extends Sourced {
   product_id: string;
   name: string;
   sku: string;

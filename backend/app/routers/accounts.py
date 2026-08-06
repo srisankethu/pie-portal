@@ -23,6 +23,7 @@ from .. import clock
 from ..authz import Principal, current_principal
 from ..db import get_session
 from ..domain import models
+from ..domain.origin import Companies
 
 router = APIRouter(prefix="/api/v1/accounts", tags=["accounts"])
 
@@ -174,6 +175,7 @@ def list_account_items(
                 models.Product.product_id.in_([r.product_id for r in rows])))
     }
 
+    companies = Companies(session, principal.organization_id)
     needle = (q or "").strip().lower()
     out: list[dict] = []
     for r in rows:
@@ -201,5 +203,10 @@ def list_account_items(
             "sku": sku,
             "active": is_active,
             "last_bought": r.last_bought.isoformat() if r.last_bought else None,
+            # Same shape as every other imported entity. One projection means a
+            # customer picker and an item picker cannot end up describing their
+            # source two different ways.
+            "origin": (companies.of(p).to_dict() if p is not None else None),
+            "sources_differ": companies.count > 1,
         })
     return out

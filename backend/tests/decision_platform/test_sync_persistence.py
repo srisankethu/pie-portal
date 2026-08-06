@@ -550,3 +550,191 @@ def test_a_broken_supply_stage_keeps_everything_already_written(session):
     assert session.query(models.SalesTxn).count() == 1
     failed = next(s for s in report.skipped if s["code"] == "SUPPLY_STAGE_FAILED")
     assert "upstream exploded" in failed["detail"]
+
+
+# ── one record, one source ──────────────────────────────────────────────────
+#
+# The read model keyed customers and items on (organization, external_id).
+# That is unique only by accident: Zoho issues globally unique contact ids, so
+# two connected Zoho companies never collided. The first connector that numbers
+# records per company breaks it, and breaks it silently.
+
+def _company(contact_id="1", name="ABC Industries", item_id="10"):
+    return _Source(
+        contacts=[{"contact_id": contact_id, "contact_name": name, "status": "active"}],
+        items=[{"item_id": item_id, "name": "Insert", "unit": "pcs", "status": "active"}])
+
+
+def test_the_same_id_in_two_connected_companies_is_two_records(session):
+    """Tally numbers ledgers from 1 in every company. Without the source in the
+    key, company B's customer 1 overwrites company A's — one of two real
+    customers silently disappears, and nothing reports it."""
+    SyncService(session, _company("1", "ABC Industries (Chennai)"), "org_a",
+                connector="tally", connection_id="conn-a").run()
+    SyncService(session, _company("1", "ABC Industries (Pune)"), "org_a",
+                connector="tally", connection_id="conn-b").run()
+    session.commit()
+
+    rows = session.query(models.Customer).order_by(models.Customer.name).all()
+    assert [r.name for r in rows] == ["ABC Industries (Chennai)",
+                                      "ABC Industries (Pune)"]
+    assert {r.connection_id for r in rows} == {"conn-a", "conn-b"}
+    # Both kept their own id; neither was rewritten by the other.
+    assert {r.external_id for r in rows} == {"1"}
+
+
+def test_the_same_name_in_two_companies_stays_two_customers(session):
+    """"ABC Industries" in two connected companies is two customers who happen
+    to share a name. Names are never identity — the platform links records
+    through the identity layer, on evidence, with a person deciding."""
+    SyncService(session, _company("100", "ABC Industries"), "org_a",
+                connector="zoho", connection_id="conn-a").run()
+    SyncService(session, _company("200", "ABC Industries"), "org_a",
+                connector="zoho", connection_id="conn-b").run()
+    session.commit()
+    assert session.query(models.Customer).count() == 2
+
+
+def test_a_re_sync_of_the_same_company_updates_rather_than_duplicates(session):
+    """The property the old key existed to give, kept: source identity is
+    stable across runs, so a second pull is an update."""
+    for name in ("ABC Industries", "ABC Industries Pvt Ltd"):
+        SyncService(session, _company("1", name), "org_a",
+                    connector="zoho", connection_id="conn-a").run()
+    session.commit()
+    rows = session.query(models.Customer).all()
+    assert len(rows) == 1 and rows[0].name == "ABC Industries Pvt Ltd"
+
+
+def test_a_pull_resolves_documents_against_its_own_company(session):
+    """An invoice from company B naming item 10 must resolve to B's item 10,
+    not to A's. This is the same defect as the collision above, seen from the
+    document side — and the one that would put A's cost on B's margin."""
+    a = _Source(
+        contacts=[{"contact_id": "1", "contact_name": "A Ltd", "status": "active"}],
+        items=[{"item_id": "10", "name": "A's insert", "unit": "pcs", "status": "active"}])
+    b = _Source(
+        contacts=[{"contact_id": "1", "contact_name": "B Ltd", "status": "active"}],
+        items=[{"item_id": "10", "name": "B's insert", "unit": "pcs", "status": "active"}],
+        invoices=[{"invoice_id": "B-1", "customer_id": "1", "date": "2026-06-01",
+                   "line_items": [{"line_item_id": "l1", "item_id": "10",
+                                   "quantity": 2, "rate": 100, "item_total": 200}]}])
+    SyncService(session, a, "org_a", connector="zoho", connection_id="conn-a").run()
+    SyncService(session, b, "org_a", connector="zoho", connection_id="conn-b").run()
+    session.commit()
+
+    txn = session.query(models.SalesTxn).one()
+    product = session.get(models.Product, txn.product_id)
+    customer = session.get(models.Customer, txn.customer_id)
+    assert product.name == "B's insert" and product.connection_id == "conn-b"
+    assert customer.name == "B Ltd" and customer.connection_id == "conn-b"
+
+
+def test_rows_imported_before_provenance_existed_still_resolve(session):
+    """Nothing is backfilled — a row written before this existed cannot be
+    attributed after the fact. It must still resolve, or the next pull orphans
+    every document it wrote."""
+    SyncService(session, _company("1", "Legacy Ltd"), "org_a").run()
+    session.commit()
+    assert session.query(models.Customer).one().connection_id is None
+
+    # A later pull that *does* know its company finds the unattributed row
+    # rather than creating a second one beside it.
+    repo = ReadModelRepository(session, "org_a", connector="zoho",
+                               connection_id="conn-a")
+    assert repo.get_customer_by_external("1").name == "Legacy Ltd"
+
+
+# ── the shared origin projection ────────────────────────────────────────────
+def test_one_origin_shape_for_every_imported_entity(session):
+    """Customers, items and vendors are unrelated tables that share one
+    property — they came from somewhere. One projection, so a customer picker
+    and an item picker cannot describe their source two different ways."""
+    from app.domain.origin import Companies
+
+    session.add(models.Organization(organization_id="org_a", name="Sanketh"))
+    session.add(models.ZohoConnection(
+        connection_id="conn-a", organization_id="org_a",
+        zoho_organization_id="60036630626", label="4U Precision",
+        accounts_base="https://accounts.zoho.in",
+        api_base="https://www.zohoapis.in/books/v3"))
+    session.flush()
+    SyncService(session, _good_source(), "org_a",
+                connector="zoho", connection_id="conn-a").run()
+    session.commit()
+
+    companies = Companies(session, "org_a")
+    for row in (session.query(models.Customer).one(),
+                session.query(models.Product).one()):
+        o = companies.of(row).to_dict()
+        assert o["company"] == "4U Precision"
+        assert o["connector_short"] == "Zoho"
+        assert o["unknown"] is False
+        assert o["external_id"]
+
+
+def test_an_unattributed_row_says_so_rather_than_being_guessed_at(session):
+    """The organization has exactly one connection, so guessing would be right
+    today — and wrong the moment a second company connects, silently, on rows
+    nobody would re-check."""
+    from app.domain.origin import Companies
+
+    session.add(models.Organization(organization_id="org_a", name="Sanketh"))
+    session.add(models.ZohoConnection(
+        connection_id="conn-a", organization_id="org_a",
+        zoho_organization_id="60036630626", label="4U Precision",
+        accounts_base="https://accounts.zoho.in",
+        api_base="https://www.zohoapis.in/books/v3"))
+    session.flush()
+    SyncService(session, _good_source(), "org_a").run()   # no connection named
+    session.commit()
+
+    o = Companies(session, "org_a").of(session.query(models.Customer).one())
+    assert o.company == ""
+    assert o.connection_id is None
+
+
+def test_source_badges_are_information_only_when_there_is_more_than_one(session):
+    """With a single connected company every badge says the same thing, and a
+    column of identical badges is decoration that costs width on every screen."""
+    from app.domain.origin import Companies
+
+    session.add(models.Organization(organization_id="org_a", name="Sanketh"))
+    session.flush()
+    assert Companies(session, "org_a").count == 0
+
+    for n, label in ((1, "4U Precision"), (2, "SLS Engineers")):
+        session.add(models.ZohoConnection(
+            connection_id=f"conn-{n}", organization_id="org_a",
+            zoho_organization_id=f"6003663062{n}", label=label,
+            accounts_base="https://accounts.zoho.in",
+            api_base="https://www.zohoapis.in/books/v3"))
+    session.flush()
+    assert Companies(session, "org_a").count == 2
+
+
+def test_nothing_in_the_origin_layer_branches_on_a_connector_name():
+    """A connector contributes a row to a registry and nothing else. A rule
+    that needed `if connector == "zoho"` would belong in that connector's own
+    package, not in the projection every entity goes through."""
+    import inspect
+
+    from app.domain import origin
+
+    import ast
+
+    from app.domain import origin as _origin
+
+    tree = ast.parse(inspect.getsource(_origin))
+    names = set(_origin.CONNECTORS)
+    # Branching is the thing that does not scale: a comparison against a
+    # connector name is a rule that has to be repeated for every future one.
+    # Naming a connector in a *registry* is data and is fine — that is how a
+    # connector declares itself.
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Compare):
+            for side in [node.left, *node.comparators]:
+                if isinstance(side, ast.Constant) and side.value in names:
+                    raise AssertionError(
+                        f"origin.py branches on connector {side.value!r} at "
+                        f"line {node.lineno}")

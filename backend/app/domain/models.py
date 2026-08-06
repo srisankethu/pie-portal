@@ -245,12 +245,34 @@ class User(Base):
 
 class Customer(Base):
     __tablename__ = "customers"
-    __table_args__ = (UniqueConstraint("organization_id", "external_id",
-                                       name="uq_customer_org_external"),)
+    __table_args__ = (
+        UniqueConstraint("organization_id", "connector", "connection_id",
+                         "external_id", name="uq_customer_source"),
+    )
 
     customer_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
     organization_id: Mapped[str] = mapped_column(String(64), index=True)
-    external_id: Mapped[str] = mapped_column(String(128), index=True)  # Zoho contact_id
+    # ── where this record came from ──────────────────────────────────────────
+    #
+    # An imported record's identity is (connector, connection, the id that
+    # system gave it) — never its name. Two connected companies can both hold
+    # "ABC Industries", and they are two different customers who happen to
+    # share a name; one connected company's id space says nothing about
+    # another's, so an external id alone is not unique either.
+    #
+    # This used to be keyed on (organization, external_id), which was correct
+    # only by accident: Zoho's contact ids happen to be globally unique, so two
+    # Zoho companies never collided. The first non-Zoho connector breaks that —
+    # Tally numbers its ledgers from 1 per company — and the failure is silent,
+    # two different customers upserting onto one row.
+    #
+    # Nullable because rows imported before this existed cannot be attributed
+    # after the fact, and guessing which company they came from would be
+    # inventing provenance. NULL renders as "source not recorded", which is the
+    # true statement.
+    connector: Mapped[Optional[str]] = mapped_column(String(32), index=True)
+    connection_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    external_id: Mapped[str] = mapped_column(String(128), index=True)
     name: Mapped[str] = mapped_column(String(255))
     assigned_user_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
     # Zoho's salesperson on this account's most recent invoice, kept as Zoho's own
@@ -274,12 +296,17 @@ class Customer(Base):
 
 class Product(Base):
     __tablename__ = "products"
-    __table_args__ = (UniqueConstraint("organization_id", "external_id",
-                                       name="uq_product_org_external"),)
+    __table_args__ = (
+        UniqueConstraint("organization_id", "connector", "connection_id",
+                         "external_id", name="uq_product_source"),
+    )
 
     product_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
     organization_id: Mapped[str] = mapped_column(String(64), index=True)
-    external_id: Mapped[str] = mapped_column(String(128), index=True)  # Zoho item_id
+    # See ``Customer`` for why the source is part of the key, not decoration.
+    connector: Mapped[Optional[str]] = mapped_column(String(32), index=True)
+    connection_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    external_id: Mapped[str] = mapped_column(String(128), index=True)
     name: Mapped[str] = mapped_column(String(255))
     uom: Mapped[Optional[str]] = mapped_column(String(32))
     hsn: Mapped[Optional[str]] = mapped_column(String(32))
@@ -1241,12 +1268,17 @@ class Vendor(Base):
     """
 
     __tablename__ = "vendors"
-    __table_args__ = (UniqueConstraint("organization_id", "external_id",
-                                       name="uq_vendor_org_external"),)
+    __table_args__ = (
+        UniqueConstraint("organization_id", "connector", "connection_id",
+                         "external_id", name="uq_vendor_source"),
+    )
 
     vendor_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
     organization_id: Mapped[str] = mapped_column(String(64), index=True)
-    external_id: Mapped[str] = mapped_column(String(128), index=True)  # Zoho contact_id
+    # See ``Customer`` for why the source is part of the key, not decoration.
+    connector: Mapped[Optional[str]] = mapped_column(String(32), index=True)
+    connection_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    external_id: Mapped[str] = mapped_column(String(128), index=True)
     name: Mapped[str] = mapped_column(String(255))
     #: Registration ids, the strongest identity keys available for a supplier.
     #: Absent on plenty of small vendors, which the matcher reads as "no

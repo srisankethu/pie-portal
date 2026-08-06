@@ -774,6 +774,7 @@ function TracePanel({ decisionId, token }: { decisionId: string; token: string }
   const [open, setOpen] = useState(false);
   const [trace, setTrace] = useState<DecisionTrace | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
 
   useEffect(() => {
     // Reset when the card changes, or the panel would show the last
@@ -791,6 +792,29 @@ function TracePanel({ decisionId, token }: { decisionId: string; token: string }
       .catch((e) => { if (live) setError(String(e?.message || e)); });
     return () => { live = false; };
   }, [open, trace, token, decisionId]);
+
+  /** Append the next page rather than replacing it: somebody following a
+   *  figure back through a year is building a picture, and losing the rows
+   *  they already read would make them start again. */
+  const more = useCallback(async () => {
+    if (!trace) return;
+    const shown = trace.states.reduce((n, l) => n + l.transitions.length, 0);
+    setLoadingMore(true);
+    try {
+      const next = await papi.getTrace(token, decisionId, shown);
+      setTrace({
+        ...next,
+        states: next.states.map((level, i) => ({
+          ...level,
+          transitions: [...(trace.states[i]?.transitions ?? []), ...level.transitions],
+        })),
+      });
+    } catch (e) {
+      setError(String((e as Error)?.message || e));
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [trace, token, decisionId]);
 
   return (
     <>
@@ -869,6 +893,14 @@ function TracePanel({ decisionId, token }: { decisionId: string; token: string }
                 ))}
               </tbody>
             </table>
+            {level.has_more && (
+              <button className="btn btn-ghost btn-sm" onClick={more}
+                      disabled={loadingMore}>
+                {loadingMore
+                  ? "Following further back…"
+                  : `Show ${Math.min(40, level.transitions_total - level.transitions.length)} more of ${level.transitions_total}`}
+              </button>
+            )}
           </div>
         </div>
       ))}

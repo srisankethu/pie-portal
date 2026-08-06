@@ -592,7 +592,8 @@ def stock_position(principal: Principal = Depends(current_principal),
 
     carrying = stock.Carrying(annual_pct=th.carrying_cost_annual_pct,
                               dead_days=th.dead_stock_days,
-                              slow_days=th.slow_stock_days)
+                              slow_days=th.slow_stock_days,
+                              rate_is_published=th.carrying_rate_is_published)
     result = stock.build(lines, as_of, carrying, with_cost=with_cost)
     if not with_cost:
         result["unavailable"].append({

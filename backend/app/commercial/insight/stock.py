@@ -62,10 +62,32 @@ class Carrying:
     annual_pct: float
     dead_days: int
     slow_days: int
+    #: Has the carrying rate been published — in a policy document, a training
+    #: deck, an email, anywhere a salesperson could read it?
+    #:
+    #: This is the guard for the disclosure hazard documented on ``to_dict``.
+    #: ``monthly = quantity x cost x rate / 12``, and the quantity is on the
+    #: row, so the rate is the *only* thing standing between a salesperson and
+    #: every purchase cost in the catalogue. While it is secret the monthly
+    #: drain is safe to show; the moment it is not, the column has to come off
+    #: that screen.
+    #:
+    #: It was a paragraph of prose asking somebody to remember. It is now a
+    #: setting the code reads, so remembering is not required — flip it and the
+    #: column disappears for every role that cannot already see cost.
+    rate_is_published: bool = False
 
     @property
     def monthly_pct(self) -> float:
         return self.annual_pct / 12.0
+
+    def drain_visible_to(self, *, with_cost: bool) -> bool:
+        """May this reader see what a line costs to keep each month?
+
+        Always, for a reader who can already see cost — they can compute it
+        anyway. For anyone else, only while the rate is unpublished.
+        """
+        return with_cost or not self.rate_is_published
 
 
 @dataclass
@@ -208,12 +230,17 @@ class StockLine:
         cost in the catalogue is computable, permanently.
 
         It is kept out of every operations payload and out of the Settings
-        screen for any role below owner. **If that rate is ever published — in
-        a policy document, a training deck, an email — this column has to come
-        off the salesperson's screen the same day.** It is flagged here rather
-        than solved because the alternative is not showing a salesperson what
-        their dead stock costs, and that number is the entire point of the
-        screen.
+        screen for any role below owner. And the remaining hazard — that the
+        rate is published somewhere this code cannot see — is now a *setting*
+        rather than a paragraph asking somebody to remember:
+        ``Carrying.rate_is_published``. Turn it on and this column comes off
+        the salesperson's screen automatically, along with the two figures
+        derived from it, and the screen says why instead of going quietly
+        blank.
+
+        The alternative was to withhold the drain from a salesperson always,
+        and that number is the entire point of the screen — so the coupling is
+        enforced rather than the feature removed.
         """
         band = self.health(as_of, c)
         out = {
@@ -230,7 +257,6 @@ class StockLine:
             # Age, health and what it costs to keep — operational, and the
             # three things a decision about clearing stock is made from.
             "health": band,
-            "monthly_holding_cost": self.monthly_holding_cost(c),
             "priority": self.priority(as_of, c),
             "action": self.recommended_action(as_of, c),
             "action_label": ACTIONS[self.recommended_action(as_of, c)],
@@ -238,6 +264,11 @@ class StockLine:
             # this", which is what turns a dead-stock row into a phone call.
             "buyers": list(self.buyers[:6]),
         }
+        # Absent, not zeroed, when the rate has been published and this reader
+        # cannot already see cost: a zero would read as "this costs nothing to
+        # keep", which is the opposite of true.
+        if c.drain_visible_to(with_cost=with_cost):
+            out["monthly_holding_cost"] = self.monthly_holding_cost(c)
         if with_cost:
             out["purchase_rate"] = self.purchase_rate
             out["inventory_value"] = self.inventory_value()
@@ -400,7 +431,9 @@ def build(lines: Iterable[StockLine], as_of: date, c: Carrying, *,
         "idle_after_days": IDLE_AFTER_DAYS,
         "dead_after_days": c.dead_days,
         "slow_after_days": c.slow_days,
-        "unavailable": _unavailable(len(no_policy), len(rows)),
+        "unavailable": _unavailable(
+            len(no_policy), len(rows),
+            drain_withheld=not c.drain_visible_to(with_cost=with_cost)),
     }
 
 
@@ -453,20 +486,26 @@ def _kpis(rows: list[StockLine], as_of: date, c: Carrying, *,
     # are interleaved rather than appended, because "cash in quiet stock"
     # belongs beside "lines gone quiet" and not in a block of its own at the
     # end where it reads as a separate subject.
-    cards: list[dict] = [
-        {"key": "MONTHLY_DRAIN", "label": "Costing us every month",
-         "value": round(monthly, 2), "unit": "money", "filter": None,
-         "note": "What the shelf costs to keep, this month."},
-    ]
+    cards: list[dict] = []
+    # The headline card is the drain, and it goes only to a reader allowed to
+    # see it. Once the carrying rate is published, the drain plus the quantity
+    # on each row recovers the purchase cost — so the card comes off with the
+    # column rather than staying as a total nobody can break down.
+    if c.drain_visible_to(with_cost=with_cost):
+        cards.append(
+            {"key": "MONTHLY_DRAIN", "label": "Costing us every month",
+             "value": round(monthly, 2), "unit": "money", "filter": None,
+             "note": "What the shelf costs to keep, this month."})
     if with_cost:
         cards.append(
             {"key": "ANNUAL_DRAIN", "label": "Over a year",
              "value": round(monthly * 12, 2), "unit": "money", "filter": None,
              "note": "The monthly figure at the current carrying rate."})
-    cards.append(
-        {"key": "DEAD_DRAIN", "label": f"From stock idle {c.dead_days}+ days",
-         "value": round(dead_monthly, 2), "unit": "money", "filter": "DEAD",
-         "note": "The part of that drain nothing is currently selling."})
+    if c.drain_visible_to(with_cost=with_cost):
+        cards.append(
+            {"key": "DEAD_DRAIN", "label": f"From stock idle {c.dead_days}+ days",
+             "value": round(dead_monthly, 2), "unit": "money", "filter": "DEAD",
+             "note": "The part of that drain nothing is currently selling."})
     cards.append(
         {"key": "DEAD_COUNT", "label": "Lines gone quiet",
          "value": len(dead), "unit": "count", "filter": "DEAD",
@@ -489,14 +528,30 @@ def _kpis(rows: list[StockLine], as_of: date, c: Carrying, *,
     return cards
 
 
-def _unavailable(no_policy: int = 0, total: int = 0) -> list[dict]:
-    out = [{
+def _unavailable(no_policy: int = 0, total: int = 0, *,
+                 drain_withheld: bool = False) -> list[dict]:
+    out: list[dict] = []
+    if drain_withheld:
+        # Named rather than left blank. A column that vanishes with no
+        # explanation reads as a bug, and the next person to notice will file
+        # one — or worse, put it back.
+        out.append({
+            "series": "monthly_cash_drain",
+            "reason": ("What a line costs to keep is quantity x cost x the "
+                       "carrying rate / 12. The quantity is on every row, so "
+                       "once the carrying rate is public the drain gives away "
+                       "the purchase cost of everything in the catalogue. The "
+                       "rate has been marked published, so this column is off "
+                       "for roles that cannot already see cost. An owner can "
+                       "still see it."),
+        })
+    out.append({
         "series": "weeks_of_cover",
         "reason": ("Cover needs a demand forecast. The only forecast this data "
                    "supports is 'what sold recently, repeated', which would "
                    "print as a projection without being one. Recent sold "
                    "quantity is shown instead, unprojected."),
-    }]
+    })
     # Asked for, and refused, with the reason. Each of these is either a
     # forecast this data cannot support or a field Zoho does not give us —
     # and inventing either would put a number on the screen that looks like

@@ -34,14 +34,56 @@ def _money(v: Decimal) -> Decimal:
     return v.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
+class UncalibratedRate(ValueError):
+    """The entity's rate has not been solved yet.
+
+    Distinct from a missing entity, and distinct from a rate that is genuinely
+    zero, because the three need different answers from a person.
+    """
+
+
 def rate_for_entity(cfg: Config, entity_id: str) -> Decimal:
+    """The share rate for one entity, or a refusal.
+
+    **Zero is not a rate.** The parameter block ships r at 0.0000 pending the
+    Phase-1 shadow run, and the comment beside it says an unrun calibration
+    must not silently pay whatever a developer typed. Nothing enforced that:
+    a payout run against the shipped block would have paid every salesperson
+    exactly nothing and looked, from every screen and every log line, like the
+    mechanism working correctly.
+
+    A zero rate is therefore refused rather than applied. If an entity is ever
+    genuinely meant to pay nothing, that is a decision somebody makes — set
+    ``r_by_entity`` to ``null`` and the refusal below says so by name, which is
+    a sentence in a config file rather than a silence nobody can see.
+    """
     table = cfg.get("payout", "r_by_entity")
     if entity_id not in table:
         raise ValueError(
             f"no incentive rate calibrated for entity {entity_id!r}. r is "
             "per-entity by design and must be solved from that entity's own "
             "shadow-run CAF, never inherited from another.")
-    return Decimal(str(table[entity_id]))
+    raw = table[entity_id]
+    if raw is None:
+        raise UncalibratedRate(
+            f"entity {entity_id!r} is deliberately set to pay nothing "
+            "(r_by_entity: null). If that is wrong, calibrate it.")
+    rate = Decimal(str(raw))
+    if rate == 0:
+        raise UncalibratedRate(
+            f"the incentive rate for {entity_id!r} is still 0.0000 — the "
+            "placeholder this parameter block ships with, pending the Phase-1 "
+            "shadow run. Running the payout on it would pay everybody nothing "
+            "and look exactly like a working month.\n\n"
+            "Solve r from that entity's own shadow-run CAF and set it in "
+            "incentive_engine/config/parameters.yaml, or set it to null to "
+            "state on purpose that this entity pays no share.")
+    if rate < 0:
+        raise ValueError(
+            f"the incentive rate for {entity_id!r} is negative ({rate}). A "
+            "share of contribution cannot be negative; a clawback is a "
+            "separate mechanism.")
+    return rate
 
 
 def apply_accelerator(cfg: Config, r: Decimal, points: Decimal,

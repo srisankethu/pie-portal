@@ -298,3 +298,87 @@ def test_an_item_with_history_but_no_stock_reading_is_not_reported_as_zero(clien
         assert product_id not in {line.product_id for line in lines}
     finally:
         s.close()
+
+
+# ── the disclosure coupling ─────────────────────────────────────────────────
+#
+# Monthly drain = quantity x cost x carrying rate / 12, and the quantity is on
+# every row. So the rate is the only thing standing between a salesperson and
+# every purchase cost in the catalogue. That was a paragraph asking somebody to
+# remember on the day the rate got published; it is now a setting the code
+# reads.
+
+def _stock_body(client, email: str) -> dict:
+    return client.get("/api/v1/insight/stock", headers=_hdr(client, email)).json()
+
+
+def _publish_the_rate(monkeypatch) -> None:
+    """Mark the carrying rate as published, the way an owner would.
+
+    Wraps the loader rather than poking the frozen dataclass: `dataclasses
+    .replace` is how the rest of this codebase varies a threshold, and it keeps
+    the version hash honest so the last test here means something."""
+    import dataclasses
+
+    from app.routers import insight as insight_router
+
+    original = insight_router.policy.load_for_org
+    monkeypatch.setattr(
+        insight_router.policy, "load_for_org",
+        lambda session, org: dataclasses.replace(
+            original(session, org), carrying_rate_is_published=True))
+
+
+def test_the_drain_is_on_a_salespersons_screen_while_the_rate_is_secret(client):
+    """The default, and the reason the column exists at all."""
+    _build_state(client)
+    body = _stock_body(client, SALESPERSON)
+    assert body["items"]
+    assert all("monthly_holding_cost" in r for r in body["items"])
+    assert any(c["key"] == "MONTHLY_DRAIN" for c in body["kpis"])
+
+
+def test_publishing_the_rate_takes_the_drain_off_that_screen(client, monkeypatch):
+    """Not a reminder — a coupling. Flip the setting and the column, both KPI
+    cards derived from it, and nothing else, disappear."""
+    _publish_the_rate(monkeypatch)
+    _build_state(client)
+    body = _stock_body(client, SALESPERSON)
+
+    assert body["items"], "the rest of the screen must survive"
+    assert all("monthly_holding_cost" not in r for r in body["items"])
+    assert not any(c["key"] in ("MONTHLY_DRAIN", "DEAD_DRAIN") for c in body["kpis"])
+    # Named, not silently blank: a column that vanishes with no explanation
+    # reads as a bug, and somebody will put it back.
+    withheld = next(u for u in body["unavailable"]
+                    if u["series"] == "monthly_cash_drain")
+    assert "carrying rate" in withheld["reason"]
+
+
+def test_an_owner_keeps_the_drain_even_once_the_rate_is_public(client, monkeypatch):
+    """A reader who can already see cost can compute the drain anyway.
+    Withholding it from them would be theatre."""
+    _publish_the_rate(monkeypatch)
+    _build_state(client)
+    body = _stock_body(client, OWNER)
+    assert all("monthly_holding_cost" in r for r in body["items"])
+    assert any(c["key"] == "MONTHLY_DRAIN" for c in body["kpis"])
+
+
+def test_the_drain_is_absent_rather_than_zero(client, monkeypatch):
+    """Zero would read as "this costs nothing to keep", which is the opposite
+    of true and worse than saying nothing."""
+    _publish_the_rate(monkeypatch)
+    _build_state(client)
+    for row in _stock_body(client, SALESPERSON)["items"]:
+        assert "monthly_holding_cost" not in row
+
+
+def test_the_setting_is_inside_the_thresholds_version(client):
+    """A screen rendered before and after the change has to be
+    distinguishable, or a past number becomes unexplainable."""
+    from app.commercial.config import CommercialThresholds
+
+    secret = CommercialThresholds()
+    published = CommercialThresholds(carrying_rate_is_published=True)
+    assert secret.version != published.version

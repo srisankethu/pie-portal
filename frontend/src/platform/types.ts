@@ -102,6 +102,12 @@ export interface DecisionTrace {
     event_count: number;
     thresholds_version: string | null;
     transitions_total: number;
+    /** Where this page starts. The chain is paged newest-first: the
+     *  transitions of one state key are a bounded set re-derived by each fold,
+     *  not a growing feed, so an offset is a page number rather than a
+     *  place-holder in a stream. */
+    transitions_offset: number;
+    has_more: boolean;
     transitions: {
       event_seq: number;
       event_type: string;

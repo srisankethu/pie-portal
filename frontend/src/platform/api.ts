@@ -94,7 +94,8 @@ export const papi = {
    *  Fetched on demand rather than with the card: the chain can run to
    *  hundreds of transitions and almost nobody opens it, so paying for it on
    *  every card view would be paying for the exception. */
-  getTrace: (t: string, id: string) => req<DecisionTrace>(`/api/v1/decisions/${id}/trace`, {}, t),
+  getTrace: (t: string, id: string, offset = 0) =>
+    req<DecisionTrace>(`/api/v1/decisions/${id}/trace?offset=${offset}`, {}, t),
 
   act: (t: string, id: string, body: { action: string; note?: string; reason?: string }) =>
     req<DecisionSummary>(`/api/v1/decisions/${id}/action`, { method: "POST", body: JSON.stringify(body) }, t),

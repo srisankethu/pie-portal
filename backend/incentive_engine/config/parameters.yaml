@@ -188,8 +188,16 @@ vendor:
 # ── payout ──────────────────────────────────────────────────────────────────
 payout:
   # r is PER ENTITY. SLS at ~19Cr and 4U at ~37L cannot share a rate.
-  # These are placeholders pending the Phase-1 shadow run (Q4). An unrun
-  # calibration must not silently pay whatever a developer typed.
+  #
+  # These are placeholders pending the Phase-1 shadow run (Q4), and 0.0000 is
+  # now REFUSED by payout.rate_for_entity rather than applied. That is the
+  # difference between a mechanism that is not ready and a month in which
+  # everybody earned nothing — which, until the guard existed, looked
+  # identical from every screen and every log line.
+  #
+  # To go live: solve r from that entity's own shadow-run CAF and put it here.
+  # To state on purpose that an entity pays no share: set it to `null`, which
+  # the refusal reports by name.
   r_by_entity:
     SLS: "0.0000"
     4U:  "0.0000"

@@ -129,11 +129,35 @@ def test_an_uncalibrated_entity_refuses_to_pay_rather_than_inherit_a_rate(cfg):
         payout.rate_for_entity(cfg, "SOME-NEW-ENTITY")
 
 
-def test_the_shipped_config_pays_nothing_until_calibrated():
-    """A scheme nobody has calibrated must not silently pay whatever a
-    developer typed."""
+def test_the_shipped_config_refuses_to_pay_rather_than_paying_nothing():
+    """The stronger guarantee, and the one that matters.
+
+    This used to assert the shipped rate *was* zero, which is true and is not
+    the same thing. A payout run on r = 0.0000 pays every salesperson exactly
+    nothing and looks, from every screen and every log line, identical to a
+    working month in which the business made no contribution. Nobody notices a
+    silence. Everybody notices a refusal that names the file to edit.
+    """
     shipped = load_config(as_of=date(2026, 7, 1))
-    assert payout.rate_for_entity(shipped, "SLS") == D("0")
+    with pytest.raises(payout.UncalibratedRate, match="shadow run"):
+        payout.rate_for_entity(shipped, "SLS")
+
+
+def test_an_entity_meant_to_pay_no_share_says_so_on_purpose(cfg):
+    """`null` is a decision somebody made; 0.0000 is a placeholder nobody
+    replaced. The refusal distinguishes them, so the config file can carry the
+    sentence instead of a silence."""
+    cfg.raw["payout"]["r_by_entity"]["UPS"] = None
+    with pytest.raises(payout.UncalibratedRate, match="deliberately"):
+        payout.rate_for_entity(cfg, "UPS")
+
+
+def test_a_negative_rate_is_refused(cfg):
+    """A share of contribution cannot be negative. A clawback is its own
+    mechanism, with its own cap, and routing one through r would bypass it."""
+    cfg.raw["payout"]["r_by_entity"]["SLS"] = "-0.05"
+    with pytest.raises(ValueError, match="negative"):
+        payout.rate_for_entity(cfg, "SLS")
 
 
 def test_a_payout_split_that_does_not_sum_to_one_is_refused(cfg):

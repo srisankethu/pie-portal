@@ -172,6 +172,21 @@ class CommercialThresholds:
     # which of the two it means.
     dead_stock_days: int = 365
     slow_stock_days: int = 180
+    #: Has the carrying rate above been published anywhere a salesperson could
+    #: read it — a policy document, a training deck, an email?
+    #:
+    #: Off by default, because it is not. Turn it on and the Monthly Cash Drain
+    #: column and its two KPI cards come off the salesperson's stock screen
+    #: automatically: the drain is quantity x cost x rate / 12 and the quantity
+    #: is on the row, so a reader holding the rate recovers every purchase cost
+    #: in the catalogue. Unlike the floor markup, which varies by family and
+    #: takes many observations to unpick, this is one organization-wide
+    #: constant — disclosed once, disclosed permanently.
+    #:
+    #: A setting rather than a paragraph asking somebody to remember on the day
+    #: it happens. It is part of the thresholds version, so a screen rendered
+    #: before and after the change is distinguishable.
+    carrying_rate_is_published: bool = False
 
     # ── the decision queue ───────────────────────────────────────────────────
     #
@@ -201,6 +216,9 @@ class CommercialThresholds:
                                         _default("carrying_cost_annual_pct")),
             dead_stock_days=_i("CI_DEAD_STOCK_DAYS", _default("dead_stock_days")),
             slow_stock_days=_i("CI_SLOW_STOCK_DAYS", _default("slow_stock_days")),
+            carrying_rate_is_published=(
+                os.environ.get("CI_CARRYING_RATE_IS_PUBLISHED", "").strip().lower()
+                in ("1", "true", "yes")),
             decision_rupees_per_point=_f("CI_DECISION_RUPEES_PER_POINT",
                                          _default("decision_rupees_per_point")),
             excess_cover_months=_f("CI_EXCESS_COVER_MONTHS",

@@ -729,3 +729,43 @@ def test_a_supplier_card_is_named_after_the_supplier(api):
     card = _card(api, DecisionType.SUP_OPEN_COMMITMENT.value)
     assert card["subject_entity_type"] == "VENDOR"
     assert card["subject_label"] == "Kennametal India"
+
+
+def test_the_chain_pages_rather_than_stopping_at_forty(api, session):
+    """A chain that stops with no way forward cannot settle an argument about
+    the forty-first row."""
+    owner = api.hdr("s.menon@sanketh.in")
+    rows = api.get("/api/v1/decisions", headers=owner).json()
+    row = next(r for r in rows
+               if r["decision_type"] == DecisionType.INV_DEAD_STOCK.value)
+    url = f"/api/v1/decisions/{row['decision_id']}/trace"
+
+    first = api.get(f"{url}?limit=2", headers=owner).json()["states"][0]
+    assert first["transitions_offset"] == 0
+    assert len(first["transitions"]) == 2
+    assert first["has_more"] is (first["transitions_total"] > 2)
+
+    second = api.get(f"{url}?limit=2&offset=2", headers=owner).json()["states"][0]
+    assert second["transitions_offset"] == 2
+    assert second["transitions_total"] == first["transitions_total"]
+    # Disjoint pages, still newest-first across the boundary.
+    assert ({t["event_seq"] for t in first["transitions"]}
+            .isdisjoint({t["event_seq"] for t in second["transitions"]}))
+    if second["transitions"]:
+        assert (second["transitions"][0]["occurred_on"]
+                <= first["transitions"][-1]["occurred_on"])
+
+    past_the_end = api.get(f"{url}?offset=9999", headers=owner).json()["states"][0]
+    assert past_the_end["transitions"] == []
+    assert past_the_end["has_more"] is False
+
+
+def test_a_request_for_ten_thousand_rows_is_refused(api):
+    """Somebody reconciling a year is a real reader; this is not."""
+    owner = api.hdr("s.menon@sanketh.in")
+    rows = api.get("/api/v1/decisions", headers=owner).json()
+    row = next(r for r in rows
+               if r["decision_type"] == DecisionType.INV_DEAD_STOCK.value)
+    r = api.get(f"/api/v1/decisions/{row['decision_id']}/trace?limit=10000",
+                headers=owner)
+    assert r.status_code == 422

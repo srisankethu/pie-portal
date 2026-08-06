@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -194,11 +194,16 @@ def get_decision_detail(
     return _detail(session, _visible(session, principal, decision_id), principal)
 
 
-#: How much of a state key's working one response carries. A busy item can
-#: have hundreds of transitions and a card is read, not audited — the *total*
-#: is always reported so the reader knows what they are seeing a slice of, and
-#: the full working stays available through the state engine.
-_TRACE_LIMIT = 40
+#: How much of a state key's working one response carries by default. A busy
+#: item can have hundreds of transitions and a card is read before it is
+#: audited, so the first page is short. The *total* is always reported, and the
+#: rest is one page away rather than out of reach — a chain that stops at forty
+#: with no way forward is a chain that cannot settle an argument about the
+#: forty-first.
+_TRACE_PAGE = 40
+#: The most one request will return. Somebody reconciling a full year is a real
+#: reader; a request for ten thousand rows is not.
+_TRACE_MAX = 500
 
 
 def _erp_ref(event: models.BusinessEvent) -> dict:
@@ -215,6 +220,8 @@ def _erp_ref(event: models.BusinessEvent) -> dict:
 @router.get("/{decision_id}/trace")
 def trace_decision(
     decision_id: str,
+    offset: int = Query(0, ge=0),
+    limit: int = Query(_TRACE_PAGE, ge=1, le=_TRACE_MAX),
     principal: Principal = Depends(current_principal),
     session: Session = Depends(get_session),
 ) -> dict:
@@ -230,6 +237,11 @@ def trace_decision(
 
     A signal-derived decision has no state keys and says so, rather than
     returning an empty chain that reads like a gap in the data.
+
+    Paged newest-first by offset rather than by cursor: the transitions of one
+    state key are a bounded set re-derived by each fold, not a growing feed, so
+    there is no stream for a cursor to keep its place in — and an offset is a
+    page number the reader can reason about.
     """
     d = _visible(session, principal, decision_id)
     org = principal.organization_id
@@ -249,11 +261,13 @@ def trace_decision(
         # Newest first: the reader is asking "what moved this", and the most
         # recent movements are the ones they can still act on.
         steps = list(reversed(steps))
+        total = len(steps)
+        page = steps[offset:offset + limit]
         events = {
             e.seq: e for e in session.scalars(
                 select(models.BusinessEvent).where(
                     models.BusinessEvent.seq.in_(
-                        [s["event_seq"] for s in steps[:_TRACE_LIMIT]] or [-1])))}
+                        [s["event_seq"] for s in page] or [-1])))}
         levels.append({
             "state": state_name,
             "key": key,
@@ -262,7 +276,9 @@ def trace_decision(
             "value": (row.value if row else {}),
             "event_count": (row.event_count if row else 0),
             "thresholds_version": (row.thresholds_version if row else None),
-            "transitions_total": len(steps),
+            "transitions_total": total,
+            "transitions_offset": offset,
+            "has_more": offset + len(page) < total,
             "transitions": [
                 {
                     "event_seq": step["event_seq"],
@@ -272,7 +288,7 @@ def trace_decision(
                     "erp": (_erp_ref(events[step["event_seq"]])
                             if step["event_seq"] in events else None),
                 }
-                for step in steps[:_TRACE_LIMIT]
+                for step in page
             ],
         })
 

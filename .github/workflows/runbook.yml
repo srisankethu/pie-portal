@@ -1,0 +1,96 @@
+# The deploy runbook, written when the change lands rather than reconstructed
+# from the log at 9pm.
+#
+# This deliberately does NOT deploy. `docs/operations.md` says, after an
+# incident: "No auto-migration — schema changes become a deliberate, reviewed
+# deploy step." Automating the apply would reverse that decision quietly. What
+# is automated is the *review*: which migrations landed, which of them rewrite
+# or destroy, and the order to do things in.
+#
+# On a pull request it appears as a comment, so the migration risk is visible
+# while the change can still be argued with. On a merge to main it becomes the
+# release note.
+name: runbook
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  runbook:
+    name: deploy runbook
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The script diffs a range, so a shallow clone would report every
+          # migration in the repository as new on the first run.
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Work out what this change adds
+        id: range
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="${{ github.event.pull_request.base.sha }}"
+            head="${{ github.event.pull_request.head.sha }}"
+          else
+            # `before` is all-zeros on a branch's first push; fall back to the
+            # first parent, which is the merge base for a merge commit.
+            base="${{ github.event.before }}"
+            case "$base" in
+              0000000*|"") base="${{ github.sha }}^" ;;
+            esac
+            head="${{ github.sha }}"
+          fi
+          echo "value=$base..$head" >> "$GITHUB_OUTPUT"
+
+      - name: Render it
+        run: |
+          python3 scripts/deploy_runbook.py \
+            --range "${{ steps.range.outputs.value }}" --out runbook.md
+
+      - name: Add it to the run summary
+        run: cat runbook.md >> "$GITHUB_STEP_SUMMARY"
+
+      # On a PR, only when there is something to say. A bot comment on every
+      # pull request is a bot comment people filter out, and then the one that
+      # mattered goes with it.
+      - name: Comment, if this touches the schema
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('runbook.md', 'utf8');
+            if (body.includes('No migrations in this range')) return;
+
+            const marker = '<!-- deploy-runbook -->';
+            const { owner, repo } = context.repo;
+            const issue_number = context.payload.pull_request.number;
+            const existing = (await github.rest.issues.listComments(
+              { owner, repo, issue_number })).data
+              .find((c) => c.body.startsWith(marker));
+            const payload = `${marker}\n${body}`;
+            // Updated in place rather than appended: a thread of six runbooks
+            // makes the reader work out which one is current, and they will
+            // sometimes get it wrong.
+            if (existing) {
+              await github.rest.issues.updateComment(
+                { owner, repo, comment_id: existing.id, body: payload });
+            } else {
+              await github.rest.issues.createComment(
+                { owner, repo, issue_number, body: payload });
+            }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deploy-runbook
+          path: runbook.md

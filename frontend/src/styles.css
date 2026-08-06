@@ -387,13 +387,7 @@ table.grid tbody tr:hover td { background: color-mix(in srgb, var(--color-accent
 .trace-table { display: block; max-height: 340px; overflow: auto; }
 
 /* confidence */
-.conf { font-family: var(--font-heading); font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; padding: 2px 8px; border: 1px solid currentColor; }
-.conf.High { color: #2f6b3f; } .conf.Medium { color: var(--warn); } .conf.Low, .conf.INSUFFICIENT { color: var(--danger-fg); }
 
-.pri { font-family: var(--font-heading); font-size: 10.5px; letter-spacing: 0.05em; text-transform: uppercase; padding: 2px 7px; }
-.pri.HIGH { background: var(--danger-bg); color: var(--danger-fg); }
-.pri.MEDIUM { background: var(--caution-bg); color: var(--caution-fg); }
-.pri.LOW { background: color-mix(in srgb, var(--color-text) 8%, transparent); color: var(--color-neutral-700); }
 
 /* list */
 .dp-table { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -553,12 +547,6 @@ table.grid tbody tr:hover td { background: color-mix(in srgb, var(--color-accent
 }
 
 /* Confidence badge: honest about what it is measuring. */
-.conf.deterministic {
-  color: var(--color-neutral-700);
-  background: var(--color-neutral-100);
-  border-color: var(--color-divider);
-}
-
 /* Toast with an undo affordance. */
 .toast { display: flex; align-items: center; gap: 14px; }
 .toast-undo {

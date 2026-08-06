@@ -19,6 +19,7 @@
 
 import { lazy, Suspense, useMemo } from "react";
 import type { ColDef, GridOptions } from "ag-grid-community";
+import { LoadingState } from "./kit";
 
 export type { ColDef } from "ag-grid-community";
 
@@ -67,7 +68,7 @@ export function DataGrid<T>(props: DataGridProps<T>) {
   // chunk lands.
   const placeholder = (
     <div className="ag-shell" style={{ height: height ?? 240 }}>
-      <div className="skeleton" style={{ height: "100%" }} />
+      <LoadingState rows={4} height={38} />
     </div>
   );
 

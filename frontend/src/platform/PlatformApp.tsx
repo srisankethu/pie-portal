@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { DataGrid, numeric } from "./DataGrid";
 import { EntityName } from "./EntityName";
+import { CompanyFilter, useCompanyFilter } from "./CompanyFilter";
 import { formatDate } from "../when";
 import {
   clearPlatformSession,
@@ -841,7 +842,12 @@ function ListScreen({
   const types = ["", ...[...counts.entries()]
     .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
     .map(([t]) => t)];
-  const rows = (summaries || []).filter((s) => !listType || s.decision_type === listType);
+  const byType = (summaries || []).filter((s) => !listType || s.decision_type === listType);
+  // Company narrows what the type chips already narrowed. Applied last so the
+  // chip counts stay counts of the whole queue — a chip that changed its own
+  // number when a company was chosen would be reporting on itself.
+  const company = useCompanyFilter(byType);
+  const rows = company.filtered;
   return (
     <div>
       <div className="dp-head">
@@ -869,6 +875,8 @@ function ListScreen({
             onClick={() => setListType(t)}
           />
         ))}
+        <CompanyFilter options={company.options} value={company.company}
+                       onChange={company.setCompany} show={company.show} />
       </Stack>
       {loading && !summaries ? (
         <Stack spacing={1}>
@@ -1331,6 +1339,10 @@ function CustomerScreen({
   const [status, setStatus] = useState<StatusFilter>("active");
   const [sort, setSort] = useState<"name" | "recent" | "value">("name");
   const [accErr, setAccErr] = useState<string | null>(null);
+  // Options from the whole directory, not from whatever the search left — a
+  // company that vanishes from the dropdown when you type is a company you
+  // cannot get back to without clearing the box first.
+  const accountCompany = useCompanyFilter(accounts ?? []);
 
   useEffect(() => {
     let cancelled = false;
@@ -1370,7 +1382,12 @@ function CustomerScreen({
         }
         return x.name.localeCompare(y.name);
       });
-    const quiet = shown.filter((a) => !a.last_order).length;
+    // Applied after search and sort, so the count below reports what is on
+    // screen. Hooks are called unconditionally: this branch is inside the
+    // component, and a filter behind an `if` is a filter React forbids.
+    const company = accountCompany;
+    const rows = company.apply(shown);
+    const quiet = rows.filter((a) => !a.last_order).length;
 
     return (
       <div>
@@ -1399,6 +1416,8 @@ function CustomerScreen({
           <Seg label="Sort by" value={sort}
                onChange={(v) => setSort(v as "name" | "recent" | "value")}
                options={[["name", "Name"], ["recent", "Last order"], ["value", "12-month value"]]} />
+          <CompanyFilter options={company.options} value={company.company}
+                         onChange={company.setCompany} show={company.show} />
         </div>
 
         {accErr ? (
@@ -1411,7 +1430,7 @@ function CustomerScreen({
             <div className="skeleton" style={{ height: 44 }} />
             <div className="skeleton" style={{ height: 44 }} />
           </>
-        ) : shown.length === 0 ? (
+        ) : rows.length === 0 ? (
           <div className="dp-empty">
             {needle
               ? `No ${status === "all" ? "" : status + " "}customer matches “${q}”.`
@@ -1422,7 +1441,7 @@ function CustomerScreen({
         ) : (
           <>
             <div className="dp-count">
-              {shown.length} {shown.length === 1 ? "customer" : "customers"}
+              {rows.length} {rows.length === 1 ? "customer" : "customers"}
               {status !== "all" && ` marked ${status}`}
               {quiet > 0 && ` · ${quiet} have never ordered`}
             </div>
@@ -1430,7 +1449,7 @@ function CustomerScreen({
               ariaLabel="Customers"
               twoLineRows
               pageSize={25}
-              rows={shown}
+              rows={rows}
               onRowClick={(a) => setCustomerId(a.customer_id)}
               columns={[
                 {

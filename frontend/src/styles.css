@@ -1340,3 +1340,11 @@ table.grid tbody tr:hover td { background: color-mix(in srgb, var(--color-accent
 /* A record whose source was never captured. Stated, not styled away: rows
    imported before provenance existed cannot be attributed after the fact. */
 .ent-src.unknown { font-style: italic; }
+
+/* The connector under the company on an identity row. Secondary because with
+   three Zoho books the company is what tells the records apart; the connector
+   only starts distinguishing when a second system lands. */
+.id-connector-sub {
+  display: block; font-size: 11px; color: var(--color-neutral-600);
+  letter-spacing: .02em;
+}

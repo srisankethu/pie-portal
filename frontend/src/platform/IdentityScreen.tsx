@@ -50,7 +50,19 @@ function RecordRow({
 }) {
   return (
     <tr>
-      <td><span className="id-connector">{r.connector}</span></td>
+      {/* The company, not just the connector. This column said "zoho" on every
+          row, which is the one thing every row has in common when a business
+          reads three Zoho books — so the screen whose entire purpose is telling
+          connector records apart could not tell them apart. The connector still
+          shows, second, because it is what differs once a Tally book lands. */}
+      <td>
+        <span className="id-connector">
+          {r.origin?.company || r.connector}
+        </span>
+        {r.origin?.company && (
+          <span className="id-connector-sub">{r.origin.connector_short}</span>
+        )}
+      </td>
       <td className="mono">{r.external_id}</td>
       <td>{kind === "customers" ? r.name : r.description}</td>
       <td className="mono">
@@ -129,8 +141,8 @@ function IdentityCard({
         <thead>
           <tr>
             <th>
-              <Labelled tip="Which system this row came from. It is never rewritten from another connector's values — that is what makes a number on any screen traceable.">
-                Connector
+              <Labelled tip="Which connected company this row came from, and which system it came through. It is never rewritten from another record's values — that is what makes a number on any screen traceable.">
+                Source
               </Labelled>
             </th>
             <th>External ID</th>

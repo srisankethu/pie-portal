@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 from ..authz import Principal, require_manager_or_owner, require_owner
 from ..db import get_session
 from ..domain import models
+from ..domain.origin import Companies
 from ..identity import service as identity
 from ..identity.service import CUSTOMER, ITEM
 
@@ -38,11 +39,17 @@ def _entity(kind: str) -> str:
     return _TYPES[kind]
 
 
-def _record_dict(r: Any, entity_type: str) -> dict:
+def _record_dict(r: Any, entity_type: str, companies: Optional[Companies] = None) -> dict:
     common = {
         "record_id": r.record_id,
         "connector": r.connector,
         "connection_id": r.connection_id,
+        # The *company*, not just the connector. This screen showed "zoho" on
+        # every row, which is the one thing every row has in common when a
+        # business reads three Zoho books — so the screen whose entire purpose
+        # is telling connector records apart could not tell them apart. The
+        # same projection every other list uses.
+        "origin": companies.of(r).to_dict() if companies is not None else None,
         "external_id": r.external_id,
         "last_synced_at": r.last_synced_at.isoformat() if r.last_synced_at else None,
         # The raw values exactly as the connector supplied them. Kept visible
@@ -74,17 +81,22 @@ def _identity_dict(session: Session, row: Any, entity_type: str,
                    *, with_records: bool = True) -> dict:
     records = identity.records_for(session, row.organization_id, entity_type,
                                    row.identity_id)
+    companies = Companies(session, row.organization_id)
     out = {
         "identity_id": row.identity_id,
         "label": row.label,
         "display_name": row.label or _display(records, entity_type),
         "active": row.active,
         "connector_count": len({r.connector for r in records}),
+        # Two records from two *companies* of the same connector is the case
+        # `connector_count` cannot see, and it is the common one here: three
+        # Zoho books, one customer, three records, one connector.
+        "company_count": len({r.connection_id for r in records}),
         "record_count": len(records),
         "created_at": row.created_at.isoformat() if row.created_at else None,
     }
     if with_records:
-        out["records"] = [_record_dict(r, entity_type) for r in records]
+        out["records"] = [_record_dict(r, entity_type, companies) for r in records]
     return out
 
 

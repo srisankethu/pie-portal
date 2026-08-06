@@ -11,8 +11,8 @@ import {
 } from "./api";
 import type { Account, DecisionDetail, DecisionSummary, DecisionTrace, PlatformSession, Role, StatusFilter } from "./types";
 import { aiState, factLabel, factValue, isPrimaryFact, stateFieldLabel } from "./format";
-import { ActionsPanel, Bp, Conf, FactChip, ImpactPanel, Interpretation, Labelled, Pri,
-         RankingPanel, Tip, WhyPanel, typeLabel } from "./ui";
+import { ActionsPanel, Bp, Conf, DecisionCard, ImpactPanel, Interpretation, Labelled,
+         Pri, RankingPanel, Tip, WhyPanel, typeLabel } from "./ui";
 import Avatar from "@mui/material/Avatar";
 import Button from "@mui/material/Button";
 import Chip from "@mui/material/Chip";
@@ -353,11 +353,17 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
   // the product is broken.
   const navItems: NavItem[] = [
     // ── Decide ──
-    { key: "home", label: "Storyboard", group: "decide" },
-    // Open, not total: a badge counting closed decisions is a badge that never
-    // goes down, and one that never goes down stops being read.
-    { key: "list", label: rh.nav, group: "decide",
-      count: openDecisions.length,
+    // The landing screen leads with what needs deciding, so it takes the role's
+    // own name for that — "Today", "Team focus", "Where to intervene". It used
+    // to be called "Storyboard" and the queue below it carried the role name,
+    // which left two nav items claiming to be the place decisions live.
+    { key: "home", label: rh.nav, group: "decide",
+      // Open, not total: a badge counting closed decisions is a badge that
+      // never goes down, and one that never goes down stops being read.
+      count: openDecisions.length },
+    // The full table, filterable and sortable, as opposed to the landing
+    // screen's prioritised head of the same list.
+    { key: "list", label: "All decisions", group: "decide",
       // A decision detail page has no nav entry of its own; it belongs to the
       // queue it was opened from, and the sidebar should say so.
       alsoCurrentFor: ["detail"] },
@@ -462,7 +468,17 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
             say — a list of open items answers "what is outstanding", never
             "what happened". */}
         {screen === "home" && (
-          <Storyboard session={session} onNavigate={goViz} />
+          <HomeScreen
+            session={session}
+            title={rh.title}
+            sub={rh.sub}
+            open={openDecisions}
+            details={details}
+            loading={loading}
+            onOpen={openDetail}
+            onSeeAll={() => go("list")}
+            onNavigate={goViz}
+          />
         )}
 
         {/* ── DECISION LIST ── */}
@@ -610,6 +626,124 @@ function LoadFailed({ error, onRetry, busy }: { error: string; onRetry: () => vo
         <button className="btn btn-primary" onClick={onRetry} disabled={busy}>
           {busy ? "Retrying…" : "Try again"}
         </button>
+      </div>
+    </div>
+  );
+}
+
+// ── the landing screen ───────────────────────────────────────────────────────
+/** What needs a decision, and then what changed.
+ *
+ * This screen used to be the storyboard alone. The storyboard is a good
+ * briefing — it is an ordered list of beats, each carrying what changed, why,
+ * and where to go — but it answers "what happened to the business" and the
+ * product's actual output is "what should someone do today". That output lived
+ * one click away, behind a nav item, which made the queue something you had to
+ * know to look for.
+ *
+ * So the order is inverted rather than the storyboard replaced: the decisions
+ * first, the movement that produced them underneath as supporting context. The
+ * storyboard is unchanged and still reachable on its own terms.
+ *
+ * **Why there is no total.** The obvious header is "N decisions worth ₹X", and
+ * it would be wrong. Dead-stock capital and revenue at risk are different
+ * claims, so summing `impact.financial` across types produces a figure that
+ * means nothing and invites a decision against it. The count is broken down by
+ * priority band instead — which is not a money claim — and each card carries
+ * its own figure with the sentence that says what it is.
+ */
+const BAND_ORDER = ["HIGH", "MEDIUM", "LOW"] as const;
+
+/** How many cards before the screen stops being a summary. The rest are one
+ *  click away, and the link says how many. */
+const HOME_CARDS = 5;
+
+function HomeScreen({
+  session, title, sub, open, details, loading, onOpen, onSeeAll, onNavigate,
+}: {
+  session: PlatformSession;
+  title: string;
+  sub: string;
+  open: DecisionSummary[];
+  details: Record<string, DecisionDetail>;
+  loading: boolean;
+  onOpen: (id: string) => void;
+  onSeeAll: () => void;
+  onNavigate: (route: string) => void;
+}) {
+  // Already sorted by the server on priority then recency; take the head.
+  const top = open.slice(0, HOME_CARDS);
+  const bands = BAND_ORDER
+    .map((b) => [b, open.filter((s) => s.priority_band === b).length] as const)
+    .filter(([, n]) => n > 0);
+
+  return (
+    <div>
+      <div className="dp-head">
+        <h1>{title}</h1>
+        <p>{sub}</p>
+      </div>
+
+      {loading && open.length === 0 ? (
+        <Stack spacing={1.5} sx={{ mb: 4 }}>
+          <Skeleton variant="rounded" height={104} />
+          <Skeleton variant="rounded" height={104} />
+        </Stack>
+      ) : open.length === 0 ? (
+        /* Not "all clear". Nothing is flagged, which is a fact about the
+           evidence and not a verdict on the business. */
+        <div className="empty-state-card compact" style={{ marginBottom: 28 }}>
+          <div className="empty-state-card__eyebrow">Nothing waiting</div>
+          <h3>No decision needs you right now</h3>
+          <p>
+            Nothing in the book currently clears the thresholds that raise a decision. That is a
+            statement about the evidence, not a judgement that everything is well — what changed
+            over the period is below.
+          </p>
+        </div>
+      ) : (
+        <>
+          <div className="dp-count">
+            {open.length} open {open.length === 1 ? "decision" : "decisions"}
+            {bands.length > 0 && (
+              <>
+                {" · "}
+                {bands.map(([b, n], i) => (
+                  <span key={b}>
+                    {i > 0 && " · "}
+                    {n} {b.toLowerCase()}
+                  </span>
+                ))}
+              </>
+            )}
+          </div>
+
+          <div className="dp-cards tight">
+            {top.map((s) => {
+              const d = details[s.decision_id];
+              return d
+                ? <DecisionCard key={s.decision_id} d={d} onOpen={onOpen} compact />
+                : <Skeleton key={s.decision_id} variant="rounded" height={104} />;
+            })}
+          </div>
+
+          {open.length > top.length && (
+            <Button onClick={onSeeAll} sx={{ mt: 1.5 }}>
+              See all {open.length} decisions →
+            </Button>
+          )}
+        </>
+      )}
+
+      {/* The briefing, demoted to what it is: the movement these decisions came
+          out of, for whoever wants to check the arithmetic behind them. */}
+      <div className="home-context">
+        <div className="home-context-mark">
+          <Labelled tip="The period movement the decisions above were detected against. Kept on this screen rather than behind a nav item because 'why is this being raised now' is the first question anyone asks of a queue.">
+            The evidence behind them
+          </Labelled>
+        </div>
+        <Storyboard session={session} onNavigate={onNavigate} />
       </div>
     </div>
   );
@@ -1327,23 +1461,12 @@ function CustomerScreen({
         {decs.length > 1 && " — the same account is flagged for more than one reason"}
       </div>
       <div className="dp-cards">
+        {/* The card this was extracted from. It only ever rendered the
+            interpretation, so a state-derived decision on this account showed a
+            blank body — the impact and the rationale it does carry were not in
+            the branch. Sharing the card fixed that here as a side effect. */}
         {decs.map((d) => (
-          <Bp className="dcard" key={d.decision_id}>
-            <div className="dcard-top">
-              <span className="dcard-type">{typeLabel(d.decision_type)}</span>
-              <Pri band={d.priority.band} />
-              <span className="dp-spacer" />
-              <button className="btn btn-ghost btn-sm" onClick={() => onOpen(d.decision_id)}>
-                Open →
-              </button>
-            </div>
-            {d.interpretation.explanation && <div className="dcard-reason">{d.interpretation.explanation}</div>}
-            <div className="dcard-chips">
-              {d.facts.filter((f) => !f.restricted && isPrimaryFact(f.label)).slice(0, 4).map((f) => (
-                <FactChip key={f.label} f={f} />
-              ))}
-            </div>
-          </Bp>
+          <DecisionCard key={d.decision_id} d={d} onOpen={onOpen} />
         ))}
       </div>
       </>

@@ -1,7 +1,8 @@
 // Small shared presentation pieces for the Decision Platform.
 import type { ReactNode } from "react";
 import type { DecisionDetail, Fact } from "./types";
-import { CONF_LABEL, TYPE_LABEL, aiState, factLabel, factValue, stateFieldLabel } from "./format";
+import { CONF_LABEL, TYPE_LABEL, aiState, factLabel, factValue, isPrimaryFact,
+         stateFieldLabel } from "./format";
 import { money } from "../money";
 import type { DecisionAction, DecisionImpact, DecisionRanking } from "./types";
 
@@ -245,5 +246,85 @@ export function ActionsPanel({ actions }: { actions: DecisionAction[] }) {
         {actions.map((a) => <li key={a.key}>{a.label}</li>)}
       </ul>
     </>
+  );
+}
+
+/* ── the decision card ────────────────────────────────────────────────────── */
+
+/** One decision, at a glance, wherever a list of them is shown.
+ *
+ * Extracted from `CustomerScreen`, which had the only copy, when the landing
+ * screen needed the same thing. A second copy would have been the easy move and
+ * the wrong one: the two producers render differently (see below), and two
+ * copies of that branch is one place for a state decision to start rendering as
+ * a signal one worth nothing.
+ *
+ * **Two origins, two claims.** A signal decision says "here is a reading of the
+ * evidence" — so it shows the interpretation and the facts the detector
+ * measured. A state decision says "here is what this is worth, and here is the
+ * arithmetic" — so it shows the impact and the rationale assembled from the
+ * numbers that triggered it, and never the interpretation, because there is no
+ * model in that path at all. Read from `origin` rather than sniffed from which
+ * fields happen to be populated.
+ */
+export function DecisionCard({
+  d, onOpen, compact = false,
+}: {
+  d: DecisionDetail;
+  onOpen: (id: string) => void;
+  /** Drop the impact basis and trim the fact chips. Used where the card is one
+   *  of several on a screen that is not only about decisions. */
+  compact?: boolean;
+}) {
+  const fromState = d.origin === "STATE";
+  const facts = d.facts.filter((f) => !f.restricted && isPrimaryFact(f.label));
+  return (
+    <Bp className="dcard">
+      <div className="dcard-top">
+        <span className="dcard-type">{typeLabel(d.decision_type)}</span>
+        <Pri band={d.priority.band} />
+        <span className="dcard-subject">{d.subject_label}</span>
+        <span className="dp-spacer" />
+        <button className="btn btn-ghost btn-sm" onClick={() => onOpen(d.decision_id)}>
+          Open →
+        </button>
+      </div>
+
+      {fromState ? (
+        <>
+          {d.impact?.financial != null && (
+            <div className="dcard-impact">
+              <b>{money(d.impact.financial)}</b>
+              {/* The sentence matters as much as the figure: capital locked and
+                  revenue at risk can be the same number and are not the same
+                  claim, and a reader who sums them across cards is wrong. */}
+              {!compact && d.impact.basis && <span>{d.impact.basis}</span>}
+            </div>
+          )}
+          {d.rationale && <div className="dcard-reason">{d.rationale}</div>}
+        </>
+      ) : (
+        <>
+          {/* Clamped to two lines in a list, in full on a detail page.
+              A card in a list is scanned against its neighbours, so uneven
+              paragraphs make the list harder to read than the same text set
+              short — and when the model is degraded, or is the mock provider,
+              every explanation is the same sentence and five full copies of it
+              push the facts that DO differ below the fold. Clamped rather than
+              hidden, because when the readings differ the first line is the most
+              useful thing on the card. */}
+          {d.interpretation.explanation && (
+            <div className={`dcard-reason${compact ? " clamp" : ""}`}>
+              {d.interpretation.explanation}
+            </div>
+          )}
+          {facts.length > 0 && (
+            <div className={`dcard-chips${compact ? " tight" : ""}`}>
+              {facts.slice(0, 4).map((f) => <FactChip key={f.label} f={f} />)}
+            </div>
+          )}
+        </>
+      )}
+    </Bp>
   );
 }

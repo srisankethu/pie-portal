@@ -301,11 +301,35 @@ table.grid tbody tr:hover td { background: color-mix(in srgb, var(--color-accent
 .dp-count { font-family: var(--font-heading); font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--color-neutral-700); margin-bottom: 12px; }
 .dp-cards { display: grid; gap: 16px; }
 .dcard { padding: 16px 18px; background: var(--color-bg); }
+.dp-cards.tight .dcard { padding: 13px 16px; }
 .dcard-top { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
 .dcard-type { font-family: var(--font-heading); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--color-accent-800); }
 .dcard-cust { font-family: var(--font-heading); font-size: 20px; font-weight: 600; }
+.dcard-subject { font-family: var(--font-heading); font-size: 15px; font-weight: 600; }
 .dcard-reason { margin: 8px 0 12px; font-size: 14px; line-height: 1.5; max-width: 68ch; }
+.dcard-reason.clamp {
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; margin-bottom: 0;
+}
 .dcard-chips { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+.dcard-chips.tight { margin: 10px 0 0; }
+/* What a state-derived decision is worth. The figure leads; the basis beside it
+   is what stops two cards being added together. */
+.dcard-impact { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+.dcard-impact b { font-family: var(--font-heading); font-size: 22px; font-weight: 600; }
+.dcard-impact span { font-size: 12.5px; color: var(--color-neutral-700); max-width: 54ch; }
+
+/* The briefing, below the queue. Separated by a rule rather than a heading:
+   it is the same page continuing into its evidence, not a new section. */
+.home-context {
+  margin-top: 34px; padding-top: 22px;
+  border-top: 1px solid var(--color-divider);
+}
+.home-context-mark {
+  font-family: var(--font-heading); font-size: 11px; font-weight: 600;
+  letter-spacing: 0.09em; text-transform: uppercase;
+  color: var(--color-neutral-600); margin-bottom: 14px;
+}
 .factchip { display: inline-flex; gap: 6px; align-items: baseline; border: 1px solid var(--color-divider); padding: 3px 8px; font-size: 12px; }
 .factchip .k { color: var(--color-neutral-600); text-transform: uppercase; letter-spacing: 0.04em; font-size: 10.5px; }
 .factchip .v { font-variant-numeric: tabular-nums; font-weight: 600; }

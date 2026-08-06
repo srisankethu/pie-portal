@@ -1,3 +1,5 @@
+import MenuItem from "@mui/material/MenuItem";
+import TextField from "@mui/material/TextField";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { formatDate, since, todayISO } from "../when";
 import { papi } from "./api";
@@ -524,12 +526,13 @@ function AddConnection({
               reaches every company that user can see, so re-entering the same secret
               would only create a copy for a future rotation to miss.
             </p>
-            <label htmlFor="cx-cred" style={{ marginTop: 10 }}>
-              Zoho sign-in
-            </label>
-            <select
+            <TextField
               id="cx-cred"
-              className="input"
+              select
+              fullWidth
+              size="small"
+              label="Zoho sign-in"
+              sx={{ mt: 1.5 }}
               value={credentialId}
               onChange={(e) => {
                 setCredentialId(e.target.value);
@@ -537,12 +540,12 @@ function AddConnection({
               }}
             >
               {view.credentials.map((c) => (
-                <option key={c.credential_id} value={c.credential_id}>
+                <MenuItem key={c.credential_id} value={c.credential_id}>
                   {c.label} · {c.client_id.slice(0, 18)}… · used by {c.used_by}{" "}
                   {c.used_by === 1 ? "company" : "companies"}
-                </option>
+                </MenuItem>
               ))}
-            </select>
+            </TextField>
 
             <button
               type="button"
@@ -585,9 +588,11 @@ function AddConnection({
                 Data centre
               </Labelled>
             </label>
-            <select
+            <TextField
               id="cx-dc"
-              className="input"
+              select
+              fullWidth
+              size="small"
               value={form.accounts_base}
               onChange={(e) => {
                 const p = DC_PRESETS.find((d) => d.accounts_base === e.target.value);
@@ -595,11 +600,11 @@ function AddConnection({
               }}
             >
               {DC_PRESETS.map((p) => (
-                <option key={p.accounts_base} value={p.accounts_base}>
+                <MenuItem key={p.accounts_base} value={p.accounts_base}>
                   {p.label}
-                </option>
+                </MenuItem>
               ))}
-            </select>
+            </TextField>
 
             <label htmlFor="cx-client-id" style={{ marginTop: 10 }}>Client ID</label>
             <input

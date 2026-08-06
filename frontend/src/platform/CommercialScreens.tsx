@@ -1,3 +1,6 @@
+import Button from "@mui/material/Button";
+import MenuItem from "@mui/material/MenuItem";
+import TextField from "@mui/material/TextField";
 import { useCallback, useEffect, useState } from "react";
 import { DataGrid, numeric } from "./DataGrid";
 import { formatDate } from "../when";
@@ -215,16 +218,19 @@ export function CustomerCommercial({
         {showAll ? "All items" : "Items requiring attention"}
       </div>
       <div className="ci-controls">
-        <label>
-          Sort by
-          <select className="input" value={sort}
-                  onChange={(e) => setSort(e.target.value as SortKey)}>
-            {SORTS.map((o) => <option key={o.key} value={o.key}>{o.label}</option>)}
-          </select>
-        </label>
-        <button className="btn btn-ghost btn-sm" onClick={() => setShowAll(!showAll)}>
+        <TextField
+          select
+          size="small"
+          label="Sort by"
+          value={sort}
+          onChange={(e) => setSort(e.target.value as SortKey)}
+          sx={{ minWidth: 210 }}
+        >
+          {SORTS.map((o) => <MenuItem key={o.key} value={o.key}>{o.label}</MenuItem>)}
+        </TextField>
+        <Button size="small" onClick={() => setShowAll(!showAll)}>
           {showAll ? "Only items needing attention" : `Show all ${s.active_items} items`}
-        </button>
+        </Button>
       </div>
 
       {shown.length === 0 ? (

@@ -1,3 +1,5 @@
+import Avatar from "@mui/material/Avatar";
+import Chip from "@mui/material/Chip";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, clearDraftQuote, clearSession, loadDraftQuote, loadSession, saveDraftQuote, saveSession } from "./api";
 import type { Line, Quote, Session } from "./types";
@@ -327,28 +329,49 @@ export default function App({ onOpenPlatform }: { onOpenPlatform?: (hash: string
       </div>
 
       <div className="toolbar">
+        {/* Chips, matching the decision queue's filter row. These select what
+            the grid shows; they are not actions, and rendering them as buttons
+            said otherwise on both screens. */}
         {FILTERS.map(([key, label]) => {
           const count = quote.filterCounts[key] ?? 0;
+          // Unresolved lines and lines needing a decision are the two states
+          // that stop a quote being sent, so their count is coloured even when
+          // the chip is not the active one.
           const alert = (key === "NEEDS" || key === "UNRES") && count > 0;
           return (
-            <button
+            <Chip
               key={key}
-              className={"filter" + (filter === key ? " active" : "")}
+              label={label}
+              avatar={
+                <Avatar
+                  sx={{
+                    bgcolor: "transparent",
+                    fontSize: 11,
+                    fontWeight: 700,
+                    color: alert && filter !== key ? "var(--danger-fg)" : undefined,
+                  }}
+                >
+                  {count}
+                </Avatar>
+              }
+              color={filter === key ? "primary" : "default"}
+              variant={filter === key ? "filled" : "outlined"}
               onClick={() => setFilter(key)}
-            >
-              {label}
-              <span className={"count" + (alert ? " alert" : "")}>{count}</span>
-            </button>
+            />
           );
         })}
         {mgmt && (quote.filterCounts.MFLOOR ?? 0) > 0 && (
-          <button
-            className={"filter" + (filter === "MFLOOR" ? " active" : "")}
+          <Chip
+            label="Below margin floor"
+            avatar={
+              <Avatar sx={{ bgcolor: "transparent", fontSize: 11, fontWeight: 700 }}>
+                {quote.filterCounts.MFLOOR}
+              </Avatar>
+            }
+            color={filter === "MFLOOR" ? "error" : "default"}
+            variant={filter === "MFLOOR" ? "filled" : "outlined"}
             onClick={() => setFilter(filter === "MFLOOR" ? "ALL" : "MFLOOR")}
-          >
-            Below margin floor
-            <span className="count alert">{quote.filterCounts.MFLOOR}</span>
-          </button>
+          />
         )}
         <div className="spacer" style={{ flex: 1 }} />
         <input

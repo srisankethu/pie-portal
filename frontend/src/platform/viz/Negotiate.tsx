@@ -18,6 +18,8 @@
 // exists for: give something to the customer, ask something of the vendor, and
 // see immediately what each does to the same figure.
 
+import MenuItem from "@mui/material/MenuItem";
+import TextField from "@mui/material/TextField";
 import { useEffect, useState } from "react";
 import { money } from "../../money";
 import { papi } from "../api";
@@ -349,18 +351,26 @@ function Choice({
   const id = `neg-${label.replace(/\W+/g, "-").toLowerCase()}`;
   return (
     <div className="field neg-field">
-      <label htmlFor={id}>{label}</label>
-      {/* `title` on both: a select clips its own value, and tool names are
-          long enough that "25mm shank turning ho…" is ambiguous between two
-          real items. Hovering gives the whole thing back. */}
-      <select id={id} className="input" value={value} disabled={disabled}
-              title={options.find((o) => o.value === value)?.label}
-              onChange={(e) => onChange(e.target.value)}>
+      {/* `title` on the control: it clips its own value, and tool names are long
+          enough that "25mm shank turning ho…" is ambiguous between two real
+          items. Hovering gives the whole thing back. The menu itself does not
+          need it — an open MUI menu shows each option at full width. */}
+      <TextField
+        id={id}
+        select
+        fullWidth
+        size="small"
+        label={label}
+        value={value}
+        disabled={disabled}
+        title={options.find((o) => o.value === value)?.label}
+        onChange={(e) => onChange(e.target.value)}
+        helperText={hint}
+      >
         {options.map((o) => (
-          <option key={o.value} value={o.value} title={o.label}>{o.label}</option>
+          <MenuItem key={o.value} value={o.value}>{o.label}</MenuItem>
         ))}
-      </select>
-      {hint && <span className="viz-muted neg-hint">{hint}</span>}
+      </TextField>
     </div>
   );
 }
@@ -373,12 +383,21 @@ function Field({
 }) {
   const id = `neg-${label.replace(/\W+/g, "-").toLowerCase()}`;
   return (
+    // A TextField like the pickers beside it. Mixing a label-above input with a
+    // floating-label select in one row of a form makes the two look like
+    // different kinds of question when they are not.
     <div className="field neg-field">
-      <label htmlFor={id}>{label}</label>
-      <input id={id} className="input" value={value} disabled={disabled}
-             inputMode={numeric ? "decimal" : undefined}
-             onChange={(e) => onChange(e.target.value)} />
-      {hint && <span className="viz-muted neg-hint">{hint}</span>}
+      <TextField
+        id={id}
+        fullWidth
+        size="small"
+        label={label}
+        value={value}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.value)}
+        helperText={hint}
+        slotProps={{ htmlInput: { inputMode: numeric ? "decimal" : undefined } }}
+      />
     </div>
   );
 }

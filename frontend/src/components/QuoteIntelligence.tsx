@@ -1,3 +1,5 @@
+import MenuItem from "@mui/material/MenuItem";
+import TextField from "@mui/material/TextField";
 import { useState } from "react";
 import type { Line, LineIntelligence, QuoteException } from "../types";
 import { Labelled, Tip } from "../Tip";
@@ -282,21 +284,20 @@ export function QuoteIntelligence({
           </div>
         ) : capturing ? (
           <div className="qi-capture">
-            <label className="qi-label" htmlFor={`qi-reason-${intel.line_id}`}>
-              {needsApproval ? "Why should this be approved?" : "Why is this price right?"}
-            </label>
-            <select
+            <TextField
               id={`qi-reason-${intel.line_id}`}
-              className="input"
+              select
+              fullWidth
+              size="small"
+              label={needsApproval ? "Why should this be approved?" : "Why is this price right?"}
               value={reasonCode}
               onChange={(e) => setReasonCode(e.target.value)}
+              sx={{ mb: 1 }}
             >
               {OVERRIDE_REASONS.map(([code, label]) => (
-                <option key={code} value={code}>
-                  {label}
-                </option>
+                <MenuItem key={code} value={code}>{label}</MenuItem>
               ))}
-            </select>
+            </TextField>
             <textarea
               className="input"
               rows={2}

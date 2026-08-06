@@ -11,7 +11,11 @@ import type {
   PlatformUser,
   PolicyField,
   Role } from "./types";
+import Alert from "@mui/material/Alert";
+import Button from "@mui/material/Button";
+import MenuItem from "@mui/material/MenuItem";
 import Switch from "@mui/material/Switch";
+import TextField from "@mui/material/TextField";
 import { Bp, Labelled } from "./ui";
 import { money, moneySymbol } from "../money";
 
@@ -805,18 +809,20 @@ function NewUserForm({
 
   return (
     <form className="st-newuser" onSubmit={submit}>
-      <input className="input" placeholder="name@company.com" value={email}
-             onChange={(e) => setEmail(e.target.value)} required aria-label="Email" />
-      <input className="input" placeholder="Full name" value={name}
-             onChange={(e) => setName(e.target.value)} required aria-label="Name" />
-      <select className="input" value={role} onChange={(e) => setRole(e.target.value as Role)}
-              aria-label="Role">
+      <TextField size="small" type="email" placeholder="name@company.com" value={email}
+                 onChange={(e) => setEmail(e.target.value)} required label="Email" />
+      <TextField size="small" placeholder="Full name" value={name}
+                 onChange={(e) => setName(e.target.value)} required label="Name" />
+      <TextField select size="small" value={role} label="Role"
+                 onChange={(e) => setRole(e.target.value as Role)}>
         {(Object.keys(ROLE_LABEL) as Role[]).map((r) => (
-          <option key={r} value={r}>{ROLE_LABEL[r]}</option>
+          <MenuItem key={r} value={r}>{ROLE_LABEL[r]}</MenuItem>
         ))}
-      </select>
-      <button className="btn btn-primary" disabled={busy}>{busy ? "Creating…" : "Add user"}</button>
-      {error && <div className="dp-error st-span">{error}</div>}
+      </TextField>
+      <Button type="submit" variant="contained" disabled={busy}>
+        {busy ? "Creating…" : "Add user"}
+      </Button>
+      {error && <Alert severity="error" className="st-span" sx={{ mt: 1 }}>{error}</Alert>}
       <div className="st-help st-span">{ROLE_HELP[role]}</div>
     </form>
   );
@@ -995,16 +1001,18 @@ export function SettingsScreen({ session }: { session: PlatformSession }) {
                   <td className="mono">{u.email}</td>
                   <td>
                     {canManage && u.user_id !== session.user_id ? (
-                      <select
-                        className="input st-role"
+                      <TextField
+                        select
+                        size="small"
+                        className="st-role"
                         value={u.role}
                         onChange={(e) => patchUser(u.user_id, { role: e.target.value as Role })}
                         aria-label={`Role for ${u.name}`}
                       >
                         {(Object.keys(ROLE_LABEL) as Role[]).map((r) => (
-                          <option key={r} value={r}>{ROLE_LABEL[r]}</option>
+                          <MenuItem key={r} value={r}>{ROLE_LABEL[r]}</MenuItem>
                         ))}
-                      </select>
+                      </TextField>
                     ) : (
                       ROLE_LABEL[u.role]
                     )}

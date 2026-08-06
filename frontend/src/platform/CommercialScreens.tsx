@@ -2,12 +2,13 @@ import Button from "@mui/material/Button";
 import MenuItem from "@mui/material/MenuItem";
 import TextField from "@mui/material/TextField";
 import { useCallback, useEffect, useState } from "react";
-import { DataGrid, numeric } from "./DataGrid";
+import { DataGrid, numeric, text } from "./DataGrid";
 import { formatDate } from "../when";
 import { papi } from "./api";
 import type {
   CustomerItemDetail,
   CustomerItemRow,
+  CustomerItemTxn,
   CustomerPortfolio,
   PeerRow,
   PlatformSession } from "./types";
@@ -342,11 +343,15 @@ export function CustomerItemScreen({
   session,
   customerId,
   productId,
-  onBack }: {
+  onBack,
+  onOpenCustomer }: {
   session: PlatformSession;
   customerId: string;
   productId: string;
   onBack: () => void;
+  /** Open another account from the peer comparison. Optional: a caller that
+   *  cannot navigate gets a non-clickable grid rather than a dead row. */
+  onOpenCustomer?: (customerId: string) => void;
 }) {
   const [data, setData] = useState<CustomerItemDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -506,33 +511,42 @@ export function CustomerItemScreen({
             </p>
           </>
         )}
-        <div className="ci-scroll">
-          <table className="dp-table ci-table">
-            <thead>
-              <tr>
-                <th>Customer</th><th className="num">Selling price</th>
-                <th className="num">Margin</th><th className="num">Volume</th>
-                <th className="num">Orders</th><th>Last bought</th>
-              </tr>
-            </thead>
-            <tbody>
-              {[data.peers.subject, ...data.peers.rows]
-                .filter((p): p is PeerRow => p != null)
-                .map((p) => (
-                  <tr key={p.customer_id} className={p.is_subject ? "ci-subject" : ""}>
-                    <td style={{ fontWeight: p.is_subject ? 700 : 400 }}>
-                      {p.name}{p.is_subject && <span className="ci-you"> this customer</span>}
-                    </td>
-                    <td className="num">{money(p.net_sell_price)}</td>
-                    <td className="num">{pct(p.margin)}</td>
-                    <td className="num">{num(p.qty)}</td>
-                    <td className="num">{p.txn_count}</td>
-                    <td>{when(p.last_transaction_date)}</td>
-                  </tr>
-                ))}
-            </tbody>
-          </table>
-        </div>
+        {/* A grid rather than markup: the row count here is "how many other
+            accounts buy this item", which is driven by the size of the book.
+            Sorting it by margin is the question the panel exists to answer, and
+            a plain table cannot be asked. Rows open the account. */}
+        <DataGrid<PeerRow>
+          ariaLabel="This item's price across accounts"
+          rows={[data.peers.subject, ...data.peers.rows]
+            .filter((p): p is PeerRow => p != null)}
+          onRowClick={(p) => onOpenCustomer?.(p.customer_id)}
+          pageSize={10}
+          filters={false}
+          columns={[
+            {
+              ...text<PeerRow>("name", "Customer"),
+              // The account being viewed is in this list on purpose — the
+              // comparison is meaningless without it — so it is marked rather
+              // than left for the reader to find by name.
+              cellRenderer: (p: { data?: PeerRow }) =>
+                p.data ? (
+                  <span style={{ fontWeight: p.data.is_subject ? 700 : 400 }}>
+                    {p.data.name}
+                    {p.data.is_subject && <span className="ci-you"> this customer</span>}
+                  </span>
+                ) : null,
+            },
+            numeric<PeerRow>("net_sell_price", "Selling price", money),
+            numeric<PeerRow>("margin", "Margin", (v) => pct(v)),
+            numeric<PeerRow>("qty", "Volume", num),
+            numeric<PeerRow>("txn_count", "Orders", (v) => String(v)),
+            {
+              ...text<PeerRow>("last_transaction_date", "Last bought"),
+              minWidth: 130,
+              valueFormatter: (p) => when(p.value),
+            },
+          ]}
+        />
       </Bp>
 
       {/* E. did the lower margin buy anything */}
@@ -564,37 +578,40 @@ export function CustomerItemScreen({
         Every figure above is an aggregate of exactly these lines.
       </p>
       <Bp style={{ padding: 2 }}>
-        <div className="ci-scroll">
-          <table className="dp-table ci-table">
-            <thead>
-              <tr>
-                <th>Date</th><th>Invoice</th><th className="num">Qty</th>
-                <th className="num">Rate</th><th className="num">Disc</th>
-                <th className="num">Net price</th><th className="num">Eff. cost</th>
-                <th className="num">GP</th><th className="num">Margin</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.transactions.map((t) => (
-                <tr key={t.external_ref}>
-                  <td>{when(t.date)}</td>
-                  <td className="mono" style={{ fontSize: 12 }}>{t.invoice_id || "—"}</td>
-                  <td className="num">{num(t.qty)}</td>
-                  <td className="num">{money(t.rate)}</td>
-                  <td className="num">{t.discount_percent ? pct(t.discount_percent / 100) : "—"}</td>
-                  <td className="num">{money(t.net_sell_price)}</td>
-                  <td className="num">
-                    {t.effective_cost == null
-                      ? <span className="fsrc">no cost</span>
-                      : money(t.effective_cost)}
-                  </td>
-                  <td className="num">{money(t.gross_profit)}</td>
-                  <td className="num">{pct(t.margin)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        {/* Every line this account ever bought of this item, so the row count
+            is the length of the relationship. Sorting by margin or by date is
+            how somebody finds the line that started an erosion, and a plain
+            table could only be read top to bottom.
+
+            No row click: a line's destination would be the invoice, and this
+            platform does not have an invoice screen. A cursor that promised one
+            would be worse than none. */}
+        <DataGrid<CustomerItemTxn>
+          ariaLabel="Every line of this relationship"
+          rows={data.transactions}
+          pageSize={25}
+          columns={[
+            { ...text<CustomerItemTxn>("date", "Date"), minWidth: 120,
+              sort: "desc", valueFormatter: (p) => when(p.value) },
+            { ...text<CustomerItemTxn>("invoice_id", "Invoice"),
+              cellClass: "mono", minWidth: 130,
+              valueFormatter: (p) => p.value || "—" },
+            numeric<CustomerItemTxn>("qty", "Qty", num),
+            numeric<CustomerItemTxn>("rate", "Rate", money),
+            numeric<CustomerItemTxn>("discount_percent", "Disc",
+                                     (v) => pct(v / 100)),
+            numeric<CustomerItemTxn>("net_sell_price", "Net price", money),
+            {
+              ...numeric<CustomerItemTxn>("effective_cost", "Eff. cost", money),
+              // "no cost" rather than an em dash: an uncosted line is a gap in
+              // the bill history, not a missing value, and the two are acted on
+              // differently.
+              valueFormatter: (p) => (p.value == null ? "no cost" : money(Number(p.value))),
+            },
+            numeric<CustomerItemTxn>("gross_profit", "GP", money),
+            numeric<CustomerItemTxn>("margin", "Margin", (v) => pct(v)),
+          ]}
+        />
       </Bp>
     </div>
   );

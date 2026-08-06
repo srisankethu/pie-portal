@@ -557,6 +557,10 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
             customerId={customerId}
             productId={itemId}
             onBack={() => go("customer", customerId)}
+            // A row in the peer comparison is another account buying the same
+            // item — clicking it opens that relationship, which is the next
+            // question anybody asks of that table.
+            onOpenCustomer={(cid) => go("customerItem", cid, itemId)}
           />
         )}
 

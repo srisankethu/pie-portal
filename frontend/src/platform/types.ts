@@ -461,12 +461,31 @@ export interface CustomerItemDetail {
   };
   volume_vs_margin: { period_start: string; period_end: string; qty: number | null;
                       revenue: number | null; margin: number | null; txn_count: number }[];
-  transactions: {
-    date: string; invoice_id: string | null; external_ref: string; qty: number | null;
-    rate: number | null; discount_percent: number | null; net_sell_price: number | null;
-    effective_cost: number | null; revenue: number | null; cogs: number | null;
-    gross_profit: number | null; margin: number | null; cost_source: string | null;
-  }[];
+  transactions: CustomerItemTxn[];
+}
+
+/** One line of one customer's history with one item.
+ *
+ * Named rather than left inline because the grid that renders it is typed on
+ * it — an anonymous shape means the columns fall back to `unknown` and a
+ * mistyped field name compiles.
+ */
+export interface CustomerItemTxn {
+  date: string;
+  invoice_id: string | null;
+  external_ref: string;
+  qty: number | null;
+  rate: number | null;
+  discount_percent: number | null;
+  net_sell_price: number | null;
+  /** Null where no bill covers this sale. A gap in the purchase history, not a
+   *  zero — the screen says "no cost" rather than showing a dash. */
+  effective_cost: number | null;
+  revenue: number | null;
+  cogs: number | null;
+  gross_profit: number | null;
+  margin: number | null;
+  cost_source: string | null;
 }
 
 /* ── users, approvals and policy ──────────────────────────────────────────── */

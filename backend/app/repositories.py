@@ -10,8 +10,8 @@ sync is idempotent and never duplicates a source record.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Optional, Sequence
+from datetime import date, datetime, timezone
+from typing import Any, Optional, Sequence
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -269,6 +269,57 @@ class ReadModelRepository:
             self.s.add(row)
         row.modified_at = modified_at or None
         row.fetched_at = datetime.now(timezone.utc)
+
+    def ingested_in_window(self, doc_type: str, start: date,
+                           end: date) -> list[str]:
+        """Document ids this connection holds whose document date falls inside
+        the pull's window.
+
+        Bounded by the *document's own date*, not by when it was fetched: the
+        listing this is compared against was bounded that way, and comparing
+        against anything else would treat a document the pull never looked for
+        as one Zoho has deleted.
+        """
+        table = _MIRRORED.get(doc_type)
+        if table is None:
+            return []
+        model, ref_col, date_col = table
+        rows = self.s.scalars(
+            select(getattr(model, ref_col)).where(
+                model.organization_id == self.org,
+                getattr(model, date_col) >= start,
+                getattr(model, date_col) <= end,
+            ))
+        return [str(r) for r in rows]
+
+    def retire_document(self, doc_type: str, doc_id: str) -> int:
+        """Remove a document's read-model rows. Returns how many.
+
+        Its events are superseded separately by the caller — that is what makes
+        every *derived* thing (states, decisions, metrics) forget it on the next
+        build. This clears what the screens read directly.
+        """
+        removed = 0
+        for model, ref_col, prefixed in _RETIRE_FROM.get(doc_type, ()):
+            column = getattr(model, ref_col)
+            # Line rows are keyed `{doc_id}:{line_id}`; header rows are the id.
+            match = (column.startswith(f"{doc_id}:") if prefixed
+                     else column == doc_id)
+            rows = self.s.scalars(
+                select(model).where(model.organization_id == self.org, match)).all()
+            for row in rows:
+                self.s.delete(row)
+                removed += 1
+        # The cursor goes too, or the next pull believes it still holds it.
+        cursor = self.s.scalars(
+            select(models.IngestedDocument).where(
+                models.IngestedDocument.organization_id == self.org,
+                models.IngestedDocument.connection_id == self.connection_id,
+                models.IngestedDocument.doc_type == doc_type,
+                models.IngestedDocument.doc_id == doc_id)).all()
+        for row in cursor:
+            self.s.delete(row)
+        return removed
 
     def clear_ingested(self) -> int:
         """Forget this connection's cursor, so its next pull re-fetches
@@ -724,3 +775,25 @@ class SignalRepository:
                 models.Signal.signal_id == signal_id,
             )
         )
+
+
+#: Which table answers "what do we hold for this document kind, and when was
+#: it dated". Only kinds listed here are ever reconciled against the source —
+#: a kind with no entry is simply never retired, which is the safe default.
+_MIRRORED: dict[str, tuple[Any, str, str]] = {
+    "invoice": (models.InvoiceDoc, "external_ref", "date"),
+    "bill": (models.BillDoc, "external_ref", "date"),
+}
+
+#: What to delete when a document is retired. The boolean says whether the
+#: reference is a line key (``{doc_id}:{line_id}``) or the document id itself.
+#:
+#: Both the header and its lines, because the screens read the lines directly
+#: and a header removed without them would leave revenue with nothing to
+#: attribute it to.
+_RETIRE_FROM: dict[str, tuple[tuple[Any, str, bool], ...]] = {
+    "invoice": ((models.SalesTxn, "external_ref", True),
+                (models.InvoiceDoc, "external_ref", False)),
+    "bill": ((models.CostRecord, "external_ref", True),
+             (models.BillDoc, "external_ref", False)),
+}

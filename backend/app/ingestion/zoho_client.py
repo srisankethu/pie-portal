@@ -161,6 +161,19 @@ class ZohoApiSource:
         self.calls = 0
         self.documents_fetched = 0
         self.documents_resumed = 0
+        # ── what the listing saw, for mirroring ──────────────────────────────
+        #
+        # Every document id Zoho currently reports as real trade inside this
+        # pull's window, per document kind — including the ones the resume
+        # cursor then skipped. That inclusion is the whole point: a resumed
+        # pull *yields* almost nothing, so a caller that reconciled against
+        # what it received would conclude the entire book had been deleted.
+        self.listed: dict[str, set[str]] = {}
+        # Kinds whose listing ran to the end without raising. Only these may be
+        # reconciled — a pull that was throttled out halfway saw part of the
+        # book, and treating the part it missed as deleted would destroy real
+        # history on a bad network day.
+        self.listing_complete: set[str] = set()
 
     # ── transport ────────────────────────────────────────────────────────────
     def _client(self):
@@ -453,10 +466,16 @@ class ZohoApiSource:
         """
         cutoff = self._cutoff()
         until = self._until
+        kind = detail_key
+        seen: set[str] = self.listed.setdefault(kind, set())
         for row in self._paginate(path, list_key, sort_column="date", sort_order="D",
                                   **self._window()):
             status = str(row.get("status") or "").lower()
             if status in excluded_status:
+                # Deliberately *not* recorded as seen. A voided or drafted
+                # document is not trade, so as far as this platform is
+                # concerned it is the same as absent — which is what makes
+                # voiding an invoice in Zoho remove it from PIE.
                 continue
             # Re-checked locally as well: the bounds above are a request to
             # Zoho, and a source that quietly ignored them would otherwise
@@ -469,6 +488,8 @@ class ZohoApiSource:
             if doc_date < cutoff or (until is not None and doc_date > until):
                 continue
             doc_id = str(row.get(id_field))
+            # Recorded before the resume check, not after. See `self.listed`.
+            seen.add(doc_id)
             # The stamp the *list* reports. This is the value the resume check
             # will see next time, so it is also the value that must be stored —
             # see below.
@@ -496,6 +517,9 @@ class ZohoApiSource:
                 # of the resume protocol and not of any one document type.
                 detail = {**detail, "last_modified_time": listed_stamp}
                 yield detail
+        # Reached only when the loop above was not abandoned by an exception or
+        # by the consumer breaking out early.
+        self.listing_complete.add(kind)
 
     def list_invoices(self, skip: Optional[SkipPredicate] = None) -> Iterable[dict[str, Any]]:
         for inv in self._documents("invoices", "invoices", "invoice", "invoice_id",

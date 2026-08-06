@@ -4,6 +4,7 @@ import CssBaseline from "@mui/material/CssBaseline";
 import { ThemeProvider } from "@mui/material/styles";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { SnackbarProvider } from "notistack";
+import { HashRouter } from "react-router-dom";
 
 // Self-hosted, not the Google Fonts CDN. The <link> in index.html failed on any
 // network that cannot reach fonts.gstatic.com — an air-gapped shop floor, a
@@ -61,7 +62,13 @@ createRoot(document.getElementById("root")!).render(
           anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
           autoHideDuration={6000}
         >
-          <Root />
+          {/* Hash rather than browser history: the API and this bundle are
+              served by the same FastAPI app, and a browser-path router needs
+              every unknown path rewritten to index.html there. See
+              `platform/route.ts`. */}
+          <HashRouter>
+            <Root />
+          </HashRouter>
         </SnackbarProvider>
       </QueryClientProvider>
     </ThemeProvider>

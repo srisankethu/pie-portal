@@ -26,7 +26,10 @@ import { useSnackbar } from "notistack";
 import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
-import { navigate, parseHash, type Screen } from "./route";
+import { Navigate, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom";
+import {
+  LEGACY_ACCOUNTS, PATH, PATTERN, pathFor, screenAt, vizPath, type Screen,
+} from "./route";
 import AppShell, { type NavItem } from "./AppShell";
 import { SignInCard } from "../SignInCard";
 import { abilityFor } from "./ability";
@@ -166,9 +169,12 @@ function ActionModal({
 export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void }) {
   const { enqueueSnackbar, closeSnackbar } = useSnackbar();
   const [session, setSession] = useState<PlatformSession | null>(loadPlatformSession());
-  // Screen lives in the URL hash so Back, reload and shareable links all work.
-  const [route, setRoute] = useState(() => parseHash(window.location.hash));
-  const screen: Screen = route.screen;
+  // The URL is the screen, so Back, reload and shareable links all work. React
+  // Router owns the matching; `screen` is only what the nav highlights, which is
+  // a different question — a decision detail has no nav item of its own.
+  const location = useLocation();
+  const navigate = useNavigate();
+  const screen: Screen = screenAt(location.pathname);
   const [summaries, setSummaries] = useState<DecisionSummary[] | null>(null);
   const [details, setDetails] = useState<Record<string, DecisionDetail>>({});
   const [loading, setLoading] = useState(false);
@@ -181,55 +187,11 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
   // no approval queue.
   const [pendingApprovals, setPendingApprovals] = useState(0);
 
-  const detailId = route.screen === "detail" ? route.id ?? null : null;
-  const customerId =
-    route.screen === "customer" || route.screen === "customerItem" ? route.id ?? null : null;
-  const itemId = route.screen === "customerItem" ? route.itemId ?? null : null;
-
-  useEffect(() => {
-    const onHash = () => setRoute(parseHash(window.location.hash));
-    window.addEventListener("hashchange", onHash);
-    return () => window.removeEventListener("hashchange", onHash);
-  }, []);
-
-  const go = useCallback((s: Screen, id?: string, itemId?: string) => {
-    navigate({ screen: s, id, itemId });
-    setRoute({ screen: s, id, itemId });
-  }, []);
-
-  /** Resolve a route string emitted by the insight layer onto a screen.
-   *
-   *  The server names a destination for every beat and every weather front —
-   *  `lost-revenue`, `opportunities`, `customer/<id>` — and this is the single
-   *  place those names become navigation. One table rather than a conditional
-   *  per call site, so adding a beat means adding a row here and nothing else.
-   *  An unrecognised route lands on the storyboard rather than nowhere. */
+  /** A destination named by the insight layer, followed. The naming table is
+   *  in `route.ts` next to the paths it produces. */
   const goViz = useCallback((route: string) => {
-    const [head, id] = route.split("/");
-    if (head === "customer" && id) return go("customer", id);
-    if (head === "simulate") return go("simulate");
-    const map: Record<string, Screen> = {
-      "lost-revenue": "lostRevenue",
-      opportunities: "opportunities",
-      journey: "journey",
-      weather: "weather",
-      "revenue-flow": "home",
-      data: "data",
-      simulate: "simulate",
-      landscape: "landscape",
-      composition: "composition",
-      cadence: "cadence",
-      payments: "payments",
-      stock: "stock",
-      supply: "supply",
-      negotiate: "negotiate",
-      // Bare `customer` — no id — is the Customers screen with its own picker.
-      // It routes here now that Customers is a nav destination in its own right
-      // rather than only ever a link carrying an account.
-      customer: "customer",
-    };
-    go(map[head] ?? "home");
-  }, [go]);
+    navigate(vizPath(route));
+  }, [navigate]);
 
   /** Say something, and offer the way back if there is one.
    *
@@ -314,9 +276,10 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
     setNotice(null);
     savePlatformSession(s);
     setSession(s);
-    go("home");
+    navigate(PATH.home);
   };
-  const openDetail = (id: string) => go("detail", id);
+  const openDetail = useCallback(
+    (id: string) => navigate(pathFor("detail", id)), [navigate]);
 
   const refresh = useCallback(async (id?: string) => {
     if (!session) return;
@@ -448,7 +411,6 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
     <AppShell
       items={navItems}
       current={screen}
-      onNavigate={go}
       userName={session.name}
       roleLabel={roleShort}
       onSignOut={signOut}
@@ -461,137 +423,136 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
         {error ? (
           <LoadFailed error={error} onRetry={load} busy={loading} />
         ) : (
-          <>
-        {/* ── the visualization layer ── */}
-        {screen === "weather" && <WeatherScreen session={session} onNavigate={goViz} />}
-        {screen === "opportunities" && <OpportunityScreen session={session} onNavigate={goViz} />}
-        {screen === "lostRevenue" && <LostRevenueScreen session={session} onNavigate={goViz} />}
-        {/* Two answers to one question, stacked rather than split across two
-            nav items: the journey chart is month by month, the migration matrix
-            is period against period and names who moved. */}
-        {/* "journey" is kept as a route so existing links and the storyboard's
-            own navigation still resolve; it renders the same combined screen. */}
-        {screen === "journey" && (
-          <div className="screen-stack">
-            <JourneyScreen session={session} onNavigate={goViz} />
-            <MigrationMatrix session={session} months={3} onNavigate={goViz} />
-          </div>
-        )}
-        {screen === "simulate" && <SimulatorScreen session={session} />}
-        {screen === "landscape" && <LandscapeScreen session={session} onNavigate={goViz} />}
-        {screen === "composition" && <CompositionScreen session={session} onNavigate={goViz} />}
-        {screen === "cadence" && <CadenceScreen session={session} onNavigate={goViz} />}
-        {screen === "payments" && <PaymentsScreen session={session} onNavigate={goViz} />}
-        {screen === "stock" && <StockScreen session={session} />}
-        {screen === "supply" && <SupplyScreen session={session} />}
-        {screen === "negotiate" && <NegotiateScreen session={session} />}
+          <Routes>
+            {/* ── HOME: the Commercial Storyboard ──
+                A briefing, not a queue. The decision list it used to show is
+                still one click away at /decisions; what belongs on the first
+                screen is what changed and what to do about it, which the queue
+                alone cannot say — a list of open items answers "what is
+                outstanding", never "what happened". */}
+            <Route
+              path={PATH.home}
+              element={
+                <HomeScreen
+                  session={session}
+                  title={rh.title}
+                  sub={rh.sub}
+                  open={openDecisions}
+                  details={details}
+                  loading={loading}
+                  onOpen={openDetail}
+                  onSeeAll={() => navigate(PATH.list)}
+                  onNavigate={goViz}
+                />
+              }
+            />
 
-        {/* ── HOME: the Commercial Storyboard ──
-            A briefing, not a queue. The decision list it used to show is still
-            one click away at /decisions; what belongs on the first screen is
-            what changed and what to do about it, which the queue alone cannot
-            say — a list of open items answers "what is outstanding", never
-            "what happened". */}
-        {screen === "home" && (
-          <HomeScreen
-            session={session}
-            title={rh.title}
-            sub={rh.sub}
-            open={openDecisions}
-            details={details}
-            loading={loading}
-            onOpen={openDetail}
-            onSeeAll={() => go("list")}
-            onNavigate={goViz}
-          />
-        )}
+            {/* ── DECISION LIST ── */}
+            <Route
+              path={PATH.list}
+              element={
+                <ListScreen
+                  summaries={summaries}
+                  details={details}
+                  loading={loading}
+                  listType={listType}
+                  setListType={setListType}
+                  onOpen={openDetail}
+                />
+              }
+            />
 
-        {/* ── DECISION LIST ── */}
-        {screen === "list" && (
-          <ListScreen
-            summaries={summaries}
-            details={details}
-            loading={loading}
-            listType={listType}
-            setListType={setListType}
-            onOpen={openDetail}
-          />
-        )}
+            {/* ── DETAIL ── */}
+            <Route
+              path={PATTERN.detail}
+              element={
+                <DetailRoute
+                  details={details}
+                  token={session.token}
+                  loading={loading}
+                  onAct={(id, kind) => setModal({ id, kind })}
+                />
+              }
+            />
 
-        {/* ── DETAIL ── */}
-        {screen === "detail" && detailId && (
-          <DetailScreen
-            d={details[detailId]}
-            token={session.token}
-            loading={loading}
-            onBack={() => go("list")}
-            onAct={(kind) => setModal({ id: detailId, kind })}
-            onOpenAccount={(cid) => go("customer", cid)}
-          />
-        )}
+            {/* ── CUSTOMERS ──
+                "Customers" and "Accounts" were two nav items for one thing, and
+                the names did not say which held what. One screen now, and the
+                merge is inside the screen rather than a stack of the two old
+                ones: the directory carries what each account has actually been
+                doing so it can be *chosen from* rather than only searched, and
+                the two whole-book views sit under a heading that says they are
+                the whole book. Picking an account replaces the lot with that
+                account — which is a navigation, so it lands in the URL and Back
+                returns to the directory.
 
-        {/* ── CUSTOMERS ──
-            "Customers" and "Accounts" were two nav items for one thing, and
-            the names did not say which held what. One screen now, and the
-            merge is inside the screen rather than a stack of the two old ones:
-            the directory carries what each account has actually been doing so
-            it can be *chosen from* rather than only searched, and the two
-            whole-book views sit under a heading that says they are the whole
-            book. Picking an account replaces the lot with that account. */}
-        {screen === "customer" && (
-          <CustomerScreen
-            session={session}
-            details={details}
-            customerId={customerId}
-            setCustomerId={(id) => go("customer", id ?? undefined)}
-            onOpen={openDetail}
-            onOpenItem={(pid) => go("customerItem", customerId ?? undefined, pid)}
-            onNavigate={goViz}
-          />
-        )}
+                Two paths, one screen: the picker, and one account. */}
+            {[PATH.customer, PATTERN.account].map((path) => (
+              <Route
+                key={path}
+                path={path}
+                element={
+                  <CustomerRoute
+                    session={session}
+                    details={details}
+                    onOpen={openDetail}
+                    onNavigate={goViz}
+                  />
+                }
+              />
+            ))}
 
-        {/* ── CUSTOMER x ITEM (the grain that names what is eroding) ── */}
-        {screen === "customerItem" && customerId && itemId && (
-          <CustomerItemScreen
-            session={session}
-            customerId={customerId}
-            productId={itemId}
-            onBack={() => go("customer", customerId)}
-            // A row in the peer comparison is another account buying the same
-            // item — clicking it opens that relationship, which is the next
-            // question anybody asks of that table.
-            onOpenCustomer={(cid) => go("customerItem", cid, itemId)}
-          />
-        )}
+            {/* ── CUSTOMER x ITEM (the grain that names what is eroding) ── */}
+            <Route path={PATTERN.customerItem} element={<CustomerItemRoute session={session} />} />
 
-        {/* ── QUOTES (integration surface) ── */}
-        {screen === "quotes" && (
-          <div>
-            <div className="dp-head">
-              <h1>Quote intelligence</h1>
-              <p>Verified context and a role-gated economics view while you price a line.</p>
-            </div>
-            <Bp style={{ padding: 22, maxWidth: 640 }}>
-              <p style={{ marginTop: 0 }}>
-                Quote context resolves the requested item, shows this customer's own price history and — for
-                managers — the cost and margin, then leaves the price in your hands. It never pre-fills the field.
-              </p>
-              <button className="btn btn-primary" onClick={onOpenQuotes}>
-                Open the Quote Builder →
-              </button>
-            </Bp>
-          </div>
-        )}
+            {/* The path the account picker used to live at. Redirected rather
+                than served, so a saved link ends up on the current URL. */}
+            <Route path={LEGACY_ACCOUNTS} element={<Navigate to={PATH.customer} replace />} />
 
-        {/* ── DATA & CONNECTION ── */}
-        {screen === "data" && <DataScreen session={session} onSynced={load} />}
-        {screen === "approvals" && <ApprovalsScreen session={session} />}
-        {screen === "identity" && <IdentityScreen token={session.token} />}
-        {screen === "settings" && <SettingsScreen session={session} />}
+            {/* ── the visualization layer ── */}
+            <Route path={PATH.weather} element={<WeatherScreen session={session} onNavigate={goViz} />} />
+            <Route path={PATH.opportunities} element={<OpportunityScreen session={session} onNavigate={goViz} />} />
+            <Route path={PATH.lostRevenue} element={<LostRevenueScreen session={session} onNavigate={goViz} />} />
+            {/* Two answers to one question, stacked rather than split across two
+                nav items: the journey chart is month by month, the migration
+                matrix is period against period and names who moved. `journey`
+                is kept as a route so existing links and the storyboard's own
+                navigation still resolve. */}
+            <Route
+              path={PATH.journey}
+              element={
+                <div className="screen-stack">
+                  <JourneyScreen session={session} onNavigate={goViz} />
+                  <MigrationMatrix session={session} months={3} onNavigate={goViz} />
+                </div>
+              }
+            />
+            <Route path={PATH.simulate} element={<SimulatorScreen session={session} />} />
+            <Route path={PATH.landscape} element={<LandscapeScreen session={session} onNavigate={goViz} />} />
+            <Route path={PATH.composition} element={<CompositionScreen session={session} onNavigate={goViz} />} />
+            <Route path={PATH.cadence} element={<CadenceScreen session={session} onNavigate={goViz} />} />
+            <Route path={PATH.payments} element={<PaymentsScreen session={session} onNavigate={goViz} />} />
+            <Route path={PATH.stock} element={<StockScreen session={session} />} />
+            <Route path={PATH.supply} element={<SupplyScreen session={session} />} />
+            <Route path={PATH.negotiate} element={<NegotiateScreen session={session} />} />
 
-        {/* ── AI STATES (reference) ── */}
-        {screen === "states" && <StatesScreen />}
-          </>
+            {/* ── QUOTES (integration surface) ── */}
+            <Route path={PATH.quotes} element={<QuotesDoor onOpenQuotes={onOpenQuotes} />} />
+
+            {/* ── DATA & CONNECTION ── */}
+            <Route path={PATH.data} element={<DataScreen session={session} onSynced={load} />} />
+            <Route path={PATH.approvals} element={<ApprovalsScreen session={session} />} />
+            <Route path={PATH.identity} element={<IdentityScreen token={session.token} />} />
+            <Route path={PATH.settings} element={<SettingsScreen session={session} />} />
+
+            {/* ── AI STATES (reference) ── */}
+            <Route path={PATH.states} element={<StatesScreen />} />
+
+            {/* A path nobody recognises. Redirected rather than rendered as
+                home, so what the address bar says and what the screen shows do
+                not disagree. */}
+            <Route path="*" element={<Navigate to={PATH.home} replace />} />
+          </Routes>
         )}
       </div>
 
@@ -604,6 +565,100 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
         />
       )}
     </AppShell>
+  );
+}
+
+// ── the routes that carry an id ──────────────────────────────────────────────
+/* Three screens are *about* something named in the URL. Each gets a thin
+ * component so `useParams` reads the id where React Router matched it, instead
+ * of the shell re-parsing `location.pathname` to work out what it is showing.
+ * Module level rather than nested inside `PlatformApp`: a component redefined
+ * on every render is a component React remounts on every render, and these hold
+ * their screens' state. */
+
+function DetailRoute({
+  details, token, loading, onAct,
+}: {
+  details: Record<string, DecisionDetail>;
+  token: string;
+  loading: boolean;
+  onAct: (id: string, kind: string) => void;
+}) {
+  const { id = "" } = useParams();
+  const navigate = useNavigate();
+  return (
+    <DetailScreen
+      d={details[id]}
+      token={token}
+      loading={loading}
+      onBack={() => navigate(PATH.list)}
+      onAct={(kind) => onAct(id, kind)}
+      onOpenAccount={(cid) => navigate(pathFor("customer", cid))}
+    />
+  );
+}
+
+function CustomerRoute({
+  session, details, onOpen, onNavigate,
+}: {
+  session: PlatformSession;
+  details: Record<string, DecisionDetail>;
+  onOpen: (id: string) => void;
+  onNavigate: (route: string) => void;
+}) {
+  // Absent on the picker path, present on `/account/<id>` — the one piece of
+  // state this screen used to hold and now reads from where it belongs.
+  const { id } = useParams();
+  const navigate = useNavigate();
+  return (
+    <CustomerScreen
+      session={session}
+      details={details}
+      customerId={id ?? null}
+      setCustomerId={(cid) => navigate(cid ? pathFor("customer", cid) : PATH.customer)}
+      onOpen={onOpen}
+      onOpenItem={(pid) => id && navigate(pathFor("customerItem", id, pid))}
+      onNavigate={onNavigate}
+    />
+  );
+}
+
+function CustomerItemRoute({ session }: { session: PlatformSession }) {
+  const { id = "", itemId = "" } = useParams();
+  const navigate = useNavigate();
+  return (
+    <CustomerItemScreen
+      session={session}
+      customerId={id}
+      productId={itemId}
+      onBack={() => navigate(pathFor("customer", id))}
+      // A row in the peer comparison is another account buying the same item —
+      // clicking it opens that relationship, which is the next question anybody
+      // asks of that table.
+      onOpenCustomer={(cid) => navigate(pathFor("customerItem", cid, itemId))}
+    />
+  );
+}
+
+/** The way through to the Quote Builder, which is the other surface of this
+ *  build rather than another route in it. */
+function QuotesDoor({ onOpenQuotes }: { onOpenQuotes: () => void }) {
+  return (
+    <div>
+      <div className="dp-head">
+        <h1>Quote intelligence</h1>
+        <p>Verified context and a role-gated economics view while you price a line.</p>
+      </div>
+      <Bp style={{ padding: 22, maxWidth: 640 }}>
+        <p style={{ marginTop: 0 }}>
+          Quote context resolves the requested item, shows this customer's own price history and — for
+          managers — the cost and margin, then leaves the price in your hands. It never pre-fills the field.
+        </p>
+        <button className="btn btn-primary" onClick={onOpenQuotes}>
+          Open the Quote Builder →
+        </button>
+      </Bp>
+    </div>
   );
 }
 

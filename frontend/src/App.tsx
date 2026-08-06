@@ -45,7 +45,7 @@ function passesFilter(l: Line, f: string, flagged: Set<string>): boolean {
   }
 }
 
-export default function App({ onOpenPlatform }: { onOpenPlatform?: (hash: string) => void } = {}) {
+export default function App({ onOpenPlatform }: { onOpenPlatform?: (path: string) => void } = {}) {
   const [session, setSession] = useState<Session | null>(loadSession());
   const [quote, setQuote] = useState<Quote | null>(null);
   const [filter, setFilter] = useState("ALL");

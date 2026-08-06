@@ -76,19 +76,36 @@ def is_stale(run: models.SyncRun, *, now: Optional[datetime] = None) -> bool:
     return (now - last) > STALE_AFTER
 
 
-def active_run(session: Session, organization_id: str) -> Optional[models.SyncRun]:
-    """The sync currently in flight for this organization, if any.
+def active_run(session: Session, organization_id: str, *,
+               connection_id: Optional[str] = None,
+               any_connection: bool = True) -> Optional[models.SyncRun]:
+    """The sync currently in flight, if any.
+
+    Two questions, deliberately kept distinct because they have different right
+    answers:
+
+    **"Is anything running?"** — ``any_connection=True``, the default. What the
+    Data screen asks, because a person watching a progress bar wants to see
+    whatever is actually happening.
+
+    **"Is *this connection* already running?"** — pass ``connection_id`` with
+    ``any_connection=False``. What ``start_sync`` asks, and the reason this
+    parameter exists: the check used to be organization-wide, so syncing one
+    Zoho company silently handed back the other company's in-flight job instead
+    of starting anything. Three connected companies could only ever be pulled
+    one after another, and the second click looked like it had worked.
 
     Reaps a dead one as a side effect rather than reporting it as live: a row
     nobody is updating is not a job in progress, and treating it as one locks
-    the organization out of syncing until somebody edits the database.
+    syncing out until somebody edits the database.
     """
+    stmt = (select(models.SyncRun)
+            .where(models.SyncRun.organization_id == organization_id,
+                   models.SyncRun.status.in_(ACTIVE)))
+    if not any_connection:
+        stmt = stmt.where(models.SyncRun.connection_id == connection_id)
     row = session.scalars(
-        select(models.SyncRun)
-        .where(models.SyncRun.organization_id == organization_id,
-               models.SyncRun.status.in_(ACTIVE))
-        .order_by(models.SyncRun.started_at.desc())
-        .limit(1)).first()
+        stmt.order_by(models.SyncRun.started_at.desc()).limit(1)).first()
     if row is None:
         return None
     if is_stale(row):
@@ -483,7 +500,17 @@ def start_sync(session: Session, organization_id: str, *,
     scripted caller (a cron, a CLI) block on the work it just asked for.
     """
     with _start_lock:
-        existing = active_run(session, organization_id)
+        # This connection's job, not the organization's. Two connected Zoho
+        # companies are two independent pulls against two different APIs, and
+        # there is no reason one should wait for the other — they were
+        # serialised only because this check did not look at which connection
+        # was running.
+        #
+        # Still one per connection: clicking Sync twice on the same company
+        # should show the job already in flight, not start a second pull that
+        # fights it for the same rows.
+        existing = active_run(session, organization_id,
+                              connection_id=connection_id, any_connection=False)
         if existing is not None:
             return existing, False
 

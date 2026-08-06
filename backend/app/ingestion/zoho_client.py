@@ -469,12 +469,32 @@ class ZohoApiSource:
             if doc_date < cutoff or (until is not None and doc_date > until):
                 continue
             doc_id = str(row.get(id_field))
-            if skip is not None and skip(doc_id, str(row.get("last_modified_time") or "")):
+            # The stamp the *list* reports. This is the value the resume check
+            # will see next time, so it is also the value that must be stored —
+            # see below.
+            listed_stamp = str(row.get("last_modified_time") or "")
+            if skip is not None and skip(doc_id, listed_stamp):
                 self.documents_resumed += 1
                 continue
             detail = self._get(f"{path}/{doc_id}").get(detail_key) or {}
             if detail:
                 self.documents_fetched += 1
+                # Overwrite the detail's own stamp with the list's.
+                #
+                # This is the whole of the "every sync re-reads the entire book"
+                # bug. The sync stored `last_modified_time` from the *detail*
+                # payload and the check above compares against the *list*
+                # payload, and Zoho does not promise those two strings are
+                # identical. Whenever they differ by so much as a format, every
+                # document compares unequal on every run: nothing is ever
+                # skipped, every document costs its detail call again, and every
+                # row is re-upserted — which is what a full re-population looks
+                # like from the outside.
+                #
+                # Fixed here rather than at the three call sites that store it,
+                # because storing "whatever we will compare later" is a property
+                # of the resume protocol and not of any one document type.
+                detail = {**detail, "last_modified_time": listed_stamp}
                 yield detail
 
     def list_invoices(self, skip: Optional[SkipPredicate] = None) -> Iterable[dict[str, Any]]:
@@ -485,6 +505,19 @@ class ZohoApiSource:
                 "customer_id": str(inv.get("customer_id")),
                 "date": inv.get("date"),
                 "last_modified_time": inv.get("last_modified_time"),
+                # The receivable terms, from the document already fetched: no
+                # extra call, no extra scope — the mirror of what `list_bills`
+                # passes through for payables. These were missing when the
+                # receivables state was added, so every invoice header arrived
+                # with no balance, no due date and no status: the fold saw
+                # nothing owed by anybody, and the collection and credit-
+                # exposure cards could never fire against a real Zoho pull.
+                # The tests passed throughout because the fixtures supply them.
+                "invoice_number": inv.get("invoice_number"),
+                "due_date": inv.get("due_date"),
+                "status": inv.get("status"),
+                "total": inv.get("total"),
+                "balance": inv.get("balance"),
                 # Zoho's own record of who owns the sale. Mapped onto a platform
                 # user by the sync layer; never guessed at when it is absent.
                 "salesperson_id": (str(inv["salesperson_id"])

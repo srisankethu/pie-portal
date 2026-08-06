@@ -619,11 +619,24 @@ class IngestedDocument(Base):
     """
 
     __tablename__ = "ingested_documents"
-    __table_args__ = (UniqueConstraint("organization_id", "doc_type", "doc_id",
-                                       name="uq_ingested_org_type_doc"),)
+    __table_args__ = (
+        UniqueConstraint("organization_id", "connection_id", "doc_type", "doc_id",
+                         name="uq_ingested_org_conn_type_doc"),
+    )
 
     ingested_document_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
     organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    #: Which connected company this document was read from.
+    #:
+    #: A Zoho document id is unique inside the Zoho organization that issued it
+    #: and nowhere else, and this business runs three of them. Without this the
+    #: cursor is shared: one company's id can suppress another's fetch, and a
+    #: full sync of one company clears the cursor for all three.
+    #:
+    #: Nullable because rows written before this existed have no connection to
+    #: name. They match a ``None`` connection, which is what an unscoped
+    #: single-connection deployment still passes.
+    connection_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
     doc_type: Mapped[str] = mapped_column(String(16), index=True)   # invoice | bill
     doc_id: Mapped[str] = mapped_column(String(64), index=True)
     modified_at: Mapped[Optional[str]] = mapped_column(String(64))  # Zoho's stamp, verbatim

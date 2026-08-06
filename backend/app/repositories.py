@@ -227,36 +227,62 @@ class ReadModelRepository:
 
     # ── resume cursor ────────────────────────────────────────────────────────
     def ingested_index(self, doc_type: str) -> dict[str, str]:
-        """``{doc_id: modified_at}`` for documents already pulled."""
-        return {
-            r.doc_id: (r.modified_at or "")
-            for r in self.s.scalars(
-                select(models.IngestedDocument).where(
-                    models.IngestedDocument.organization_id == self.org,
-                    models.IngestedDocument.doc_type == doc_type,
-                ))
-        }
+        """``{doc_id: modified_at}`` for documents already pulled *by this
+        connection*.
+
+        Scoped to the connection, not just the organization. An external id is
+        unique only inside the system that issued it, and this business runs
+        three Zoho companies under one PIE organization — so an unscoped cursor
+        lets one company's invoice id suppress another company's fetch of a
+        completely different document. It also made a full sync of one
+        connection wipe the cursor for all of them, which is a re-read of every
+        document in every company.
+        """
+        stmt = select(models.IngestedDocument).where(
+            models.IngestedDocument.organization_id == self.org,
+            models.IngestedDocument.doc_type == doc_type,
+            models.IngestedDocument.connection_id == self.connection_id,
+        )
+        return {r.doc_id: (r.modified_at or "") for r in self.s.scalars(stmt)}
 
     def mark_ingested(self, doc_type: str, doc_id: str, modified_at: str) -> None:
+        """Record this document as held, at the stamp we will compare next time.
+
+        ``modified_at`` must be the stamp the *list* endpoint reports, because
+        that is what ``ingested_index`` is compared against. Storing the
+        detail payload's stamp instead is what made every document look changed
+        on every run; ``zoho_client._documents`` now guarantees the two are the
+        same string.
+        """
         row = self.s.scalar(
             select(models.IngestedDocument).where(
                 models.IngestedDocument.organization_id == self.org,
                 models.IngestedDocument.doc_type == doc_type,
                 models.IngestedDocument.doc_id == doc_id,
+                models.IngestedDocument.connection_id == self.connection_id,
             )
         )
         if row is None:
             row = models.IngestedDocument(organization_id=self.org, doc_type=doc_type,
-                                          doc_id=doc_id)
+                                          doc_id=doc_id,
+                                          connection_id=self.connection_id)
             self.s.add(row)
         row.modified_at = modified_at or None
         row.fetched_at = datetime.now(timezone.utc)
 
     def clear_ingested(self) -> int:
-        """Forget the cursor, so the next pull re-fetches every document."""
+        """Forget this connection's cursor, so its next pull re-fetches
+        everything.
+
+        This connection's, not the organization's. A full re-read of one Zoho
+        company is a reasonable thing to ask for; making the other two companies
+        re-read their entire history as a side effect is not, and that is what
+        an organization-wide clear did.
+        """
         rows = self.s.scalars(
             select(models.IngestedDocument).where(
-                models.IngestedDocument.organization_id == self.org)).all()
+                models.IngestedDocument.organization_id == self.org,
+                models.IngestedDocument.connection_id == self.connection_id)).all()
         for r in rows:
             self.s.delete(r)
         return len(rows)

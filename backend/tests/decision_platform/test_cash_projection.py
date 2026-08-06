@@ -20,7 +20,7 @@ about what this business looks like.
 """
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
@@ -33,8 +33,10 @@ from app.state.reducers.receivables import RECEIVABLES
 
 from .test_decision_intelligence import ORG, TODAY, _fold, _seed
 
-#: The Monday of the week containing TODAY (2026-08-06, a Thursday).
-THIS_MONDAY = date(2026, 8, 3)
+#: The Monday opening the week that contains TODAY. Derived, not written down:
+#: TODAY is the business date now, so a hardcoded Monday would be right for one
+#: week and quietly wrong for every other.
+THIS_MONDAY = TODAY - timedelta(days=TODAY.isoweekday() - 1)
 
 
 def _schedule(session) -> dict:

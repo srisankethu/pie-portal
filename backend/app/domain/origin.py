@@ -24,7 +24,7 @@ else about it is data.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Optional, Protocol
+from typing import Any, Iterable, Optional, Protocol
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -44,6 +44,18 @@ class Sourced(Protocol):
     connector: Optional[str]
     connection_id: Optional[str]
     external_id: str
+
+
+def index_of(session: Session, organization_id: str, model: Any) -> dict[str, Sourced]:
+    """Every imported record of one kind, by its own local id.
+
+    One query per entity kind per request, which is what keeps ``stamp`` from
+    being an N+1. The primary key column differs per table and is read from the
+    mapper rather than passed in, so a caller cannot pair the wrong one.
+    """
+    pk = list(model.__table__.primary_key.columns)[0].name
+    return {getattr(r, pk): r for r in session.scalars(
+        select(model).where(model.organization_id == organization_id))}
 
 
 #: How each connector presents itself. A registry, not a chain of conditionals:
@@ -167,6 +179,28 @@ class Companies:
             # which is worth showing rather than discarding.
             unknown=not connector and not company,
         )
+
+    def stamp(self, rows: Iterable[dict[str, Any]],
+              index: dict[str, Sourced], *, by: str,
+              key: str = "origin") -> list[dict[str, Any]]:
+        """Attach each row's source, in place, and hand the rows back.
+
+        The alternative — every endpoint reaching for the master table it needs
+        and formatting the source itself — is how the customer picker ended up
+        naming the company while the item grid did not. One projection, applied
+        the same way everywhere, is the whole point of this module; this is that
+        projection applied to a list rather than to one record.
+
+        A row whose entity has no master gets ``None`` rather than a fabricated
+        origin. That is a real state — it is the gap the sync reports as
+        UNKNOWN_CUSTOMER — and the screen says "source not recorded" for it.
+        """
+        out = []
+        for row in rows:
+            record = index.get(str(row.get(by) or ""))
+            row[key] = self.of(record).to_dict() if record is not None else None
+            out.append(row)
+        return out
 
     @property
     def count(self) -> int:

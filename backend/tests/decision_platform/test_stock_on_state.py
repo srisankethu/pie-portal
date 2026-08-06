@@ -21,6 +21,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.commercial.insight import stock
+from app import clock
 from app.commercial.policy import load_for_org
 from app.db import Base, get_session
 from app.domain import models
@@ -129,9 +130,15 @@ def _hdr(c, email):
 def _build_state(client) -> date:
     s = client.Maker()
     try:
-        on = date.today()
-        state_engine.build(s, ORG, as_of=on,
-                           thresholds_version=load_for_org(s, ORG).version)
+        # The business date, not the machine's. `clock.today` is what every
+        # endpoint under test asks for, and with the organization in
+        # Asia/Kolkata the two disagree for five and a half hours of every day:
+        # after 18:30 UTC the app reads a state built for "yesterday" and
+        # correctly reports an empty shelf. A suite that goes red every evening
+        # in India is a suite people stop reading.
+        th = load_for_org(s, ORG)
+        on = clock.today(th.timezone)
+        state_engine.build(s, ORG, as_of=on, thresholds_version=th.version)
         s.commit()
         return on
     finally:

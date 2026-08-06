@@ -438,7 +438,10 @@ def _sync_state(session: Session, org: str) -> dict:
     opened fresh while a pull is running must show that pull, not an idle
     button.
     """
-    active = jobs.active_run(session, org)
+    running = jobs.active_runs(session, org)
+    # The headline still needs one job to talk about. Newest first from
+    # `active_runs`, so this is the pull that started most recently.
+    active = running[0] if running else None
     last = jobs.last_finished_run(session, org)
     ok = jobs.last_successful_run(session, org)
     return {
@@ -446,10 +449,25 @@ def _sync_state(session: Session, org: str) -> dict:
         # invent for an organization that has never synced.
         "state": active.status if active is not None else (last.status if last else "IDLE"),
         "active": _run_dict(active),
+        # Every pull in flight, not just the newest. Two connected Zoho
+        # companies are two independent pulls against two different APIs, and
+        # reporting one of them is what made the other invisible — the screen
+        # could not show a second progress bar because it was never told there
+        # was a second job.
+        "active_runs": [_run_dict(r) for r in running],
+        # Which connections are *individually* busy. The screen gates each
+        # company's button on its own entry here; a single organization-wide
+        # flag is what disabled all three buttons the moment any one of them
+        # started, and made the concurrency behind it unreachable.
+        "busy_connections": [r.connection_id for r in running
+                             if r.connection_id is not None],
         "last": _run_dict(last),
         "last_successful_at": (ok.started_at.isoformat()
                                if ok is not None and ok.started_at else None),
-        "can_start": active is None,
+        # Kept, and no longer the gate for a per-connection button. An
+        # organization-wide pull — the "sync everything" path, which carries no
+        # connection_id — genuinely cannot run twice at once.
+        "can_start": not any(r.connection_id is None for r in running),
     }
 
 

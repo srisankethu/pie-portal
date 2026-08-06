@@ -509,3 +509,72 @@ def test_a_state_build_that_fails_never_fails_the_pull(client):
 
     last = client.get("/api/v1/data/sync", headers=_hdr(client)).json()["last"]
     assert last["status"] == "OK"
+
+
+# ── two companies, two pulls ────────────────────────────────────────────────
+#
+# The start guard was scoped to a connection so that three connected Zoho
+# companies could pull at once. That change was invisible from the screen,
+# because the status endpoint still reported a single active run and a single
+# organization-wide `can_start`, and every company's button was disabled by it.
+# These four tests hold the whole path — guard, status, and the per-company
+# flags the screen actually reads — so the concurrency cannot go quietly
+# unreachable again.
+
+def test_two_companies_pull_at_once(client):
+    """Two connections are two independent APIs. Neither waits for the other."""
+    a = client.post("/api/v1/data/sync", headers=_hdr(client),
+                    json={"connection_id": "conn_sls"}).json()
+    b = client.post("/api/v1/data/sync", headers=_hdr(client),
+                    json={"connection_id": "conn_4u"}).json()
+
+    assert a["started"] is True
+    assert b["started"] is True, (
+        "the second company must start its own pull, not be handed the first's")
+    assert a["run"]["sync_run_id"] != b["run"]["sync_run_id"]
+
+    s = client.Maker()
+    assert s.query(models.SyncRun).count() == 2
+    s.close()
+
+
+def test_the_status_reports_every_pull_in_flight(client):
+    """One active run in the response is what made the second company invisible:
+    the screen had nothing to draw a second progress bar from."""
+    client.post("/api/v1/data/sync", headers=_hdr(client),
+                json={"connection_id": "conn_sls"})
+    client.post("/api/v1/data/sync", headers=_hdr(client),
+                json={"connection_id": "conn_4u"})
+
+    state = client.get("/api/v1/data/sync", headers=_hdr(client)).json()
+
+    assert len(state["active_runs"]) == 2
+    assert sorted(state["busy_connections"]) == ["conn_4u", "conn_sls"]
+    # The headline still names one job, and it is one of the two real ones.
+    assert state["active"]["sync_run_id"] in {r["sync_run_id"] for r in state["active_runs"]}
+
+
+def test_one_company_pulling_does_not_mark_another_busy(client):
+    """The flag each button gates on. An organization-wide one is what disabled
+    all three companies the moment any one of them started."""
+    client.post("/api/v1/data/sync", headers=_hdr(client),
+                json={"connection_id": "conn_sls"})
+
+    state = client.get("/api/v1/data/sync", headers=_hdr(client)).json()
+
+    assert state["busy_connections"] == ["conn_sls"]
+    assert "conn_4u" not in state["busy_connections"]
+
+
+def test_the_same_company_still_refuses_a_second_pull(client):
+    """Concurrency across companies, never within one: two pulls of the same
+    book would fight over the same rows."""
+    first = client.post("/api/v1/data/sync", headers=_hdr(client),
+                        json={"connection_id": "conn_sls"}).json()
+    again = client.post("/api/v1/data/sync", headers=_hdr(client),
+                        json={"connection_id": "conn_sls"}).json()
+
+    assert again["started"] is False
+    assert again["run"]["sync_run_id"] == first["run"]["sync_run_id"]
+    assert client.get("/api/v1/data/sync",
+                      headers=_hdr(client)).json()["busy_connections"] == ["conn_sls"]

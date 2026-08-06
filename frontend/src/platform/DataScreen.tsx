@@ -84,9 +84,15 @@ export function DataScreen({ session, onSynced }: { session: PlatformSession; on
 
   const s = status?.last_sync;
   const canSync = Boolean(status?.can_sync);
-  // One job at a time per organization, so every start button shares one
-  // disabled condition rather than each screen inventing its own.
-  const syncBusy = !(sync.state?.can_start ?? true) || sync.busy;
+  // Which companies are pulling *right now*, by connection. This used to be one
+  // organization-wide flag, and that flag disabled all three companies' buttons
+  // the moment any one of them started — so the per-connection concurrency the
+  // server grew was unreachable from the screen that would have used it.
+  const busyConnections = (sync.state?.busy_connections ?? []) as string[];
+  // The "every company" button is a different question and keeps the old
+  // answer: it is one pull across all of them, and two of those really would
+  // read the same books twice.
+  const allBusy = !(sync.state?.can_start ?? true) || sync.busy;
 
   return (
     <div>
@@ -106,8 +112,8 @@ export function DataScreen({ session, onSynced }: { session: PlatformSession; on
         session={session}
         canSync={canSync}
         onSync={(id, from, reread) => startSync(id, from, reread)}
-        syncBusy={syncBusy}
-        activeConnectionId={sync.state?.active?.connection_id ?? null}
+        busyConnections={busyConnections}
+        starting={sync.busy}
       />
 
       {/* ── what to pull ── */}
@@ -149,7 +155,7 @@ export function DataScreen({ session, onSynced }: { session: PlatformSession; on
               <button
                 className="btn btn-primary btn-sm"
                 onClick={() => startSync()}
-                disabled={syncBusy}
+                disabled={allBusy}
               >
                 {sync.state?.active ? "Sync running…" : sync.busy ? "Starting…" : "Sync every company"}
               </button>

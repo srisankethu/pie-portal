@@ -20,6 +20,8 @@ from typing import Any
 import pytest
 from sqlalchemy import delete
 
+from app import clock
+from app.commercial.config import CommercialThresholds
 from app.commercial.policy import load_for_org
 from app.decisions.opportunities import (STATE_TYPES, generate_from_state,
                                          policy_from)
@@ -36,7 +38,20 @@ from app.state.replay import replay
 #: The seeded organization, so the API fixture below signs in as a real
 #: user of the same book the detectors ran over.
 ORG = "org_sanketh"
-TODAY = date(2026, 8, 6)
+
+#: The day this book is read on — the *business* date, never the machine's.
+#:
+#: This was a hardcoded calendar date, which is a trap the whole suite fell into
+#: at 18:30 UTC every day. The organization runs in Asia/Kolkata, so from that
+#: moment the business date is tomorrow while ``date.today()`` is still today.
+#: A stock observation is stamped with the business date, and a fold pinned to
+#: the machine's date sits one day *behind* it — so the observation is in the
+#: future, the fold silently excludes it, and every inventory decision
+#: disappears. Twenty-six tests went red for five and a half hours a day and
+#: green again overnight, which is the worst kind of failing test.
+#:
+#: The dated documents below are written relative to this, so they move with it.
+TODAY = clock.today(CommercialThresholds().timezone)
 
 
 class _Source:

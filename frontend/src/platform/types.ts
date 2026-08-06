@@ -15,7 +15,7 @@ export interface PlatformSession {
   timezone: string;
 }
 
-export interface DecisionSummary {
+export interface DecisionSummary extends Sourced {
   decision_id: string;
   decision_type: string;
   subject_entity_type: string;
@@ -319,6 +319,14 @@ export interface SyncState {
   last: SyncRun | null;
   /** Excludes PARTIAL — it wrote rows but did not finish. */
   last_successful_at: string | null;
+  /** Every pull in flight, one per company. `active` is the newest of these,
+   *  kept for the headline; this is what lets the screen show two at once. */
+  active_runs: SyncRun[];
+  /** The connection ids in `active_runs`. Each company's button gates on its
+   *  own membership, not on whether *some* sync is running. */
+  busy_connections: string[];
+  /** Whether an organization-wide pull — every company, one job — may start.
+   *  Not a gate on a single company's button. */
   can_start: boolean;
 }
 

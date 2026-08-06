@@ -881,6 +881,7 @@ function ListScreen({
       ) : (
         <DataGrid<DecisionRow>
           ariaLabel="Decisions"
+          twoLineRows
           rows={rows.map((r) => ({ ...r, detail: details[r.decision_id] }))}
           onRowClick={(r) => onOpen(r.decision_id)}
           columns={[
@@ -905,10 +906,25 @@ function ListScreen({
               // The label arrives with the detail, a moment after the summary.
               // Until then this said the raw entity id — a UUID nobody
               // recognises, in the column people scan to find their account.
-              headerName: "Account / subject", flex: 1, minWidth: 200,
+              // The name, and which connected company it belongs to. Pooled
+              // across three books, "ABC Industries" appears three times and
+              // they are three different customers with three different
+              // problems — a queue that cannot tell them apart cannot be
+              // worked from. Filtering and sorting still run on the name, so
+              // the source line is information rather than a sort key.
+              headerName: "Account / subject", flex: 1, minWidth: 240,
               filter: "agTextColumnFilter",
               valueGetter: (p) => p.data?.detail?.subject_label ?? "",
-              valueFormatter: (p) => p.value || "…",
+              cellRenderer: (p: { data?: DecisionRow; value?: string }) =>
+                p.value ? (
+                  <EntityName
+                    name={p.value}
+                    origin={p.data?.origin}
+                    show={Boolean(p.data?.sources_differ)}
+                  />
+                ) : (
+                  <span className="viz-muted">…</span>
+                ),
             },
             {
               // Two producers, two answers to "why". A signal decision has a
@@ -1412,6 +1428,7 @@ function CustomerScreen({
             </div>
             <DataGrid<AccountRow>
               ariaLabel="Customers"
+              twoLineRows
               pageSize={25}
               rows={shown}
               onRowClick={(a) => setCustomerId(a.customer_id)}

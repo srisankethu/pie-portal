@@ -19,8 +19,9 @@ import { money } from "../../money";
 import { formatDate } from "../../when";
 import { papi } from "../api";
 import { abilityFor } from "../ability";
+import { EntityName } from "../EntityName";
 import { DataGrid, numeric } from "../DataGrid";
-import type { PlatformSession } from "../types";
+import type { EntityOrigin, PlatformSession } from "../types";
 import { Figure, Panel, ValueAxis, stateOf } from "./Panel";
 import { Seg } from "./Seg";
 import { pct, useInsight } from "./useInsight";
@@ -472,6 +473,10 @@ export function StockScreen({ session }: { session: PlatformSession }) {
   // A manager or owner gets the value behind the drain; a salesperson does
   // not, and the presence of the field is how the screen knows which it is.
   const seesValue = items.some((r) => "inventory_value" in r);
+  // Below two connected companies every badge says the same thing, and a
+  // column of identical badges is width spent on decoration. The server
+  // decides, because it is the only side that knows how many books there are.
+  const sourcesDiffer = Boolean(data?.sources_differ);
 
   const deciles = useMemo(() => ({
     monthly_holding_cost: decileOf(items, "monthly_holding_cost"),
@@ -563,6 +568,7 @@ export function StockScreen({ session }: { session: PlatformSession }) {
 
       <DataGrid<Row>
         ariaLabel="Stock"
+        twoLineRows
         pageSize={25}
         rows={shown}
         empty={
@@ -574,10 +580,18 @@ export function StockScreen({ session }: { session: PlatformSession }) {
           {
             field: "label", headerName: "Item", flex: 1.5, minWidth: 220,
             filter: "agTextColumnFilter",
+            // An item master is per connected company: the same part number is
+            // a different row in each book, with its own stock and its own
+            // purchase rate. A shelf pooled across three companies has to say
+            // which shelf, or two rows with one name read as a duplicate.
             cellRenderer: (p: { data?: Row }) => (
-              <span>
+              <span className="stock-item">
                 <span className={`stock-dot ${String(p.data?.health ?? "")}`} />
-                {String(p.data?.label ?? "")}
+                <EntityName
+                  name={String(p.data?.label ?? "")}
+                  origin={p.data?.origin as EntityOrigin | undefined}
+                  show={sourcesDiffer}
+                />
               </span>
             ),
           },
@@ -698,6 +712,7 @@ export function SupplyScreen({ session }: { session: PlatformSession }) {
     () => papi.supply(session.token), [session.token]);
 
   const suppliers = rows(data?.suppliers);
+  const vendorSourcesDiffer = Boolean(data?.sources_differ);
   const open = rows(data?.open_orders);
   const counts = (data?.counts as Record<string, number>) ?? {};
   const topShare = data?.top_supplier_share as number | null | undefined;
@@ -728,7 +743,18 @@ export function SupplyScreen({ session }: { session: PlatformSession }) {
         <ul className="dist">
           {suppliers.map((s, i) => (
             <li className="dist-row" key={i}>
-              <span className="dist-label">{String(s.label)}</span>
+              {/* A supplier is per connected company too: the same vendor
+                  invoicing two of the books is two rows, and a concentration
+                  figure read across them without saying so looks like one
+                  dependency where there are two relationships. */}
+              <span className="dist-label">
+                <EntityName
+                  name={String(s.label)}
+                  origin={s.origin as EntityOrigin | undefined}
+                  show={vendorSourcesDiffer}
+                  strong={false}
+                />
+              </span>
               <span className="dist-track">
                 <span className="dist-fill"
                       style={{ width: `${num(s.share) * 100}%` }} />

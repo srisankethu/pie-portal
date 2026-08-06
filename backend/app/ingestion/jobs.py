@@ -123,6 +123,40 @@ def active_run(session: Session, organization_id: str, *,
     return row
 
 
+def active_runs(session: Session, organization_id: str) -> list[models.SyncRun]:
+    """Every sync in flight, one per connection.
+
+    ``active_run`` answers "is anything running" with a single row, which is the
+    right answer for a headline and the wrong one for a screen that lists
+    connections. Three connected Zoho companies can pull at once — that is the
+    whole point of scoping the start guard by connection — and a status endpoint
+    that reports one of them makes the other two invisible. The screen then has
+    no way to show two progress bars, and no way to tell which company the one
+    it *can* see belongs to.
+
+    Stale rows are reaped here too, through ``active_run``, so a dead job does
+    not hold a connection's button hostage.
+    """
+    rows = session.scalars(
+        select(models.SyncRun)
+        .where(models.SyncRun.organization_id == organization_id,
+               models.SyncRun.status.in_(ACTIVE))
+        .order_by(models.SyncRun.started_at.desc())).all()
+    live: dict[Optional[str], models.SyncRun] = {}
+    for row in rows:
+        if is_stale(row):
+            # One reaper, in `active_run`, rather than a second copy of the
+            # same three assignments that could drift from it.
+            active_run(session, organization_id,
+                       connection_id=row.connection_id, any_connection=False)
+            continue
+        # Newest first from the query, so the first row seen for a connection is
+        # the one to report. A second would be a bug in the start guard, and
+        # showing the older one would hide it.
+        live.setdefault(row.connection_id, row)
+    return list(live.values())
+
+
 def last_finished_run(session: Session, organization_id: str) -> Optional[models.SyncRun]:
     """The most recent run that actually ended, whatever the outcome."""
     return session.scalars(

@@ -38,6 +38,14 @@ export interface DataGridProps<T> {
   /** Rows per page. 25 suits a screen somebody scans; 10 suits a panel that
    *  sits under something else and must not push it off the page. */
   pageSize?: number;
+  /** Taller rows, for a grid whose name column carries a second line.
+   *
+   *  `EntityName` renders the record's connected company under its name, and a
+   *  row sized for one line clips it — the source is in the DOM, invisible, and
+   *  two customers called "Pitti Engineering" look identical again. Opt in
+   *  rather than default: most grids are one line and would only lose density.
+   */
+  twoLineRows?: boolean;
   /** Shown in place of the grid when `rows` is an empty array. A grid that
    *  renders "No Rows To Show" in its own words has thrown away the one place
    *  this product explains *why* something is empty. */

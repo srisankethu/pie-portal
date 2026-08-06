@@ -35,6 +35,7 @@ from ..commercial.insight import (cadence, cashflow, cohorts, composition, flow,
 from ..db import get_session
 from ..domain import models
 from ..domain.enums import Role
+from ..domain.origin import Companies, index_of
 from ..signals.aggregates import label_for, load_snapshot
 from ..commercial.insight import series
 from ..state.engine import latest_as_of, load as load_state
@@ -699,6 +700,15 @@ def stock_position(principal: Principal = Depends(current_principal),
                        "each month is not — that is the number this screen is "
                        "for, and it is on every row."),
         })
+    # Which connected company each item belongs to. An item master is per
+    # company — the same part number is a different row in each book — so a
+    # shelf pooled across three companies needs to say which shelf.
+    companies = Companies(session, org)
+    items = index_of(session, org, models.Product)
+    companies.stamp(result.get("items") or [], items, by="product_id")
+    for group in result.get("groups") or []:
+        companies.stamp(group.get("items") or [], items, by="product_id")
+    result["sources_differ"] = companies.count > 1
     return _envelope(
         result, currency=th.currency,
         empty_reason=(None if lines else
@@ -748,6 +758,13 @@ def supplier_position(principal: Principal = Depends(require_manager_or_owner),
         orders, as_of,
         terms_by_vendor={vid: v.payment_terms_days for vid, v in vendors.items()
                          if v.payment_terms_days is not None})
+    # A supplier is per connected company too: the same vendor invoicing two of
+    # the books is two rows, and concentration read across them without saying
+    # so would look like one dependency where there are two relationships.
+    companies = Companies(session, org)
+    companies.stamp(result.get("suppliers") or [], vendors, by="vendor_id")
+    companies.stamp(result.get("open_orders") or [], vendors, by="vendor_id")
+    result["sources_differ"] = companies.count > 1
     return _envelope(result, currency=th.currency, empty_reason=None)
 
 

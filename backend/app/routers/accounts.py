@@ -70,12 +70,23 @@ def list_accounts(
 
     trade = _trade_summary(session, principal.organization_id,
                            [c.customer_id for c in rows])
+    # Which company each account belongs to. The directory is the screen where
+    # this matters most and the one place it was missing: "ABC Industries" can
+    # legitimately exist in all three connected books, and a flat list of names
+    # cannot be chosen from — somebody picks one and finds out later it was the
+    # wrong company's account. Same projection as the item picker, so the two
+    # cannot end up describing their source two different ways.
+    companies = Companies(session, principal.organization_id)
     return [
         {
             "customer_id": c.customer_id,
             "name": c.name,
             "status": c.status,
             "assigned_user_id": c.assigned_user_id,
+            "origin": companies.of(c).to_dict(),
+            # One connected company means every badge says the same thing, and a
+            # column of identical badges is width spent on decoration.
+            "sources_differ": companies.count > 1,
             **trade.get(c.customer_id, _NO_TRADE),
         }
         for c in rows

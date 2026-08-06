@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { DataGrid, numeric } from "./DataGrid";
-import { EntityName } from "./EntityName";
+import { EntityName, EntitySource } from "./EntityName";
 import { CompanyFilter, useCompanyFilter } from "./CompanyFilter";
 import { formatDate } from "../when";
 import {
@@ -927,7 +927,7 @@ function ListScreen({
                 p.value ? (
                   <EntityName
                     name={p.value}
-                    origin={p.data?.origin}
+                    origin={p.data?.subject_origin}
                     show={Boolean(p.data?.sources_differ)}
                   />
                 ) : (
@@ -1159,7 +1159,15 @@ function DetailScreen({
         <Pri band={d.priority.band} />
         {closed && <span className="pri LOW">{d.status}</span>}
       </div>
-      <h1 style={{ margin: "2px 0 18px" }}>{d.subject_label}</h1>
+      {/* The card is where somebody decides, so it has to say which book it is
+          about. Two accounts called "Pitti Engineering" raise two cards, and
+          opening one without knowing which is opening the wrong one half the
+          time. The queue carried this before the card did, which was backwards:
+          the queue is scanned, the card is acted on. */}
+      <h1 style={{ margin: "2px 0 4px" }}>{d.subject_label}</h1>
+      <div style={{ margin: "0 0 18px" }}>
+        <EntitySource origin={d.subject_origin} show={Boolean(d.sources_differ)} />
+      </div>
 
       <div className="dp-split">
         {/* LEFT — what the data shows. For a state decision that is the
@@ -1512,14 +1520,16 @@ function CustomerScreen({
     );
   }
   const decs = all.filter((d) => d.subject_entity_id === customerId);
-  const name = decs[0]?.subject_label || accounts?.find((a) => a.customer_id === customerId)?.name || customerId;
+  const account = accounts?.find((a) => a.customer_id === customerId);
+  const name = decs[0]?.subject_label || account?.name || customerId;
   return (
     <div>
       <button className="btn btn-ghost btn-sm" onClick={() => setCustomerId(null)} style={{ marginBottom: 10 }}>
         ← All accounts
       </button>
       <div className="dp-head">
-        <h1>{name}</h1>
+        <h1 style={{ marginBottom: 2 }}>{name}</h1>
+        <EntitySource origin={account?.origin} show={Boolean(account?.sources_differ)} />
         <p>Trading facts and what we read from them.</p>
       </div>
       {/* How this account has behaved over time. Every role gets this: the

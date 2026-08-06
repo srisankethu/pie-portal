@@ -15,7 +15,7 @@ export interface PlatformSession {
   timezone: string;
 }
 
-export interface DecisionSummary extends Sourced {
+export interface DecisionSummary {
   decision_id: string;
   decision_type: string;
   subject_entity_type: string;
@@ -30,6 +30,11 @@ export interface DecisionSummary extends Sourced {
   human_action: { action: string; actor_user_id: string; acted_at: string; note?: string } | null;
   created_at: string;
   updated_at: string;
+  /** Which connected company this decision's *subject* belongs to. Not
+   *  `origin` — a decision's origin is STATE or SIGNAL, and one key cannot
+   *  carry both meanings. */
+  subject_origin?: EntityOrigin | null;
+  sources_differ?: boolean;
 }
 
 export interface Fact {
@@ -125,6 +130,11 @@ export interface DecisionTrace {
 }
 
 export interface DecisionDetail {
+  /** Which connected company the *subject* belongs to. Distinct from `origin`
+   *  below, which says whether this decision was folded from state or raised
+   *  from a signal — two different questions, so two different keys. */
+  subject_origin?: EntityOrigin | null;
+  sources_differ?: boolean;
   decision_id: string;
   decision_type: string;
   subject_entity_type: string;

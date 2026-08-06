@@ -50,6 +50,31 @@ def _subject_label(session: Session, d: models.Decision) -> str:
     return getattr(row, attr, None) or d.subject_entity_id
 
 
+def _subject_origin(session: Session, d: models.Decision) -> dict:
+    """Which connected company the card is *about*.
+
+    Named `subject_origin`, not `origin`: a decision already has an origin, and
+    it means something else entirely — whether the card was folded from state or
+    raised from a signal. Reusing the word silently replaced that field, and the
+    test that asserts a signal card still says SIGNAL is what caught it. Two
+    meanings for one key on one object is a defect however carefully it is
+    documented.
+
+    The queue carried this and the card did not, which is the wrong way round:
+    the queue is scanned and the card is where somebody decides. Two accounts
+    called "Pitti Engineering" produce two cards, and opening one of them
+    without knowing which book it belongs to is opening the wrong one half the
+    time.
+    """
+    entry = _SUBJECT_MASTERS.get(d.subject_entity_type)
+    row = session.get(entry[0], d.subject_entity_id) if entry else None
+    companies = Companies(session, d.organization_id)
+    return {
+        "subject_origin": companies.of(row).to_dict() if row is not None else None,
+        "sources_differ": companies.count > 1,
+    }
+
+
 def _detail(session: Session, d: models.Decision, principal: Principal) -> dict:
     """Full role-gated decision projection for the detail screen.
 
@@ -106,6 +131,7 @@ def _detail(session: Session, d: models.Decision, principal: Principal) -> dict:
         "subject_entity_type": d.subject_entity_type,
         "subject_entity_id": d.subject_entity_id,
         "subject_label": _subject_label(session, d),
+        **_subject_origin(session, d),
         "assigned_user_id": d.assigned_user_id,
         "assigned_role": d.assigned_role,
         "detected_at": d.detected_at.isoformat() if d.detected_at else None,
@@ -194,7 +220,8 @@ def list_decisions(
     for d in rows:
         read = _to_read(d)
         record = indexes.get(d.subject_entity_type, {}).get(d.subject_entity_id)
-        read.origin = companies.of(record).to_dict() if record is not None else None
+        read.subject_origin = (companies.of(record).to_dict()
+                               if record is not None else None)
         read.sources_differ = companies.count > 1
         out.append(read)
     return out
@@ -321,6 +348,7 @@ def trace_decision(
         "decision_type": d.decision_type,
         "origin": d.origin,
         "subject_label": _subject_label(session, d),
+        **_subject_origin(session, d),
         "impact": d.impact or {},
         "rationale": d.rationale,
         "ranking": (d.confidence or {}).get("ranking") or {},

@@ -574,6 +574,13 @@ def payment_behaviour(principal: Principal = Depends(current_principal),
         settled, snapshot.customer_names, as_of,
         advances=sum(1 for r in receipts if r.is_advance),
         unapplied_total=float(sum(r.unapplied_amount or 0 for r in receipts)))
+    # Who pays slowly is a list of names to act on, and two accounts sharing a
+    # name across two books are two different conversations with two different
+    # people. Same projection as every other list.
+    companies = Companies(session, org)
+    companies.stamp(result.get("customers") or [],
+                    index_of(session, org, models.Customer), by="customer_id")
+    result["sources_differ"] = companies.count > 1
     return _envelope(
         result, currency=th.currency,
         empty_reason=(None if result["customers"] else

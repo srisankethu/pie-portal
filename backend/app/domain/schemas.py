@@ -331,11 +331,13 @@ class DecisionRead(BaseModel):
     human_action: Optional[dict[str, Any]] = None
     created_at: datetime
     updated_at: datetime
-    #: Which connected company this decision's subject belongs to. Optional
-    #: because a single decision fetched on its own does not pay for the master
-    #: index the list endpoint loads once; ``None`` there means "not resolved
-    #: here", which the screen renders as nothing rather than as "unknown".
-    origin: Optional[dict[str, Any]] = None
+    #: Which connected company this decision's *subject* belongs to. Not
+    #: ``origin``: a decision's origin is whether it was folded from state or
+    #: raised from a signal, and one key cannot carry both meanings. Optional
+    #: because a decision fetched on its own does not pay for the master index
+    #: the list loads once; ``None`` means "not resolved here", which the screen
+    #: renders as nothing rather than as "unknown".
+    subject_origin: Optional[dict[str, Any]] = None
     #: True when the organization reads more than one connected company. Below
     #: two, every badge would say the same thing.
     sources_differ: bool = False

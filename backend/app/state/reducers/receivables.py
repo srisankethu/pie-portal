@@ -55,7 +55,7 @@ RECEIVABLES = "RECEIVABLES"
 
 #: Statuses that never were a receivable. A draft invoices nobody, and a void
 #: or written-off invoice is not money anyone is going to collect.
-_NOT_OWED = {"draft", "void", "cancelled", "canceled", "written_off"}
+NOT_OWED = {"draft", "void", "cancelled", "canceled", "written_off"}
 
 
 class ReceivablesReducer:
@@ -67,7 +67,7 @@ class ReceivablesReducer:
         payload = event.payload or {}
         if event.event_type == ev.PAYMENT_RECEIVED:
             return self._receipt(event, payload, ctx)
-        if str(payload.get("status") or "").lower() in _NOT_OWED:
+        if str(payload.get("status") or "").lower() in NOT_OWED:
             return ()
         return self._receivable(event, payload, ctx, as_of)
 

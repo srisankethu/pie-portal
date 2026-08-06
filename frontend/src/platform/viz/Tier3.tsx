@@ -14,12 +14,17 @@
 // them trustworthy is naming the gap rather than filling it.
 
 import { useMemo, useState } from "react";
+import { scaleBand, scaleLinear } from "d3-scale";
 import { money } from "../../money";
+import { formatDate } from "../../when";
 import { papi } from "../api";
+import { abilityFor } from "../ability";
 import { DataGrid, numeric } from "../DataGrid";
 import type { PlatformSession } from "../types";
-import { Figure, Panel, stateOf } from "./Panel";
+import { Figure, Panel, ValueAxis, stateOf } from "./Panel";
+import { Seg } from "./Seg";
 import { pct, useInsight } from "./useInsight";
+import { compactMoney, useMeasure } from "./useMeasure";
 
 type Row = Record<string, unknown>;
 
@@ -41,6 +46,236 @@ function Unavailable({ items }: { items: Row[] }) {
   );
 }
 
+// ── Cash: what the committed book does next ─────────────────────────────────
+//
+// The one forward-looking view in the product, and it is forward-looking only
+// in the sense that it reads *dates already written on documents*. Every rupee
+// on this chart is an invoice raised or a bill received; nothing is a forecast
+// of trade that has not happened, and nothing is weighted by how likely it is
+// to be paid.
+//
+// **It says movement, never position.** PIE reads payments, not balances, so
+// there is no opening figure to run a balance from. "The committed book moves
+// cash by −₹4.2L over thirteen weeks, worst in week six" is answerable;
+// "you run out on 12 October" is not, and the difference is the whole reason
+// this panel is trustworthy.
+//
+// Four totals sit beside the chart rather than inside it — overdue, past the
+// horizon, undated, and open orders. Each is real money that cannot honestly be
+// drawn as a bar in a particular week, and a projection whose parts do not add
+// up to the book is a projection people stop trusting.
+
+const HORIZONS: [string, string][] = [["13", "13 weeks"], ["26", "26 weeks"]];
+
+function CashProjection({ session }: { session: PlatformSession }) {
+  const [weeks, setWeeks] = useState("13");
+  const { data, loading, error, reload } = useInsight(
+    () => papi.cashflow(session.token, Number(weeks)), [session.token, weeks]);
+  const [ref, room] = useMeasure<HTMLDivElement>();
+
+  const buckets = rows(data?.buckets);
+  const overdue = (data?.overdue ?? {}) as Row;
+  const undated = (data?.undated ?? {}) as Row;
+  const beyond = (data?.beyond_horizon ?? {}) as Row;
+  const unscheduled = (data?.unscheduled ?? {}) as Row;
+  const unattributed = (data?.unattributed ?? {}) as Row;
+  const net = num(data?.net_over_horizon);
+  const lowest = num(data?.lowest_cumulative);
+
+  /** Named beside the chart, never drawn on it. Zero rows are dropped rather
+   *  than shown as "₹0" — an empty row teaches a reader to skip the list. */
+  const aside = [
+    { key: "overdue", label: "Already due, not settled",
+      why: "Real, and not week-one movement — being overdue is what disproves that.",
+      inflow: num(overdue.inflow), outflow: num(overdue.outflow) },
+    { key: "beyond", label: `Dated past ${formatDate(data?.horizon_ends_on as string)}`,
+      why: "Counted so the parts still add up to the book.",
+      inflow: num(beyond.inflow), outflow: num(beyond.outflow) },
+    { key: "undated", label: "No terms on record",
+      why: "Owed, with no due date to place it. Defaulting one would invent terms nobody gave.",
+      inflow: num(undated.inflow), outflow: num(undated.outflow) },
+    { key: "orders", label: "Open orders",
+      why: "Committed, and carrying no due date — only the invoice or bill that follows has one.",
+      inflow: num(unscheduled.open_sales_value),
+      outflow: num(unscheduled.open_purchase_value) },
+  ].filter((r) => r.inflow > 0 || r.outflow > 0);
+
+  return (
+    <Panel
+      title="Cash from the committed book"
+      question="What does what we have already promised do to cash"
+      state={stateOf(loading, error, data?.empty_reason as string)}
+      error={error} emptyReason={data?.empty_reason as string} onRetry={reload} wide
+      actions={
+        <div className="seg-controls">
+          <Seg label="Horizon" value={weeks} onChange={setWeeks} options={HORIZONS} />
+        </div>
+      }
+    >
+      <p className="viz-headline">
+        Over {String(data?.weeks ?? "")} weeks the committed book moves cash by{" "}
+        <strong>{net >= 0 ? "+" : "−"}{money(Math.abs(net))}</strong>
+        {lowest < 0 && Boolean(data?.lowest_week_starts_on) && (
+          <> · deepest at <strong>−{money(Math.abs(lowest))}</strong> in the week
+          of {formatDate(String(data?.lowest_week_starts_on))}</>
+        )}.{" "}
+        <span className="viz-muted">
+          Movement, not a balance — the platform reads payments, never bank
+          balances, so there is no position to run this from.
+        </span>
+      </p>
+
+      <div ref={ref}>
+        <Figure
+          caption="Bars are invoices and bills falling due, in the week their own document names. The line is the running total of those bars, from zero. Nothing here is a forecast of trade that has not happened."
+          summary={buckets.map((b) =>
+            `Week of ${formatDate(b.starts_on as string)}: in ${money(num(b.inflow))}, out ${money(num(b.outflow))}, running ${money(num(b.cumulative))}`,
+          ).join("; ")}
+          table={
+            <table className="viz-table">
+              <thead><tr>
+                <th scope="col">Week of</th><th scope="col">In</th>
+                <th scope="col">Out</th><th scope="col">Net</th>
+                <th scope="col">Running</th>
+              </tr></thead>
+              <tbody>
+                {buckets.map((b, i) => (
+                  <tr key={i}>
+                    <th scope="row">{formatDate(b.starts_on as string)}</th>
+                    <td>{money(num(b.inflow))}</td>
+                    <td>{money(num(b.outflow))}</td>
+                    <td>{money(num(b.net))}</td>
+                    <td>{money(num(b.cumulative))}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          }
+        >
+          {room.width > 0 && buckets.length > 0 && (
+            <CashChart buckets={buckets} width={room.width}
+                       currency={String(data?.currency ?? "INR")} />
+          )}
+        </Figure>
+      </div>
+
+      {aside.length > 0 && (
+        <div className="tier3-list">
+          <h4>Not on the timeline, and why</h4>
+          <ul className="cash-aside">
+            {aside.map((r) => (
+              <li key={r.key}>
+                <span className="cash-aside-head">
+                  <strong>{r.label}</strong>
+                  <span className="cash-aside-figures">
+                    {r.inflow > 0 && <em className="pos">in {money(r.inflow)}</em>}
+                    {r.outflow > 0 && <em className="neg">out {money(r.outflow)}</em>}
+                  </span>
+                </span>
+                <span className="viz-muted">{r.why}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* The one reconciliation worth stating out loud: the schedule counts an
+          obligation whether or not its party resolved, and the receivables and
+          supplier screens cannot. Saying so is what stops two screens with
+          different totals looking like a bug in one of them. */}
+      {(num(unattributed.inflow) > 0 || num(unattributed.outflow) > 0) && (
+        <p className="viz-muted viz-footnote">
+          {money(num(unattributed.inflow) + num(unattributed.outflow))} of this
+          belongs to a customer or supplier the contact pull did not return. It
+          is real money and it is counted here; it simply has no name to file it
+          under, which is why the Customers and Suppliers screens show less.
+        </p>
+      )}
+    </Panel>
+  );
+}
+
+/** Weekly in-and-out against a zero rule, with the running total over it.
+ *
+ *  Two bars per week rather than one net bar: a week that takes ₹5L in and
+ *  pays ₹5L out is not the same week as one where nothing happens, and a net
+ *  bar draws them identically. */
+function CashChart({
+  buckets, width, currency,
+}: { buckets: Row[]; width: number; currency: string }) {
+  const H = 260;
+  const PAD = { top: 14, right: 10, bottom: 46, left: 62 };
+
+  const flows = buckets.flatMap((b) => [num(b.inflow), -num(b.outflow)]);
+  const running = buckets.map((b) => num(b.cumulative));
+  const y = scaleLinear()
+    .domain([Math.min(...flows, ...running, 0), Math.max(...flows, ...running, 0)])
+    .range([H - PAD.bottom, PAD.top])
+    .nice();
+  const band = scaleBand<number>()
+    .domain(buckets.map((_, i) => i))
+    .range([PAD.left, Math.max(PAD.left + 1, width - PAD.right)])
+    .paddingInner(0.34);
+  // Two bars share a band, so each gets half of it minus a hairline gap.
+  const barW = Math.max(2, band.bandwidth() / 2 - 1);
+  const zero = y(0);
+
+  return (
+    <svg width={width} height={H} viewBox={`0 0 ${width} ${H}`}
+         className="viz-svg" role="presentation">
+      <ValueAxis scale={y} x0={PAD.left} x1={width - PAD.right}
+                 format={(v) => compactMoney(v, currency)} />
+
+      {buckets.map((b, i) => {
+        const left = band(i) ?? PAD.left;
+        const inflow = num(b.inflow);
+        const outflow = num(b.outflow);
+        const label = String(b.starts_on ?? "");
+        return (
+          <g key={i}>
+            <title>
+              {`Week of ${formatDate(label)}\nIn ${money(inflow)}\nOut ${money(outflow)}\n`}
+              {`Running ${money(num(b.cumulative))}`}
+            </title>
+            {inflow > 0 && (
+              <rect x={left} y={y(inflow)} width={barW}
+                    height={Math.max(1, zero - y(inflow))}
+                    className="cash-bar cash-bar-in" rx="1.5" />
+            )}
+            {outflow > 0 && (
+              <rect x={left + barW + 2} y={zero} width={barW}
+                    height={Math.max(1, y(-outflow) - zero)}
+                    className="cash-bar cash-bar-out" rx="1.5" />
+            )}
+            {/* Every fourth week carries a date. Thirteen dates at this width
+                overlap into a grey smear, and a label nobody can read is worse
+                than none because it still costs the space. */}
+            {i % 4 === 0 && (
+              <text x={left + band.bandwidth() / 2} y={H - 26}
+                    textAnchor="middle" className="viz-axis">
+                {formatDate(label)}
+              </text>
+            )}
+          </g>
+        );
+      })}
+
+      <line x1={PAD.left} x2={width - PAD.right} y1={zero} y2={zero}
+            stroke="var(--viz-rule)" strokeWidth="1" />
+      {/* The running total. A line rather than a third bar: it is a level at a
+          point in time, not a quantity arriving in that week. */}
+      <polyline
+        className="cash-running"
+        points={buckets.map((_, i) =>
+          `${(band(i) ?? PAD.left) + band.bandwidth() / 2},${y(running[i])}`).join(" ")}
+      />
+      <text x={PAD.left} y={H - 8} className="viz-axis-note">
+        running total, from zero
+      </text>
+    </svg>
+  );
+}
+
 // ── Cash: how long customers take to pay ────────────────────────────────────
 export function PaymentsScreen({
   session, onNavigate,
@@ -58,8 +293,18 @@ export function PaymentsScreen({
   const patterns = (data?.patterns as Record<string, Record<string, string>>) ?? {};
   const trends = (data?.trends as Record<string, string>) ?? {};
   const patternCounts = (data?.pattern_counts as Record<string, number>) ?? {};
+  // The projection is manager-and-above because half of it is what we owe
+  // suppliers. Omitted rather than rendered and then 403'd — a panel that
+  // always fails teaches people the product is broken.
+  const mayReadCommitments = abilityFor(session).can("read", "supply");
 
   return (
+    <div className="screen-stack">
+      {/* What is coming, then how they actually pay. The projection places
+          money at its due date; this screen below is the measured evidence
+          about whether that date is honoured, which is the right order to
+          read them in. */}
+      {mayReadCommitments && <CashProjection session={session} />}
     <Panel
       title="Cash collection"
       question="How long does the money take to arrive, and from whom"
@@ -174,6 +419,7 @@ export function PaymentsScreen({
 
       <Unavailable items={rows(data?.unavailable)} />
     </Panel>
+    </div>
   );
 }
 

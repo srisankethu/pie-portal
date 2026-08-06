@@ -168,6 +168,13 @@ export const papi = {
   payments: (t: string) =>
     req<Record<string, unknown>>("/api/v1/insight/payments", {}, t),
 
+  // Manager and above. The inflow half is receivables, but the outflow half is
+  // what we owe suppliers — purchase cost by another name — so the endpoint is
+  // scoped like `supply` and the panel is hidden rather than 403'd.
+  cashflow: (t: string, weeks: number) =>
+    req<Record<string, unknown>>(
+      `/api/v1/insight/cashflow?weeks=${weeks}`, {}, t),
+
   stock: (t: string) =>
     req<Record<string, unknown>>("/api/v1/insight/stock", {}, t),
 

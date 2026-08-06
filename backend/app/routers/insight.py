@@ -29,9 +29,9 @@ from sqlalchemy.orm import Session
 from ..authz import Principal, current_principal, require_manager_or_owner
 from .. import clock
 from ..commercial import floor, incentive, policy
-from ..commercial.insight import (cadence, cohorts, composition, flow, landscape,
-                                  payments, periods, radar, simulate, stock, story,
-                                  supply, weather)
+from ..commercial.insight import (cadence, cashflow, cohorts, composition, flow,
+                                  landscape, payments, periods, radar, simulate,
+                                  stock, story, supply, weather)
 from ..db import get_session
 from ..domain import models
 from ..domain.enums import Role
@@ -40,8 +40,10 @@ from ..commercial.insight import series
 from ..state.engine import latest_as_of, load as load_state
 from ..state.reducers.trade import CUSTOMER_MONTH
 from ..state import engine as state_engine
+from ..state.reducers.cash import CASH_SCHEDULE
 from ..state.reducers.commitments import COMMITMENTS
 from ..state.reducers.inventory import INVENTORY
+from ..state.reducers.receivables import RECEIVABLES
 from ..signals.config import load_thresholds as load_signal_thresholds
 
 log = logging.getLogger("pie_portal.insight")
@@ -577,6 +579,38 @@ def payment_behaviour(principal: Principal = Depends(current_principal),
                       "Payments have synced, but none of them is applied to an "
                       "invoice yet — so there is no invoice date to measure "
                       "from. Advances are counted separately above."))
+
+
+@router.get("/cashflow")
+def cash_projection(weeks: int = Query(cashflow.WEEKS, ge=1, le=26),
+                    principal: Principal = Depends(require_manager_or_owner),
+                    session: Session = Depends(get_session)) -> dict:
+    """What the committed book does to cash, week by week.
+
+    Manager and above. The inflow half is receivables and would be fine for a
+    salesperson, but the outflow half is what we owe suppliers — purchase cost
+    by another name, in exactly the sense that scopes ``/supply``. A projection
+    with one side removed would net to a number that is not the answer to any
+    question, so the whole endpoint is scoped rather than half of it stripped.
+
+    Every figure is an obligation already entered into. Reads three folded
+    states and does no arithmetic here — the money lives in ``insight/cashflow``
+    and the routing lives here.
+    """
+    org, _snapshot, th = _labels_only(session, principal)
+    on = latest_as_of(session, org, CASH_SCHEDULE)
+    if on is None:
+        return _no_data(th.currency, "a cash projection")
+    return _envelope(
+        cashflow.project(
+            state_engine.load(session, org, CASH_SCHEDULE, on),
+            state_engine.load(session, org, COMMITMENTS, on),
+            state_engine.load(session, org, RECEIVABLES, on),
+            # The state's own build date, not today: a projection dated today
+            # from a fold that last ran on Friday would silently age its own
+            # first bucket into the overdue column over the weekend.
+            as_of=on, weeks=weeks),
+        currency=th.currency, thresholds_version=th.version)
 
 
 #: How many names a dead-stock row can usefully carry. Beyond this the column

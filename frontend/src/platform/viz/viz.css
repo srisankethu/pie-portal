@@ -481,6 +481,40 @@
    the axis competes with the data for the reader's attention, which is the one
    thing a gridline must never do. */
 .viz-gridline { stroke: var(--viz-rule); stroke-width: 1px; stroke-opacity: .5; }
+
+/* ── the cash projection ─────────────────────────────────────────────────── */
+/* Money in and money out share the palette the rest of the product already
+   uses for gain and loss, so a reader who has seen the revenue waterfall does
+   not have to learn a second colour language. Direction is also encoded by
+   which side of the zero rule the bar sits on, which is what survives
+   greyscale and forced-colours mode. */
+.cash-bar-in { fill: var(--viz-gain); }
+.cash-bar-out { fill: var(--viz-loss); }
+.cash-running {
+  fill: none; stroke: var(--viz-ink); stroke-width: 1.75px;
+  stroke-linejoin: round; stroke-linecap: round;
+}
+
+/* What could not honestly be drawn as a bar, with the reason on the same row.
+   A figure whose exclusion is explained beside it is one nobody has to come
+   and ask about. */
+.cash-aside { list-style: none; margin: 0; padding: 0; }
+.cash-aside li {
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 9px 0; border-bottom: 1px solid var(--viz-rule);
+  font-size: 13px;
+}
+.cash-aside li:last-child { border-bottom: none; }
+.cash-aside-head {
+  display: flex; gap: 12px; align-items: baseline;
+  justify-content: space-between; flex-wrap: wrap;
+}
+.cash-aside-figures { display: flex; gap: 12px; font-style: normal; }
+.cash-aside-figures em {
+  font-style: normal; font-variant-numeric: tabular-nums; font-weight: 600;
+}
+.cash-aside-figures .pos { color: var(--viz-gain); }
+.cash-aside-figures .neg { color: var(--viz-loss); }
 .viz-axis-note {
   font-size: 10.5px; fill: var(--color-neutral-600); font-style: italic;
   /* Same halo as the quadrant labels — a reference line sits where the data is. */

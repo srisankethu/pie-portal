@@ -272,10 +272,11 @@ class QuoteStore:
             return q
 
     # ── line construction ────────────────────────────────────────────────────
-    def build_lines(self, rows: List[Dict[str, Any]], zoho: ZohoService) -> List[Line]:
+    def build_lines(self, rows: List[Dict[str, Any]], zoho: ZohoService,
+                    customer_scope: Optional[str] = None) -> List[Line]:
         lines: List[Line] = []
         for row in rows:
-            res: Resolution = pie_service.resolve(row["code"])
+            res: Resolution = pie_service.resolve(row["code"], customer_scope)
             ln = Line(
                 id=f"l{next(_ids)}",
                 raw=row["raw"],
@@ -294,9 +295,17 @@ class QuoteStore:
             lines.append(ln)
         return lines
 
-    def add_rfq(self, quote: Quote, text: str, zoho: ZohoService) -> List[Line]:
+    def add_rfq(self, quote: Quote, text: str, zoho: ZohoService,
+                customer_scope: Optional[str] = None) -> List[Line]:
+        """``customer_scope`` is the customer's cross-connector identity.
+
+        It arrives as an opaque string rather than being looked up here: this
+        store is deliberately database-free — it imports pricing, the engine and
+        Zoho, and nothing else — and giving it a session to resolve an identity
+        would be the first crack in that.
+        """
         rows = _split_rfq(text)
-        new = self.build_lines(rows, zoho)
+        new = self.build_lines(rows, zoho, customer_scope)
         with self._lock:
             quote.lines.extend(new)
         return new

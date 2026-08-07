@@ -431,3 +431,51 @@ def history(session: Session, organization_id: str, entity_type: str,
             models.IdentityEvent.entity_type == entity_type,
             models.IdentityEvent.identity_id == identity_id)
         .order_by(models.IdentityEvent.at)))
+
+
+# ── the cross-connector name for a record ───────────────────────────────────
+def identity_for_source(session: Session, organization_id: str, *,
+                        entity_type: str, connector: str, connection_id: str,
+                        external_id: str) -> Optional[str]:
+    """The identity a connector record belongs to, or ``None`` if unlinked.
+
+    This is what a *downstream* consumer should key on when it needs to name a
+    real-world customer or item rather than one connector's row for it. The
+    motivating case is pie-parser's identity scope: a confirmed "this customer's
+    part code means MM# X" is a fact about the customer, not about which of our
+    three companies happened to trade with them, so scoping it to the connector
+    row would record the same fact twice and let the two drift.
+
+    Returns ``None`` rather than inventing a scope when the record is unlinked.
+    Linking is deliberately manual here, so an unlinked record is the normal
+    early state, not an error — and a caller that substituted the connector's
+    own id would be writing keys it intends to replace the moment somebody
+    links the record.
+    """
+    shape = _SHAPES[entity_type]
+    record = shape["record"]
+    row = session.scalars(
+        select(record).where(
+            record.organization_id == organization_id,
+            record.connector == connector,
+            record.connection_id == connection_id,
+            record.external_id == external_id)).first()
+    return row.identity_id if row is not None else None
+
+
+def identity_for_customer(session: Session, organization_id: str,
+                          customer: Any) -> Optional[str]:
+    """Convenience over :func:`identity_for_source` for a resolved customer row.
+
+    Takes the ``models.Customer`` a caller already has rather than a reference
+    to match, so the tolerant matching stays in the one place that owns it
+    (``decisions.quote_support._resolve_customer``, reached through
+    ``commercial.quote_service.resolve_customer``) instead of gaining a second
+    implementation here.
+    """
+    if customer is None:
+        return None
+    return identity_for_source(
+        session, organization_id, entity_type=CUSTOMER,
+        connector=customer.connector, connection_id=customer.connection_id,
+        external_id=customer.external_id)

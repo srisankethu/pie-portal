@@ -62,3 +62,47 @@ def test_relationship_band_mapping():
     assert pie_service._rel_from_score(0.70) == "COMPAT"
     assert pie_service._rel_from_score(0.40) == "POSSIBLE"
     assert pie_service._rel_from_score(None) == "POSSIBLE"
+
+
+# ── resolving under a customer's identity ───────────────────────────────────
+#
+# The quote builder now tells the engine which real-world customer the RFQ came
+# from, so a confirmed "this customer's code means MM# X" mapping can win over
+# re-reading the text. These pin the two halves that matter: naming a customer
+# must never turn an answer into an assertion, and it must never turn a working
+# line into a dead one.
+
+def test_naming_a_customer_proposes_rather_than_asserts():
+    """The same MM# resolves EXACT unscoped and "confirm this" under a customer.
+
+    Before the engine fix this returned nothing at all under a customer scope,
+    because the resolver refused to consult the catalogue for a scoped source.
+    A quote line that silently stopped resolving the moment we knew who sent it
+    was the reason the context was never wired up.
+    """
+    plain = pie_service.resolve("2001174")
+    scoped = pie_service.resolve("2001174", "identity-abc")
+
+    assert plain.rel == "EXACT" and plain.supplyCode == "2001174"
+
+    # Found, shown, and explicitly not auto-selected: nothing has confirmed that
+    # *this customer's* 2001174 is the manufacturer's.
+    assert scoped.rel == "AMBIGUOUS"
+    assert scoped.supplyCode is None, "an unconfirmed identity must not be priced"
+    assert [c.code for c in scoped.candidates] == ["2001174"]
+    assert scoped.outcome == "NEEDS_REVIEW"
+    assert any("confirm" in (c.reason or "").lower() for c in scoped.candidates)
+
+
+def test_a_customer_scope_never_loses_a_requirement():
+    # A requirement is not an identity, so the scope changes nothing about it.
+    plain = pie_service.resolve("CNMG 120408 KCP25")
+    scoped = pie_service.resolve("CNMG 120408 KCP25", "identity-abc")
+    assert [c.code for c in scoped.candidates] == [c.code for c in plain.candidates]
+
+
+def test_an_unknown_code_stays_unresolved_under_a_scope():
+    # The fall-through consults the catalogue; it does not invent a match.
+    res = pie_service.resolve("XZ-CUSTOM-778-NOTREAL", "identity-abc")
+    assert res.rel == "UNRESOLVED"
+    assert res.supplyCode is None

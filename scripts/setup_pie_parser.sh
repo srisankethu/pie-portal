@@ -12,7 +12,10 @@
 # how to authenticate rather than failing silently.
 set -uo pipefail
 
-PIN="0f17d49d82a712eaf5633c16afa860441043633e"
+# pie-parser master. Moved from 0f17d49 for the scoped-source fix: passing a
+# customer identity into resolution REQUIRES it, because against the previous
+# pin naming a customer made every scoped line resolve to nothing at all.
+PIN="de5b5ea0e68da07ba2cb2aafff4c3a385f002feb"
 DEST="${1:-$(cd "$(dirname "$0")/.." && pwd)/pie-parser}"
 HTTPS_REMOTE="https://github.com/srisankethu/pie-parser.git"
 SSH_REMOTE="git@github.com:srisankethu/pie-parser.git"

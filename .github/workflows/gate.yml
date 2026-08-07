@@ -62,6 +62,40 @@ jobs:
             exit 1
           fi
 
+  # The frontend needs neither Python nor pie-parser, so it is checked on its own
+  # rather than behind the pie-parser clone that `verify` depends on. Without
+  # this, a credential problem in a *different repository* takes the TypeScript
+  # build's signal with it — which is what happened on the first run of this
+  # workflow, when the PIE_PARSER_TOKEN secret did not exist yet.
+  #
+  # This deliberately duplicates step 4 of scripts/verify.sh, on the same
+  # reasoning as the `invariants` job above: a fast, independent, self-naming
+  # signal is worth one repeated command. `verify` remains authoritative and
+  # still runs the build itself — do NOT "simplify" this by removing the
+  # frontend step from verify.sh, because a developer running `make verify`
+  # locally must get the whole gate from that one command. The duplication is
+  # the point; the *checks* are not allowed to differ.
+  frontend:
+    name: frontend — types + build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: install
+        working-directory: frontend
+        # The browsers are not needed to typecheck or build, and downloading
+        # them on every run is minutes for nothing.
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+        run: npm ci
+      - name: tsc + vite build
+        working-directory: frontend
+        run: npm run build
+
   verify:
     name: verify — lint, tests, frontend, migrations
     runs-on: ubuntu-latest

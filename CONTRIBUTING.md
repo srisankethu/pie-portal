@@ -100,16 +100,35 @@ The fix has three parts, and all three are needed:
    when pie-parser is missing, instead of producing twenty-five collection
    errors that look like a data problem.
 
-`main` should require both checks to pass: **Settings → Branches → Add rule**,
-requiring `§1 invariants` and `verify — lint, tests, frontend, migrations`.
-Without that rule the gate is advisory, and an advisory gate is how a repository
-ends up eight merges deep into a red build.
+`main` should require all three checks to pass: **Settings → Branches → Add
+rule**, requiring `§1 invariants`, `frontend — types + build`, and
+`verify — lint, tests, frontend, migrations`. Without that rule the gate is
+advisory, and an advisory gate is how a repository ends up eight merges deep in
+a red build.
 
 **CI needs one secret.** pie-parser is private and the automatic `GITHUB_TOKEN`
 is scoped to this repository only. Create a fine-grained PAT with `Contents:read`
 on `srisankethu/pie-parser` and add it as the repository secret
 `PIE_PARSER_TOKEN` (**Settings → Secrets and variables → Actions**). Without it
-the `verify` job stops at the checkout and says so.
+the `verify` job stops at the checkout and says so in four lines that name the
+fix — which is what it did on this workflow's first run.
+
+### Why two jobs repeat what `verify` already does
+
+`§1 invariants` and `frontend — types + build` run commands `verify` runs again.
+That is deliberate, and it is the one place duplication earns its keep:
+
+- Both are fast and **independent of pie-parser**, so they keep giving signal
+  when a credential problem in *another repository* stops `verify` at its second
+  step. That is not hypothetical — it is exactly what happened first time out.
+- A failure names itself in the checks list without anyone opening a log.
+
+The rule that keeps this from becoming the drift it replaced: **`verify` stays
+complete.** It still lints and still builds the frontend, because a developer
+running `make verify` locally must get the whole gate from one command. Never
+"simplify" this by deleting a step from `verify.sh` because a CI job covers it —
+the jobs may repeat a check, but the checks themselves are never allowed to
+differ.
 
 ### What is deliberately not in the gate
 

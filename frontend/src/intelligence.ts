@@ -5,22 +5,14 @@
  * single pass over the customer's history, so calling it per line would give
  * forty chances for the answers to disagree with each other.
  *
- * The Quote Builder and the Decision Platform authenticate separately (the
- * builder has its own demo accounts; the platform is database-backed and
- * org-scoped). The platform token is the one that carries an organisation, so
- * it is the one these endpoints need. When it is absent the panel says so
- * rather than silently showing a quote with no commercial context.
+ * These endpoints need an organisation, which is why they take the platform
+ * token. That used to be a *second* token read straight out of `localStorage`
+ * by a `platformToken()` helper here, because the Quote Builder authenticated
+ * separately against its own demo accounts and its own session had no
+ * organisation on it. There is one session now, and the caller passes its token
+ * in like every other client in this codebase does.
  */
 import type { LineIntelligence, QuoteIntelligence, QuoteOutcome, QuoteOutcomeStatus } from "./types";
-
-export function platformToken(): string | null {
-  try {
-    const raw = localStorage.getItem("pie_platform_session");
-    return raw ? JSON.parse(raw).token || null : null;
-  } catch {
-    return null;
-  }
-}
 
 export interface AssessLine {
   line_id: string;

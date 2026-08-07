@@ -53,7 +53,6 @@ export function QuoteIntelligence({
   intel,
   loading,
   error,
-  connected,
   onOverride,
   onRequestApproval,
   approvalStatus,
@@ -62,7 +61,6 @@ export function QuoteIntelligence({
   intel: LineIntelligence | null;
   loading: boolean;
   error: string | null;
-  connected: boolean;
   onOverride: (lineId: string, reasonCode: string, reason: string) => Promise<void>;
   onRequestApproval: (lineId: string, reasonCode: string, reason: string) => Promise<void>;
   /** The live approval on this line, if one has been raised. */
@@ -75,17 +73,11 @@ export function QuoteIntelligence({
   const [saved, setSaved] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
-  if (!connected) {
-    return (
-      <div className="qi qi-connect">
-        <div className="qi-head">Commercial intelligence</div>
-        <p>
-          Sign in to the Decisions platform to price this line against what this customer has
-          actually paid, at this quantity, and against the rest of the book.
-        </p>
-      </div>
-    );
-  }
+  // There is no "not connected to the platform" state here any more. It existed
+  // because the Quote Builder had a login of its own, so a person could be
+  // inside it while holding no platform session at all — and the panel had to
+  // tell them to go and sign in a second time. One session now: reaching this
+  // screen means the assessment can be asked for.
 
   if (loading && !intel) {
     return (

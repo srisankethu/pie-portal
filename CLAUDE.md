@@ -11,10 +11,23 @@ day-to-day loop. This file is the part that constrains how code gets *added*.
 **Writing or changing UI? Read `docs/ui-standards.md` first.** It is a standing
 standard, not a style preference: Material UI as the design system, `Paper` for
 dashboard surfaces and `Card` only for a business entity, status as a `Chip`
-rather than coloured text, MUI's own loading components rather than a
-hand-rolled shimmer, theme tokens rather than literals, and a shared component
-in `platform/kit.tsx` wherever a pattern appears twice. New UI follows it;
-existing screens move toward it as they are touched.
+rather than coloured text, **AG Grid through `platform/DataGrid.tsx` for any
+table whose row count is set by the size of the business — never a hand-written
+`<table>`**, MUI's own loading components rather than a hand-rolled shimmer,
+theme tokens rather than literals, and a shared component in `platform/kit.tsx`
+wherever a pattern appears twice. New UI follows it; existing screens move
+toward it as they are touched.
+
+The grid rule is stated here because leaving it only in `ui-standards.md` §3 is
+how the Quote Builder's line table stayed a hand-written `<table class="grid">`
+through three UI passes: this paragraph is the summary people actually read
+before writing a screen, it listed six rules, and the one it left out was the
+one that screen was breaking. A rule that is not in the digest is a rule that
+gets followed by whoever happens to open the long document.
+
+`<table>` is still right for a fact panel (a label and a value, four rows) and
+for the accessible table under a chart. `platform/DataGrid.tsx` states the line;
+the check in §6 finds the cases worth thinking about.
 
 ---
 
@@ -440,6 +453,22 @@ Optional, if you want a real similarity scan and are willing to install it:
 `npx jscpd --min-tokens 30 backend/app frontend/src`. Treat >30 duplicated
 tokens in a contiguous block as a flag, not a failure — some repetition is
 clearer than the abstraction that removes it.
+
+Also optional, and deliberately not in `verify.sh`: if you added or changed a
+screen, look at the tables in it.
+
+```bash
+git diff --name-only --diff-filter=d origin/main...HEAD -- 'frontend/src/**/*.tsx' \
+  | xargs -r rg -n '<table' || true
+```
+
+A `<table>` is right for a fact panel and for the accessible table under a
+chart, and wrong for anything whose row count is the size of the business —
+which is a judgement, so this prints and you decide. It stays out of the gate
+for the reason the paragraphs above give: seven of the eight raw tables left in
+this codebase are correct, and a check that is usually wrong is a check people
+learn to scroll past. It is here because the Quote Builder's line table stayed
+hand-written through three UI passes and no tool ever mentioned it.
 
 Then fill in §8 against the output.
 

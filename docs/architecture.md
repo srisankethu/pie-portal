@@ -193,6 +193,17 @@ built in rather than bolted on.
 
 ## Quote Builder integration
 
+**One identity.** `/api/quotes` authenticates the platform user in
+`Authorization`, exactly as `/api/v1/*` does, and `is_manager_or_owner` decides
+whether a response carries economics. It used to authenticate a Quote Builder
+principal of its own — two fixed accounts, any password — and read the real,
+org-scoped identity from an optional second `X-Platform-Authorization` header.
+That was two logins in one browser: the screen showed the demo account's name
+and role, and the org-scoped half of resolution (confirmed mappings, equivalence
+bands, the approval gate) fell back to packaged defaults whenever the second
+header was absent — which meant "send without signing in to the platform" was
+the way around every approval in the product.
+
 The Quote Builder resolves a pasted RFQ into priced lines via the PIE engine.
 Each line's drawer offers on-demand decision support for that
 *(customer, product)*: the deterministic facts on one side, a clearly separated

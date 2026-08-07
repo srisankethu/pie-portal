@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, Callable, Optional
 
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..clock import today as _clock_today
@@ -189,6 +190,24 @@ class SyncReport:
         }
 
 
+def _sole_connection(session: Session, organization_id: str) -> bool:
+    """Does this organization have exactly one connected company?
+
+    The question that decides whether a connectionless row can be attributed
+    without guessing. One connection: it came from there, because there is
+    nowhere else. Two: it could be either, and picking one silently merges a
+    stranger's customers into a book they never traded with.
+    """
+    from ..domain import models
+
+    try:
+        return session.scalar(
+            select(func.count()).select_from(models.ZohoConnection)
+            .where(models.ZohoConnection.organization_id == organization_id)) == 1
+    except Exception:  # noqa: BLE001 — never fail a sync over an optimisation
+        return False
+
+
 class SyncService:
     """Pull and project one organization's Zoho data.
 
@@ -219,9 +238,17 @@ class SyncService:
         # row it upserts carries where it came from. Without this the read
         # model keys customers and items on an external id alone, which is
         # unique only inside the system that issued it.
-        self.repo = ReadModelRepository(session, organization_id,
-                                        connector=connector,
-                                        connection_id=connection_id)
+        self.repo = ReadModelRepository(
+            session, organization_id,
+            connector=connector, connection_id=connection_id,
+            # Rows this connector wrote before connections existed carry no
+            # book. With a single connection there is nowhere else they could
+            # have come from, so this pull claims them instead of inserting a
+            # twin beside every one. With two or more it would be a guess, and
+            # a wrong guess pools two companies' customers — so they are left
+            # alone and `scripts/diagnose_attribution.py` reports them.
+            adopt_connectionless=(connection_id is not None
+                                  and _sole_connection(session, organization_id)))
         # The event log is written in this same pass, from the same normalised
         # DTOs. Not a second traversal: a log assembled later from the read
         # model could only ever record what survived, which is the one thing an

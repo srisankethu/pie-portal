@@ -13,7 +13,7 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 from typing import Any, Optional, Sequence
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from .domain import models
@@ -29,7 +29,8 @@ class ReadModelRepository:
 
     def __init__(self, session: Session, organization_id: str, *,
                  connector: Optional[str] = None,
-                 connection_id: Optional[str] = None) -> None:
+                 connection_id: Optional[str] = None,
+                 adopt_connectionless: bool = False) -> None:
         self.s = session
         self.org = organization_id
         # Which connected company this repository is writing on behalf of.
@@ -42,6 +43,12 @@ class ReadModelRepository:
         # which read back as "source not recorded" rather than as a guess.
         self.connector = connector
         self.connection_id = connection_id
+        # Whether rows this connector wrote before connections existed may be
+        # claimed by this one. Only the caller can know: it is unambiguous when
+        # the organization has a single connection and a guess the moment it has
+        # two, because a connectionless row does not say which book it came
+        # from. Off by default — see ``_for_upsert``.
+        self.adopt_connectionless = adopt_connectionless
 
     def _source(self, model) -> list:
         """The clauses that pin a lookup to this repository's own source.
@@ -53,15 +60,66 @@ class ReadModelRepository:
         return [model.connector == self.connector,
                 model.connection_id == self.connection_id]
 
-    # ── customers ────────────────────────────────────────────────────────────
-    def upsert_customer(self, c: CustomerIn) -> models.Customer:
+    def _for_upsert(self, model, external_id: str):
+        """The row this pull should write to, adopting an unclaimed one.
+
+        The exact-source match comes first and is unchanged. What is new is the
+        second look: a row with the same external id that carries *no*
+        provenance at all is unclaimed, and this pull claims it.
+
+        Without that step, provenance can only ever be set at insert — so the
+        first pull to run under a new ``(connector, connection)`` pair does not
+        recognise anything written under the old one and re-inserts the entire
+        master list beside it. That has already happened once in the field: rows
+        written before the connector was recorded read "source not recorded",
+        and every one of them now has a twin reading "Zoho". Repeating a sync is
+        idempotent; it is *changing* the identity of the writer that duplicates,
+        and adoption is what makes that change survivable.
+
+        Two grades of unclaimed, and they are not equally safe:
+
+        * **No provenance at all** — neither connector nor connection. Nothing
+          contests it, so this pull adopts it unconditionally.
+        * **This connector, no connection.** Written by a pull that knew the
+          system but not the book. Whether it belongs to *this* connection is
+          knowable only from outside: with one connection there is nowhere else
+          it could have come from; with two it is a guess, and guessing pools
+          two companies' records. Gated on ``adopt_connectionless``, which the
+          caller sets only when it has established there is one.
+
+        A row belonging to a *different* connection is never adopted at any
+        setting. That is another company's record even when the external id
+        matches.
+        """
         row = self.s.scalar(
-            select(models.Customer).where(
-                models.Customer.organization_id == self.org,
-                models.Customer.external_id == c.external_id,
-                *self._source(models.Customer),
+            select(model).where(
+                model.organization_id == self.org,
+                model.external_id == external_id,
+                *self._source(model),
             )
         )
+        if row is not None or not self.connector:
+            return row
+
+        claimable = [model.connector.is_(None)]
+        if self.adopt_connectionless:
+            claimable.append(model.connector == self.connector)
+        unclaimed = self.s.scalar(
+            select(model).where(
+                model.organization_id == self.org,
+                model.external_id == external_id,
+                model.connection_id.is_(None),
+                or_(*claimable),
+            )
+        )
+        if unclaimed is not None:
+            unclaimed.connector = self.connector
+            unclaimed.connection_id = self.connection_id
+        return unclaimed
+
+    # ── customers ────────────────────────────────────────────────────────────
+    def upsert_customer(self, c: CustomerIn) -> models.Customer:
+        row = self._for_upsert(models.Customer, c.external_id)
         if row is None:
             row = models.Customer(organization_id=self.org, external_id=c.external_id,
                                connector=self.connector,
@@ -112,13 +170,7 @@ class ReadModelRepository:
 
     # ── products ─────────────────────────────────────────────────────────────
     def upsert_product(self, p: ProductIn) -> models.Product:
-        row = self.s.scalar(
-            select(models.Product).where(
-                models.Product.organization_id == self.org,
-                models.Product.external_id == p.external_id,
-                *self._source(models.Product),
-            )
-        )
+        row = self._for_upsert(models.Product, p.external_id)
         if row is None:
             row = models.Product(organization_id=self.org, external_id=p.external_id,
                                connector=self.connector,

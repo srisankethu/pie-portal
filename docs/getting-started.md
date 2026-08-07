@@ -46,40 +46,41 @@ offline mock, and the whole app works without network access to a model.
 ## 3. Get the code
 
 ```bash
-git clone https://github.com/srisankethu/pie-portal
+git clone --recurse-submodules https://github.com/srisankethu/pie-portal
 cd pie-portal
 ```
+
+Already cloned without `--recurse-submodules`? Section 4 fixes that.
 
 ---
 
 ## 4. Fetch the PIE engine
 
 The Quote Builder resolves product codes using **pie-parser**, a separate
-private repository. It is fetched at a **pinned commit** into `./pie-parser`
-(gitignored) rather than committed here, so the integration always builds
-against a known-good engine revision.
+private repository, vendored here as a **git submodule** at `./pie-parser`. The
+commit it is pinned to lives in this repository's index, so the integration
+always builds against a known-good engine revision and moving the pin is a
+reviewable one-line commit.
 
-**macOS / Linux:**
-
-```bash
-./scripts/setup_pie_parser.sh
-```
-
-**Windows (PowerShell)** — clone manually, then check out the pin:
-
-```powershell
-git clone https://github.com/srisankethu/pie-parser.git pie-parser
-cd pie-parser
-git checkout 0f17d49d82a712eaf5633c16afa860441043633e
-cd ..
-```
-
-pie-parser is **private**, so this step needs GitHub credentials. If the HTTPS
-clone fails with an auth error, either configure a credential helper / personal
-access token, or use SSH:
+The same command works everywhere, including Windows PowerShell:
 
 ```bash
-git clone git@github.com:srisankethu/pie-parser.git pie-parser
+git submodule update --init --recursive pie-parser
+```
+
+On macOS / Linux `./scripts/setup_pie_parser.sh` runs exactly that and, if it
+fails, prints the credential options below rather than git's terser message.
+
+Do **not** clone pie-parser separately and check out a commit by hand. The pin
+is recorded in one place — the index — and a SHA copied into a shell history or
+a document is the copy that goes stale silently.
+
+pie-parser is **private**, so this step needs GitHub credentials. If the fetch
+fails with an auth error, configure a credential helper / personal access token
+(`gh auth login`), or rewrite the remote to SSH once, globally:
+
+```bash
+git config --global url."git@github.com:".insteadOf "https://github.com/"
 ```
 
 Already have a checkout elsewhere? Skip this step and point at it instead:

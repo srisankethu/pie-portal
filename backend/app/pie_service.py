@@ -1,7 +1,8 @@
 """In-process bridge to the pie-parser Product Intelligence Engine.
 
-This is the heart of the integration. It loads pie-parser (a pinned clone)
-once, reusing its identity-first ``resolve_rfq.run()`` orchestration, and maps
+This is the heart of the integration. It loads pie-parser (the ./pie-parser
+submodule) once, reusing its identity-first ``resolve_rfq.run()`` orchestration,
+and maps
 the engine's output onto the quote-builder's *relationship* vocabulary
 (EXACT / TECH / COMPAT / POSSIBLE / AMBIGUOUS / UNRESOLVED) that the design's
 supply column and drawer render.

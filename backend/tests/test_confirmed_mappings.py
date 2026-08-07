@@ -92,7 +92,14 @@ def test_nothing_is_recorded_without_a_scope(session):
 
 
 # ── what the engine actually reads ──────────────────────────────────────────
+#
+# From here down the engine has to be present: the store indexes its rows with
+# the engine's own ScopedIdentifier, so constructing one needs it on sys.path.
+# The tests above exercise the write side, which does not, and keep running in
+# a checkout with no access to the private submodule.
 
+
+@pytest.mark.requires_pie
 def test_the_store_answers_in_the_engine_s_own_key_shape(session):
     from identity.model import Namespace, ScopedIdentifier
 
@@ -111,6 +118,7 @@ def test_the_store_answers_in_the_engine_s_own_key_shape(session):
         ScopedIdentifier(Namespace.CUSTOMER_ITEM, "9999", IDENTITY)) is None
 
 
+@pytest.mark.requires_pie
 def test_a_superseded_mapping_is_not_served(session):
     _confirm(session, target="2001174")
     _confirm(session, target="6739214")
@@ -122,6 +130,7 @@ def test_a_superseded_mapping_is_not_served(session):
     assert hit.target_record_id == "6739214"
 
 
+@pytest.mark.requires_pie
 def test_mappings_do_not_leak_between_organizations(session):
     _confirm(session)
     assert len(OrgMappingStore(session, "org_other")) == 0
@@ -129,6 +138,7 @@ def test_mappings_do_not_leak_between_organizations(session):
 
 # ── the loop, end to end through the real engine ────────────────────────────
 
+@pytest.mark.requires_pie
 def test_a_confirmed_mapping_changes_what_the_engine_resolves(session):
     """The point of all of it: confirm once, resolve authoritatively after.
 
@@ -153,6 +163,7 @@ def test_a_confirmed_mapping_changes_what_the_engine_resolves(session):
     assert after.outcome == "AUTO_MATCH"
 
 
+@pytest.mark.requires_pie
 def test_one_customer_s_confirmation_does_not_answer_for_another(session):
     """The namespace rule, proven end to end rather than by construction."""
     from app.pie_service import pie_service

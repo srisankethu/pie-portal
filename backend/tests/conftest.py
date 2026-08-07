@@ -52,6 +52,29 @@ os.environ.setdefault("PIE_PARSER_ROOT", str(REPO / "pie-parser"))
 os.environ.setdefault("PIE_CATALOG", str(BACKEND / "data" / "products.jsonl"))
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _data_dir():
+    """Create ``backend/data/`` before anything opens the app's engine.
+
+    A fresh clone has no ``backend/data/`` — the .db files are gitignored and
+    nothing else in the directory is tracked — and SQLite will not create a
+    missing directory: it fails with ``unable to open database file``.
+    ``bootstrap.ensure_data_dir`` exists precisely for this and runs on a real
+    startup, but ``TestClient`` never runs the app's lifespan, so the tests that
+    touch ``app.db.engine`` directly (``test_db_concurrency``) never got it.
+    They passed on every developer machine, where the directory already exists,
+    and failed the first time the suite ran on a clean checkout.
+
+    Autouse here, unlike the catalogue below, and the difference is the point: a
+    `mkdir` has no external dependency and cannot fail in a way that says
+    something misleading about the code under test. Making a *private repository
+    checkout* a session-wide precondition is what took the whole suite down.
+    """
+    from app.bootstrap import ensure_data_dir
+
+    ensure_data_dir()
+
+
 @pytest.fixture(scope="session")
 def pie_catalog():
     """Build the decoded catalogue once, or skip the tests that need it.

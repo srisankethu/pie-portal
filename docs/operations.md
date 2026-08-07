@@ -120,6 +120,11 @@ deployment needs no migration step.
 
 ### Deploy sequence
 
+Packaged, with Postgres and TLS already wired together:
+**[hosting.md](hosting.md)** — `make deploy-build`, `make deploy-release`,
+`make deploy-up`. Prefer it. What follows is the same sequence by hand, for a
+deployment that supplies its own process manager and reverse proxy.
+
 ```bash
 export APP_ENV=production
 export AUTH_SECRET="$(openssl rand -base64 32)"
@@ -148,9 +153,13 @@ cd frontend && npm ci && npm run build     # → frontend/dist/
 These are deployment decisions, not code defects, and the platform is **not
 ready for real customer data** until they are closed:
 
-1. **Replace the demo login.** `routers/platform_auth.py` accepts any password
-   for a known email. It is explicitly demo-grade auth and must be swapped for
-   the organization's identity provider.
+1. **Move sign-in onto the organization's identity provider.** This gate has
+   partly closed and the rest of it is unchanged. `routers/platform_auth.py` no
+   longer accepts any password for a known email — it verifies a PBKDF2 hash, a
+   user row without one cannot sign in at all, and every failure returns one
+   indistinguishable 401. What is still missing is SSO, MFA, per-person
+   provisioning, and a password reset that does not go through an operator
+   running `python -m app.seed --set-password`.
 2. **Give every salesperson a Zoho account with a matching email.** The sync now
    maps the salesperson on a customer's most recent invoice to a platform user,
    but only on an exact email match. Salesperson scope is

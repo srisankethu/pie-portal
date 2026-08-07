@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# The deliberate half of a deploy: apply migrations, then seed the organization.
+#
+# This is a one-shot service an operator runs, not a step in the API container's
+# entrypoint, because docs/operations.md and CLAUDE.md §4 both say so — after an
+# incident:
+#
+#     No auto-migration — schema changes become a deliberate, reviewed deploy
+#     step. AUTO_BOOTSTRAP is ignored [in production].
+#
+# So `docker compose up` never migrates. Nothing changes this database's schema
+# unless somebody asked for it, by name:
+#
+#     docker compose --profile release run --rm release
+set -euo pipefail
+
+cd /app/backend
+
+# Where the database sits in the revision history, in the words CLAUDE.md §4
+# uses. Printed before *and* after, because the pair is the record of what this
+# deploy actually did — "BEHIND -> CURRENT" is a migration that ran, and
+# "CURRENT -> CURRENT" is one that had nothing to do, and those look identical
+# in a log that only reports success.
+state() {
+	python - "$1" <<'PY'
+import sys
+from app.db import engine
+from app.migration_state import inspect_database
+print(f"[release] {sys.argv[1]}: {inspect_database(engine).summary}", flush=True)
+PY
+}
+
+state "before"
+
+# Alembic is the only thing permitted to create or alter this schema. If this
+# fails with "table already exists", the database is UNSTAMPED and upgrading can
+# never work — see the state table in CLAUDE.md §4 before reaching for a fix.
+python -m alembic upgrade head
+
+state "after"
+
+# app/seed.py carries a published default password so a fresh clone can sign in.
+# In production that default is a public credential for an *owner* account —
+# full cost, margin and AI-spend visibility — so refuse to seed rather than
+# create one and trust somebody to change it later.
+if [ "${APP_ENV:-}" = "production" ]; then
+	case "${SEED_PASSWORD:-}" in
+	"" | "change-me-now")
+		cat >&2 <<'EOF'
+
+error: SEED_PASSWORD is unset, or still the default published in app/seed.py.
+
+Seeding now would create an owner account whose password is in this repository.
+Put a real one in .env.production and re-run:
+
+    SEED_PASSWORD=$(python3 -c 'import secrets; print(secrets.token_urlsafe(18))')
+
+Every seeded account is flagged must_change_password, so this is the value each
+person signs in with once — not the one they keep.
+EOF
+		exit 1
+		;;
+	esac
+fi
+
+# Idempotent: it creates the organization and the three role accounts if they
+# are absent and leaves existing ones alone, so re-running a deploy does not
+# reset anybody's password.
+python -m app.seed

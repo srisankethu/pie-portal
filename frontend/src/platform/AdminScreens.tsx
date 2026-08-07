@@ -951,7 +951,7 @@ export function SettingsScreen({ session }: { session: PlatformSession }) {
                  autoComplete="new-password" value={pw.next}
                  onChange={(e) => setPw({ ...pw, next: e.target.value })}
                  required aria-label="New password" />
-          <Button variant="outlined">Change password</Button>
+          <Button type="submit" variant="outlined">Change password</Button>
           {pwMsg && <div className="st-span st-help">{pwMsg}</div>}
         </form>
       </Bp>

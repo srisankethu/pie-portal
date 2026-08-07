@@ -353,8 +353,13 @@ def test_snapshots_are_scoped_to_the_organization(client):
     s.close()
 
 
+@pytest.mark.requires_pie
 def test_a_decision_records_which_catalogue_resolved_it(client):
     """The parser's ruleset checksum, alongside the thresholds version.
+
+    The only test in this module that needs the engine: ``catalog_version`` is
+    read off the loaded catalogue, and with no engine it is empty on both sides
+    of the comparison, which would pass without asserting anything.
 
     Both answer "why does this row say what it says" for different halves of
     the answer: thresholds decide the price, the catalogue decides the product.

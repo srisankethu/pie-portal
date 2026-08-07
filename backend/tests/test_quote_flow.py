@@ -45,6 +45,7 @@ def test_auth_required():
     assert client.get("/api/quotes/nope").status_code == 401
 
 
+@pytest.mark.requires_pie
 def test_intake_builds_resolution_grid(mgmt_hdr):
     q = client.post("/api/quotes", json={"customer": "Pitti Engineering"}, headers=mgmt_hdr).json()
     qid = q["id"]
@@ -76,6 +77,7 @@ def test_economics_are_role_gated(sales_hdr, mgmt_hdr):
     assert "cost" in mline["economics"]
 
 
+@pytest.mark.requires_pie
 def test_supply_selection_and_pricing(mgmt_hdr):
     q = client.post("/api/quotes", json={"customer": "Pitti"}, headers=mgmt_hdr).json()
     qid = q["id"]

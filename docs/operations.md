@@ -67,7 +67,7 @@ deployment needs no migration step.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `PIE_PARSER_ROOT` | `./pie-parser` | Path to the pinned pie-parser checkout. |
+| `PIE_PARSER_ROOT` | `./pie-parser` | Path to the pie-parser submodule (or your own checkout). |
 | `PIE_CATALOG` | `backend/data/products.jsonl` | Decoded catalogue path. |
 | `AUTO_BUILD_CATALOG` | `1` | Build the catalogue lazily if missing. Set `0` in constrained deploys and build out of band. |
 | `PIE_WARM` | `1` | Warm the engine at startup. `0` starts much faster. |

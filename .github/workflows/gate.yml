@@ -132,3 +132,96 @@ jobs:
       - name: tsc + vite build
         working-directory: frontend
         run: npm run build
+
+  # The check that would have caught the pin skew. pie-parser is vendored as a
+  # submodule, so the commit this repo resolves against is a line in the index —
+  # but a pin that nothing executes is a pin nobody has tested. Moving it used
+  # to be verified by hand, and the last move was made *because* the previous
+  # commit made every scoped line resolve to nothing at all, which is exactly
+  # the kind of failure a green build should not survive.
+  #
+  # Deliberately its own job rather than steps inside `backend`: the seam is
+  # what this proves, and a failure here should name the engine rather than
+  # hide behind an unrelated lint or unit failure.
+  pie-contract:
+    name: pie-parser contract — the pinned engine still resolves
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # pie-parser is a private repository, and the default GITHUB_TOKEN is
+      # scoped to *this* one, so it cannot fetch the submodule. Rather than
+      # fail a build for a missing credential, report clearly that the seam is
+      # unverified and let the rest of the gate stand — a red check nobody can
+      # fix is a check people learn to ignore.
+      - name: Can CI reach the engine?
+        id: reachable
+        env:
+          PIE_PARSER_TOKEN: ${{ secrets.PIE_PARSER_TOKEN }}
+        run: |
+          # The pin, read out of this repo's index — exact, and available
+          # before the submodule is fetched (or when it never is).
+          echo "pin=$(git rev-parse HEAD:pie-parser)" >> "$GITHUB_OUTPUT"
+          if [ -z "${PIE_PARSER_TOKEN}" ]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=pie-parser contract not verified::\
+          No PIE_PARSER_TOKEN secret, so the pinned engine was not fetched and \
+          the seam is untested on this run. Add a token with read access to \
+          srisankethu/pie-parser (Settings -> Secrets -> Actions) to enable it."
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Fetch pie-parser at the pinned commit
+        if: steps.reachable.outputs.enabled == 'true'
+        env:
+          PIE_PARSER_TOKEN: ${{ secrets.PIE_PARSER_TOKEN }}
+        run: |
+          git config --global url."https://x-access-token:${PIE_PARSER_TOKEN}@github.com/".insteadOf "https://github.com/"
+          git submodule update --init --recursive pie-parser
+          echo "pinned at $(git -C pie-parser rev-parse HEAD)"
+
+      - uses: actions/setup-python@v5
+        if: steps.reachable.outputs.enabled == 'true'
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - name: install
+        if: steps.reachable.outputs.enabled == 'true'
+        run: pip install -r backend/requirements.txt
+
+      # The catalogue is ~13 MB decoded from the corpus and is a pure function
+      # of the pinned commit, so it is cached against exactly that — a pin move
+      # invalidates it, which is the one time it must be rebuilt.
+      - name: Cache the decoded catalogue
+        if: steps.reachable.outputs.enabled == 'true'
+        uses: actions/cache@v4
+        with:
+          path: backend/data/products.jsonl
+          key: pie-catalog-${{ steps.reachable.outputs.pin }}
+
+      # Selected by marker, not by a list of files: `requires_pie` is already
+      # how conftest decides what to skip without an engine, so the set this
+      # runs is by construction exactly the set the `backend` job could not
+      # cover. A new engine-backed test is picked up by marking it, and a file
+      # list here could not go stale because there isn't one.
+      - name: The engine resolves what the portal expects
+        if: steps.reachable.outputs.enabled == 'true'
+        working-directory: backend
+        run: python -m pytest -q -m requires_pie tests
+
+      # A marker that selects nothing means the seam is no longer covered —
+      # most likely someone removed the last marked test, which should be a
+      # deliberate act rather than a quietly green job.
+      - name: The contract must actually cover something
+        if: steps.reachable.outputs.enabled == 'true'
+        working-directory: backend
+        run: |
+          n=$(python -m pytest -q -m requires_pie --collect-only tests 2>/dev/null \
+              | grep -c '::' || true)
+          echo "engine-backed tests: $n"
+          if [ "$n" -eq 0 ]; then
+            echo "::error::No tests are marked requires_pie — the pinned engine is untested."
+            exit 1
+          fi

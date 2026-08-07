@@ -13,7 +13,7 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 from typing import Any, Optional, Sequence
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from .domain import models
@@ -296,6 +296,26 @@ class ReadModelRepository:
             models.IngestedDocument.connection_id == self.connection_id,
         )
         return {r.doc_id: (r.modified_at or "") for r in self.s.scalars(stmt)}
+
+    def ingested_high_water(self, doc_type: str) -> Optional[str]:
+        """The newest modification stamp this connection has already pulled.
+
+        What an incremental listing stops at. Derived from the rows actually
+        held rather than kept as a separate "last synced at" column, and that is
+        deliberate: a stored cursor is a second source of truth that can outrun
+        the data it claims to describe — a pull that recorded the cursor and then
+        died would skip forever the documents it never wrote. This cannot get
+        ahead of the rows, because it *is* the rows.
+
+        Returns None when nothing has been pulled yet, which correctly means
+        "there is no floor; list everything".
+        """
+        stmt = select(func.max(models.IngestedDocument.modified_at)).where(
+            models.IngestedDocument.organization_id == self.org,
+            models.IngestedDocument.doc_type == doc_type,
+            models.IngestedDocument.connection_id == self.connection_id,
+        )
+        return self.s.scalar(stmt) or None
 
     def mark_ingested(self, doc_type: str, doc_id: str, modified_at: str) -> None:
         """Record this document as held, at the stamp we will compare next time.

@@ -49,7 +49,8 @@ def organizations_with_connections(session) -> list[str]:
 
 
 def _sync_one_organization(organization_id: str, *, since: Optional[date],
-                           full: bool, triggered_by: str) -> dict:
+                           full: bool, triggered_by: str,
+                           incremental: bool = True) -> dict:
     """One organization, on its own session — this runs in its own thread."""
     from .db import SessionLocal
     from .ingestion import jobs
@@ -57,7 +58,7 @@ def _sync_one_organization(organization_id: str, *, since: Optional[date],
     session = SessionLocal()
     try:
         result = jobs.start_all(session, organization_id, since=since, full=full,
-                                triggered_by=triggered_by)
+                                triggered_by=triggered_by, incremental=incremental)
         session.commit()
         return result
     except Exception as e:  # noqa: BLE001 — one organization must not sink the rest
@@ -70,17 +71,18 @@ def _sync_one_organization(organization_id: str, *, since: Optional[date],
 
 
 def sync_all(organization_ids: list[str], *, since: Optional[date] = None,
-             full: bool = False, triggered_by: str = "schedule") -> list[dict]:
+             full: bool = False, triggered_by: str = "schedule",
+             incremental: bool = True) -> list[dict]:
     """Every organization concurrently; every connection within one concurrently."""
     if not organization_ids:
         return []
+    kw = dict(since=since, full=full, triggered_by=triggered_by,
+              incremental=incremental)
     if len(organization_ids) == 1:
-        return [_sync_one_organization(organization_ids[0], since=since, full=full,
-                                       triggered_by=triggered_by)]
+        return [_sync_one_organization(organization_ids[0], **kw)]
     with ThreadPoolExecutor(max_workers=len(organization_ids),
                             thread_name_prefix="sync-org") as pool:
-        futures = [pool.submit(_sync_one_organization, oid, since=since, full=full,
-                               triggered_by=triggered_by)
+        futures = [pool.submit(_sync_one_organization, oid, **kw)
                    for oid in organization_ids]
         return [f.result() for f in futures]
 
@@ -126,8 +128,16 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--since", metavar="YYYY-MM-DD",
                         help="Start date for the pull. Default: the resume cursor, "
                              "or the rolling ZOHO_HISTORY_DAYS window.")
+    parser.add_argument("--reconcile", action="store_true",
+                        help="List the whole book instead of stopping at what "
+                             "changed. Still skips unchanged documents, so it "
+                             "costs list calls only — but it is the only mode "
+                             "that notices a document deleted or voided in "
+                             "Zoho. Run it weekly.")
     parser.add_argument("--full", action="store_true",
-                        help="Ignore the resume cursor and re-read the whole window.")
+                        help="Ignore the resume cursor and re-fetch every "
+                             "document. Hours, not minutes — for a read model "
+                             "you no longer trust, not for a schedule.")
     parser.add_argument("--json", action="store_true",
                         help="Emit the raw result as JSON instead of a summary.")
     args = parser.parse_args(argv)
@@ -152,7 +162,8 @@ def main(argv: Optional[list[str]] = None) -> int:
               file=sys.stderr)
         return 2
 
-    results = sync_all(org_ids, since=since, full=args.full)
+    results = sync_all(org_ids, since=since, full=args.full,
+                       incremental=not args.reconcile)
 
     if args.json:
         print(json.dumps(results, indent=2, default=str))

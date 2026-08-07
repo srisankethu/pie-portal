@@ -220,14 +220,44 @@ It blocks until the cycle is done, so two nightly runs cannot overlap, and it
 exits non-zero if any pull failed or came back `PARTIAL` — which is what makes
 cron mail you the night Zoho rate-limited the run.
 
+### Two cadences, and why it is two
+
+The nightly pull is **incremental**: it asks Zoho for the most recently modified
+documents first and stops as soon as it reaches something it already holds. The
+resume cursor already avoided re-*fetching* an unchanged document; this avoids
+re-*listing* it too, which is the rest of the bill — two years of history is one
+list call per 200 documents, every night, almost all of it spent discovering
+that nothing moved.
+
+What that buys costs one thing, and it is worth understanding rather than
+discovering: a listing that stopped early has not seen the whole book, so it
+cannot tell you about a document that was **deleted or voided** in Zoho. The
+code refuses to guess — an early-stopped listing is not marked complete, and the
+deletion sweep declines to run against it. Nothing is silently pruned; the
+mirror simply lags on deletions until a full listing happens.
+
+That is what `--reconcile` is for. It lists everything while still skipping
+unchanged documents, so it costs list calls only — minutes, not the original
+hour — and it is the only mode that notices a deletion.
+
 ```bash
-# 01:30 nightly. Cron mails you the summary only when something went wrong.
+# Nightly at 01:30 — incremental. Minutes.
 (crontab -l 2>/dev/null; echo '30 1 * * * cd ~/pie-portal && docker compose --env-file .env.production exec -T api python -m app.sync_all >> ~/sync.log 2>&1') | crontab -
+
+# Sundays at 02:30 — full listing, so deletions and voids land. Still minutes.
+(crontab -l 2>/dev/null; echo '30 2 * * 0 cd ~/pie-portal && docker compose --env-file .env.production exec -T api python -m app.sync_all --reconcile >> ~/sync.log 2>&1') | crontab -
 ```
 
-Useful flags: `--full` ignores the resume cursor and re-reads the whole window,
-`--since YYYY-MM-DD` sets the start date, `--organization` limits it to one
-tenant (repeatable), `--json` emits the raw result.
+| Mode | Detail calls | List calls | Sees deletions | Use |
+|---|---|---|---|---|
+| default | changed only | stops at the mark | no | nightly |
+| `--reconcile` | changed only | whole window | **yes** | weekly |
+| `--full` | **every document** | whole window | yes | a read model you no longer trust |
+
+`--full` is the original hour-long pull. It is not a schedule; it is a repair.
+
+Other flags: `--since YYYY-MM-DD` sets the start date, `--organization` limits
+it to one tenant (repeatable), `--json` emits the raw result.
 
 Host cron rather than a scheduler container: one less thing to keep alive, and
 it fails in the place you already read mail from. The Data screen's own Sync

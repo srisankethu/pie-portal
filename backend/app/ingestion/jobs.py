@@ -266,7 +266,7 @@ def _window_label(start: date, end: date) -> str:
 def execute_sync(session: Session, run: models.SyncRun, *,
                  since: Optional[date] = None, full: bool = False,
                  connection_id: Optional[str] = None,
-                 analysis: bool = True) -> dict:
+                 analysis: bool = True, incremental: bool = True) -> dict:
     """Pull, detect, recompute, decide — the whole cycle, against one run row.
 
     Lifted out of the request handler unchanged in behaviour so that the
@@ -368,7 +368,7 @@ def execute_sync(session: Session, run: models.SyncRun, *,
         # NULL, and a NULL connection resolves to no company at all.
         svc = SyncService(session, source_for(since, None), org,
                           resume=not full, on_phase=phase,
-                          connection_id=connection_id)
+                          connection_id=connection_id, incremental=incremental)
         svc.begin()
         # Customers and items are the whole master list whatever the window, so
         # they are read once rather than once per slice.
@@ -541,7 +541,8 @@ def execute_analysis(session: Session, run: models.SyncRun, organization_id: str
 
 # ── dispatch ────────────────────────────────────────────────────────────────
 def run_job(sync_run_id: str, since: date, full: bool,
-            connection_id: Optional[str], *, analysis: bool = True) -> None:
+            connection_id: Optional[str], *, analysis: bool = True,
+            incremental: bool = True) -> None:
     """Run the job on its own session, because the request's is already closed.
 
     Public because ``start_all`` submits it to a thread pool of its own rather
@@ -556,7 +557,8 @@ def run_job(sync_run_id: str, since: date, full: bool,
         if run is None:            # deleted between queueing and starting
             return
         execute_sync(session, run, since=since, full=full,
-                     connection_id=connection_id, analysis=analysis)
+                     connection_id=connection_id, analysis=analysis,
+                     incremental=incremental)
         session.commit()
     except Exception:  # noqa: BLE001
         log.exception("sync job %s crashed outside its own handler", sync_run_id)
@@ -641,7 +643,8 @@ def start_sync(session: Session, organization_id: str, *,
 def start_all(session: Session, organization_id: str, *,
               since: Optional[date] = None, full: bool = False,
               triggered_by: Optional[str] = None,
-              max_workers: Optional[int] = None) -> dict:
+              max_workers: Optional[int] = None,
+              incremental: bool = True) -> dict:
     """Pull every enabled connection at once, then analyse the organization once.
 
     **Fan out, then fan in.** The pulls are independent — Zoho meters its API
@@ -694,7 +697,8 @@ def start_all(session: Session, organization_id: str, *,
             # analysis=False: the organization-wide half is this function's job,
             # once, below — not each pull's.
             futures.append(pool.submit(run_job, sync_run_id, since_, full_,
-                                       connection_id, analysis=False))
+                                       connection_id, analysis=False,
+                                       incremental=incremental))
 
         for conn in conns:
             run, started = start_sync(

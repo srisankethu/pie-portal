@@ -379,6 +379,47 @@ def test_the_scheduler_exits_zero_on_a_clean_run(db, capsys):
     assert "analysed" in capsys.readouterr().out
 
 
+def test_two_pulls_may_vault_the_same_name_at_once(db):
+    """The second race the first end-to-end run hit, in a different table.
+
+    ``name_vault`` is upserted per entity while the pull runs, by read-then-
+    insert. Two connections vaulting the same entity together both read nothing,
+    both inserted, and one died on the unique constraint.
+    """
+    from app.trust.vault import put, resolve
+
+    Maker = db
+    errors: list[BaseException] = []
+
+    for round_no in range(5):
+        entity = f"cust-{round_no}"
+        barrier = threading.Barrier(4)
+
+        def racer(entity=entity, barrier=barrier, n=[0]):
+            session = Maker()
+            try:
+                barrier.wait(timeout=10)
+                put(session, ORG, "CUSTOMER", entity, "Bharat Forge")
+                session.commit()
+            except BaseException as e:  # noqa: BLE001 — asserted on below
+                errors.append(e)
+                session.rollback()
+            finally:
+                session.close()
+
+        threads = [threading.Thread(target=racer) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=30)
+
+        assert not errors, f"a concurrent vault write failed: {errors[0]!r}"
+
+    check = Maker()
+    assert resolve(check, ORG, "CUSTOMER", "cust-0") == "Bharat Forge"
+    check.close()
+
+
 def test_the_analysis_summaries_survive_onto_the_run(db):
     """They used to be built, stored, and then replaced by the finally block."""
     s = db()

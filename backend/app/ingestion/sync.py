@@ -220,11 +220,16 @@ class SyncService:
                  resume: bool = True,
                  on_phase: Optional[Callable[[str], None]] = None,
                  connector: str = "zoho",
-                 connection_id: Optional[str] = None) -> None:
+                 connection_id: Optional[str] = None,
+                 incremental: bool = True) -> None:
         self.s = session
         self.source = source
         self.org = organization_id
         self.resume = resume
+        # Whether the listing itself may stop early. Off makes this the periodic
+        # reconciliation: still cheap (unchanged documents cost no detail call)
+        # but complete, which is the only state in which deletions are visible.
+        self.incremental = incremental
         # Reports what the pull is doing, so a job that takes minutes can say
         # so in words. Optional: a scripted caller that does not care passes
         # nothing and the stages run exactly as before.
@@ -329,6 +334,11 @@ class SyncService:
         """Bills and invoices for one window. ``label`` names it on screen."""
         previous, self.source = self.source, (source or self.source)
         try:
+            # Per window, because each window gets its own source object. The
+            # mark is global to the connection, so every window short-circuits
+            # against the same floor — an old window whose documents have not
+            # been touched since the last pull stops on its first page.
+            self.arm_incremental_listing(self.source)
             suffix = f" · {label}" if label else ""
             self._phase(f"Reading bills{suffix}")
             self._sync_bills()
@@ -614,6 +624,46 @@ class SyncService:
             return None
         until = getattr(self.source, "_until", None) or date.max
         return cutoff, until
+
+    #: Every document kind that costs a detail call, and so is worth listing
+    #: incrementally. Named here rather than discovered, because a kind missing
+    #: from this list is merely listed the slow way — while a kind wrongly *in*
+    #: it would be listed against another kind's high-water mark.
+    INCREMENTAL_KINDS = ("invoice", "bill", "customerpayment")
+
+    def arm_incremental_listing(self, source: Optional[ZohoSource] = None) -> dict[str, str]:
+        """Tell one window's source where each kind's listing may stop.
+
+        The other half of the resume cursor. ``_skipper`` already saves the
+        *detail* call for a document that has not changed; this saves the *list*
+        call too, which is the rest of a nightly pull's bill — two years of
+        history is one list call per 200 documents, every night, almost all of
+        it spent discovering that nothing moved.
+
+        Three modes, and the difference between the last two is the whole reason
+        ``incremental`` is not just ``resume``:
+
+        ``resume``  ``incremental``  what it does
+        ----------  ---------------  ------------------------------------------
+        True        True             Nightly. Skips unchanged details *and*
+                                     stops listing at the high-water mark. Does
+                                     not see deletions.
+        True        False            The reconciliation. Still skips unchanged
+                                     details, so it costs list calls only — but
+                                     it lists the whole book, which is what lets
+                                     the deletion sweep run.
+        False       —                Rebuild. Re-fetches every detail.
+        """
+        source = source if source is not None else self.source
+        if not (self.resume and self.incremental):
+            return {}
+        marks = {kind: mark for kind in self.INCREMENTAL_KINDS
+                 if (mark := self.repo.ingested_high_water(kind))}
+        # A source that has never heard of this is left alone — the fixture
+        # source has no listing to short-circuit and no window to speak of.
+        if hasattr(source, "modified_since"):
+            source.modified_since = dict(marks)
+        return marks
 
     def _skipper(self, doc_type: str):
         """A predicate the source can use to avoid re-fetching known documents."""

@@ -1303,8 +1303,23 @@ table.grid tbody tr:hover td { background: color-mix(in srgb, var(--color-accent
  * colour alone — the connector shows a mark and a word, so the badge survives
  * colour-blindness, greyscale printing and a screen reader.
  */
-.ent { display: inline-grid; gap: 1px; }
+/* An inline-grid is an *atomic* inline: it cannot be split, so it cannot be
+   ellipsised by its container either. Inside an ag-grid cell — which is
+   `overflow:hidden; text-overflow:ellipsis; white-space:nowrap` — a name wider
+   than the column was therefore sliced mid-word with no ellipsis at all, and
+   no tooltip to recover it: "IN-0200-0046 PRIMO RPS + LTS + CONDUIT KIT
+   ASSEMBLY LIMITED" rendered as "…CONDUIT KIT ASSEMB". The cell's own ellipsis
+   never applied because there was nothing splittable to apply it to.
+
+   So bound the box to its container and let each line truncate on its own.
+   `min-width: 0` because a grid item's automatic minimum size is its content,
+   which would otherwise keep the box at its full intrinsic width whatever the
+   max-width says. */
+.ent { display: inline-grid; gap: 1px; max-width: 100%; min-width: 0; }
 .ent-name { font-weight: 600; }
+/* Where the name is not the emphasis — a supplier in a distribution list. */
+.ent-name-plain { font-weight: 400; }
+.ent-name, .ent-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ent-meta { font-size: 11.5px; color: var(--color-neutral-600); line-height: 1.3; }
 .ent-src { white-space: nowrap; }
 .ent-mark { margin-right: 4px; opacity: .75; }

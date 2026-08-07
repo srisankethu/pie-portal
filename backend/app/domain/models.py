@@ -1837,3 +1837,52 @@ class StateTransition(Base):
     #: The field changes this event made, as ``[[op, field, value], …]``.
     changes: Mapped[list[Any]] = mapped_column(JSON, default=list)
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class ConfirmedCodeMapping(Base):
+    """"This customer's part number means that manufacturer product."
+
+    The fact a salesperson establishes once and should never be asked again.
+    pie-parser can resolve a scoped code authoritatively when a confirmed
+    mapping exists — but its own store is a CSV inside the engine repository,
+    which ships empty and is shared by everyone who runs the engine. A
+    confirmation is made by a person, about one organization's customer, so it
+    belongs here and is handed to the engine at resolution time.
+
+    Scoped to a ``CustomerIdentity``, never to a connector's customer row: the
+    same real customer reached through two connected Zoho companies quotes the
+    same part number, and filing the fact twice would let the two answers drift.
+
+    Superseded rather than mutated. A mapping that was true and was later
+    corrected is how you explain a quote sent last March, and overwriting the
+    row in place destroys exactly that.
+    """
+
+    __tablename__ = "confirmed_code_mappings"
+    __table_args__ = (
+        Index("ix_confirmed_code_lookup",
+              "organization_id", "identity_id", "code", "active"),
+    )
+
+    mapping_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    #: The customer's cross-connector identity — the namespace this code lives in.
+    identity_id: Mapped[str] = mapped_column(String(64), index=True)
+    #: The customer's own code, normalized the way pie-parser normalizes an
+    #: identity key: trimmed and upper-cased, with internal punctuation intact,
+    #: because separators can be meaningful in a part number.
+    code: Mapped[str] = mapped_column(String(128))
+    #: The manufacturer record it resolves to (an MM#).
+    target_record_id: Mapped[str] = mapped_column(String(64))
+    #: pie-parser's RelationshipType. SAME_PRODUCT is the only one that resolves
+    #: authoritatively; the rest are recorded but still ask for review.
+    relationship: Mapped[str] = mapped_column(String(32), default="SAME_PRODUCT")
+    #: Where the confirmation came from, e.g. "quote q1 line l3" — so a wrong
+    #: mapping can be traced to the moment somebody made it.
+    source_ref: Mapped[str] = mapped_column(String(255), default="")
+    confirmed_by_user_id: Mapped[Optional[str]] = mapped_column(String(64))
+    #: False once superseded by a later confirmation for the same code.
+    active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    superseded_by: Mapped[Optional[str]] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
+                                                 index=True)

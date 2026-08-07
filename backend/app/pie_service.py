@@ -187,7 +187,8 @@ class PieService:
         return self._catalog_version
 
     def _make_args(self, text: str,
-                   customer_scope: Optional[str] = None) -> argparse.Namespace:
+                   customer_scope: Optional[str] = None,
+                   mapping_store: Any = None) -> argparse.Namespace:
         return argparse.Namespace(
             text=text,
             pie_data=self._catalog_path or settings.PIE_CATALOG,
@@ -202,11 +203,16 @@ class PieService:
             source_customer=customer_scope,
             source_vendor=None,
             source_manufacturer=None,
+            # This organization's confirmed "their code means this product"
+            # rows. None falls back to pie-parser's packaged store, which is
+            # empty — the behaviour before any of this existed.
+            mapping_store=mapping_store,
         )
 
     # ── resolution ───────────────────────────────────────────────────────────
     def resolve(self, text: str, customer_scope: Optional[str] = None,
-                bands: Optional[Bands] = None) -> Resolution:
+                bands: Optional[Bands] = None,
+                mapping_store: Any = None) -> Resolution:
         """Resolve one RFQ line's text into a portal Resolution.
 
         ``customer_scope`` is the customer's cross-connector identity when the
@@ -223,7 +229,7 @@ class PieService:
         text = (text or "").strip()
         try:
             self._ensure_loaded()
-            args = self._make_args(text, customer_scope)
+            args = self._make_args(text, customer_scope, mapping_store)
             result, _human = self._mod.run(args, self._sources)
             return self._map(text, result, bands or Bands.default())
         except Exception:  # noqa: BLE001 — deliberate: isolate engine failures

@@ -7,7 +7,7 @@ principal never receives per-line economics.
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy.orm import Session
@@ -16,6 +16,7 @@ from .. import approvals
 from ..authz import Principal as PlatformPrincipal, load_principal
 from ..commercial import policy, quote_service
 from ..identity import service as identity_service
+from ..identity.mapping_store import OrgMappingStore
 from ..config import settings
 from ..db import get_session
 from ..deps import current_principal, get_zoho
@@ -93,8 +94,27 @@ def intake(quote_id: str, body: IntakeRequest,
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "No RFQ text provided")
     store.add_rfq(q, body.text, zoho,
                   _customer_scope(session, platform, q.customer),
-                  _bands(session, platform))
+                  _bands(session, platform),
+                  _mapping_store(session, platform))
     return q.to_dict(principal.is_mgmt)
+
+
+def _mapping_store(session: Session,
+                   platform: Optional[PlatformPrincipal]) -> Optional[Any]:
+    """This organization's confirmed code mappings, for the engine to read.
+
+    None without a platform token: pie-parser then falls back to its packaged
+    store, which is empty, so an unauthenticated Quote Builder session resolves
+    exactly as it did before any of this existed.
+    """
+    if platform is None:
+        return None
+    try:
+        return OrgMappingStore(session, platform.organization_id)
+    except Exception:  # noqa: BLE001 — resolution proceeds without them
+        log.exception("could not load confirmed mappings for %s",
+                      platform.organization_id)
+        return None
 
 
 def _bands(session: Session, platform: Optional[PlatformPrincipal]) -> Optional[Bands]:
@@ -161,11 +181,48 @@ def line_options(quote_id: str, line_id: str,
 @router.post("/{quote_id}/lines/{line_id}/supply")
 def select_supply(quote_id: str, line_id: str, body: SelectSupplyRequest,
                   principal: Principal = Depends(current_principal),
-                  zoho: ZohoService = Depends(get_zoho)):
+                  zoho: ZohoService = Depends(get_zoho),
+                  platform: Optional[PlatformPrincipal] = Depends(optional_platform_principal),
+                  session: Session = Depends(get_session)):
     q = _get_quote(quote_id)
     ln = _get_line(q, line_id)
+    confirmed = _confirm_identity(session, platform, q, ln, body.code)
     store.select_supply(ln, body.code, zoho, manual=body.manual)
-    return q.to_dict(principal.is_mgmt)
+    out = q.to_dict(principal.is_mgmt)
+    if confirmed:
+        # Worth saying out loud: the person has just taught the system something
+        # permanent, and a change with no feedback reads as a change that did
+        # not happen.
+        out["note"] = (f"Recorded: this customer's {ln.reqCode} means {body.code}. "
+                       "It will resolve on its own from now on.")
+    return out
+
+
+def _confirm_identity(session: Session, platform: Optional[PlatformPrincipal],
+                      quote: Quote, ln: Line, code: str) -> bool:
+    """Record a confirmation when the user answers the engine's own question.
+
+    Only when they select the record the engine *proposed* as this line's
+    identity. Picking a different product is a substitution on one quote, and
+    filing that as "their code means this" would teach the system something the
+    person did not say — and would then resolve it that way silently forever.
+    """
+    if platform is None or not ln.customerScope or ln.identityCandidate != code:
+        return False
+    try:
+        row = identity_service.confirm_code_mapping(
+            session, platform.organization_id,
+            identity_id=ln.customerScope, code=ln.reqCode,
+            target_record_id=code,
+            source_ref=f"quote {quote.id} line {ln.id}",
+            user_id=getattr(platform, "user_id", None))
+        if row is not None:
+            session.commit()
+        return row is not None
+    except Exception:  # noqa: BLE001 — a quote must not fail over bookkeeping
+        log.exception("could not record a confirmed mapping for line %s", ln.id)
+        session.rollback()
+        return False
 
 
 @router.post("/{quote_id}/lines/{line_id}/price")

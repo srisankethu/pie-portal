@@ -479,3 +479,80 @@ def identity_for_customer(session: Session, organization_id: str,
         session, organization_id, entity_type=CUSTOMER,
         connector=customer.connector, connection_id=customer.connection_id,
         external_id=customer.external_id)
+
+
+# ── confirmed customer-code mappings ────────────────────────────────────────
+#
+# The loop this closes: pie-parser proposes "your 7781 is probably MM# X" and
+# refuses to assert it; a person confirms; the confirmation is recorded here;
+# every later resolution of that code answers authoritatively without asking
+# again. Before this, the confirmation was made on the quote screen and thrown
+# away, so the same question came back every quarter.
+
+def normalize_code(raw: str) -> str:
+    """Trim and upper-case, leaving internal punctuation alone.
+
+    Deliberately the same rule as pie-parser's ``normalize_identifier``: the two
+    have to agree or a mapping written here will not be found there. Stripping
+    separators would merge two genuinely different part numbers into one key.
+    """
+    return (raw or "").strip().upper()
+
+
+def confirm_code_mapping(session: Session, organization_id: str, *,
+                         identity_id: str, code: str, target_record_id: str,
+                         relationship: str = "SAME_PRODUCT",
+                         source_ref: str = "",
+                         user_id: Optional[str] = None
+                         ) -> Optional[models.ConfirmedCodeMapping]:
+    """Record that a customer's code means a manufacturer product.
+
+    Idempotent: re-confirming the same target returns the existing row rather
+    than stacking duplicates. A *different* target supersedes the previous
+    mapping instead of overwriting it, so the quote sent under the old one can
+    still be explained.
+
+    Returns None when there is nothing to record — no identity to scope to, no
+    code, or no target. A missing scope is the normal early state for an
+    unlinked customer and must not raise on a quote screen.
+    """
+    key = normalize_code(code)
+    if not (identity_id and key and target_record_id):
+        return None
+
+    current = session.scalars(
+        select(models.ConfirmedCodeMapping).where(
+            models.ConfirmedCodeMapping.organization_id == organization_id,
+            models.ConfirmedCodeMapping.identity_id == identity_id,
+            models.ConfirmedCodeMapping.code == key,
+            models.ConfirmedCodeMapping.active.is_(True))).first()
+    if current is not None and current.target_record_id == target_record_id:
+        return current
+
+    row = models.ConfirmedCodeMapping(
+        organization_id=organization_id, identity_id=identity_id, code=key,
+        target_record_id=target_record_id, relationship=relationship,
+        source_ref=source_ref[:255], confirmed_by_user_id=user_id)
+    session.add(row)
+    session.flush()                     # the new row needs its id below
+    if current is not None:
+        current.active = False
+        current.superseded_by = row.mapping_id
+        # Flushed too, not left pending until the caller happens to commit:
+        # otherwise anything reading in this same session — `OrgMappingStore`
+        # being built for the next line of the same quote — still sees the old
+        # mapping as active and resolves to the record just corrected.
+        session.flush()
+    record_event(session, organization_id, entity_type=CUSTOMER,
+                 identity_id=identity_id, action="CODE_MAPPING_CONFIRMED",
+                 actor=user_id or "SYSTEM",
+                 detail=f"{key} -> {target_record_id} ({source_ref})")
+    return row
+
+
+def active_code_mappings(session: Session, organization_id: str
+                         ) -> list[models.ConfirmedCodeMapping]:
+    return list(session.scalars(
+        select(models.ConfirmedCodeMapping).where(
+            models.ConfirmedCodeMapping.organization_id == organization_id,
+            models.ConfirmedCodeMapping.active.is_(True))))

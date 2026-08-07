@@ -82,6 +82,21 @@ def _split_rfq(text: str) -> List[Dict[str, Any]]:
     return rows
 
 
+def _identity_candidate(res: Resolution) -> Optional[str]:
+    """The record the engine proposed as this line's identity, if it did.
+
+    Narrow on purpose. It is only the unconfirmed cross-namespace proposal —
+    "this customer's code is probably MM# X, confirm it" — which pie-parser
+    returns as NEEDS_REVIEW with exactly one candidate. Selecting that code is
+    a person answering the question the engine asked, and worth remembering
+    forever. Selecting anything else is a substitution on one quote, which is
+    not a fact about what the customer's code means.
+    """
+    if res.outcome != "NEEDS_REVIEW" or len(res.candidates) != 1:
+        return None
+    return res.candidates[0].code
+
+
 @dataclass
 class Line:
     id: str
@@ -95,6 +110,17 @@ class Line:
     outcome: str
     semantics: str
     notes: List[str] = field(default_factory=list)
+    #: The identity this line was resolved under, if the customer is linked.
+    #: Remembered rather than re-derived, so a confirmation is filed under the
+    #: same scope the question was asked in even if the quote is re-pointed at
+    #: another customer afterwards.
+    customerScope: Optional[str] = None
+    #: The record the engine proposed as this line's identity but declined to
+    #: assert — "your code probably means this; confirm it". Selecting exactly
+    #: this code is a confirmation of the proposal, which is a fact worth
+    #: keeping; selecting anything else is a substitution on one quote, which
+    #: is not. See store.select_supply.
+    identityCandidate: Optional[str] = None
     # supply selection
     sel: str = "AUTO"                 # AUTO | USER | MANUAL
     # zoho-derived
@@ -274,10 +300,12 @@ class QuoteStore:
     # ── line construction ────────────────────────────────────────────────────
     def build_lines(self, rows: List[Dict[str, Any]], zoho: ZohoService,
                     customer_scope: Optional[str] = None,
-                    bands: Optional[Bands] = None) -> List[Line]:
+                    bands: Optional[Bands] = None,
+                    mapping_store: Any = None) -> List[Line]:
         lines: List[Line] = []
         for row in rows:
-            res: Resolution = pie_service.resolve(row["code"], customer_scope, bands)
+            res: Resolution = pie_service.resolve(row["code"], customer_scope, bands,
+                                                  mapping_store)
             ln = Line(
                 id=f"l{next(_ids)}",
                 raw=row["raw"],
@@ -290,6 +318,8 @@ class QuoteStore:
                 outcome=res.outcome,
                 semantics=res.semantics,
                 notes=res.notes,
+                customerScope=customer_scope,
+                identityCandidate=_identity_candidate(res),
                 service="PIE" if res.pie_offline else None,
             )
             self._enrich_from_zoho(ln, zoho)
@@ -298,7 +328,8 @@ class QuoteStore:
 
     def add_rfq(self, quote: Quote, text: str, zoho: ZohoService,
                 customer_scope: Optional[str] = None,
-                bands: Optional[Bands] = None) -> List[Line]:
+                bands: Optional[Bands] = None,
+                mapping_store: Any = None) -> List[Line]:
         """``customer_scope`` is the customer's cross-connector identity.
 
         It arrives as an opaque string rather than being looked up here: this
@@ -307,7 +338,7 @@ class QuoteStore:
         would be the first crack in that.
         """
         rows = _split_rfq(text)
-        new = self.build_lines(rows, zoho, customer_scope, bands)
+        new = self.build_lines(rows, zoho, customer_scope, bands, mapping_store)
         with self._lock:
             quote.lines.extend(new)
         return new

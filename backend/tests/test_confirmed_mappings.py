@@ -1,0 +1,166 @@
+"""Confirming a customer's code, once, and never being asked again.
+
+The loop: pie-parser proposes "your 7781 is probably MM# X" and refuses to
+assert it (identity/resolver.py); a person confirms by selecting exactly that
+record; the confirmation is recorded here; the next resolution answers
+authoritatively without asking. Before this the confirmation was made on the
+quote screen and discarded, so the question came back every quarter.
+"""
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+import pytest
+
+# pie-parser's own `identity` package, which app.pie_service puts on sys.path
+# when it loads the engine. These tests assert against the engine's key shape
+# without paying for a catalogue load, so they add it directly.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "pie-parser"))
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+from app.db import Base
+from app.domain import models
+from app.identity import service as identity_service
+from app.identity.mapping_store import OrgMappingStore
+
+ORG = "org_test"
+IDENTITY = "identity-pitti"
+
+
+@pytest.fixture()
+def session():
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)          # a fixture, per CLAUDE.md §4
+    s = sessionmaker(bind=engine)()
+    yield s
+    s.close()
+
+
+def _confirm(session, code="7781", target="2001174", **kw):
+    return identity_service.confirm_code_mapping(
+        session, ORG, identity_id=IDENTITY, code=code,
+        target_record_id=target, source_ref="quote q1 line l1",
+        user_id="u1", **kw)
+
+
+def test_a_confirmation_is_recorded_and_auditable(session):
+    row = _confirm(session)
+    assert row is not None
+    assert row.code == "7781" and row.target_record_id == "2001174"
+    assert row.active is True
+
+    # The identity layer's own audit trail carries it too — a wrong mapping has
+    # to be traceable to the moment somebody made it.
+    events = session.query(models.IdentityEvent).all()
+    assert [e.action for e in events] == ["CODE_MAPPING_CONFIRMED"]
+    assert "2001174" in events[0].detail
+
+
+def test_confirming_the_same_thing_twice_does_not_stack(session):
+    first = _confirm(session)
+    again = _confirm(session)
+    assert again.mapping_id == first.mapping_id
+    assert session.query(models.ConfirmedCodeMapping).count() == 1
+
+
+def test_a_correction_supersedes_rather_than_overwrites(session):
+    first = _confirm(session, target="2001174")
+    second = _confirm(session, target="6739214")
+
+    session.refresh(first)
+    assert first.active is False and first.superseded_by == second.mapping_id
+    assert second.active is True
+    # The old row survives: a quote sent under it must stay explainable.
+    assert first.target_record_id == "2001174"
+
+
+def test_the_code_is_normalized_the_way_the_engine_normalizes_it(session):
+    _confirm(session, code="  7781-a  ")
+    row = session.query(models.ConfirmedCodeMapping).one()
+    # Trimmed and upper-cased, punctuation intact — stripping the dash would
+    # merge two genuinely different part numbers.
+    assert row.code == "7781-A"
+
+
+def test_nothing_is_recorded_without_a_scope(session):
+    assert identity_service.confirm_code_mapping(
+        session, ORG, identity_id="", code="7781",
+        target_record_id="2001174") is None
+    assert session.query(models.ConfirmedCodeMapping).count() == 0
+
+
+# ── what the engine actually reads ──────────────────────────────────────────
+
+def test_the_store_answers_in_the_engine_s_own_key_shape(session):
+    from identity.model import Namespace, ScopedIdentifier
+
+    _confirm(session)
+    store = OrgMappingStore(session, ORG)
+    assert len(store) == 1
+
+    hit = store.lookup(ScopedIdentifier(Namespace.CUSTOMER_ITEM, "7781", IDENTITY))
+    assert hit is not None and hit.target_record_id == "2001174"
+
+    # A different customer's identical code is a different key — this is the
+    # whole reason the namespace is scoped.
+    assert store.lookup(
+        ScopedIdentifier(Namespace.CUSTOMER_ITEM, "7781", "identity-other")) is None
+    assert store.lookup(
+        ScopedIdentifier(Namespace.CUSTOMER_ITEM, "9999", IDENTITY)) is None
+
+
+def test_a_superseded_mapping_is_not_served(session):
+    _confirm(session, target="2001174")
+    _confirm(session, target="6739214")
+    store = OrgMappingStore(session, ORG)
+    assert len(store) == 1
+
+    from identity.model import Namespace, ScopedIdentifier
+    hit = store.lookup(ScopedIdentifier(Namespace.CUSTOMER_ITEM, "7781", IDENTITY))
+    assert hit.target_record_id == "6739214"
+
+
+def test_mappings_do_not_leak_between_organizations(session):
+    _confirm(session)
+    assert len(OrgMappingStore(session, "org_other")) == 0
+
+
+# ── the loop, end to end through the real engine ────────────────────────────
+
+def test_a_confirmed_mapping_changes_what_the_engine_resolves(session):
+    """The point of all of it: confirm once, resolve authoritatively after.
+
+    Runs the real pie-parser against the real catalogue, so this asserts the
+    portal's store is actually reachable from inside the engine — not that the
+    two halves look compatible.
+    """
+    from app.pie_service import pie_service
+
+    CODE = "PITTI-77-XY"          # the customer's own code; not in the catalogue
+
+    # Before: the customer's code means nothing to anyone.
+    before = pie_service.resolve(CODE, IDENTITY, None, OrgMappingStore(session, ORG))
+    assert before.rel == "UNRESOLVED"
+    assert before.supplyCode is None
+
+    _confirm(session, code=CODE, target="2001174")
+
+    after = pie_service.resolve(CODE, IDENTITY, None, OrgMappingStore(session, ORG))
+    assert after.rel == "EXACT", "a confirmed mapping must resolve authoritatively"
+    assert after.supplyCode == "2001174"
+    assert after.outcome == "AUTO_MATCH"
+
+
+def test_one_customer_s_confirmation_does_not_answer_for_another(session):
+    """The namespace rule, proven end to end rather than by construction."""
+    from app.pie_service import pie_service
+
+    CODE = "PITTI-77-XY"
+    _confirm(session, code=CODE, target="2001174")
+    store = OrgMappingStore(session, ORG)
+
+    assert pie_service.resolve(CODE, IDENTITY, None, store).supplyCode == "2001174"
+    # Same code, a different real-world customer: still unknown.
+    assert pie_service.resolve(CODE, "identity-someone-else", None, store).rel == "UNRESOLVED"

@@ -45,6 +45,7 @@ def test_auth_required():
     assert client.get("/api/quotes/nope").status_code == 401
 
 
+@pytest.mark.requires_pie
 def test_intake_builds_resolution_grid(mgmt_hdr):
     q = client.post("/api/quotes", json={"customer": "Pitti Engineering"}, headers=mgmt_hdr).json()
     qid = q["id"]
@@ -76,6 +77,7 @@ def test_economics_are_role_gated(sales_hdr, mgmt_hdr):
     assert "cost" in mline["economics"]
 
 
+@pytest.mark.requires_pie
 def test_supply_selection_and_pricing(mgmt_hdr):
     q = client.post("/api/quotes", json={"customer": "Pitti"}, headers=mgmt_hdr).json()
     qid = q["id"]
@@ -121,6 +123,7 @@ def _clean_quote(hdr) -> str:
     return qid
 
 
+@pytest.mark.requires_pie
 def test_sending_a_quote_requires_a_platform_identity_when_approvals_are_on(mgmt_hdr):
     """The Quote Builder's own login carries no organization, so it cannot be
     checked against an approval queue. Sending without the platform token would
@@ -131,6 +134,7 @@ def test_sending_a_quote_requires_a_platform_identity_when_approvals_are_on(mgmt
     assert "Decisions platform" in r.json()["detail"]
 
 
+@pytest.mark.requires_pie
 def test_estimate_created_when_clean_and_nothing_needs_approval(mgmt_hdr):
     """With a platform identity and no line requiring approval, the gate opens.
 

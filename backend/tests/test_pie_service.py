@@ -1,7 +1,12 @@
 """The pie-parser integration: real resolution mapped to portal relationships."""
 from __future__ import annotations
 
+import pytest
+
 from app.pie_service import pie_service
+
+# Every test here resolves through the real engine against the real catalogue.
+pytestmark = pytest.mark.requires_pie
 
 
 def test_exact_identity_resolves_to_exact():

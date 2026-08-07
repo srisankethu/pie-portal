@@ -1,24 +1,23 @@
 # The gate from CLAUDE.md §6, run by a machine instead of by memory.
 #
-# It calls ./scripts/verify.sh rather than restating the steps, and that change
-# is the point of this file's current shape. The previous version listed the
-# checks itself, which made it a second source of truth beside CLAUDE.md §6.
-# The two drifted, and the drift was invisible:
+# The checks themselves live in ./scripts/verify.sh, which `make verify` also
+# runs. That is deliberate: this file used to restate what CLAUDE.md §6 told a
+# person to run, the two lists drifted, and the drift was invisible for eight
+# consecutive merges to main — CI installed ruff unpinned and reported 1314
+# errors against an unchanged tree, and because lint ran before pytest in one
+# job the 1174-test suite was skipped every run. One list, run from both places.
 #
-#   * `pip install ... ruff`, unpinned, resolved to a release with a broader
-#     default rule set. 1314 lint errors, no code change behind them. Because
-#     lint and pytest were steps in ONE job, the 1174-test backend suite was
-#     skipped every run.
-#   * The workflow never fetched pie-parser, which the app imports in-process.
-#     All 25 migration-integrity tests died at collection with "PIE corpus not
-#     found" — so the drift check that CLAUDE.md §4 exists to protect, the one
-#     written after the schema and models diverged in 130 places, had never
-#     actually executed.
+# Four jobs, and the split is on a real axis rather than a cosmetic one:
 #
-# Both went unnoticed for eight consecutive merges to main, because a check that
-# is always red is a check nobody reads. One list, in the script, run from both
-# places — and the script fails loudly and early when its inputs are missing
-# rather than producing twenty-five confusing collection errors.
+#   invariants / frontend  fast, and independent of the pie-parser engine, so
+#                          they keep giving signal whatever happens to it. They
+#                          repeat a check `verify` also runs; that duplication
+#                          is the point, and `verify` stays complete regardless.
+#   verify                 the whole gate, including `alembic upgrade head` on an
+#                          EMPTY database — the check §4 was written about, and
+#                          the one nobody runs on an already-migrated laptop.
+#   pie-contract           the only job that needs a credential, so a missing
+#                          one costs the seam and nothing else.
 name: gate
 
 on:
@@ -26,8 +25,9 @@ on:
   push:
     branches: [main]
 
-# A second push to the same branch supersedes the first. The gate is a statement
-# about the head commit, so testing an overtaken one is spend with no reader.
+# A second push to the same branch supersedes the first. The gate is a
+# statement about the head commit, so testing an overtaken one is spend with no
+# reader.
 concurrency:
   group: gate-${{ github.ref }}
   cancel-in-progress: true
@@ -36,15 +36,15 @@ permissions:
   contents: read
 
 jobs:
-  # Seconds, and it gives an instant legible signal on the rule that makes every
-  # number auditable. `verify` below re-runs it as part of the whole gate; this
-  # exists so the common catastrophic mistake names itself in the checks list
-  # without waiting four minutes.
   invariants:
     name: §1 invariants
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # The two greps CLAUDE.md §1 tells a human to run. `test_layer_boundaries`
+      # covers the same ground by parsing imports, and is the check that blocks
+      # — this runs anyway because it is seconds, and because a failure here is
+      # legible without reading a traceback.
       - name: Deterministic layers must not import ai/
         run: |
           if grep -rnE '^\s*(from|import)\s+\.*\.?ai[. ]' \
@@ -62,19 +62,6 @@ jobs:
             exit 1
           fi
 
-  # The frontend needs neither Python nor pie-parser, so it is checked on its own
-  # rather than behind the pie-parser clone that `verify` depends on. Without
-  # this, a credential problem in a *different repository* takes the TypeScript
-  # build's signal with it — which is what happened on the first run of this
-  # workflow, when the PIE_PARSER_TOKEN secret did not exist yet.
-  #
-  # This deliberately duplicates step 4 of scripts/verify.sh, on the same
-  # reasoning as the `invariants` job above: a fast, independent, self-naming
-  # signal is worth one repeated command. `verify` remains authoritative and
-  # still runs the build itself — do NOT "simplify" this by removing the
-  # frontend step from verify.sh, because a developer running `make verify`
-  # locally must get the whole gate from that one command. The duplication is
-  # the point; the *checks* are not allowed to differ.
   frontend:
     name: frontend — types + build
     runs-on: ubuntu-latest
@@ -96,6 +83,16 @@ jobs:
         working-directory: frontend
         run: npm run build
 
+  # The check that would have caught the pin skew. pie-parser is vendored as a
+  # submodule, so the commit this repo resolves against is a line in the index —
+  # but a pin that nothing executes is a pin nobody has tested. Moving it used
+  # to be verified by hand, and the last move was made *because* the previous
+  # commit made every scoped line resolve to nothing at all, which is exactly
+  # the kind of failure a green build should not survive.
+  #
+  # Deliberately its own job rather than steps inside `backend`: the seam is
+  # what this proves, and a failure here should name the engine rather than
+  # hide behind an unrelated lint or unit failure.
   verify:
     name: verify — lint, tests, frontend, migrations
     runs-on: ubuntu-latest
@@ -105,102 +102,6 @@ jobs:
       # correctly; bumping to the Node 24 majors is a separate one-line change
       # that should be made once and watched go green, not bundled in here.
       - uses: actions/checkout@v4
-
-      # pie-portal imports pie-parser in-process (backend/app/pie_service.py)
-      # from a pinned clone. Fetching it is the step that was MISSING, and its
-      # absence is why the migrations job failed 25 tests while appearing to be
-      # about migrations.
-      #
-      # pie-parser is private, and the automatic GITHUB_TOKEN is scoped to this
-      # repository only, so a token that can read pie-parser is required.
-      #
-      # This probe runs BEFORE the checkout because `actions/checkout` reports
-      # every one of "no secret", "wrong scope", "expired", "not approved" as the
-      # same 404 after three retries. That is a failure that does not name its
-      # cause, which is the thing this whole gate exists to stop. Distinguishing
-      # them here costs one API call.
-      #
-      # The token is never printed. Only the HTTP status is, and Actions masks
-      # secret values in logs regardless.
-      - name: check the pie-parser credential before using it
-        id: cred
-        env:
-          TOKEN: ${{ secrets.PIE_PARSER_TOKEN }}
-          # Only the KEYS of this are printed, via `jq -r 'keys[]'`. Never the
-          # values. Actions masks secret values in logs anyway, but printing
-          # names only means there is nothing to mask in the first place.
-          #
-          # This exists because the previous version of this step could say the
-          # token was not visible but not say why, so the same fix got tried
-          # twice. A diagnostic that cannot distinguish its causes is the thing
-          # this gate was built to stop.
-          SECRET_NAMES: ${{ toJSON(secrets) }}
-        run: |
-          if [ -z "$TOKEN" ]; then
-            echo "PIE_PARSER_TOKEN is not visible to this workflow run."
-            echo ""
-            echo "Secret names this job CAN see:"
-            printf '%s' "$SECRET_NAMES" | jq -r 'keys[]' | sed 's/^/  - /'
-            echo ""
-            echo "Absent from that list => it is not a REPOSITORY secret on"
-            echo "srisankethu/pie-portal. The two ways it can exist and still not"
-            echo "appear here:"
-            echo "  * an ENVIRONMENT secret. Those resolve only for a job that"
-            echo "    declares 'environment:', which this one does not. They sit"
-            echo "    in a separate section of the same settings page."
-            echo "  * a secret on another repository. Secrets never cross repos,"
-            echo "    so one on pie-parser cannot be read from pie-portal."
-            echo "Present in the list => it exists with an empty value; re-enter it."
-            echo ""
-            echo "::error::PIE_PARSER_TOKEN is not readable by this job. See the"
-            echo "::error::secret-name list above for which of the two cases it is."
-            exit 1
-          fi
-          CODE=$(curl -sS -o /dev/null -w '%{http_code}' \
-            -H "Authorization: Bearer $TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            https://api.github.com/repos/srisankethu/pie-parser || echo 000)
-          echo "PIE_PARSER_TOKEN is set. GET /repos/srisankethu/pie-parser -> HTTP $CODE"
-          case "$CODE" in
-            200) echo "The token can read pie-parser." ;;
-            404)
-              echo "::error::The token is set but cannot see srisankethu/pie-parser."
-              echo "::error::A fine-grained PAT returns 404 (not 403) when the"
-              echo "::error::repository is not in its selected list. Check all three:"
-              echo "::error::  1. Repository access explicitly includes pie-parser"
-              echo "::error::  2. Repository permissions -> Contents: Read-only"
-              echo "::error::  3. The token has not expired"
-              exit 1 ;;
-            401)
-              echo "::error::The token was rejected (401) — expired or revoked."
-              exit 1 ;;
-            *)
-              echo "::error::Unexpected HTTP $CODE from the GitHub API. If this is"
-              echo "::error::5xx or 000 it is likely transient; re-run the job."
-              exit 1 ;;
-          esac
-
-      - name: fetch pie-parser at the pinned commit
-        uses: actions/checkout@v4
-        with:
-          repository: srisankethu/pie-parser
-          token: ${{ secrets.PIE_PARSER_TOKEN }}
-          path: pie-parser
-          # The pin lives in scripts/setup_pie_parser.sh, which is the single
-          # place it is recorded. Checking out the default branch here and moving
-          # to the pin below keeps that true rather than copying the SHA into a
-          # second file that would then need updating twice.
-          fetch-depth: 0
-
-      - name: move pie-parser to the pinned commit
-        run: |
-          PIN=$(grep -oE '^PIN="[0-9a-f]+"' scripts/setup_pie_parser.sh | cut -d'"' -f2)
-          if [ -z "$PIN" ]; then
-            echo "::error::Could not read PIN from scripts/setup_pie_parser.sh"
-            exit 1
-          fi
-          git -C pie-parser checkout -q "$PIN"
-          echo "pie-parser at $PIN"
 
       - uses: actions/setup-python@v5
         with:
@@ -214,31 +115,118 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
-      # requirements-dev.txt pins ruff, pytest, pytest-xdist and cffi exactly.
-      # Installing the linter unpinned is what broke this gate; see the header of
-      # ruff.toml. cffi is here because without it Debian's `cryptography` panics
-      # at import and takes 22 test modules with it.
+      # requirements-dev.txt pins ruff, pytest, pytest-xdist and cffi exactly,
+      # and ruff.toml writes the rule set down. Both halves are needed: a pinned
+      # version with implicit rules breaks on the next bump, and a written rule
+      # can still change meaning between versions. cffi is here because without
+      # it Debian's `cryptography` panics at import and takes 22 test modules
+      # with it at collection.
       - name: install pinned tooling
         run: python -m pip install -r backend/requirements-dev.txt
 
       - name: install frontend dependencies
         working-directory: frontend
-        # The browsers are not needed to typecheck or build, and downloading them
-        # on every run is minutes for nothing.
+        # The browsers are not needed to typecheck or build, and downloading
+        # them on every run is minutes for nothing.
         env:
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
         run: npm ci
 
-      # The same script a developer runs. Lint, §1 invariants, the full backend
+      # The same script a developer runs. Lint, the §1 invariants, the backend
       # suite (parallel, per-worker databases), the frontend production build,
       # and `alembic upgrade head` on an EMPTY database plus the drift test and
       # the single-head check.
       #
+      # The pie-parser submodule is deliberately NOT fetched here. Without the
+      # engine, conftest skips the `requires_pie` tests and everything else runs
+      # — so this job needs no credential and cannot be held hostage by one.
+      # The seam those tests cover is the `pie-contract` job's whole purpose.
+      #
       # verify.sh runs every check and reports all failures at the end rather
-      # than stopping at the first, so one red build tells you everything that is
-      # wrong — not just the earliest thing. That is the specific behaviour whose
-      # absence hid the test suite behind a lint failure.
+      # than stopping at the first, so one red build names everything that is
+      # wrong — the specific behaviour whose absence hid the suite behind lint.
       - name: verify
-        env:
-          PIE_PARSER_ROOT: ${{ github.workspace }}/pie-parser
         run: ./scripts/verify.sh
+
+  pie-contract:
+    name: pie-parser contract — the pinned engine still resolves
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # pie-parser is a private repository, and the default GITHUB_TOKEN is
+      # scoped to *this* one, so it cannot fetch the submodule. Rather than
+      # fail a build for a missing credential, report clearly that the seam is
+      # unverified and let the rest of the gate stand — a red check nobody can
+      # fix is a check people learn to ignore.
+      - name: Can CI reach the engine?
+        id: reachable
+        env:
+          PIE_PARSER_TOKEN: ${{ secrets.PIE_PARSER_TOKEN }}
+        run: |
+          # The pin, read out of this repo's index — exact, and available
+          # before the submodule is fetched (or when it never is).
+          echo "pin=$(git rev-parse HEAD:pie-parser)" >> "$GITHUB_OUTPUT"
+          if [ -z "${PIE_PARSER_TOKEN}" ]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=pie-parser contract not verified::\
+          No PIE_PARSER_TOKEN secret, so the pinned engine was not fetched and \
+          the seam is untested on this run. Add a token with read access to \
+          srisankethu/pie-parser (Settings -> Secrets -> Actions) to enable it."
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Fetch pie-parser at the pinned commit
+        if: steps.reachable.outputs.enabled == 'true'
+        env:
+          PIE_PARSER_TOKEN: ${{ secrets.PIE_PARSER_TOKEN }}
+        run: |
+          git config --global url."https://x-access-token:${PIE_PARSER_TOKEN}@github.com/".insteadOf "https://github.com/"
+          git submodule update --init --recursive pie-parser
+          echo "pinned at $(git -C pie-parser rev-parse HEAD)"
+
+      - uses: actions/setup-python@v5
+        if: steps.reachable.outputs.enabled == 'true'
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - name: install
+        if: steps.reachable.outputs.enabled == 'true'
+        run: pip install -r backend/requirements.txt
+
+      # The catalogue is ~13 MB decoded from the corpus and is a pure function
+      # of the pinned commit, so it is cached against exactly that — a pin move
+      # invalidates it, which is the one time it must be rebuilt.
+      - name: Cache the decoded catalogue
+        if: steps.reachable.outputs.enabled == 'true'
+        uses: actions/cache@v4
+        with:
+          path: backend/data/products.jsonl
+          key: pie-catalog-${{ steps.reachable.outputs.pin }}
+
+      # Selected by marker, not by a list of files: `requires_pie` is already
+      # how conftest decides what to skip without an engine, so the set this
+      # runs is by construction exactly the set the `backend` job could not
+      # cover. A new engine-backed test is picked up by marking it, and a file
+      # list here could not go stale because there isn't one.
+      - name: The engine resolves what the portal expects
+        if: steps.reachable.outputs.enabled == 'true'
+        working-directory: backend
+        run: python -m pytest -q -m requires_pie tests
+
+      # A marker that selects nothing means the seam is no longer covered —
+      # most likely someone removed the last marked test, which should be a
+      # deliberate act rather than a quietly green job.
+      - name: The contract must actually cover something
+        if: steps.reachable.outputs.enabled == 'true'
+        working-directory: backend
+        run: |
+          n=$(python -m pytest -q -m requires_pie --collect-only tests 2>/dev/null \
+              | grep -c '::' || true)
+          echo "engine-backed tests: $n"
+          if [ "$n" -eq 0 ]; then
+            echo "::error::No tests are marked requires_pie — the pinned engine is untested."
+            exit 1
+          fi

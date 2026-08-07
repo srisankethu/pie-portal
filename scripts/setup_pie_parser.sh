@@ -1,76 +1,40 @@
 #!/usr/bin/env bash
-# Fetch the pie-parser Product Intelligence Engine at the pinned commit.
+# Fetch the pie-parser Product Intelligence Engine at the commit this repo pins.
 #
-# pie-portal integrates pie-parser by importing it in-process (see
-# backend/app/pie_service.py). It is fetched into ./pie-parser at a pinned
-# commit rather than committed into this repo, so the integration always builds
-# against a known-good engine revision. Override the location with
-# PIE_PARSER_ROOT if you already have a checkout elsewhere.
+# pie-parser is a git submodule at ./pie-parser, so the pin lives in this
+# repository's index rather than in a variable in this file. `git diff` shows a
+# pin change as a one-line "Subproject commit ..." edit, and moving the pin is a
+# reviewable commit instead of an edit to a shell string nobody diffs.
 #
-# pie-parser is a PRIVATE repo, so cloning needs GitHub auth. This script tries
-# HTTPS first and falls back to SSH automatically; if both fail it prints exactly
-# how to authenticate rather than failing silently.
+# This script exists only to turn git's submodule auth failure — which is
+# terse and does not mention that the repository is private — into something
+# actionable. If it ever stops earning that, delete it and document
+# `git submodule update --init` instead.
+#
+# Already have pie-parser checked out elsewhere? Skip this and point the app at
+# it: export PIE_PARSER_ROOT=/path/to/pie-parser
 set -uo pipefail
 
-# pie-parser master. Moved from 0f17d49 for the scoped-source fix: passing a
-# customer identity into resolution REQUIRES it, because against the previous
-# pin naming a customer made every scoped line resolve to nothing at all.
-PIN="7d1a76d7ecb01c3d95148f56017bdf6ed6dc50b2"
-DEST="${1:-$(cd "$(dirname "$0")/.." && pwd)/pie-parser}"
-HTTPS_REMOTE="https://github.com/srisankethu/pie-parser.git"
-SSH_REMOTE="git@github.com:srisankethu/pie-parser.git"
+cd "$(dirname "$0")/.."
 
-die() { echo "error: $*" >&2; exit 1; }
-
-# Already checked out? Just move it to the pinned commit and exit.
-if [ -d "$DEST/.git" ]; then
-  echo "pie-parser already present at $DEST"
-  git -C "$DEST" fetch --depth 1 origin "$PIN" 2>/dev/null || true
-  if git -C "$DEST" checkout -q "$PIN" 2>/dev/null; then
-    echo "pie-parser checked out at $PIN"
-  else
-    echo "note: could not check out pinned commit $PIN (using existing checkout)"
-  fi
+if git submodule update --init --recursive pie-parser; then
+  echo "pie-parser at $(git -C pie-parser rev-parse --short HEAD) (the pinned commit)"
   exit 0
 fi
 
-# A leftover, non-git directory would make `git clone` refuse. Catch it clearly.
-if [ -e "$DEST" ] && [ -n "$(ls -A "$DEST" 2>/dev/null)" ]; then
-  die "$DEST already exists and is not a pie-parser checkout.
-  Remove it and re-run:  rm -rf \"$DEST\" && $0"
-fi
+cat >&2 <<'EOF'
 
-clone_from() {  # $1 = remote url
-  echo "Cloning pie-parser from $1 ..."
-  git clone "$1" "$DEST" 2>&1
-}
+error: could not fetch the pie-parser submodule.
 
-if clone_from "$HTTPS_REMOTE"; then
-  :
-else
-  echo ""
-  echo "HTTPS clone failed (pie-parser is private — this is usually auth)."
-  echo "Trying SSH ..."
-  rm -rf "$DEST"
-  if ! clone_from "$SSH_REMOTE"; then
-    cat >&2 <<EOF
+pie-parser is a PRIVATE repository, so this needs GitHub credentials. Pick one:
 
-error: could not clone pie-parser over HTTPS or SSH.
+  1. GitHub CLI (HTTPS):  gh auth login          # GitHub.com -> HTTPS
+  2. A Personal Access Token (repo scope) via git's credential helper.
+  3. SSH — rewrite the HTTPS remote once, globally:
+       git config --global url."git@github.com:".insteadOf "https://github.com/"
+     then re-run this script.
 
-pie-parser is a private repository, so you need GitHub credentials. Pick one:
-
-  1. GitHub CLI (HTTPS):   gh auth login      # GitHub.com -> HTTPS
-  2. A Personal Access Token via git's credential helper (repo scope).
-  3. SSH: add your key to GitHub, then re-run this script.
-
-Already have pie-parser cloned elsewhere? Skip this script and point the app at it:
+Already have pie-parser cloned elsewhere? Skip this script entirely:
   export PIE_PARSER_ROOT=/path/to/pie-parser
 EOF
-    exit 1
-  fi
-fi
-
-if ! git -C "$DEST" checkout -q "$PIN"; then
-  die "cloned pie-parser but could not check out pinned commit $PIN"
-fi
-echo "pie-parser checked out at $PIN"
+exit 1

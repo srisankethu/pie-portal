@@ -5,8 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
-    "preview": "vite preview"
+    "build": "tsc -b && node scripts/check-forms.mjs && vite build",
+    "preview": "vite preview",
+    "check:forms": "node scripts/check-forms.mjs"
   },
   "dependencies": {
     "@casl/ability": "^7.0.1",

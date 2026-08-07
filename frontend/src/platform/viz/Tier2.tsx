@@ -17,7 +17,7 @@
 // is easier than tracking seven bands through a stack. The question ("did the
 // mix change?") is answered better, not merely differently.
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { scaleLinear, scaleSqrt } from "d3-scale";
 import { MonthPicker, Seg } from "./Seg";
 import { money } from "../../money";
@@ -67,7 +67,18 @@ export function LandscapeScreen({
     [session.token, subject, measure]);
   const [ref, room] = useMeasure<HTMLDivElement>();
 
-  const points = (data?.points as Record<string, unknown>[] | undefined) ?? [];
+  const all = (data?.points as Record<string, unknown>[] | undefined) ?? [];
+  // Which quadrant the reader has narrowed to, if any.
+  //
+  // The counts above were readable and useless: "118 Fix first" names a set you
+  // could see the size of and could not find, because 800 points overlap into
+  // one mass at the left edge. Selecting a quadrant is the way in — the plot
+  // shows only those, the axis rescales to *their* range so they spread out,
+  // and the table opens beneath sorted by revenue. Cleared when the subject or
+  // measure changes, because the quadrants mean something else by then.
+  const [focus, setFocus] = useState<string | null>(null);
+  useEffect(() => { setFocus(null); }, [subject, measure]);
+  const points = focus ? all.filter((p) => String(p.quadrant) === focus) : all;
   const quadrants = (data?.quadrants as Record<string, Record<string, string>>) ?? {};
   const counts = (data?.counts as Record<string, number>) ?? {};
   const currency = String(data?.currency ?? "INR");
@@ -153,16 +164,32 @@ export function LandscapeScreen({
       {/* The quadrant legend is the point of the chart, so it leads rather than
           sitting under it as a key. Each is a job, with its own count. */}
       <ul className="quad-legend">
-        {["FIX_FIRST", "REVIEW", "PROTECT", "LEAVE"].map((q) => (
-          <li key={q} className={`quad quad-${QUADRANT_TONE[q]}`}>
-            <span className="quad-count">{counts[q] ?? 0}</span>
-            <span className="quad-body">
-              <strong>{quadrants[q]?.label ?? q}</strong>
-              <span className="viz-muted">{quadrants[q]?.meaning}</span>
-            </span>
-          </li>
-        ))}
+        {["FIX_FIRST", "REVIEW", "PROTECT", "LEAVE"].map((q) => {
+          const n = counts[q] ?? 0;
+          const on = focus === q;
+          return (
+            <li key={q} className={`quad quad-${QUADRANT_TONE[q]}${on ? " quad-on" : ""}`}>
+              <button type="button" className="quad-hit" aria-pressed={on}
+                      disabled={n === 0} onClick={() => setFocus(on ? null : q)}>
+                <span className="quad-count">{n}</span>
+                <span className="quad-body">
+                  <strong>{quadrants[q]?.label ?? q}</strong>
+                  <span className="viz-muted">{quadrants[q]?.meaning}</span>
+                </span>
+              </button>
+            </li>
+          );
+        })}
       </ul>
+
+      {focus && (
+        <p className="quad-focus">
+          Showing the <strong>{points.length}</strong>{" "}
+          {quadrants[focus]?.label ?? focus} of {all.length}. The axis is scaled
+          to these, so positions are not comparable with the whole book.{" "}
+          <InlineLink onClick={() => setFocus(null)}>Show everything</InlineLink>
+        </p>
+      )}
 
       <div ref={ref}>
         <Figure
@@ -170,6 +197,13 @@ export function LandscapeScreen({
           summary={points.map((p) =>
             `${p.label}${p.sublabel ? " / " + p.sublabel : ""}: ${money(Number(p.x))}, ${pct(p.y as number)}, ${quadrants[String(p.quadrant)]?.label}`,
           ).join("; ")}
+          // Open, and sorted by revenue, the moment a quadrant is selected:
+          // at that point the reader is not looking at a chart any more, they
+          // are working a list, and the largest money is where to start.
+          tableOpen={Boolean(focus)}
+          tableLabel={focus
+            ? `${points.length} ${quadrants[focus]?.label ?? focus}, largest first`
+            : "View as a table"}
           table={
             <table className="viz-table">
               <thead><tr>
@@ -178,7 +212,9 @@ export function LandscapeScreen({
                 <th scope="col">Quadrant</th>
               </tr></thead>
               <tbody>
-                {points.map((p, i) => (
+                {[...points]
+                  .sort((a, b) => Number(b.x) - Number(a.x))
+                  .map((p, i) => (
                   <tr key={i}>
                     <td>{String(p.label)}{p.sublabel ? ` / ${p.sublabel}` : ""}</td>
                     <td>{money(Number(p.x))}</td>
@@ -279,8 +315,17 @@ export function LandscapeScreen({
               {points.map((p, i) => {
                 const y = p.y == null ? null : Number(p.y);
                 const cy = y == null ? H - 12 : py(y);
+                // In Item mode a point is a product, and there is no product
+                // screen — so these dots did nothing at all when clicked, while
+                // looking identical to the ones that work. Stock is the item
+                // view this product already has: on hand, age, what it costs to
+                // hold, and the customers who buy it. Send them there focused
+                // on the item rather than leaving a dead control on the page.
                 const target = p.customer_id
-                  ? `customer/${String(p.customer_id)}` : null;
+                  ? `customer/${String(p.customer_id)}`
+                  : p.product_id
+                    ? `stock?item=${encodeURIComponent(String(p.product_id))}`
+                    : null;
                 return (
                   <g key={i} className={target ? "dot dot-clickable" : "dot"}
                      role={target ? "button" : undefined}

@@ -28,16 +28,24 @@ pass() { printf '\033[32mok\033[0m    %s\n' "$1"; }
 PY="${PYTHON:-python3}"
 
 # pie-parser is imported in-process (backend/app/pie_service.py) from a pinned
-# clone. Without it, every test module that reaches app.main dies at collection
-# with "PIE corpus not found" — which is precisely how the migrations job in CI
-# failed 25 tests at once while appearing to be about migrations.
+# submodule. Its absence is a *narrowing* of what this run proves, not a reason
+# to refuse to run: `backend/tests/conftest.py` skips the `requires_pie` tests
+# when the engine is missing, so everything else still executes.
+#
+# This used to be a hard stop, which was wrong in the way that matters — it let
+# one missing credential decide whether lint, 1174 tests and the migration check
+# ran at all. A red check nobody can fix is a check people learn to ignore.
+#
+# Skipped, never silently passed: the seam is covered by the `pie-contract` job,
+# which fetches the engine and runs exactly the marked set.
 export PIE_PARSER_ROOT="${PIE_PARSER_ROOT:-$REPO/pie-parser}"
-if [ ! -f "$PIE_PARSER_ROOT/corpora/kmt_zcnc_2026-07_nomenclature.csv" ]; then
-  printf '\033[31mpie-parser is not available at %s\033[0m\n' "$PIE_PARSER_ROOT"
-  printf 'Run ./scripts/setup_pie_parser.sh, or set PIE_PARSER_ROOT to a checkout.\n'
-  printf 'Nothing below can run without it, so this is a hard stop rather than\n'
-  printf 'twenty-five confusing collection errors.\n'
-  exit 1
+PIE_AVAILABLE=1
+if [ ! -f "$PIE_PARSER_ROOT/tools/resolve_rfq.py" ]; then
+  PIE_AVAILABLE=0
+  printf '\033[33mnote:\033[0m pie-parser is not checked out at %s\n' "$PIE_PARSER_ROOT"
+  printf '      The engine-backed tests will SKIP. Everything else still runs.\n'
+  printf '      To cover them: git submodule update --init pie-parser\n'
+  printf '      (or set PIE_PARSER_ROOT to an existing checkout).\n'
 fi
 
 # ── 1. Lint ──────────────────────────────────────────────────────────────────
@@ -144,7 +152,16 @@ if [ ${#FAILED[@]} -eq 0 ]; then
     # from "not run yet". Only a full run stamps: --fast skipped two checks, and
     # a stamp that lies is worse than no stamp.
     ./scripts/source_signature.sh > .verify-stamp 2>/dev/null || true
-    printf '\033[32mVERIFIED\033[0m — all checks passed.\n'
+    if [ "$PIE_AVAILABLE" = "0" ]; then
+      # Still stamped: the gate did run, and nagging a developer who simply has
+      # no submodule would train them to ignore the hook. But a narrowed run must
+      # never read as a full one, so the verdict says which part went uncovered.
+      printf '\033[32mVERIFIED\033[0m — all checks passed, \033[33mbut narrowed\033[0m:\n'
+      printf '      the engine-backed (requires_pie) tests were SKIPPED, because\n'
+      printf '      pie-parser is not checked out. CI covers them in pie-contract.\n'
+    else
+      printf '\033[32mVERIFIED\033[0m — all checks passed.\n'
+    fi
   fi
   exit 0
 fi

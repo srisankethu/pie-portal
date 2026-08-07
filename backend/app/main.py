@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import logging
 import os
+import uuid
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Response, status
+from fastapi import FastAPI, Request, Response, status
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import settings
@@ -114,6 +116,44 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="pie-portal — Sanketh Quote Builder", version="0.1.0", lifespan=lifespan)
+
+@app.exception_handler(Exception)
+async def unhandled_error(request: Request, exc: Exception) -> JSONResponse:
+    """Say what broke, and give the reader something to search the log for.
+
+    An unhandled error used to reach the browser as a bare "Internal Server
+    Error", which told nobody anything — so the client filled the silence by
+    naming the most plausible cause it could think of, and pointed at the
+    migration state. That is guessing dressed as diagnosis, and it sent an
+    operator to `/api/health` for an error that had nothing to do with the
+    schema. It reported CURRENT, correctly, and the actual failure stayed
+    invisible.
+
+    So: log the traceback with a short id, and return the same id with the
+    exception's *type*. The type is safe to show — `IntegrityError`,
+    `ZohoAuthError`, `KeyError` each send you somewhere different — while the
+    message may carry a row, a token or a name, and belongs in the log where
+    access is already controlled.
+    """
+    error_id = uuid.uuid4().hex[:8]
+    # noqa: LOG004 — ruff sees no syntactic `except` block here and assumes the
+    # traceback is unavailable. It is not: Starlette invokes exception handlers
+    # from inside its own `except`, so `sys.exc_info()` is set and `.exception()`
+    # logs the traceback correctly. Downgrading to `.error()` to satisfy the rule
+    # would drop the traceback — the exact silence the docstring above is about.
+    log.exception("unhandled error %s on %s %s",  # noqa: LOG004
+                  error_id, request.method, request.url.path)
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={
+            "detail": (f"{type(exc).__name__} while handling this request "
+                       f"(error {error_id}). The server log has the traceback; "
+                       f"search it for {error_id}."),
+            "error_id": error_id,
+            "error_type": type(exc).__name__,
+        },
+    )
+
 
 # Dev CORS: the Vite frontend runs on a separate origin during development.
 app.add_middleware(

@@ -1,5 +1,17 @@
-"""Test fixtures: point the app at the pinned pie-parser submodule, bring the
-schema up, and build a small catalogue — once for the whole session.
+"""Test fixtures: point the app at the pinned pie-parser submodule and build a
+small catalogue once for the whole session.
+
+pie-parser is a *private* submodule, so a checkout without access to it — CI's
+default token cannot fetch it — has no engine and no corpus to decode. That
+must cost only the tests that actually resolve a product code. It used to cost
+the entire suite: this fixture is session-scoped and autouse, so building the
+catalogue unconditionally meant a missing engine raised during setup for every
+one of the ~1180 tests, including the migration and schema tests whose own
+conftest says in as many words that they do not load pie-parser.
+
+So: the catalogue is built when the engine is there, and tests that need it are
+marked ``requires_pie`` and skip when it is not. Skipped, never silently
+passed — the `pie-contract` gate job fetches the engine and runs them for real.
 """
 from __future__ import annotations
 
@@ -13,32 +25,29 @@ BACKEND = Path(__file__).resolve().parents[1]
 REPO = BACKEND.parent
 sys.path.insert(0, str(BACKEND))
 
+# Ensure the app uses the vendored submodule + a test catalogue location.
+os.environ.setdefault("PIE_PARSER_ROOT", str(REPO / "pie-parser"))
+os.environ.setdefault("PIE_CATALOG", str(BACKEND / "data" / "products.jsonl"))
+
 # pie-parser's own packages (`identity`, `engine`, `resolver`) must be importable
 # by name, because a few tests import them directly rather than through
 # `app.pie_service`.
 #
 # They used to arrive by side effect: both `app/catalog.py` and `app/pie_service.py`
-# insert this path just before their own `from engine import ...`. That made the
-# suite's result depend on execution order, and on a *generated file* —
+# insert this path immediately before their own `from engine import ...`. That
+# made the result depend on execution order *and* on a generated file —
 # `ensure_catalog()` returns early when `products.jsonl` already exists, several
-# lines before it touches `sys.path`. So on a machine that had built the
-# catalogue, `tests/test_confirmed_mappings.py` failed with
-# `ModuleNotFoundError: No module named 'identity'`; on a clean one it passed.
-# Distributing the suite across xdist workers exposed the same thing.
+# lines before it touches `sys.path`. So with the engine present but the
+# catalogue already built, `test_confirmed_mappings` still failed with
+# `ModuleNotFoundError: No module named 'identity'`.
 #
-# Done here, once, unconditionally: the fixture below cannot do it, because
-# import-time failures in test modules happen before any fixture runs.
-_PIE_ROOT = os.environ.get("PIE_PARSER_ROOT") or str(REPO / "pie-parser")
+# The `requires_pie` marker below is about the engine being *absent*; this is the
+# separate case where it is present and merely unimportable. Both are needed.
+# Done at import time because a fixture cannot help — the failing import is
+# inside a test body, but nothing guarantees another test ran first.
+_PIE_ROOT = os.environ["PIE_PARSER_ROOT"]
 if _PIE_ROOT not in sys.path:
     sys.path.insert(0, _PIE_ROOT)
-
-# Ensure the app uses the vendored submodule + a test catalogue location.
-#
-# `setdefault`, not assignment: the migration suite and CI both supply their own
-# values, and overriding a deliberately-set variable is how a test ends up
-# proving something about the wrong database.
-os.environ.setdefault("PIE_PARSER_ROOT", str(REPO / "pie-parser"))
-os.environ.setdefault("PIE_CATALOG", str(BACKEND / "data" / "products.jsonl"))
 
 # Under pytest-xdist, give every worker its own database.
 #
@@ -52,9 +61,9 @@ os.environ.setdefault("PIE_CATALOG", str(BACKEND / "data" / "products.jsonl"))
 # settings object resolves DATABASE_URL once, on first import, and a later
 # assignment would be read by nothing.
 #
-# Serial runs are untouched, so `pytest tests` behaves exactly as before. Only
-# `-n` opts into the isolated path, which is also why the migration suite (which
-# passes its own explicit URLs) is unaffected either way.
+# Serial runs are untouched, so `pytest tests` behaves exactly as before; only
+# `-n` opts into the isolated path. The migration suite passes its own explicit
+# URLs and is unaffected either way.
 _WORKER = os.environ.get("PYTEST_XDIST_WORKER")
 if _WORKER:
     _worker_db = BACKEND / "data" / f"test_{_WORKER}.db"
@@ -63,28 +72,67 @@ if _WORKER:
     # one file, which is the failure this exists to prevent.
     os.environ["DATABASE_URL"] = f"sqlite:///{_worker_db}"
 
+#: Whether the engine is actually present. The orchestration entry point is the
+#: thing ``pie_service`` loads, so its absence is exactly what "no engine"
+#: means — a stale directory left by an interrupted fetch is not an engine.
+PIE_AVAILABLE = (Path(os.environ["PIE_PARSER_ROOT"]) / "tools" / "resolve_rfq.py").exists()
+
+_SKIP_REASON = (
+    "pie-parser is not checked out, so there is no engine to resolve against. "
+    "Fetch it with ./scripts/setup_pie_parser.sh, or set PIE_PARSER_ROOT."
+)
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    config.addinivalue_line(
+        "markers",
+        "requires_pie: needs the pie-parser engine; skipped when it is absent.",
+    )
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list) -> None:
+    if PIE_AVAILABLE:
+        return
+    skip = pytest.mark.skip(reason=_SKIP_REASON)
+    for item in items:
+        if "requires_pie" in item.keywords:
+            item.add_marker(skip)
+
 
 @pytest.fixture(scope="session", autouse=True)
-def _schema_and_catalog():
-    """Make the suite runnable from a fresh clone.
+def _catalog():
+    """Build the catalogue once (idempotent) so resolution tests have data.
 
-    Two session-scoped preconditions, in order. The catalogue was already here;
-    the schema was not, and its absence made the suite depend on whether somebody
-    had happened to run ``python -m app.bootstrap`` earlier. On a clean checkout
-    the two end-to-end quote tests failed with ``no such table: users`` — the
-    exact failure ``app/bootstrap.py`` was written to make impossible, reached by
-    the one path that never called it.
+    A no-op without the engine: the tests that would read it are already
+    skipped, and raising here would take the rest of the suite with it.
+    """
+    if not PIE_AVAILABLE:
+        return
+    from app.catalog import ensure_catalog
+    ensure_catalog()
 
-    ``TestClient(app)`` is constructed at module import time in several test
-    files rather than used as a context manager, so the app's lifespan never
-    runs and never bootstraps. Doing it here instead of changing those files
-    keeps the fix in one place.
 
-    ``bootstrap()`` is idempotent, so this is safe to re-run, and cheap when the
-    schema is already at head.
+@pytest.fixture(scope="session", autouse=True)
+def _platform_database():
+    """Create and seed the real database once, for the tests that drive the
+    real app rather than an in-memory fixture.
+
+    `test_quote_flow` and `test_db_concurrency` go through `app.main`, which
+    binds the configured engine at import and reads `backend/data/` — a
+    directory that is gitignored and therefore absent on any fresh checkout.
+    Nothing in the suite created it, so those tests passed only where somebody
+    had run `make bootstrap` by hand and failed everywhere else, CI included,
+    with `unable to open database file`.
+
+    The subtler one: without a database the approval gate has nothing to check
+    against, so `POST /estimate` answered 200 where the test demands 403. That
+    test exists because sending without a platform identity would otherwise be
+    the way around every approval in the product — it must never be able to
+    pass or fail for an incidental reason.
+
+    Alembic-only and idempotent, so this is `make bootstrap` rather than a
+    second schema path (CLAUDE.md §4 — never `create_all` outside a fixture,
+    and this is not one of those either).
     """
     from app.bootstrap import bootstrap
-    from app.catalog import ensure_catalog
-
     bootstrap()
-    ensure_catalog()

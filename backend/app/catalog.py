@@ -2,8 +2,8 @@
 
 The catalogue is ``products.jsonl`` produced by pie-parser's ``run_parser`` over
 the Kennametal/WIDIA nomenclature corpus. It is large (~13 MB) and deterministic,
-so it is gitignored and (re)built from the pinned pie-parser clone instead of
-being committed.
+so it is gitignored and (re)built from the pinned pie-parser submodule instead
+of being committed.
 """
 from __future__ import annotations
 

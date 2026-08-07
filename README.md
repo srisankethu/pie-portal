@@ -34,10 +34,10 @@ nothing, macOS/Linux and Windows, in about 15 minutes.
 Requires Python 3.11+ and Node 20+.
 
 ```bash
-git clone https://github.com/srisankethu/pie-portal
+git clone --recurse-submodules https://github.com/srisankethu/pie-portal
 cd pie-portal
 
-./scripts/setup_pie_parser.sh                        # PIE engine (private repo)
+./scripts/setup_pie_parser.sh                        # PIE engine (private submodule)
 python -m pip install -r backend/requirements.txt
 python scripts/build_catalog.py
 (cd frontend && npm install)

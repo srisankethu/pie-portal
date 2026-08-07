@@ -8,6 +8,11 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.seed import SEED_PASSWORD
 
+# Intake builds a resolution grid through pie-parser, so this flow needs the
+# pinned clone; the send/approval cases sign in through the platform identity
+# endpoints, which need a migrated and seeded database — see tests/conftest.py.
+pytestmark = pytest.mark.usefixtures("pie_catalog", "platform_db")
+
 client = TestClient(app)
 
 

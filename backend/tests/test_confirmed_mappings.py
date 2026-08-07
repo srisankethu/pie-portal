@@ -9,14 +9,21 @@ quote screen and discarded, so the question came back every quarter.
 from __future__ import annotations
 
 import sys
-from pathlib import Path
 
 import pytest
+
+from app.config import settings
 
 # pie-parser's own `identity` package, which app.pie_service puts on sys.path
 # when it loads the engine. These tests assert against the engine's key shape
 # without paying for a catalogue load, so they add it directly.
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "pie-parser"))
+#
+# Via settings, not a hardcoded `parents[2] / "pie-parser"`: the clone is only
+# nested for a developer who ran setup_pie_parser.sh, and PIE_PARSER_ROOT is
+# what points at it anywhere else (a sibling checkout, CI's clone path). The
+# literal path silently found nothing and the failure surfaced much later as
+# `ModuleNotFoundError: No module named 'identity'`.
+sys.path.insert(0, str(settings.PIE_PARSER_ROOT))
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -24,6 +31,10 @@ from app.db import Base
 from app.domain import models
 from app.identity import service as identity_service
 from app.identity.mapping_store import OrgMappingStore
+
+# The last section of this file resolves through the real engine, so the clone
+# is a genuine precondition for the file — see tests/conftest.py.
+pytestmark = pytest.mark.usefixtures("pie_catalog")
 
 ORG = "org_test"
 IDENTITY = "identity-pitti"

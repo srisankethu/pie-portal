@@ -403,10 +403,13 @@ without a tool having actually looked.
 # 1. Tests. Non-negotiable; the suite is the contract.
 cd backend && python -m pytest tests -q
 
-# 2. Types and build.
-cd frontend && npx tsc -b && npm run build
+# 2. Frontend tests, types and build.
+cd frontend && npm test && npx tsc -b && npm run build
 
-# 3. Lint (ruff is installed).
+# 3. Lint. The rule set lives in `backend/ruff.toml` and the version is pinned
+#    in gate.yml — an unpinned linter once turned this step red on untouched
+#    code and, because it runs before pytest in the same job, stopped the whole
+#    backend suite from running for days.
 ruff check backend/app
 
 # 4. The invariant checks from §1 — must print nothing.

@@ -1,0 +1,32 @@
+# The lint contract, written down instead of inherited.
+#
+# This file exists because of a specific failure: `gate.yml` installed ruff
+# unpinned, ruff shipped a release whose *default* rule set grew the pyupgrade
+# (`UP`) family, and the next push to main found 1,314 errors in code nobody had
+# touched. Because `ruff` runs before `pytest` in the same job, the whole backend
+# suite stopped running — for days, silently, while the checks list showed a
+# plain red X that read like a test failure.
+#
+# The lesson is not "pin ruff" (though `gate.yml` now does). It is that an
+# implicit rule set is a dependency on someone else's release notes. Selecting
+# explicitly means a new ruff can add whatever defaults it likes and the gate
+# still tests this repository rather than this week's fashion.
+#
+# Adding a rule family here is a deliberate act: turn it on, fix what it finds,
+# land both together. Do not add one and leave the findings for later — a gate
+# that is expected to be red is not a gate.
+
+target-version = "py311"
+line-length = 100
+
+[lint]
+# E4/E7/E9 (a subset of pycodestyle) + F (pyflakes) — ruff's historical default,
+# which is what this codebase was written against and currently passes clean.
+#
+# `UP` is deliberately absent. The codebase uses `Optional[X]` and `List[X]`
+# throughout, and every module that carries code — all 136 of them; the
+# remaining 15 files are empty `__init__.py` markers — already has
+# `from __future__ import annotations`, so the runtime cost the rule exists to
+# remove is not being paid here. Rewriting ~1,300 annotations is a change worth
+# making on purpose, in its own commit, not as a side effect of unblocking CI.
+select = ["E4", "E7", "E9", "F"]

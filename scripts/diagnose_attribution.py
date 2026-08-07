@@ -41,9 +41,44 @@ s = SessionLocal()
 conns = list(s.scalars(select(models.ZohoConnection)))
 print(f"connected companies: {len(conns)}")
 for c in conns:
-    print(f"   {c.connection_id}  label={c.label!r}  enabled={c.enabled}")
+    print(f"   {c.connection_id}  org={c.organization_id}  "
+          f"label={c.label!r}  enabled={c.enabled}")
 if not conns:
     print("   none — nothing can name a company until a connection exists")
+
+# ── the organization each side thinks it is in ───────────────────────────────
+#
+# A row can carry a perfectly good connection_id and still render as "source not
+# recorded", because both lookups that resolve it are scoped to the *requesting*
+# organization: `Companies` loads only connections whose organization_id matches,
+# and `index_of` loads only records whose organization_id matches. A row whose
+# organization_id differs from its connection's is therefore attributable in the
+# database and unattributable on the screen — which is precisely the state that
+# a NULL-connection count of zero cannot detect.
+conn_orgs = {c.organization_id for c in conns}
+by_conn = {c.connection_id: c for c in conns}
+print()
+print(f"organizations owning a connection: {len(conn_orgs)}  {sorted(conn_orgs)}")
+for label, model in (("customers", models.Customer), ("products", models.Product)):
+    row_orgs = set(s.scalars(select(model.organization_id).distinct()))
+    stray = row_orgs - conn_orgs
+    print(f"{label:<10} span {len(row_orgs)} organization(s) {sorted(row_orgs)}"
+          + (f"  <-- {sorted(stray)} own no connection" if stray else ""))
+    # And the crossed case: the row and the connection it names disagree.
+    crossed = 0
+    for org_id, cid in s.execute(
+            select(model.organization_id, model.connection_id)
+            .where(model.connection_id.is_not(None)).distinct()).all():
+        conn = by_conn.get(cid)
+        if conn is not None and conn.organization_id != org_id:
+            crossed += 1
+            print(f"   MISMATCH {label}: rows in org {org_id} point at "
+                  f"connection {cid} owned by org {conn.organization_id}")
+        elif conn is None:
+            print(f"   DANGLING {label}: rows point at connection {cid}, "
+                  f"which no longer exists")
+    if not crossed:
+        print(f"   {label}: every connection_id resolves within its own org")
 
 print()
 print(f"{'table':<14}{'rows':>9}{'no connection':>15}{'no connector':>14}")

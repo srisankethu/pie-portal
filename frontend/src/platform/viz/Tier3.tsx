@@ -15,13 +15,14 @@
 
 import Button from "@mui/material/Button";
 import { useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { scaleBand, scaleLinear } from "d3-scale";
 import { money } from "../../money";
 import { formatDate } from "../../when";
 import { papi } from "../api";
 import { abilityFor } from "../ability";
 import { EntityName } from "../EntityName";
-import { VarianceIndicator } from "../kit";
+import { InlineLink, VarianceIndicator } from "../kit";
 import { CompanyFilter, useCompanyFilter } from "../CompanyFilter";
 import { DataGrid, numeric } from "../DataGrid";
 import type { EntityOrigin, PlatformSession, Sourced } from "../types";
@@ -482,6 +483,13 @@ export function StockScreen({ session }: { session: PlatformSession }) {
     "stock",
     () => papi.stock(session.token), [session.token]);
   const [active, setActive] = useState<string[]>([]);
+  // `?item=` narrows the shelf to one product. The landscape sends items here
+  // because there is no product screen and Stock is the closest thing to one —
+  // arriving at a 3,000-row grid and being told to find it yourself is not a
+  // drill-down. Read from the URL so the view is linkable and the back button
+  // returns to the whole shelf.
+  const [params, setParams] = useSearchParams();
+  const focusItem = params.get("item");
 
   const items = rows(data?.items);
   const counts = (data?.counts as Record<string, number>) ?? {};
@@ -515,7 +523,19 @@ export function StockScreen({ session }: { session: PlatformSession }) {
       : items.filter((r) => chosen.every((f) => passes(r, f, deciles)));
   }, [items, filters, active, deciles]);
   // Company last, so the band chips keep counting the whole shelf.
-  const shown = company.apply(banded as Sourced[]) as Row[];
+  const byCompany = company.apply(banded as Sourced[]) as Row[];
+  // The `?item=` narrowing is applied after everything else and is *not* a
+  // filter chip: it came from a link somebody followed, so it is announced and
+  // dismissible rather than hidden among the controls. An unknown id shows
+  // nothing and says so, instead of silently falling back to the whole shelf —
+  // a stale link that quietly returns 3,000 rows reads as the link having
+  // worked.
+  const shown = focusItem
+    ? byCompany.filter((r) => String(r.product_id) === focusItem)
+    : byCompany;
+  const focusLabel = focusItem
+    ? String(items.find((r) => String(r.product_id) === focusItem)?.label ?? "")
+    : "";
 
   const toggle = (key: string) =>
     setActive((a) => a.includes(key) ? a.filter((k) => k !== key) : [...a, key]);
@@ -530,6 +550,20 @@ export function StockScreen({ session }: { session: PlatformSession }) {
       state={stateOf(loading, error, data?.empty_reason as string)}
       error={error} emptyReason={data?.empty_reason as string} onRetry={reload} wide
     >
+      {focusItem && (
+        <p className="quad-focus">
+          {shown.length > 0 ? (
+            <>Showing one item — <strong>{focusLabel || focusItem}</strong>.</>
+          ) : (
+            <>No item on this shelf matches <strong>{focusItem}</strong>. It may
+            have been removed from the books since that link was made.</>
+          )}{" "}
+          <InlineLink onClick={() => { params.delete("item"); setParams(params); }}>
+            Show the whole shelf
+          </InlineLink>
+        </p>
+      )}
+
       {/* The summary, each card a way into the rows behind it. A headline a
           person cannot drill into is one they have to take on trust. */}
       <ul className="kpi-row">

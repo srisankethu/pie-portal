@@ -114,11 +114,18 @@ export function Figure({
   caption,
   summary,
   table,
+  tableOpen = false,
+  tableLabel = "View as a table",
   children,
 }: {
   caption: string;
   summary: string;
   table?: ReactNode;
+  /** Open the table without being asked. For the case where the chart has
+   *  narrowed to a set somebody is about to work through: a collapsed list is
+   *  the right default for context and the wrong one for a worklist. */
+  tableOpen?: boolean;
+  tableLabel?: string;
   children: ReactNode;
 }) {
   return (
@@ -128,8 +135,8 @@ export function Figure({
       </div>
       <figcaption>{caption}</figcaption>
       {table && (
-        <details className="viz-table-fallback">
-          <summary>View as a table</summary>
+        <details className="viz-table-fallback" open={tableOpen}>
+          <summary>{tableLabel}</summary>
           {table}
         </details>
       )}

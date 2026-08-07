@@ -1,28 +1,23 @@
 /** The application frame: brand bar, grouped navigation, content column.
  *
- * The nav this replaces was eighteen undifferentiated text buttons in a
- * `flex-wrap` row. At a laptop width they spilled onto a second line, and
- * because nothing grouped them, finding "Suppliers" meant reading all eighteen
- * labels — the screens were fine and the way in was not. Below about 1100px it
- * took three lines and pushed the page heading under the fold.
+ * Replaces eighteen undifferentiated text buttons in a `flex-wrap` row, where
+ * finding "Suppliers" meant reading all eighteen labels and a laptop width
+ * pushed the page heading under the fold.
  *
- * The grouping is by the question the screens answer, not by the code that
- * serves them:
+ * Grouped by the question the screens answer, not by the code that serves them:
  *
  *   Decide      the queue, the desk, and the things that block a quote
  *   Understand  where the money moved and why
  *   The book    what is actually held — customers, stock, suppliers, cash
  *   Setup       connections, identity, and the policy that governs the rest
  *
- * Role scoping is unchanged and still lives with the caller: `AppShell` renders
- * whatever items it is handed. A screen a role cannot read is omitted upstream
- * rather than shown and then 403'd, because a nav item that always fails is a
- * nav item that teaches people the product is broken.
+ * Role scoping lives with the caller: `AppShell` renders whatever it is handed,
+ * and a screen a role cannot read is omitted upstream rather than 403'd.
  *
- * Every item is an anchor, not a button. That is the whole reason the router
- * moved to React Router: a `<button onClick>` cannot be ctrl-clicked into a new
- * tab, shows no destination on hover, and gives the browser nothing to restore.
- * Comparing the queue against one account meant losing one of them.
+ * Every item is an anchor, not a button — the reason the router moved to React
+ * Router. A `<button onClick>` cannot be ctrl-clicked into a new tab and shows
+ * no destination on hover, so comparing the queue against one account meant
+ * losing one of them.
  */
 import { useState, type ReactNode } from "react";
 import AppBar from "@mui/material/AppBar";

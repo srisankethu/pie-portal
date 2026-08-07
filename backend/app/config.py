@@ -48,7 +48,7 @@ def _path_env(name: str, default: Path) -> Path:
 class Settings:
     """Process-wide settings (plain attributes; no external deps)."""
 
-    # Location of the pie-parser package (a pinned clone at ./pie-parser by default).
+    # Location of the pie-parser package (the ./pie-parser submodule by default).
     PIE_PARSER_ROOT: Path = _path_env("PIE_PARSER_ROOT", REPO_ROOT / "pie-parser")
 
     # Decoded PIE product catalogue (products.jsonl) the resolver searches.

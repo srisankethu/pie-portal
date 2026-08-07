@@ -1,4 +1,4 @@
-// The two remaining Tier 1 views: one customer's history, and who changed size.
+// The two remaining the overview views: one customer's history, and who changed size.
 //
 // Neither gets a nav entry, and that is the design rather than an omission.
 // A health timeline is *about one customer*, so it belongs on that customer's

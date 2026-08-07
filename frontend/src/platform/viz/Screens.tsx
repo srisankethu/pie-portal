@@ -1,4 +1,4 @@
-// The remaining Tier 1 views.
+// The remaining overview views.
 //
 // Each answers its three questions in the same order and with the same
 // furniture, so moving between them costs nothing: a headline that states what
@@ -21,12 +21,14 @@ import { MonthPicker as SharedMonthPicker } from "./Seg";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { money } from "../../money";
 import { Tip } from "../../Tip";
-import { InlineLink, VarianceIndicator } from "../kit";
+import { ChartTip, InlineLink, VarianceIndicator } from "../kit";
+import { DataGrid, numeric } from "../DataGrid";
 import { papi } from "../api";
 import type { PlatformSession } from "../types";
 import { Figure, Panel, stateOf } from "./Panel";
 import {
-  BAND_COLOR, BUCKET_LABEL, BUCKET_SIGN, CONFIDENCE_LABEL, CONFIDENCE_OPACITY,
+  BAND_COLOR, BUCKET_LABEL, BUCKET_MEANING, BUCKET_SHADE, BUCKET_SIGN,
+  CONFIDENCE_LABEL, CONFIDENCE_OPACITY,
 } from "./tokens";
 import { type Envelope, useInsight } from "./useInsight";
 import { compactMoney, thinLabels, useMeasure } from "./useMeasure";
@@ -308,6 +310,11 @@ export function JourneyScreen({
     "journey",
     () => papi.journey(session.token, months), [session.token, months]);
   const [ref, room] = useMeasure<HTMLDivElement>();
+  /** Which band is open, as (month label, state). One at a time — two open
+   *  drill-downs is two tables nobody asked to compare. */
+  const [focus, setFocus] = useState<{ month: string; state: string } | null>(null);
+  // A band from a 24-month window does not exist in a 6-month one.
+  useEffect(() => { setFocus(null); }, [months]);
 
   const series = (data?.series as Record<string, unknown>[] | undefined) ?? [];
   const dormant = (data?.dormant as Record<string, unknown> | undefined) ?? {};
@@ -317,6 +324,18 @@ export function JourneyScreen({
       (a, k) => a + Number((p.counts as Record<string, number>)[k] ?? 0), 0)), 1);
 
   const labels = useMemo(() => thinLabels(series, room, 64), [series, room]);
+
+  // The open band's members, and the honest total behind them. The server caps
+  // the list; the count is uncapped, so the heading can say "the 20 largest of
+  // 214" instead of implying 20 is all there was.
+  const focusPoint = focus
+    ? series.find((p) => String(p.label) === focus.month)
+    : undefined;
+  const focusRows = ((focusPoint?.members as Record<string, Record<string, unknown>[]>
+    | undefined)?.[focus?.state ?? ""]) ?? [];
+  const focusTotal = focus
+    ? Number((focusPoint?.counts as Record<string, number> | undefined)?.[focus.state] ?? 0)
+    : 0;
 
   return (
     <Panel
@@ -342,24 +361,27 @@ export function JourneyScreen({
               .join(", "),
           ).join("; ")}
           table={
-            <table className="viz-table">
-              <thead>
-                <tr>
-                  <th scope="col">Month</th>
-                  {ORDER.map((k) => <th key={k} scope="col">{BUCKET_LABEL[k]}</th>)}
-                </tr>
-              </thead>
-              <tbody>
-                {series.map((p, i) => (
-                  <tr key={i}>
-                    <th scope="row">{String(p.label)}</th>
-                    {ORDER.map((k) => (
-                      <td key={k}>{(p.counts as Record<string, number>)[k] ?? 0}</td>
-                    ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <DataGrid<Record<string, unknown>>
+              ariaLabel="Customer journey by month"
+              pageSize={24}
+              filters={false}
+              rows={series.map((p) => {
+                const c = p.counts as Record<string, number>;
+                return {
+                  month: String(p.label),
+                  ...Object.fromEntries(ORDER.map((k) => [k, c[k] ?? 0])),
+                  total: ORDER.reduce((a, k) => a + (c[k] ?? 0), 0),
+                };
+              })}
+              columns={[
+                { field: "month", headerName: "Month", width: 140, flex: 0 },
+                ...ORDER.map((k) => numeric<Record<string, unknown>>(
+                  k, BUCKET_LABEL[k], (v) => String(v),
+                  { width: 130, flex: 0, headerTooltip: BUCKET_MEANING[k] })),
+                numeric<Record<string, unknown>>("total", "Customers trading",
+                                                 (v) => String(v), { width: 170, flex: 0 }),
+              ]}
+            />
           }
         >
           <div className="journey">
@@ -377,24 +399,56 @@ export function JourneyScreen({
                       if (!n) return null;
                       const sign = BUCKET_SIGN[k] ?? 0;
                       const share = n / maxCount;
+                      const monthTotal = ORDER.reduce(
+                        (a, key) => a + Number(counts[key] ?? 0), 0);
+                      const on = focus?.month === String(p.label) && focus?.state === k;
                       return (
-                        <span
+                        <ChartTip
                           key={k}
-                          className={`journey-seg ${sign < 0 ? "neg" : sign > 0 ? "pos" : "flat"}`}
-                          style={{ height: `${share * 100}%` }}
-                          title={`${p.label} · ${n} ${BUCKET_LABEL[k]}`}
+                          title={
+                            <>
+                              <strong>{BUCKET_LABEL[k]}</strong> · {String(p.label)}
+                              <br />
+                              {n} of {monthTotal} customers trading
+                              {" "}({Math.round((n / monthTotal) * 100)}%)
+                              <br />
+                              <span style={{ opacity: 0.8 }}>{BUCKET_MEANING[k]}</span>
+                              <br />
+                              <span style={{ opacity: 0.8 }}>Click to list them</span>
+                            </>
+                          }
                         >
-                          {/* The count, printed inside the band when there is
-                              room for it. Without this the chart shows relative
-                              heights and no quantity — a reader cannot tell one
-                              customer from five, which is the entire question
-                              this screen exists to answer. Segments too short to
-                              hold a numeral keep it in the tooltip and the
-                              table rather than overflowing. */}
-                          {share > 0.13 && !room.cramped && (
-                            <span className="journey-count">{n}</span>
-                          )}
-                        </span>
+                          {/* A button, not a span. The band is the control that
+                              answers "who are those 21?", and a click target
+                              that is not a button is one a keyboard cannot
+                              reach. */}
+                          <button
+                            type="button"
+                            aria-pressed={on}
+                            aria-label={`${n} ${BUCKET_LABEL[k]} in ${String(p.label)}`}
+                            className={`journey-seg ${sign < 0 ? "neg" : sign > 0 ? "pos" : "flat"}`
+                              + `${on ? " on" : ""}`}
+                            style={{
+                              height: `${share * 100}%`,
+                              // Lightness separates the states inside one
+                              // direction; see BUCKET_SHADE.
+                              opacity: BUCKET_SHADE[k] ?? 1,
+                            }}
+                            onClick={() => setFocus(
+                              on ? null : { month: String(p.label), state: k })}
+                          >
+                            {/* The count, printed inside the band when there is
+                                room for it. Without this the chart shows relative
+                                heights and no quantity — a reader cannot tell one
+                                customer from five, which is the entire question
+                                this screen exists to answer. Segments too short to
+                                hold a numeral keep it in the tooltip and the
+                                table rather than overflowing. */}
+                            {share > 0.13 && !room.cramped && (
+                              <span className="journey-count">{n}</span>
+                            )}
+                          </button>
+                        </ChartTip>
                       );
                     })}
                   </div>
@@ -405,15 +459,60 @@ export function JourneyScreen({
               );
             })}
           </div>
+          {/* Every state named, not three families. The chart draws six bands
+              and the legend used to name three, so a column showing two red
+              blocks was unreadable by construction: nothing on the page said
+              the upper one was "Lost" and the lower "Spent less", or why that
+              distinction is the whole point of the view. */}
           <Legend
-            items={[
-              { label: "Gained or grew", cls: "pos" },
-              { label: "Unchanged", cls: "flat" },
-              { label: "Shrank or lost", cls: "neg" },
-            ]}
+            items={ORDER.map((k) => ({
+              label: BUCKET_LABEL[k],
+              cls: (BUCKET_SIGN[k] ?? 0) < 0 ? "neg" : (BUCKET_SIGN[k] ?? 0) > 0 ? "pos" : "flat",
+              opacity: BUCKET_SHADE[k] ?? 1,
+              tip: BUCKET_MEANING[k],
+            }))}
           />
         </Figure>
       </div>
+
+      {focus && (
+        <div className="journey-drill">
+          <h4>
+            {BUCKET_LABEL[focus.state]} · {focus.month}
+            <span className="viz-muted">
+              {" "}— {focusTotal} customer{focusTotal === 1 ? "" : "s"}
+              {focusTotal > focusRows.length &&
+                `, the ${focusRows.length} largest movements shown`}
+            </span>
+            {" "}
+            <InlineLink onClick={() => setFocus(null)}>Close</InlineLink>
+          </h4>
+          {focusRows.length === 0 ? (
+            <p className="viz-muted">
+              This month's states were counted before customer names travelled
+              with them. Re-run the page to load the list.
+            </p>
+          ) : (
+            <DataGrid<Record<string, unknown>>
+              ariaLabel={`${BUCKET_LABEL[focus.state]} customers in ${focus.month}`}
+              pageSize={20}
+              rows={focusRows}
+              onRowClick={(r) => onNavigate(`customer/${String(r.customer_id)}`)}
+              columns={[
+                { field: "label", headerName: "Customer", flex: 1, minWidth: 240,
+                  filter: "agTextColumnFilter" },
+                numeric<Record<string, unknown>>("previous", "Month before",
+                                                 (v) => money(v), { width: 150, flex: 0 }),
+                numeric<Record<string, unknown>>("current", "This month",
+                                                 (v) => money(v), { width: 150, flex: 0 }),
+                numeric<Record<string, unknown>>("delta", "Movement", (v) =>
+                  `${v >= 0 ? "+" : "−"}${money(Math.abs(v))}`,
+                  { width: 160, flex: 0, sort: "asc" }),
+              ]}
+            />
+          )}
+        </div>
+      )}
 
       {Number(dormant.count ?? 0) > 0 && (
         <div className="dormant">
@@ -657,13 +756,27 @@ function SimCol({
   );
 }
 
-function Legend({ items }: { items: { label: string; cls: string }[] }) {
+function Legend({ items }: {
+  items: {
+    label: string; cls: string;
+    /** Lightness within the hue, for a palette that separates states inside a
+     *  direction. Must match the mark, or the legend is describing a colour
+     *  that is not on the chart. */
+    opacity?: number;
+    /** What the state means. A legend that only names the bands explains the
+     *  colours and not the categories — "Spent less" and "Lost" are both red
+     *  and both bad, and the difference between them is the decision. */
+    tip?: string;
+  }[];
+}) {
   return (
     <ul className="viz-legend">
       {items.map((i) => (
         <li key={i.label}>
-          <span className={`viz-swatch ${i.cls}`} aria-hidden="true" />
+          <span className={`viz-swatch ${i.cls}`} aria-hidden="true"
+                style={i.opacity != null ? { opacity: i.opacity } : undefined} />
           {i.label}
+          {i.tip && <Tip label={i.label} text={i.tip} />}
         </li>
       ))}
     </ul>

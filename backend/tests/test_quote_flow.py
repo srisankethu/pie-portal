@@ -100,6 +100,7 @@ def test_a_forged_token_is_refused(client):
         headers={"Authorization": "Bearer not.a.real.token"}).status_code == 401
 
 
+@pytest.mark.requires_pie
 def test_intake_builds_resolution_grid(client, mgmt_hdr):
     q = client.post("/api/quotes", json={"customer": "Pitti Engineering"}, headers=mgmt_hdr).json()
     qid = q["id"]
@@ -131,6 +132,7 @@ def test_economics_are_role_gated(client, sales_hdr, mgmt_hdr):
     assert "cost" in mline["economics"]
 
 
+@pytest.mark.requires_pie
 def test_supply_selection_and_pricing(client, mgmt_hdr):
     q = client.post("/api/quotes", json={"customer": "Pitti"}, headers=mgmt_hdr).json()
     qid = q["id"]
@@ -176,6 +178,14 @@ def _clean_quote(client, hdr) -> str:
     return qid
 
 
+# `test_sending_a_quote_requires_a_platform_identity_when_approvals_are_on` was
+# here on main. It asserted a 403 when the browser sent the Quote Builder's login
+# without the platform header — a case that cannot arise now that there is one
+# identity, because the organization comes from the signed-in principal rather
+# than from a header a caller can omit. The rule it protected is not weaker: it
+# moved from "send the second header or be refused" to "there is no request
+# without an organization on it".
+@pytest.mark.requires_pie
 def test_estimate_created_when_clean_and_nothing_needs_approval(client, mgmt_hdr):
     """The gate opens when no line on this quote asked for sign-off.
 

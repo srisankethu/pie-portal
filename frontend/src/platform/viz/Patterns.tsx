@@ -1,4 +1,4 @@
-// The five Tier 2 views, as three screens.
+// The five pattern views, as three screens.
 //
 // Two of the specified five are the same chart as another with a different
 // measure — "Product Momentum Galaxy" is the margin landscape with volume on
@@ -22,9 +22,11 @@ import { scaleLinear, scaleSqrt } from "d3-scale";
 import { MonthPicker, Seg } from "./Seg";
 import { money } from "../../money";
 import { Tip } from "../../Tip";
-import { InlineLink } from "../kit";
+import { ChartTip, InlineLink, StatusChip } from "../kit";
+import { DataGrid, numeric } from "../DataGrid";
+import { EntityName } from "../EntityName";
 import { papi } from "../api";
-import type { PlatformSession } from "../types";
+import type { EntityOrigin, PlatformSession } from "../types";
 import { Figure, Panel, ValueAxis, stateOf } from "./Panel";
 import { pct, useInsight } from "./useInsight";
 import { compactMoney, thinLabels, useMeasure } from "./useMeasure";
@@ -429,22 +431,31 @@ export function CompositionScreen({
             `${s.label}: ${(s.values as number[]).map((v, i) => `${periods[i]?.label} ${measure === "orders" ? v : money(v)}`).join(", ")}`,
           ).join("; ")}
           table={
-            <table className="viz-table">
-              <thead><tr>
-                <th scope="col">Contributor</th>
-                {periods.map((p, i) => <th key={i} scope="col">{p.label}</th>)}
-              </tr></thead>
-              <tbody>
-                {series.map((s, i) => (
-                  <tr key={i}>
-                    <th scope="row">{String(s.label)}</th>
-                    {(s.values as number[]).map((v, j) => (
-                      <td key={j}>{measure === "orders" ? v : money(v)}</td>
-                    ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <DataGrid<Record<string, unknown>>
+              ariaLabel={measure === "orders" ? "Order flow by month" : "Revenue mix by month"}
+              pageSize={10}
+              filters={false}
+              rows={series.map((s) => ({
+                label: String(s.label),
+                total: Number(s.total),
+                ...Object.fromEntries(
+                  (s.values as number[]).map((v, j) => [`m${j}`, Number(v)])),
+              }))}
+              columns={[
+                { field: "label", headerName: "Contributor", flex: 1, minWidth: 220,
+                  filter: "agTextColumnFilter", pinned: "left" },
+                numeric<Record<string, unknown>>(
+                  "total", "Total",
+                  (v) => (measure === "orders" ? String(v) : money(v)),
+                  { width: 150, flex: 0, sort: "desc" }),
+                // One column per month, in the chart's own order, so the table
+                // and the bars are the same object read two ways.
+                ...periods.map((p, j) => numeric<Record<string, unknown>>(
+                  `m${j}`, String(p.label),
+                  (v) => (measure === "orders" ? String(v) : money(v)),
+                  { width: 140, flex: 0 })),
+              ]}
+            />
           }
         >
           <div className="multiples">
@@ -476,16 +487,51 @@ export function CompositionScreen({
                       </span>
                     </span>
                   </div>
-                  <div className="multiple-bars" aria-hidden="true">
-                    {values.map((v, j) => (
-                      <span key={j} className="multiple-slot"
-                            title={`${periods[j]?.label}: ${measure === "orders" ? v : money(v)}`}>
-                        <span
-                          className={`multiple-bar${isOther ? " other" : ""}`}
-                          style={{ height: `${peak ? (v / peak) * 100 : 0}%` }}
-                        />
-                      </span>
-                    ))}
+                  {/* Not `aria-hidden` any more: these carry real tooltips
+                      now, and hiding the row from assistive tech also hid the
+                      only place the monthly figures were readable. */}
+                  <div className="multiple-bars">
+                    {values.map((v, j) => {
+                      const prev = j > 0 ? values[j - 1] : null;
+                      const change = prev && prev > 0 ? (v - prev) / prev : null;
+                      return (
+                        <ChartTip
+                          key={j}
+                          title={
+                            <>
+                              <strong>{String(s.label)}</strong>
+                              <br />
+                              {periods[j]?.label}:{" "}
+                              {measure === "orders"
+                                ? `${v} order${v === 1 ? "" : "s"}`
+                                : money(v)}
+                              {change != null && (
+                                <>
+                                  <br />
+                                  <span style={{ opacity: 0.85 }}>
+                                    {change >= 0 ? "▲" : "▼"}{" "}
+                                    {Math.abs(Math.round(change * 100))}% on{" "}
+                                    {periods[j - 1]?.label}
+                                  </span>
+                                </>
+                              )}
+                              <br />
+                              <span style={{ opacity: 0.8 }}>
+                                Bars share one scale across every row, so
+                                heights compare between customers
+                              </span>
+                            </>
+                          }
+                        >
+                          <span className="multiple-slot">
+                            <span
+                              className={`multiple-bar${isOther ? " other" : ""}`}
+                              style={{ height: `${peak ? (v / peak) * 100 : 0}%` }}
+                            />
+                          </span>
+                        </ChartTip>
+                      );
+                    })}
                   </div>
                 </div>
               );
@@ -524,6 +570,10 @@ export function CadenceScreen({
   const customers = (data?.customers as Record<string, unknown>[] | undefined) ?? [];
   const overdue = customers.filter((c) => c.overdue);
   const peak = Math.max(...wheel.map((d) => Number(d.orders)), 1);
+  const totalOrders = wheel.reduce((a, d) => a + Number(d.orders), 0);
+  // Named in the tooltip so the wheel says which spoke is the long one without
+  // the reader having to eyeball lengths against an unlabelled rim.
+  const peakDay = wheel.find((d) => Number(d.orders) === peak)?.day ?? null;
 
   const R = 118, CX = 140, CY = 140, INNER = 46;
 
@@ -564,13 +614,29 @@ export function CadenceScreen({
               const y1 = CY + Math.sin(angle) * INNER;
               const x2 = CX + Math.cos(angle) * len;
               const y2 = CY + Math.sin(angle) * len;
+              const share = Number(d.orders) / totalOrders;
               return (
-                <g key={d.day}>
-                  <title>{`Day ${d.day}: ${d.orders} order${d.orders === 1 ? "" : "s"}`}</title>
+                <ChartTip
+                  key={d.day}
+                  title={
+                    <>
+                      <strong>Day {d.day} of the month</strong>
+                      <br />
+                      {d.orders} order{d.orders === 1 ? "" : "s"} landed on this
+                      day across the window
+                      {totalOrders > 0 && <> · {Math.round(share * 100)}% of all orders</>}
+                      <br />
+                      <span style={{ opacity: 0.8 }}>
+                        Busiest day is the {peakDay}
+                        {peakDay ? ` with ${peak}` : ""}
+                      </span>
+                    </>
+                  }
+                >
                   <line x1={x1} y1={y1} x2={x2} y2={y2}
                         className={Number(d.orders) ? "wheel-spoke" : "wheel-spoke empty"}
                         strokeWidth={5} strokeLinecap="round" />
-                </g>
+                </ChartTip>
               );
             })}
             {[1, 8, 15, 22].map((day) => {
@@ -602,25 +668,61 @@ export function CadenceScreen({
               text="Measured against each customer's median gap between orders, not one company-wide interval — a quarterly buyer is not late in month two. Customers with too few orders to establish a rhythm are counted separately rather than assumed regular."
             />
           </h4>
-          <ol className="cadence-rows">
-            {customers.slice(0, 12).map((c, i) => (
-              <li key={i} className={c.overdue ? "cadence-row late" : "cadence-row"}>
-                <button type="button" className="cadence-hit"
-                        onClick={() => onNavigate(`customer/${String(c.customer_id)}`)}>
-                  <span className="cadence-name">{String(c.label)}</span>
-                  <span className="cadence-figures">
-                    <span>{String(c.days_since_last)}d since last</span>
-                    <span className="viz-muted">
-                      {c.typical_interval_days
-                        ? `usually every ${c.typical_interval_days}d`
-                        : `only ${c.order_count} orders — no rhythm yet`}
-                    </span>
-                  </span>
-                  {c.overdue ? <span className="cadence-flag">overdue</span> : null}
-                </button>
-              </li>
-            ))}
-          </ol>
+          {/* A grid, and every customer rather than the first twelve. The list
+              showed a fixed dozen in server order, so "who else is close to
+              overdue" was unanswerable without leaving the screen — and the
+              answer is a sort, which a list cannot do. */}
+          <DataGrid<Record<string, unknown>>
+            ariaLabel="Buying rhythm by customer"
+            twoLineRows
+            pageSize={12}
+            rows={customers}
+            onRowClick={(c) => onNavigate(`customer/${String(c.customer_id)}`)}
+            columns={[
+              {
+                field: "label", headerName: "Customer", flex: 1, minWidth: 240,
+                filter: "agTextColumnFilter",
+                cellRenderer: (p: { data?: Record<string, unknown> }) => (
+                  <EntityName
+                    name={String(p.data?.label ?? "")}
+                    sub={p.data?.typical_interval_days
+                      ? `usually every ${String(p.data.typical_interval_days)}d`
+                      : `only ${String(p.data?.order_count)} orders — no rhythm yet`}
+                    origin={p.data?.origin as EntityOrigin | undefined}
+                    show={Boolean(data?.sources_differ)}
+                  />
+                ),
+              },
+              numeric<Record<string, unknown>>(
+                "days_since_last", "Since last", (v) => `${v} d`,
+                {
+                  width: 140, flex: 0, sort: "desc",
+                  headerTooltip: "Days since this customer's most recent order.",
+                }),
+              numeric<Record<string, unknown>>(
+                "typical_interval_days", "Usual gap",
+                (v) => `${v} d`,
+                {
+                  width: 140, flex: 0,
+                  headerTooltip: "This customer's own median gap between "
+                    + "orders. Blank where they have too few orders for a "
+                    + "median to mean anything.",
+                }),
+              {
+                field: "overdue", headerName: "Status", width: 140, flex: 0,
+                filter: "agTextColumnFilter",
+                // A Chip, per the UI standard — status is never bare coloured
+                // text. Only rendered when true: "not overdue" is the resting
+                // state and a column of grey "fine" chips is noise.
+                cellRenderer: (p: { data?: Record<string, unknown> }) =>
+                  (p.data?.overdue
+                    ? <StatusChip label="Overdue" tone="bad"
+                                  tip="Past this customer's own median gap between orders." />
+                    : null),
+                valueFormatter: (p) => (p.value ? "Overdue" : ""),
+              },
+            ]}
+          />
           {Number(data?.unestimable_count ?? 0) > 0 && (
             <p className="viz-muted viz-footnote">
               {String(data?.unestimable_count)} customer(s) have fewer than{" "}

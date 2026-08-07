@@ -27,11 +27,11 @@ export type Screen =
   /** The visualization layer. `home` is the Storyboard; these are the screens
    *  its beats link out to, each answering one question in depth. */
   | "weather" | "opportunities" | "lostRevenue" | "journey" | "simulate"
-  /** Tier 2: position, mix and rhythm. Each is one screen serving two of the
+  /** Patterns: position, mix and rhythm. Each is one screen serving two of the
    *  specified views, because the pairs differ only in which measure is on the
    *  vertical or which quantity is summed. */
   | "landscape" | "composition" | "cadence"
-  /** Tier 3: the shelf, the suppliers and the cash — the three things the book
+  /** The book itself: the shelf, the suppliers and the cash — the three things the book
    *  always knew and the platform did not read until it ingested them. */
   | "payments" | "stock" | "supply"
   /** The negotiation desk: the one screen a salesperson uses to decide rather

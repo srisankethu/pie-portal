@@ -10,6 +10,11 @@ engine per resolution instead.
 Only the ``lookup`` half of the interface is needed: the engine reads mappings,
 it never writes them. Writing is ``identity.service.confirm_code_mapping``,
 where the audit trail and the supersede rule live.
+
+Rows are indexed by ``ScopedIdentifier.key()`` — the engine's own builder, not a
+copy of its format. That is the one thing this module must get exactly right: a
+key that disagrees produces a lookup miss, and a miss is indistinguishable from
+"nobody has confirmed this mapping", so the failure is silent.
 """
 from __future__ import annotations
 
@@ -31,11 +36,29 @@ class OrgMappingStore:
     """
 
     def __init__(self, session: Session, organization_id: str) -> None:
+        # The engine's own key builder, so there is one definition of the key
+        # shape rather than a copy here that agrees until somebody changes it.
+        # A miss reads as "nobody confirmed this mapping", so a drifted format
+        # would not raise — it would quietly stop resolving confirmed products.
+        # pie-parser pins the format in test_scoped_identifier_key_is_a_
+        # published_format; test_the_store_answers_in_the_engine_s_own_key_shape
+        # is this side of that contract.
+        #
+        # Imported lazily, not at module scope: this module is imported by the
+        # quote router at startup and must stay importable when the engine is
+        # absent. Constructing a store *does* need it — but the store exists
+        # only to be read by the engine, so there is nothing to serve without
+        # one, and the router degrades to None (see quote._mapping_store).
+        from identity.model import Namespace, ScopedIdentifier
+
         self._by_key: Dict[str, Any] = {}
         for row in service.active_code_mappings(session, organization_id):
-            # pie-parser's own key shape, built without importing it: this
-            # module must stay importable when the engine is absent.
-            self._by_key[f"CUSTOMER_ITEM:{row.identity_id}:{row.code}"] = row
+            key = ScopedIdentifier(
+                namespace=Namespace.CUSTOMER_ITEM,
+                value=row.code,
+                scope=row.identity_id,
+            ).key()
+            self._by_key[key] = row
 
     def lookup(self, identifier: Any) -> Optional[Any]:
         row = self._by_key.get(identifier.key())

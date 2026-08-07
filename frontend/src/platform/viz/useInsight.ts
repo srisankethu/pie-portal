@@ -1,29 +1,20 @@
 // One loader for every insight view: same states, same retry, same shape.
 //
 // This was written twice — once in `Screens.tsx` and once, verbatim, in
-// `Tier2.tsx` when the second batch of screens was added. Two copies of a
+// `Patterns.tsx` when the second batch of screens was added. Two copies of a
 // loading hook is two places a retry, an auth-loss check or a request-cancel
 // would have to be added, and the second copy is the one that gets forgotten.
 // It lives here so every screen's four states come from the same code.
 //
-// It is TanStack Query underneath now, and the interface below is deliberately
-// unchanged so that swap touched no screen. What the twenty-odd callers get for
-// free is exactly the list the comment above was worried about having to write:
+// TanStack Query underneath, with the interface deliberately unchanged so the
+// swap touched no screen. It buys request cancellation (two month-picker
+// changes used to race, and the stale answer could win), deduplication across
+// panels asking for one window, and a cache so navigating back shows the last
+// answer immediately.
 //
-//   **Request cancellation.** Changing the month picker twice in a second used
-//   to leave two requests racing, and whichever answered last won — so a fast
-//   answer to the old question could overwrite a slow answer to the new one.
-//
-//   **Deduplication.** The storyboard mounts several panels that ask for the
-//   same window. Each one used to be its own round trip.
-//
-//   **A cache with a stated lifetime.** Navigating away and back re-ran every
-//   query against a book that changes once a sync, so the screens now show the
-//   last answer immediately and refresh behind it.
-//
-// `staleTime` is the one judgement call. These screens read a projection that
-// is rebuilt at the end of a sync, so anything shorter than a sync interval is
-// re-asking a question whose answer cannot have moved.
+// `staleTime` is the judgement call: these screens read a projection rebuilt at
+// the end of a sync, so anything shorter re-asks a question whose answer cannot
+// have moved.
 
 import { useQuery } from "@tanstack/react-query";
 

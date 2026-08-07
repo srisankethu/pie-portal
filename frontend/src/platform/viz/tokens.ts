@@ -75,6 +75,37 @@ export const BUCKET_LABEL: Record<string, string> = {
   NEW: "New",
 };
 
+/** What each state actually means, for the tooltip and the legend.
+ *
+ *  "Spent less" and "Lost" are both red and both bad, and a reader looking at
+ *  two red bands stacked has no way to tell which is which or why it matters
+ *  that they are separate. They are separate because they need different
+ *  phone calls. */
+export const BUCKET_MEANING: Record<string, string> = {
+  NEW: "First order ever — no trading history before this month",
+  RECOVERED: "Traded before, went quiet, ordered again this month",
+  GROWN: "Spent more this month than last",
+  STABLE: "Spent about the same as last month",
+  SHRUNK: "Spent less this month than last, but still ordering",
+  LOST: "Ordered last month, nothing at all this month",
+};
+
+/** Six states drawn in three hues, separated by lightness within each hue.
+ *
+ *  The hue carries the direction — better, same, worse — which is the thing a
+ *  glance needs. Lightness separates the states inside a direction, which is
+ *  the thing a second look needs. Six *hues* would say these are six unrelated
+ *  categories and lose the direction entirely, and the palette check fails
+ *  above five anyway. Same reasoning as `CONFIDENCE_OPACITY` below. */
+export const BUCKET_SHADE: Record<string, number> = {
+  NEW: 1,
+  RECOVERED: 0.72,
+  GROWN: 0.48,
+  STABLE: 1,
+  SHRUNK: 0.62,
+  LOST: 1,
+};
+
 /** Confidence is ordinal, so it gets one hue at three opacities plus a shape —
  *  never three hues, which would read as three unrelated categories. */
 export const CONFIDENCE_OPACITY: Record<string, number> = {

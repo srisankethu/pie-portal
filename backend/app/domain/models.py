@@ -1304,7 +1304,7 @@ class ErasureReceipt(Base):
 #
 # These are *ingested facts*, in the same class as SalesTxn and CostRecord: raw
 # rows from Zoho with a source_ref, no interpretation and no thresholds_version.
-# The Tier 3 views compute from them at request time, the way every other
+# The the book views views compute from them at request time, the way every other
 # insight module computes from the sales snapshot. Nothing here decides
 # anything; a stock number that has been rounded, banded or judged on its way
 # in is a stock number nobody can reconcile against Zoho.

@@ -1,7 +1,7 @@
 .PHONY: help setup verify verify-fast catalog bootstrap migrate seed \
         backend frontend dev test lint \
         deploy-build deploy-release deploy-up deploy-down deploy-logs \
-        deploy-runbook
+        deploy-runbook deploy-sync
 
 help:
 	@echo "pie-portal — Sanketh Quote Builder + Commercial Decision Platform"
@@ -30,6 +30,7 @@ help:
 	@echo "  make deploy-up       start Postgres, the API and the TLS edge"
 	@echo "  make deploy-down     stop them (volumes survive)"
 	@echo "  make deploy-logs     follow the logs"
+	@echo "  make deploy-sync     pull every company at once, analyse once"
 	@echo ""
 	@echo "CI runs 'make verify'. There is no second list of checks anywhere."
 
@@ -103,6 +104,11 @@ deploy-down:
 
 deploy-logs:
 	$(COMPOSE) logs -f --tail=100
+
+# Pull every connected company at once, then analyse the organization once.
+# What the nightly cron runs; blocks, and exits non-zero if a pull did not land.
+deploy-sync:
+	$(COMPOSE) exec -T api python -m app.sync_all $(SYNC_ARGS)
 
 # What a deploy of this range requires, in the order it requires it. Reads the
 # migrations that landed; it does NOT guess what production is at.

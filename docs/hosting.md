@@ -199,9 +199,39 @@ docker compose --env-file .env.production logs -f api   # just the backend
 docker compose --env-file .env.production exec api sh   # a shell in the API
 ```
 
-Schedule the operating cycle from the host's cron against the running API
-rather than adding a scheduler container — one less thing to keep alive, and it
-fails loudly in the place you already read mail from.
+### The scheduled sync
+
+```bash
+docker compose --env-file .env.production exec -T api python -m app.sync_all
+```
+
+That pulls **every enabled connection at once** and then analyses the
+organization **once**, after all of them. Both halves matter:
+
+- Zoho meters its API per company and every imported table is keyed on
+  `connection_id`, so the pulls are genuinely independent. Three companies that
+  took three hours end to end now take about as long as the slowest one.
+- Detectors, metrics, business state and decisions are scoped to the
+  *organization*, whose read model all of its connections feed. Running them
+  per-connection did not just cost three times over — the first pass analysed a
+  book that was two thirds unread and spent real AI calls on it.
+
+It blocks until the cycle is done, so two nightly runs cannot overlap, and it
+exits non-zero if any pull failed or came back `PARTIAL` — which is what makes
+cron mail you the night Zoho rate-limited the run.
+
+```bash
+# 01:30 nightly. Cron mails you the summary only when something went wrong.
+(crontab -l 2>/dev/null; echo '30 1 * * * cd ~/pie-portal && docker compose --env-file .env.production exec -T api python -m app.sync_all >> ~/sync.log 2>&1') | crontab -
+```
+
+Useful flags: `--full` ignores the resume cursor and re-reads the whole window,
+`--since YYYY-MM-DD` sets the start date, `--organization` limits it to one
+tenant (repeatable), `--json` emits the raw result.
+
+Host cron rather than a scheduler container: one less thing to keep alive, and
+it fails in the place you already read mail from. The Data screen's own Sync
+button is unaffected — it still starts one company and returns immediately.
 
 ---
 

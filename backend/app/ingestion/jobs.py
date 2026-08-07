@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from typing import Callable, Optional
 
@@ -264,19 +265,24 @@ def _window_label(start: date, end: date) -> str:
 # ── the work itself ─────────────────────────────────────────────────────────
 def execute_sync(session: Session, run: models.SyncRun, *,
                  since: Optional[date] = None, full: bool = False,
-                 connection_id: Optional[str] = None) -> dict:
+                 connection_id: Optional[str] = None,
+                 analysis: bool = True) -> dict:
     """Pull, detect, recompute, decide — the whole cycle, against one run row.
 
     Lifted out of the request handler unchanged in behaviour so that the
     background job and any scripted caller share one implementation. It updates
     the run as it goes, which is what makes the job observable at all.
 
+    ``analysis=False`` stops after the pull. That is for a caller pulling
+    several connections at once: the four phases after the pull are scoped to
+    the *organization*, not to the connection, so running them per-connection is
+    both wasteful and wrong — see ``execute_analysis``. Such a caller runs them
+    once, after every pull has landed. Nothing else should pass it.
+
     Never raises: a sync that fails must leave a row saying so, because a job
     that vanishes is indistinguishable from one that never started.
     """
-    from ..decisions.service import DecisionService
     from ..seed import ensure_org_and_users
-    from ..signals.engine import run_detectors
     from .sync import SyncReport, SyncService, get_source
 
     org = run.organization_id
@@ -318,7 +324,7 @@ def execute_sync(session: Session, run: models.SyncRun, *,
     phase("Starting")
 
     demo_removed: dict[str, int] = {}
-    commercial_report: Optional[dict] = None
+    analysis_notes: dict = {}
     svc: Optional[SyncService] = None
     report = SyncReport(organization_id=org)   # placeholder until a source resolves
 
@@ -384,55 +390,18 @@ def execute_sync(session: Session, run: models.SyncRun, *,
         report = svc.report
         session.flush()
 
-        phase("Detecting signals")
-        detected = run_detectors(session, org)
-        run.signals_emitted = detected.get("signals_emitted", 0)
-
-        # Customer × Item metrics are derived from what just landed, so they are
-        # rebuilt here rather than on the next page load. Targeted at the
-        # relationships this pull actually moved — a full rebuild would scan the
-        # organization's entire history to re-derive rows nothing changed.
-        # Best-effort: a metrics problem must not fail a pull that succeeded.
-        phase("Recomputing customer × item metrics")
-        try:
-            from ..commercial.compute import recompute as recompute_commercial
-
-            ci = recompute_commercial(
-                session, org, customer_ids=(report.touched_customer_ids or None))
-            run.signals_emitted += sum(ci.signals_by_type.values())
-            commercial_report = ci.to_dict()
-        except Exception:  # noqa: BLE001
-            log.exception("customer-item recompute failed; the pull itself is kept")
-
-        # Business state, folded from the events this pull recorded. Best
-        # effort, and after the metrics: a projection that fails to build must
-        # not fail a pull that succeeded, because the pull is the thing that
-        # cannot be redone cheaply and the projection is the thing that can.
-        phase("Building business state")
-        try:
-            from ..commercial.policy import load_for_org
-            from ..state.engine import build as build_state
-
-            th = load_for_org(session, org)
-            state = build_state(
-                session, org, as_of=_clock_today(svc.timezone() if svc else None),
-                thresholds_version=th.version)
-            run.notes = {**(run.notes or {}), "state": state.to_dict()}
-
-            # Decisions folded straight out of that state — deterministic, no
-            # AI, and inside the same try: a queue built from a state that
-            # failed to build would describe a business as of nothing.
-            from ..decisions.opportunities import generate_from_state
-
-            opportunities = generate_from_state(session, org, thresholds=th)
-            run.notes = {**(run.notes or {}), "opportunities": opportunities}
-            run.decisions_created += opportunities.get("created", 0)
-        except Exception:  # noqa: BLE001
-            log.exception("state build failed; the pull itself is kept")
-
-        phase("Generating decisions")
-        generated = DecisionService(session, org).generate()
-        run.decisions_created = generated.get("created", 0)
+        if analysis:
+            analysis_notes = execute_analysis(
+                session, run, org,
+                customer_ids=(report.touched_customer_ids or None),
+                timezone=svc.timezone() if svc else None, on_phase=phase)
+        else:
+            # Handed back so the caller that skipped the analysis can run it
+            # once, for the union of everything its parallel pulls touched.
+            analysis_notes = {
+                "pull_only": True,
+                "touched_customer_ids": sorted(report.touched_customer_ids or []),
+            }
         run.status = "OK"
     except Exception as e:  # noqa: BLE001 — a failed sync must be visible, not silent
         log.exception("sync failed")
@@ -472,18 +441,113 @@ def execute_sync(session: Session, run: models.SyncRun, *,
         notes: dict = {}
         if any(demo_removed.values()):
             notes["demo_data_removed"] = demo_removed
-        if commercial_report is not None:
-            notes["commercial"] = commercial_report
+        # Merged, not assigned over. The analysis phases used to write their own
+        # summaries onto ``run.notes`` inside the try block and this block then
+        # replaced the whole dict — so "state" and "opportunities" were built,
+        # stored, and silently discarded before anything could read them. They
+        # now come back as a return value, which is harder to drop by accident.
+        notes.update(analysis_notes)
         run.notes = notes
         session.flush()
 
     return dict(run.notes or {})
 
 
+def execute_analysis(session: Session, run: models.SyncRun, organization_id: str, *,
+                     customer_ids: Optional[list[str]] = None,
+                     timezone: Optional[str] = None,
+                     on_phase: Optional[Callable[[str], None]] = None) -> dict:
+    """Detect, recompute, project, decide — the organization-wide half of a cycle.
+
+    Split out of ``execute_sync`` because of what it is scoped to. A pull
+    belongs to one connected Zoho company; every one of these four phases
+    belongs to the **organization**, and an organization can have several
+    connections whose rows land in one read model and are analysed together
+    (see ``models.ZohoConnection``). So running this once per connection is
+    wrong twice over:
+
+    * **It reads an incomplete book.** Syncing three companies one after another
+      ran the detectors after the first, when two thirds of the period's trade
+      had not been read yet. The third pass corrected it, so the end state was
+      right and nobody noticed — but the first two passes emitted signals, built
+      a business state, and spent real AI calls on decisions about a business
+      that was two thirds missing.
+    * **It cannot be parallelised.** Three pulls write disjoint rows, because
+      every imported table is keyed on ``connection_id``. These four phases
+      write ``signals``, ``customer_item_metrics``, ``business_states`` and
+      ``decisions``, which are keyed on the organization alone. Run them
+      concurrently and they race each other for the same rows.
+
+    Returns the note fragments for the run row rather than writing them onto it,
+    so a caller running this once for several pulls decides where they land.
+
+    Best-effort in the middle two phases, deliberately: the pull is the
+    expensive thing that cannot be redone cheaply, and a projection that fails
+    to build must not fail a pull that succeeded.
+    """
+    from ..decisions.service import DecisionService
+    from ..signals.engine import run_detectors
+
+    org = organization_id
+    phase = on_phase or (lambda _name: None)
+    notes: dict = {}
+
+    phase("Detecting signals")
+    detected = run_detectors(session, org)
+    run.signals_emitted = detected.get("signals_emitted", 0)
+
+    # Customer × Item metrics are derived from what just landed, so they are
+    # rebuilt here rather than on the next page load. Targeted at the
+    # relationships the pull actually moved — a full rebuild would scan the
+    # organization's entire history to re-derive rows nothing changed.
+    phase("Recomputing customer × item metrics")
+    try:
+        from ..commercial.compute import recompute as recompute_commercial
+
+        ci = recompute_commercial(session, org, customer_ids=customer_ids)
+        run.signals_emitted += sum(ci.signals_by_type.values())
+        notes["commercial"] = ci.to_dict()
+    except Exception:  # noqa: BLE001
+        log.exception("customer-item recompute failed; the pull itself is kept")
+
+    # Business state, folded from the events the pull recorded. After the
+    # metrics, and inside one try with the queue built from it.
+    phase("Building business state")
+    try:
+        from ..commercial.policy import load_for_org
+        from ..state.engine import build as build_state
+
+        th = load_for_org(session, org)
+        state = build_state(session, org, as_of=_clock_today(timezone),
+                            thresholds_version=th.version)
+        notes["state"] = state.to_dict()
+
+        # Decisions folded straight out of that state — deterministic, no AI,
+        # and inside the same try: a queue built from a state that failed to
+        # build would describe a business as of nothing.
+        from ..decisions.opportunities import generate_from_state
+
+        opportunities = generate_from_state(session, org, thresholds=th)
+        notes["opportunities"] = opportunities
+        run.decisions_created += opportunities.get("created", 0)
+    except Exception:  # noqa: BLE001
+        log.exception("state build failed; the pull itself is kept")
+
+    phase("Generating decisions")
+    generated = DecisionService(session, org).generate()
+    run.decisions_created = generated.get("created", 0)
+    return notes
+
+
 # ── dispatch ────────────────────────────────────────────────────────────────
-def _in_thread(sync_run_id: str, since: date, full: bool,
-               connection_id: Optional[str]) -> None:
-    """Run the job on its own session, because the request's is already closed."""
+def run_job(sync_run_id: str, since: date, full: bool,
+            connection_id: Optional[str], *, analysis: bool = True) -> None:
+    """Run the job on its own session, because the request's is already closed.
+
+    Public because ``start_all`` submits it to a thread pool of its own rather
+    than to ``thread_dispatch``: it has to *wait* for the pulls, and a detached
+    daemon thread cannot be waited on.
+    """
     from ..db import SessionLocal
 
     session = SessionLocal()
@@ -492,7 +556,7 @@ def _in_thread(sync_run_id: str, since: date, full: bool,
         if run is None:            # deleted between queueing and starting
             return
         execute_sync(session, run, since=since, full=full,
-                     connection_id=connection_id)
+                     connection_id=connection_id, analysis=analysis)
         session.commit()
     except Exception:  # noqa: BLE001
         log.exception("sync job %s crashed outside its own handler", sync_run_id)
@@ -516,7 +580,7 @@ def _in_thread(sync_run_id: str, since: date, full: bool,
 def thread_dispatch(sync_run_id: str, since: date, full: bool,
                     connection_id: Optional[str]) -> None:
     threading.Thread(
-        target=_in_thread, args=(sync_run_id, since, full, connection_id),
+        target=run_job, args=(sync_run_id, since, full, connection_id),
         name=f"sync-{sync_run_id[:8]}", daemon=True).start()
 
 
@@ -572,3 +636,144 @@ def start_sync(session: Session, organization_id: str, *,
     # finished. Harmless for the threaded path, where the row really is queued.
     session.expire_all()
     return run, True
+
+
+def start_all(session: Session, organization_id: str, *,
+              since: Optional[date] = None, full: bool = False,
+              triggered_by: Optional[str] = None,
+              max_workers: Optional[int] = None) -> dict:
+    """Pull every enabled connection at once, then analyse the organization once.
+
+    **Fan out, then fan in.** The pulls are independent — Zoho meters its API
+    per company, each pull holds its own client and so its own pacer, and every
+    imported table is keyed on ``connection_id`` so three pulls write disjoint
+    rows. Three companies that took three hours end to end take about as long as
+    the slowest one.
+
+    The four phases *after* the pull are not independent and must not be run per
+    connection; ``execute_analysis`` says why at length. They run once here,
+    against the union of what every pull touched, on the last run to finish —
+    which is also the run the Data screen shows first, so the numbers land where
+    somebody will look for them.
+
+    Blocks until the whole cycle is done, because the caller is a cron or a CLI
+    that needs an exit code. The Data screen's own button still uses
+    ``start_sync`` per connection and returns immediately.
+    """
+    from ..seed import ensure_org_and_users
+    from ..trust.keys import ensure_key
+    from . import connections as connections_mod
+
+    conns = connections_mod.list_connections(session, organization_id,
+                                             enabled_only=True)
+    if not conns:
+        return {"organization_id": organization_id, "connections": 0,
+                "runs": [], "analysed": False,
+                "detail": "No enabled Zoho connection to pull from."}
+
+    # Whatever the organization shares, made to exist once, here, before anything
+    # is dispatched. Each pull would otherwise create it on first use, and three
+    # pulls starting together all find it absent and all insert it — which is a
+    # unique-constraint violation that takes down two of the three.
+    #
+    # ``ensure_key`` is safe on its own now, and this still belongs here: doing
+    # setup once in the orchestrator is the same rule the analysis follows, and
+    # it keeps the pulls to work that is genuinely per-connection.
+    ensure_org_and_users(session)
+    ensure_key(session, organization_id)
+    session.commit()
+
+    run_ids: list[str] = []
+    already_running: list[str] = []
+    with ThreadPoolExecutor(max_workers=max_workers or len(conns),
+                            thread_name_prefix="sync-all") as pool:
+        futures = []
+
+        def dispatch(sync_run_id: str, since_: date, full_: bool,
+                     connection_id: Optional[str]) -> None:
+            # analysis=False: the organization-wide half is this function's job,
+            # once, below — not each pull's.
+            futures.append(pool.submit(run_job, sync_run_id, since_, full_,
+                                       connection_id, analysis=False))
+
+        for conn in conns:
+            run, started = start_sync(
+                session, organization_id, since=since, full=full,
+                connection_id=conn.connection_id, triggered_by=triggered_by,
+                dispatch=dispatch)
+            run_ids.append(run.sync_run_id)
+            if not started:
+                # Someone else is already pulling this company. Its rows will
+                # land, so the analysis below still needs to wait for it — but
+                # this call did not start it and must not claim to have.
+                already_running.append(conn.connection_id)
+        # Leaving the block joins every pull. `result()` re-raises anything the
+        # pool itself failed on; run_job handles its own errors onto the row.
+        for future in futures:
+            future.result()
+
+    # The worker sessions wrote these rows; this one is still holding the QUEUED
+    # copies it created.
+    session.expire_all()
+    rows = list(session.scalars(
+        select(models.SyncRun).where(models.SyncRun.sync_run_id.in_(run_ids))))
+
+    # The union of what the pulls moved, so the metric recompute stays targeted.
+    # An empty union would mean a full rebuild of the organization's history, so
+    # it is passed as None only when genuinely nothing was touched.
+    touched: set[str] = set()
+    for row in rows:
+        touched.update((row.notes or {}).get("touched_customer_ids") or [])
+
+    landed = [r for r in rows if r.status in ("OK", "PARTIAL")]
+    result = {
+        "organization_id": organization_id,
+        "connections": len(conns),
+        "already_running": already_running,
+        "runs": [{"sync_run_id": r.sync_run_id, "connection_id": r.connection_id,
+                  "status": r.status, "error": r.error,
+                  "documents_fetched": r.documents_fetched,
+                  "documents_resumed": r.documents_resumed} for r in rows],
+        "analysed": False,
+    }
+    if not landed:
+        # Nothing was read, so there is nothing new to analyse. Detecting over
+        # an unchanged read model would emit the same signals against a fresh
+        # timestamp and spend AI calls restating them.
+        result["detail"] = "Every pull failed; the organization was not analysed."
+        return result
+
+    host = max(landed, key=lambda r: _aware(r.finished_at) or _aware(r.started_at))
+    org_row = session.get(models.Organization, organization_id)
+
+    def phase(name: str) -> None:
+        host.phase = name
+        host.heartbeat_at = _now()
+        session.commit()
+
+    host.status = "RUNNING"
+    try:
+        notes = execute_analysis(
+            session, host, organization_id,
+            customer_ids=sorted(touched) or None,
+            timezone=(getattr(org_row, "timezone", None) or None), on_phase=phase)
+        host.status = "OK" if host.error is None else "PARTIAL"
+    except Exception as e:  # noqa: BLE001 — the pulls succeeded; say so
+        log.exception("organization-wide analysis failed after %d pulls", len(landed))
+        notes = {}
+        host.status = "PARTIAL"
+        host.error = f"Pull succeeded; analysis failed. {type(e).__name__}: {e}"[:1000]
+    finally:
+        merged = {k: v for k, v in (host.notes or {}).items() if k != "pull_only"}
+        merged.pop("touched_customer_ids", None)
+        host.notes = {**merged, **notes}
+        host.phase = None
+        host.finished_at = _now()
+        host.heartbeat_at = _now()
+        session.commit()
+
+    result["analysed"] = True
+    result["analysis_run_id"] = host.sync_run_id
+    result["signals_emitted"] = host.signals_emitted
+    result["decisions_created"] = host.decisions_created
+    return result

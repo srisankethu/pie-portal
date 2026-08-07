@@ -22,7 +22,7 @@ import { formatDate } from "../../when";
 import { papi } from "../api";
 import { abilityFor } from "../ability";
 import { EntityName } from "../EntityName";
-import { InlineLink, VarianceIndicator } from "../kit";
+import { ChartTip, InlineLink, VarianceIndicator } from "../kit";
 import { CompanyFilter, useCompanyFilter } from "../CompanyFilter";
 import { DataGrid, numeric } from "../DataGrid";
 import type { EntityOrigin, PlatformSession, Sourced } from "../types";
@@ -138,24 +138,31 @@ function CashProjection({ session }: { session: PlatformSession }) {
             `Week of ${formatDate(b.starts_on as string)}: in ${money(num(b.inflow))}, out ${money(num(b.outflow))}, running ${money(num(b.cumulative))}`,
           ).join("; ")}
           table={
-            <table className="viz-table">
-              <thead><tr>
-                <th scope="col">Week of</th><th scope="col">In</th>
-                <th scope="col">Out</th><th scope="col">Net</th>
-                <th scope="col">Running</th>
-              </tr></thead>
-              <tbody>
-                {buckets.map((b, i) => (
-                  <tr key={i}>
-                    <th scope="row">{formatDate(b.starts_on as string)}</th>
-                    <td>{money(num(b.inflow))}</td>
-                    <td>{money(num(b.outflow))}</td>
-                    <td>{money(num(b.net))}</td>
-                    <td>{money(num(b.cumulative))}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <DataGrid<Row>
+              ariaLabel="Committed cash by week"
+              pageSize={26}
+              filters={false}
+              rows={buckets}
+              columns={[
+                {
+                  field: "starts_on", headerName: "Week of", width: 150, flex: 0,
+                  valueFormatter: (p) => (p.value ? formatDate(String(p.value)) : "—"),
+                },
+                numeric<Row>("inflow", "Money in", (v) => money(v),
+                             { width: 160, flex: 0 }),
+                numeric<Row>("outflow", "Money out", (v) => money(v),
+                             { width: 160, flex: 0 }),
+                numeric<Row>("net", "Net", (v) =>
+                  `${v >= 0 ? "+" : "−"}${money(Math.abs(v))}`,
+                  { width: 160, flex: 0 }),
+                numeric<Row>("cumulative", "Running total", (v) => money(v), {
+                  width: 180, flex: 0,
+                  headerTooltip: "The bars added up from zero, week by week. "
+                    + "Movement, not a balance — the platform reads payments, "
+                    + "never bank balances.",
+                }),
+              ]}
+            />
           }
         >
           {room.width > 0 && buckets.length > 0 && (
@@ -240,12 +247,32 @@ function CashChart({
         const inflow = num(b.inflow);
         const outflow = num(b.outflow);
         const label = String(b.starts_on ?? "");
+        const net = num(b.net);
+        // One tooltip for the whole week, on a transparent strip covering the
+        // band. Per-bar tooltips would mean hovering a 6px rectangle to learn
+        // what a week does, and the out-bar of a week with no outflow does not
+        // exist to hover at all.
+        const tip = (
+          <>
+            <strong>Week of {formatDate(label)}</strong>
+            <br />
+            Money in {money(inflow)}
+            <br />
+            Money out {money(outflow)}
+            <br />
+            Net {net >= 0 ? "+" : "−"}{money(Math.abs(net))} this week
+            <br />
+            <span style={{ opacity: 0.85 }}>
+              Running total from zero: {money(num(b.cumulative))}
+            </span>
+            <br />
+            <span style={{ opacity: 0.8 }}>
+              Invoices and bills already raised — not a forecast
+            </span>
+          </>
+        );
         return (
           <g key={i}>
-            <title>
-              {`Week of ${formatDate(label)}\nIn ${money(inflow)}\nOut ${money(outflow)}\n`}
-              {`Running ${money(num(b.cumulative))}`}
-            </title>
             {inflow > 0 && (
               <rect x={left} y={y(inflow)} width={barW}
                     height={Math.max(1, zero - y(inflow))}
@@ -256,6 +283,11 @@ function CashChart({
                     height={Math.max(1, y(-outflow) - zero)}
                     className="cash-bar cash-bar-out" rx="1.5" />
             )}
+            <ChartTip title={tip}>
+              <rect x={left} y={PAD.top} width={band.bandwidth()}
+                    height={Math.max(1, H - 26 - PAD.top)}
+                    className="cash-hit" />
+            </ChartTip>
             {/* Every fourth week carries a date. Thirteen dates at this width
                 overlap into a grey smear, and a label nobody can read is worse
                 than none because it still costs the space. */}

@@ -296,7 +296,8 @@ def customer_journey(months: int = Query(12, ge=3, le=24),
     if as_of is None:
         return _no_data(th.currency, "the customer journey")
 
-    points = cohorts.journey(snapshot.sales, as_of, months=months)
+    points = cohorts.journey(snapshot.sales, as_of, months=months,
+                             names=snapshot.customer_names)
     return _envelope(
         {"series": [p.to_dict() for p in points],
          "dormant": cohorts.dormancy(snapshot.sales, snapshot.customer_names, as_of)},

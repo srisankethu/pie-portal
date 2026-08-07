@@ -959,3 +959,16 @@
   font-variant-numeric: tabular-nums;
   font-weight: 600;
 }
+
+/* The per-week hover target on the cash chart. Transparent and full-height:
+   a week is the unit the reader asks about, and making them hit a 6px bar to
+   ask it — or a bar that does not exist, in a week with no outflow — is a
+   tooltip that only works where it is least needed. */
+.cash-hit { fill: transparent; cursor: default; }
+.cash-hit:hover { fill: color-mix(in srgb, var(--color-neutral-600) 7%, transparent); }
+
+/* A journey band is now a button; it must not look like one. */
+.journey-seg { border: 0; padding: 0; cursor: pointer; font: inherit; width: 100%; }
+.journey-seg:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
+.journey-seg.on { outline: 2px solid var(--color-text); outline-offset: 1px; }
+.journey-drill { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--color-divider); }

@@ -235,7 +235,8 @@ class ReadModelRepository:
         row.source_ref = t.source_ref.model_dump()
         return row
 
-    def upsert_cost_record(self, r: CostRecordIn, product_id: str) -> models.CostRecord:
+    def upsert_cost_record(self, r: CostRecordIn, product_id: str,
+                           vendor_id: Optional[str] = None) -> models.CostRecord:
         row = self.s.scalar(
             select(models.CostRecord).where(
                 models.CostRecord.organization_id == self.org,
@@ -246,6 +247,12 @@ class ReadModelRepository:
             row = models.CostRecord(organization_id=self.org, external_ref=r.external_ref)
             self.s.add(row)
         row.product_id = product_id
+        # Resolved by the caller against this repository's own source, the same
+        # way every other vendor reference in the sync is. Left as it was when
+        # the caller could not resolve one, so a re-sync that *can* fills it in
+        # and a pull from a connection with no vendor scope does not blank it.
+        if vendor_id is not None:
+            row.vendor_id = vendor_id
         row.date = r.date
         row.qty = r.qty
         row.unit_cost = r.unit_cost

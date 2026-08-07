@@ -54,6 +54,7 @@ import ScheduleOutlined from "@mui/icons-material/ScheduleOutlined";
 import GroupsOutlined from "@mui/icons-material/GroupsOutlined";
 import Inventory2Outlined from "@mui/icons-material/Inventory2Outlined";
 import LocalShippingOutlined from "@mui/icons-material/LocalShippingOutlined";
+import HubOutlined from "@mui/icons-material/HubOutlined";
 import PaymentsOutlined from "@mui/icons-material/PaymentsOutlined";
 import StorageOutlined from "@mui/icons-material/StorageOutlined";
 import FingerprintOutlined from "@mui/icons-material/FingerprintOutlined";
@@ -96,6 +97,7 @@ const ICON: Partial<Record<Screen, typeof MenuIcon>> = {
   customer: GroupsOutlined,
   stock: Inventory2Outlined,
   supply: LocalShippingOutlined,
+  bonds: HubOutlined,
   payments: PaymentsOutlined,
 
   data: StorageOutlined,

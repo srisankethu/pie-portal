@@ -45,6 +45,7 @@ import { CustomerCommercial, CustomerItemScreen } from "./CommercialScreens";
 import { Storyboard } from "./viz/Storyboard";
 import { JourneyScreen, LostRevenueScreen, OpportunityScreen, SimulatorScreen, WeatherScreen } from "./viz/Screens";
 import { CadenceScreen, CompositionScreen, LandscapeScreen } from "./viz/Patterns";
+import { BondsScreen } from "./viz/Bonds";
 import { CustomerHealthTimeline, MigrationMatrix } from "./viz/History";
 import { PaymentsScreen, StockScreen, SupplyScreen } from "./viz/TheBook";
 import { NegotiateScreen } from "./viz/Negotiate";
@@ -386,6 +387,13 @@ export default function PlatformApp() {
     // both are visible to a salesperson.
     { key: "composition", label: "Mix", group: "understand" },
     { key: "cadence", label: "Rhythm", group: "understand" },
+    // Visible to everybody, unlike Suppliers: the customer half carries no cost
+    // and no margin, and the server omits the supplier half from a
+    // salesperson's response rather than the nav hiding the whole screen. A
+    // salesperson has a real question here — which of my accounts is drifting —
+    // and 403-ing them out of it to protect the other half would answer it by
+    // removing it.
+    { key: "bonds", label: "Bonds", group: "understand" },
 
     // ── The book ──
     // One "Customers" door, not two. The account picker, the month-by-month
@@ -539,6 +547,7 @@ export default function PlatformApp() {
             <Route path={PATH.payments} element={<PaymentsScreen session={session} onNavigate={goViz} />} />
             <Route path={PATH.stock} element={<StockScreen session={session} />} />
             <Route path={PATH.supply} element={<SupplyScreen session={session} />} />
+            <Route path={PATH.bonds} element={<BondsScreen session={session} onNavigate={goViz} />} />
             <Route path={PATH.negotiate} element={<NegotiateScreen session={session} />} />
 
             {/* ── QUOTES ──

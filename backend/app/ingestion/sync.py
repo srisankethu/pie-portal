@@ -842,6 +842,11 @@ class SyncService:
             self._read_lines(ev.COST_LINE_RECORDED, "bill", ref, raw, lines)
             by_line = {str(ln.get("line_item_id") or i): ln
                        for i, ln in enumerate(raw.get("line_items") or [])}
+            # Once per bill, not once per line: every line of a bill carries the
+            # same header vendor, and resolving inside the loop would repeat the
+            # lookup for each of forty lines.
+            vendor = (self.repo.get_vendor_by_external(lines[0].vendor_external_id)
+                      if lines[0].vendor_external_id else None)
             for r in lines:
                 prod = self.repo.get_product_by_external(r.product_external_id)
                 if prod is None:
@@ -856,7 +861,9 @@ class SyncService:
                             party=str(raw.get("vendor_name") or ""),
                             what="bill"))
                     continue
-                self.repo.upsert_cost_record(r, prod.product_id)
+                self.repo.upsert_cost_record(
+                    r, prod.product_id,
+                    vendor.vendor_id if vendor is not None else None)
                 self.report.cost_records += 1
                 # A new cost changes the margin of every customer buying this
                 # item, not just the buyer of this bill.

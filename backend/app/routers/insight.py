@@ -29,9 +29,9 @@ from sqlalchemy.orm import Session
 from ..authz import Principal, current_principal, require_manager_or_owner
 from .. import clock
 from ..commercial import floor, incentive, policy
-from ..commercial.insight import (cadence, cashflow, cohorts, composition, flow,
-                                  landscape, payments, periods, radar, simulate,
-                                  stock, story, supply, weather)
+from ..commercial.insight import (bonds, cadence, cashflow, cohorts, composition,
+                                  flow, landscape, payments, periods, radar,
+                                  simulate, stock, story, supply, weather)
 from ..db import get_session
 from ..domain import models
 from ..domain.enums import Role
@@ -774,6 +774,197 @@ def supplier_position(principal: Principal = Depends(require_manager_or_owner),
     companies.stamp(result.get("open_orders") or [], vendors, by="vendor_id")
     result["sources_differ"] = companies.count > 1
     return _envelope(result, currency=th.currency, empty_reason=None)
+
+
+# ── relationship bonds ──────────────────────────────────────────────────────
+#
+# The one screen that looks at both sides of the book at once, so the role split
+# runs through the middle of it rather than around it.
+#
+# The customer half contains no cost and no margin — recency, regularity,
+# catalogue spread, revenue share and payment behaviour — so every role sees it.
+# The supplier half is denominated in *spend*, which is purchase cost by another
+# name, so a salesperson's response has no supplier half at all. Omitted by the
+# server, not hidden by the browser: there is nothing in the payload to read out
+# of a network tab, which is the same rule ``/supply`` follows.
+
+#: Wider than ``MAX_MONTHS`` on purpose. The comparison screens cap at a year
+#: because a period compared against one more than a year old is comparing two
+#: different businesses; a bond is the opposite question — whether a tie has
+#: held — and two years is the shortest span that shows one forming or decaying.
+BOND_MIN_MONTHS = 6
+BOND_MAX_MONTHS = 36
+
+
+def _customer_bonds(session: Session, principal: Principal, snapshot,
+                    th, as_of: date, months: int) -> dict:
+    """Trade lines and settled invoices → one bond per customer."""
+    lines = [
+        bonds.TradeLine(
+            counterparty_id=row.customer_id,
+            date=row.date,
+            amount=float(row.line_revenue),
+            item_id=row.product_id,
+            # One invoice is one document however many lines it has — the same
+            # rule ``aggregates.order_dates`` applies, for the same reason.
+            document_ref=str((row.source_ref or {}).get("record_id")
+                             or row.external_ref),
+        )
+        for row in snapshot.sales
+    ]
+    settled = _settlements(session, principal.organization_id)
+    return bonds.build(
+        lines, snapshot.customer_names, as_of, side=bonds.CUSTOMER,
+        thresholds=th, item_names=snapshot.product_names,
+        reliability=bonds.reliability_from_payments(settled),
+        signal_thresholds=load_signal_thresholds(), months=months)
+
+
+def _vendor_bonds(session: Session, org: str, item_names: dict[str, str],
+                  th, as_of: date, months: int) -> dict:
+    """Bill lines and purchase orders → one bond per supplier.
+
+    Bill lines rather than bill headers: breadth is "how much of the catalogue
+    do they actually supply", which only exists at line grain. That is what
+    ``cost_records.vendor_id`` was added for — before it, this question needed
+    the bill id split back out of a composite ``external_ref``.
+    """
+    vendors = {v.vendor_id: v for v in session.scalars(
+        select(models.Vendor).where(models.Vendor.organization_id == org)).all()}
+    cost_rows = session.execute(
+        select(models.CostRecord.vendor_id, models.CostRecord.product_id,
+               models.CostRecord.date, models.CostRecord.qty,
+               models.CostRecord.unit_cost, models.CostRecord.source_ref,
+               models.CostRecord.external_ref)
+        .where(models.CostRecord.organization_id == org,
+               models.CostRecord.vendor_id.is_not(None))).all()
+    lines = [
+        bonds.TradeLine(
+            counterparty_id=r.vendor_id,
+            date=r.date,
+            amount=float((r.qty or 0) * (r.unit_cost or 0)),
+            item_id=r.product_id,
+            document_ref=str((r.source_ref or {}).get("record_id")
+                             or r.external_ref),
+        )
+        for r in cost_rows
+    ]
+
+    # Reliability comes from orders, not from bills: a bill is what arrived, and
+    # "did they leave an order hanging" is only answerable from the order.
+    orders = [
+        supply.SupplierOrder(
+            vendor_id=po.vendor_id,
+            vendor_label=(vendors[po.vendor_id].name if po.vendor_id in vendors
+                          else "Supplier not in the contact list"),
+            number=po.number, ordered_on=po.date, expected_on=po.expected_date,
+            received_on=po.received_on,
+            pending_qty=float(po.pending_qty or 0),
+            ordered_qty=float(po.ordered_qty or 0),
+            total=(float(po.total) if po.total is not None else None),
+            status=po.status or "")
+        for po in session.scalars(
+            select(models.PurchaseOrderDoc)
+            .where(models.PurchaseOrderDoc.organization_id == org)).all()
+    ]
+    built = bonds.build(
+        lines, {vid: v.name for vid, v in vendors.items()}, as_of,
+        side=bonds.VENDOR, thresholds=th, item_names=item_names,
+        reliability=bonds.reliability_from_supply(
+            orders, as_of, stale_after_days=supply.STALE_ORDER_DAYS),
+        signal_thresholds=load_signal_thresholds(), months=months)
+    # An empty supplier half has two quite different causes, and a screen that
+    # cannot tell them apart shows a blank panel for both. "Nothing bought yet"
+    # is a fact about the business; "bills exist but none names a supplier" is a
+    # fact about the sync, and it has a fix somebody can act on.
+    built["empty_reason"] = _why_no_vendor_bonds(session, org, lines)
+
+    # What we still owe them, past due — the other half of a supplier bond, and
+    # the half that cannot go in the score. ``bonds.unavailable`` says why: a
+    # bill carries a balance and no payment date, so this is answerable for
+    # today and not reconstructible for a past month.
+    overdue = _overdue_to_vendors(session, org, as_of)
+    for row in built["bonds"]:
+        row["overdue_payable"] = overdue.get(row["counterparty_id"], 0.0)
+    return built
+
+
+def _why_no_vendor_bonds(session: Session, org: str, lines: list) -> Optional[str]:
+    """Which kind of empty the supplier half is, in the words a fix needs."""
+    if lines:
+        return None
+    total = session.scalar(
+        select(func.count()).select_from(models.CostRecord)
+        .where(models.CostRecord.organization_id == org)) or 0
+    if total == 0:
+        return ("No supplier bill has been synced yet, so there is no purchase "
+                "relationship to measure.")
+    return (f"{total} bill line(s) are on record, but none of them names a "
+            "supplier. Cost lines only started carrying their vendor recently — "
+            "re-run a full sync and this fills in.")
+
+
+def _overdue_to_vendors(session: Session, org: str, as_of: date) -> dict[str, float]:
+    """Balance still owed on bills whose due date has passed, per supplier."""
+    out: dict[str, float] = {}
+    for row in session.scalars(
+            select(models.BillDoc).where(
+                models.BillDoc.organization_id == org,
+                models.BillDoc.vendor_id.is_not(None),
+                models.BillDoc.due_date.is_not(None),
+                models.BillDoc.due_date < as_of)).all():
+        balance = float(row.balance or 0)
+        if balance > 0:
+            out[row.vendor_id] = out.get(row.vendor_id, 0.0) + balance
+    return out
+
+
+@router.get("/bonds")
+def relationship_bonds(
+        months: int = Query(bonds.DEFAULT_MONTHS,
+                            ge=BOND_MIN_MONTHS, le=BOND_MAX_MONTHS),
+        principal: Principal = Depends(current_principal),
+        session: Session = Depends(get_session)) -> dict:
+    """How strong each tie is, and how it got that way."""
+    org, snapshot, th = _context(session, principal)
+    as_of = _as_of(snapshot) or clock.today(th.timezone)
+    with_suppliers = principal.role in (Role.SALES_MANAGER, Role.OWNER)
+
+    customers = _customer_bonds(session, principal, snapshot, th, as_of, months)
+    vendors = (_vendor_bonds(session, org, snapshot.product_names, th, as_of,
+                             months)
+               if with_suppliers else None)
+
+    # A counterparty is per connected company: the same firm trading with two of
+    # the books is two relationships with two different people, and one bond
+    # drawn across both would claim a closeness neither half has. Same rule
+    # ``/supply`` applies to suppliers, applied to both sides here.
+    companies = Companies(session, org)
+    companies.stamp(customers["bonds"], index_of(session, org, models.Customer),
+                    by="counterparty_id")
+    if vendors is not None:
+        companies.stamp(vendors["bonds"],
+                        index_of(session, org, models.Vendor),
+                        by="counterparty_id")
+
+    empty = None
+    if not customers["bonds"] and not (vendors or {}).get("bonds"):
+        empty = ("Nothing has been traded yet, so there is no relationship to "
+                 "measure. Connect a Zoho company and run a sync.")
+    return _envelope(
+        {"customers": customers, "vendors": vendors}, currency=th.currency,
+        empty_reason=empty, as_of=as_of.isoformat(),
+        sources_differ=companies.count > 1,
+        supplier_side_visible=with_suppliers,
+        unavailable=(bonds.unavailable(
+            bonds.CUSTOMER,
+            has_reliability=any(b["facets"]["reliability"] is not None
+                                for b in customers["bonds"]))
+            + (bonds.unavailable(
+                bonds.VENDOR,
+                has_reliability=any(b["facets"]["reliability"] is not None
+                                    for b in vendors["bonds"]))
+               if vendors else [])))
 
 
 # ── the negotiation desk ────────────────────────────────────────────────────

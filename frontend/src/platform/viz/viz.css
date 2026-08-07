@@ -972,3 +972,81 @@
 .journey-seg:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
 .journey-seg.on { outline: 2px solid var(--color-text); outline-offset: 1px; }
 .journey-drill { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--color-divider); }
+
+/* ── the bond map ──────────────────────────────────────────────────────────
+   Radius is the measure: a node's distance from the hub *is* its bond
+   strength, so the rings are labelled and the ties are drawn. Colour is spent
+   on movement — the only signed dimension here — using the loss/gain pair the
+   palette already validated, never green↔red.
+
+   Motion is a real encoding on this screen rather than decoration: a node
+   sliding inward between frames is the relationship strengthening. That is
+   also why the reduced-motion rule turns the transition off completely instead
+   of shortening it — a shortened slide is still a slide, and the scrubber
+   works without one. */
+.bond-stage { margin-top: 6px; }
+.bond-map { display: block; margin: 0 auto; max-width: 100%; overflow: visible; }
+
+.bond-ring { fill: none; stroke: var(--viz-rule); stroke-width: 1px; stroke-opacity: .6; }
+.bond-tie { stroke: var(--viz-neutral); stroke-opacity: .3; }
+.bond-hub { fill: color-mix(in srgb, var(--color-text) 7%, transparent); stroke: var(--viz-rule); }
+.bond-hub-label { fill: var(--color-text); font-size: 12px; font-weight: 600; }
+.bond-hub-sub { fill: var(--color-text-secondary); font-size: 10px; }
+
+.bond-node {
+  cursor: pointer;
+  stroke: var(--viz-surface);
+  stroke-width: 1.25px;
+  transition: cx .38s ease, cy .38s ease, r .2s ease;
+}
+.bond-node:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.bond-node.bond-on { stroke: var(--color-text); stroke-width: 2px; }
+/* Direction of travel. Also carried by the tooltip's signed number and by the
+   Movement column in the table fallback, so colour is never the only cue. */
+.bond-up { fill: var(--viz-gain); }
+.bond-down { fill: var(--viz-loss); }
+.bond-flat { fill: var(--viz-neutral); }
+
+.bond-still .bond-node { transition: none; }
+@media (prefers-reduced-motion: reduce) {
+  .bond-node { transition: none; }
+}
+
+.bond-timeline {
+  display: flex; align-items: center; gap: 12px;
+  margin: 10px auto 0; max-width: 620px; flex-wrap: wrap;
+}
+.bond-timeline input[type="range"] { flex: 1; min-width: 160px; accent-color: var(--color-accent); }
+.bond-month {
+  font-variant-numeric: tabular-nums; font-weight: 600;
+  min-width: 84px; text-align: right;
+}
+
+.bond-unscored { margin-top: 10px; color: var(--color-text-secondary); font-size: 13px; }
+.bond-late { color: var(--viz-loss); font-weight: 600; }
+
+.bond-detail {
+  margin-top: 16px; padding: 14px 16px;
+  border: 1px solid var(--color-divider); border-radius: 6px;
+}
+.bond-detail-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.bond-detail-head h4 { margin: 0; }
+.bond-detail-head > div { display: inline-flex; align-items: center; gap: 10px; }
+
+/* The decomposition. Bars rather than a radar: a spider chart encodes area,
+   which depends on the order the axes happen to be in and is not a quantity
+   anybody chose. Five labelled bars compare directly and survive greyscale. */
+.bond-facets { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 7px; }
+.bond-facets li { display: grid; grid-template-columns: 130px 1fr 92px; align-items: center; gap: 10px; }
+.bond-facet-label { font-size: 13px; }
+.bond-facet-track { background: var(--color-neutral-200); border-radius: 2px; height: 12px; }
+.bond-facet-fill { display: block; height: 100%; background: var(--viz-gain); border-radius: 2px; }
+.bond-facet-value {
+  font-size: 12px; text-align: right; font-variant-numeric: tabular-nums;
+  color: var(--color-text-secondary);
+}
+
+@media (max-width: 720px) {
+  .bond-facets li { grid-template-columns: 1fr 74px; }
+  .bond-facet-track { grid-column: 1 / -1; order: 3; }
+}

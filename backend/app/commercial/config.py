@@ -235,6 +235,36 @@ class CommercialThresholds:
     # distribution, while being owed most of your money by one customer is not.
     supplier_spend_share: float = 0.40
 
+    # ── relationship bond strength ───────────────────────────────────────────
+    #
+    # How the five measured facets in ``insight/bonds.py`` combine into one
+    # score. They are settings rather than constants for the same reason the
+    # margin floor is: what makes a relationship strong is a judgement about
+    # this business, and burying it in a module would make the score a black
+    # box that nobody can argue with.
+    #
+    # Being here also means they are inside ``version`` — so re-weighting the
+    # bond does not make last quarter's bonds unexplainable. A screen rendered
+    # before and after a change is distinguishable, which is the whole reason
+    # the version hash exists.
+    #
+    # They need not sum to 1: the composite renormalises over whichever facets
+    # are measurable for a given counterparty, because a customer whose
+    # invoices carry no due dates has *unknown* payment behaviour rather than
+    # bad payment behaviour.
+    #
+    # Recency leads on purpose. Everything else describes what a relationship
+    # has been; only recency says whether it still is.
+    bond_weight_recency: float = 0.30
+    bond_weight_consistency: float = 0.25
+    bond_weight_breadth: float = 0.15
+    #: Their share of this company's book. Named ``share`` rather than
+    #: ``weight`` because ``weight`` already means "the weight of a facet" two
+    #: lines up, and one word meaning two things in one block is how a
+    #: mis-tuning happens.
+    bond_weight_share: float = 0.15
+    bond_weight_reliability: float = 0.15
+
     @classmethod
     def from_env(cls) -> "CommercialThresholds":
         return cls(
@@ -256,6 +286,16 @@ class CommercialThresholds:
                                          _default("receivable_exposure_share")),
             supplier_spend_share=_f("CI_SUPPLIER_SPEND_SHARE",
                                     _default("supplier_spend_share")),
+            bond_weight_recency=_f("CI_BOND_WEIGHT_RECENCY",
+                                   _default("bond_weight_recency")),
+            bond_weight_consistency=_f("CI_BOND_WEIGHT_CONSISTENCY",
+                                       _default("bond_weight_consistency")),
+            bond_weight_breadth=_f("CI_BOND_WEIGHT_BREADTH",
+                                   _default("bond_weight_breadth")),
+            bond_weight_share=_f("CI_BOND_WEIGHT_SHARE",
+                                 _default("bond_weight_share")),
+            bond_weight_reliability=_f("CI_BOND_WEIGHT_RELIABILITY",
+                                       _default("bond_weight_reliability")),
             recent_days=_i("CI_RECENT_DAYS", 90),
             previous_days=_i("CI_PREVIOUS_DAYS", 90),
             historical_lookback_days=_i("CI_HISTORICAL_LOOKBACK_DAYS", 730),

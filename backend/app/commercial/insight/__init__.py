@@ -27,4 +27,7 @@ Modules:
   ``story``     the briefing: what changed, why, what to do
   ``simulate``  scenario arithmetic over persisted facts, never a projection
                 the platform cannot show its working for
+  ``bonds``     how strong the tie is to each customer and each supplier, as
+                five published facets rather than one opaque score — and the
+                same measure at every month end, so the trajectory is watchable
 """

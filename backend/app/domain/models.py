@@ -366,12 +366,33 @@ class CostRecord(Base):
         # makes the effective-cost lookup for a customer-item pair cheap.
         Index("ix_cost_records_org_product_date",
               "organization_id", "product_id", "date"),
+        # The mirror of the pair above, for the other direction: "what did we
+        # buy from this supplier, and when". Spend-by-supplier over a window
+        # was a full scan without it.
+        Index("ix_cost_records_org_vendor_date",
+              "organization_id", "vendor_id", "date"),
     )
 
     cost_record_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
     organization_id: Mapped[str] = mapped_column(String(64), index=True)
     external_ref: Mapped[str] = mapped_column(String(160), index=True)  # bill_id:line_id
     product_id: Mapped[str] = mapped_column(String(64), index=True)
+    #: Who this was bought from, copied down from the bill header.
+    #:
+    #: ``CostRecordIn`` has carried ``vendor_external_id`` since the supply pull
+    #: landed, and the state reducers read it off the event payload — but the
+    #: read model dropped it here, so the only way to ask "which items does this
+    #: supplier actually supply" was to re-derive the bill id out of
+    #: ``external_ref`` and join back to ``bills``. A dimension at line grain,
+    #: not a measure: copying ``balance`` down would turn a sum into a
+    #: de-duplication problem, copying the *vendor* down does not.
+    #:
+    #: Nullable, and left null rather than guessed. A bill from a supplier the
+    #: vendor pull did not return is still a real cost — dropping the line to
+    #: say who sold it would understate what an item cost.
+    vendor_id: Mapped[Optional[str]] = mapped_column(String(64),
+                                                     ForeignKey("vendors.vendor_id"),
+                                                     index=True)
     date: Mapped[date] = mapped_column(Date, index=True)
     qty: Mapped[Any] = mapped_column(Numeric(18, 4))
     # Effective, post-discount unit cost — every margin/pricing consumer reads this.

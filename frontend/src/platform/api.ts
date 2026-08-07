@@ -185,6 +185,16 @@ export const papi = {
   supply: (t: string) =>
     req<Record<string, unknown>>("/api/v1/insight/supply", {}, t),
 
+  // Relationship bonds — the one view that reads both sides of the book.
+  //
+  // Not scoped like `supply` even though it carries a supplier half: the
+  // customer half contains no cost and no margin, so a salesperson gets a real
+  // answer rather than a 403. The server omits the supplier half from their
+  // response entirely, which is why this takes no `side` parameter — asking is
+  // not what decides, the role is.
+  bonds: (t: string, months: number) =>
+    req<Record<string, unknown>>(`/api/v1/insight/bonds?months=${months}`, {}, t),
+
   // The negotiation desk. A POST because it computes on what the salesperson
   // is proposing, not on what is stored — nothing is persisted by asking.
   negotiate: (t: string, body: Record<string, unknown>) =>

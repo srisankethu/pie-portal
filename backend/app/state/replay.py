@@ -91,7 +91,8 @@ class _Applier:
         if product is None:
             self.report._missing(e, "product", r.product_external_id)
             return False
-        self.repo.upsert_cost_record(r, product.product_id)
+        self.repo.upsert_cost_record(r, product.product_id,
+                                     self._vendor(r.vendor_external_id))
         return True
 
     def payable(self, e: models.BusinessEvent) -> bool:

@@ -1,51 +1,106 @@
-"""End-to-end API flow: login, intake, resolution grid, role-gated economics,
-supply selection, pricing, and estimate creation."""
+"""End-to-end API flow: intake, resolution grid, role-gated economics, supply
+selection, pricing, and estimate creation.
+
+Both fixtures sign in through ``/api/v1/auth/login`` — the product's only login.
+The Quote Builder used to have a second one at ``/api/auth/login`` with two
+fixed demo accounts and no password check, so these tests could pass while the
+identity on screen belonged to nobody: the browser signed in twice, and the
+second sign-in decided whether cost and margin were sent.
+"""
 from __future__ import annotations
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
-from app.main import app
-from app.seed import SEED_PASSWORD
+from app.db import Base, get_session
+from app.domain import models  # noqa: F401  (populate metadata)
+from app.routers import platform_auth, quote
+from app.seed import SEED_PASSWORD, ensure_org_and_users
 
-client = TestClient(app)
-
-
-def _token(email: str) -> str:
-    r = client.post("/api/auth/login", json={"email": email, "password": "x"})
-    assert r.status_code == 200, r.text
-    return r.json()["token"]
-
-
-def _platform_token(email: str) -> str:
-    """The org-scoped platform identity, which the commercial gate needs and the
-    Quote Builder's own demo login does not carry."""
-    r = client.post("/api/v1/auth/login",
-                    json={"email": email, "password": SEED_PASSWORD})
-    assert r.status_code == 200, r.text
-    return r.json()["token"]
+OWNER = "s.menon@sanketh.in"
+SALES = "r.nair@sanketh.in"
 
 
 @pytest.fixture()
-def sales_hdr():
-    return {"Authorization": f"Bearer {_token('r.nair@sanketh.in')}"}
+def client():
+    """The quote endpoints on their own database.
+
+    Same shape as `decision_platform/test_quote_intelligence_api.py`: an
+    in-memory schema, the seeded org and users, and `get_session` overridden.
+    These tests used to run against whatever `data/platform.db` happened to hold
+    because the login they used consulted no database at all.
+    """
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False},
+                           poolclass=StaticPool, future=True)
+    Base.metadata.create_all(engine)
+    Maker = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False,
+                         future=True)
+
+    s = Maker()
+    ensure_org_and_users(s)
+    s.commit()
+    s.close()
+
+    api = FastAPI()
+    api.include_router(platform_auth.router)
+    api.include_router(quote.router)
+
+    def _override():
+        sess = Maker()
+        try:
+            yield sess
+            sess.commit()
+        finally:
+            sess.close()
+
+    api.dependency_overrides[get_session] = _override
+    return TestClient(api)
+
+
+def _hdr(c: TestClient, email: str) -> dict:
+    r = c.post("/api/v1/auth/login", json={"email": email, "password": SEED_PASSWORD})
+    assert r.status_code == 200, r.text
+    return {"Authorization": f"Bearer {r.json()['token']}"}
 
 
 @pytest.fixture()
-def mgmt_hdr():
-    return {"Authorization": f"Bearer {_token('s.menon@sanketh.in')}"}
+def sales_hdr(client):
+    return _hdr(client, SALES)
 
 
-def test_login_rejects_unknown_account():
-    r = client.post("/api/auth/login", json={"email": "nobody@x.com", "password": "x"})
-    assert r.status_code == 401
+@pytest.fixture()
+def mgmt_hdr(client):
+    return _hdr(client, OWNER)
 
 
-def test_auth_required():
+def test_the_quote_builder_has_no_login_of_its_own():
+    """The second door is gone from the real app, not merely unused by the client.
+
+    While it existed, a browser could hold a Quote Builder session belonging to
+    a demo account nobody had authenticated, and every economics decision on
+    these endpoints was taken against *that* role.
+    """
+    from app.main import app as real_app
+
+    assert not [r for r in real_app.routes
+                if getattr(r, "path", "").startswith("/api/auth/")]
+
+
+def test_auth_required(client):
     assert client.get("/api/quotes/nope").status_code == 401
 
 
-def test_intake_builds_resolution_grid(mgmt_hdr):
+def test_a_forged_token_is_refused(client):
+    assert client.get(
+        "/api/quotes/nope",
+        headers={"Authorization": "Bearer not.a.real.token"}).status_code == 401
+
+
+def test_intake_builds_resolution_grid(client, mgmt_hdr):
     q = client.post("/api/quotes", json={"customer": "Pitti Engineering"}, headers=mgmt_hdr).json()
     qid = q["id"]
     rfq = "2001174, 20\nCNMG 120408 KCP25  50\nXZ-CUSTOM-778-NOTREAL, 5"
@@ -58,7 +113,7 @@ def test_intake_builds_resolution_grid(mgmt_hdr):
     assert set(q["filterCounts"]) >= {"ALL", "NEEDS", "UNRES", "SUBST"}
 
 
-def test_economics_are_role_gated(sales_hdr, mgmt_hdr):
+def test_economics_are_role_gated(client, sales_hdr, mgmt_hdr):
     qs = client.post("/api/quotes", json={"customer": "Pitti"}, headers=sales_hdr).json()
     qid = qs["id"]
     client.post(f"/api/quotes/{qid}/intake", json={"text": "2001174, 10"}, headers=sales_hdr)
@@ -76,7 +131,7 @@ def test_economics_are_role_gated(sales_hdr, mgmt_hdr):
     assert "cost" in mline["economics"]
 
 
-def test_supply_selection_and_pricing(mgmt_hdr):
+def test_supply_selection_and_pricing(client, mgmt_hdr):
     q = client.post("/api/quotes", json={"customer": "Pitti"}, headers=mgmt_hdr).json()
     qid = q["id"]
     q = client.post(f"/api/quotes/{qid}/intake",
@@ -96,7 +151,7 @@ def test_supply_selection_and_pricing(mgmt_hdr):
     assert q["lines"][0]["lineTotal"] == 999 * 50
 
 
-def test_estimate_blocked_by_technical_lines(mgmt_hdr):
+def test_estimate_blocked_by_technical_lines(client, mgmt_hdr):
     q = client.post("/api/quotes", json={"customer": "Pitti"}, headers=mgmt_hdr).json()
     qid = q["id"]
     client.post(f"/api/quotes/{qid}/intake",
@@ -106,7 +161,7 @@ def test_estimate_blocked_by_technical_lines(mgmt_hdr):
     assert est["blockers"]
 
 
-def _clean_quote(hdr) -> str:
+def _clean_quote(client, hdr) -> str:
     """A quote with one in-books, priced, technically-clean line."""
     q = client.post("/api/quotes", json={"customer": "Pitti"}, headers=hdr).json()
     qid = q["id"]
@@ -121,25 +176,14 @@ def _clean_quote(hdr) -> str:
     return qid
 
 
-def test_sending_a_quote_requires_a_platform_identity_when_approvals_are_on(mgmt_hdr):
-    """The Quote Builder's own login carries no organization, so it cannot be
-    checked against an approval queue. Sending without the platform token would
-    otherwise be the way around every approval in the product."""
-    qid = _clean_quote(mgmt_hdr)
-    r = client.post(f"/api/quotes/{qid}/estimate", headers=mgmt_hdr)
-    assert r.status_code == 403
-    assert "Decisions platform" in r.json()["detail"]
+def test_estimate_created_when_clean_and_nothing_needs_approval(client, mgmt_hdr):
+    """The gate opens when no line on this quote asked for sign-off.
 
-
-def test_estimate_created_when_clean_and_nothing_needs_approval(mgmt_hdr):
-    """With a platform identity and no line requiring approval, the gate opens.
-
-    Only technical-status lines block on the Quote Builder side; the commercial
-    gate adds nothing when no snapshot on this quote asked for sign-off.
+    It reads the organization off the signed-in principal, so there is no longer
+    a header a caller can omit to be judged against a different org — or, as
+    before, against the packaged default org with no approvals in it.
     """
-    qid = _clean_quote(mgmt_hdr)
-    hdr = dict(mgmt_hdr)
-    hdr["X-Platform-Authorization"] = f"Bearer {_platform_token('s.menon@sanketh.in')}"
-    est = client.post(f"/api/quotes/{qid}/estimate", headers=hdr).json()
+    qid = _clean_quote(client, mgmt_hdr)
+    est = client.post(f"/api/quotes/{qid}/estimate", headers=mgmt_hdr).json()
     assert est["ok"] is True, est
     assert est["estimateNumber"]

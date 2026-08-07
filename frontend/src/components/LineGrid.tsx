@@ -130,9 +130,9 @@ export function LineGrid({
           ].filter(Boolean);
           const li = intel[l.id];
           // The authoritative margin is the platform's: it uses the recorded
-          // purchase cost as of today, net of bill-line discounts. The legacy
-          // per-line figure is only a fallback for when the platform is not
-          // connected.
+          // purchase cost as of today, net of bill-line discounts. The
+          // catalogue figure below is the fallback for a line the assessment
+          // could not price — no synced purchase cost for that item yet.
           const authMargin = li?.economics?.margin ?? null;
           const econ = l.economics;
           return (
@@ -234,7 +234,7 @@ export function LineGrid({
                   ) : econ && econ.margin !== null ? (
                     <span className={econ.below_floor ? "warn" : ""}>
                       {(econ.margin * 100).toFixed(1)}%
-                      <Tip text="Derived from the catalogue cost, because the commercial platform is not connected. Indicative only — the real purchase cost comes from bills and may differ." />
+                      <Tip text="Derived from the catalogue cost, because no purchase cost has been synced for this item yet. Indicative only — the real purchase cost comes from bills and may differ." />
                     </span>
                   ) : (
                     "—"

@@ -17,7 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .config import settings
 from .pie_service import pie_service
-from .routers import (accounts, admin, approvals, auth, commercial, connections,
+from .routers import (accounts, admin, approvals, commercial, connections,
                       data_status,
                       decisions, identity, internal, platform_auth, quote,
                       insight, quote_intelligence, quote_support, trust)
@@ -160,12 +160,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Legacy Quote Builder (preserved; not part of the V1 decision platform).
-app.include_router(auth.router)
-app.include_router(quote.router)
-
 # Commercial Decision Platform (Phase 1 foundation).
 app.include_router(platform_auth.router)
+
+# The Quote Builder. One surface of the same product, and — since the demo login
+# beside it was removed — one identity: `/api/quotes` authenticates the same
+# platform user every `/api/v1` endpoint does.
+app.include_router(quote.router)
 app.include_router(internal.router)
 app.include_router(decisions.router)
 app.include_router(quote_support.router)

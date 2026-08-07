@@ -11,11 +11,11 @@ import { pathFor } from "../platform/route";
 export function SupplyDrawer({
   line,
   customer,
+  token,
   mgmt,
   intel,
   intelLoading,
   intelError,
-  intelConnected,
   onRecordOverride,
   onRequestApproval,
   approvalStatus,
@@ -25,11 +25,12 @@ export function SupplyDrawer({
   onRevert }: {
   line: Line;
   customer: string;
+  /** The signed-in session's token, for the panels that call the platform. */
+  token: string;
   mgmt: boolean;
   intel: LineIntelligence | null;
   intelLoading: boolean;
   intelError: string | null;
-  intelConnected: boolean;
   onRecordOverride: (lineId: string, reasonCode: string, reason: string) => Promise<void>;
   onRequestApproval: (lineId: string, reasonCode: string, reason: string) => Promise<void>;
   approvalStatus: { status: string; required_authority: string; decision_note: string | null } | null;
@@ -122,7 +123,6 @@ export function SupplyDrawer({
             intel={intel}
             loading={intelLoading}
             error={intelError}
-            connected={intelConnected}
             onOverride={onRecordOverride}
             onRequestApproval={onRequestApproval}
             approvalStatus={approvalStatus}
@@ -133,7 +133,7 @@ export function SupplyDrawer({
               onOpenPlatform?.(pathFor("customerItem", customerId, productId))
             }
           />
-          <DecisionSupport customer={customer} line={line} />
+          <DecisionSupport customer={customer} line={line} token={token} />
 
           {line.candidates.length === 0 && (
             <div className="empty">

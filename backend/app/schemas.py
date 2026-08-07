@@ -6,18 +6,6 @@ from typing import List, Optional
 from pydantic import BaseModel, Field
 
 
-class LoginRequest(BaseModel):
-    email: str
-    password: str
-
-
-class LoginResponse(BaseModel):
-    token: str
-    role: str
-    name: str
-    email: str
-
-
 class CreateQuoteRequest(BaseModel):
     customer: str = "New customer"
 

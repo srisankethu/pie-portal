@@ -66,7 +66,10 @@ On Windows, or if anything goes wrong, see
 
 ## The two surfaces
 
-One backend, one frontend build, two surfaces:
+One backend, one frontend build, one sign-in — and two surfaces reached through
+the same navigation. The Quote Builder used to be a second application in the
+bundle with a login of its own; it is a screen at `#/quotes` now, on the account
+you signed in with.
 
 **Commercial Decision Platform** (primary) — detects five commercial situations,
 grounds an AI interpretation on deterministic facts, and routes role-scoped

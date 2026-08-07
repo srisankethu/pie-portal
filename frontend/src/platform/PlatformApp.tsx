@@ -36,6 +36,7 @@ import {
 } from "./route";
 import AppShell, { type NavItem } from "./AppShell";
 import { SignInCard } from "../SignInCard";
+import QuoteBuilder from "../QuoteBuilder";
 import { abilityFor } from "./ability";
 import { ApprovalsScreen, SettingsScreen } from "./AdminScreens";
 import { IdentityScreen } from "./IdentityScreen";
@@ -170,7 +171,7 @@ function ActionModal({
 }
 
 // ── main ─────────────────────────────────────────────────────────────────────
-export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void }) {
+export default function PlatformApp() {
   const { enqueueSnackbar, closeSnackbar } = useSnackbar();
   const [session, setSession] = useState<PlatformSession | null>(loadPlatformSession());
   // The URL is the screen, so Back, reload and shareable links all work. React
@@ -540,8 +541,13 @@ export default function PlatformApp({ onOpenQuotes }: { onOpenQuotes: () => void
             <Route path={PATH.supply} element={<SupplyScreen session={session} />} />
             <Route path={PATH.negotiate} element={<NegotiateScreen session={session} />} />
 
-            {/* ── QUOTES (integration surface) ── */}
-            <Route path={PATH.quotes} element={<QuotesDoor onOpenQuotes={onOpenQuotes} />} />
+            {/* ── QUOTES ──
+                The Quote Builder itself, not a door in front of it. It used to
+                be a second application behind a button here: clicking through
+                replaced the whole shell, asked for a second sign-in, and then
+                showed a different name in a different brand bar. It is a screen
+                like any other now, on this session. */}
+            <Route path={PATH.quotes} element={<QuoteBuilder session={session} />} />
 
             {/* ── DATA & CONNECTION ── */}
             <Route path={PATH.data} element={<DataScreen session={session} onSynced={load} />} />
@@ -641,28 +647,6 @@ function CustomerItemRoute({ session }: { session: PlatformSession }) {
       // asks of that table.
       onOpenCustomer={(cid) => navigate(pathFor("customerItem", cid, itemId))}
     />
-  );
-}
-
-/** The way through to the Quote Builder, which is the other surface of this
- *  build rather than another route in it. */
-function QuotesDoor({ onOpenQuotes }: { onOpenQuotes: () => void }) {
-  return (
-    <div>
-      <div className="dp-head">
-        <h1>Quote intelligence</h1>
-        <p>Verified context and a role-gated economics view while you price a line.</p>
-      </div>
-      <Bp style={{ padding: 22, maxWidth: 640 }}>
-        <p style={{ marginTop: 0 }}>
-          Quote context resolves the requested item, shows this customer's own price history and — for
-          managers — the cost and margin, then leaves the price in your hands. It never pre-fills the field.
-        </p>
-        <Button variant="contained" onClick={onOpenQuotes}>
-          Open the Quote Builder →
-        </Button>
-      </Bp>
-    </div>
   );
 }
 

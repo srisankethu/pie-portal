@@ -19,7 +19,7 @@ import "@fontsource/barlow-condensed/500.css";
 import "@fontsource/barlow-condensed/600.css";
 import "@fontsource/barlow-condensed/700.css";
 
-import Root from "./Root";
+import PlatformApp from "./platform/PlatformApp";
 import theme from "./theme";
 // After the theme: `CssBaseline` emits the design tokens, and these rules read
 // them. Import order decides nothing about custom properties at runtime, but it
@@ -66,8 +66,12 @@ createRoot(document.getElementById("root")!).render(
               served by the same FastAPI app, and a browser-path router needs
               every unknown path rewritten to index.html there. See
               `platform/route.ts`. */}
+          {/* One application. There used to be a `Root` here that chose
+              between two of them — the platform and the Quote Builder — each
+              with its own shell and its own login. The builder is a route now,
+              so this is just the app. */}
           <HashRouter>
-            <Root />
+            <PlatformApp />
           </HashRouter>
         </SnackbarProvider>
       </QueryClientProvider>

@@ -136,7 +136,12 @@ async def unhandled_error(request: Request, exc: Exception) -> JSONResponse:
     access is already controlled.
     """
     error_id = uuid.uuid4().hex[:8]
-    log.exception("unhandled error %s on %s %s",
+    # noqa: LOG004 — ruff sees no syntactic `except` block here and assumes the
+    # traceback is unavailable. It is not: Starlette invokes exception handlers
+    # from inside its own `except`, so `sys.exc_info()` is set and `.exception()`
+    # logs the traceback correctly. Downgrading to `.error()` to satisfy the rule
+    # would drop the traceback — the exact silence the docstring above is about.
+    log.exception("unhandled error %s on %s %s",  # noqa: LOG004
                   error_id, request.method, request.url.path)
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

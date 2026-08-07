@@ -1,12 +1,23 @@
 # The gate from CLAUDE.md §6, run by a machine instead of by memory.
 #
-# Every step here is one a person was already told to run before merging. The
-# only change is that forgetting is no longer possible — which matters most for
-# the migration job below, the check that would have caught the incident §4 was
-# written about and the one nobody runs on an already-migrated laptop.
+# The checks themselves live in ./scripts/verify.sh, which `make verify` also
+# runs. That is deliberate: this file used to restate what CLAUDE.md §6 told a
+# person to run, the two lists drifted, and the drift was invisible for eight
+# consecutive merges to main — CI installed ruff unpinned and reported 1314
+# errors against an unchanged tree, and because lint ran before pytest in one
+# job the 1174-test suite was skipped every run. One list, run from both places.
 #
-# Jobs are split so a failure names itself in the checks list. "backend" going
-# red tells you more than one "ci" going red does.
+# Four jobs, and the split is on a real axis rather than a cosmetic one:
+#
+#   invariants / frontend  fast, and independent of the pie-parser engine, so
+#                          they keep giving signal whatever happens to it. They
+#                          repeat a check `verify` also runs; that duplication
+#                          is the point, and `verify` stays complete regardless.
+#   verify                 the whole gate, including `alembic upgrade head` on an
+#                          EMPTY database — the check §4 was written about, and
+#                          the one nobody runs on an already-migrated laptop.
+#   pie-contract           the only job that needs a credential, so a missing
+#                          one costs the seam and nothing else.
 name: gate
 
 on:
@@ -51,78 +62,6 @@ jobs:
             exit 1
           fi
 
-  backend:
-    name: backend — ruff + tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: pip
-          cache-dependency-path: backend/requirements.txt
-      # ruff is PINNED. Unpinned, this step installed whatever was newest on the
-      # day the job ran, and ruff's *default* rule selection is not stable
-      # across releases — a version after 0.15.8 turned 0 findings into 1314
-      # (UP006, and the rest of a wider default set) against an unchanged tree.
-      # Because `ruff` runs before `pytest` in this job, that failure also
-      # skipped the entire backend suite, so the gate ran no backend tests at
-      # all while looking like it had an opinion.
-      #
-      # A lint rule set is a decision this repo should make deliberately, not
-      # inherit from a release date. Bumping this pin is how the decision gets
-      # made, and the diff shows the new findings.
-      - run: pip install -r backend/requirements.txt ruff==0.15.8
-      - name: ruff
-        run: ruff check backend/app
-      # `-p no:randomly` is not used: the suite is order-independent by design
-      # and finding out otherwise is worth a red build.
-      - name: pytest
-        working-directory: backend
-        run: python -m pytest tests -q
-
-  migrations:
-    name: migrations on an empty database
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: pip
-          cache-dependency-path: backend/requirements.txt
-      - run: pip install -r backend/requirements.txt
-      # The EMPTY case. A developer's own database is already migrated and can
-      # never exercise this; production always can. §4 exists because the
-      # schema and the models drifted apart in 130 places and nobody had run
-      # autogenerate against a fresh database.
-      - name: alembic upgrade head, from nothing
-        working-directory: backend
-        env:
-          DATABASE_URL: sqlite:////tmp/gate.db
-        run: |
-          rm -f /tmp/gate.db
-          python -m alembic upgrade head
-      - name: schema must match the models exactly
-        working-directory: backend
-        env:
-          DATABASE_URL: sqlite:////tmp/gate.db
-        run: python -m pytest tests/decision_platform/test_migrations_integrity.py -q
-      # Two heads means two branches each added a migration and nobody merged
-      # them. It fails on the one deployment that runs them in the wrong order,
-      # which is always the production one.
-      - name: exactly one head
-        working-directory: backend
-        env:
-          DATABASE_URL: sqlite:////tmp/gate.db
-        run: |
-          heads=$(python -m alembic heads | grep -c . || true)
-          if [ "$heads" -ne 1 ]; then
-            python -m alembic heads
-            echo "::error::$heads migration heads. Run: alembic merge -m 'merge' <rev> <rev>"
-            exit 1
-          fi
-
   frontend:
     name: frontend — types + build
     runs-on: ubuntu-latest
@@ -154,6 +93,61 @@ jobs:
   # Deliberately its own job rather than steps inside `backend`: the seam is
   # what this proves, and a failure here should name the engine rather than
   # hide behind an unrelated lint or unit failure.
+  verify:
+    name: verify — lint, tests, frontend, migrations
+    runs-on: ubuntu-latest
+    steps:
+      # checkout@v4 / setup-python@v5 / setup-node@v4 target Node 20, which
+      # GitHub now forces onto Node 24 with a deprecation warning. They run
+      # correctly; bumping to the Node 24 majors is a separate one-line change
+      # that should be made once and watched go green, not bundled in here.
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.txt
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # requirements-dev.txt pins ruff, pytest, pytest-xdist and cffi exactly,
+      # and ruff.toml writes the rule set down. Both halves are needed: a pinned
+      # version with implicit rules breaks on the next bump, and a written rule
+      # can still change meaning between versions. cffi is here because without
+      # it Debian's `cryptography` panics at import and takes 22 test modules
+      # with it at collection.
+      - name: install pinned tooling
+        run: python -m pip install -r backend/requirements-dev.txt
+
+      - name: install frontend dependencies
+        working-directory: frontend
+        # The browsers are not needed to typecheck or build, and downloading
+        # them on every run is minutes for nothing.
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+        run: npm ci
+
+      # The same script a developer runs. Lint, the §1 invariants, the backend
+      # suite (parallel, per-worker databases), the frontend production build,
+      # and `alembic upgrade head` on an EMPTY database plus the drift test and
+      # the single-head check.
+      #
+      # The pie-parser submodule is deliberately NOT fetched here. Without the
+      # engine, conftest skips the `requires_pie` tests and everything else runs
+      # — so this job needs no credential and cannot be held hostage by one.
+      # The seam those tests cover is the `pie-contract` job's whole purpose.
+      #
+      # verify.sh runs every check and reports all failures at the end rather
+      # than stopping at the first, so one red build names everything that is
+      # wrong — the specific behaviour whose absence hid the suite behind lint.
+      - name: verify
+        run: ./scripts/verify.sh
+
   pie-contract:
     name: pie-parser contract — the pinned engine still resolves
     runs-on: ubuntu-latest

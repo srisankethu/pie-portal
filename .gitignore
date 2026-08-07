@@ -5,6 +5,13 @@ __pycache__/
 venv/
 *.egg-info/
 .pytest_cache/
+.ruff_cache/
+
+# Local gate state, not shared: .verify-stamp records that THIS working tree
+# passed, and the nag file is the stop-hook's loop-breaker. Committing either
+# would let one machine's green run silence the hook on another.
+.verify-stamp
+.claude/.verify-nag
 
 # Generated PIE catalog (built from pie-parser corpus via scripts/build_catalog.py)
 backend/data/products.jsonl

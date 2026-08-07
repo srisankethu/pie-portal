@@ -1,0 +1,38 @@
+# Tooling the gate depends on, pinned exactly.
+#
+# `requirements.txt` is what the app needs to *run*, and its ranges are fine
+# there. This file is different: these decide whether a change may merge, so a
+# new release changing its own defaults is a broken build nobody caused.
+#
+# That is not hypothetical here. It is why CLAUDE.md now has a ruff.toml beside
+# it. `gate.yml` ran `pip install -r backend/requirements.txt ruff` — unpinned —
+# a newer ruff shipped a broader default rule set, and the gate reported 1314
+# lint errors with no code change behind them. Because lint ran before pytest in
+# the same job, the 1174-test backend suite was skipped on every one of eight
+# consecutive merges to main.
+#
+# Upgrading is a deliberate commit: bump the pin, run `make verify`, fix or
+# explicitly defer what the new version reports, in a change that does nothing
+# else — so a review can tell a mechanical rewrite from a behaviour change.
+
+-r requirements.txt
+
+# Pinned to the versions the 1174-test suite was actually verified against.
+# Note requirements.txt asks for `pytest>=8.0`; what resolves today is 9.1.1, a
+# major version it has already crossed without anyone deciding to.
+ruff==0.16.1
+pytest==9.1.1
+
+# Cuts the suite from ~7m40s to ~2m20s on four cores. The wall-clock matters:
+# an eight-minute suite is one that gets skipped "just this once", and the whole
+# point of the gate is that there is no such once. See tests/conftest.py for the
+# per-worker database isolation this needs.
+pytest-xdist==3.8.0
+
+# Not a linter — a runtime dependency that only shows up on a clean machine.
+# Debian's system `cryptography` binds to Rust bindings that import
+# `_cffi_backend`; without it, `import app.main` dies at collection with
+# `pyo3_runtime.PanicException: Python API call failed`, taking all 22 test
+# modules with it. Nothing in requirements.txt pulls it in, so a fresh container
+# cannot run the suite at all until this is installed.
+cffi==2.1.1

@@ -195,10 +195,11 @@ The distinction that decides it: **is the colour the only thing saying what this
 means?** If a reader in greyscale loses the meaning, it is a defect. If they
 lose only emphasis, it is fine.
 
-**Not yet aligned — one clear case, two worth arguing about.** The previous two
-revisions of this section each said "nothing the current audit can name", and
-each was wrong within a release. The claim is an enumeration now rather than a
-promise, so the next reader can check it in a minute:
+**Not yet aligned — nothing clear-cut, two worth arguing about.** The previous
+two revisions of this section each said "nothing the current audit can name",
+and each was wrong within a release, so this one does not say it. The claim is
+an enumeration rather than a promise, and the next reader can check it in a
+minute:
 
 ```bash
 rg -n '<table' frontend/src --glob '*.tsx'
@@ -213,12 +214,20 @@ rg -n '<table' frontend/src --glob '*.tsx'
 | `cx-scopes` (`ConnectionsPanel`) | the fixed OAuth scopes on one connection | **Correct.** Shape of the screen. |
 | `dp-table` (`DataScreen`) | a capped *sample* of skipped records | Arguable — bounded by the sample, not by the book. |
 | `id-table` (`IdentityScreen`) | the records behind one identity | Arguable — a handful per identity today. |
-| `st-table` (`AdminScreens`) | the organization's user accounts | **Should be a grid.** Its row count is the size of the team. |
 
-The case this revision fixed was the Quote Builder's line table, and it was the
-worst of them: its row count is the size of the RFQ, so a forty-line tender was
-forty rows with no sort, no way to bring the thin-margin lines together, and a
-rate field that saved on blur.
+Two tables have been converted since this table was written, and both were the
+same defect at different sizes. The Quote Builder's line grid was the worse one:
+its row count is the size of the RFQ, so a forty-line tender was forty rows with
+no sort, no way to bring the thin-margin lines together, and a rate field that
+saved on blur. `AdminScreens`' people-and-roles table followed — smaller, but
+the row count is the size of the team, and "who can see cost?" and "who has
+never signed in?" are both sort questions.
+
+Both are `DataGrid` now, which is also how `DataGridProps` grew the things a
+list of *records* needs rather than a list of numbers: `getRowId`, a row class,
+controlled selection, and an editable cell. That growth is the point — the
+second grid needing selection got it for free, and neither had to open
+`AgGridReact` beside the wrapper.
 
 The lesson is in how to check, not what was missed. Twice the miss has been in
 the Quote Builder — first `.toast`, a fixed-position div on a 2.4s timer that

@@ -1182,6 +1182,12 @@ def book_dependency(principal: Principal = Depends(current_principal),
         sole_source=_sole_source_counts(session, org) if with_suppliers else {},
         with_suppliers=with_suppliers)
 
+    # The whole book as one picture, on the same rows the lists were built
+    # from — so a band and a row can never disagree about a number.
+    result["flow"] = dependency.sankey(
+        flows, vendor_names=vendors,
+        customer_names=snapshot.customer_names) if with_suppliers else None
+
     companies = Companies(session, org)
     companies.stamp(result["customers"]["rows"],
                     index_of(session, org, models.Customer), by="entity_id")

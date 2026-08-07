@@ -34,6 +34,7 @@ import type { EntityOrigin, PlatformSession, Sourced } from "../types";
 import { Panel, stateOf } from "./Panel";
 import { pct, useInsight } from "./useInsight";
 import { TargetEditor } from "./Targets";
+import { BookFlow } from "./BookFlow";
 
 type Row = Record<string, unknown>;
 
@@ -87,6 +88,13 @@ export function DependencyScreen({
           item, so this fills in after a full sync — until then the supplier
           shares below are computed over the traced part only.
         </p>
+      )}
+
+      {/* The picture first. The two lists below answer "how exposed are we to
+          this name"; this answers "what does the business look like", which is
+          the question somebody opens the screen with. */}
+      {supplierSide && data?.flow != null && (
+        <BookFlow flow={data.flow as Row} />
       )}
 
       <div className="dep-halves">

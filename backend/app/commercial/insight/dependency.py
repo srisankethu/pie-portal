@@ -359,6 +359,126 @@ def _concentration(rows: list[Standing]) -> dict:
     }
 
 
+# ── the whole book as one picture ───────────────────────────────────────────
+#
+# Principals → lines → customers, with the width of every band the money
+# running through it. The two dependency lists above answer "how exposed are we
+# to this name"; this answers the question an owner actually asks first, which
+# is "what does my business look like" — and it answers both ends and the mix in
+# the middle at once, which no list can.
+#
+# **Nothing is silently dropped.** Revenue that could not be traced to a
+# principal gets its own band, and so does trade in items no line could be
+# resolved for. A flow picture that quietly omitted them would show a smaller,
+# tidier business than the real one and would not reconcile with the totals on
+# every other screen.
+#
+# **The tail is folded, and the fold is labelled with its count.** A band per
+# customer is a hairball at two hundred; "Other (183)" is a band somebody can
+# read, and the number in it says how much was folded.
+
+#: The node stages, in the order they are drawn.
+STAGE_VENDOR = 0
+STAGE_LINE = 1
+STAGE_CUSTOMER = 2
+
+UNTRACED = "__untraced__"
+UNPLACED = "__unplaced__"
+OTHER_VENDORS = "__other_vendors__"
+OTHER_CUSTOMERS = "__other_customers__"
+
+
+def sankey(flows: Iterable[Flow], *, vendor_names: dict[str, str],
+           customer_names: dict[str, str],
+           top_vendors: int = 8, top_customers: int = 8) -> dict:
+    """The book as bands of money, principal through line to customer."""
+    rows = list(flows)
+    if not rows:
+        return {"nodes": [], "links": [], "total": 0.0,
+                "folded": {"vendors": 0, "customers": 0}}
+
+    def total_by(key) -> dict[str, float]:
+        out: dict[str, float] = {}
+        for f in rows:
+            out[key(f)] = out.get(key(f), 0.0) + f.revenue
+        return out
+
+    vendor_total = total_by(lambda f: f.vendor_id or UNTRACED)
+    customer_total = total_by(lambda f: f.customer_id)
+
+    # Which names survive as their own band. The rest fold, and the fold says
+    # how many went into it.
+    keep_v = {v for v, _ in sorted(
+        ((v, m) for v, m in vendor_total.items() if v != UNTRACED),
+        key=lambda kv: -kv[1])[:top_vendors]}
+    keep_c = {c for c, _ in sorted(customer_total.items(),
+                                   key=lambda kv: -kv[1])[:top_customers]}
+
+    def vendor_of(f: Flow) -> str:
+        if not f.vendor_id:
+            return UNTRACED
+        return f.vendor_id if f.vendor_id in keep_v else OTHER_VENDORS
+
+    def line_of(f: Flow) -> str:
+        return f.category if (f.category and f.category != UNCATEGORISED) else UNPLACED
+
+    def customer_of(f: Flow) -> str:
+        return f.customer_id if f.customer_id in keep_c else OTHER_CUSTOMERS
+
+    left: dict[tuple[str, str], float] = {}
+    right: dict[tuple[str, str], float] = {}
+    weight: dict[str, float] = {}
+    for f in rows:
+        v, ln, c = vendor_of(f), line_of(f), customer_of(f)
+        left[(v, ln)] = left.get((v, ln), 0.0) + f.revenue
+        right[(ln, c)] = right.get((ln, c), 0.0) + f.revenue
+        for node in (v, ln, c):
+            weight[node] = weight.get(node, 0.0) + f.revenue
+
+    folded_v = len([v for v in vendor_total if v not in keep_v and v != UNTRACED])
+    folded_c = len([c for c in customer_total if c not in keep_c])
+
+    def label(node: str, stage: int) -> str:
+        if node == UNTRACED:
+            return "Not traced to a principal"
+        if node == UNPLACED:
+            return "Line not resolved"
+        if node == OTHER_VENDORS:
+            return f"Other suppliers ({folded_v})"
+        if node == OTHER_CUSTOMERS:
+            return f"Other customers ({folded_c})"
+        if stage == STAGE_VENDOR:
+            return vendor_names.get(node) or f"Unnamed supplier (id {node})"
+        if stage == STAGE_CUSTOMER:
+            return customer_names.get(node) or f"Unnamed customer (id {node})"
+        return LABELS.get(node, node)
+
+    stages = {STAGE_VENDOR: {v for v, _ in left},
+              STAGE_LINE: {ln for _, ln in left} | {ln for ln, _ in right},
+              STAGE_CUSTOMER: {c for _, c in right}}
+    nodes = [
+        {"id": f"{stage}:{node}", "key": node, "stage": stage,
+         "label": label(node, stage), "money": round(weight.get(node, 0.0), 2),
+         # Named so a screen can style the honest bands differently from the
+         # real ones without re-deriving which is which.
+         "residual": node in (UNTRACED, UNPLACED, OTHER_VENDORS, OTHER_CUSTOMERS)}
+        for stage, names in sorted(stages.items())
+        for node in sorted(names, key=lambda n: -weight.get(n, 0.0))
+    ]
+    links = (
+        [{"source": f"{STAGE_VENDOR}:{v}", "target": f"{STAGE_LINE}:{ln}",
+          "money": round(m, 2)} for (v, ln), m in left.items()]
+        + [{"source": f"{STAGE_LINE}:{ln}", "target": f"{STAGE_CUSTOMER}:{c}",
+            "money": round(m, 2)} for (ln, c), m in right.items()]
+    )
+    return {
+        "nodes": nodes,
+        "links": sorted(links, key=lambda kv: -kv["money"]),
+        "total": round(sum(f.revenue for f in rows), 2),
+        "folded": {"vendors": folded_v, "customers": folded_c},
+    }
+
+
 def unavailable() -> list[dict]:
     """The two claims this view is not entitled to make."""
     return [

@@ -18,9 +18,17 @@
 // line. The reader makes the call. Colouring blanks as opportunity would send
 // people on wasted drives and the grid would not be trusted twice.
 //
-// **This is AG Grid, not a hand-written table.** The row count is the number of
-// customers in the business, which is exactly the line CLAUDE.md draws — the
-// only `<table>` on this screen is the accessible twin of the affinity figure.
+// **The heatmap leads and the grid follows, and that order was wrong first.**
+// This screen shipped as an AG Grid of 197 rows by 5 columns. An analyst scans
+// that happily; an owner wants to look once and know *the right half of my book
+// is empty and it is coolant*. The grid is still here and still AG Grid — the
+// row count is the size of the business, which is exactly the line CLAUDE.md
+// draws — but it now sits under the picture rather than in front of it, which
+// is the `Figure` pattern the rest of this package already uses.
+//
+// The heatmap is the same three states in the same colours. What it adds is
+// *shape*: rows sorted by how many lines they hold, so whitespace collects into
+// a block you can see the size of instead of a count you have to trust.
 
 import { useMemo, useState } from "react";
 import { money } from "../../money";
@@ -30,7 +38,7 @@ import { EntityName } from "../EntityName";
 import { CompanyFilter, useCompanyFilter } from "../CompanyFilter";
 import { DataGrid, numeric } from "../DataGrid";
 import type { EntityOrigin, PlatformSession, Sourced } from "../types";
-import { Panel, stateOf } from "./Panel";
+import { Figure, Panel, stateOf } from "./Panel";
 import { Seg } from "./Seg";
 import { pct, useInsight } from "./useInsight";
 
@@ -165,6 +173,14 @@ export function MixScreen({
         </p>
       )}
 
+      <Figure
+        caption={`Each row is a customer, each column a ${by === "vendor" ? "principal" : "line of the business"}. Filled means they buy it, amber means they used to and stopped, blank means never. Rows are sorted by how much they take, so the whitespace collects.`}
+        summary={`${counts.single_line ?? 0} of ${shown.length} customers buy from only one ${by === "vendor" ? "supplier" : "line"}.`}
+        tableLabel="View as a grid"
+      >
+        <Heatmap rows={worklist} columns={columns} />
+      </Figure>
+
       <div className="tier3-list">
         <DataGrid<Row>
           ariaLabel="Product mix by customer"
@@ -231,6 +247,61 @@ export function MixScreen({
 
 function cellOf(customer: Row, category: string): Row | undefined {
   return rows(customer.cells).find((c) => c.category === category);
+}
+
+/** The shape of the whitespace, at a glance.
+ *
+ *  One cell per customer per column, sorted so the customers holding most sit
+ *  at the top — which turns a scattered grid into a wedge, and the size of the
+ *  empty part into something you see rather than count. The same three states
+ *  and the same colours as the grid below, so the two cannot tell different
+ *  stories about one book.
+ *
+ *  Deliberately not a `<table>`: at two hundred rows this is a picture of a
+ *  distribution, and the accessible version of it is the AG Grid immediately
+ *  underneath. */
+function Heatmap({ rows: list, columns }: { rows: Row[]; columns: Row[] }) {
+  const ordered = useMemo(
+    () => [...list].sort((a, b) => (num(b.lines_held) - num(a.lines_held))
+                                   || (num(b.revenue) - num(a.revenue))),
+    [list]);
+  if (!ordered.length || !columns.length) return null;
+
+  // Rows thin out as the book grows so the whole thing stays on one screen —
+  // the point of this view is the shape, and a heatmap you scroll has none.
+  const h = ordered.length > 300 ? 2 : ordered.length > 120 ? 3 : 6;
+  const tracks = `repeat(${columns.length}, 1fr)`;
+
+  return (
+    <>
+      {/* The columns have to be named on the picture itself. The whitespace
+          picker above carries the same words, but a reader looking at a block
+          of colour should not have to count across to work out which line a
+          gap is in. */}
+      <div className="heat-head" style={{ gridTemplateColumns: tracks }}>
+        {columns.map((col) => (
+          <span key={String(col.category)}>{String(col.label)}</span>
+        ))}
+      </div>
+      {/* No explicit cell width: the grid track *is* the width. Setting both
+          made every cell a fifth of its own column and turned a dense block
+          into five thin strips with gaps between them — which is a picture of
+          nothing. */}
+      <div className="heat" style={{ gridTemplateColumns: tracks }}>
+        {ordered.map((c) =>
+          columns.map((col) => {
+            const cell = cellOf(c, String(col.category));
+            const state = String(cell?.state ?? "NEVER");
+            return (
+              <span key={`${c.customer_id}-${col.category}`}
+                    className={`heat-cell heat-${state.toLowerCase()}`}
+                    style={{ height: h }}
+                    title={`${String(c.label)} — ${String(col.label)}: ${CELL[state]?.label ?? state}`} />
+            );
+          }))}
+      </div>
+    </>
+  );
 }
 
 /** The strongest reason to look at this gap, in one sentence. */

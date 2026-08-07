@@ -57,6 +57,7 @@ import LocalShippingOutlined from "@mui/icons-material/LocalShippingOutlined";
 import HubOutlined from "@mui/icons-material/HubOutlined";
 import GridViewOutlined from "@mui/icons-material/GridViewOutlined";
 import AccountTreeOutlined from "@mui/icons-material/AccountTreeOutlined";
+import TrackChangesOutlined from "@mui/icons-material/TrackChangesOutlined";
 import PaymentsOutlined from "@mui/icons-material/PaymentsOutlined";
 import StorageOutlined from "@mui/icons-material/StorageOutlined";
 import FingerprintOutlined from "@mui/icons-material/FingerprintOutlined";
@@ -102,6 +103,7 @@ const ICON: Partial<Record<Screen, typeof MenuIcon>> = {
   bonds: HubOutlined,
   mix: GridViewOutlined,
   dependency: AccountTreeOutlined,
+  targets: TrackChangesOutlined,
   payments: PaymentsOutlined,
 
   data: StorageOutlined,

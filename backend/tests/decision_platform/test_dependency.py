@@ -214,3 +214,73 @@ def test_an_empty_book_returns_the_shape_rather_than_nothing():
     assert result["customers"]["rows"] == []
     assert result["customers"]["concentration"]["top_share"] is None
     assert result["attribution"]["share"] is None
+
+
+# ── the book as one picture ──────────────────────────────────────────────────
+def _sankey(flows, **kw):
+    kw.setdefault("vendor_names", {})
+    kw.setdefault("customer_names", {})
+    return dep.sankey(flows, **kw)
+
+
+def _node(chart, key):
+    return next(n for n in chart["nodes"] if n["key"] == key)
+
+
+def test_the_flow_runs_principal_through_line_to_customer():
+    chart = _sankey([_flow("c1", "v1", 100.0, category="CUTTING_TOOLS")])
+    stages = {n["key"]: n["stage"] for n in chart["nodes"]}
+    assert stages["v1"] == dep.STAGE_VENDOR
+    assert stages["CUTTING_TOOLS"] == dep.STAGE_LINE
+    assert stages["c1"] == dep.STAGE_CUSTOMER
+    assert len(chart["links"]) == 2
+    assert chart["total"] == 100.0
+
+
+def test_every_band_reconciles_with_the_total_on_both_sides():
+    """A flow picture whose bands do not add up teaches people to distrust the
+    page — the same rule the revenue waterfall is held to."""
+    flows = [_flow("c1", "v1", 60.0, category="CUTTING_TOOLS"),
+             _flow("c2", "v2", 40.0, category="COOLANTS")]
+    chart = _sankey(flows)
+    left = sum(link["money"] for link in chart["links"]
+               if link["source"].startswith(f"{dep.STAGE_VENDOR}:"))
+    right = sum(link["money"] for link in chart["links"]
+                if link["source"].startswith(f"{dep.STAGE_LINE}:"))
+    assert left == chart["total"] == right == 100.0
+
+
+def test_untraced_revenue_gets_its_own_band_rather_than_vanishing():
+    """Omitting it would draw a smaller, tidier business than the real one and
+    would not reconcile with the totals on every other screen."""
+    chart = _sankey([_flow("c1", None, 30.0, category="CUTTING_TOOLS"),
+                     _flow("c2", "v1", 70.0, category="CUTTING_TOOLS")])
+    untraced = _node(chart, dep.UNTRACED)
+    assert untraced["money"] == 30.0
+    assert untraced["residual"] is True
+    assert chart["total"] == 100.0
+
+
+def test_trade_in_unplaced_items_gets_its_own_band_too():
+    chart = _sankey([_flow("c1", "v1", 25.0, category=None)])
+    assert _node(chart, dep.UNPLACED)["money"] == 25.0
+
+
+def test_the_tail_folds_and_the_fold_says_how_many_went_into_it():
+    """A band per customer is a hairball at two hundred; 'Other (183)' is a band
+    somebody can read."""
+    flows = [_flow(f"c{i}", f"v{i}", float(100 - i), category="CUTTING_TOOLS")
+             for i in range(20)]
+    chart = _sankey(flows, top_vendors=3, top_customers=3)
+    assert chart["folded"] == {"vendors": 17, "customers": 17}
+    assert "17" in _node(chart, dep.OTHER_VENDORS)["label"]
+    assert "17" in _node(chart, dep.OTHER_CUSTOMERS)["label"]
+    # Folding moves money between bands; it never loses any.
+    assert sum(link["money"] for link in chart["links"]
+               if link["source"].startswith(f"{dep.STAGE_VENDOR}:")) == chart["total"]
+
+
+def test_an_empty_book_draws_no_bands_rather_than_failing():
+    chart = _sankey([])
+    assert chart["nodes"] == [] and chart["links"] == []
+    assert chart["total"] == 0.0

@@ -1169,3 +1169,75 @@
   .dep-row { grid-template-columns: 1fr auto; }
   .dep-track { grid-column: 1 / -1; }
 }
+
+/* ── the flow map ──────────────────────────────────────────────────────────
+   Principals → lines → customers, band width is money. Hovering lights one
+   path, which is the interaction the shape exists for: "where does Kennametal
+   end up" is answered by following a ribbon, not by reading twenty rows.
+
+   Residual bands — revenue no principal could be traced to, trade in items no
+   line resolved — are drawn muted rather than omitted. A picture that dropped
+   them would show a smaller, tidier business than the real one. */
+.flow-map { display: block; width: 100%; overflow: visible; }
+.flow-ribbon {
+  fill: none; stroke: var(--viz-gain); stroke-opacity: .28;
+  transition: stroke-opacity .15s ease;
+}
+.flow-ribbon:hover { stroke-opacity: .6; }
+.flow-ribbon.dim { stroke-opacity: .06; }
+.flow-ribbon.residual { stroke: var(--viz-neutral); }
+.flow-bar { fill: var(--viz-gain); }
+.flow-bar.residual { fill: var(--viz-neutral); }
+.flow-node { cursor: default; }
+.flow-label { fill: var(--color-text); font-size: 11px; }
+
+/* ── the target wall ───────────────────────────────────────────────────────
+   A bullet chart per principal: one bar for what is done, one marker for where
+   the period is. The comparison between the two is the whole judgement, and an
+   achievement bar alone hides it until the last week.
+
+   Behind is amber, never red — red is a loss on this palette, and a target
+   behind in week six is a thing to work rather than a thing that went wrong.
+   Every card says it in words as well. */
+.wall {
+  list-style: none; margin: 14px 0 0; padding: 0;
+  display: grid; gap: 14px;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+}
+.wall-card {
+  border: 1px solid var(--color-divider); border-radius: 6px;
+  padding: 12px 14px; display: grid; gap: 6px;
+}
+.wall-card.behind { border-left: 3px solid var(--viz-accent); }
+.wall-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.wall-figures { display: flex; align-items: baseline; gap: 6px; }
+.wall-figures strong { font-size: 19px; font-variant-numeric: tabular-nums; }
+.wall-track {
+  position: relative; height: 12px; border-radius: 2px;
+  background: var(--color-neutral-200);
+}
+.wall-fill { position: absolute; inset: 0 auto 0 0; height: 100%; border-radius: 2px; }
+.wall-fill.ok { background: var(--viz-gain); }
+.wall-fill.behind { background: var(--viz-accent); }
+.wall-pace {
+  position: absolute; top: -3px; width: 2px; height: 18px;
+  background: var(--color-text);
+}
+.wall-note { margin: 0; font-size: 11.5px; }
+
+/* ── the mix heatmap ───────────────────────────────────────────────────────
+   The same three states as the grid below it, in the same colours. What this
+   adds is shape: rows sorted by how much each customer takes, so the
+   whitespace collects into a block whose size you can see rather than count. */
+.heat { display: grid; gap: 1px; margin: 10px 0 4px; }
+.heat-cell { display: block; border-radius: 1px; }
+.heat-buys { background: var(--viz-gain); }
+.heat-lapsed { background: var(--viz-accent); }
+.heat-never { background: color-mix(in srgb, var(--color-text) 7%, transparent); }
+
+.heat-head {
+  display: grid; gap: 1px; margin-top: 14px;
+  font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--color-text-secondary);
+}
+.heat-head span { padding-bottom: 4px; }

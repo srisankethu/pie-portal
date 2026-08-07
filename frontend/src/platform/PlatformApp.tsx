@@ -48,6 +48,7 @@ import { CadenceScreen, CompositionScreen, LandscapeScreen } from "./viz/Pattern
 import { BondsScreen } from "./viz/Bonds";
 import { MixScreen } from "./viz/Mix";
 import { DependencyScreen } from "./viz/Dependency";
+import { TargetWallScreen } from "./viz/TargetWall";
 import { CustomerHealthTimeline, MigrationMatrix } from "./viz/History";
 import { PaymentsScreen, StockScreen, SupplyScreen } from "./viz/TheBook";
 import { NegotiateScreen } from "./viz/Negotiate";
@@ -404,6 +405,11 @@ export default function PlatformApp() {
     // salesperson sees it; the server omits the supplier half from their
     // response rather than the nav hiding the whole screen.
     { key: "dependency", label: "Dependency", group: "understand" },
+    // Manager and above: a principal's target is measured against purchase
+    // spend, which is cost by another name.
+    ...(ability.can("read", "supply")
+      ? ([{ key: "targets", label: "Supplier targets", group: "understand" }] as NavItem[])
+      : []),
 
     // ── The book ──
     // One "Customers" door, not two. The account picker, the month-by-month
@@ -560,6 +566,7 @@ export default function PlatformApp() {
             <Route path={PATH.bonds} element={<BondsScreen session={session} onNavigate={goViz} />} />
             <Route path={PATH.mix} element={<MixScreen session={session} onNavigate={goViz} />} />
             <Route path={PATH.dependency} element={<DependencyScreen session={session} onNavigate={goViz} />} />
+            <Route path={PATH.targets} element={<TargetWallScreen session={session} />} />
             <Route path={PATH.negotiate} element={<NegotiateScreen session={session} />} />
 
             {/* ── QUOTES ──

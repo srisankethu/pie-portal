@@ -126,16 +126,34 @@ jobs:
         id: cred
         env:
           TOKEN: ${{ secrets.PIE_PARSER_TOKEN }}
+          # Only the KEYS of this are printed, via `jq -r 'keys[]'`. Never the
+          # values. Actions masks secret values in logs anyway, but printing
+          # names only means there is nothing to mask in the first place.
+          #
+          # This exists because the previous version of this step could say the
+          # token was not visible but not say why, so the same fix got tried
+          # twice. A diagnostic that cannot distinguish its causes is the thing
+          # this gate was built to stop.
+          SECRET_NAMES: ${{ toJSON(secrets) }}
         run: |
           if [ -z "$TOKEN" ]; then
-            echo "::error::PIE_PARSER_TOKEN is not visible to this workflow run."
-            echo "::error::Either it does not exist, or it was added somewhere this"
-            echo "::error::run cannot read: an *environment* secret rather than a"
-            echo "::error::repository secret, a secret on the wrong repository"
-            echo "::error::(it belongs on pie-portal, not pie-parser), or a name"
-            echo "::error::that differs by a character."
-            echo "::error::Add it at: Settings -> Secrets and variables -> Actions"
-            echo "::error::-> Repository secrets, named exactly PIE_PARSER_TOKEN."
+            echo "PIE_PARSER_TOKEN is not visible to this workflow run."
+            echo ""
+            echo "Secret names this job CAN see:"
+            printf '%s' "$SECRET_NAMES" | jq -r 'keys[]' | sed 's/^/  - /'
+            echo ""
+            echo "Absent from that list => it is not a REPOSITORY secret on"
+            echo "srisankethu/pie-portal. The two ways it can exist and still not"
+            echo "appear here:"
+            echo "  * an ENVIRONMENT secret. Those resolve only for a job that"
+            echo "    declares 'environment:', which this one does not. They sit"
+            echo "    in a separate section of the same settings page."
+            echo "  * a secret on another repository. Secrets never cross repos,"
+            echo "    so one on pie-parser cannot be read from pie-portal."
+            echo "Present in the list => it exists with an empty value; re-enter it."
+            echo ""
+            echo "::error::PIE_PARSER_TOKEN is not readable by this job. See the"
+            echo "::error::secret-name list above for which of the two cases it is."
             exit 1
           fi
           CODE=$(curl -sS -o /dev/null -w '%{http_code}' \

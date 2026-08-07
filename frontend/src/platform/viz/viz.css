@@ -1241,3 +1241,19 @@
   color: var(--color-text-secondary);
 }
 .heat-head span { padding-bottom: 4px; }
+
+/* The catalogue's source column: what placed this item, and a way out of a
+   hand-set answer. Kept on one line so the grid row stays two lines tall. */
+.cat-source { display: inline-flex; align-items: center; gap: 8px; }
+
+/* The line picker, in the cell. Styled to read as part of the row rather than
+   as a form control dropped into a grid — a work queue of 200 rows with 200
+   chunky selects in it looks like a form nobody wants to fill in. */
+.cat-pick {
+  font: inherit; font-size: 12.5px; width: 100%;
+  padding: 3px 4px; border-radius: 4px;
+  border: 1px solid var(--color-divider);
+  background: transparent; color: var(--color-text);
+}
+.cat-pick:hover { border-color: var(--color-text-secondary); }
+.cat-pick:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }

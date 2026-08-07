@@ -1296,6 +1296,139 @@ def delete_vendor_target(target_id: str,
     session.delete(row)
 
 
+# ── the catalogue: which line each item belongs to ──────────────────────────
+#
+# The last mile of category coverage. Three of the four sources resolve
+# themselves — an override, the catalogue's own word, the tariff code, the
+# supplier's dominant line — and whatever is left needs a person. This is where
+# that person works.
+#
+# Manager and above: placing an item in a line is policy, and it moves every
+# figure on the mix grid and the coverage facet on every bond.
+#
+# **Ordered by the money running through the item, not alphabetically.** A
+# catalogue has thousands of items and almost nobody will place them all; the
+# useful property is that placing the first ten closes most of the gap, and that
+# is only true if the list leads with the ones revenue actually flows through.
+
+
+@router.get("/catalogue")
+def catalogue_lines(unplaced_only: bool = Query(True),
+                    principal: Principal = Depends(require_manager_or_owner),
+                    session: Session = Depends(get_session)) -> dict:
+    """Every item's line, where it came from, and what it is worth placing."""
+    org, snapshot, th = _context(session, principal)
+    vendor_of = _vendor_of_product(session, org)
+    lines_of = _category_of(session, org, th, vendor_of)
+
+    overrides = {
+        row.product_id: row for row in session.scalars(
+            select(models.ItemCategoryOverride).where(
+                models.ItemCategoryOverride.organization_id == org)).all()
+    }
+    revenue: dict[str, float] = {}
+    for row in snapshot.sales:
+        revenue[row.product_id] = revenue.get(row.product_id, 0.0) + float(row.line_revenue)
+
+    products = session.scalars(
+        select(models.Product).where(models.Product.organization_id == org)).all()
+    vendors = {v.vendor_id: v.name for v in session.scalars(
+        select(models.Vendor).where(models.Vendor.organization_id == org)).all()}
+
+    rows = []
+    for p in products:
+        resolved = lines_of.get(p.product_id)
+        if resolved is None:
+            continue
+        if unplaced_only and resolved.known:
+            continue
+        rows.append({
+            "product_id": p.product_id,
+            "name": p.name,
+            "hsn": p.hsn,
+            "heading": cat.heading_of(p.hsn),
+            "zoho_category": p.category,
+            "category": resolved.category,
+            "label": cat.LABELS[resolved.category],
+            "source": resolved.source,
+            "source_label": cat.SOURCE_LABEL[resolved.source],
+            "overridden": p.product_id in overrides,
+            "note": overrides[p.product_id].note if p.product_id in overrides else None,
+            "supplier": vendors.get(vendor_of.get(p.product_id) or ""),
+            "revenue": round(revenue.get(p.product_id, 0.0), 2),
+        })
+    # The biggest first. Placing the item nothing sells is busywork; placing the
+    # one a tenth of revenue runs through is the whole job.
+    rows.sort(key=lambda r: -r["revenue"])
+
+    unplaced_revenue = sum(
+        revenue.get(pid, 0.0) for pid, r in lines_of.items() if not r.known)
+    total_revenue = sum(revenue.values())
+    return _envelope(
+        {"items": rows,
+         "lines": cat.lines(),
+         "catalogue": cat.coverage_report(lines_of),
+         # What placing the rest is worth. A coverage percentage counted in
+         # *items* can look alarming while the unplaced ones sell nothing —
+         # this is the number that says whether the work matters.
+         "unplaced_revenue": round(unplaced_revenue, 2),
+         "unplaced_revenue_share": (round(unplaced_revenue / total_revenue, 4)
+                                    if total_revenue else None)},
+        currency=th.currency,
+        empty_reason=(None if rows else
+                      ("Every item that has traded is placed in a line."
+                       if unplaced_only else
+                       "No items have been synced yet.")))
+
+
+class ItemLineIn(BaseModel):
+    category: str = Field(min_length=1)
+    note: Optional[str] = Field(default=None, max_length=512)
+
+
+@router.put("/catalogue/{product_id}")
+def set_item_line(product_id: str, body: ItemLineIn,
+                  principal: Principal = Depends(require_manager_or_owner),
+                  session: Session = Depends(get_session)) -> dict:
+    """Place an item in a line by hand. Beats every other source."""
+    org = principal.organization_id
+    if body.category not in cat.ORDER:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            f"category must be one of {', '.join(cat.ORDER)}")
+    product = session.get(models.Product, product_id)
+    if product is None or product.organization_id != org:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such item")
+
+    row = session.scalar(
+        select(models.ItemCategoryOverride).where(
+            models.ItemCategoryOverride.organization_id == org,
+            models.ItemCategoryOverride.product_id == product_id))
+    if row is None:
+        row = models.ItemCategoryOverride(organization_id=org,
+                                          product_id=product_id)
+        session.add(row)
+    row.category = body.category
+    row.note = body.note
+    row.set_by_user_id = principal.user_id
+    session.flush()
+    return {"product_id": product_id, "category": row.category,
+            "label": cat.LABELS[row.category], "source": cat.BY_OVERRIDE}
+
+
+@router.delete("/catalogue/{product_id}", status_code=status.HTTP_204_NO_CONTENT)
+def clear_item_line(product_id: str,
+                    principal: Principal = Depends(require_manager_or_owner),
+                    session: Session = Depends(get_session)) -> None:
+    """Drop the override and let the automatic sources speak again."""
+    row = session.scalar(
+        select(models.ItemCategoryOverride).where(
+            models.ItemCategoryOverride.organization_id == principal.organization_id,
+            models.ItemCategoryOverride.product_id == product_id))
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No override on that item")
+    session.delete(row)
+
+
 # ── the negotiation desk ────────────────────────────────────────────────────
 #
 # The one screen in this product a salesperson uses to *decide* rather than to

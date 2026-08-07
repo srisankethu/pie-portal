@@ -49,6 +49,7 @@ import { BondsScreen } from "./viz/Bonds";
 import { MixScreen } from "./viz/Mix";
 import { DependencyScreen } from "./viz/Dependency";
 import { TargetWallScreen } from "./viz/TargetWall";
+import { CatalogueScreen } from "./viz/Catalogue";
 import { CustomerHealthTimeline, MigrationMatrix } from "./viz/History";
 import { PaymentsScreen, StockScreen, SupplyScreen } from "./viz/TheBook";
 import { NegotiateScreen } from "./viz/Negotiate";
@@ -430,6 +431,12 @@ export default function PlatformApp() {
     { key: "payments", label: "Cash", group: "book" },
 
     // ── Setup ──
+    // Setup, not Understand: placing an item is catalogue maintenance, and it
+    // is where somebody goes when a mix screen says its coverage is thin.
+    // Manager and above, like the policy it is.
+    ...(ability.can("read", "supply")
+      ? ([{ key: "catalogue", label: "Item lines", group: "setup" }] as NavItem[])
+      : []),
     { key: "data", label: "Data & connection", group: "setup" },
     { key: "identity", label: "Identities", group: "setup" },
     { key: "states", label: "AI states", group: "setup" },
@@ -567,6 +574,7 @@ export default function PlatformApp() {
             <Route path={PATH.mix} element={<MixScreen session={session} onNavigate={goViz} />} />
             <Route path={PATH.dependency} element={<DependencyScreen session={session} onNavigate={goViz} />} />
             <Route path={PATH.targets} element={<TargetWallScreen session={session} />} />
+            <Route path={PATH.catalogue} element={<CatalogueScreen session={session} />} />
             <Route path={PATH.negotiate} element={<NegotiateScreen session={session} />} />
 
             {/* ── QUOTES ──

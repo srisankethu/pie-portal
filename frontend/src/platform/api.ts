@@ -217,6 +217,21 @@ export const papi = {
     req<Record<string, unknown>>("/api/v1/insight/targets",
       { method: "PUT", body: JSON.stringify(body) }, t),
 
+  // The catalogue's last mile: which line an item belongs to, set by hand.
+  // Manager and above — placing an item moves every mix figure downstream.
+  catalogue: (t: string, unplacedOnly: boolean) =>
+    req<Record<string, unknown>>(
+      `/api/v1/insight/catalogue?unplaced_only=${unplacedOnly}`, {}, t),
+
+  setItemLine: (t: string, productId: string, category: string) =>
+    req<Record<string, unknown>>(
+      `/api/v1/insight/catalogue/${encodeURIComponent(productId)}`,
+      { method: "PUT", body: JSON.stringify({ category }) }, t),
+
+  clearItemLine: (t: string, productId: string) =>
+    req<unknown>(`/api/v1/insight/catalogue/${encodeURIComponent(productId)}`,
+      { method: "DELETE" }, t),
+
   deleteTarget: (t: string, targetId: string) =>
     req<unknown>(`/api/v1/insight/targets/${encodeURIComponent(targetId)}`,
       { method: "DELETE" }, t),

@@ -363,3 +363,166 @@ def test_a_key_outside_the_given_columns_is_dropped_not_invented():
 def test_the_grid_carries_the_version_that_produced_it():
     assert _grid([_line("c1", cat.CUTTING_TOOLS, date(2026, 6, 1))]
                  )["thresholds_version"] == TH.version
+
+
+# ── the catalogue's last mile: placing an item by hand ───────────────────────
+#
+# The write path, tested through the API rather than the model: what matters is
+# that an override outranks every automatic source, that it survives the re-sync
+# that rebuilds products, and that only a manager can set one.
+@pytest.fixture()
+def client():
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    from app.db import Base, get_session
+    from app.routers import insight, platform_auth
+    from app.seed import ensure_org_and_users
+
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False},
+                           poolclass=StaticPool, future=True)
+    Base.metadata.create_all(engine)
+    Maker = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False,
+                         future=True)
+    s = Maker()
+    ensure_org_and_users(s)
+    # One item the tariff code places, so an override has something to beat.
+    s.add(models.Product(product_id="p-tool", organization_id="org_sanketh",
+                         external_id="e-tool", name="CNMG 120408",
+                         hsn="82071900", active=True, source_ref={}))
+    s.commit()
+    s.close()
+
+    app = FastAPI()
+    app.include_router(platform_auth.router)
+    app.include_router(insight.router)
+
+    def _override():
+        sess = Maker()
+        try:
+            yield sess
+            sess.commit()
+        finally:
+            sess.close()
+
+    app.dependency_overrides[get_session] = _override
+    return TestClient(app), Maker
+
+
+def _auth(client, email):
+    from app.seed import SEED_PASSWORD
+    r = client.post("/api/v1/auth/login",
+                    json={"email": email, "password": SEED_PASSWORD})
+    assert r.status_code == 200, r.text
+    return {"Authorization": f"Bearer {r.json()['token']}"}
+
+
+def test_a_hand_placed_item_beats_its_tariff_code(client):
+    c, Maker = client
+    head = _auth(c, "m.rao@sanketh.in")
+    r = c.put("/api/v1/insight/catalogue/p-tool",
+              json={"category": cat.METROLOGY}, headers=head)
+    assert r.status_code == 200, r.text
+    assert r.json()["category"] == cat.METROLOGY
+    assert r.json()["source"] == cat.BY_OVERRIDE
+
+    listing = c.get("/api/v1/insight/catalogue?unplaced_only=false",
+                    headers=head).json()
+    row = next(i for i in listing["items"] if i["product_id"] == "p-tool")
+    assert row["category"] == cat.METROLOGY      # not CUTTING_TOOLS from 8207
+    assert row["source"] == cat.BY_OVERRIDE
+    assert row["overridden"] is True
+
+
+def test_clearing_an_override_lets_the_automatic_sources_speak_again(client):
+    c, _ = client
+    head = _auth(c, "m.rao@sanketh.in")
+    c.put("/api/v1/insight/catalogue/p-tool",
+          json={"category": cat.METROLOGY}, headers=head)
+    assert c.delete("/api/v1/insight/catalogue/p-tool",
+                    headers=head).status_code == 204
+
+    listing = c.get("/api/v1/insight/catalogue?unplaced_only=false",
+                    headers=head).json()
+    row = next(i for i in listing["items"] if i["product_id"] == "p-tool")
+    assert row["category"] == cat.CUTTING_TOOLS
+    assert row["source"] == cat.BY_HSN
+
+
+def test_an_override_survives_the_resync_that_rebuilds_the_product(client):
+    """The whole reason it lives in its own table. Products are derived and a
+    full re-sync rebuilds them; a mapping somebody typed is the only copy."""
+    from app.repositories import ReadModelRepository
+    from app.domain.schemas import ProductIn, SourceRef
+
+    c, Maker = client
+    head = _auth(c, "m.rao@sanketh.in")
+    c.put("/api/v1/insight/catalogue/p-tool",
+          json={"category": cat.METROLOGY}, headers=head)
+
+    # Re-sync the same item: `upsert_product` rewrites every synced field.
+    s = Maker()
+    ReadModelRepository(s, "org_sanketh").upsert_product(ProductIn(
+        external_id="e-tool", name="CNMG 120408", hsn="82071900",
+        category="Cutting Tools", active=True,
+        source_ref=SourceRef(record_type="item", record_id="e-tool")))
+    s.commit()
+    s.close()
+
+    listing = c.get("/api/v1/insight/catalogue?unplaced_only=false",
+                    headers=head).json()
+    row = next(i for i in listing["items"] if i["product_id"] == "p-tool")
+    assert row["category"] == cat.METROLOGY, (
+        "a re-sync must not destroy a mapping somebody typed")
+
+
+def test_a_salesperson_cannot_place_an_item(client):
+    """Placing an item is policy — it moves every mix figure downstream."""
+    c, _ = client
+    head = _auth(c, "r.nair@sanketh.in")
+    assert c.put("/api/v1/insight/catalogue/p-tool",
+                 json={"category": cat.METROLOGY}, headers=head).status_code == 403
+    assert c.get("/api/v1/insight/catalogue", headers=head).status_code == 403
+
+
+def test_an_unknown_line_is_refused_rather_than_stored(client):
+    c, _ = client
+    head = _auth(c, "m.rao@sanketh.in")
+    r = c.put("/api/v1/insight/catalogue/p-tool",
+              json={"category": "NONSENSE"}, headers=head)
+    assert r.status_code == 422
+    # UNCATEGORISED is not a line either — it is the absence of one.
+    assert c.put("/api/v1/insight/catalogue/p-tool",
+                 json={"category": cat.UNCATEGORISED},
+                 headers=head).status_code == 422
+
+
+def test_the_list_leads_with_the_items_revenue_runs_through(client):
+    """Placing the item nothing sells is busywork; the first rows have to be
+    the ones worth the keystrokes."""
+    from decimal import Decimal
+
+    c, Maker = client
+    head = _auth(c, "m.rao@sanketh.in")
+    s = Maker()
+    for pid, rev in (("p-big", 900), ("p-small", 10)):
+        s.add(models.Product(product_id=pid, organization_id="org_sanketh",
+                             external_id=pid, name=pid, hsn=None, active=True,
+                             source_ref={}))
+        s.add(models.SalesTxn(
+            organization_id="org_sanketh", external_ref=f"inv-{pid}",
+            customer_id="c1", product_id=pid, date=date(2026, 6, 1),
+            qty=Decimal("1"), unit_price=Decimal(rev),
+            line_revenue=Decimal(rev), source_ref={"record_id": f"inv-{pid}"}))
+    s.commit()
+    s.close()
+
+    listing = c.get("/api/v1/insight/catalogue", headers=head).json()
+    unplaced = [i["product_id"] for i in listing["items"]]
+    assert unplaced[:2] == ["p-big", "p-small"]
+    # And the headline is revenue, because a count can look alarming while the
+    # unplaced items sell nothing.
+    assert listing["unplaced_revenue"] == 910.0

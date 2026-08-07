@@ -42,6 +42,8 @@ export type Screen =
   | "dependency"
   /** Where each principal's number stands. */
   | "targets"
+  /** Which line of the business each item belongs to. */
+  | "catalogue"
   /** The negotiation desk: the one screen a salesperson uses to decide rather
    *  than to read. */
   | "negotiate"
@@ -87,6 +89,7 @@ export const PATH: Record<Screen, string> = {
   mix: "/mix",
   dependency: "/dependency",
   targets: "/targets",
+  catalogue: "/item-lines",
   negotiate: "/negotiate",
 };
 

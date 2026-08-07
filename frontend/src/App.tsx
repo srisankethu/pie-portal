@@ -1,7 +1,8 @@
 import Button from "@mui/material/Button";
 import Avatar from "@mui/material/Avatar";
 import Chip from "@mui/material/Chip";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useSnackbar } from "notistack";
+import { useEffect, useMemo, useState } from "react";
 import { api, clearDraftQuote, clearSession, loadDraftQuote, loadSession, saveDraftQuote, saveSession } from "./api";
 import type { Line, Quote, Session } from "./types";
 import { SignIn } from "./components/SignIn";
@@ -55,19 +56,20 @@ export default function App({ onOpenPlatform }: { onOpenPlatform?: (path: string
   const [focusId, setFocusId] = useState<string | null>(null);
   const [intakeOpen, setIntakeOpen] = useState(false);
   const [drawerLineId, setDrawerLineId] = useState<string | null>(null);
-  const [toast, setToast] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [draftStatus, setDraftStatus] = useState<string | null>(null);
-  const toastTimer = useRef<number | undefined>(undefined);
 
   const mgmt = session?.role === "mgmt";
   // One assessment for the whole quote — see useQuoteIntelligence.
   const ci = useQuoteIntelligence(quote);
 
-  const flash = (msg: string) => {
-    setToast(msg);
-    window.clearTimeout(toastTimer.current);
-    toastTimer.current = window.setTimeout(() => setToast(null), 2400);
+  // The same `SnackbarProvider` the platform side already uses, rather than
+  // the fixed-position div and 2.4s timer this used to hand-roll: two of them
+  // in quick succession replaced each other, and 2.4s is too short to read a
+  // sentence. `flash` keeps its name so every call site is unchanged.
+  const { enqueueSnackbar } = useSnackbar();
+  const flash = (msg: string, variant: "default" | "success" = "default") => {
+    enqueueSnackbar(msg, { variant, autoHideDuration: variant === "success" ? 8000 : 3000 });
   };
 
   // Create a fresh quote on sign-in, or resume a locally saved draft.
@@ -255,7 +257,12 @@ export default function App({ onOpenPlatform }: { onOpenPlatform?: (path: string
     guard(async () => {
       const q = await api.selectSupply(t, quote!.id, drawerLineId!, code, manual);
       setQuote(q);
-      flash(code === drawerLine?.reqCode ? "Reverted to requested product" : `Supply set to ${code}`);
+      // A confirmed mapping is a durable fact the person just taught the
+      // system — it outranks the routine "supply set" acknowledgement, and is
+      // held longer because it is a sentence rather than a status.
+      if (q.note) flash(q.note, "success");
+      else flash(code === drawerLine?.reqCode
+        ? "Reverted to requested product" : `Supply set to ${code}`);
     });
 
   const doRevert = () =>
@@ -534,7 +541,6 @@ export default function App({ onOpenPlatform }: { onOpenPlatform?: (path: string
           onRevert={doRevert}
         />
       )}
-      {toast && <div className="toast">{toast}</div>}
     </div>
   );
 }

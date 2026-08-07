@@ -1,4 +1,5 @@
 import type { Quote, Session } from "./types";
+import { platformToken } from "./intelligence";
 
 const TOKEN_KEY = "pie_portal_session";
 const DRAFT_KEY = "pie_portal_draft";
@@ -31,6 +32,18 @@ export function clearDraftQuote() {
   localStorage.removeItem(DRAFT_KEY);
 }
 
+/** The org-scoped Decisions identity, when the browser holds one.
+ *
+ *  A second header rather than `Authorization`, which already carries the Quote
+ *  Builder's own login. Sent on every call that can use an organization —
+ *  resolution reads that org's confirmed mappings and equivalence policy, and
+ *  without it the server correctly falls back to the packaged defaults, which
+ *  looks exactly like the feature not working. */
+function platformHeaders(): Record<string, string> {
+  const t = platformToken();
+  return t ? { "X-Platform-Authorization": `Bearer ${t}` } : {};
+}
+
 async function req<T>(path: string, opts: RequestInit = {}, token?: string): Promise<T> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (token) headers.Authorization = `Bearer ${token}`;
@@ -57,12 +70,13 @@ export const api = {
   getQuote: (t: string, id: string) => req<Quote>(`/api/quotes/${id}`, {}, t),
 
   intake: (t: string, id: string, text: string) =>
-    req<Quote>(`/api/quotes/${id}/intake`, { method: "POST", body: JSON.stringify({ text }) }, t),
+    req<Quote>(`/api/quotes/${id}/intake`,
+      { method: "POST", body: JSON.stringify({ text }), headers: platformHeaders() }, t),
 
   selectSupply: (t: string, id: string, lineId: string, code: string, manual = false) =>
     req<Quote>(
       `/api/quotes/${id}/lines/${lineId}/supply`,
-      { method: "POST", body: JSON.stringify({ code, manual }) },
+      { method: "POST", body: JSON.stringify({ code, manual }), headers: platformHeaders() },
       t,
     ),
 

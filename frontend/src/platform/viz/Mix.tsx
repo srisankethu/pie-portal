@@ -52,9 +52,13 @@ export function MixScreen({
   session, onNavigate,
 }: { session: PlatformSession; onNavigate: (r: string) => void }) {
   const [months, setMonths] = useState("12");
+  // Lines of the business, or principals. The same grid asked of a different
+  // key — see mix.py. An authorised distributor needs both: "who has never
+  // bought coolant" and "who has never bought a single Sandvik item".
+  const [by, setBy] = useState("category");
   const { data, loading, error, reload } = useInsight(
-    "mix", () => papi.mix(session.token, Number(months)),
-    [session.token, months]);
+    "mix", () => papi.mix(session.token, Number(months), by),
+    [session.token, months, by]);
 
   const columns = rows(data?.categories);
   const customers = rows(data?.customers);
@@ -82,11 +86,15 @@ export function MixScreen({
   return (
     <Panel
       title="Product mix"
-      question="Who takes which lines of the business — and who takes only one"
+      question={by === "vendor"
+        ? "Which principals each customer buys — and which they have never taken"
+        : "Who takes which lines of the business — and who takes only one"}
       state={stateOf(loading, error, data?.empty_reason as string)}
       error={error} emptyReason={data?.empty_reason as string} onRetry={reload} wide
       actions={
         <div className="seg-controls">
+          <Seg label="Columns" value={by} onChange={setBy}
+               options={[["category", "By line"], ["vendor", "By supplier"]]} />
           <Seg label="Window" value={months} onChange={setMonths}
                options={[["12", "1y"], ["24", "2y"], ["36", "3y"]]} />
         </div>
@@ -94,7 +102,7 @@ export function MixScreen({
     >
       <p className="viz-headline">
         <strong>{counts.single_line ?? 0}</strong> of {shown.length} customers
-        buy only one line
+        buy from only one {by === "vendor" ? "supplier" : "line"}
         {(counts.full_coverage ?? 0) > 0 && (
           <> · <strong>{counts.full_coverage}</strong> take everything</>
         )}
@@ -107,7 +115,7 @@ export function MixScreen({
       {/* How much of the catalogue could actually be placed. A grid built on a
           half-categorised catalogue has half-phantom whitespace, and that has
           to be visible before anybody acts on a blank cell. */}
-      {resolved != null && resolved < 1 && (
+      {by === "category" && resolved != null && resolved < 1 && (
         <p className="bond-unscored">
           <strong>{pct(resolved, 0)}</strong> of the catalogue is placed in a
           line ({num(catalogue.uncategorised)} item

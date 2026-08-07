@@ -36,6 +36,14 @@ so a pairing below ``MIN_PEERS`` reports no affinity at all rather than a
 number that will be quoted in a meeting. Same discipline as every other floor in
 this package.
 
+**One grid, two pivots.** The columns are lines of the business or they are
+principals, and nothing else in here changes: the cell states, the affinity, the
+support floor and the ordering are identical questions asked of a different key.
+An authorised distributor needs both — "who has never bought coolant" and "who
+has never bought a single Sandvik item" are the same shape of conversation with
+different people. Two modules would agree until the first tuning, so this one
+takes its columns from the caller and calls the key a ``key``.
+
 Layer rules, inherited: ``commercial/``, deterministic, never imports ``ai/``.
 Revenue and counts only — no cost and no margin reach this module, which is why
 the whole view is visible to a salesperson.
@@ -46,7 +54,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Iterable, Optional
 
-from ..categories import LABELS, ORDER, UNCATEGORISED
+from ..categories import UNCATEGORISED
 from ..config import CommercialThresholds
 from . import periods
 
@@ -75,6 +83,21 @@ MIN_PEERS = 5
 LAPSE_WINDOW_SHARE = 1.0
 
 
+#: The two things the columns can be. The word "key" throughout the module is
+#: deliberate: it is a line of the business or a principal, and every rule below
+#: is the same question asked of either.
+BY_CATEGORY = "category"
+BY_VENDOR = "vendor"
+
+
+@dataclass(frozen=True)
+class Column:
+    """One column: what identifies it, and what a person calls it."""
+
+    key: str
+    label: str
+
+
 @dataclass(frozen=True)
 class MixLine:
     """One line of trade, reduced to what a mix grid needs."""
@@ -82,20 +105,26 @@ class MixLine:
     customer_id: str
     date: date
     amount: float
-    category: str
+    #: The line of the business, or the principal. Which one is decided by the
+    #: caller's ``columns``, and nothing below cares.
+    key: str
 
 
 @dataclass
 class Cell:
-    category: str
+    key: str
+    label: str
     state: str
     revenue: float
     last_traded: Optional[date]
     orders: int
 
     def to_dict(self) -> dict:
+        # The field is still called ``category`` on the wire. It is what the
+        # screen reads, and one grid rendering two pivots should not have to
+        # branch on which noun the server used for the same slot.
         return {
-            "category": self.category, "label": LABELS.get(self.category, self.category),
+            "category": self.key, "label": self.label,
             "state": self.state, "revenue": round(self.revenue, 2),
             "last_traded": self.last_traded.isoformat() if self.last_traded else None,
             "orders": self.orders,
@@ -104,25 +133,36 @@ class Cell:
 
 def build(lines: Iterable[MixLine], names: dict[str, str], as_of: date, *,
           thresholds: CommercialThresholds,
-          categories_sold: Optional[Iterable[str]] = None,
+          columns: Iterable[Column],
+          dimension: str = BY_CATEGORY,
           months: int = 12) -> dict:
     """The grid, the affinity behind every gap, and what it will not claim."""
-    rows = [r for r in lines if r.category and r.category != UNCATEGORISED]
-    sold = _sold(categories_sold, rows)
+    cols = [c for c in columns if c.key and c.key != UNCATEGORISED]
+    order = [c.key for c in cols]
+    label_of = {c.key: c.label for c in cols}
+    known = set(order)
+    rows = [r for r in lines if r.key and r.key in known]
     window = periods.months_back(as_of, months)
     start = window[0].start if window else as_of
 
-    if not rows or not sold:
+    if not rows or not order:
         return {
-            "as_of": as_of.isoformat(), "categories": _columns(sold),
+            "as_of": as_of.isoformat(), "dimension": dimension,
+            "categories": [c.__dict__ | {"category": c.key} for c in cols],
             "customers": [], "affinity": [], "counts": {},
             "cell_meanings": CELL_MEANING, "months": months,
             "min_peers": MIN_PEERS,
             "empty_reason": (
-                "No trade is categorised yet, so there is no product mix to "
-                "show. Item categories come from Zoho, from the HSN map, or "
-                "from an override in Settings."
-                if not sold else
+                "No trade could be placed against a "
+                + ("line of the business" if dimension == BY_CATEGORY
+                   else "supplier")
+                + " yet, so there is no mix to show. "
+                + ("Item categories come from Zoho, from the HSN ranges, or "
+                   "from an override in Settings."
+                   if dimension == BY_CATEGORY else
+                   "A sale is attributed to a principal through the bills that "
+                   "bought the item, so this fills in after a full sync.")
+                if not order else
                 "Nothing has been traded yet."),
             "thresholds_version": thresholds.version,
         }
@@ -131,10 +171,10 @@ def build(lines: Iterable[MixLine], names: dict[str, str], as_of: date, *,
     per: dict[str, dict[str, Cell]] = {}
     for r in rows:
         cells = per.setdefault(r.customer_id, {})
-        cell = cells.get(r.category)
+        cell = cells.get(r.key)
         if cell is None:
-            cell = Cell(r.category, NEVER, 0.0, None, 0)
-            cells[r.category] = cell
+            cell = Cell(r.key, label_of.get(r.key, r.key), NEVER, 0.0, None, 0)
+            cells[r.key] = cell
         cell.orders += 1
         if r.date >= start:
             cell.revenue += r.amount
@@ -145,40 +185,43 @@ def build(lines: Iterable[MixLine], names: dict[str, str], as_of: date, *,
             cell.state = BUYS if (cell.last_traded and cell.last_traded >= start) else LAPSED
 
     # ── affinity: of those who take A, how many also take B ─────────────────
-    taken: dict[str, set[str]] = {c: set() for c in sold}
+    taken: dict[str, set[str]] = {key: set() for key in order}
     for customer, cells in per.items():
-        for category, cell in cells.items():
-            if cell.state == BUYS and category in taken:
-                taken[category].add(customer)
+        for key, cell in cells.items():
+            if cell.state == BUYS and key in taken:
+                taken[key].add(customer)
 
     customers = []
     for customer, cells in sorted(
             per.items(),
             key=lambda kv: -sum(c.revenue for c in kv[1].values())):
-        present = {c: cells.get(c) or Cell(c, NEVER, 0.0, None, 0) for c in sold}
-        held = [c for c in sold if present[c].state == BUYS]
+        present = {k: cells.get(k) or Cell(k, label_of.get(k, k), NEVER, 0.0,
+                                           None, 0)
+                   for k in order}
+        held = [k for k in order if present[k].state == BUYS]
         customers.append({
             "customer_id": customer,
             "label": names.get(customer) or f"Unnamed customer (id {customer})",
-            "cells": [present[c].to_dict() for c in sold],
+            "cells": [present[k].to_dict() for k in order],
             "revenue": round(sum(c.revenue for c in present.values()), 2),
             "lines_held": len(held),
-            "lines_sold": len(sold),
+            "lines_sold": len(order),
             # The gaps, ranked by how many comparable customers take them. This
             # is the "worth a call" ordering, and it is a *suggestion of where
             # to look*, never an assertion that the money is there.
-            "gaps": _gaps(present, held, taken, sold),
+            "gaps": _gaps(present, held, taken, order, label_of),
         })
 
     return {
         "as_of": as_of.isoformat(),
-        "categories": _columns(sold),
+        "dimension": dimension,
+        "categories": [{"category": c.key, "label": c.label} for c in cols],
         "customers": customers,
-        "affinity": _affinity_table(taken, sold),
+        "affinity": _affinity_table(taken, order, label_of),
         "counts": {
             "customers": len(customers),
             "full_coverage": sum(1 for c in customers
-                                 if c["lines_held"] == len(sold)),
+                                 if c["lines_held"] == len(order)),
             "single_line": sum(1 for c in customers if c["lines_held"] == 1),
             "lapsed_cells": sum(1 for c in customers
                                 for cell in c["cells"] if cell["state"] == LAPSED),
@@ -191,27 +234,9 @@ def build(lines: Iterable[MixLine], names: dict[str, str], as_of: date, *,
     }
 
 
-def _columns(sold: list[str]) -> list[dict]:
-    return [{"category": c, "label": LABELS.get(c, c)} for c in sold]
-
-
-def _sold(declared: Optional[Iterable[str]], rows: list[MixLine]) -> list[str]:
-    """The columns, in the catalogue's declared order.
-
-    Ordered by ``categories.ORDER`` rather than by anything in the data, so the
-    grid's columns are in the same place on every screen and every run — a
-    matrix whose columns move is one nobody can compare against last month's
-    screenshot.
-    """
-    if declared is not None:
-        names = {c for c in declared if c and c != UNCATEGORISED}
-    else:
-        names = {r.category for r in rows}
-    return [c for c in ORDER if c in names]
-
-
 def _gaps(cells: dict[str, Cell], held: list[str],
-          taken: dict[str, set[str]], sold: list[str]) -> list[dict]:
+          taken: dict[str, set[str]], order: list[str],
+          label_of: dict[str, str]) -> list[dict]:
     """Every line this customer does not currently buy, with its affinity.
 
     ``affinity`` is the strongest single pairing: of the customers who take a
@@ -220,20 +245,20 @@ def _gaps(cells: dict[str, Cell], held: list[str],
     "of your cutting-tool customers".
     """
     out = []
-    for category in sold:
-        cell = cells[category]
+    for key in order:
+        cell = cells[key]
         if cell.state == BUYS:
             continue
         best: Optional[dict] = None
         for anchor in held:
-            share, peers = _lift(taken, anchor, category)
+            share, peers = _lift(taken, anchor, key)
             if share is None:
                 continue
             if best is None or share > best["share"]:
-                best = {"from": anchor, "from_label": LABELS.get(anchor, anchor),
+                best = {"from": anchor, "from_label": label_of.get(anchor, anchor),
                         "share": share, "peers": peers}
         out.append({
-            "category": category, "label": LABELS.get(category, category),
+            "category": key, "label": label_of.get(key, key),
             "state": cell.state,
             "last_traded": cell.last_traded.isoformat() if cell.last_traded else None,
             "affinity": best,
@@ -260,7 +285,8 @@ def _lift(taken: dict[str, set[str]], anchor: str, target: str
     return round(len(both) / len(base), 4), len(base)
 
 
-def _affinity_table(taken: dict[str, set[str]], sold: list[str]) -> list[dict]:
+def _affinity_table(taken: dict[str, set[str]], order: list[str],
+                    label_of: dict[str, str]) -> list[dict]:
     """Every ordered pair, for the legend under the grid.
 
     Ordered pairs rather than unordered: "of coolant buyers, 90% take cutting
@@ -269,14 +295,14 @@ def _affinity_table(taken: dict[str, set[str]], sold: list[str]) -> list[dict]:
     into one symmetric number would lose the only one worth acting on.
     """
     out = []
-    for anchor in sold:
-        for target in sold:
+    for anchor in order:
+        for target in order:
             if anchor == target:
                 continue
             share, peers = _lift(taken, anchor, target)
             out.append({
-                "from": anchor, "from_label": LABELS.get(anchor, anchor),
-                "to": target, "to_label": LABELS.get(target, target),
+                "from": anchor, "from_label": label_of.get(anchor, anchor),
+                "to": target, "to_label": label_of.get(target, target),
                 "share": share, "peers": peers,
                 "estimable": share is not None,
             })

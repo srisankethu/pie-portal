@@ -198,8 +198,28 @@ export const papi = {
   // Product mix — who takes which lines of the business, and which they do not.
   // Every role: the grid is revenue and dates, and the conversation it exists
   // for is a salesperson's.
-  mix: (t: string, months: number) =>
-    req<Record<string, unknown>>(`/api/v1/insight/mix?months=${months}`, {}, t),
+  // Two pivots, one endpoint: lines of the business, or principals.
+  mix: (t: string, months: number, by = "category") =>
+    req<Record<string, unknown>>(
+      `/api/v1/insight/mix?months=${months}&by=${by}`, {}, t),
+
+  // What this book leans on, at both ends. The supplier half is manager+ and
+  // is omitted from a salesperson's response rather than 403-ing the screen.
+  dependency: (t: string) =>
+    req<Record<string, unknown>>("/api/v1/insight/dependency", {}, t),
+
+  // Vendor targets. The one thing in the platform that is typed rather than
+  // synced, so it has a write path.
+  targets: (t: string) =>
+    req<Record<string, unknown>>("/api/v1/insight/targets", {}, t),
+
+  setTarget: (t: string, body: Record<string, unknown>) =>
+    req<Record<string, unknown>>("/api/v1/insight/targets",
+      { method: "PUT", body: JSON.stringify(body) }, t),
+
+  deleteTarget: (t: string, targetId: string) =>
+    req<unknown>(`/api/v1/insight/targets/${encodeURIComponent(targetId)}`,
+      { method: "DELETE" }, t),
 
   // The negotiation desk. A POST because it computes on what the salesperson
   // is proposing, not on what is stored — nothing is persisted by asking.

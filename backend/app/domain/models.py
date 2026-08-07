@@ -324,6 +324,54 @@ class Product(Base):
                                                  onupdate=_now)
 
 
+class VendorTarget(Base):
+    """What a principal expects this distributor to do, in a period.
+
+    An authorised distributor does not choose its own numbers — Kennametal,
+    Sandvik and the rest set them, per period, and the year is run against them.
+    Nothing in Zoho holds a target and nothing derives one, so this is the one
+    table in the platform whose contents are *typed rather than synced*. It is
+    not derived, it is not rebuildable from a re-sync, and it must survive one.
+
+    ``basis`` is not decoration. A principal's target is usually on what you
+    **buy** from them; some are on what you **sell** of their product. Those are
+    different numbers against different actuals, and a single "target" column
+    would quietly compare one to the other — which is the kind of error nobody
+    catches until a quarter closes wrong.
+
+    Periods are stored as explicit start and end dates rather than as a quarter
+    label, because principals do not agree on a financial year: an Indian
+    principal's Q1 is April to June and a European parent's is January to March.
+    A label would have to be interpreted; two dates cannot be misread.
+    """
+
+    __tablename__ = "vendor_targets"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "vendor_id", "period_start",
+                         "period_end", "basis", name="uq_vendor_target_period"),
+        Index("ix_vendor_target_org_period", "organization_id", "period_start"),
+    )
+
+    target_id: Mapped[str] = mapped_column(String(64), primary_key=True,
+                                           default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    vendor_id: Mapped[str] = mapped_column(String(64),
+                                           ForeignKey("vendors.vendor_id"),
+                                           index=True)
+    period_start: Mapped[date] = mapped_column(Date)
+    period_end: Mapped[date] = mapped_column(Date)
+    #: ``PURCHASE`` — what we buy from them. ``SALES`` — what we sell of theirs.
+    basis: Mapped[str] = mapped_column(String(16), default="PURCHASE")
+    amount: Mapped[Any] = mapped_column(Numeric(18, 4))
+    #: Who typed it, and what they were told. A target nobody can source is one
+    #: nobody argues with when it is missed.
+    set_by_user_id: Mapped[Optional[str]] = mapped_column(String(64))
+    note: Mapped[Optional[str]] = mapped_column(String(512))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
+                                                 onupdate=_now)
+
+
 class ItemCategoryOverride(Base):
     """What a person said an item's line is, when the catalogue could not say.
 

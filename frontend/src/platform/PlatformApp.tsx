@@ -47,6 +47,7 @@ import { JourneyScreen, LostRevenueScreen, OpportunityScreen, SimulatorScreen, W
 import { CadenceScreen, CompositionScreen, LandscapeScreen } from "./viz/Patterns";
 import { BondsScreen } from "./viz/Bonds";
 import { MixScreen } from "./viz/Mix";
+import { DependencyScreen } from "./viz/Dependency";
 import { CustomerHealthTimeline, MigrationMatrix } from "./viz/History";
 import { PaymentsScreen, StockScreen, SupplyScreen } from "./viz/TheBook";
 import { NegotiateScreen } from "./viz/Negotiate";
@@ -399,6 +400,10 @@ export default function PlatformApp() {
     // salesperson's, so hiding it from them would be removing the feature to
     // protect a field it does not contain.
     { key: "mix", label: "Product mix", group: "understand" },
+    // Both halves on one screen. The customer half is revenue and counts, so a
+    // salesperson sees it; the server omits the supplier half from their
+    // response rather than the nav hiding the whole screen.
+    { key: "dependency", label: "Dependency", group: "understand" },
 
     // ── The book ──
     // One "Customers" door, not two. The account picker, the month-by-month
@@ -554,6 +559,7 @@ export default function PlatformApp() {
             <Route path={PATH.supply} element={<SupplyScreen session={session} />} />
             <Route path={PATH.bonds} element={<BondsScreen session={session} onNavigate={goViz} />} />
             <Route path={PATH.mix} element={<MixScreen session={session} onNavigate={goViz} />} />
+            <Route path={PATH.dependency} element={<DependencyScreen session={session} onNavigate={goViz} />} />
             <Route path={PATH.negotiate} element={<NegotiateScreen session={session} />} />
 
             {/* ── QUOTES ──

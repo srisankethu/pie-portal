@@ -274,42 +274,68 @@ class CommercialThresholds:
     # belongs inside ``version``. Re-map a prefix and last quarter's coverage
     # stays explainable, because the version says what the map was.
     #
-    # Matched longest-prefix-first, so a specific code beats a general one.
-    # Tuple-of-pairs rather than a dict so the dataclass stays frozen, hashable
-    # and JSON-stable for the hash.
+    # Matched as inclusive ranges over the four-digit HSN *heading*, numerically.
+    # Ranges rather than string prefixes because the tariff is organised as
+    # runs — 8456 through 8465 is "machine tools" as one block — and eleven
+    # prefix entries to say one range is eleven places for somebody to leave a
+    # gap. A single heading is written as a range whose ends are equal.
     #
-    # Deliberately conservative: a prefix is here only where the code really
-    # does mean one line. 82 alone covers spanners and hand tools as well as
-    # cutting tools, so 82 is *not* mapped — the four-digit children are. An
-    # item this map cannot place is reported as uncategorised, which is a
-    # smaller problem than an item placed in the wrong column.
-    hsn_category_map: tuple[tuple[str, str], ...] = (
-        # Interchangeable tools, and the carbide/HSS cutting lines.
-        ("8207", "CUTTING_TOOLS"),
-        ("8208", "CUTTING_TOOLS"),
-        ("8209", "CUTTING_TOOLS"),
-        # Tool holders and the arbors that carry them.
-        ("8466", "CUTTING_TOOLS"),
-        # Lubricating preparations — cutting oils, way lubes, rust preventives.
-        ("3403", "COOLANTS"),
+    # Tuple-of-triples rather than a dict so the dataclass stays frozen,
+    # hashable and JSON-stable for the version hash.
+    #
+    # Deliberately conservative: a heading is here only where it really does
+    # mean one line. Chapter 82 as a whole covers spanners and files as well as
+    # cutting tools, so the chapter is not mapped — its headings are, and they
+    # split across two lines. An item this map cannot place is reported as
+    # uncategorised, which is a much smaller problem than an item placed in the
+    # wrong column.
+    hsn_category_ranges: tuple[tuple[int, int, str], ...] = (
+        # 8202 saws and saw blades; 8207–8209 interchangeable tools, knives and
+        # blades for machines, and cermet tips — the carbide/HSS core.
+        (8202, 8202, "CUTTING_TOOLS"),
+        (8207, 8209, "CUTTING_TOOLS"),
+        # Tool holders, arbors and work holders.
+        (8466, 8466, "CUTTING_TOOLS"),
+        # 8203–8206 hand tools, files, spanners and sets: real lines for this
+        # trade, but not cutting tools.
+        (8203, 8206, "CONSUMABLES"),
+        # Abrasives, abrasive cloth and paper; self-adhesive tapes.
+        (6804, 6805, "CONSUMABLES"),
+        (3919, 3919, "CONSUMABLES"),
         # Petroleum oils. Broader than coolant, but in this book's purchase
         # pattern it is neat cutting oil far more often than anything else.
-        ("2710", "COOLANTS"),
-        # Measuring and checking instruments; drawing/marking-out instruments.
-        ("9017", "METROLOGY"),
-        ("9031", "METROLOGY"),
-        ("9032", "METROLOGY"),
-        # Machine tools: machining centres, lathes, drilling/boring/milling.
-        ("8457", "MACHINES"),
-        ("8458", "MACHINES"),
-        ("8459", "MACHINES"),
-        ("8460", "MACHINES"),
-        ("8461", "MACHINES"),
-        # Abrasives and the smaller repeat lines.
-        ("6804", "CONSUMABLES"),
-        ("6805", "CONSUMABLES"),
-        ("3919", "CONSUMABLES"),
+        (2710, 2710, "COOLANTS"),
+        # Lubricating preparations — cutting fluids, way lubes, rust preventives.
+        (3403, 3403, "COOLANTS"),
+        # Drawing and measuring instruments; measuring, checking and regulating
+        # instruments.
+        (9017, 9017, "METROLOGY"),
+        (9031, 9032, "METROLOGY"),
+        # Machine tools as one block: 8456 laser/EDM, 8457 machining centres,
+        # 8458 lathes, 8459 drilling/boring/milling, 8460 grinding, 8461
+        # planing/shaping, 8462 forging/pressing, 8463 other working, 8464
+        # stone/glass, 8465 wood.
+        (8456, 8465, "MACHINES"),
     )
+
+    # ── inferring a line from the principal who supplies it ──────────────────
+    #
+    # An authorised distributor's suppliers are mostly single-line: everything
+    # from a coolant principal is coolant. So where the tariff code is blank,
+    # the vendor's own catalogue is real evidence — but only where there is
+    # enough of it, and only where that vendor is actually concentrated.
+    #
+    # Both floors are policy, so both are in the version hash. Loosening them
+    # is loosening how much of the mix grid is inference rather than fact, and
+    # that must be visible in the version a figure was stamped with.
+    #
+    # Fewer placed items than this from one vendor and their "dominant line" is
+    # a coincidence.
+    vendor_category_min_items: int = 4
+    # And that dominant line must actually dominate. Kennametal sells inserts,
+    # holders and gauges; at 0.7 a genuinely mixed principal infers nothing and
+    # their unplaced items stay honestly uncategorised.
+    vendor_category_dominance: float = 0.7
 
     @classmethod
     def from_env(cls) -> "CommercialThresholds":

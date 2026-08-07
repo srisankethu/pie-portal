@@ -1111,3 +1111,61 @@
    Screens whose gaps are described in words opt out rather than the shared rule
    changing under the screens that still want it. */
 .tl-unavailable.said-plain strong { text-transform: none; }
+
+/* ── dependency, both ends of the book ─────────────────────────────────────
+   Two halves, one encoding, mirrored — so "we depend on them" and "we depend
+   on this customer" are comparable at a glance rather than being two screens
+   somebody opens in sequence.
+
+   The vendor row draws two bars on one track: revenue riding on the principal,
+   and what we spend with them. The gap between them is the finding, and two
+   bars show it where two columns of numbers make somebody do the subtraction. */
+.dep-halves { display: grid; gap: 28px; margin-top: 14px; }
+@media (min-width: 1100px) { .dep-halves { grid-template-columns: 1fr 1fr; } }
+
+.dep-side h4 { margin: 0 0 2px; }
+.dep-rows { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 10px; }
+.dep-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 1.1fr) minmax(80px, 1fr) auto auto;
+  align-items: center; gap: 10px;
+}
+.dep-name { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
+
+.dep-track {
+  position: relative; height: 16px; border-radius: 2px;
+  background: var(--color-neutral-200);
+}
+.dep-fill {
+  position: absolute; inset: 0 auto 0 0; height: 100%;
+  background: var(--viz-gain); border-radius: 2px;
+}
+/* Spend, drawn over the revenue bar rather than beside it: the question is how
+   much of one the other is, and stacking makes that a length comparison
+   instead of an arithmetic one. */
+.dep-spend { background: var(--viz-neutral); height: 6px; top: 5px; bottom: 5px; }
+
+.dep-figures { display: flex; flex-direction: column; line-height: 1.35; text-align: right; }
+.dep-figures .viz-muted { font-size: 11.5px; }
+
+/* Achievement and elapsed period on one track. An achievement bar alone says
+   60% and sounds fine; what decides whether it is fine is how much of the
+   quarter has gone, so the pace marker sits on the same track. */
+.dep-target { grid-column: 1 / -1; display: grid; gap: 4px; }
+.dep-target-track {
+  position: relative; height: 8px; border-radius: 2px;
+  background: var(--color-neutral-200);
+}
+.dep-target-fill { position: absolute; inset: 0 auto 0 0; height: 100%; border-radius: 2px; }
+.dep-target-fill.ok { background: var(--viz-gain); }
+.dep-target-fill.behind { background: var(--viz-accent); }
+.dep-target-pace {
+  position: absolute; top: -3px; width: 2px; height: 14px;
+  background: var(--color-text);
+}
+.dep-target .viz-muted { font-size: 11.5px; }
+
+@media (max-width: 720px) {
+  .dep-row { grid-template-columns: 1fr auto; }
+  .dep-track { grid-column: 1 / -1; }
+}

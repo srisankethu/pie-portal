@@ -31,8 +31,9 @@ from .. import clock
 from ..commercial import floor, incentive, policy
 from ..commercial import categories as cat
 from ..commercial.insight import (bonds, cadence, cashflow, cohorts, composition,
-                                  flow, landscape, mix, payments, periods, radar,
-                                  simulate, stock, story, supply, weather)
+                                  dependency, flow, landscape, mix, payments,
+                                  periods, radar, simulate, stock, story, supply,
+                                  weather)
 from ..db import get_session
 from ..domain import models
 from ..domain.enums import Role
@@ -797,7 +798,32 @@ BOND_MIN_MONTHS = 6
 BOND_MAX_MONTHS = 36
 
 
-def _category_of(session: Session, org: str, th) -> dict[str, cat.Resolution]:
+def _vendor_of_product(session: Session, org: str) -> dict[str, str]:
+    """Each item's dominant supplier, by what this book has spent with them.
+
+    The join that makes principal-level analysis possible at all: a sale is a
+    customer buying an *item*, and only the purchase side knows whose item it
+    is. An item bought from two suppliers is attributed wholly to the larger —
+    a real inference, and the reason every view built on this reports what share
+    of revenue it could attribute rather than quietly showing a share of a
+    fraction of the book.
+    """
+    spend: dict[str, dict[str, float]] = {}
+    rows = session.execute(
+        select(models.CostRecord.product_id, models.CostRecord.vendor_id,
+               models.CostRecord.qty, models.CostRecord.unit_cost)
+        .where(models.CostRecord.organization_id == org,
+               models.CostRecord.vendor_id.is_not(None))).all()
+    for product_id, vendor_id, qty, unit_cost in rows:
+        bucket = spend.setdefault(product_id, {})
+        bucket[vendor_id] = bucket.get(vendor_id, 0.0) + float((qty or 0) * (unit_cost or 0))
+    return {product_id: max(by_vendor.items(), key=lambda kv: kv[1])[0]
+            for product_id, by_vendor in spend.items() if by_vendor}
+
+
+def _category_of(session: Session, org: str, th,
+                 vendor_of: Optional[dict[str, str]] = None,
+                 ) -> dict[str, cat.Resolution]:
     """Every product's line of the business, resolved once per request.
 
     One place, so the mix grid, the bond strip's lanes and the coverage facet
@@ -812,7 +838,9 @@ def _category_of(session: Session, org: str, th) -> dict[str, cat.Resolution]:
             select(models.ItemCategoryOverride).where(
                 models.ItemCategoryOverride.organization_id == org)).all()
     }
-    return cat.resolve_all(products, th, overrides=overrides)
+    return cat.resolve_all(products, th, overrides=overrides,
+                           vendor_of=vendor_of if vendor_of is not None
+                           else _vendor_of_product(session, org))
 
 
 def _customer_bonds(session: Session, principal: Principal, snapshot,
@@ -1008,24 +1036,50 @@ def relationship_bonds(
 # would be removing the feature to protect a field it does not contain.
 @router.get("/mix")
 def product_mix(months: int = Query(12, ge=3, le=36),
+                by: str = Query(mix.BY_CATEGORY,
+                                pattern=f"^({mix.BY_CATEGORY}|{mix.BY_VENDOR})$"),
                 principal: Principal = Depends(current_principal),
                 session: Session = Depends(get_session)) -> dict:
-    """Who takes which lines of the business, and what the gaps look like."""
+    """Who takes which lines — or which principals — and where the gaps are.
+
+    Two pivots, one grid. "Who has never bought coolant" and "who has never
+    bought a single Sandvik item" are the same conversation with different
+    people, and an authorised distributor needs both.
+    """
     org, snapshot, th = _context(session, principal)
     as_of = _as_of(snapshot)
     if as_of is None:
         return _no_data(th.currency, "product mix")
 
-    lines_of = _category_of(session, org, th)
+    vendor_of = _vendor_of_product(session, org)
+    lines_of = _category_of(session, org, th, vendor_of)
+
+    if by == mix.BY_VENDOR:
+        vendors = {v.vendor_id: v.name for v in session.scalars(
+            select(models.Vendor).where(
+                models.Vendor.organization_id == org)).all()}
+        # Only principals this book has actually bought from become columns. A
+        # supplier on the contact list with no purchase history is not a line
+        # anybody has failed to sell, and a column of pure whitespace would
+        # invent a hundred opportunities.
+        traded = {vendor_of.get(row.product_id) for row in snapshot.sales}
+        columns = [mix.Column(vid, name) for vid, name in
+                   sorted(vendors.items(), key=lambda kv: kv[1])
+                   if vid in traded]
+        key_of = vendor_of
+    else:
+        columns = [mix.Column(c, cat.LABELS[c]) for c in cat.ORDER]
+        key_of = {pid: r.category for pid, r in lines_of.items()}
+
     result = mix.build(
         [
             mix.MixLine(customer_id=row.customer_id, date=row.date,
                         amount=float(row.line_revenue),
-                        category=_line_of(lines_of, row.product_id) or "")
+                        key=key_of.get(row.product_id) or "")
             for row in snapshot.sales
         ],
         snapshot.customer_names, as_of, thresholds=th,
-        categories_sold=cat.ORDER, months=months)
+        columns=columns, dimension=by, months=months)
 
     # Per connected company, like every other list: the same firm buying from
     # two of the books is two relationships, and a coverage gap read across
@@ -1040,6 +1094,200 @@ def product_mix(months: int = Query(12, ge=3, le=36),
         catalogue=cat.coverage_report(lines_of),
         lines=cat.lines(),
         unavailable=mix.unavailable())
+
+
+# ── dependency: what this book leans on, at both ends ───────────────────────
+#
+# The customer half is revenue and counts — no cost — so every role reads it.
+# The supplier half is denominated in purchase spend and carries each
+# principal's target, so it is manager-and-above and is omitted from a
+# salesperson's response rather than hidden in it.
+
+
+def _sole_source_counts(session: Session, org: str) -> dict[str, int]:
+    """Items only ever supplied by one vendor, counted per vendor.
+
+    Derived from the same cost lines the rest of this reads rather than from the
+    ``SUPPLIER`` state, because that fold is keyed per (vendor, item) and this
+    needs the inverse — how many *items* have a single supplier. The rule is the
+    one ``state/opportunities/supplier.py`` states: one supplier on record is
+    not evidence that no other exists, which is why the count travels with the
+    caveat rather than as a recommendation.
+    """
+    suppliers: dict[str, set[str]] = {}
+    for product_id, vendor_id in session.execute(
+            select(models.CostRecord.product_id, models.CostRecord.vendor_id)
+            .where(models.CostRecord.organization_id == org,
+                   models.CostRecord.vendor_id.is_not(None))).all():
+        suppliers.setdefault(product_id, set()).add(vendor_id)
+    out: dict[str, int] = {}
+    for vendors in suppliers.values():
+        if len(vendors) == 1:
+            only = next(iter(vendors))
+            out[only] = out.get(only, 0) + 1
+    return out
+
+
+def _targets(session: Session, org: str) -> list[dependency.Target]:
+    return [
+        dependency.Target(
+            vendor_id=row.vendor_id, period_start=row.period_start,
+            period_end=row.period_end, basis=row.basis,
+            amount=float(row.amount or 0))
+        for row in session.scalars(
+            select(models.VendorTarget).where(
+                models.VendorTarget.organization_id == org)).all()
+    ]
+
+
+@router.get("/dependency")
+def book_dependency(principal: Principal = Depends(current_principal),
+                    session: Session = Depends(get_session)) -> dict:
+    """Who this book leans on, in both directions."""
+    org, snapshot, th = _context(session, principal)
+    as_of = _as_of(snapshot)
+    if as_of is None:
+        return _no_data(th.currency, "dependency")
+
+    with_suppliers = principal.role in (Role.SALES_MANAGER, Role.OWNER)
+    vendor_of = _vendor_of_product(session, org)
+    lines_of = _category_of(session, org, th, vendor_of)
+    vendors = {v.vendor_id: v.name for v in session.scalars(
+        select(models.Vendor).where(models.Vendor.organization_id == org)).all()}
+
+    flows = [
+        dependency.Flow(
+            customer_id=row.customer_id, product_id=row.product_id,
+            date=row.date, revenue=float(row.line_revenue),
+            vendor_id=vendor_of.get(row.product_id),
+            category=_line_of(lines_of, row.product_id))
+        for row in snapshot.sales
+    ]
+    spends = [
+        dependency.Spend(vendor_id=r.vendor_id, product_id=r.product_id,
+                         date=r.date,
+                         amount=float((r.qty or 0) * (r.unit_cost or 0)))
+        for r in session.execute(
+            select(models.CostRecord.vendor_id, models.CostRecord.product_id,
+                   models.CostRecord.date, models.CostRecord.qty,
+                   models.CostRecord.unit_cost)
+            .where(models.CostRecord.organization_id == org,
+                   models.CostRecord.vendor_id.is_not(None))).all()
+    ] if with_suppliers else []
+
+    result = dependency.build(
+        flows, spends, as_of, thresholds=th,
+        vendor_names=vendors, customer_names=snapshot.customer_names,
+        targets=_targets(session, org) if with_suppliers else [],
+        sole_source=_sole_source_counts(session, org) if with_suppliers else {},
+        with_suppliers=with_suppliers)
+
+    companies = Companies(session, org)
+    companies.stamp(result["customers"]["rows"],
+                    index_of(session, org, models.Customer), by="entity_id")
+    if result["vendors"] is not None:
+        companies.stamp(result["vendors"]["rows"],
+                        index_of(session, org, models.Vendor), by="entity_id")
+    return _envelope(
+        result, currency=th.currency,
+        empty_reason=(None if result["customers"]["rows"] else
+                      "Nothing has been traded yet, so there is no exposure to "
+                      "measure."),
+        sources_differ=companies.count > 1,
+        supplier_side_visible=with_suppliers,
+        catalogue=cat.coverage_report(lines_of))
+
+
+class TargetIn(BaseModel):
+    """One principal's number for one period."""
+
+    vendor_id: str = Field(min_length=1)
+    period_start: date
+    period_end: date
+    amount: Decimal = Field(ge=0)
+    basis: str = Field(default=dependency.ON_PURCHASE)
+    note: Optional[str] = Field(default=None, max_length=512)
+
+
+@router.put("/targets", status_code=status.HTTP_200_OK)
+def set_vendor_target(body: TargetIn,
+                      principal: Principal = Depends(require_manager_or_owner),
+                      session: Session = Depends(get_session)) -> dict:
+    """Record what a principal expects, for one period.
+
+    An upsert on (vendor, period, basis) rather than an insert: a target gets
+    revised, and a second row for the same quarter would make "the target" a
+    question about which row won.
+    """
+    org = principal.organization_id
+    if body.basis not in (dependency.ON_PURCHASE, dependency.ON_SALES):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            "basis must be PURCHASE or SALES")
+    if body.period_end < body.period_start:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            "the period ends before it starts")
+    vendor = session.get(models.Vendor, body.vendor_id)
+    if vendor is None or vendor.organization_id != org:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such supplier")
+
+    row = session.scalar(
+        select(models.VendorTarget).where(
+            models.VendorTarget.organization_id == org,
+            models.VendorTarget.vendor_id == body.vendor_id,
+            models.VendorTarget.period_start == body.period_start,
+            models.VendorTarget.period_end == body.period_end,
+            models.VendorTarget.basis == body.basis))
+    if row is None:
+        row = models.VendorTarget(
+            organization_id=org, vendor_id=body.vendor_id,
+            period_start=body.period_start, period_end=body.period_end,
+            basis=body.basis)
+        session.add(row)
+    row.amount = body.amount
+    row.note = body.note
+    row.set_by_user_id = principal.user_id
+    session.flush()
+    return {"target_id": row.target_id, "vendor_id": row.vendor_id,
+            "amount": float(row.amount), "basis": row.basis,
+            "period_start": row.period_start.isoformat(),
+            "period_end": row.period_end.isoformat()}
+
+
+@router.get("/targets")
+def list_vendor_targets(principal: Principal = Depends(require_manager_or_owner),
+                        session: Session = Depends(get_session)) -> dict:
+    """Every target on record, newest period first."""
+    org = principal.organization_id
+    vendors = {v.vendor_id: v.name for v in session.scalars(
+        select(models.Vendor).where(models.Vendor.organization_id == org)).all()}
+    rows = session.scalars(
+        select(models.VendorTarget)
+        .where(models.VendorTarget.organization_id == org)
+        .order_by(models.VendorTarget.period_start.desc())).all()
+    return {
+        "targets": [
+            {"target_id": r.target_id, "vendor_id": r.vendor_id,
+             "vendor_label": vendors.get(r.vendor_id, r.vendor_id),
+             "period_start": r.period_start.isoformat(),
+             "period_end": r.period_end.isoformat(),
+             "basis": r.basis, "amount": float(r.amount or 0), "note": r.note}
+            for r in rows
+        ],
+        "vendors": [{"vendor_id": vid, "label": name}
+                    for vid, name in sorted(vendors.items(), key=lambda kv: kv[1])],
+        "bases": [{"basis": b, "label": label}
+                  for b, label in dependency.BASIS_LABEL.items()],
+    }
+
+
+@router.delete("/targets/{target_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_vendor_target(target_id: str,
+                         principal: Principal = Depends(require_manager_or_owner),
+                         session: Session = Depends(get_session)) -> None:
+    row = session.get(models.VendorTarget, target_id)
+    if row is None or row.organization_id != principal.organization_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such target")
+    session.delete(row)
 
 
 # ── the negotiation desk ────────────────────────────────────────────────────

@@ -56,13 +56,37 @@ def test_the_tax_code_places_an_item_the_catalogue_says_nothing_about():
     assert cat.resolve(_product(hsn="82071900"), TH).source == cat.BY_HSN
 
 
-def test_the_longest_matching_prefix_wins():
-    """Shortest-first would let a vague entry swallow every specific one, which
-    is invisible until somebody asks why the whole catalogue is in one column."""
-    assert cat.from_hsn("8207", TH) == cat.CUTTING_TOOLS
-    assert cat.from_hsn("8457", TH) == cat.MACHINES
-    # A code that is in no mapped family stays unplaced rather than falling into
-    # whichever prefix happened to be checked first.
+def test_the_heading_is_read_however_the_catalogue_writes_the_code():
+    """4, 6 and 8 digits are the same heading, and catalogues carry dots."""
+    assert cat.heading_of("8207") == 8207
+    assert cat.heading_of("820730") == 8207
+    assert cat.heading_of("82073010") == 8207
+    assert cat.heading_of("8466.10") == 8466
+    assert cat.heading_of("9017 00 00") == 9017
+    # Fewer than four digits is not a heading, and inventing one would place an
+    # item on two characters of evidence.
+    assert cat.heading_of("82") is None
+    assert cat.heading_of("") is None
+
+
+def test_a_range_covers_a_run_of_headings_and_the_narrower_one_wins():
+    """The tariff is organised in runs — 8456–8465 is machine tools as a block —
+    and writing that as ten prefixes is ten places to leave a gap."""
+    for heading in ("8456", "8460", "8465"):
+        assert cat.from_hsn(heading, TH) == cat.MACHINES
+    # 8466 sits immediately after that block and is deliberately *not* in it:
+    # holders are tooling, not a machine.
+    assert cat.from_hsn("8466", TH) == cat.CUTTING_TOOLS
+    # A narrow range beats a wide one that contains it.
+    overlapping = CommercialThresholds(
+        hsn_category_ranges=TH.hsn_category_ranges
+        + ((8200, 8299, cat.CONSUMABLES),))
+    assert cat.from_hsn("8207", overlapping) == cat.CUTTING_TOOLS
+    assert cat.from_hsn("8299", overlapping) == cat.CONSUMABLES
+
+
+def test_a_heading_in_no_range_stays_unplaced():
+    """Better an honest gap than an item in the wrong column."""
     assert cat.from_hsn("7318", TH) is None
 
 
@@ -84,12 +108,69 @@ def test_a_blank_or_meaningless_zoho_category_falls_through_rather_than_sticking
     assert cat.from_zoho("Coolant & Lubricants") == cat.COOLANTS
 
 
-def test_the_hsn_map_is_inside_the_thresholds_version():
-    """Re-mapping a prefix must make last quarter's mix distinguishable, which
+def test_the_hsn_ranges_are_inside_the_thresholds_version():
+    """Re-mapping a heading must make last quarter's mix distinguishable, which
     is the whole reason the map is policy rather than a module constant."""
     other = CommercialThresholds(
-        hsn_category_map=TH.hsn_category_map + (("7318", cat.CONSUMABLES),))
+        hsn_category_ranges=TH.hsn_category_ranges
+        + ((7318, 7318, cat.CONSUMABLES),))
     assert other.version != TH.version
+
+
+def test_the_vendor_inference_floors_are_inside_the_version_too():
+    """Loosening them changes how much of the grid is inference rather than
+    fact, which must be visible in the version a figure was stamped with."""
+    assert CommercialThresholds(vendor_category_min_items=2).version != TH.version
+    assert CommercialThresholds(vendor_category_dominance=0.4).version != TH.version
+
+
+# ── the fourth source: the principal who supplies it ─────────────────────────
+def test_an_unplaced_item_takes_its_suppliers_line():
+    """An authorised distributor's suppliers are mostly single-line, so where
+    the tariff code is blank, who sold it to us is real evidence."""
+    products = [_product(pid=f"p{i}", hsn="34031900") for i in range(5)]
+    products.append(_product(pid="blank", hsn=None))
+    vendor_of = {p.product_id: "v-coolant" for p in products}
+    resolved = cat.resolve_all(products, TH, vendor_of=vendor_of)
+    assert resolved["blank"].category == cat.COOLANTS
+    assert resolved["blank"].source == cat.BY_VENDOR
+
+
+def test_a_mixed_principal_infers_nothing():
+    """A major tooling brand sells inserts, holders and gauges. Sweeping their
+    unplaced items into whichever line happened to be commonest is exactly the
+    guess this module exists to refuse."""
+    products = [_product(pid="a", hsn="82071900"), _product(pid="b", hsn="82071900"),
+                _product(pid="c", hsn="90172000"), _product(pid="d", hsn="34031900"),
+                _product(pid="blank", hsn=None)]
+    vendor_of = {p.product_id: "v-mixed" for p in products}
+    resolved = cat.resolve_all(products, TH, vendor_of=vendor_of)
+    assert resolved["blank"].category == cat.UNCATEGORISED
+
+
+def test_too_few_placed_items_infer_nothing():
+    """One coincidence is not a dominant line."""
+    products = [_product(pid="a", hsn="34031900"), _product(pid="blank", hsn=None)]
+    resolved = cat.resolve_all(products, TH,
+                               vendor_of={"a": "v", "blank": "v"})
+    assert resolved["blank"].category == cat.UNCATEGORISED
+
+
+def test_a_vendor_inference_never_overwrites_better_evidence():
+    """Weaker evidence does not get to win. The item's own tariff code stands."""
+    products = [_product(pid=f"p{i}", hsn="34031900") for i in range(6)]
+    products.append(_product(pid="tool", hsn="82071900"))
+    vendor_of = {p.product_id: "v-coolant" for p in products}
+    resolved = cat.resolve_all(products, TH, vendor_of=vendor_of)
+    assert resolved["tool"].category == cat.CUTTING_TOOLS
+    assert resolved["tool"].source == cat.BY_HSN
+
+
+def test_dominant_line_needs_both_support_and_dominance():
+    assert cat.dominant_line([cat.COOLANTS] * 3, TH) is None          # too few
+    assert cat.dominant_line([cat.COOLANTS] * 5, TH) == cat.COOLANTS
+    mixed = [cat.COOLANTS] * 3 + [cat.METROLOGY] * 2
+    assert cat.dominant_line(mixed, TH) is None                       # 60% < 70%
 
 
 def test_the_catalogue_report_says_how_much_it_could_not_place():
@@ -106,12 +187,16 @@ def test_the_catalogue_report_says_how_much_it_could_not_place():
 # ── the grid ─────────────────────────────────────────────────────────────────
 def _line(customer: str, category: str, day: date, amount: float = 1000.0):
     return mix.MixLine(customer_id=customer, date=day, amount=amount,
-                       category=category)
+                       key=category)
+
+
+#: The five lines of the business, as the columns the grid is given.
+COLUMNS = [mix.Column(c, cat.LABELS[c]) for c in LINES]
 
 
 def _grid(lines, **kw) -> dict:
-    return mix.build(lines, {}, AS_OF, thresholds=TH,
-                     categories_sold=LINES, **kw)
+    kw.setdefault("columns", COLUMNS)
+    return mix.build(lines, {}, AS_OF, thresholds=TH, **kw)
 
 
 def _row(grid: dict, customer: str) -> dict:
@@ -237,9 +322,42 @@ def test_the_grid_refuses_to_call_a_gap_an_opportunity():
 
 def test_an_uncategorised_catalogue_explains_itself_rather_than_rendering_blank():
     grid = mix.build([_line("c1", cat.UNCATEGORISED, date(2026, 6, 1))], {},
-                     AS_OF, thresholds=TH, categories_sold=[])
+                     AS_OF, thresholds=TH, columns=[])
     assert grid["customers"] == []
-    assert "categorised" in grid["empty_reason"]
+    # The empty state names the fix, not just the emptiness.
+    assert "HSN ranges" in grid["empty_reason"]
+    assert "Settings" in grid["empty_reason"]
+
+
+def test_the_same_grid_pivots_to_principals_without_a_second_implementation():
+    """"Who has never bought coolant" and "who has never bought a Sandvik item"
+    are one conversation with different people. Two modules would agree until
+    the first tuning."""
+    columns = [mix.Column("v1", "Kennametal"), mix.Column("v2", "Sandvik")]
+    lines = []
+    for i in range(6):
+        lines.append(mix.MixLine(f"c{i}", date(2026, 6, 1), 100.0, "v1"))
+        if i < 3:
+            lines.append(mix.MixLine(f"c{i}", date(2026, 6, 1), 100.0, "v2"))
+    grid = mix.build(lines, {}, AS_OF, thresholds=TH, columns=columns,
+                     dimension=mix.BY_VENDOR)
+    assert grid["dimension"] == mix.BY_VENDOR
+    assert [c["label"] for c in grid["categories"]] == ["Kennametal", "Sandvik"]
+    pair = next(a for a in grid["affinity"]
+                if a["from"] == "v1" and a["to"] == "v2")
+    assert pair["share"] == pytest.approx(0.5)
+    # And the gap on a customer who takes only the first names the second.
+    gap = next(g for g in _row(grid, "c5")["gaps"])
+    assert gap["label"] == "Sandvik"
+
+
+def test_a_key_outside_the_given_columns_is_dropped_not_invented():
+    """A phantom column entry is a phantom gap."""
+    grid = mix.build(
+        [mix.MixLine("c1", date(2026, 6, 1), 100.0, "v-unknown")], {}, AS_OF,
+        thresholds=TH, columns=[mix.Column("v1", "Kennametal")],
+        dimension=mix.BY_VENDOR)
+    assert grid["customers"] == []
 
 
 def test_the_grid_carries_the_version_that_produced_it():

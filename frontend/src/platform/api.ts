@@ -60,16 +60,20 @@ async function req<T>(path: string, opts: RequestInit = {}, token?: string): Pro
       }
     }
     if (res.status >= 500 && detail === "Internal Server Error") {
-      // This used to assert "the usual cause is a pending `alembic upgrade
-      // head`" — a plausible sentence printed with no evidence for it, and
-      // wrong in the case that actually happened: a schema built outside
-      // Alembic, where upgrading fails with "table already exists" and the
-      // advice sends the operator somewhere that cannot work. The server can
-      // answer this question properly, so point at the answer instead of
-      // guessing at it.
+      // The server names the exception and gives a searchable id now, so this
+      // only fires for a 500 that got past its handler.
+      //
+      // It used to name migrations. First as "the usual cause is a pending
+      // `alembic upgrade head`", then — after that proved wrong — as "check
+      // /api/health, it says what to run". Both are the same mistake in
+      // different clothes: the client has no evidence about the cause and was
+      // supplying one anyway. An owner followed the second version for a
+      // failing "Add company", got CURRENT, and was left exactly where they
+      // started with a confident wrong lead. Say what is known, which is
+      // nothing beyond where to look.
       detail =
-        "The server hit an error it could not describe. Its log has the traceback. " +
-        "Check /api/health — it reports the migration state and says what to run.";
+        "The server hit an error and did not say what it was. " +
+        "Its log has the traceback for this request.";
     }
     const err = new Error(detail) as Error & { status?: number };
     err.status = res.status;

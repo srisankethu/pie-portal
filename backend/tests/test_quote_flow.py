@@ -123,6 +123,7 @@ def _clean_quote(hdr) -> str:
     return qid
 
 
+@pytest.mark.requires_pie
 def test_sending_a_quote_requires_a_platform_identity_when_approvals_are_on(mgmt_hdr):
     """The Quote Builder's own login carries no organization, so it cannot be
     checked against an approval queue. Sending without the platform token would
@@ -133,6 +134,7 @@ def test_sending_a_quote_requires_a_platform_identity_when_approvals_are_on(mgmt
     assert "Decisions platform" in r.json()["detail"]
 
 
+@pytest.mark.requires_pie
 def test_estimate_created_when_clean_and_nothing_needs_approval(mgmt_hdr):
     """With a platform identity and no line requiring approval, the gate opens.
 

@@ -67,3 +67,29 @@ def _catalog():
         return
     from app.catalog import ensure_catalog
     ensure_catalog()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _platform_database():
+    """Create and seed the real database once, for the tests that drive the
+    real app rather than an in-memory fixture.
+
+    `test_quote_flow` and `test_db_concurrency` go through `app.main`, which
+    binds the configured engine at import and reads `backend/data/` — a
+    directory that is gitignored and therefore absent on any fresh checkout.
+    Nothing in the suite created it, so those tests passed only where somebody
+    had run `make bootstrap` by hand and failed everywhere else, CI included,
+    with `unable to open database file`.
+
+    The subtler one: without a database the approval gate has nothing to check
+    against, so `POST /estimate` answered 200 where the test demands 403. That
+    test exists because sending without a platform identity would otherwise be
+    the way around every approval in the product — it must never be able to
+    pass or fail for an incidental reason.
+
+    Alembic-only and idempotent, so this is `make bootstrap` rather than a
+    second schema path (CLAUDE.md §4 — never `create_all` outside a fixture,
+    and this is not one of those either).
+    """
+    from app.bootstrap import bootstrap
+    bootstrap()

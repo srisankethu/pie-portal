@@ -493,24 +493,12 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
         </Alert>
       )}
 
-      {selectedCount > 0 && (
-        <Stack
-          direction="row"
-          spacing={1}
-          useFlexGap
-          sx={{ mb: 2, flexWrap: "wrap", alignItems: "center" }}
-        >
-          <Typography variant="body2" color="text.secondary">
-            {selectedCount} selected
-          </Typography>
-          <Button variant="outlined" size="small" onClick={() => doDiscount(10)}>
-            Apply 10% discount
-          </Button>
-          <Button variant="outlined" size="small" onClick={clearSelection}>
-            Clear selection
-          </Button>
-        </Stack>
-      )}
+      {/* No selection strip here. "3 selected · Apply 10% discount" was on this
+          screen twice — once above the grid and once in the summary bar, which
+          is sticky and therefore always on screen anyway — and "Clear selection"
+          was a third spelling of the toolbar's own Clear. A jscpd pass named it;
+          it is the kind of duplicate that reads as thoroughness until somebody
+          asks which of the two buttons is the real one. */}
 
       {!hasLines ? (
         <EmptyState

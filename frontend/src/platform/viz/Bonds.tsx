@@ -1,31 +1,47 @@
-// The bond map: how close each customer and each supplier actually is, and how
-// that got to be true.
+// The bond strip: how close each customer and each supplier actually is, and
+// how that got to be true.
 //
-// **Radius is the measure, and that is the whole reason this is radial.** The
-// company sits at the centre and a counterparty's distance from it *is* their
-// bond strength — the metaphor everyone already uses for a relationship, made
-// literal. A bar chart of the same numbers would rank them, which is a
-// different and less interesting question, and the ledger below answers it
-// anyway.
+// **This was a radial map first, and the scale test killed it.** Company at the
+// centre, radius as bond strength — the metaphor made literal, and genuinely
+// lovely at twenty counterparties. At two hundred it is a grey clot. The reason
+// is not tuning and cannot be tuned away: bond scores *cluster*. On a synthetic
+// book of 200 customers, 78 of the 139 scored sat between 50 and 69, so the
+// middle half of the book occupied 36% of the radius — and a circle has only
+// about 130px of radius to spend. The suppliers were worse: their middle half
+// fitted inside 12%.
 //
-// **Angle carries the sector, not decoration.** The nodes in a wedge are the
-// counterparties whose trade is mostly one thing, so "everything on the drill
-// side is drifting out" is a sentence somebody can read off the picture and
-// then act on. An angle that meant nothing would be half the ink carrying no
-// information — and worse, it would make the play unreadable, because nodes
-// would have to be re-laid-out every frame and would jump.
+// A strip fixes exactly that, by construction and not by luck:
+//
+// **The score gets the full width.** Roughly 1,100px of horizontal resolution
+// instead of 130px of radius, so the 50–69 pile-up separates into something a
+// person can actually read a rank off.
+//
+// **A cluster becomes a mound instead of an overlap.** Points that share a
+// score stack perpendicular to the axis, so the shape of the book — where the
+// mass of your relationships sits — is information you can see. On the radial
+// the same cluster was noise, because it was drawn on top of itself.
+//
+// **The play becomes one axis of motion.** A dot sliding left is an account
+// decaying. Two-dimensional drift on a radius was much harder to follow, and
+// forced the layout to be recomputed per frame.
+//
+// **The vertical position is packed once and then held.** It comes from the
+// *current* scores and never from the frame being displayed. Repacking per
+// frame would make every dot hop rows as its neighbours moved, which reads as
+// noise and hides the one thing the play exists to show. So y is identity and
+// x is the measure — the trade that makes the animation legible.
 //
 // **Colour is the only signed thing here**, so it gets the signed palette:
-// movement over the window, blue for strengthening and red for weakening,
-// which is the pairing `tokens.ts` validated for colour-vision deficiency.
-// Strength is already the radius; colouring by strength too would spend the
-// one signed channel on a dimension that is redundant.
+// movement over the window, blue strengthening and red weakening, the pairing
+// `tokens.ts` validated for colour-vision deficiency. Position already carries
+// strength; colouring by strength too would spend the one signed channel on a
+// dimension that is already encoded.
 //
-// **What is NOT on the map.** A bond the server declined to score has no
-// position, because the outer edge means "weakest" and an unscored
-// relationship is not weak — it is unmeasured. `Patterns.tsx` made the same
-// call for points with no margin, and for the same reason: on the axis they
-// read as a measured zero. They are counted, named and listed instead.
+// **What is NOT on the strip.** A bond the server declined to score has no
+// position, because the left end means "weakest" and an unscored relationship
+// is not weak — it is unmeasured. `Patterns.tsx` made the same call for points
+// with no margin, and for the same reason: on the axis they read as a measured
+// zero. They are counted, named and listed instead.
 
 import Button from "@mui/material/Button";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -75,7 +91,11 @@ const BAND_TONE: Record<string, "good" | "warn" | "bad" | "neutral"> = {
  *  a real slide shows up before it is a recovery job. */
 const MOVEMENT_LOOKBACK = 6;
 
-/** A plotted node. Everything the map needs, resolved once per frame. */
+/** A plotted node. Everything the strip needs, resolved once per frame.
+ *
+ *  `y` and `lane` are the counterparty's fixed seat and do not depend on the
+ *  frame; `x`, `r`, `score` and `movement` do. That split is what makes the
+ *  playback readable. */
 interface Node {
   id: string;
   label: string;
@@ -86,8 +106,11 @@ interface Node {
   band: string;
   side: string;
   origin?: EntityOrigin;
-  angle: number;
   overdue: boolean;
+  lane: number;
+  x: number;
+  y: number;
+  r: number;
 }
 
 export function BondsScreen({
@@ -143,9 +166,16 @@ export function BondsScreen({
     return out;
   }, [showCustomers, showSuppliers, customerBonds, vendorBonds, frames, vendorFrames]);
 
+  const plotWidth = Math.max(320, room.width || 720);
+  // Seats are packed from the *current* scores and deliberately do not depend
+  // on `at`. Repacking per frame would make every dot hop rows as its
+  // neighbours moved — see the note at the top of the file.
+  const { lanes, seat } = useMemo(
+    () => packLanes(sides, company.apply.bind(company), plotWidth),
+    [sides, company.company, plotWidth]);   // eslint-disable-line react-hooks/exhaustive-deps
   const nodes = useMemo(
-    () => layout(sides, at, company.apply.bind(company)),
-    [sides, at, company.company]);   // eslint-disable-line react-hooks/exhaustive-deps
+    () => layout(sides, at, company.apply.bind(company), seat, plotWidth),
+    [sides, at, company.company, seat, plotWidth]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   const shownCustomers = company.apply(customerBonds as Sourced[]) as Row[];
   const shownVendors = company.apply(vendorBonds as Sourced[]) as Row[];
@@ -155,7 +185,6 @@ export function BondsScreen({
   const frameLabel = String(
     (frames[at] ?? vendorFrames[at])?.label ?? data?.as_of ?? "");
 
-  const size = room.cramped ? 320 : Math.min(room.width || 560, 620);
   const chosen = ledger.find((b) => String(b.counterparty_id) === selected) ?? null;
 
   return (
@@ -193,20 +222,22 @@ export function BondsScreen({
       <div ref={ref} className="bond-stage">
         <Figure
           caption={
-            `Distance from the centre is bond strength — closer is stronger. `
-            + `Wedge is what they mostly trade. Dot size is ${showSuppliers && !showCustomers ? "spend" : "revenue"}. `
-            + `Colour is movement over the last ${MOVEMENT_LOOKBACK} months: blue strengthening, red weakening.`}
+            `Left to right is bond strength, 0–100. Dots stack where scores `
+            + `cluster, so the mound is where most of the book sits. Dot size `
+            + `is ${showSuppliers && !showCustomers ? "spend" : "revenue"}. `
+            + `Colour is movement over the last ${MOVEMENT_LOOKBACK} months: `
+            + `blue strengthening, red weakening.`}
           summary={nodes.map((n) =>
             `${n.label}: ${n.score.toFixed(0)} of 100, ${n.band.toLowerCase()}, ${money(n.money)}`)
             .join(". ") || "No scored relationship in this window."}
           table={<BondTable nodes={nodes} />}
         >
-          {/* The hub names the sides actually drawn, taken from the nodes
-              rather than from the toggle — a hub reading "suppliers ·
-              customers" over a circle of only customers labels an absence. */}
-          <BondMap nodes={nodes} size={size}
-                   reduced={reduced} selected={selected}
-                   onSelect={(id) => setSelected(id === selected ? null : id)} />
+          {/* Only populated sides get a lane — an empty supplier band would
+              read as "this business has no suppliers", which is never what it
+              means. The emptiness is stated in words underneath instead. */}
+          <BondStrip nodes={nodes} lanes={lanes} bands={rows(customers.bands)}
+                     width={plotWidth} reduced={reduced} selected={selected}
+                     onSelect={(id) => setSelected(id === selected ? null : id)} />
         </Figure>
 
         <Timeline
@@ -318,79 +349,86 @@ export function BondsScreen({
   );
 }
 
-// ── the map ─────────────────────────────────────────────────────────────────
-function BondMap({
-  nodes, size, reduced, selected, onSelect,
+// ── the strip ───────────────────────────────────────────────────────────────
+function BondStrip({
+  nodes, lanes, bands, width, reduced, selected, onSelect,
 }: {
   nodes: Node[];
-  size: number;
+  lanes: Lane[];
+  bands: Row[];
+  width: number;
   reduced: boolean;
   selected: string | null;
   onSelect: (id: string) => void;
 }) {
-  const drawn = [...new Set(nodes.map((n) => n.side))];
-  const cx = size / 2, cy = size / 2;
-  const rOuter = size / 2 - 26;
-  // The hub is not decoration: without it every anchored bond would pile onto
-  // one point and the strongest relationships — the ones the screen exists to
-  // show — would be the least readable part of it.
-  const rInner = Math.max(34, size * 0.14);
-  const pr = scaleSqrt()
-    .domain([0, Math.max(...nodes.map((n) => n.money), 1)])
-    .range([3.5, size > 420 ? 15 : 10]);
+  const HEAD = 20;
+  // Each lane is exactly as tall as its own tallest stack. A fixed height
+  // would either clip the crowded lane or leave the sparse one mostly empty.
+  const tops: number[] = [];
+  let y = AXIS_H;
+  for (const lane of lanes) {
+    tops.push(y + HEAD + lane.half);
+    y += HEAD + lane.half * 2 + 14;
+  }
+  const height = Math.max(y, AXIS_H + 80);
+
+  // The band edges, straight from the server's own legend — so the regions on
+  // the axis and the chips in the ledger can never disagree about where
+  // "steady" starts. Ascending, for drawing left to right.
+  const edges = [...bands]
+    .map((b) => ({ at: num(b.min_score), label: String(b.band).toLowerCase() }))
+    .sort((a, b) => a.at - b.at);
 
   return (
-    <svg viewBox={`0 0 ${size} ${size}`} width="100%" height={size}
-         className={`bond-map${reduced ? " bond-still" : ""}`}>
-      {/* Strength rings, so a radius can be read rather than only compared. */}
+    <svg viewBox={`0 0 ${width} ${height}`} width="100%" height={height}
+         className={`bond-strip${reduced ? " bond-still" : ""}`}>
+      {/* Band regions, labelled. This replaces the radial's rings and is
+          strictly better: a reader sees which band a dot is in without
+          measuring anything, and the boundaries are policy rather than
+          round numbers somebody liked. */}
       <g aria-hidden="true">
-        {[25, 50, 75, 100].map((s) => (
-          <circle key={s} cx={cx} cy={cy} r={rInner + (1 - s / 100) * (rOuter - rInner)}
-                  className="bond-ring" />
-        ))}
-        {[25, 50, 75].map((s) => (
-          <text key={s} x={cx} className="viz-axis" textAnchor="middle"
-                y={cy - (rInner + (1 - s / 100) * (rOuter - rInner)) - 3}>{s}</text>
-        ))}
-      </g>
-
-      {/* The tie itself — drawn from the hub, so "close" is something you see
-          rather than something you measure. */}
-      <g aria-hidden="true">
-        {nodes.map((n) => {
-          const p = point(cx, cy, n.angle, radiusFor(n.score, rInner, rOuter));
-          const h = point(cx, cy, n.angle, rInner);
+        {edges.map((e, i) => {
+          const x0 = xOf(e.at, width);
+          const x1 = xOf(edges[i + 1]?.at ?? 100, width);
           return (
-            <line key={`l${n.side}${n.id}`} x1={h.x} y1={h.y} x2={p.x} y2={p.y}
-                  className="bond-tie"
-                  style={{ strokeWidth: Math.max(0.6, pr(n.money) / 5) }} />
+            <g key={e.label}>
+              {i > 0 && (
+                <line x1={x0} x2={x0} y1={AXIS_H - 6} y2={height}
+                      className="bond-edge" />
+              )}
+              <text x={(x0 + x1) / 2} y={14} textAnchor="middle"
+                    className="bond-band-label">{e.label}</text>
+            </g>
           );
         })}
+        {[0, 25, 50, 75, 100].map((s) => (
+          <text key={s} x={xOf(s, width)} y={AXIS_H - 8} textAnchor="middle"
+                className="viz-axis">{s}</text>
+        ))}
       </g>
 
-      <circle cx={cx} cy={cy} r={rInner} className="bond-hub" />
-      <text x={cx} y={cy - 4} textAnchor="middle" className="bond-hub-label">
-        This book
-      </text>
-      <text x={cx} y={cy + 12} textAnchor="middle" className="bond-hub-sub">
-        {drawn.length > 1
-          ? "suppliers · customers"
-          : drawn[0] === "vendor" ? "suppliers" : "customers"}
-      </text>
+      {lanes.map((lane, i) => (
+        <g key={lane.side}>
+          <text x={2} y={tops[i] - lane.half - 6} className="bond-lane-label">
+            {lane.label} ({lane.count})
+          </text>
+          <line x1={PAD_L} x2={width - PAD_R} y1={tops[i]} y2={tops[i]}
+                className="bond-spine" aria-hidden="true" />
+        </g>
+      ))}
 
       {nodes.map((n) => {
-        const p = point(cx, cy, n.angle, radiusFor(n.score, rInner, rOuter));
         const on = selected === n.id;
         return (
           <ChartTip
             key={`${n.side}${n.id}`}
             title={`${n.label} — ${n.score.toFixed(0)}/100, ${n.band.toLowerCase()}. `
-              + `${money(n.money)} traded. ${n.sector}.`
+              + `${money(n.money)} traded.`
               + (n.movement == null ? "" : ` ${signed(n.movement)} over ${MOVEMENT_LOOKBACK} months.`)
               + (n.overdue ? " Past their own buying rhythm." : "")}
           >
             <circle
-              cx={p.x} cy={p.y} r={pr(n.money) + (on ? 3 : 0)}
+              cx={n.x} cy={tops[n.lane] + n.y} r={n.r + (on ? 3 : 0)}
               className={`bond-node ${toneOf(n.movement)}${on ? " bond-on" : ""}`}
               tabIndex={0}
               role="button"
@@ -404,6 +442,8 @@ function BondMap({
     </svg>
   );
 }
+
+const AXIS_H = 34;
 
 // ── the play ────────────────────────────────────────────────────────────────
 function Timeline({
@@ -612,64 +652,133 @@ function BondTable({ nodes }: { nodes: Node[] }) {
 }
 
 // ── geometry and small helpers ──────────────────────────────────────────────
-//
-// The layout is computed from the *bond list*, never from the frame, so a
-// node's angle is the same in every frame. Laying out per frame would let a
-// dot swap wedges as its neighbours came and went, and the play would read as
-// noise rather than as movement.
+
+/** The lanes, and every counterparty's fixed seat inside one.
+ *
+ *  Computed from the *current* scores and never from the displayed frame — see
+ *  the note at the top of the file. This is the whole reason the play reads as
+ *  movement rather than as churn: a dot's row is its identity, and only its
+ *  horizontal position is the measure.
+ *
+ *  Only a populated side gets a lane. An empty supplier half reserving a band
+ *  of canvas says "this business has no suppliers", which is never what it
+ *  means — the emptiness is stated in words below the chart instead.
+ */
+function packLanes(
+  sides: { side: string; bonds: Row[]; frames: Row[] }[],
+  apply: <R extends Sourced>(rows: R[]) => R[],
+  width: number,
+): { lanes: Lane[]; seat: Map<string, Seat> } {
+  const seat = new Map<string, Seat>();
+  const lanes: Lane[] = [];
+
+  sides.forEach(({ side, bonds, frames }) => {
+    // Only a counterparty the server sent frames for can be drawn — the frame
+    // series is where a per-month score comes from. The lane label counts
+    // exactly these, so it can never claim more dots than are on the canvas.
+    const covered = new Set(
+      frames.flatMap((f) => rows(f.bonds).map((e) => String(e.counterparty_id))));
+    const scored = (apply(bonds as Sourced[]) as Row[])
+      .filter((b) => b.score != null
+                     && covered.has(String(b.counterparty_id)))
+      // Ascending, so the packer places the crowded left end first and the
+      // sparse right end settles around it rather than the other way round.
+      .sort((a, b) => num(a.score) - num(b.score));
+    if (!scored.length) return;
+
+    const r = radiusScale(scored);
+    const lane = lanes.length;
+    const placed: { x: number; y: number; r: number }[] = [];
+    let extent = 0;
+
+    for (const b of scored) {
+      const x = xOf(num(b.score), width);
+      const rr = r(num(b.money));
+      // Nearest free seat to the lane's spine, tried outward in both
+      // directions. A dot that cannot find one at all stays on the spine and
+      // overlaps rather than being pushed off the canvas — an overlap is
+      // survivable, a mark drawn outside its own lane is not.
+      let y = 0;
+      for (let k = 0; k <= MAX_STACK; k += 1) {
+        const options = k === 0 ? [0] : [k * STACK_STEP, -k * STACK_STEP];
+        const free = options.find((cy) => placed.every((p) => {
+          const dx = p.x - x, dy = p.y - cy;
+          const reach = p.r + rr + 1;
+          return dx * dx + dy * dy >= reach * reach;
+        }));
+        if (free !== undefined) { y = free; break; }
+      }
+      placed.push({ x, y, r: rr });
+      extent = Math.max(extent, Math.abs(y) + rr);
+      seat.set(`${side}:${String(b.counterparty_id)}`, { lane, y });
+    }
+
+    lanes.push({
+      side,
+      label: side === "vendor" ? "Suppliers" : "Customers",
+      count: scored.length,
+      half: Math.max(extent + 6, 26),
+    });
+  });
+
+  return { lanes, seat };
+}
+
+interface Lane { side: string; label: string; count: number; half: number }
+interface Seat { lane: number; y: number }
+
+/** Marks sized by area, not by diameter — the same rule `Patterns.tsx` uses.
+ *  Scaling the radius makes a counterparty with twice the revenue look four
+ *  times as important. */
+function radiusScale(rows: Row[]) {
+  return scaleSqrt()
+    .domain([0, Math.max(...rows.map((b) => num(b.money)), 1)])
+    .range([3, 13]);
+}
+
+/** Score → x. The axis is the full panel width, which is the entire point of
+ *  the strip: a radial had ~130px to spend on the same 0–100. */
+function xOf(score: number, width: number): number {
+  const s = Math.min(100, Math.max(0, score));
+  return PAD_L + (s / 100) * Math.max(1, width - PAD_L - PAD_R);
+}
+
+const PAD_L = 34;
+const PAD_R = 18;
+const STACK_STEP = 2;
+const MAX_STACK = 70;
 
 function layout(
   sides: { side: string; bonds: Row[]; frames: Row[] }[],
   at: number,
   apply: <R extends Sourced>(rows: R[]) => R[],
+  seat: Map<string, Seat>,
+  width: number,
 ): Node[] {
   const out: Node[] = [];
-  // Only a side with something to draw claims an arc. Splitting the circle by
-  // how many sides are *selected* rather than by how many are populated is what
-  // put four customers into a quarter of the canvas while an empty supplier
-  // half held the other 180° — the emptiness of a half is said in words below
-  // the chart, not by reserving space for it.
-  const populated = sides
-    .map((s) => ({ ...s, scored: (apply(s.bonds as Sourced[]) as Row[])
-                                   .filter((b) => b.score != null) }))
-    .filter((s) => s.scored.length > 0);
-  const span = (Math.PI * 2) / Math.max(1, populated.length);
-
-  populated.forEach(({ side, frames, scored }, sideIndex) => {
-    const bySector = new Map<string, Row[]>();
-    for (const b of scored) {
-      const key = String(b.sector ?? "Other");
-      bySector.set(key, [...(bySector.get(key) ?? []), b]);
-    }
-    // Stable ordering, so the wedges do not reshuffle between renders.
-    const sectors = [...bySector.keys()].sort();
-    const total = scored.length || 1;
-    const base = sideIndex * span - Math.PI / 2;
-
-    let placed = 0;
-    for (const sector of sectors) {
-      const group = (bySector.get(sector) ?? [])
-        .slice()
-        .sort((a, b) => num(b.money) - num(a.money));
-      for (const b of group) {
-        const id = String(b.counterparty_id);
-        const point = frameFor(frames, at, id);
-        const score = point?.score;
-        if (score == null) { placed += 1; continue; }
-        out.push({
-          id, label: String(b.label), sector, side,
-          score: Number(score),
-          money: num(point?.money ?? b.money),
-          movement: movementOf(frames, at, id),
-          band: String(point?.band ?? b.band ?? "THIN"),
-          origin: b.origin as EntityOrigin | undefined,
-          overdue: Boolean(b.overdue),
-          // Half a slot in, so the first node is not welded to the seam
-          // between two wedges.
-          angle: base + span * ((placed + 0.5) / total),
-        });
-        placed += 1;
-      }
+  sides.forEach(({ side, bonds, frames }) => {
+    const visible = apply(bonds as Sourced[]) as Row[];
+    const r = radiusScale(visible.filter((b) => b.score != null));
+    for (const b of visible) {
+      const id = String(b.counterparty_id);
+      const here = seat.get(`${side}:${id}`);
+      if (!here) continue;
+      const point = frameFor(frames, at, id);
+      // Unscored *in this frame* means absent from it, not parked at zero.
+      if (point?.score == null) continue;
+      out.push({
+        id, label: String(b.label), sector: String(b.sector ?? "Other"), side,
+        score: Number(point.score),
+        money: num(point.money ?? b.money),
+        movement: movementOf(frames, at, id),
+        band: String(point.band ?? b.band ?? "THIN"),
+        origin: b.origin as EntityOrigin | undefined,
+        overdue: Boolean(b.overdue),
+        lane: here.lane,
+        y: here.y,
+        x: xOf(Number(point.score), width),
+        r: r(num(point.money ?? b.money)),
+      });
     }
   });
   return out;
@@ -691,16 +800,6 @@ function movementOf(frames: Row[], at: number, id: string): number | null {
   const then = frameFor(frames, at - MOVEMENT_LOOKBACK, id)?.score;
   if (now == null || then == null) return null;
   return Number(now) - Number(then);
-}
-
-/** Strong bonds sit near the hub. The inversion is the whole metaphor. */
-function radiusFor(score: number, rInner: number, rOuter: number): number {
-  const s = Math.min(100, Math.max(0, score));
-  return rInner + (1 - s / 100) * (rOuter - rInner);
-}
-
-function point(cx: number, cy: number, angle: number, r: number) {
-  return { x: cx + Math.cos(angle) * r, y: cy + Math.sin(angle) * r };
 }
 
 /** Movement → colour class. Neutral inside a band that is not worth a claim:

@@ -82,10 +82,17 @@ VENDOR = "vendor"
 #: How far back the play runs by default, in whole calendar months.
 DEFAULT_MONTHS = 24
 
-#: How many counterparties get a frame series. The current-state list is always
-#: complete — this caps only the *animated* set, because 300 dots moving is not
-#: a thing anybody reads. Stated in the response rather than applied silently.
-DEFAULT_FRAME_COVER = 80
+#: How many counterparties get a frame series.
+#:
+#: This started at 80 on the belief that 300 moving dots is not a thing anybody
+#: reads. That was true of the radial layout it was written for — and measuring
+#: the strip that replaced it showed the readability argument had evaporated,
+#: while the cap quietly stayed: the chart drew 80 dots under a lane labelled
+#: 139, which is the silent truncation §6 says to report rather than apply.
+#:
+#: So it is now a *payload* bound and nothing else, set well above a real book's
+#: counterparty count. The current-state list has never been capped.
+DEFAULT_FRAME_COVER = 400
 
 #: How much of the book one counterparty must hold for ``weight`` to saturate.
 #: A tenth is a lot in distribution; above it, more concentration does not make
@@ -511,7 +518,6 @@ def _one(party: str, rows: list[TradeLine], names: dict[str, str], as_of: date, 
             "score": score,
             "band": band_of(score) if score is not None else None,
             "money": round(sum(monthly[: i + 1]), 2),
-            "trailing_money": round(trailing[i], 2),
         })
 
     # Today's bond is the last frame's facets recomputed against ``as_of``

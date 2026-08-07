@@ -948,3 +948,14 @@
 .drain-fill { display: block; height: 100%; background: var(--viz-neutral); }
 .drain-fill.SLOW { background: var(--viz-accent); }
 .drain-fill.DEAD { background: var(--viz-loss); }
+
+/* An order past the ageing threshold, marked on the age cell itself.
+   The old list carried a separate "AGEING" flag beside the row, which is a
+   second column's worth of width restating what the number in the age column
+   already says. Marking the number keeps the signal on the fact it derives
+   from, and keeps it visible when the grid is sorted by anything else. */
+.ag-cell.po-ageing {
+  color: var(--viz-loss);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}

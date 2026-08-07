@@ -844,28 +844,82 @@ export function SupplyScreen({ session }: { session: PlatformSession }) {
         {open.length === 0 ? (
           <p className="tier3-none">Nothing outstanding.</p>
         ) : (
-          <ol className="cadence-rows">
-            {open.map((o, i) => (
-              <li key={i}
-                  className={num(o.age_days) >= staleAfter ? "cadence-row late" : "cadence-row"}>
-                <span className="cadence-hit as-row">
-                  <span className="cadence-name">
-                    {String(o.number || "—")}
-                    <span className="viz-muted"> · {String(o.vendor_label)}</span>
-                  </span>
-                  <span className="cadence-figures">
-                    <span>{num(o.pending_qty)} of {num(o.ordered_qty)} to come</span>
-                    <span className="viz-muted">
-                      ordered {String(o.ordered_on)} · {String(o.age_days)} days ago
-                    </span>
-                  </span>
-                  {num(o.age_days) >= staleAfter ? (
-                    <span className="cadence-flag">ageing</span>
-                  ) : null}
-                </span>
-              </li>
-            ))}
-          </ol>
+          <>
+            {/* A grid rather than the hand-rolled `<ol>` this used to be. The
+                list could not be sorted by value or age, filtered to one
+                supplier, or copied out — and "which of these should I chase"
+                is a question you answer by re-sorting. The standard says AG
+                Grid for tabular data; this was tabular data wearing a list. */}
+            <DataGrid<Row>
+              ariaLabel="Open purchase orders"
+              twoLineRows
+              pageSize={25}
+              rows={open}
+              columns={[
+                {
+                  field: "number", headerName: "Order", flex: 1.4, minWidth: 240,
+                  filter: "agTextColumnFilter",
+                  cellRenderer: (p: { data?: Row }) => (
+                    <EntityName
+                      name={String(p.data?.number || "—")}
+                      sub={String(p.data?.vendor_label ?? "")}
+                      origin={p.data?.origin as EntityOrigin | undefined}
+                      show={vendorSourcesDiffer}
+                    />
+                  ),
+                },
+                {
+                  // "Placed", not "Ordered": the quantity column two along is
+                  // also an "ordered", and two columns under one word is a
+                  // table you have to decode rather than read.
+                  field: "ordered_on", headerName: "Placed", width: 130, flex: 0,
+                  filter: "agDateColumnFilter",
+                  valueFormatter: (p) => (p.value ? formatDate(String(p.value)) : "—"),
+                },
+                numeric<Row>("age_days", "Age", (v) => `${v} d`, {
+                  width: 110, flex: 0, sort: "desc",
+                  headerTooltip: "Days since the order was placed. With no "
+                    + "promised date on most of this book's orders, age is the "
+                    + "only thing that ranks what to chase.",
+                  // The ageing flag as a cell state rather than a separate
+                  // column: it is derived from this number, so it belongs on it.
+                  cellClass: (p) =>
+                    `ag-num${num(p.value) >= staleAfter ? " po-ageing" : ""}`,
+                }),
+                // Ordered then outstanding, left to right, so the pair reads
+                // as the order shrinking rather than as two unrelated counts.
+                numeric<Row>("ordered_qty", "Ordered qty", (v) => v.toLocaleString("en-IN"),
+                             { width: 140, flex: 0 }),
+                numeric<Row>("pending_qty", "Still to come", (v) => v.toLocaleString("en-IN"),
+                             { width: 150, flex: 0 }),
+                // The whole order's value. Already on the payload and simply
+                // never rendered. Safe here because `/supply` is
+                // manager-or-owner at the door — purchase cost never reaches a
+                // salesperson because they cannot reach this endpoint at all.
+                numeric<Row>("total", "Order value", (v) => money(v), {
+                  width: 160, flex: 0,
+                  headerTooltip: "What the whole order is worth. The platform "
+                    + "stores purchase orders at header grain, with no line "
+                    + "rates, so the part already received and the part still "
+                    + "to come cannot be valued separately — see the note "
+                    + "below the table.",
+                }),
+              ]}
+            />
+            {/* Naming the gap rather than filling it, which is the rule this
+                screen is built on. Splitting the value by quantity would need
+                every line on the order to carry the same rate; on an order
+                reading "460 of 500 to come" across a dozen different tools it
+                would be a number nobody could reproduce from the book. */}
+            <p className="viz-muted viz-footnote">
+              {money(open.reduce((t, o) => t + num(o.total), 0))} of open orders
+              on this page. The value dispatched and the value still to come are
+              not shown because purchase orders are held at header grain — the
+              line rates that would split the total are not ingested, and
+              apportioning it by quantity would assume every line on an order
+              costs the same.
+            </p>
+          </>
         )}
       </div>
 

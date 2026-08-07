@@ -578,3 +578,112 @@ def test_the_same_company_still_refuses_a_second_pull(client):
     assert again["run"]["sync_run_id"] == first["run"]["sync_run_id"]
     assert client.get("/api/v1/data/sync",
                       headers=_hdr(client)).json()["busy_connections"] == ["conn_sls"]
+
+
+# ── "Sync every company" means every company ─────────────────────────────────
+#
+# The button said so and its tooltip said "Runs one pull per enabled company, in
+# turn". The server did not: a run with no connection named resolved credentials
+# through `get_zoho_credentials`, whose no-argument form falls back to the
+# organization's *first* enabled row. A three-company organization pulled one
+# company for ever, and — because the rows it wrote carried no connection at all
+# — the Company filter, which builds its options from the rows, had nothing to
+# offer and hid itself. One connector visible in a product built for three.
+
+def _connect(client, *companies: tuple[str, str, bool]) -> None:
+    """Give the organization some connected Zoho companies.
+
+    `(connection_id, label, enabled)`. No credentials: `get_source` is patched
+    in every test here, so nothing ever decrypts one.
+    """
+    s = client.Maker()
+    for connection_id, label, enabled in companies:
+        s.add(models.ZohoConnection(
+            connection_id=connection_id, organization_id=ORG, label=label,
+            enabled=enabled, zoho_organization_id=f"zoho-{connection_id}"))
+    s.commit()
+    s.close()
+
+
+def _pulled_connections(client, monkeypatch) -> list[str | None]:
+    """The connection each source was built for, in order, as the run asked."""
+    seen: list[str | None] = []
+
+    def record(session, org, since=None, connection_id=None, **kw):
+        seen.append(connection_id)
+        return Empty()
+
+    monkeypatch.setattr("app.ingestion.sync.get_source", record)
+    monkeypatch.setattr(jobs, "thread_dispatch", client.inline)
+    return seen
+
+
+def test_syncing_every_company_reads_every_enabled_connection(client, monkeypatch):
+    seen = _pulled_connections(client, monkeypatch)
+    _connect(client, ("conn_sls", "SLS Engineers", True), ("conn_4u", "4U Precision", True))
+
+    client.post("/api/v1/data/sync", headers=_hdr(client), json={})
+
+    assert set(seen) == {"conn_sls", "conn_4u"}, (
+        "a run with no connection named must read every enabled company, not "
+        "the first one")
+
+
+def test_a_disabled_company_is_skipped_by_the_all_companies_run(client, monkeypatch):
+    """Disabling is how somebody says 'keep the credentials, skip it'."""
+    seen = _pulled_connections(client, monkeypatch)
+    _connect(client, ("conn_sls", "SLS Engineers", True), ("conn_ups", "UPS", False))
+
+    client.post("/api/v1/data/sync", headers=_hdr(client), json={})
+
+    assert set(seen) == {"conn_sls"}
+
+
+def test_naming_one_company_still_reads_only_that_one(client, monkeypatch):
+    seen = _pulled_connections(client, monkeypatch)
+    _connect(client, ("conn_sls", "SLS Engineers", True), ("conn_4u", "4U Precision", True))
+
+    client.post("/api/v1/data/sync", headers=_hdr(client),
+                json={"connection_id": "conn_4u"})
+
+    assert set(seen) == {"conn_4u"}
+
+
+def test_an_organization_with_no_connections_still_pulls_once(client, monkeypatch):
+    """The fixture source in development, and the legacy environment-variable
+    credentials. Both want exactly one unattributed pass, which is what an empty
+    connection list has always produced."""
+    seen = _pulled_connections(client, monkeypatch)
+
+    client.post("/api/v1/data/sync", headers=_hdr(client), json={})
+
+    assert seen == [None] * len(seen) and seen, "one pass, attributed to nobody"
+
+
+def test_the_progress_counter_counts_every_company(client, monkeypatch):
+    """`windows_done / windows_total` is what the sync card draws. Counting one
+    company's windows while reading three would sit at 33% and call it done."""
+    seen = _pulled_connections(client, monkeypatch)
+    _connect(client, ("conn_sls", "SLS Engineers", True), ("conn_4u", "4U Precision", True))
+
+    client.post("/api/v1/data/sync", headers=_hdr(client), json={})
+
+    s = client.Maker()
+    run = s.query(models.SyncRun).one()
+    assert run.windows_total == run.windows_done
+    assert run.windows_total % 2 == 0, "an even number of windows across two companies"
+    s.close()
+
+
+def test_one_company_cannot_pull_while_every_company_is_pulling(client):
+    """The umbrella run now covers this connection too, so a second job on it
+    would be two pulls of the same book against the same API."""
+    every = client.post("/api/v1/data/sync", headers=_hdr(client), json={}).json()
+    one = client.post("/api/v1/data/sync", headers=_hdr(client),
+                      json={"connection_id": "conn_sls"}).json()
+
+    assert every["started"] is True
+    assert one["started"] is False, (
+        "a single-company pull must be handed the all-companies job already "
+        "reading that company")
+    assert one["run"]["sync_run_id"] == every["run"]["sync_run_id"]

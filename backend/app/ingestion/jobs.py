@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Callable, Optional
 
@@ -339,11 +340,11 @@ def execute_sync(session: Session, run: models.SyncRun, *,
 
         phase("Connecting to Zoho")
 
-        def source_for(start: date, end: Optional[date]):
+        def source_for(start: date, end: Optional[date], conn: Optional[str]):
             """One source per window, each asking Zoho only for its own months."""
             kwargs = {"since": start}
-            if connection_id:
-                kwargs["connection_id"] = connection_id
+            if conn:
+                kwargs["connection_id"] = conn
             src = get_source(session, org, **kwargs)
             # Only the live client can be bounded above; the fixture source has
             # no window to speak of and is left alone.
@@ -351,37 +352,68 @@ def execute_sync(session: Session, run: models.SyncRun, *,
                 src._until = end
             return src
 
+        # Which books this run covers. Naming a connection means that one;
+        # naming none means *every enabled one*, which is what the button
+        # labelled "Sync every company" has always claimed and never did.
+        #
+        # What it did instead: `get_zoho_credentials` with no connection falls
+        # back to the organization's *first* enabled row, so a three-company
+        # organization pulled one company and the other two stayed empty for
+        # ever. The rows it wrote also carried no connection at all, and a row
+        # with no connection belongs to no company — so the Company filter,
+        # which builds its options from the rows, had nothing to offer and hid
+        # itself. Two different reasons for the same symptom: one connector
+        # visible in a product built for three.
+        targets = _sync_targets(session, org, connection_id)
+        several = len(targets) > 1
+
         windows = plan_windows(since)
-        run.windows_total = len(windows)
+        # Per company, because that is what the progress counter is counting.
+        run.windows_total = len(windows) * len(targets)
         run.windows_done = 0
 
-        # The connection this run was started for, so every row it writes says
-        # which connected company it came from. Omitting it was why the Stock
-        # and Customers screens could name the connector ("Zoho") but never the
-        # book — `SyncService` defaults the connector and leaves the connection
-        # NULL, and a NULL connection resolves to no company at all.
-        svc = SyncService(session, source_for(since, None), org,
-                          resume=not full, on_phase=phase,
-                          connection_id=connection_id)
-        svc.begin()
-        # Customers and items are the whole master list whatever the window, so
-        # they are read once rather than once per slice.
-        svc.run_reference()
+        services: list[SyncService] = []
+        for index, target in enumerate(targets):
+            # Named in every phase line, so a pull that takes minutes says which
+            # company it is on rather than reading the same six phases three
+            # times over.
+            book = f" · {target.label}" if several and target.label else ""
 
-        for start, end in windows:
-            label = _window_label(start, end)
-            svc.run_documents(source_for(start, end), label=label)
-            run.windows_done += 1
-            # Flushed per window so a watcher sees the count move, and so an
-            # interrupted pull records how far it actually got.
-            phase(f"Read {label}")
+            svc = SyncService(session, source_for(since, None, target.connection_id), org,
+                              resume=not full, on_phase=phase,
+                              connection_id=target.connection_id)
+            # Once per run, not once per company: it clears the document cursor
+            # for the whole organization, and clearing it again after the first
+            # company had already recorded its documents would make the next
+            # resume re-read them.
+            if index == 0:
+                svc.begin()
+            # Customers and items are the whole master list whatever the window,
+            # so they are read once per company rather than once per slice.
+            svc.run_reference()
 
-        # After the documents, because payments resolve to customers the
-        # document pass may have created, and stock resolves to products.
-        svc.run_supply()
+            for start, end in windows:
+                label = _window_label(start, end)
+                svc.run_documents(source_for(start, end, target.connection_id),
+                                  label=f"{label}{book}")
+                run.windows_done += 1
+                # Committed per window so a watcher sees the count move, and so
+                # an interrupted pull records how far it actually got.
+                phase(f"Read {label}{book}")
 
-        svc.finish()
-        report = svc.report
+            # After the documents, because payments resolve to customers the
+            # document pass may have created, and stock resolves to products.
+            svc.run_supply()
+            services.append(svc)
+
+        # Assignments are decided from the newest invoice found, so they run
+        # once, after every company has been read — not once per company against
+        # a book that is still half-loaded.
+        services[-1].finish()
+
+        report = SyncReport(organization_id=org)
+        for svc in services:
+            report.merge(svc.report)
         session.flush()
 
         phase("Detecting signals")
@@ -523,6 +555,40 @@ def thread_dispatch(sync_run_id: str, since: date, full: bool,
 Dispatch = Callable[[str, date, bool, Optional[str]], None]
 
 
+@dataclass(frozen=True)
+class _Target:
+    """One connected company a run will read, and what to call it on screen."""
+    connection_id: Optional[str]
+    label: str
+
+
+def _sync_targets(session: Session, organization_id: str,
+                  connection_id: Optional[str]) -> list[_Target]:
+    """The books one run covers: the named connection, or every enabled one.
+
+    The third case is the one that keeps the old behaviour intact rather than
+    breaking a single-company deployment: an organization with no connection
+    rows at all is either running against the fixture source in development or
+    against the legacy environment-variable credentials, and both want exactly
+    one unattributed pass — which is what an empty list of connections has
+    always produced.
+    """
+    from .connections import get_connection, list_connections
+
+    if connection_id is not None:
+        try:
+            conn = get_connection(session, organization_id, connection_id)
+            return [_Target(connection_id, conn.label or conn.zoho_organization_id or "")]
+        except Exception:  # noqa: BLE001 — a label is never a reason to refuse a pull
+            return [_Target(connection_id, "")]
+
+    rows = list_connections(session, organization_id, enabled_only=True)
+    if rows:
+        return [_Target(r.connection_id, r.label or r.zoho_organization_id or "")
+                for r in rows]
+    return [_Target(None, "")]
+
+
 def start_sync(session: Session, organization_id: str, *,
                since: Optional[date] = None,
                full: bool = False, connection_id: Optional[str] = None,
@@ -551,6 +617,16 @@ def start_sync(session: Session, organization_id: str, *,
         # fights it for the same rows.
         existing = active_run(session, organization_id,
                               connection_id=connection_id, any_connection=False)
+        # An all-companies run covers this connection too, now that it really
+        # reads every one of them rather than only the first. Starting a
+        # single-company pull beside it would have two jobs writing the same
+        # rows from the same API — idempotent, but twice the Zoho calls and a
+        # progress display that cannot say which job the counter belongs to.
+        # The reverse direction is already covered: the umbrella run's own
+        # guard is keyed on a NULL connection.
+        if existing is None and connection_id is not None:
+            existing = active_run(session, organization_id,
+                                  connection_id=None, any_connection=False)
         if existing is not None:
             return existing, False
 

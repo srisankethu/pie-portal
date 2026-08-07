@@ -116,7 +116,14 @@ export function DataScreen({ session, onSynced }: { session: PlatformSession; on
         session={session}
         canSync={canSync}
         onSync={(id, from, reread) => startSync(id, from, reread)}
+        // An all-companies run reads *this* company too, so its own button is
+        // busy for the duration. It reports itself with a NULL connection, so
+        // it never appears in `busy_connections` — without this, every card
+        // offered a pull the server would decline by handing back the umbrella
+        // job, which looks like a button that does nothing.
         busyConnections={busyConnections}
+        everyCompanyBusy={Boolean(sync.state?.active
+                                  && sync.state.active.connection_id == null)}
         starting={sync.busy}
       />
 

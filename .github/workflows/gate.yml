@@ -107,26 +107,66 @@ jobs:
       - uses: actions/checkout@v4
 
       # pie-portal imports pie-parser in-process (backend/app/pie_service.py)
-      # from a pinned clone. THIS STEP IS THE ONE THAT WAS MISSING, and its
+      # from a pinned clone. Fetching it is the step that was MISSING, and its
       # absence is why the migrations job failed 25 tests while appearing to be
       # about migrations.
       #
       # pie-parser is private, and the automatic GITHUB_TOKEN is scoped to this
-      # repository only. It therefore needs a token that can read pie-parser:
-      # create a fine-grained PAT with Contents:read on srisankethu/pie-parser
-      # and add it as the repository secret PIE_PARSER_TOKEN
-      # (Settings -> Secrets and variables -> Actions).
+      # repository only, so a token that can read pie-parser is required.
       #
-      # `continue-on-error` so a missing secret produces verify.sh's own precise
-      # message instead of a bare "checkout failed" — the failure should say what
-      # to do about it.
+      # This probe runs BEFORE the checkout because `actions/checkout` reports
+      # every one of "no secret", "wrong scope", "expired", "not approved" as the
+      # same 404 after three retries. That is a failure that does not name its
+      # cause, which is the thing this whole gate exists to stop. Distinguishing
+      # them here costs one API call.
+      #
+      # The token is never printed. Only the HTTP status is, and Actions masks
+      # secret values in logs regardless.
+      - name: check the pie-parser credential before using it
+        id: cred
+        env:
+          TOKEN: ${{ secrets.PIE_PARSER_TOKEN }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "::error::PIE_PARSER_TOKEN is not visible to this workflow run."
+            echo "::error::Either it does not exist, or it was added somewhere this"
+            echo "::error::run cannot read: an *environment* secret rather than a"
+            echo "::error::repository secret, a secret on the wrong repository"
+            echo "::error::(it belongs on pie-portal, not pie-parser), or a name"
+            echo "::error::that differs by a character."
+            echo "::error::Add it at: Settings -> Secrets and variables -> Actions"
+            echo "::error::-> Repository secrets, named exactly PIE_PARSER_TOKEN."
+            exit 1
+          fi
+          CODE=$(curl -sS -o /dev/null -w '%{http_code}' \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/srisankethu/pie-parser || echo 000)
+          echo "PIE_PARSER_TOKEN is set. GET /repos/srisankethu/pie-parser -> HTTP $CODE"
+          case "$CODE" in
+            200) echo "The token can read pie-parser." ;;
+            404)
+              echo "::error::The token is set but cannot see srisankethu/pie-parser."
+              echo "::error::A fine-grained PAT returns 404 (not 403) when the"
+              echo "::error::repository is not in its selected list. Check all three:"
+              echo "::error::  1. Repository access explicitly includes pie-parser"
+              echo "::error::  2. Repository permissions -> Contents: Read-only"
+              echo "::error::  3. The token has not expired"
+              exit 1 ;;
+            401)
+              echo "::error::The token was rejected (401) — expired or revoked."
+              exit 1 ;;
+            *)
+              echo "::error::Unexpected HTTP $CODE from the GitHub API. If this is"
+              echo "::error::5xx or 000 it is likely transient; re-run the job."
+              exit 1 ;;
+          esac
+
       - name: fetch pie-parser at the pinned commit
-        id: pie
-        continue-on-error: true
         uses: actions/checkout@v4
         with:
           repository: srisankethu/pie-parser
-          token: ${{ secrets.PIE_PARSER_TOKEN || secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.PIE_PARSER_TOKEN }}
           path: pie-parser
           # The pin lives in scripts/setup_pie_parser.sh, which is the single
           # place it is recorded. Checking out the default branch here and moving
@@ -135,7 +175,6 @@ jobs:
           fetch-depth: 0
 
       - name: move pie-parser to the pinned commit
-        if: steps.pie.outcome == 'success'
         run: |
           PIN=$(grep -oE '^PIN="[0-9a-f]+"' scripts/setup_pie_parser.sh | cut -d'"' -f2)
           if [ -z "$PIN" ]; then
@@ -144,15 +183,6 @@ jobs:
           fi
           git -C pie-parser checkout -q "$PIN"
           echo "pie-parser at $PIN"
-
-      - name: report a missing pie-parser clearly
-        if: steps.pie.outcome != 'success'
-        run: |
-          echo "::error::Could not check out srisankethu/pie-parser. The backend"
-          echo "::error::imports it in-process, so nothing below can run. Add a"
-          echo "::error::fine-grained PAT with Contents:read on pie-parser as the"
-          echo "::error::repository secret PIE_PARSER_TOKEN."
-          exit 1
 
       - uses: actions/setup-python@v5
         with:

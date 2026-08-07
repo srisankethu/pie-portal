@@ -15,7 +15,7 @@ set -uo pipefail
 # pie-parser master. Moved from 0f17d49 for the scoped-source fix: passing a
 # customer identity into resolution REQUIRES it, because against the previous
 # pin naming a customer made every scoped line resolve to nothing at all.
-PIN="de5b5ea0e68da07ba2cb2aafff4c3a385f002feb"
+PIN="9ef48ffdb35858439cdb8176eaa4d9b19e049cc0"
 DEST="${1:-$(cd "$(dirname "$0")/.." && pwd)/pie-parser}"
 HTTPS_REMOTE="https://github.com/srisankethu/pie-parser.git"
 SSH_REMOTE="git@github.com:srisankethu/pie-parser.git"

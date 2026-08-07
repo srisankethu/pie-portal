@@ -681,7 +681,11 @@ function AddConnection({
 
         {error && <p className="cx-detail bad">{error}</p>}
         <div style={{ marginTop: 12 }}>
-          <Button variant="contained" size="small" disabled={busy}>
+          {/* `type="submit"` is load-bearing, not decoration: MUI's Button
+              defaults to type="button", where a bare <button> in a form
+              defaults to submit. Without it this renders, enables, depresses
+              and does nothing at all. */}
+          <Button type="submit" variant="contained" size="small" disabled={busy}>
             {busy ? "Adding…" : "Add company"}
           </Button>
         </div>

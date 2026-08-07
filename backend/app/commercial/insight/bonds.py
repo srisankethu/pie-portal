@@ -19,12 +19,26 @@ The five, each a ratio in [0, 1] where 1 is the strongest:
                  days. A quarterly buyer is not late in week six.
 ``consistency``  the share of eligible months they actually traded in. Regular
                  trade is the single most honest evidence of a live tie.
-``breadth``      how much of the catalogue the relationship spans. One SKU is a
-                 transaction; twelve is being embedded in someone's operation.
+``breadth``      how many of the **lines of the business** they take, out of
+                 how many there are. See below — this one changed.
 ``weight``       their share of this company's book, saturating. Concentration
                  is part of a bond — it is also what makes losing one hurt.
 ``reliability``  whether they do the thing they promised: pay, for a customer;
                  deliver, for a supplier.
+
+**Breadth counts categories, not SKUs, and that is not a refinement.** It
+counted distinct items first, which made twelve cutting-tool inserts score
+higher than four items spread across cutting tools, coolant, metrology and
+machines. For a distributor trying to grow product mix that is precisely
+backwards: the second customer is the deeper relationship and the harder one to
+displace, because a competitor has to beat four lines instead of one. So breadth
+is now coverage — categories bought ÷ categories sold — and the bond score
+rewards the thing the business is actually trying to grow. It also needs no
+saturation constant, because the denominator is real.
+
+Items the catalogue cannot place fall in ``UNCATEGORISED`` and are excluded from
+both sides of that ratio rather than counted against anybody. A customer is not
+narrow because the platform failed to categorise what they bought.
 
 **Momentum is deliberately not a facet.** The frames *are* the trajectory, and
 scoring the slope as well would count the same movement twice — a relationship
@@ -71,6 +85,7 @@ from typing import Iterable, Optional
 
 from ...signals import aggregates as agg
 from ...signals.config import SignalThresholds, load_thresholds as load_signal_thresholds
+from ..categories import UNCATEGORISED
 from ..config import CommercialThresholds
 from . import payments, periods
 
@@ -99,13 +114,6 @@ DEFAULT_FRAME_COVER = 400
 #: the tie meaningfully stronger, it makes it more dangerous — which is a
 #: different screen's question.
 WEIGHT_SATURATION = 0.10
-
-#: Distinct items at which ``breadth`` reaches one half. The curve is
-#: ``n / (n + k)``: absolute, so a relationship's breadth never moves because a
-#: *different* relationship changed. ``landscape.py`` records why that matters —
-#: a facet computed against the median of the plotted set changes when the
-#: filter does, which makes it meaningless.
-BREADTH_HALF = 5.0
 
 #: How long trailing weight is measured over. Lifetime share would let a
 #: relationship that ended three years ago keep its weight forever.
@@ -159,6 +167,14 @@ class TradeLine:
     #: The document this line belongs to. Distinct documents are what "an
     #: order" means for cadence, so a forty-line bill counts once.
     document_ref: str
+    #: Which line of the business the item belongs to, already resolved by
+    #: ``commercial/categories.py``. Resolved by the caller rather than here
+    #: because the resolution needs the product master and an override table,
+    #: and this module takes facts rather than fetching them.
+    #:
+    #: ``None`` or ``UNCATEGORISED`` means the catalogue could not place it —
+    #: excluded from coverage rather than counted against the counterparty.
+    category: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -253,23 +269,21 @@ def consistency_of(active_months: int, eligible_months: int) -> Optional[float]:
     return min(1.0, active_months / eligible_months)
 
 
-def saturating(value: float, half: float) -> float:
-    """``n / (n + k)`` — approaches 1 without ever claiming it.
+def breadth_of(categories_bought: int, categories_sold: int) -> Optional[float]:
+    """How many lines of the business they take, out of how many there are.
 
-    The shape ``breadth`` uses: each additional item adds less than the one
-    before, which is how breadth actually behaves. Named because a bare
-    expression inside a facet is a curve nobody can find again.
+    A real ratio with a real denominator, which is why there is no curve and no
+    constant to justify. One line out of five is a fragile relationship however
+    large it is — a single purchasing decision ends it — and five out of five is
+    a customer a competitor has to beat five times.
+
+    ``None`` when nothing is categorised at all: that is a gap in the catalogue,
+    not a narrow customer, and scoring it as zero would blame somebody for the
+    platform's own missing data.
     """
-    return value / (value + half) if value > 0 else 0.0
-
-
-def breadth_of(distinct_items: int) -> float:
-    """How much of the catalogue the tie spans, saturating.
-
-    One item scores low on purpose — a single-SKU relationship is one
-    purchasing decision away from ending, however large it is.
-    """
-    return saturating(distinct_items, BREADTH_HALF)
+    if categories_sold <= 0:
+        return None
+    return min(1.0, categories_bought / categories_sold)
 
 
 def weight_of(share: Optional[float]) -> Optional[float]:
@@ -320,6 +334,11 @@ class Bond:
     share: Optional[float]
     documents: int
     distinct_items: int
+    #: The lines they take, and how many there are to take. The pair rather
+    #: than the ratio, because "two of five" is what a person acts on and a
+    #: bare 0.4 is not.
+    categories: list[str]
+    categories_sold: int
     first_traded: Optional[date]
     last_traded: Optional[date]
     #: Straight from ``aggregates.Cadence`` — the dormancy detector's own rule,
@@ -340,6 +359,7 @@ class Bond:
             "money": round(self.money, 2),
             "share": _round(self.share),
             "documents": self.documents, "distinct_items": self.distinct_items,
+            "categories": self.categories, "categories_sold": self.categories_sold,
             "first_traded": self.first_traded.isoformat() if self.first_traded else None,
             "last_traded": self.last_traded.isoformat() if self.last_traded else None,
             "overdue": self.overdue,
@@ -354,7 +374,7 @@ class Bond:
 def build(lines: Iterable[TradeLine], names: dict[str, str], as_of: date, *,
           side: str,
           thresholds: CommercialThresholds,
-          item_names: Optional[dict[str, str]] = None,
+          categories_sold: Optional[Iterable[str]] = None,
           reliability: Optional[dict[str, Reliability]] = None,
           signal_thresholds: Optional[SignalThresholds] = None,
           months: int = DEFAULT_MONTHS,
@@ -374,7 +394,12 @@ def build(lines: Iterable[TradeLine], names: dict[str, str], as_of: date, *,
         return _empty(as_of, side, window, thresholds)
 
     by_party = agg.group_by(rows, lambda r: r.counterparty_id)
-    sectors = _sectors(rows, item_names or {})
+    # How many lines there are to take. Given by the caller rather than derived
+    # from what happens to have been traded: a line nobody has bought yet is
+    # still a line on offer, and deriving the denominator from the data would
+    # make coverage look complete on exactly the book with the worst mix.
+    sold = _sold(categories_sold, rows)
+    sectors = _sectors(rows)
     weights = _weights(thresholds)
 
     # Book totals per month, the denominator ``weight`` is a share of. Computed
@@ -396,7 +421,7 @@ def build(lines: Iterable[TradeLine], names: dict[str, str], as_of: date, *,
                             weights=weights, thresholds=thresholds,
                             signal_thresholds=sig,
                             reliability=rel.get(party),
-                            sector=sectors.get(party, _OTHER))
+                            sector=sectors.get(party, _OTHER), sold=sold)
         bonds.append(bond)
         series[party] = points
 
@@ -464,7 +489,7 @@ def _one(party: str, rows: list[TradeLine], names: dict[str, str], as_of: date, 
          weights: dict[str, float], thresholds: CommercialThresholds,
          signal_thresholds: SignalThresholds,
          reliability: Optional[Reliability],
-         sector: str) -> tuple[Bond, list[dict]]:
+         sector: str, sold: int) -> tuple[Bond, list[dict]]:
     """One counterparty: their bond today, and one point per month behind it."""
     doc_days = _document_days(rows)
     monthly = [0.0] * len(window)
@@ -478,14 +503,20 @@ def _one(party: str, rows: list[TradeLine], names: dict[str, str], as_of: date, 
     # items had been traded by the end of month i — a running set, not a
     # re-scan per frame.
     items_upto: list[int] = []
+    cats_upto: list[int] = []
     seen: set[str] = set()
+    seen_cats: set[str] = set()
     cursor = 0
     ordered = sorted(rows, key=lambda r: r.date)
     for period in window:
         while cursor < len(ordered) and ordered[cursor].date <= period.end:
-            seen.add(ordered[cursor].item_id)
+            line = ordered[cursor]
+            seen.add(line.item_id)
+            if line.category and line.category != UNCATEGORISED:
+                seen_cats.add(line.category)
             cursor += 1
         items_upto.append(len(seen))
+        cats_upto.append(len(seen_cats))
 
     first = ordered[0].date
     points: list[dict] = []
@@ -505,7 +536,8 @@ def _one(party: str, rows: list[TradeLine], names: dict[str, str], as_of: date, 
         facets = _facets_at(
             doc_days, when, first=first, window=window, upto=i,
             monthly=monthly, trailing=trailing, book_trailing=book_trailing,
-            distinct_items=items_upto[i], reliability=reliability,
+            categories_bought=cats_upto[i], categories_sold=sold,
+            reliability=reliability,
             thresholds=thresholds, signal_thresholds=signal_thresholds)
         # The same evidence floor the current view applies, applied to the frame
         # as it stood. Without it the play scores a relationship the list beside
@@ -525,7 +557,8 @@ def _one(party: str, rows: list[TradeLine], names: dict[str, str], as_of: date, 
     facets = _facets_at(
         doc_days, as_of, first=first, window=window, upto=len(window) - 1,
         monthly=monthly, trailing=trailing, book_trailing=book_trailing,
-        distinct_items=len(seen), reliability=reliability,
+        categories_bought=len(seen_cats), categories_sold=sold,
+        reliability=reliability,
         thresholds=thresholds, signal_thresholds=signal_thresholds)
     cadence = agg.cadence_of(
         _as_sale_rows(doc_days), as_of,
@@ -547,6 +580,7 @@ def _one(party: str, rows: list[TradeLine], names: dict[str, str], as_of: date, 
         band=band_of(score) if score is not None else None,
         facets=facets, money=sum(r.amount for r in rows), share=None,
         documents=len(doc_days), distinct_items=len(seen),
+        categories=sorted(seen_cats), categories_sold=sold,
         first_traded=first, last_traded=ordered[-1].date,
         overdue=cadence.overdue,
         typical_interval_days=cadence.typical_interval_days,
@@ -557,7 +591,8 @@ def _one(party: str, rows: list[TradeLine], names: dict[str, str], as_of: date, 
 def _facets_at(doc_days: list[date], when: date, *, first: date,
                window: list[periods.Period], upto: int, monthly: list[float],
                trailing: list[float], book_trailing: list[float],
-               distinct_items: int, reliability: Optional[Reliability],
+               categories_bought: int, categories_sold: int,
+               reliability: Optional[Reliability],
                thresholds: CommercialThresholds,
                signal_thresholds: SignalThresholds) -> Facets:
     """The five facets as they stood on one day."""
@@ -579,7 +614,7 @@ def _facets_at(doc_days: list[date], when: date, *, first: date,
         recency=recency_of(cadence.overdue_ratio),
         consistency=(consistency_of(active, eligible)
                      if eligible >= thresholds.min_history_months else None),
-        breadth=breadth_of(distinct_items),
+        breadth=breadth_of(categories_bought, categories_sold),
         weight=weight_of(share),
         reliability=(reliability.as_of(when) if reliability else None),
     )
@@ -702,43 +737,49 @@ def reliability_from_supply(orders: Iterable, as_of: date, *,
 
 
 # ── small shared helpers ─────────────────────────────────────────────────────
-_OTHER = "Other"
+#: A counterparty whose every line is uncategorised has no dominant line. Named
+#: with the catalogue's own "not categorised" code rather than a second word for
+#: the same idea, so one vocabulary reaches the screen.
+_OTHER = UNCATEGORISED
 
-#: How many of the book's largest items become named sectors. The radial map
-#: puts sector on the angle, and seven wedges is the most a reader can hold;
-#: past that the grouping stops being a grouping.
-SECTOR_COUNT = 6
+def _sold(declared: Optional[Iterable[str]], rows: list[TradeLine]) -> int:
+    """How many lines the business sells — the denominator of coverage.
 
-
-def _sectors(rows: list[TradeLine], item_names: dict[str, str]) -> dict[str, str]:
-    """Each counterparty's dominant item, among the book's biggest few.
-
-    The angle on the radial map, and the reason it carries information rather
-    than being arrangement: "everything I buy from the drill people is
-    loosening" is a sentence a person can act on. Everything outside the top
-    few falls to ``Other`` rather than producing a hundred wedges.
-
-    ``item_names`` is the product master, deliberately a separate argument from
-    the counterparty names: they are two id spaces, and looking an item id up in
-    a customer dictionary silently returns "Unnamed" for every sector.
+    Taken from the caller, which knows the catalogue. Falls back to the lines
+    actually seen in the data only when nothing was declared, and that fallback
+    is a poor one on purpose: deriving the denominator from what has been traded
+    means a book that only ever sold cutting tools reports perfect coverage,
+    which is exactly the book with the worst mix.
     """
-    by_item: dict[str, float] = {}
-    for row in rows:
-        by_item[row.item_id] = by_item.get(row.item_id, 0.0) + row.amount
-    top = {item for item, _ in
-           sorted(by_item.items(), key=lambda kv: -kv[1])[:SECTOR_COUNT]}
+    if declared is not None:
+        names = {c for c in declared if c and c != UNCATEGORISED}
+        if names:
+            return len(names)
+    return len({r.category for r in rows
+                if r.category and r.category != UNCATEGORISED})
 
+
+def _sectors(rows: list[TradeLine]) -> dict[str, str]:
+    """Each counterparty's dominant line of the business.
+
+    This was the book's top few *items*, which measured out at 147 of 204
+    counterparties landing in "Other" and the named groups being individual
+    SKUs — "Holders — M12 #5" is not something anybody can act on. A line of the
+    business is: "my coolant customers are all thin bonds" is a sentence with a
+    decision attached to it, and it is what the strip's lanes group by.
+
+    Dominant by money rather than by count, because a customer taking one
+    machine and forty inserts is a cutting-tool account with a machine on it,
+    not the reverse.
+    """
     per_party: dict[str, dict[str, float]] = {}
     for row in rows:
-        if row.item_id in top:
-            bucket = per_party.setdefault(row.counterparty_id, {})
-            bucket[row.item_id] = bucket.get(row.item_id, 0.0) + row.amount
-
-    out: dict[str, str] = {}
-    for party, spread in per_party.items():
-        item = max(spread.items(), key=lambda kv: kv[1])[0]
-        out[party] = agg.label_for(item_names, item, kind="item")
-    return out
+        if not row.category or row.category == UNCATEGORISED:
+            continue
+        bucket = per_party.setdefault(row.counterparty_id, {})
+        bucket[row.category] = bucket.get(row.category, 0.0) + row.amount
+    return {party: max(spread.items(), key=lambda kv: kv[1])[0]
+            for party, spread in per_party.items()}
 
 
 def _document_days(rows: list[TradeLine]) -> list[date]:

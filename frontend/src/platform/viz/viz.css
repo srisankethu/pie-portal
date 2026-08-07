@@ -1061,3 +1061,53 @@
   .bond-facets li { grid-template-columns: 1fr 74px; }
   .bond-facet-track { grid-column: 1 / -1; order: 3; }
 }
+
+/* ── the mix grid ──────────────────────────────────────────────────────────
+   Three cell states, and every one of them says a word as well as carrying a
+   tint. A grid whose only signal is colour is unreadable in greyscale and to a
+   substantial minority of people, and this one is meant to be printed and
+   argued over.
+
+   Lapsed is the loudest cell on purpose: the line was already approved and the
+   buying stopped, which is a shorter conversation than a line nobody has ever
+   taken. "Never" is deliberately quiet — it is not a failure, and tinting every
+   blank as an opportunity is how a whitespace grid stops being trusted. */
+.mix-cell { font-variant-numeric: tabular-nums; font-weight: 600; font-size: 12.5px; }
+.mix-buys { color: var(--viz-gain); }
+.mix-lapsed {
+  color: var(--viz-accent);
+  border-bottom: 2px solid color-mix(in srgb, var(--viz-accent) 55%, transparent);
+}
+.mix-never { color: var(--color-text-secondary); font-weight: 400; }
+
+/* The whitespace picker: one button per line, counting who is missing it. The
+   count leads because "43 customers do not buy coolant" is the sentence
+   somebody acts on — the label alone is a category name. */
+.mix-lines {
+  list-style: none; margin: 12px 0 4px; padding: 0;
+  display: flex; flex-wrap: wrap; gap: 8px;
+}
+.mix-line {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 12px; border: 1px solid var(--color-divider);
+  border-radius: 6px; background: none; cursor: pointer; font: inherit;
+  text-align: left;
+}
+.mix-line:disabled { opacity: .5; cursor: default; }
+.mix-line:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
+.mix-line-on { outline: 2px solid var(--color-text); outline-offset: 1px; }
+.mix-line-count {
+  font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums;
+  min-width: 34px; text-align: right;
+}
+.mix-line-body { display: flex; flex-direction: column; line-height: 1.3; }
+.mix-line-body .viz-muted { font-size: 11.5px; }
+
+.mix-affinity { margin-top: 16px; }
+
+/* `.tl-unavailable strong` capitalises every word, which is right for the
+   one-word series names it was written for ("stock", "margin") and wrong for a
+   label that is a sentence — it rendered "Whether A Gap Is An Opportunity".
+   Screens whose gaps are described in words opt out rather than the shared rule
+   changing under the screens that still want it. */
+.tl-unavailable.said-plain strong { text-transform: none; }

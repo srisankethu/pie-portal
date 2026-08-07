@@ -36,6 +36,8 @@ export type Screen =
   | "payments" | "stock" | "supply"
   /** Who is actually close to this book, on both sides of it, over time. */
   | "bonds"
+  /** Which lines of the business each customer takes, and which they do not. */
+  | "mix"
   /** The negotiation desk: the one screen a salesperson uses to decide rather
    *  than to read. */
   | "negotiate"
@@ -78,6 +80,7 @@ export const PATH: Record<Screen, string> = {
   stock: "/stock",
   supply: "/supply",
   bonds: "/bonds",
+  mix: "/mix",
   negotiate: "/negotiate",
 };
 

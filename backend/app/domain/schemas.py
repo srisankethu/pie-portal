@@ -42,6 +42,9 @@ class ProductIn(BaseModel):
     name: str = Field(min_length=1)
     uom: Optional[str] = None
     hsn: Optional[str] = None
+    #: The catalogue's own words, carried through unnormalised. See
+    #: ``models.Product.category`` for why it is not mapped on the way in.
+    category: Optional[str] = None
     active: bool = True
     source_ref: SourceRef
 

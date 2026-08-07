@@ -46,6 +46,7 @@ import { Storyboard } from "./viz/Storyboard";
 import { JourneyScreen, LostRevenueScreen, OpportunityScreen, SimulatorScreen, WeatherScreen } from "./viz/Screens";
 import { CadenceScreen, CompositionScreen, LandscapeScreen } from "./viz/Patterns";
 import { BondsScreen } from "./viz/Bonds";
+import { MixScreen } from "./viz/Mix";
 import { CustomerHealthTimeline, MigrationMatrix } from "./viz/History";
 import { PaymentsScreen, StockScreen, SupplyScreen } from "./viz/TheBook";
 import { NegotiateScreen } from "./viz/Negotiate";
@@ -394,6 +395,10 @@ export default function PlatformApp() {
     // and 403-ing them out of it to protect the other half would answer it by
     // removing it.
     { key: "bonds", label: "Bonds", group: "understand" },
+    // Revenue and dates, no cost — and the conversation it exists for is a
+    // salesperson's, so hiding it from them would be removing the feature to
+    // protect a field it does not contain.
+    { key: "mix", label: "Product mix", group: "understand" },
 
     // ── The book ──
     // One "Customers" door, not two. The account picker, the month-by-month
@@ -548,6 +553,7 @@ export default function PlatformApp() {
             <Route path={PATH.stock} element={<StockScreen session={session} />} />
             <Route path={PATH.supply} element={<SupplyScreen session={session} />} />
             <Route path={PATH.bonds} element={<BondsScreen session={session} onNavigate={goViz} />} />
+            <Route path={PATH.mix} element={<MixScreen session={session} onNavigate={goViz} />} />
             <Route path={PATH.negotiate} element={<NegotiateScreen session={session} />} />
 
             {/* ── QUOTES ──

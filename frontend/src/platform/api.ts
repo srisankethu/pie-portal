@@ -195,6 +195,12 @@ export const papi = {
   bonds: (t: string, months: number) =>
     req<Record<string, unknown>>(`/api/v1/insight/bonds?months=${months}`, {}, t),
 
+  // Product mix — who takes which lines of the business, and which they do not.
+  // Every role: the grid is revenue and dates, and the conversation it exists
+  // for is a salesperson's.
+  mix: (t: string, months: number) =>
+    req<Record<string, unknown>>(`/api/v1/insight/mix?months=${months}`, {}, t),
+
   // The negotiation desk. A POST because it computes on what the salesperson
   // is proposing, not on what is stored — nothing is persisted by asking.
   negotiate: (t: string, body: Record<string, unknown>) =>

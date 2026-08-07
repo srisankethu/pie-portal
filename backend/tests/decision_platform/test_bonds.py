@@ -30,6 +30,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from app.commercial import categories
 from app.commercial.config import CommercialThresholds
 from app.commercial.insight import bonds, payments
 from app.db import Base, get_session
@@ -43,22 +44,34 @@ AS_OF = date(2026, 8, 7)
 #: repeated, so a change to the seed is one edit and not four.
 SALESPERSON = "r.nair@sanketh.in"
 MANAGER = "m.rao@sanketh.in"
+
+#: The lines of the business, and the one most of these fixtures trade in.
+FIVE_LINES = list(categories.ORDER)
+CUTTING = categories.CUTTING_TOOLS
 TH = CommercialThresholds()
 SIG = SignalThresholds()
 
 
 def _lines(party: str, *, count: int, every_days: int = 30, amount: float = 5000.0,
-           items: int = 1, start: date = date(2024, 9, 1)) -> list[bonds.TradeLine]:
-    """A counterparty trading on a fixed rhythm, across ``items`` products."""
+           items: int = 1, start: date = date(2024, 9, 1),
+           category: str | None = CUTTING) -> list[bonds.TradeLine]:
+    """A counterparty trading on a fixed rhythm, across ``items`` products.
+
+    ``category`` is the line of the business those products belong to — one by
+    default, because most of these tests are about rhythm rather than mix and a
+    fixture that spread across five lines would make every bond look broad.
+    """
     out: list[bonds.TradeLine] = []
     for i in range(count):
         day = start + timedelta(days=every_days * i)
         for k in range(items):
-            out.append(bonds.TradeLine(party, day, amount, f"item{k}", f"{party}-{i}"))
+            out.append(bonds.TradeLine(party, day, amount, f"{category}-item{k}",
+                                       f"{party}-{i}", category=category))
     return out
 
 
 def _build(lines, names=None, **kw) -> dict:
+    kw.setdefault("categories_sold", FIVE_LINES)
     return bonds.build(lines, names or {}, AS_OF, side=bonds.CUSTOMER,
                        thresholds=TH, signal_thresholds=SIG, **kw)
 
@@ -96,25 +109,64 @@ def test_recency_is_unknown_rather_than_zero_without_a_rhythm():
     assert bonds.recency_of(None) is None
 
 
-def test_breadth_saturates_and_a_single_sku_scores_low():
-    assert bonds.breadth_of(0) == 0.0
-    assert bonds.breadth_of(5) == pytest.approx(0.5)
-    assert bonds.breadth_of(1) < 0.2
-    assert bonds.breadth_of(500) < 1.0
+def test_breadth_counts_lines_of_the_business_not_skus():
+    """The correction that made this facet serve the mix goal.
 
-
-def test_breadth_does_not_move_when_a_different_relationship_changes():
-    """The reason it is an absolute curve and not a share of the widest.
-
-    ``landscape.py`` records the failure being avoided: a facet measured against
-    the plotted set changes when the filter does, and a relationship that
-    crosses a band because somebody else grew is a number nobody can explain.
+    It counted distinct items first, which scored twelve cutting-tool inserts
+    above four items spread across four lines — backwards for a distributor
+    trying to grow mix, because the second customer is the one a competitor has
+    to beat four times.
     """
-    alone = _build(_lines("a", count=6, items=4))
-    crowded = _build(_lines("a", count=6, items=4)
-                     + _lines("b", count=6, items=40, amount=99999.0))
-    assert (_bond(alone, "a")["facets"]["breadth"]
-            == _bond(crowded, "a")["facets"]["breadth"])
+    assert bonds.breadth_of(1, 5) == pytest.approx(0.2)
+    assert bonds.breadth_of(4, 5) == pytest.approx(0.8)
+    assert bonds.breadth_of(5, 5) == pytest.approx(1.0)
+
+
+def test_many_skus_in_one_line_is_still_a_narrow_relationship():
+    """The whole point, stated end to end rather than on the helper."""
+    wide = _build(_lines("wide", count=8, items=1, category=CUTTING),
+                  categories_sold=FIVE_LINES)
+    deep = _build(_lines("deep", count=8, items=20, category=CUTTING),
+                  categories_sold=FIVE_LINES)
+    assert (_bond(wide, "wide")["facets"]["breadth"]
+            == _bond(deep, "deep")["facets"]["breadth"]), (
+        "twenty SKUs in one line is not broader than one SKU in that line")
+
+
+def test_taking_more_lines_raises_breadth():
+    spread: list[bonds.TradeLine] = []
+    for i, line in enumerate(FIVE_LINES[:4]):
+        spread += _lines("spread", count=2, category=line,
+                         start=date(2025, 1, 1 + i))
+    result = _build(spread, categories_sold=FIVE_LINES)
+    assert _bond(result, "spread")["facets"]["breadth"] == pytest.approx(0.8)
+    assert _bond(result, "spread")["categories_sold"] == 5
+
+
+def test_breadth_is_unknown_rather_than_zero_when_nothing_is_categorised():
+    """A gap in the catalogue is not a narrow customer, and scoring it as one
+    would blame somebody for the platform's own missing data."""
+    assert bonds.breadth_of(0, 0) is None
+    result = _build(_lines("a", count=8, category=None), categories_sold=[])
+    assert "breadth" in _bond(result, "a")["missing_facets"]
+
+
+def test_an_uncategorised_item_is_excluded_rather_than_counted_against_anybody():
+    known = _build(_lines("a", count=8, category=CUTTING),
+                   categories_sold=FIVE_LINES)
+    with_junk = _build(_lines("a", count=8, category=CUTTING)
+                       + _lines("a", count=4, category=categories.UNCATEGORISED,
+                                start=date(2025, 6, 1)),
+                       categories_sold=FIVE_LINES)
+    assert (_bond(known, "a")["facets"]["breadth"]
+            == _bond(with_junk, "a")["facets"]["breadth"])
+
+
+def test_the_denominator_is_what_the_business_sells_not_what_it_happened_to_sell():
+    """Deriving it from the data would make the worst-mix book look perfect."""
+    only_one_line = _lines("a", count=8, category=CUTTING)
+    declared = _build(only_one_line, categories_sold=FIVE_LINES)
+    assert _bond(declared, "a")["facets"]["breadth"] == pytest.approx(0.2)
 
 
 def test_weight_saturates_at_a_tenth_of_the_book():

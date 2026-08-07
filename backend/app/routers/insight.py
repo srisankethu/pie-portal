@@ -29,8 +29,9 @@ from sqlalchemy.orm import Session
 from ..authz import Principal, current_principal, require_manager_or_owner
 from .. import clock
 from ..commercial import floor, incentive, policy
+from ..commercial import categories as cat
 from ..commercial.insight import (bonds, cadence, cashflow, cohorts, composition,
-                                  flow, landscape, payments, periods, radar,
+                                  flow, landscape, mix, payments, periods, radar,
                                   simulate, stock, story, supply, weather)
 from ..db import get_session
 from ..domain import models
@@ -796,8 +797,27 @@ BOND_MIN_MONTHS = 6
 BOND_MAX_MONTHS = 36
 
 
+def _category_of(session: Session, org: str, th) -> dict[str, cat.Resolution]:
+    """Every product's line of the business, resolved once per request.
+
+    One place, so the mix grid, the bond strip's lanes and the coverage facet
+    cannot disagree about what an item is — three resolutions of one taxonomy is
+    three answers waiting to happen.
+    """
+    products = session.scalars(
+        select(models.Product).where(models.Product.organization_id == org)).all()
+    overrides = {
+        row.product_id: row.category
+        for row in session.scalars(
+            select(models.ItemCategoryOverride).where(
+                models.ItemCategoryOverride.organization_id == org)).all()
+    }
+    return cat.resolve_all(products, th, overrides=overrides)
+
+
 def _customer_bonds(session: Session, principal: Principal, snapshot,
-                    th, as_of: date, months: int) -> dict:
+                    th, as_of: date, months: int,
+                    lines_of: dict[str, cat.Resolution]) -> dict:
     """Trade lines and settled invoices → one bond per customer."""
     lines = [
         bonds.TradeLine(
@@ -809,18 +829,25 @@ def _customer_bonds(session: Session, principal: Principal, snapshot,
             # rule ``aggregates.order_dates`` applies, for the same reason.
             document_ref=str((row.source_ref or {}).get("record_id")
                              or row.external_ref),
+            category=_line_of(lines_of, row.product_id),
         )
         for row in snapshot.sales
     ]
     settled = _settlements(session, principal.organization_id)
     return bonds.build(
         lines, snapshot.customer_names, as_of, side=bonds.CUSTOMER,
-        thresholds=th, item_names=snapshot.product_names,
+        thresholds=th, categories_sold=cat.ORDER,
         reliability=bonds.reliability_from_payments(settled),
         signal_thresholds=load_signal_thresholds(), months=months)
 
 
-def _vendor_bonds(session: Session, org: str, item_names: dict[str, str],
+def _line_of(lines_of: dict[str, cat.Resolution], product_id: str) -> Optional[str]:
+    found = lines_of.get(product_id)
+    return found.category if found else None
+
+
+def _vendor_bonds(session: Session, org: str,
+                  lines_of: dict[str, cat.Resolution],
                   th, as_of: date, months: int) -> dict:
     """Bill lines and purchase orders → one bond per supplier.
 
@@ -846,6 +873,7 @@ def _vendor_bonds(session: Session, org: str, item_names: dict[str, str],
             item_id=r.product_id,
             document_ref=str((r.source_ref or {}).get("record_id")
                              or r.external_ref),
+            category=_line_of(lines_of, r.product_id),
         )
         for r in cost_rows
     ]
@@ -869,7 +897,7 @@ def _vendor_bonds(session: Session, org: str, item_names: dict[str, str],
     ]
     built = bonds.build(
         lines, {vid: v.name for vid, v in vendors.items()}, as_of,
-        side=bonds.VENDOR, thresholds=th, item_names=item_names,
+        side=bonds.VENDOR, thresholds=th, categories_sold=cat.ORDER,
         reliability=bonds.reliability_from_supply(
             orders, as_of, stale_after_days=supply.STALE_ORDER_DAYS),
         signal_thresholds=load_signal_thresholds(), months=months)
@@ -929,10 +957,11 @@ def relationship_bonds(
     org, snapshot, th = _context(session, principal)
     as_of = _as_of(snapshot) or clock.today(th.timezone)
     with_suppliers = principal.role in (Role.SALES_MANAGER, Role.OWNER)
+    lines_of = _category_of(session, org, th)
 
-    customers = _customer_bonds(session, principal, snapshot, th, as_of, months)
-    vendors = (_vendor_bonds(session, org, snapshot.product_names, th, as_of,
-                             months)
+    customers = _customer_bonds(session, principal, snapshot, th, as_of, months,
+                                lines_of)
+    vendors = (_vendor_bonds(session, org, lines_of, th, as_of, months)
                if with_suppliers else None)
 
     # A counterparty is per connected company: the same firm trading with two of
@@ -956,6 +985,11 @@ def relationship_bonds(
         empty_reason=empty, as_of=as_of.isoformat(),
         sources_differ=companies.count > 1,
         supplier_side_visible=with_suppliers,
+        # How well the catalogue is placed. Rendered rather than hidden: a
+        # coverage facet computed over a half-categorised catalogue understates
+        # every customer's breadth, and the reader has to know that.
+        catalogue=cat.coverage_report(lines_of),
+        lines=cat.lines(),
         unavailable=(bonds.unavailable(
             bonds.CUSTOMER,
             has_reliability=any(b["facets"]["reliability"] is not None
@@ -965,6 +999,47 @@ def relationship_bonds(
                 has_reliability=any(b["facets"]["reliability"] is not None
                                     for b in vendors["bonds"]))
                if vendors else [])))
+
+
+# ── product mix: which lines each customer takes, and which they do not ─────
+#
+# Every role. The grid is revenue and dates — no cost, no margin — and the whole
+# point of it is a conversation a salesperson has, so 403-ing them out of it
+# would be removing the feature to protect a field it does not contain.
+@router.get("/mix")
+def product_mix(months: int = Query(12, ge=3, le=36),
+                principal: Principal = Depends(current_principal),
+                session: Session = Depends(get_session)) -> dict:
+    """Who takes which lines of the business, and what the gaps look like."""
+    org, snapshot, th = _context(session, principal)
+    as_of = _as_of(snapshot)
+    if as_of is None:
+        return _no_data(th.currency, "product mix")
+
+    lines_of = _category_of(session, org, th)
+    result = mix.build(
+        [
+            mix.MixLine(customer_id=row.customer_id, date=row.date,
+                        amount=float(row.line_revenue),
+                        category=_line_of(lines_of, row.product_id) or "")
+            for row in snapshot.sales
+        ],
+        snapshot.customer_names, as_of, thresholds=th,
+        categories_sold=cat.ORDER, months=months)
+
+    # Per connected company, like every other list: the same firm buying from
+    # two of the books is two relationships, and a coverage gap read across
+    # both would show a line as missing that one of them already sells them.
+    companies = Companies(session, org)
+    companies.stamp(result["customers"], index_of(session, org, models.Customer),
+                    by="customer_id")
+    return _envelope(
+        result, currency=th.currency,
+        empty_reason=result.pop("empty_reason", None),
+        sources_differ=companies.count > 1,
+        catalogue=cat.coverage_report(lines_of),
+        lines=cat.lines(),
+        unavailable=mix.unavailable())
 
 
 # ── the negotiation desk ────────────────────────────────────────────────────

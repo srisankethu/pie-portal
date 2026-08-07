@@ -265,6 +265,52 @@ class CommercialThresholds:
     bond_weight_share: float = 0.15
     bond_weight_reliability: float = 0.15
 
+    # ── which line of the business an item belongs to ────────────────────────
+    #
+    # HSN prefix → category, the last resort in ``commercial/categories.py``
+    # after the item's own Zoho category and any manual override. Here rather
+    # than in that module for the same reason ``target_margin_by_family`` is
+    # here: it is a policy that moves every mix figure downstream of it, so it
+    # belongs inside ``version``. Re-map a prefix and last quarter's coverage
+    # stays explainable, because the version says what the map was.
+    #
+    # Matched longest-prefix-first, so a specific code beats a general one.
+    # Tuple-of-pairs rather than a dict so the dataclass stays frozen, hashable
+    # and JSON-stable for the hash.
+    #
+    # Deliberately conservative: a prefix is here only where the code really
+    # does mean one line. 82 alone covers spanners and hand tools as well as
+    # cutting tools, so 82 is *not* mapped — the four-digit children are. An
+    # item this map cannot place is reported as uncategorised, which is a
+    # smaller problem than an item placed in the wrong column.
+    hsn_category_map: tuple[tuple[str, str], ...] = (
+        # Interchangeable tools, and the carbide/HSS cutting lines.
+        ("8207", "CUTTING_TOOLS"),
+        ("8208", "CUTTING_TOOLS"),
+        ("8209", "CUTTING_TOOLS"),
+        # Tool holders and the arbors that carry them.
+        ("8466", "CUTTING_TOOLS"),
+        # Lubricating preparations — cutting oils, way lubes, rust preventives.
+        ("3403", "COOLANTS"),
+        # Petroleum oils. Broader than coolant, but in this book's purchase
+        # pattern it is neat cutting oil far more often than anything else.
+        ("2710", "COOLANTS"),
+        # Measuring and checking instruments; drawing/marking-out instruments.
+        ("9017", "METROLOGY"),
+        ("9031", "METROLOGY"),
+        ("9032", "METROLOGY"),
+        # Machine tools: machining centres, lathes, drilling/boring/milling.
+        ("8457", "MACHINES"),
+        ("8458", "MACHINES"),
+        ("8459", "MACHINES"),
+        ("8460", "MACHINES"),
+        ("8461", "MACHINES"),
+        # Abrasives and the smaller repeat lines.
+        ("6804", "CONSUMABLES"),
+        ("6805", "CONSUMABLES"),
+        ("3919", "CONSUMABLES"),
+    )
+
     @classmethod
     def from_env(cls) -> "CommercialThresholds":
         return cls(

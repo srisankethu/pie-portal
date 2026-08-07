@@ -310,8 +310,55 @@ class Product(Base):
     name: Mapped[str] = mapped_column(String(255))
     uom: Mapped[Optional[str]] = mapped_column(String(32))
     hsn: Mapped[Optional[str]] = mapped_column(String(32))
+    #: The catalogue's own category, exactly as Zoho words it — "Cutting Tools",
+    #: "Coolant", whatever somebody typed. Stored raw and interpreted at read
+    #: time by ``commercial/categories.py``, not normalised on the way in: the
+    #: mapping from these words to a line of the business is policy, it is
+    #: versioned, and a value rewritten at sync time could never be re-read
+    #: under a corrected map without a full re-sync.
+    category: Mapped[Optional[str]] = mapped_column(String(128))
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     source_ref: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
+                                                 onupdate=_now)
+
+
+class ItemCategoryOverride(Base):
+    """What a person said an item's line is, when the catalogue could not say.
+
+    A separate table rather than a column on ``Product``, and that is the whole
+    point of it. Products are *derived*: Zoho is the system of record and a full
+    re-sync rebuilds every product row from nothing (§4). A mapping somebody sat
+    down and typed is not derived — it is the only copy — and putting it on a
+    derived row means the next complete re-sync silently deletes an afternoon of
+    somebody's work.
+
+    Keyed by ``product_id`` because that is what the rest of the platform joins
+    on, and it survives a re-sync: ``upsert_product`` matches on the source key
+    and keeps the row it already had.
+    """
+
+    __tablename__ = "item_category_overrides"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "product_id",
+                         name="uq_item_category_override"),
+    )
+
+    override_id: Mapped[str] = mapped_column(String(64), primary_key=True,
+                                             default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    product_id: Mapped[str] = mapped_column(String(64),
+                                            ForeignKey("products.product_id"),
+                                            index=True)
+    #: One of ``commercial.categories.ORDER``. Validated at the router rather
+    #: than by an enum column, so adding a line is a code change and not a
+    #: migration against every historical row.
+    category: Mapped[str] = mapped_column(String(48))
+    #: Who decided, and when. An override is a judgement, and a judgement with
+    #: no name on it is one nobody can ask about.
+    set_by_user_id: Mapped[Optional[str]] = mapped_column(String(64))
+    note: Mapped[Optional[str]] = mapped_column(String(512))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
                                                  onupdate=_now)

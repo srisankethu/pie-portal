@@ -71,8 +71,8 @@ const FACETS: [string, string, string][] = [
    "Where they sit in their own buying cycle — not a fixed number of days. A quarterly buyer six weeks in is not late."],
   ["consistency", "Regular",
    "The share of the months they could have traded in that they did, counted from their first document rather than from the start of the window."],
-  ["breadth", "Spread",
-   "How much of the catalogue the relationship covers. One item is a transaction; a dozen is being embedded in how they work."],
+  ["breadth", "Lines taken",
+   "How many lines of the business they buy, out of how many there are. Counted by line and not by SKU: twenty cutting-tool items is still one line, and a customer taking four is one a competitor has to beat four times."],
   ["weight", "Material",
    "Their share of this company's book, saturating at a tenth. Concentration is part of a bond, and part of what makes losing one hurt."],
   ["reliability", "Dependable",
@@ -130,6 +130,11 @@ export function BondsScreen({
   // the server omits it — so the control that would switch to it is not
   // rendered rather than rendered disabled.
   const [view, setView] = useState("both");
+  // One lane per side, or one per line of the business. Splitting is what makes
+  // "my coolant customers are all thin bonds" visible — a sentence with a
+  // decision attached — and it costs vertical space, so it is asked for rather
+  // than assumed.
+  const [group, setGroup] = useState("all");
   const showCustomers = !supplierSide || view !== "suppliers";
   const showSuppliers = supplierSide && view !== "customers";
 
@@ -171,8 +176,9 @@ export function BondsScreen({
   // on `at`. Repacking per frame would make every dot hop rows as its
   // neighbours moved — see the note at the top of the file.
   const { lanes, seat } = useMemo(
-    () => packLanes(sides, company.apply.bind(company), plotWidth),
-    [sides, company.company, plotWidth]);   // eslint-disable-line react-hooks/exhaustive-deps
+    () => packLanes(sides, company.apply.bind(company), plotWidth,
+                    group === "line"),
+    [sides, company.company, plotWidth, group]);   // eslint-disable-line react-hooks/exhaustive-deps
   const nodes = useMemo(
     () => layout(sides, at, company.apply.bind(company), seat, plotWidth),
     [sides, at, company.company, seat, plotWidth]);   // eslint-disable-line react-hooks/exhaustive-deps
@@ -200,6 +206,8 @@ export function BondsScreen({
                  options={[["both", "Both"], ["customers", "Customers"],
                            ["suppliers", "Suppliers"]]} />
           )}
+          <Seg label="Group" value={group} onChange={setGroup}
+               options={[["all", "Together"], ["line", "By line"]]} />
           <Seg label="Window" value={months} onChange={setMonths}
                options={[["12", "1y"], ["24", "2y"], ["36", "3y"]]} />
         </div>
@@ -613,7 +621,7 @@ function FacetBreakdown({
 function Unavailable({ items }: { items: Row[] }) {
   if (!items.length) return null;
   return (
-    <ul className="tl-unavailable">
+    <ul className="tl-unavailable said-plain">
       {items.map((u, i) => (
         <li key={i}>
           <strong>{String(u.what)}</strong> — not in the score.{" "}
@@ -668,6 +676,7 @@ function packLanes(
   sides: { side: string; bonds: Row[]; frames: Row[] }[],
   apply: <R extends Sourced>(rows: R[]) => R[],
   width: number,
+  branch: boolean,
 ): { lanes: Lane[]; seat: Map<string, Seat> } {
   const seat = new Map<string, Seat>();
   const lanes: Lane[] = [];
@@ -678,14 +687,32 @@ function packLanes(
     // exactly these, so it can never claim more dots than are on the canvas.
     const covered = new Set(
       frames.flatMap((f) => rows(f.bonds).map((e) => String(e.counterparty_id))));
-    const scored = (apply(bonds as Sourced[]) as Row[])
+    const eligible = (apply(bonds as Sourced[]) as Row[])
       .filter((b) => b.score != null
-                     && covered.has(String(b.counterparty_id)))
-      // Ascending, so the packer places the crowded left end first and the
-      // sparse right end settles around it rather than the other way round.
-      .sort((a, b) => num(a.score) - num(b.score));
-    if (!scored.length) return;
+                     && covered.has(String(b.counterparty_id)));
+    if (!eligible.length) return;
 
+    // Split into one lane per line of the business, when asked. This is the
+    // branching the mix goal wants: "my coolant customers are all thin bonds"
+    // is a sentence with a decision attached, and it is invisible when every
+    // line is packed into one row.
+    for (const group of splitBy(eligible, side, branch)) {
+      packOne(group, side, seat, lanes, width);
+    }
+  });
+
+  return { lanes, seat };
+}
+
+/** One lane's worth: the swarm packing, and the lane it produces. */
+function packOne(group: { label: string; rows: Row[] }, side: string,
+                 seat: Map<string, Seat>, lanes: Lane[], width: number): void {
+  {
+    // Ascending, so the packer places the crowded left end first and the
+    // sparse right end settles around it rather than the other way round.
+    const scored = group.rows
+      .slice()
+      .sort((a, b) => num(a.score) - num(b.score));
     const r = radiusScale(scored);
     const lane = lanes.length;
     const placed: { x: number; y: number; r: number }[] = [];
@@ -715,14 +742,50 @@ function packLanes(
 
     lanes.push({
       side,
-      label: side === "vendor" ? "Suppliers" : "Customers",
+      label: group.label,
       count: scored.length,
       half: Math.max(extent + 6, 26),
     });
-  });
-
-  return { lanes, seat };
+  }
 }
+
+/** One group per lane: the whole side, or one per line of the business.
+ *
+ *  Splitting is opt-in because it costs vertical space and only earns it when
+ *  the question is about mix. Lines are ordered by population so the crowded
+ *  ones lead, and a counterparty whose trade is entirely uncategorised falls in
+ *  a named lane rather than being dropped off the chart.
+ */
+function splitBy(rows: Row[], side: string, branch: boolean,
+                 ): { label: string; rows: Row[] }[] {
+  const whole = side === "vendor" ? "Suppliers" : "Customers";
+  if (!branch) return [{ label: whole, rows }];
+
+  const groups = new Map<string, Row[]>();
+  for (const r of rows) {
+    const key = String(r.sector ?? "UNCATEGORISED");
+    groups.set(key, [...(groups.get(key) ?? []), r]);
+  }
+  return [...groups.entries()]
+    .sort((a, b) => b[1].length - a[1].length)
+    .map(([key, group]) => ({
+      label: `${whole} · ${LINE_LABEL[key] ?? key}`,
+      rows: group,
+    }));
+}
+
+/** Category code → the words the server uses for it. Kept beside the chart
+ *  rather than fetched, because the strip renders before the label list would
+ *  arrive and a lane briefly titled "CUTTING_TOOLS" is a lane that looks
+ *  broken. Overridden by the server's own list where it is present. */
+const LINE_LABEL: Record<string, string> = {
+  CUTTING_TOOLS: "Cutting tools",
+  COOLANTS: "Coolants & lubricants",
+  CONSUMABLES: "Consumables",
+  METROLOGY: "Metrology",
+  MACHINES: "Machines",
+  UNCATEGORISED: "Not categorised",
+};
 
 interface Lane { side: string; label: string; count: number; half: number }
 interface Seat { lane: number; y: number }

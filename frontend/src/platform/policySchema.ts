@@ -6,26 +6,16 @@
  * have told them. These rules run against the draft as it is typed, so every
  * problem is visible at once and next to the box that has it.
  *
- * ## Why Zod and not React Hook Form here
+ * Zod rather than React Hook Form because the fields are *server-driven* -
+ * `policy.fields` arrives from `commercial/policy.EDITABLE` and changes when
+ * the backend adds a threshold. RHF would add a second source of "what fields
+ * exist" for no behaviour this form lacks.
  *
- * RHF is the better tool for a form whose fields are known at compile time; its
- * `register` and its uncontrolled inputs are what make it fast. This form's
- * fields are *server-driven*: `policy.fields` arrives from
- * `commercial/policy.EDITABLE` with a `kind` per field, and the set changes
- * when the backend adds a threshold. A schema built from that list at runtime
- * is the part that carries the value; wrapping it in RHF as well would add a
- * second source of "what fields exist" for no behaviour the form does not
- * already have. Stated here so the choice reads as a decision rather than an
- * omission.
- *
- * ## The ladder is the rule worth having
- *
- * Approval floor ≤ review floor ≤ target margin. Out of order, a price is
- * simultaneously below the review floor and above the approval floor it is
- * supposed to sit beneath, and two screens argue with each other forever. It is
- * a *cross-field* rule, which is exactly the kind an inline `&&` in a render
- * function states least clearly and a schema states best — and the message goes
- * on the field that is wrong rather than in a banner at the bottom.
+ * The ladder is the rule worth having: approval floor ≤ review floor ≤ target
+ * margin. Out of order, a price is below the review floor and above the
+ * approval floor beneath it, and two screens argue forever. Cross-field rules
+ * are what a schema states better than an inline `&&`, and the message lands on
+ * the offending field rather than in a banner.
  */
 import { z } from "zod";
 

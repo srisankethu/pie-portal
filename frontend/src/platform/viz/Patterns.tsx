@@ -1,4 +1,4 @@
-// The five Tier 2 views, as three screens.
+// The five pattern views, as three screens.
 //
 // Two of the specified five are the same chart as another with a different
 // measure — "Product Momentum Galaxy" is the margin landscape with volume on

@@ -153,7 +153,7 @@ export const papi = {
     req<Record<string, unknown>>(
       `/api/v1/insight/customers/${encodeURIComponent(customerId)}/timeline?months=${months}`, {}, t),
 
-  // ── Tier 2: three endpoints covering five specified views, because two
+  // ── Patterns: three endpoints covering five specified views, because two
   // pairs of them are the same chart with a different measure.
   landscape: (t: string, subject = "relationship", measure = "margin") =>
     req<Record<string, unknown>>(
@@ -167,7 +167,7 @@ export const papi = {
   cadence: (t: string) =>
     req<Record<string, unknown>>("/api/v1/insight/cadence", {}, t),
 
-  // ── Tier 3: the shelf, the suppliers and the cash. Three things the book
+  // ── The book itself: the shelf, the suppliers and the cash. Three things the book
   // always knew and the platform did not read until now.
   payments: (t: string) =>
     req<Record<string, unknown>>("/api/v1/insight/payments", {}, t),

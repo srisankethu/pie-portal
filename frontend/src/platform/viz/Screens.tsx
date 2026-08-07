@@ -1,4 +1,4 @@
-// The remaining Tier 1 views.
+// The remaining overview views.
 //
 // Each answers its three questions in the same order and with the same
 // furniture, so moving between them costs nothing: a headline that states what

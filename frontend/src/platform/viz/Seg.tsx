@@ -1,7 +1,7 @@
 // The shared controls the visualization screens put in their header strip.
 //
 // A segmented control, and the window picker that sits beside it. Extracted
-// from Tier2.tsx the moment a second screen needed one.
+// from Patterns.tsx the moment a second screen needed one.
 //
 // The alternative was a second copy, and a segmented control is exactly the
 // kind of thing where two copies drift: one grows `aria-pressed`, the other
@@ -71,7 +71,7 @@ export function Seg({
 
 /** How many months the screen looks back over.
  *
- * There were four of these — in Screens, Tier2, History and Storyboard — each a
+ * There were four of these — in Screens, Patterns, History and Storyboard — each a
  * hand-written `<select className="input">`, each with its own label wording and
  * its own idea of whether the option said "12" or "12 months". Four copies of
  * one control is the responsibility duplication CLAUDE.md §2 names: nothing was

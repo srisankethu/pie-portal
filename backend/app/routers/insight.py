@@ -527,7 +527,7 @@ def buying_cadence(principal: Principal = Depends(current_principal),
                                    "No customer has ordered yet."))
 
 
-# ── Tier 3: the shelf, the suppliers and the cash ───────────────────────────
+# ── The book itself: the shelf, the suppliers and the cash ───────────────────────────
 #
 # Role scope follows the rule the rest of this router already uses, not a new
 # one: no cost and no margin means every role, cost of any kind means manager

@@ -98,6 +98,10 @@ export interface Quote {
   summary: QuoteSummary;
   filterCounts: Record<string, number>;
   marginFloor: MarginFloor | null;
+  /** Present when the last action taught the system something durable — today
+   *  that is a confirmed "this customer's code means that product". Server-
+   *  written prose, shown as-is; the client does not compose it. */
+  note?: string;
 }
 
 /* ── Quote intelligence (deterministic; app/commercial) ──────────────────────

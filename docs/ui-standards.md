@@ -181,9 +181,17 @@ The distinction that decides it: **is the colour the only thing saying what this
 means?** If a reader in greyscale loses the meaning, it is a defect. If they
 lose only emphasis, it is fine.
 
-**Not yet aligned:** nothing this audit could name. That is a statement about
-this pass, not a permanent claim — the next screen someone builds can
-reintroduce any of it.
+**Not yet aligned:** nothing the current audit can name — with the caveat that
+this has already proved to be a claim about the *audit*, not the codebase. The
+pass that first said it had checked `.btn`, `.pri`, `.conf`, `.state-panel` and
+`.skeleton`; the Quote Builder's `.toast`, a fixed-position div on a 2.4s timer,
+was a custom feedback implementation this document forbids in as many words and
+went unnoticed because it was not in that list. It is `notistack` now.
+
+The lesson is in how to check, not what was missed: a sweep for *known* legacy
+class names cannot find the one nobody wrote down. Grep the standard's
+categories — feedback, loading, status, surfaces — against what the screens
+actually render, rather than against a list of names from last time.
 
 The rule stands regardless: **new UI follows this document, and any screen being
 changed for another reason moves toward it.**

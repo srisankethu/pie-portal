@@ -230,10 +230,11 @@ table.grid tbody tr:hover td { background: color-mix(in srgb, var(--color-accent
 .signin .demo { font-size: 12px; color: color-mix(in srgb, var(--color-text) 55%, transparent); margin-top: var(--space-4); line-height: 1.5; }
 .err { color: var(--danger-fg); font-size: 13px; margin-top: var(--space-2); }
 
-/* toast */
-.toast { position: fixed; bottom: 84px; left: 50%; transform: translateX(-50%); z-index: 60;
-  background: var(--color-neutral-900); color: #fff; padding: var(--space-2) var(--space-4);
-  border-radius: var(--radius-md); font-size: 13px; box-shadow: var(--shadow-lg); }
+/* The Quote Builder's toast was a fixed-position div on a 2.4s timer, and
+   `.toast-undo` beside it was already dead — nothing rendered it. Both are
+   notistack's `SnackbarProvider` now, which the platform side was already
+   using: two messages stack instead of replacing each other, and a sentence
+   gets long enough to read. */
 
 .kbd-hints { display: flex; gap: var(--space-4); font-size: 11px; color: color-mix(in srgb, var(--color-text) 55%, transparent); flex-wrap: wrap; }
 .kbd { font-family: ui-monospace, monospace; background: color-mix(in srgb, var(--color-text) 8%, transparent); padding: 1px 5px; border-radius: 3px; }
@@ -537,14 +538,6 @@ table.grid tbody tr:hover td { background: color-mix(in srgb, var(--color-accent
 }
 
 /* Confidence badge: honest about what it is measuring. */
-/* Toast with an undo affordance. */
-.toast { display: flex; align-items: center; gap: 14px; }
-.toast-undo {
-  background: none; border: 1px solid currentColor; color: inherit;
-  font: inherit; font-weight: 600; cursor: pointer;
-  padding: 2px 10px; border-radius: var(--radius-sm);
-}
-.toast-undo:hover { background: rgba(255,255,255,.15); }
 
 /* Mobile: compact chrome and finger-sized targets. */
 @media (max-width: 820px) {

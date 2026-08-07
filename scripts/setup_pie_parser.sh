@@ -12,7 +12,12 @@
 # how to authenticate rather than failing silently.
 set -uo pipefail
 
-PIN="0f17d49d82a712eaf5633c16afa860441043633e"
+# Provisional: the tip of pie-parser's claude/scoped-fallback-namespace branch,
+# not of its main. The portal changes that pass a customer identity into
+# resolution REQUIRE it — against the previous pin, naming a customer made every
+# scoped line resolve to nothing at all. Re-pin to the merge commit once that
+# branch lands.
+PIN="edcf5e7aaf6d6bc49c2ec90c5a29dc160a891765"
 DEST="${1:-$(cd "$(dirname "$0")/.." && pwd)/pie-parser}"
 HTTPS_REMOTE="https://github.com/srisankethu/pie-parser.git"
 SSH_REMOTE="git@github.com:srisankethu/pie-parser.git"

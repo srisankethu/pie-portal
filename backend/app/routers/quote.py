@@ -6,6 +6,7 @@ principal never receives per-line economics.
 """
 from __future__ import annotations
 
+import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
@@ -13,6 +14,8 @@ from sqlalchemy.orm import Session
 
 from .. import approvals
 from ..authz import Principal as PlatformPrincipal, load_principal
+from ..commercial import quote_service
+from ..identity import service as identity_service
 from ..config import settings
 from ..db import get_session
 from ..deps import current_principal, get_zoho
@@ -28,6 +31,7 @@ from ..security import Principal
 from ..store import Line, Quote, store
 from ..zoho import ZohoService
 
+log = logging.getLogger("pie_portal.quote")
 router = APIRouter(prefix="/api/quotes", tags=["quotes"])
 
 
@@ -80,12 +84,38 @@ def get_quote(quote_id: str, principal: Principal = Depends(current_principal)):
 @router.post("/{quote_id}/intake")
 def intake(quote_id: str, body: IntakeRequest,
            principal: Principal = Depends(current_principal),
-           zoho: ZohoService = Depends(get_zoho)):
+           zoho: ZohoService = Depends(get_zoho),
+           platform: Optional[PlatformPrincipal] = Depends(optional_platform_principal),
+           session: Session = Depends(get_session)):
     q = _get_quote(quote_id)
     if not body.text.strip():
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "No RFQ text provided")
-    store.add_rfq(q, body.text, zoho)
+    store.add_rfq(q, body.text, zoho, _customer_scope(session, platform, q.customer))
     return q.to_dict(principal.is_mgmt)
+
+
+def _customer_scope(session: Session, platform: Optional[PlatformPrincipal],
+                    reference: str) -> Optional[str]:
+    """The identity to resolve this quote's lines under, or None.
+
+    Three ways to get None, and all of them mean "resolve exactly as before":
+    no platform token, no customer matched, or a customer who has not been
+    linked across connectors yet. That last one is the normal early state —
+    linking is manual by design — so the fallback has to be the unscoped
+    behaviour rather than a stand-in key. Substituting the connector's own id
+    would mean every mapping confirmed today is filed under a name we intend to
+    replace the moment somebody links the record.
+    """
+    if platform is None:
+        return None
+    try:
+        customer = quote_service.resolve_customer(
+            session, platform.organization_id, reference)
+        return identity_service.identity_for_customer(
+            session, platform.organization_id, customer)
+    except Exception:  # noqa: BLE001 — scope is an optimisation, never a blocker
+        log.exception("could not resolve an identity scope for %r", reference)
+        return None
 
 
 @router.get("/{quote_id}/lines/{line_id}/options")

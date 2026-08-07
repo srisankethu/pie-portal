@@ -127,7 +127,8 @@ class PieService:
         """Eagerly load the engine + catalogue (called on app startup)."""
         self._ensure_loaded()
 
-    def _make_args(self, text: str) -> argparse.Namespace:
+    def _make_args(self, text: str,
+                   customer_scope: Optional[str] = None) -> argparse.Namespace:
         return argparse.Namespace(
             text=text,
             pie_data=self._catalog_path or settings.PIE_CATALOG,
@@ -135,14 +136,25 @@ class PieService:
             brands="all",
             top_n=settings.TOP_N,
             json=True,
-            source_customer=None,
+            # The customer's cross-connector identity, never one connector's row
+            # for them and never their name — see identity.identity_for_source.
+            # Left None when the customer is unlinked, which resolves exactly as
+            # it always has.
+            source_customer=customer_scope,
             source_vendor=None,
             source_manufacturer=None,
         )
 
     # ── resolution ───────────────────────────────────────────────────────────
-    def resolve(self, text: str) -> Resolution:
+    def resolve(self, text: str, customer_scope: Optional[str] = None) -> Resolution:
         """Resolve one RFQ line's text into a portal Resolution.
+
+        ``customer_scope`` is the customer's cross-connector identity when the
+        quote is for a linked customer. Passing it lets the engine prefer a
+        confirmed "this customer's code means MM# X" mapping over re-reading the
+        text; without a mapping the engine still consults the catalogue but
+        returns the hit as a candidate to confirm rather than an assertion, so
+        naming the customer can only ever add caution, never resolution.
 
         Any failure inside the engine degrades to a PIE_OFFLINE resolution
         rather than raising, so a single bad line never fails the whole quote —
@@ -151,7 +163,7 @@ class PieService:
         text = (text or "").strip()
         try:
             self._ensure_loaded()
-            args = self._make_args(text)
+            args = self._make_args(text, customer_scope)
             result, _human = self._mod.run(args, self._sources)
             return self._map(text, result)
         except Exception:  # noqa: BLE001 — deliberate: isolate engine failures
@@ -185,6 +197,27 @@ class PieService:
             cands += self._candidates_from_suggestions(suggestions, exclude=code)
             return Resolution(text, code, desc, "EXACT", code, cands,
                               outcome, semantics, notes)
+
+        # (1b) A candidate identity the engine will not assert: the quote names a
+        #      customer, the catalogue holds this exact code, but nobody has
+        #      confirmed that *this customer's* code means that product. The
+        #      record is real and worth showing; auto-selecting and pricing it
+        #      would assert the very thing the engine declined to.
+        #
+        #      Without this branch the match is simply dropped — `matches` is
+        #      read nowhere else — and the line would show "no PIE match" while
+        #      the engine had in fact found the record and said "confirm this".
+        cands_m = [m for m in matches if m.get("certainty") == "CANDIDATE"]
+        if cands_m and outcome == "NEEDS_REVIEW":
+            notes += [str(e) for e in (res.get("explanation") or [])]
+            return Resolution(
+                text, text, "Confirm this is the right product", "AMBIGUOUS", None,
+                [Candidate(code=str(m.get("record_id")),
+                           desc=m.get("description") or str(m.get("record_id")),
+                           rel="POSSIBLE", grade=m.get("grade"), brand=m.get("brand"),
+                           reason=m.get("note") or "Candidate identity — needs review.")
+                 for m in cands_m],
+                outcome, semantics, notes)
 
         # (2) Ambiguous / conflicting identity -> AMBIGUOUS (abstain, show options).
         if outcome in ("AMBIGUOUS", "CONFLICT"):

@@ -253,13 +253,16 @@ const TONE_COLOR: Record<Tone, "default" | "success" | "warning" | "error" | "in
  *  described in two visual languages. `tip` is where the *meaning* goes — a
  *  badge reading "PARTIAL" that cannot say what was partial is decoration. */
 export function StatusChip({
-  label, tone = "neutral", tip, size = "small", icon,
+  label, tone = "neutral", tip, size = "small", icon, dense = false,
 }: {
   label: ReactNode;
   tone?: Tone;
   tip?: string;
   size?: "small" | "medium";
   icon?: React.ReactElement;
+  /** Tighter, for several chips inside one grid cell. A row of default chips
+   *  under a product code costs more vertical space than the code itself. */
+  dense?: boolean;
 }) {
   const chip = (
     <Chip
@@ -268,7 +271,12 @@ export function StatusChip({
       size={size}
       icon={icon}
       variant={tone === "neutral" ? "outlined" : "filled"}
-      sx={{ fontWeight: 600, letterSpacing: "0.02em" }}
+      sx={{
+        fontWeight: 600, letterSpacing: "0.02em",
+        ...(dense
+          ? { height: 18, fontSize: 10.5, "& .MuiChip-label": { px: 0.75 } }
+          : null),
+      }}
     />
   );
   return tip ? <Tooltip title={tip}>{chip}</Tooltip> : chip;

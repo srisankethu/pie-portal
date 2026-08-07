@@ -2,7 +2,8 @@ import Button from "@mui/material/Button";
 import Box from "@mui/material/Box";
 import Drawer from "@mui/material/Drawer";
 import type { Line, LineIntelligence } from "../types";
-import { REL_STYLE } from "../rel";
+import { relTone } from "../rel";
+import { StatusChip } from "../platform/kit";
 import { DecisionSupport } from "./DecisionSupport";
 import { QuoteIntelligence } from "./QuoteIntelligence";
 import { money } from "../money";
@@ -155,9 +156,10 @@ export function SupplyDrawer({
               <div key={c.code} className={"cand" + (selected ? " selected" : "")}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   <span className="code">{c.code}</span>
-                  <span className="chip" style={REL_STYLE[c.rel] || REL_STYLE.NONE}>
-                    {c.rel}
-                  </span>
+                  {/* The same chip the grid behind this drawer draws, from the
+                      same tone table. Two spellings of one term is how a line
+                      reads AMBIGUOUS in amber on the grid and in grey here. */}
+                  <StatusChip label={c.rel} tone={relTone(c.rel)} dense />
                   {c.score !== null && (
                     <span className="text-muted" style={{ fontSize: 11 }}>
                       match {(c.score * 100).toFixed(0)}%

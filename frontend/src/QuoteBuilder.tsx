@@ -103,8 +103,10 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
   const [quote, setQuote] = useState<Quote | null>(null);
   const [filter, setFilter] = useState("ALL");
   const [search, setSearch] = useState("");
-  const [selected, setSelected] = useState<Record<string, boolean>>({});
-  const [focusId, setFocusId] = useState<string | null>(null);
+  // Ids, not a `Record<id, boolean>`: the grid speaks ids, the discount call
+  // takes ids, and a map that kept `false` entries made "how many are selected"
+  // a filter over the keys rather than a length.
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [intakeOpen, setIntakeOpen] = useState(false);
   const [drawerLineId, setDrawerLineId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -192,8 +194,7 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
    *  control that cleared the draft, and it also ended the session. */
   const startNewQuote = () => {
     clearDraftQuote();
-    setSelected({});
-    setFocusId(null);
+    setSelectedIds([]);
     setFilter("ALL");
     setSearch("");
     setDraftStatus(null);
@@ -201,32 +202,28 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
     flash("Started a new quote");
   };
 
-  const clearSelection = useCallback(() => {
-    setSelected({});
+  const clearSelection = () => {
+    setSelectedIds([]);
     flash("Selection cleared");
-  }, [flash]);
-
-  const selectVisible = () => {
-    if (!quote) return;
-    const next = visible.reduce<Record<string, boolean>>((acc, line) => {
-      acc[line.id] = true;
-      return acc;
-    }, {});
-    setSelected((prev) => ({ ...prev, ...next }));
-    flash(`${visible.length} visible line(s) selected`);
   };
 
-  const selectAllVisible = useCallback(() => {
-    const allVisibleSelected = visible.length > 0 && visible.every((line) => selected[line.id]);
-    const next = visible.reduce<Record<string, boolean>>((acc, line) => {
-      acc[line.id] = !allVisibleSelected;
-      return acc;
-    }, {});
-    setSelected((prev) => ({ ...prev, ...next }));
-    flash(allVisibleSelected ? "Selection cleared" : `${visible.length} visible line(s) selected`);
-  }, [visible, selected, flash]);
+  const selectVisible = () => {
+    const ids = visible.map((l) => l.id);
+    setSelectedIds((prev) => [...new Set([...prev, ...ids])]);
+    flash(`${ids.length} visible line(s) selected`);
+  };
 
-  // Keyboard navigation (design: ↑↓ navigate, Enter open, Space select, / search).
+  /** A line deleted, or filtered out of the grid, must not keep counting
+   *  towards "3 selected" — or towards a discount applied to it. */
+  const visibleIds = useMemo(() => new Set(visible.map((l) => l.id)), [visible]);
+  const selection = useMemo(
+    () => selectedIds.filter((id) => visibleIds.has(id)), [selectedIds, visibleIds]);
+
+  // Keyboard: `/` to search and Escape to close, both of which belong to the
+  // page. Everything *inside* the grid — ↑↓, Enter to open a line, Space to
+  // select — is ag-grid's now. It used to be re-implemented here over a
+  // `focusId` of our own, which meant two listeners for one keystroke and a
+  // focus ring that could disagree with the row the grid thought was current.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       const tag = (document.activeElement?.tagName || "").toUpperCase();
@@ -240,42 +237,11 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
       if (e.key === "/" && !typing) {
         e.preventDefault();
         document.getElementById("qb-search")?.focus();
-        return;
-      }
-      const mod = e.ctrlKey || e.metaKey;
-      if (mod && e.key.toLowerCase() === "a") {
-        e.preventDefault();
-        selectAllVisible();
-        return;
-      }
-      if (mod && e.key.toLowerCase() === "d") {
-        e.preventDefault();
-        clearSelection();
-        return;
-      }
-      if (typing || intakeOpen || drawerLineId) return;
-      const ids = visible.map((l) => l.id);
-      if (!ids.length) return;
-      let idx = ids.indexOf(focusId ?? "");
-      if (e.key === "ArrowDown" || e.key === "j") {
-        e.preventDefault();
-        idx = Math.min(ids.length - 1, idx + 1);
-        setFocusId(ids[idx < 0 ? 0 : idx]);
-      } else if (e.key === "ArrowUp" || e.key === "k") {
-        e.preventDefault();
-        idx = idx <= 0 ? 0 : idx - 1;
-        setFocusId(ids[idx]);
-      } else if (e.key === "Enter" && idx >= 0) {
-        e.preventDefault();
-        setDrawerLineId(ids[idx]);
-      } else if (e.key === " " && idx >= 0) {
-        e.preventDefault();
-        setSelected((s) => ({ ...s, [ids[idx]]: !s[ids[idx]] }));
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [visible, focusId, intakeOpen, drawerLineId, selectAllVisible, clearSelection]);
+  }, [intakeOpen, drawerLineId]);
 
   if (error) {
     return (
@@ -355,8 +321,7 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
 
   const doDiscount = (pct: number) =>
     guard(async () => {
-      const ids = Object.keys(selected).filter((k) => selected[k]);
-      const q = await api.discount(t, quote!.id, ids, pct);
+      const q = await api.discount(t, quote!.id, selection, pct);
       setQuote(q);
       flash(`${q.applied} line(s) discounted ${pct}%`);
     });
@@ -377,7 +342,7 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
       }
     });
 
-  const selectedCount = Object.values(selected).filter(Boolean).length;
+  const selectedCount = selection.length;
   const hasLines = quote.lines.length > 0;
 
   return (
@@ -541,9 +506,6 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
           <Button variant="outlined" size="small" onClick={() => doDiscount(10)}>
             Apply 10% discount
           </Button>
-          <Button variant="outlined" size="small" onClick={selectAllVisible}>
-            Select all visible
-          </Button>
           <Button variant="outlined" size="small" onClick={clearSelection}>
             Clear selection
           </Button>
@@ -580,23 +542,17 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
         <>
           {/* The grid scrolls inside its own box; the page never scrolls
               sideways (ui-standards §3). */}
-          <Box sx={{ overflowX: "auto" }}>
-            <LineGrid
-              lines={visible}
-              mgmt={mgmt}
-              intel={ci.byLineId}
-              selected={selected}
-              focusId={focusId}
-              onToggle={(id) => setSelected((s) => ({ ...s, [id]: !s[id] }))}
-              onOpen={(id) => {
-                setFocusId(id);
-                setDrawerLineId(id);
-              }}
-              onSetPrice={doSetPrice}
-              onDeleteLine={doDeleteLine}
-              onCreateItem={doCreateItem}
-            />
-          </Box>
+          <LineGrid
+            lines={visible}
+            mgmt={mgmt}
+            intel={ci.byLineId}
+            selectedIds={selection}
+            onSelectionChange={setSelectedIds}
+            onOpen={setDrawerLineId}
+            onSetPrice={doSetPrice}
+            onDeleteLine={doDeleteLine}
+            onCreateItem={doCreateItem}
+          />
           <div className="kbd-hints" style={{ marginTop: "var(--space-4)" }}>
             <span>
               <span className="kbd">↑↓</span> navigate
@@ -606,6 +562,9 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
             </span>
             <span>
               <span className="kbd">Space</span> select
+            </span>
+            <span>
+              <span className="kbd">F2</span> edit the rate
             </span>
             <span>
               <span className="kbd">/</span> search

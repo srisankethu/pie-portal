@@ -41,9 +41,23 @@ identity you could open, act on, or send to somebody.
 
 ## 3. Tables
 
-AG Grid Community, for all tabular data. Keep column sizing, filtering,
-sorting, grouping and virtualization at enterprise grade, and keep every grid
-responsive and performant.
+AG Grid Community, for all tabular data — through `platform/DataGrid.tsx`, which
+is the wrapper that carries this app's theme, its pagination defaults, its
+responsive column hiding and its empty state. Keep column sizing, filtering,
+sorting and virtualization at enterprise grade, and keep every grid responsive
+and performant.
+
+**Where the line is.** A `<table>` is right for a *fact panel* — a label and a
+value, four rows, sized by the shape of the screen — and for the accessible
+table under a chart (§13). It is wrong the moment the row count is set by the
+size of the business: an RFQ, a customer list, a user directory. That is the
+test to apply, and `platform/DataGrid.tsx` states it at the top of the file.
+
+**Extend the wrapper; do not open `AgGridReact` beside it.** Selection, row
+identity, row classes, editable cells and Enter-to-open all live on
+`DataGridProps` because the quote grid needed them — the next grid that needs
+one of them gets it for free, and a second wrapper is how two grids end up
+disagreeing about what a selected row looks like.
 
 Wide grids scroll inside their own box; the page never scrolls sideways.
 
@@ -181,17 +195,45 @@ The distinction that decides it: **is the colour the only thing saying what this
 means?** If a reader in greyscale loses the meaning, it is a defect. If they
 lose only emphasis, it is fine.
 
-**Not yet aligned:** nothing the current audit can name — with the caveat that
-this has already proved to be a claim about the *audit*, not the codebase. The
-pass that first said it had checked `.btn`, `.pri`, `.conf`, `.state-panel` and
-`.skeleton`; the Quote Builder's `.toast`, a fixed-position div on a 2.4s timer,
-was a custom feedback implementation this document forbids in as many words and
-went unnoticed because it was not in that list. It is `notistack` now.
+**Not yet aligned — one clear case, two worth arguing about.** The previous two
+revisions of this section each said "nothing the current audit can name", and
+each was wrong within a release. The claim is an enumeration now rather than a
+promise, so the next reader can check it in a minute:
 
-The lesson is in how to check, not what was missed: a sweep for *known* legacy
-class names cannot find the one nobody wrote down. Grep the standard's
-categories — feedback, loading, status, surfaces — against what the screens
-actually render, rather than against a list of names from last time.
+```bash
+rg -n '<table' frontend/src --glob '*.tsx'
+```
+
+| Raw `<table>` | What it holds | Verdict |
+|---|---|---|
+| `facttable` (`DataScreen` ×2, `ui.tsx`) | label/value fact panels | **Correct.** Not a grid — §3. |
+| `viz-table` (`viz/*`, seven of them) | the accessible table under a chart | **Correct.** Required by §13. |
+| `mig-grid` (`viz/History`) | the migration matrix — a chart in table clothing | **Correct.** |
+| `qi-refs` (`QuoteIntelligence`) | a few reference rows inside a drawer | **Correct.** |
+| `cx-scopes` (`ConnectionsPanel`) | the fixed OAuth scopes on one connection | **Correct.** Shape of the screen. |
+| `dp-table` (`DataScreen`) | a capped *sample* of skipped records | Arguable — bounded by the sample, not by the book. |
+| `id-table` (`IdentityScreen`) | the records behind one identity | Arguable — a handful per identity today. |
+| `st-table` (`AdminScreens`) | the organization's user accounts | **Should be a grid.** Its row count is the size of the team. |
+
+The case this revision fixed was the Quote Builder's line table, and it was the
+worst of them: its row count is the size of the RFQ, so a forty-line tender was
+forty rows with no sort, no way to bring the thin-margin lines together, and a
+rate field that saved on blur.
+
+The lesson is in how to check, not what was missed. Twice the miss has been in
+the Quote Builder — first `.toast`, a fixed-position div on a 2.4s timer that
+this document forbids in as many words (`notistack` now), then this table —
+because it arrived before the standard and every audit swept for *known* legacy
+class names, which by construction cannot find the one nobody wrote down. Grep
+the standard's categories — feedback, loading, status, surfaces, **tables** —
+against what the screens actually render, and write down what you found rather
+than that you found nothing.
+
+The digest in `CLAUDE.md` is the other half of this. It is what people read
+before writing a screen, and the reason a hand-written quote table survived
+three UI passes is that the digest listed six rules and tables was not among
+them. When a rule earns a place in this document, put a clause in that
+paragraph too.
 
 The rule stands regardless: **new UI follows this document, and any screen being
 changed for another reason moves toward it.**

@@ -47,12 +47,6 @@ a { color: var(--color-accent); text-underline-offset: 3px; }
 .input:focus-visible { border-color: var(--color-accent); outline-offset: 0; }
 textarea.input { min-height: 160px; resize: vertical; font-family: ui-monospace, monospace; font-size: 13px; }
 
-.chip {
-  display: inline-flex; align-items: center; gap: 5px;
-  font-family: var(--font-heading); font-size: 11px; font-weight: 600;
-  letter-spacing: 0.03em; padding: 2px 7px; border-radius: 2px;
-  text-transform: uppercase; white-space: nowrap;
-}
 
 /* ── app layout ─────────────────────────────────────────────────────────── */
 /* The Quote Builder's own shell used to live here: `.app`, a `.topbar` with a
@@ -77,39 +71,14 @@ textarea.input { min-height: 160px; resize: vertical; font-family: ui-monospace,
 }
 .empty-state-card h3 { margin-bottom: var(--space-2); }
 .empty-state-card p { margin: 0; color: color-mix(in srgb, var(--color-text) 65%, transparent); }
-table.grid { width: 100%; border-collapse: collapse; font-size: 13px; }
-table.grid th {
-  text-align: left; font-family: var(--font-heading); font-weight: 600;
-  font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase;
-  color: color-mix(in srgb, var(--color-text) 55%, transparent);
-  padding: 6px 8px; border-bottom: 1px solid var(--color-divider);
-  position: sticky; top: 0; background: var(--color-bg); z-index: 5;
-}
-table.grid td { padding: 7px 8px; border-bottom: 1px solid color-mix(in srgb, var(--color-text) 8%, transparent); vertical-align: top; }
-table.grid tr.focused td { background: var(--color-accent-100); }
-table.grid tr.attention td { box-shadow: inset 3px 0 0 var(--warn); }
-table.grid tr.tech td { box-shadow: inset 3px 0 0 var(--danger-fg); }
-table.grid tr.severity-high td { box-shadow: inset 3px 0 0 var(--danger-fg); background: color-mix(in srgb, var(--danger-bg) 60%, transparent); }
-table.grid tr.severity-medium td { box-shadow: inset 3px 0 0 var(--warn); background: color-mix(in srgb, var(--caution-bg) 60%, transparent); }
-table.grid tr.severity-low td { box-shadow: inset 3px 0 0 var(--color-accent-500); }
-table.grid tbody tr:hover td { background: color-mix(in srgb, var(--color-accent-100) 50%, transparent); }
-.mono { font-family: ui-monospace, monospace; font-size: 12px; }
-.req-desc { color: color-mix(in srgb, var(--color-text) 62%, transparent); font-size: 11.5px; }
-.row-hints { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
-.row-hint-pill {
-  display: inline-flex; align-items: center; padding: 2px 6px; border-radius: 999px;
-  font-size: 10px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
-  background: var(--color-neutral-200); color: var(--color-neutral-800);
-}
-.row-meta-pill {
-  display: inline-flex; align-items: center; gap: 4px; margin-top: 4px;
-  font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
-  color: var(--color-neutral-700); background: var(--color-neutral-200); padding: 2px 6px; border-radius: 999px;
-}
-.row-meta-pill.accent { background: var(--color-accent-100); color: var(--color-accent-800); }
-.rate-input { width: 78px; text-align: right; min-height: 28px; padding: 3px 6px; }
+/* The quote's line table lived here: `table.grid` with its own header, its own
+   row tints (`tr.focused`, `tr.attention`, `tr.severity-*`), the `.row-hint-pill`
+   and `.row-meta-pill` chips it printed under each code, and `.rate-input`, the
+   78px text box that saved a price on blur. It is ag-grid through
+   `platform/DataGrid` now, with MUI chips in the cells — see
+   `components/LineGrid.tsx`. The `.num` right-alignment survives because other
+   tables still use it; the grid's own is `.ag-num`. */
 .num { text-align: right; font-variant-numeric: tabular-nums; }
-.subst { color: var(--color-accent-800); font-weight: 700; }
 .warn { color: var(--warn); }
 
 /* The summary bar is a `Paper` in `components/SummaryBar.tsx`. It was fixed to
@@ -671,16 +640,8 @@ table.grid tbody tr:hover td { background: color-mix(in srgb, var(--color-accent
 }
 
 /* Per-line chip in the grid */
-.qi-chip {
-  display: inline-flex; align-items: center; gap: 4px; font-size: 10.5px;
-  padding: 1px 7px; border-radius: 10px; border: 1px solid currentColor;
-  white-space: nowrap;
-}
-.qi-chip.ok { color: var(--color-neutral-500); border-style: dashed; }
-.qi-chip.info { color: var(--color-neutral-700); }
-.qi-chip.warning { color: var(--warn); background: var(--caution-bg); }
-.qi-chip.critical { color: var(--danger-fg); background: var(--danger-bg); font-weight: 600; }
-.qi-chip-more { opacity: .7; }
+/* `.qi-chip*` is gone: the commercial exception chip in the quote grid is a
+   `StatusChip`, so its four severity colours come from the theme. */
 
 /* ── approvals and settings ──────────────────────────────────────────────────
  * The queue that makes the margin floor a boundary rather than an annotation,
@@ -1189,6 +1150,28 @@ table.grid tbody tr:hover td { background: color-mix(in srgb, var(--color-accent
 /* The grid measures its own width; the page must never scroll sideways
  * because of it. */
 .ag-shell .ag-root-wrapper { border: 0; }
+
+/* Quote grid: the state of a line, as a tint behind the row.
+ *
+ * A *second* cue, never the only one — the same fact is a chip in the Status
+ * column of the same row, so nothing here is lost in greyscale or under
+ * forced-colours. `:not(.ag-row-selected)` so a tint cannot bury the selection
+ * highlight, which is the one thing the person is actively controlling. */
+.ag-shell .ag-row.qb-row-blocked:not(.ag-row-selected) {
+  background: color-mix(in srgb, var(--danger-bg) 55%, transparent);
+}
+.ag-shell .ag-row.qb-row-attention:not(.ag-row-selected) {
+  background: color-mix(in srgb, var(--caution-bg) 45%, transparent);
+}
+/* A margin below the floor, or a quantity we cannot cover. */
+.ag-shell .qb-thin { color: var(--danger-fg); font-weight: 700; }
+/* The one cell on the screen somebody types into. Marked, because a grid where
+ * one column is editable and nothing says which is a grid people double-click
+ * at random to find out. */
+.ag-shell .qb-editable {
+  background: color-mix(in srgb, var(--color-accent) 6%, transparent);
+  box-shadow: inset 1px 0 0 color-mix(in srgb, var(--color-accent) 45%, transparent);
+}
 
 /* Rotating a connection's Zoho token. Closed until asked for: a token box
    sitting open on a working connection invites somebody to paste into it. */

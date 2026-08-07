@@ -21,7 +21,13 @@ cd "${CLAUDE_PROJECT_DIR:-$(dirname "$0")/../..}" || exit 0
 [ -x scripts/source_signature.sh ] || exit 0
 
 SIG="$(./scripts/source_signature.sh 2>/dev/null)" || exit 0
-CLEAN="$(printf '' | sha256sum | cut -d' ' -f1)"
+# Truncated to 32 characters, exactly as `source_signature.sh` truncates its
+# own output. It was the full 64 here, so this constant could never equal a
+# real signature and the clean-tree branch below was dead code: a turn that
+# committed everything it wrote — leaving nothing for the gate to read — was
+# still asked to run the gate. That is the "nagging about nothing" the
+# signature script's own comment names as how a check gets muted.
+CLEAN="$(printf '' | sha256sum | cut -d' ' -f1 | cut -c1-32)"
 
 # Nothing uncommitted: there is nothing this hook could usefully ask for.
 [ "$SIG" = "$CLEAN" ] && exit 0

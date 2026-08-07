@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from .. import approvals
 from ..authz import Principal as PlatformPrincipal, load_principal
-from ..commercial import quote_service
+from ..commercial import policy, quote_service
 from ..identity import service as identity_service
 from ..config import settings
 from ..db import get_session
@@ -28,6 +28,7 @@ from ..schemas import (
     SetPriceRequest,
 )
 from ..security import Principal
+from ..pie_service import Bands
 from ..store import Line, Quote, store
 from ..zoho import ZohoService
 
@@ -90,8 +91,31 @@ def intake(quote_id: str, body: IntakeRequest,
     q = _get_quote(quote_id)
     if not body.text.strip():
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "No RFQ text provided")
-    store.add_rfq(q, body.text, zoho, _customer_scope(session, platform, q.customer))
+    store.add_rfq(q, body.text, zoho,
+                  _customer_scope(session, platform, q.customer),
+                  _bands(session, platform))
     return q.to_dict(principal.is_mgmt)
+
+
+def _bands(session: Session, platform: Optional[PlatformPrincipal]) -> Optional[Bands]:
+    """This organization's equivalence bands, or None for the packaged defaults.
+
+    What counts as a technical equivalent is commercial policy, so it belongs to
+    the org and moves with its threshold version — the same reason the pricing
+    floors stopped being module constants. A Quote Builder session with no
+    platform token has no organization to read a policy from, and falls back to
+    the same dataclass the policy is built from rather than to a second copy of
+    the numbers.
+    """
+    if platform is None:
+        return None
+    try:
+        t = policy.load_for_org(session, platform.organization_id)
+        return Bands(tech=t.equivalence_tech_band, compat=t.equivalence_compat_band)
+    except Exception:  # noqa: BLE001 — policy is never a reason to fail intake
+        log.exception("could not load equivalence bands for %s",
+                      platform.organization_id)
+        return None
 
 
 def _customer_scope(session: Session, platform: Optional[PlatformPrincipal],

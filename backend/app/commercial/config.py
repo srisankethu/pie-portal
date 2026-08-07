@@ -136,6 +136,22 @@ class CommercialThresholds:
     # rounding. Denominated in ``currency`` above.
     price_rounding_increment: float = 5.0
 
+    # ── supply resolution bands ──────────────────────────────────────────────
+    # pie-parser returns an equivalence score in [0, 1] — geometry plus grade
+    # agreement — and deliberately does not say what counts as "equivalent".
+    # That call is commercial policy, not nomenclature: it decides whether a
+    # candidate is auto-selected onto a customer quote as a TECHNICAL
+    # EQUIVALENT, presented as merely COMPATIBLE, or left as a POSSIBLE option
+    # for someone to choose.
+    #
+    # They lived as module constants in ``app/pie_service.py`` — unversioned,
+    # untested, and invisible to the policy screen — which is the same mistake
+    # the pricing block above records having already made once. A quote line
+    # says "technical equivalent" because of these two numbers, so a decision
+    # row that cannot name them cannot explain itself.
+    equivalence_tech_band: float = 0.85
+    equivalence_compat_band: float = 0.60
+
     # ── quote-time quantity bands ────────────────────────────────────────────
     # Upper edges, inclusive. (1, 10, 50, 200) gives 1 / 2–10 / 11–50 / 51–200 /
     # 201+. Quantity is part of the identity of a price: the same item at 5

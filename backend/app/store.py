@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from . import pricing
-from .pie_service import Candidate, Resolution, pie_service
+from .pie_service import Bands, Candidate, Resolution, pie_service
 from .zoho import ZohoService
 
 _REL_LABELS = {
@@ -273,10 +273,11 @@ class QuoteStore:
 
     # ── line construction ────────────────────────────────────────────────────
     def build_lines(self, rows: List[Dict[str, Any]], zoho: ZohoService,
-                    customer_scope: Optional[str] = None) -> List[Line]:
+                    customer_scope: Optional[str] = None,
+                    bands: Optional[Bands] = None) -> List[Line]:
         lines: List[Line] = []
         for row in rows:
-            res: Resolution = pie_service.resolve(row["code"], customer_scope)
+            res: Resolution = pie_service.resolve(row["code"], customer_scope, bands)
             ln = Line(
                 id=f"l{next(_ids)}",
                 raw=row["raw"],
@@ -296,7 +297,8 @@ class QuoteStore:
         return lines
 
     def add_rfq(self, quote: Quote, text: str, zoho: ZohoService,
-                customer_scope: Optional[str] = None) -> List[Line]:
+                customer_scope: Optional[str] = None,
+                bands: Optional[Bands] = None) -> List[Line]:
         """``customer_scope`` is the customer's cross-connector identity.
 
         It arrives as an opaque string rather than being looked up here: this
@@ -305,7 +307,7 @@ class QuoteStore:
         would be the first crack in that.
         """
         rows = _split_rfq(text)
-        new = self.build_lines(rows, zoho, customer_scope)
+        new = self.build_lines(rows, zoho, customer_scope, bands)
         with self._lock:
             quote.lines.extend(new)
         return new

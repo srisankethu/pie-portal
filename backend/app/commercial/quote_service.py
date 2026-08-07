@@ -338,6 +338,19 @@ def summarize(assessment: QuoteAssessment, role: Role) -> dict:
     }
 
 
+def _catalog_version() -> str:
+    """The resolving catalogue's ruleset checksum, or "" if it cannot be read.
+
+    Provenance is worth recording and never worth failing a quote for, so this
+    swallows a missing engine the same way ``pie_service.resolve`` does.
+    """
+    try:
+        from ..pie_service import pie_service
+        return pie_service.catalog_version
+    except Exception:  # noqa: BLE001 — deliberate: never block a decision
+        return ""
+
+
 # ── immutable snapshots ─────────────────────────────────────────────────────
 def record_snapshot(
     session: Session, org: str, *,
@@ -387,6 +400,12 @@ def record_snapshot(
         overridden_exception_codes=overridden_codes,
         thresholds_version=intel.thresholds_version,
         engine_version=ENGINE_VERSION,
+        # Read here rather than threaded down from intake: the catalogue is
+        # loaded once per process and never reloaded, so its checksum is
+        # constant for the life of every resolution this row could describe.
+        # Imported inside the function for the same reason `resolve_customer`
+        # does — the module-level import would be a cycle.
+        catalog_version=_catalog_version(),
         as_of=intel.as_of,
         created_by_user_id=user_id,
     )
@@ -471,6 +490,7 @@ def snapshot_to_dict(row: models.QuoteDecision, role: Role) -> dict:
         "overridden_exception_codes": row.overridden_exception_codes or [],
         "thresholds_version": row.thresholds_version,
         "engine_version": row.engine_version,
+        "catalog_version": row.catalog_version,
         "as_of": row.as_of.isoformat() if row.as_of else None,
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "created_by_user_id": row.created_by_user_id,

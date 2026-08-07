@@ -900,6 +900,13 @@ class QuoteDecision(Base):
     # ── provenance ───────────────────────────────────────────────────────────
     thresholds_version: Mapped[str] = mapped_column(String(32), default="")
     engine_version: Mapped[str] = mapped_column(String(32), default="")
+    # Which pie-parser catalogue resolved the product on this line. Distinct
+    # from `engine_version` above, which names the quote-intelligence engine:
+    # this is the parser's own ruleset checksum, derived from the price-file
+    # bytes plus the pack, and it is what explains later why the same RFQ text
+    # resolved to a different product than it does today. Empty when the line
+    # was not resolved through the engine.
+    catalog_version: Mapped[str] = mapped_column(String(64), default="")
     as_of: Mapped[date] = mapped_column(Date)
     created_by_user_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,

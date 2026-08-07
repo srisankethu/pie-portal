@@ -353,6 +353,28 @@ def test_snapshots_are_scoped_to_the_organization(client):
     s.close()
 
 
+def test_a_decision_records_which_catalogue_resolved_it(client):
+    """The parser's ruleset checksum, alongside the thresholds version.
+
+    Both answer "why does this row say what it says" for different halves of
+    the answer: thresholds decide the price, the catalogue decides the product.
+    A quote whose product resolution cannot be reproduced is as unexplainable
+    as one whose margin cannot be.
+    """
+    from app.pie_service import pie_service
+
+    _snapshot(client, MANAGER, [_line("L1")], quote_id="q-catalog")
+    s = client.Maker()
+    row = s.query(models.QuoteDecision).filter_by(quote_id="q-catalog").one()
+
+    # It is the parser's own checksum, not the quote-intelligence version —
+    # those are different concepts and used to be conflated in one column.
+    assert row.catalog_version == pie_service.catalog_version
+    assert row.catalog_version != row.engine_version
+    assert row.thresholds_version, "thresholds provenance must still be stamped"
+    s.close()
+
+
 # ── the outcome path ────────────────────────────────────────────────────────
 def _outcome(c, email, status, quote_id="q1", note=None):
     return c.post("/api/v1/quote-intelligence/outcome",

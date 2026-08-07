@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 import logging
 import sys
 import threading
@@ -34,10 +35,25 @@ REL_RANK = {
     "PIE_DOWN": 6, "NONE": 9,
 }
 
-# Score bands that turn a fuzzy equivalence suggestion into a relationship.
-# The engine's combined score is geometry+grade agreement in [0, 1].
-_TECH_BAND = 0.85
-_COMPAT_BAND = 0.60
+#: Score bands that turn a fuzzy equivalence suggestion into a relationship.
+#:
+#: The numbers themselves are commercial policy and live in
+#: ``CommercialThresholds`` so they carry a version — see the note there. This
+#: is only the fallback for a caller with no organization in hand (the Quote
+#: Builder before anyone signs in to the platform), and it reads the same
+#: dataclass rather than restating the values, so the two cannot drift.
+@dataclass(frozen=True)
+class Bands:
+    """Where 'technically equivalent' stops and 'merely compatible' begins."""
+
+    tech: float
+    compat: float
+
+    @classmethod
+    def default(cls) -> "Bands":
+        from .commercial.config import CommercialThresholds
+        t = CommercialThresholds()
+        return cls(tech=t.equivalence_tech_band, compat=t.equivalence_compat_band)
 
 
 @dataclass
@@ -87,6 +103,26 @@ class Resolution:
         }
 
 
+def _read_catalog_version(path: Optional[Path]) -> str:
+    """The ruleset checksum stamped on the catalogue's rows.
+
+    Read from the first record rather than recomputed: the checksum belongs to
+    the run that built the file, and deriving our own would be a second answer
+    to a question the parser has already answered.
+    """
+    if path is None:
+        return ""
+    try:
+        with Path(path).open("r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if line:
+                    return str(json.loads(line).get("ruleset_checksum") or "")
+    except (OSError, ValueError):
+        log.warning("could not read a ruleset checksum from %s", path)
+    return ""
+
+
 class PieService:
     """Loads pie-parser once and resolves RFQ lines through it."""
 
@@ -95,6 +131,7 @@ class PieService:
         self._sources = None
         self._lock = threading.Lock()
         self._catalog_path: Optional[Path] = None
+        self._catalog_version: str = ""
 
     # ── lifecycle ────────────────────────────────────────────────────────────
     def _ensure_loaded(self) -> None:
@@ -118,14 +155,36 @@ class PieService:
             assert spec and spec.loader
             spec.loader.exec_module(mod)
             self._catalog_path = ensure_catalog()
+            self._catalog_version = _read_catalog_version(self._catalog_path)
             args = self._make_args("")
             self._sources = mod._build_sources(args)
             self._mod = mod
-            log.info("pie-parser loaded; catalogue=%s", self._catalog_path)
+            log.info("pie-parser loaded; catalogue=%s ruleset=%s",
+                     self._catalog_path, self._catalog_version or "unknown")
 
     def warm(self) -> None:
         """Eagerly load the engine + catalogue (called on app startup)."""
         self._ensure_loaded()
+
+    @property
+    def catalog_version(self) -> str:
+        """The ruleset checksum of the catalogue this process resolves against.
+
+        pie-parser derives it from the input bytes plus the pack's own checksum,
+        which is what makes a rerun reproducible — and it is the one fact that
+        explains, months later, why the same RFQ text resolved to a different
+        product than it does today. It is uniform across a build, and the
+        catalogue is loaded once and never reloaded, so reading it from the
+        first record is exact rather than a sample.
+
+        Empty when the engine has not loaded. Never raises: provenance must not
+        be the thing that fails a quote.
+        """
+        try:
+            self._ensure_loaded()
+        except Exception:  # noqa: BLE001 — matches resolve()'s degrade-not-raise
+            return ""
+        return self._catalog_version
 
     def _make_args(self, text: str,
                    customer_scope: Optional[str] = None) -> argparse.Namespace:
@@ -146,7 +205,8 @@ class PieService:
         )
 
     # ── resolution ───────────────────────────────────────────────────────────
-    def resolve(self, text: str, customer_scope: Optional[str] = None) -> Resolution:
+    def resolve(self, text: str, customer_scope: Optional[str] = None,
+                bands: Optional[Bands] = None) -> Resolution:
         """Resolve one RFQ line's text into a portal Resolution.
 
         ``customer_scope`` is the customer's cross-connector identity when the
@@ -165,7 +225,7 @@ class PieService:
             self._ensure_loaded()
             args = self._make_args(text, customer_scope)
             result, _human = self._mod.run(args, self._sources)
-            return self._map(text, result)
+            return self._map(text, result, bands or Bands.default())
         except Exception:  # noqa: BLE001 — deliberate: isolate engine failures
             log.exception("pie-parser resolution failed for %r", text)
             return Resolution(
@@ -176,7 +236,7 @@ class PieService:
             )
 
     # ── mapping: engine output -> portal Resolution ──────────────────────────
-    def _map(self, text: str, result: Dict[str, Any]) -> Resolution:
+    def _map(self, text: str, result: Dict[str, Any], bands: Bands) -> Resolution:
         res = result.get("resolution", {}) or {}
         outcome = res.get("outcome", "UNRESOLVED")
         semantics = res.get("input_semantics", "REQUIREMENT")
@@ -194,7 +254,7 @@ class PieService:
             cands = [Candidate(code=code, desc=desc, rel="EXACT",
                                grade=m.get("grade"), brand=m.get("brand"),
                                reason="Exact manufacturer identity.")]
-            cands += self._candidates_from_suggestions(suggestions, exclude=code)
+            cands += self._candidates_from_suggestions(suggestions, bands, exclude=code)
             return Resolution(text, code, desc, "EXACT", code, cands,
                               outcome, semantics, notes)
 
@@ -221,7 +281,8 @@ class PieService:
 
         # (2) Ambiguous / conflicting identity -> AMBIGUOUS (abstain, show options).
         if outcome in ("AMBIGUOUS", "CONFLICT"):
-            cands = self._candidates_from_suggestions(suggestions, force_rel="POSSIBLE")
+            cands = self._candidates_from_suggestions(suggestions, bands,
+                                                      force_rel="POSSIBLE")
             desc = "Ambiguous — confirm the intended product"
             return Resolution(text, text, desc, "AMBIGUOUS", None, cands,
                               outcome, semantics, notes)
@@ -234,7 +295,7 @@ class PieService:
         #     "top" suggestion is an artefact of ordering, not a technical
         #     equivalent — auto-selecting and pricing it would put a fabricated
         #     match on a customer quote. Abstain and show the options instead.
-        cands = self._candidates_from_suggestions(suggestions)
+        cands = self._candidates_from_suggestions(suggestions, bands)
         if cands and self._is_discriminating(cands) and outcome != "UNRESOLVED":
             top = cands[0]
             desc = self._requirement_desc(text, top)
@@ -257,7 +318,7 @@ class PieService:
                           outcome, semantics, notes)
 
     def _candidates_from_suggestions(
-        self, suggestions: List[Dict[str, Any]],
+        self, suggestions: List[Dict[str, Any]], bands: Bands,
         exclude: Optional[str] = None, force_rel: Optional[str] = None,
     ) -> List[Candidate]:
         out: List[Candidate] = []
@@ -267,7 +328,7 @@ class PieService:
                 continue
             scores = s.get("scores", {}) or {}
             combined = scores.get("combined")
-            rel = force_rel or self._rel_from_score(combined)
+            rel = force_rel or self._rel_from_score(combined, bands)
             out.append(Candidate(
                 code=code,
                 desc=s.get("description") or code,
@@ -295,12 +356,13 @@ class PieService:
         return scores[0] > scores[1]
 
     @staticmethod
-    def _rel_from_score(combined: Optional[float]) -> str:
+    def _rel_from_score(combined: Optional[float], bands: Optional[Bands] = None) -> str:
+        bands = bands or Bands.default()
         if combined is None:
             return "POSSIBLE"
-        if combined >= _TECH_BAND:
+        if combined >= bands.tech:
             return "TECH"
-        if combined >= _COMPAT_BAND:
+        if combined >= bands.compat:
             return "COMPAT"
         return "POSSIBLE"
 

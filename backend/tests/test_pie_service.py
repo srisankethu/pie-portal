@@ -64,6 +64,44 @@ def test_relationship_band_mapping():
     assert pie_service._rel_from_score(None) == "POSSIBLE"
 
 
+def test_the_bands_come_from_commercial_policy_not_this_module():
+    """Where "technically equivalent" stops is a policy number, not a constant.
+
+    It decides whether a fuzzy candidate is auto-selected onto a customer quote
+    under that label, so it belongs in the versioned thresholds with every other
+    number that reaches a customer — and the fallback must read the same
+    dataclass rather than restate the values, or the two drift silently.
+    """
+    from app.commercial.config import CommercialThresholds
+    from app.pie_service import Bands
+
+    t = CommercialThresholds()
+    assert Bands.default() == Bands(tech=t.equivalence_tech_band,
+                                    compat=t.equivalence_compat_band)
+
+
+def test_a_stricter_policy_actually_narrows_what_counts_as_equivalent():
+    from app.pie_service import Bands
+
+    strict = Bands(tech=0.99, compat=0.95)
+    # 0.90 is a technical equivalent under the default policy and only a
+    # possibility under a stricter one. If this ever stops being true the bands
+    # are being read from somewhere other than the policy.
+    assert pie_service._rel_from_score(0.90) == "TECH"
+    assert pie_service._rel_from_score(0.90, strict) == "POSSIBLE"
+    assert pie_service._rel_from_score(0.96, strict) == "COMPAT"
+
+
+def test_changing_a_band_changes_the_thresholds_version():
+    """The point of moving them: a policy change is recorded, not silent."""
+    import dataclasses
+    from app.commercial.config import CommercialThresholds
+
+    base = CommercialThresholds()
+    moved = dataclasses.replace(base, equivalence_tech_band=0.90)
+    assert base.version != moved.version
+
+
 # ── resolving under a customer's identity ───────────────────────────────────
 #
 # The quote builder now tells the engine which real-world customer the RFQ came

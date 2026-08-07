@@ -141,8 +141,14 @@ export function screenAt(pathname: string): Screen {
  * nothing else. A name nobody recognises lands on the storyboard rather than
  * nowhere. */
 export function vizPath(route: string): string {
-  const [head, id] = route.split("/");
-  if (head === "customer" && id) return pathFor("customer", id);
+  // The query is split off before the path is read, not after. A token like
+  // `stock?item=abc` otherwise makes the whole string the head, matches no
+  // screen, and lands on the home page — a link that goes somewhere plausible
+  // instead of nowhere, which is the harder kind to notice.
+  const q = route.indexOf("?");
+  const search = q === -1 ? "" : route.slice(q);
+  const [head, id] = (q === -1 ? route : route.slice(0, q)).split("/");
+  if (head === "customer" && id) return pathFor("customer", id) + search;
   const map: Record<string, Screen> = {
     "lost-revenue": "lostRevenue",
     opportunities: "opportunities",
@@ -163,5 +169,5 @@ export function vizPath(route: string): string {
     // rather than only ever a link carrying an account.
     customer: "customer",
   };
-  return pathFor(map[head] ?? "home");
+  return pathFor(map[head] ?? "home") + search;
 }

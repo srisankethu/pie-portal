@@ -61,7 +61,18 @@ jobs:
           python-version: "3.11"
           cache: pip
           cache-dependency-path: backend/requirements.txt
-      - run: pip install -r backend/requirements.txt ruff
+      # ruff is PINNED. Unpinned, this step installed whatever was newest on the
+      # day the job ran, and ruff's *default* rule selection is not stable
+      # across releases — a version after 0.15.8 turned 0 findings into 1314
+      # (UP006, and the rest of a wider default set) against an unchanged tree.
+      # Because `ruff` runs before `pytest` in this job, that failure also
+      # skipped the entire backend suite, so the gate ran no backend tests at
+      # all while looking like it had an opinion.
+      #
+      # A lint rule set is a decision this repo should make deliberately, not
+      # inherit from a release date. Bumping this pin is how the decision gets
+      # made, and the diff shows the new findings.
+      - run: pip install -r backend/requirements.txt ruff==0.15.8
       - name: ruff
         run: ruff check backend/app
       # `-p no:randomly` is not used: the suite is order-independent by design

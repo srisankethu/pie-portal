@@ -913,6 +913,14 @@
 }
 .chip:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
 
+/* The dot and the name are a row, so say so.
+   This wrapper had no rule at all, which left it a bare inline span: the dot
+   and the name shared a line box, their widths added up past the column, and
+   the whole name — an atomic inline-grid — was replaced by a single "…". A
+   flex row makes the name the part that gives, and `min-width: 0` is what
+   permits it to (a flex item refuses to shrink below its content otherwise). */
+.stock-item { display: flex; align-items: baseline; min-width: 0; }
+
 /* The health mark. A dot rather than a coloured row: a whole row tinted red
    fights every other colour on the page, and at three states it is the mark
    people learn rather than the fill. */
@@ -920,6 +928,9 @@
   display: inline-block; width: 8px; height: 8px; margin-right: 7px;
   border-radius: 50%; vertical-align: baseline;
   background: var(--color-neutral-400);
+  /* Never the thing that shrinks — an 8px dot squeezed to 3px reads as a
+     different state. */
+  flex: none;
 }
 .stock-dot.HEALTHY { background: var(--viz-gain); }
 .stock-dot.SLOW { background: var(--viz-accent); }

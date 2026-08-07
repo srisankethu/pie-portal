@@ -1311,11 +1311,18 @@ table.grid tbody tr:hover td { background: color-mix(in srgb, var(--color-accent
    ASSEMBLY LIMITED" rendered as "…CONDUIT KIT ASSEMB". The cell's own ellipsis
    never applied because there was nothing splittable to apply it to.
 
-   So bound the box to its container and let each line truncate on its own.
-   `min-width: 0` because a grid item's automatic minimum size is its content,
-   which would otherwise keep the box at its full intrinsic width whatever the
-   max-width says. */
-.ent { display: inline-grid; gap: 1px; max-width: 100%; min-width: 0; }
+   Capping the width is not enough on its own. `max-width: 100%` resolves
+   against the cell, so a sibling in the same cell — the Stock screen's health
+   dot — still pushes the pair past the content box, and an atomic box that
+   overflows is replaced wholesale by a single "…". That is the Stock symptom:
+   not a clipped name, no name at all.
+
+   Being *block-level* is what removes the failure rather than narrowing it. A
+   block box is not inline content, so the cell's ellipsis has no claim on it;
+   it takes the space left over and each line truncates on its own. `min-width:
+   0` is load-bearing too — a grid item's automatic minimum size is its
+   content, which would otherwise hold the full intrinsic width regardless. */
+.ent { display: grid; gap: 1px; min-width: 0; max-width: 100%; }
 .ent-name { font-weight: 600; }
 /* Where the name is not the emphasis — a supplier in a distribution list. */
 .ent-name-plain { font-weight: 400; }

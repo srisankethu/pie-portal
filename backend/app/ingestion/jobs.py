@@ -355,8 +355,14 @@ def execute_sync(session: Session, run: models.SyncRun, *,
         run.windows_total = len(windows)
         run.windows_done = 0
 
+        # The connection this run was started for, so every row it writes says
+        # which connected company it came from. Omitting it was why the Stock
+        # and Customers screens could name the connector ("Zoho") but never the
+        # book — `SyncService` defaults the connector and leaves the connection
+        # NULL, and a NULL connection resolves to no company at all.
         svc = SyncService(session, source_for(since, None), org,
-                          resume=not full, on_phase=phase)
+                          resume=not full, on_phase=phase,
+                          connection_id=connection_id)
         svc.begin()
         # Customers and items are the whole master list whatever the window, so
         # they are read once rather than once per slice.

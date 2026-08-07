@@ -37,8 +37,23 @@ export function connectorMark(origin: EntityOrigin | null | undefined): string {
  *  the eye lands on. */
 export function sourceLabel(origin: EntityOrigin | null | undefined): string {
   if (!origin || origin.unknown) return "source not recorded";
-  const parts = [origin.company, origin.connector_short].filter(Boolean);
+  // A missing company is *named*, not dropped. Falling back to the connector
+  // alone renders "Zoho" in the position a company belongs, which reads as an
+  // answer — and "Zoho" is not an answer to "which of my three books is this
+  // shelf in?". The row cannot be attributed until it carries a connection,
+  // and the screen should say which of the two it is.
+  const company = origin.company || "company not recorded";
+  const parts = [company, origin.connector_short].filter(Boolean);
   return parts.join(" · ") || "source not recorded";
+}
+
+/** True when the row names its connector but not the company it belongs to.
+ *
+ *  Its own state because it has its own cause and its own fix: the record was
+ *  written before per-connection provenance existed, and only a re-sync that
+ *  claims it can attribute it. */
+export function companyMissing(origin: EntityOrigin | null | undefined): boolean {
+  return Boolean(origin) && !origin!.unknown && !origin!.company;
 }
 
 export function EntitySource({
@@ -49,8 +64,16 @@ export function EntitySource({
   show?: boolean;
 }) {
   if (!show || !origin) return null;
+  const incomplete = origin.unknown || companyMissing(origin);
   return (
-    <span className={`ent-src${origin.unknown ? " unknown" : ""}`}>
+    <span
+      className={`ent-src${incomplete ? " unknown" : ""}`}
+      title={companyMissing(origin)
+        ? "This record was imported before its connected company was recorded, "
+          + "so it cannot say which book it belongs to. A sync that claims it "
+          + "will attribute it."
+        : undefined}
+    >
       <span className="ent-mark" aria-hidden="true">{connectorMark(origin)}</span>
       {sourceLabel(origin)}
     </span>

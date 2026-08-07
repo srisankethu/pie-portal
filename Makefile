@@ -1,5 +1,7 @@
 .PHONY: help setup verify verify-fast catalog bootstrap migrate seed \
-        backend frontend dev test lint
+        backend frontend dev test lint \
+        deploy-build deploy-release deploy-up deploy-down deploy-logs \
+        deploy-runbook
 
 help:
 	@echo "pie-portal — Sanketh Quote Builder + Commercial Decision Platform"
@@ -21,6 +23,13 @@ help:
 	@echo "  make migrate      apply database migrations"
 	@echo "  make seed         seed the default org + demo users"
 	@echo "  make catalog      build the decoded PIE catalogue from pie-parser"
+	@echo ""
+	@echo "  Self-hosting (docs/hosting.md) — needs .env.production:"
+	@echo "  make deploy-build    build the API and edge images"
+	@echo "  make deploy-release  migrations + seed: the deliberate step"
+	@echo "  make deploy-up       start Postgres, the API and the TLS edge"
+	@echo "  make deploy-down     stop them (volumes survive)"
+	@echo "  make deploy-logs     follow the logs"
 	@echo ""
 	@echo "CI runs 'make verify'. There is no second list of checks anywhere."
 
@@ -69,3 +78,33 @@ test:
 
 lint:
 	python3 -m ruff check .
+
+# ── Self-hosting (docs/hosting.md) ───────────────────────────────────────────
+# Every target passes --env-file so the deployment's secrets stay in
+# .env.production and never collide with the repo-root .env that
+# app/config.py loads for local development.
+COMPOSE = docker compose --env-file .env.production
+
+deploy-build:
+	$(COMPOSE) build
+
+# Migrations and seeding — the deliberate step. Nothing else runs this, which is
+# why `deploy-up` cannot migrate anything (CLAUDE.md §4).
+deploy-release:
+	$(COMPOSE) --profile release run --rm release
+
+deploy-up:
+	$(COMPOSE) up -d
+	@echo "Up. Health: docker compose --env-file .env.production exec api \\"
+	@echo "             python -c \"import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:8000/api/health').read().decode())\""
+
+deploy-down:
+	$(COMPOSE) down
+
+deploy-logs:
+	$(COMPOSE) logs -f --tail=100
+
+# What a deploy of this range requires, in the order it requires it. Reads the
+# migrations that landed; it does NOT guess what production is at.
+deploy-runbook:
+	python3 scripts/deploy_runbook.py --range $${RANGE:-origin/main..HEAD}

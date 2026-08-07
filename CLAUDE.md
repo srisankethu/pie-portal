@@ -400,29 +400,41 @@ Deterministic tools first, judgement second. Never report "no duplication"
 without a tool having actually looked.
 
 ```bash
-# 1. Tests. Non-negotiable; the suite is the contract.
-cd backend && python -m pytest tests -q
-
-# 2. Types and build.
-cd frontend && npx tsc -b && npm run build
-
-# 3. Lint (ruff is installed).
-ruff check backend/app
-
-# 4. The invariant checks from §1 — must print nothing.
-
-# 5. Migrations, whenever models or migrations changed. Note the `rm` — this
-#    checks the EMPTY case, which is the one that breaks in production and the
-#    one your already-migrated development database can never exercise.
-cd backend && rm -f /tmp/mig.db \
-  && DATABASE_URL="sqlite:////tmp/mig.db" python -m alembic upgrade head \
-  && python -m pytest tests/decision_platform/test_migrations_integrity.py -q
+make verify        # the whole gate, ~4 min
+make verify-fast   # the edit loop, ~2.5 min — not enough to merge on
 ```
 
-Step 5 is not optional after a model change. It is the check that would have
-caught the incident in §4: the schema and the models had drifted apart in 130
-places, and the drift was invisible because nobody ran autogenerate against a
-fresh database.
+That is the entire list, and it is deliberately not written out here a second
+time. This section used to enumerate five commands, `.github/workflows/gate.yml`
+enumerated them again, and the two drifted:
+
+- CI installed `ruff` unpinned. A newer release shipped a broader default rule
+  set, so the gate reported **1314 lint errors with no code change behind them**.
+  Lint ran *before* `pytest` in the same job, so the 1174-test backend suite was
+  skipped entirely.
+- CI never fetched pie-parser, which the backend imports in-process. All 25
+  migration-integrity tests died at collection with `PIE corpus not found` — so
+  the drift check this document leans on had never actually run.
+
+Both survived **eight consecutive merges to `main`**, because a check that is
+always red is a check nobody reads. `scripts/verify.sh` is now the single
+definition of "verified": `make verify` runs it, CI runs it, and the Claude Code
+stop-hook checks against it. Change the checks there and every caller changes
+with it.
+
+What it runs, in order: `ruff check .` (rule set in `ruff.toml`, version pinned
+in `backend/requirements-dev.txt`) · the §1 layer invariants · the backend suite
+in parallel · `tsc -b` and the production build · `alembic upgrade head` **on an
+empty database**, then the drift test and the single-head check.
+
+It runs every step and reports all failures at the end rather than stopping at
+the first, so one red build tells you everything that is wrong.
+
+**The empty-database run is not optional after a model change.** It is the check
+that would have caught the incident in §4 — the schema and the models had
+drifted apart in 130 places, invisibly, because nobody ran autogenerate against
+a fresh database. Your own database is already migrated and can never exercise
+the empty case; production only ever runs it.
 
 Optional, if you want a real similarity scan and are willing to install it:
 `npx jscpd --min-tokens 30 backend/app frontend/src`. Treat >30 duplicated

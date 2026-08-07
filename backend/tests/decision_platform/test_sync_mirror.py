@@ -12,7 +12,6 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
-import pytest
 
 from app.domain import models
 from app.ingestion.sync import SyncService

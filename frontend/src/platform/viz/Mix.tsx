@@ -72,6 +72,7 @@ export function MixScreen({
   const customers = rows(data?.customers);
   const affinity = rows(data?.affinity);
   const catalogue = (data?.catalogue as Row | undefined) ?? {};
+  const attribution = (data?.principals as Row | undefined) ?? {};
   const counts = (data?.counts as Record<string, number>) ?? {};
   const sourcesDiffer = Boolean(data?.sources_differ);
 
@@ -90,6 +91,8 @@ export function MixScreen({
   }, [shown, gap]);
 
   const resolved = catalogue.resolved_share as number | null | undefined;
+  const attributed = attribution.attributed_share as number | null | undefined;
+  const brandOnly = attribution.brand_only_share as number | null | undefined;
 
   return (
     <Panel
@@ -130,6 +133,26 @@ export function MixScreen({
           {num(catalogue.uncategorised) === 1 ? "" : "s"} unplaced). Trade in
           unplaced items is left out of this grid entirely rather than counted
           against anybody — so a gap here may be a gap in the catalogue.
+        </p>
+      )}
+
+      {/* The same caveat for the supplier pivot, where the gap has two
+          different causes and they are worth separating. An item is attributed
+          to a principal by a purchase bill where one exists, and otherwise by
+          the brand on the item master — which is how stock bought before the
+          sync window still knows whose it is. What neither can reach is a
+          column nobody has failed to sell. */}
+      {by === "vendor" && attributed != null && (
+        <p className="bond-unscored">
+          <strong>{pct(attributed, 0)}</strong> of trade is attributed to a
+          principal
+          {brandOnly != null && brandOnly > 0 && (
+            <> — <strong>{pct(brandOnly, 0)}</strong> of it from the item's
+              brand rather than a purchase bill, which is how stock bought
+              before the sync window is still counted</>
+          )}
+          . The rest is items with neither, and it is left out of this grid
+          rather than counted against anybody.
         </p>
       )}
 

@@ -28,7 +28,7 @@ from sqlalchemy.orm import Session
 
 from ..authz import Principal, current_principal, require_manager_or_owner
 from .. import clock
-from ..commercial import floor, incentive, policy
+from ..commercial import floor, incentive, policy, principals
 from ..commercial import categories as cat
 from ..commercial.insight import (bonds, cadence, cashflow, cohorts, composition,
                                   dependency, flow, landscape, mix, payments,
@@ -798,27 +798,66 @@ BOND_MIN_MONTHS = 6
 BOND_MAX_MONTHS = 36
 
 
-def _vendor_of_product(session: Session, org: str) -> dict[str, str]:
-    """Each item's dominant supplier, by what this book has spent with them.
+def _purchases(session: Session, org: str) -> list[principals.Purchase]:
+    """Every cost line that names a supplier.
 
     The join that makes principal-level analysis possible at all: a sale is a
-    customer buying an *item*, and only the purchase side knows whose item it
-    is. An item bought from two suppliers is attributed wholly to the larger —
-    a real inference, and the reason every view built on this reports what share
-    of revenue it could attribute rather than quietly showing a share of a
-    fraction of the book.
+    customer buying an *item*, and only the purchase side knows who this book
+    paid for it.
     """
-    spend: dict[str, dict[str, float]] = {}
-    rows = session.execute(
-        select(models.CostRecord.product_id, models.CostRecord.vendor_id,
-               models.CostRecord.qty, models.CostRecord.unit_cost)
-        .where(models.CostRecord.organization_id == org,
-               models.CostRecord.vendor_id.is_not(None))).all()
-    for product_id, vendor_id, qty, unit_cost in rows:
-        bucket = spend.setdefault(product_id, {})
-        bucket[vendor_id] = bucket.get(vendor_id, 0.0) + float((qty or 0) * (unit_cost or 0))
-    return {product_id: max(by_vendor.items(), key=lambda kv: kv[1])[0]
-            for product_id, by_vendor in spend.items() if by_vendor}
+    return [
+        principals.Purchase(product_id=product_id, vendor_id=vendor_id,
+                            amount=float((qty or 0) * (unit_cost or 0)))
+        for product_id, vendor_id, qty, unit_cost in session.execute(
+            select(models.CostRecord.product_id, models.CostRecord.vendor_id,
+                   models.CostRecord.qty, models.CostRecord.unit_cost)
+            .where(models.CostRecord.organization_id == org,
+                   models.CostRecord.vendor_id.is_not(None))).all()
+    ]
+
+
+def _vendor_names(session: Session, org: str) -> dict[str, str]:
+    return {v.vendor_id: v.name for v in session.scalars(
+        select(models.Vendor).where(models.Vendor.organization_id == org)).all()}
+
+
+def _principal_of_product(session: Session, org: str,
+                          ) -> dict[str, principals.Principal]:
+    """Each item's principal for **sales** attribution — bill first, brand second.
+
+    Sales only, and the boundary is the point. Anything reconciling against a
+    principal's own statement — spend, sole-source, target progress — reads
+    ``models.CostRecord.vendor_id`` directly and never comes through here. See
+    ``commercial/principals.py`` for why the two must not be chained.
+    """
+    brands = {
+        product_id: brand
+        for product_id, brand in session.execute(
+            select(models.Product.product_id, models.Product.brand)
+            .where(models.Product.organization_id == org)).all()
+    }
+    return principals.resolve_all(brands, _purchases(session, org),
+                                  _vendor_names(session, org))
+
+
+def _principal_ids(resolved: dict[str, principals.Principal]) -> dict[str, str]:
+    """product_id → principal_id, dropping the items nothing could attribute."""
+    return {product_id: p.principal_id
+            for product_id, p in resolved.items() if p.known}
+
+
+def _revenue_by_product(snapshot) -> dict[str, float]:
+    """What each item has sold, for weighting a coverage figure by money.
+
+    A coverage report counted in items says "38% unattributed" whether those
+    items sell nothing or carry a third of the book. Every report built on this
+    leads with the revenue version for that reason.
+    """
+    revenue: dict[str, float] = {}
+    for row in snapshot.sales:
+        revenue[row.product_id] = (revenue.get(row.product_id, 0.0)
+                                   + float(row.line_revenue))
+    return revenue
 
 
 def _category_of(session: Session, org: str, th,
@@ -840,7 +879,7 @@ def _category_of(session: Session, org: str, th,
     }
     return cat.resolve_all(products, th, overrides=overrides,
                            vendor_of=vendor_of if vendor_of is not None
-                           else _vendor_of_product(session, org))
+                           else _principal_ids(_principal_of_product(session, org)))
 
 
 def _customer_bonds(session: Session, principal: Principal, snapshot,
@@ -1051,21 +1090,24 @@ def product_mix(months: int = Query(12, ge=3, le=36),
     if as_of is None:
         return _no_data(th.currency, "product mix")
 
-    vendor_of = _vendor_of_product(session, org)
+    principal_of = _principal_of_product(session, org)
+    vendor_of = _principal_ids(principal_of)
     lines_of = _category_of(session, org, th, vendor_of)
 
     if by == mix.BY_VENDOR:
-        vendors = {v.vendor_id: v.name for v in session.scalars(
-            select(models.Vendor).where(
-                models.Vendor.organization_id == org)).all()}
-        # Only principals this book has actually bought from become columns. A
-        # supplier on the contact list with no purchase history is not a line
-        # anybody has failed to sell, and a column of pure whitespace would
+        # Brands that matched no vendor row are principals too, and ``names_of``
+        # is what can name them — a ``brand:`` key is deliberately absent from
+        # the Vendor table, so a screen reading that table alone would render an
+        # id where a principal's name belongs.
+        names = principals.names_of(principal_of, _vendor_names(session, org))
+        # Only principals whose product this book has actually *sold* become
+        # columns. A supplier on the contact list nobody has traded is not a
+        # line anybody has failed to sell, and a column of pure whitespace would
         # invent a hundred opportunities.
         traded = {vendor_of.get(row.product_id) for row in snapshot.sales}
-        columns = [mix.Column(vid, name) for vid, name in
-                   sorted(vendors.items(), key=lambda kv: kv[1])
-                   if vid in traded]
+        columns = [mix.Column(pid, name) for pid, name in
+                   sorted(names.items(), key=lambda kv: kv[1])
+                   if pid in traded]
         key_of = vendor_of
     else:
         columns = [mix.Column(c, cat.LABELS[c]) for c in cat.ORDER]
@@ -1092,6 +1134,8 @@ def product_mix(months: int = Query(12, ge=3, le=36),
         empty_reason=result.pop("empty_reason", None),
         sources_differ=companies.count > 1,
         catalogue=cat.coverage_report(lines_of),
+        principals=principals.coverage_report(principal_of,
+                                              _revenue_by_product(snapshot)),
         lines=cat.lines(),
         unavailable=mix.unavailable())
 
@@ -1150,10 +1194,14 @@ def book_dependency(principal: Principal = Depends(current_principal),
         return _no_data(th.currency, "dependency")
 
     with_suppliers = principal.role in (Role.SALES_MANAGER, Role.OWNER)
-    vendor_of = _vendor_of_product(session, org)
+    principal_of = _principal_of_product(session, org)
+    vendor_of = _principal_ids(principal_of)
     lines_of = _category_of(session, org, th, vendor_of)
-    vendors = {v.vendor_id: v.name for v in session.scalars(
-        select(models.Vendor).where(models.Vendor.organization_id == org)).all()}
+    # A superset of the Vendor table: real suppliers plus the brands that
+    # matched none. Purchase-side lookups are unaffected — a ``brand:`` key can
+    # never appear in a cost row — so this only names principals the sales side
+    # already found.
+    vendors = principals.names_of(principal_of, _vendor_names(session, org))
 
     flows = [
         dependency.Flow(
@@ -1201,7 +1249,9 @@ def book_dependency(principal: Principal = Depends(current_principal),
                       "measure."),
         sources_differ=companies.count > 1,
         supplier_side_visible=with_suppliers,
-        catalogue=cat.coverage_report(lines_of))
+        catalogue=cat.coverage_report(lines_of),
+        principals=principals.coverage_report(principal_of,
+                                              _revenue_by_product(snapshot)))
 
 
 class TargetIn(BaseModel):
@@ -1318,7 +1368,8 @@ def catalogue_lines(unplaced_only: bool = Query(True),
                     session: Session = Depends(get_session)) -> dict:
     """Every item's line, where it came from, and what it is worth placing."""
     org, snapshot, th = _context(session, principal)
-    vendor_of = _vendor_of_product(session, org)
+    principal_of = _principal_of_product(session, org)
+    vendor_of = _principal_ids(principal_of)
     lines_of = _category_of(session, org, th, vendor_of)
 
     overrides = {
@@ -1332,8 +1383,6 @@ def catalogue_lines(unplaced_only: bool = Query(True),
 
     products = session.scalars(
         select(models.Product).where(models.Product.organization_id == org)).all()
-    vendors = {v.vendor_id: v.name for v in session.scalars(
-        select(models.Vendor).where(models.Vendor.organization_id == org)).all()}
 
     rows = []
     for p in products:
@@ -1342,6 +1391,11 @@ def catalogue_lines(unplaced_only: bool = Query(True),
             continue
         if unplaced_only and resolved.known:
             continue
+        # Whose product this is, and on what evidence. Both, because "supplier:
+        # Kennametal" reads identically whether a bill proves it or the item
+        # master merely says so, and somebody correcting a catalogue needs to
+        # know which of those they are looking at before they trust it.
+        whose = principal_of.get(p.product_id)
         rows.append({
             "product_id": p.product_id,
             "name": p.name,
@@ -1354,7 +1408,11 @@ def catalogue_lines(unplaced_only: bool = Query(True),
             "source_label": cat.SOURCE_LABEL[resolved.source],
             "overridden": p.product_id in overrides,
             "note": overrides[p.product_id].note if p.product_id in overrides else None,
-            "supplier": vendors.get(vendor_of.get(p.product_id) or ""),
+            "brand": p.brand,
+            "supplier": whose.name if whose and whose.known else None,
+            "supplier_source": whose.source if whose else principals.BY_NOTHING,
+            "supplier_source_label": principals.SOURCE_LABEL[
+                whose.source if whose else principals.BY_NOTHING],
             "revenue": round(revenue.get(p.product_id, 0.0), 2),
         })
     # The biggest first. Placing the item nothing sells is busywork; placing the
@@ -1368,6 +1426,7 @@ def catalogue_lines(unplaced_only: bool = Query(True),
         {"items": rows,
          "lines": cat.lines(),
          "catalogue": cat.coverage_report(lines_of),
+         "principals": principals.coverage_report(principal_of, revenue),
          # What placing the rest is worth. A coverage percentage counted in
          # *items* can look alarming while the unplaced ones sell nothing —
          # this is the number that says whether the work matters.

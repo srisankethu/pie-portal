@@ -317,6 +317,20 @@ class Product(Base):
     #: versioned, and a value rewritten at sync time could never be re-read
     #: under a corrected map without a full re-sync.
     category: Mapped[Optional[str]] = mapped_column(String(128))
+    #: Whose brand this is, as the item master words it — "KENNAMETAL INDIA
+    #: LIMITED", "YG1", "NOGA". Stored raw for the same reason ``category`` is:
+    #: mapping a brand onto a principal is policy, and a value rewritten at sync
+    #: time could never be re-read under a corrected map.
+    #:
+    #: **This is not the vendor and must never be used as one.** The brand is
+    #: whose product this is; the vendor on a bill is who we actually paid. For
+    #: an authorised distributor they usually coincide, which is exactly what
+    #: makes the divergences worth seeing — stock bought from another
+    #: distributor to cover a shortfall, a competing brand filled through a
+    #: trader, an import through an intermediary. ``commercial/principals.py``
+    #: chains the two for *sales* attribution and documents where it must not
+    #: be chained.
+    brand: Mapped[Optional[str]] = mapped_column(String(128))
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     source_ref: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)

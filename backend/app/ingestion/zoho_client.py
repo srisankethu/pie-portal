@@ -448,13 +448,25 @@ class ZohoApiSource:
                 "sku": i.get("sku"),
                 "unit": i.get("unit"),
                 "hsn_or_sac": i.get("hsn_or_sac") or i.get("hsn_code"),
-                # The catalogue's own line for this item. Free — it is already
-                # on the payload the item list returns — and the best category
-                # source there is wherever the catalogue is maintained, because
-                # it is a person's answer rather than an inference from a tax
-                # code. Blank on plenty of items, which reads as "no answer"
-                # and falls through to the HSN map.
+                # The catalogue's own line for this item, where the books use
+                # Zoho's Inventory categories. Measured against the live
+                # masters it is set on **none** of them — 0 of 800 on SLS
+                # Engineers, 0 of 400 on 4U Precision — because the feature is
+                # not turned on. Kept because it costs nothing, is a person's
+                # answer where it exists, and reads as "no answer" otherwise;
+                # but the HSN map is what actually places an item here, not the
+                # fallback it was described as.
                 "category_name": i.get("category_name") or i.get("category"),
+                # Whose brand it is. The one curated field these masters really
+                # do keep — 67% of SLS items and 92% of 4U's, and *clean*: six
+                # distinct principals in one book and two in the other, with no
+                # spelling variants at all. It matters because it has no sync
+                # horizon: an item sold today out of stock bought four years ago
+                # has no bill inside the window and therefore no vendor, but it
+                # still knows whose product it is. See
+                # ``commercial/principals.py`` for where that fallback applies
+                # and, more importantly, where it does not.
+                "manufacturer": i.get("manufacturer") or i.get("brand"),
                 "status": (i.get("status") or "active"),
                 # Stock travels on the item list Zoho already returns, so this
                 # costs nothing extra. Passed through raw — including the blank

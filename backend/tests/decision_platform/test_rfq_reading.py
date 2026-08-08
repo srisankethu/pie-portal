@@ -163,6 +163,31 @@ def _quote_with_a_read_line():
     return st, q
 
 
+def _resolve(line) -> None:
+    """Put a line into the state the rest of the quote path produces once the
+    engine and Zoho have both answered: resolved, in the books, priced.
+
+    ``service`` is cleared, and that is the field this helper exists for.
+    ``add_rfq`` above sends the code to pie-parser, and ``store`` stamps
+    ``service="PIE"`` when the engine did not answer — so in an environment
+    without the engine checked out, every line this fixture builds is
+    PIE-offline before the test touches it. Setting ``rel`` to ``EXACT`` by hand
+    does not undo that: ``Line.status`` checks the offline marker *before* it
+    looks at ``rel``, and correctly so, because a line whose resolver never
+    answered has not been resolved by somebody asserting that it was.
+
+    Leaving it set is what made this test pass only where pie-parser was
+    present. It went red in ``verify`` — which deliberately does not fetch the
+    engine — and stayed red across four merges to ``main``, while reading like a
+    claim about confirmation rather than about the environment.
+    """
+    line.rel = "EXACT"
+    line.supplyCode = "CNMG120408MP"
+    line.inBooks = True
+    line.quoted = 400.0
+    line.service = None
+
+
 def test_an_unconfirmed_reading_blocks_the_estimate():
     st, q = _quote_with_a_read_line()
     assert [ln.id for ln in st.blockers(q)] == [q.lines[0].id]
@@ -184,24 +209,25 @@ def test_a_confirmed_line_that_resolves_is_released():
     st, q = _quote_with_a_read_line()
     ln = q.lines[0]
     st.confirm_reading(ln)
-    # What a resolved, in-books, priced line looks like — the state the rest of
-    # the quote path produces once Zoho has answered.
-    #
-    # `service` is part of that state and was the one field this did not set.
-    # With the engine present it is already None and the assertion held; without
-    # it, `add_rfq` above had recorded `service="PIE"` — "the resolution engine
-    # is unavailable for this line" — which `status()` reports as a technical
-    # blocker for its own good reason. So the line being described was one that
-    # had simultaneously resolved and failed to resolve, and the test failed on
-    # every checkout that cannot fetch the private submodule, which includes CI.
-    # It has been red on `main` since this file landed.
-    #
-    # Setting it here rather than marking the test `requires_pie`: the subject
-    # is the reading-confirmation hold, not the engine, and a test that runs
-    # everywhere is worth more than one that skips where it would have failed.
-    ln.rel, ln.supplyCode, ln.inBooks, ln.quoted = "EXACT", "CNMG120408MP", True, 400.0
-    ln.service = None
+    _resolve(ln)
     assert st.blockers(q) == []
+
+
+def test_a_line_whose_resolver_never_answered_still_blocks():
+    """The other half, and the one the test above was quietly relying on rather
+    than stating. Confirming the *reading* says a person checked the code
+    against what the customer wrote; it says nothing about whether the engine
+    resolved it. A line the engine never answered for keeps blocking however
+    complete it otherwise looks, because a quote that goes out on an unresolved
+    code is the failure this gate exists for."""
+    st, q = _quote_with_a_read_line()
+    ln = q.lines[0]
+    st.confirm_reading(ln)
+    _resolve(ln)
+    ln.service = "PIE"          # the engine did not answer for this line
+
+    assert [b.id for b in st.blockers(q)] == [ln.id]
+    assert ln.status()["label"] == "PIE OFFLINE"
 
 
 def test_a_typed_line_is_never_held_for_confirmation():

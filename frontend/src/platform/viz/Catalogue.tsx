@@ -145,8 +145,10 @@ export function CatalogueScreen({ session }: { session: PlatformSession }) {
               filter: "agTextColumnFilter",
               cellRenderer: (p: { data: Row }) => (
                 p.data.supplier ? (
-                  <span className="cat-source">
-                    {String(p.data.supplier)}
+                  <span className="cat-attrib">
+                    <span title={String(p.data.supplier)}>
+                      {String(p.data.supplier)}
+                    </span>
                     <StatusChip label={String(p.data.supplier_source_label)}
                                 tone={p.data.supplier_source === "BILL"
                                       ? "good" : "neutral"}

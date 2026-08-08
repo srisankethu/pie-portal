@@ -77,6 +77,14 @@ export const CSS_VARS: Record<string, string> = {
   "--color-accent": tokens.accent,
   "--color-accent-2": tokens.accent2,
   "--color-divider": fade(16),
+  /* Muted ink for a caption, a unit, an axis label. It was read in six places
+     across the chart stylesheet and declared in none, and the two failure modes
+     differed by property: `color` is inherited, so those sites quietly took the
+     body text colour, while `fill`'s initial value is black, so the SVG labels
+     rendered black rather than muted. Declared here rather than patched at each
+     call site, because a literal in a component is a value that will not
+     follow. */
+  "--color-text-secondary": tokens.neutral[700],
 
   ...Object.fromEntries(
     Object.entries(tokens.neutral).map(([k, v]) => [`--color-neutral-${k}`, v]),

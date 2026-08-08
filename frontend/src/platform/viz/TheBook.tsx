@@ -87,18 +87,21 @@ function CashProjection({ session }: { session: PlatformSession }) {
   const unattributed = (data?.unattributed ?? {}) as Row;
   const net = num(data?.net_over_horizon);
   const lowest = num(data?.lowest_cumulative);
-  // The band. `scenarios.late` is the deepest whenever anything is measured —
-  // money arriving later cannot make a trough shallower — but `requirement` is
-  // taken from the server, which minimises across all three rather than
-  // assuming which one wins.
+  // The band, named for what each corner costs the week rather than for how
+  // fast anybody is: `worst` is customers at their slowest *and* us paying at
+  // our fastest, which is the genuinely deepest trough now that both sides can
+  // move. `requirement` is still taken from the server, which minimises across
+  // all three rather than leaving the client to assume which one wins.
   const scenarios = (data?.scenarios ?? {}) as Record<string, Row>;
   const basis = (data?.basis ?? {}) as Row;
   const requirement = num(data?.requirement);
-  const early = rows(scenarios.early?.buckets);
+  const best = rows(scenarios.best?.buckets);
   const expected = rows(scenarios.expected?.buckets);
-  const late = rows(scenarios.late?.buckets);
+  const worst = rows(scenarios.worst?.buckets);
   const measuredShare = num(basis.share_measured);
-  const banded = expected.length > 0 && measuredShare > 0;
+  const outflowShare = num(basis.outflow_share_measured);
+  const outflowShifted = Boolean(basis.outflow_shifted);
+  const banded = expected.length > 0 && (measuredShare > 0 || outflowShare > 0);
 
   /** Named beside the chart, never drawn on it. Zero rows are dropped rather
    *  than shown as "₹0" — an empty row teaches a reader to skip the list. */
@@ -138,17 +141,16 @@ function CashProjection({ session }: { session: PlatformSession }) {
           of {formatDate(String(data?.lowest_week_starts_on))} if everyone pays
           to terms</>
         )}.{" "}
-        {/* The number somebody funding a week actually wants. Due dates are the
-            best case — they assume every customer pays on the day — so the
-            headline says what the worst measured timing needs, and the band on
-            the chart shows the space between. */}
+        {/* The number somebody funding a week actually wants. Due dates assume
+            every party moves on the day; the headline says what the worst
+            measured timing needs, and the band shows the space between. */}
         {banded && requirement < lowest && (
           <>
-            At the speed these customers actually pay, the deepest point is{" "}
+            At the speed money has actually moved, the deepest point is{" "}
             <strong>−{money(Math.abs(requirement))}</strong>
-            {Boolean(scenarios.late?.lowest_week_starts_on) && (
+            {Boolean(scenarios.worst?.lowest_week_starts_on) && (
               <> in the week of{" "}
-              {formatDate(String(scenarios.late?.lowest_week_starts_on))}</>
+              {formatDate(String(scenarios.worst?.lowest_week_starts_on))}</>
             )}.{" "}
           </>
         )}
@@ -157,11 +159,17 @@ function CashProjection({ session }: { session: PlatformSession }) {
           balances, so there is no position to run this from.
           {banded && (
             <>
-              {" "}The band covers {pct(measuredShare)} of the money coming in:
-              the rest is customers with too little settled history to measure,
-              left on their due dates rather than given a made-up one. Bills do
-              not move at all — nothing measures what we do to our own suppliers
-              yet, so the early case is the conservative one.
+              {" "}The band covers {pct(measuredShare)} of the money coming in
+              {outflowShifted && <> and {pct(outflowShare)} of the money going
+              out</>}: the rest has too little settled history to measure and is
+              left on its due date rather than given a made-up one.{" "}
+              {outflowShifted
+                ? "The worst case is the corner, not the slow line — customers "
+                  + "at their slowest and us paying at our fastest, because "
+                  + "money leaving later is what the week needs less of."
+                : "Bills do not move: nothing has settled often enough to "
+                  + "measure how this book pays its suppliers, so the outflow "
+                  + "sits on its due dates and the best case is conservative."}
             </>
           )}
         </span>
@@ -170,7 +178,7 @@ function CashProjection({ session }: { session: PlatformSession }) {
       <div ref={ref}>
         <Figure
           caption={banded
-            ? "Bars are invoices and bills falling due, in the week their own document names. The shaded band is the running total between the fastest and slowest each customer has actually paid; the line inside it is their median. Nothing here is a forecast of trade that has not happened — it is the same committed money, on the dates the payers have used."
+            ? "Bars are invoices and bills falling due, in the week their own document names. The shaded band is the running total between the best and worst case for the week: best is customers at their fastest and us paying at our slowest, worst is the reverse. The line inside it is everybody at their own median. Nothing here is a forecast of trade that has not happened — it is the same committed money, on the dates the payers have used."
             : "Bars are invoices and bills falling due, in the week their own document names. The line is the running total of those bars, from zero. Nothing here is a forecast of trade that has not happened."}
           summary={buckets.map((b) =>
             `Week of ${formatDate(b.starts_on as string)}: in ${money(num(b.inflow))}, out ${money(num(b.outflow))}, running ${money(num(b.cumulative))}`,
@@ -206,9 +214,9 @@ function CashProjection({ session }: { session: PlatformSession }) {
           {room.width > 0 && buckets.length > 0 && (
             <CashChart buckets={buckets} width={room.width}
                        currency={String(data?.currency ?? "INR")}
-                       early={banded ? early : []}
+                       best={banded ? best : []}
                        expected={banded ? expected : []}
-                       late={banded ? late : []} />
+                       worst={banded ? worst : []} />
           )}
         </Figure>
       </div>
@@ -258,29 +266,30 @@ function CashProjection({ session }: { session: PlatformSession }) {
  *  pays ₹5L out is not the same week as one where nothing happens, and a net
  *  bar draws them identically. */
 function CashChart({
-  buckets, width, currency, early = [], expected = [], late = [],
+  buckets, width, currency, best = [], expected = [], worst = [],
 }: {
   buckets: Row[]; width: number; currency: string;
-  /** The same committed book at each customer's fastest, median and slowest
-   *  measured payment behaviour. Empty when nothing is measured, in which case
-   *  the chart is exactly what it was: bars and one running line. */
-  early?: Row[]; expected?: Row[]; late?: Row[];
+  /** The same committed book at the two corners and the middle: `best` is
+   *  customers at their fastest and us paying at our slowest, `worst` the
+   *  reverse. Empty when nothing is measured, in which case the chart is
+   *  exactly what it was: bars and one running line. */
+  best?: Row[]; expected?: Row[]; worst?: Row[];
 }) {
   const H = 260;
   const PAD = { top: 14, right: 10, bottom: 46, left: 62 };
 
   const flows = buckets.flatMap((b) => [num(b.inflow), -num(b.outflow)]);
   const running = buckets.map((b) => num(b.cumulative));
-  const earlyRun = early.map((b) => num(b.cumulative));
+  const bestRun = best.map((b) => num(b.cumulative));
   const expectedRun = expected.map((b) => num(b.cumulative));
-  const lateRun = late.map((b) => num(b.cumulative));
+  const worstRun = worst.map((b) => num(b.cumulative));
   const banded = expectedRun.length === buckets.length
-    && earlyRun.length === buckets.length && lateRun.length === buckets.length;
+    && bestRun.length === buckets.length && worstRun.length === buckets.length;
   // The scale has to hold the whole band, or the worst case — the one number
   // this chart exists to show — is drawn off the bottom of its own axis.
   const y = scaleLinear()
-    .domain([Math.min(...flows, ...running, ...lateRun, ...earlyRun, 0),
-             Math.max(...flows, ...running, ...lateRun, ...earlyRun, 0)])
+    .domain([Math.min(...flows, ...running, ...worstRun, ...bestRun, 0),
+             Math.max(...flows, ...running, ...worstRun, ...bestRun, 0)])
     .range([H - PAD.bottom, PAD.top])
     .nice();
   const band = scaleBand<number>()
@@ -358,20 +367,20 @@ function CashChart({
 
       <line x1={PAD.left} x2={width - PAD.right} y1={zero} y2={zero}
             stroke="var(--viz-rule)" strokeWidth="1" />
-      {/* The band between the fastest and slowest each customer has actually
-          paid. Drawn under the lines so neither is obscured, and filled rather
-          than outlined because its *width* is the message: a narrow band is a
-          book that can be planned, a wide one is not. */}
+      {/* The band between the two corners. Drawn under the lines so neither is
+          obscured, and filled rather than outlined because its *width* is the
+          message: a narrow band is a book that can be planned, a wide one is
+          not. */}
       {banded && (
         <path
           className="cash-band"
           d={[
-            ...earlyRun.map((v, i) =>
+            ...bestRun.map((v, i) =>
               `${i === 0 ? "M" : "L"}${(band(i) ?? PAD.left) + band.bandwidth() / 2},${y(v)}`),
-            // Back along the late edge, so the two lines close into one shape.
-            ...lateRun.map((_, j) => {
-              const i = lateRun.length - 1 - j;
-              return `L${(band(i) ?? PAD.left) + band.bandwidth() / 2},${y(lateRun[i])}`;
+            // Back along the worst edge, so the two lines close into one shape.
+            ...worstRun.map((_, j) => {
+              const i = worstRun.length - 1 - j;
+              return `L${(band(i) ?? PAD.left) + band.bandwidth() / 2},${y(worstRun[i])}`;
             }),
             "Z",
           ].join(" ")}
@@ -380,9 +389,10 @@ function CashChart({
       {/* The running total. A line rather than a third bar: it is a level at a
           point in time, not a quantity arriving in that week.
 
-          On terms — every customer paying on the day — which is the best case
-          and is kept as the reference line because it is the only one that
-          asserts nothing beyond what the documents say. */}
+          On terms — every document settled on the day it says — kept as the
+          reference line because it is the only one that asserts nothing beyond
+          what the documents say. Note it is no longer the best case: a book
+          that habitually pays its suppliers late does better than its terms. */}
       <polyline
         className="cash-running"
         points={buckets.map((_, i) =>
@@ -397,22 +407,44 @@ function CashChart({
       )}
       <text x={PAD.left} y={H - 8} className="viz-axis-note">
         {banded
-          ? "running total from zero · solid: on terms · dashed: how they actually pay · band: fastest to slowest"
+          ? "running total from zero · solid: on terms · dashed: how money actually moves · band: best case to worst"
           : "running total, from zero"}
       </text>
     </svg>
   );
 }
 
-// ── Cash: how long customers take to pay ────────────────────────────────────
-export function PaymentsScreen({
-  session, onNavigate,
-}: { session: PlatformSession; onNavigate: (r: string) => void }) {
-  const { data, loading, error, reload } = useInsight(
-    "payments",
-    () => papi.payments(session.token), [session.token]);
+// ── Cash: how long settlement actually takes, on either side of the ledger ──
+//
+// One panel, both directions, for the same reason `insight/payments.py` is one
+// module: the figures are identical measurements with the parties swapped, and
+// a second copy of this markup would be the place the two screens started
+// disagreeing about what a spread means. What differs is the wording and where
+// a row navigates to, so those arrive as props.
 
-  const customers = rows(data?.customers);
+/** Everything about a side that the panel below cannot compute for itself. */
+type LedgerSide = {
+  /** Response key holding the party rows, and the id field on each of them. */
+  parties: "customers" | "vendors";
+  partyId: "customer_id" | "vendor_id";
+  title: string;
+  question: string;
+  heading: string;
+  /** "invoice" / "bill", already lower-case and singular. */
+  document: string;
+  /** Where a row goes when clicked, or null when there is nowhere to go. */
+  href: ((id: string) => string) | null;
+};
+
+function SettlementPanel({
+  data, loading, error, reload, side, onNavigate,
+}: {
+  data: Record<string, unknown> | null;
+  loading: boolean; error: string | null; reload: () => void;
+  side: LedgerSide;
+  onNavigate: (r: string) => void;
+}) {
+  const parties = rows(data?.[side.parties]);
   const distribution = rows(data?.distribution);
   const peak = Math.max(...distribution.map((d) => num(d.count)), 1);
   const median = data?.median_days_to_pay as number | null | undefined;
@@ -422,33 +454,25 @@ export function PaymentsScreen({
   const patterns = (data?.patterns as Record<string, Record<string, string>>) ?? {};
   const trends = (data?.trends as Record<string, string>) ?? {};
   const patternCounts = (data?.pattern_counts as Record<string, number>) ?? {};
-  const payerSourcesDiffer = Boolean(data?.sources_differ);
-  // The projection is manager-and-above because half of it is what we owe
-  // suppliers. Omitted rather than rendered and then 403'd — a panel that
-  // always fails teaches people the product is broken.
-  const mayReadCommitments = abilityFor(session).can("read", "supply");
+  const sourcesDiffer = Boolean(data?.sources_differ);
+  const unattributed = num(data?.unattributed);
+  const docs = `${side.document}s`;
 
   return (
-    <div className="screen-stack">
-      {/* What is coming, then how they actually pay. The projection places
-          money at its due date; this screen below is the measured evidence
-          about whether that date is honoured, which is the right order to
-          read them in. */}
-      {mayReadCommitments && <CashProjection session={session} />}
     <Panel
-      title="Cash collection"
-      question="How long does the money take to arrive, and from whom"
+      title={side.title}
+      question={side.question}
       state={stateOf(loading, error, data?.empty_reason as string)}
       error={error} emptyReason={data?.empty_reason as string} onRetry={reload} wide
     >
       <p className="viz-headline">
-        Half of all invoices are settled within{" "}
+        Half of all {docs} are settled within{" "}
         <strong>{median == null ? "—" : `${median} days`}</strong>
         {lateShare != null && (
           // The denominator travels with the share. "100% were late" over one
-          // invoice is true and useless; "1 of 1" is true and self-limiting.
+          // document is true and useless; "1 of 1" is true and self-limiting.
           <> · <strong>{Math.round(lateShare * datable)} of {datable}</strong>{" "}
-          invoices with terms on record were paid late</>
+          {docs} with terms on record were paid late</>
         )}
         {num(data?.advances) > 0 && (
           <> · {String(data?.advances)} advance
@@ -458,15 +482,15 @@ export function PaymentsScreen({
         )}.
       </p>
 
-      {/* A distribution really is better as a shape: the question "are we
-          being paid to terms" is answered by where the mass sits, not by any
-          one bucket's count. */}
+      {/* A distribution really is better as a shape: the question "are terms
+          being met" is answered by where the mass sits, not by any one
+          bucket's count. */}
       <Figure
-        caption="Each bar is one invoice settled, bucketed by how many days it took. Buckets are fixed rather than quantile — terms are absolute, and a moving band would stop 30 days meaning 30 days."
+        caption={`Each bar is one ${side.document} settled, bucketed by how many days it took. Buckets are fixed rather than quantile — terms are absolute, and a moving band would stop 30 days meaning 30 days.`}
         summary={distribution.map((d) => `${d.label}: ${d.count}`).join(", ")}
         table={
           <table className="viz-table">
-            <thead><tr><th scope="col">Days to pay</th><th scope="col">Invoices</th></tr></thead>
+            <thead><tr><th scope="col">Days to pay</th><th scope="col">Documents</th></tr></thead>
             <tbody>
               {distribution.map((d, i) => (
                 <tr key={i}><th scope="row">{String(d.label)}</th><td>{String(d.count)}</td></tr>
@@ -490,8 +514,8 @@ export function PaymentsScreen({
       </Figure>
 
       {/* Slow and unpredictable are different problems, so they are different
-          rows. A customer who always takes 45 days can be planned around; one
-          who takes 5 or 95 cannot, whatever their average says. */}
+          rows. A party that always takes 45 days can be planned around; one
+          that takes 5 or 95 cannot, whatever their average says. */}
       <ul className="quad-legend">
         {["PROMPT", "PREDICTABLY_LATE", "ERRATIC", "TOO_FEW"].map((key) => (
           <li key={key} className={`quad quad-${
@@ -507,20 +531,19 @@ export function PaymentsScreen({
       </ul>
 
       <div className="tier3-list">
-        <h4>Slowest payers first</h4>
+        <h4>{side.heading}</h4>
         <ol className="cadence-rows">
-          {customers.slice(0, 15).map((c, i) => (
-            <li key={i} className="cadence-row">
-              <button type="button" className="cadence-hit"
-                      onClick={() => onNavigate(`customer/${String(c.customer_id)}`)}>
-                {/* Who pays slowly is a call list, and two accounts sharing a
-                    name across two books are two different conversations with
-                    two different people. */}
+          {parties.slice(0, 15).map((c, i) => {
+            const id = String(c[side.partyId]);
+            const body = (
+              <>
+                {/* Two accounts sharing a name across two books are two
+                    different relationships with two different people. */}
                 <span className="cadence-name">
                   <EntityName
                     name={String(c.label)}
                     origin={c.origin as EntityOrigin | undefined}
-                    show={payerSourcesDiffer}
+                    show={sourcesDiffer}
                     strong={false}
                   />
                 </span>
@@ -531,6 +554,19 @@ export function PaymentsScreen({
                     {c.estimable
                       ? `${c.median_days_to_pay} days typical`
                       : `only ${c.settlements} settled — no typical yet`}
+                    {/* Promised against actual, where both halves exist. A
+                        gap of zero is a real statement; a missing one is not
+                        the same thing and is left off entirely. */}
+                    {c.terms_gap_days != null && (
+                      <span className="viz-muted">
+                        {" · "}terms say {String(c.agreed_terms_days)}d,{" "}
+                        {Number(c.terms_gap_days) > 0
+                          ? `${c.terms_gap_days}d over`
+                          : Number(c.terms_gap_days) < 0
+                            ? `${Math.abs(Number(c.terms_gap_days))}d inside`
+                            : "met"}
+                      </span>
+                    )}
                   </span>
                   <span className="viz-muted">
                     {patterns[String(c.pattern)]?.label ?? ""}
@@ -544,21 +580,105 @@ export function PaymentsScreen({
                 {Number(c.worst_days_to_pay) > 90 ? (
                   <span className="cadence-flag">{String(c.worst_days_to_pay)}d worst</span>
                 ) : null}
-              </button>
-            </li>
-          ))}
+              </>
+            );
+            return (
+              <li key={i} className="cadence-row">
+                {side.href ? (
+                  <button type="button" className="cadence-hit"
+                          onClick={() => onNavigate(side.href!(id))}>
+                    {body}
+                  </button>
+                ) : (
+                  // No supplier screen to open yet. A button that navigates
+                  // nowhere is worse than a row that does not pretend to.
+                  <span className="cadence-hit">{body}</span>
+                )}
+              </li>
+            );
+          })}
         </ol>
         <p className="viz-muted viz-footnote">
-          Measured per invoice settled, not per payment — one transfer clearing
-          ten invoices is ten observations. Fewer than {minSettlements} settled
-          invoices and no pattern is asserted. The spread is a median absolute
-          deviation, so one invoice paid nine months late stays a story about
-          that invoice rather than redefining the customer.
+          Measured per {side.document} settled, not per payment — one transfer
+          clearing ten {docs} is ten observations. Fewer than {minSettlements}{" "}
+          settled {docs} and no pattern is asserted. The spread is a median
+          absolute deviation, so one {side.document} paid nine months late stays
+          a story about that {side.document} rather than redefining the account.
+          {unattributed > 0 && (
+            <> {unattributed} settlement{unattributed === 1 ? "" : "s"} could not
+            be attributed to anyone the contact pull returned, and {unattributed === 1
+              ? "is" : "are"} left out of the rows above rather than filed under
+            a placeholder.</>
+          )}
         </p>
       </div>
 
       <Unavailable items={rows(data?.unavailable)} />
     </Panel>
+  );
+}
+
+const RECEIVABLE_SIDE: LedgerSide = {
+  parties: "customers", partyId: "customer_id",
+  title: "Cash collection",
+  question: "How long does the money take to arrive, and from whom",
+  heading: "Slowest payers first",
+  document: "invoice",
+  href: (id) => `customer/${id}`,
+};
+
+const PAYABLE_SIDE: LedgerSide = {
+  parties: "vendors", partyId: "vendor_id",
+  title: "How we pay",
+  question: "How long do we take to settle, and with whom",
+  heading: "Suppliers we take longest with",
+  document: "bill",
+  // Suppliers have no per-account screen the way customers do, so a row here
+  // is a fact to read rather than a door.
+  href: null,
+};
+
+export function PaymentsScreen({
+  session, onNavigate,
+}: { session: PlatformSession; onNavigate: (r: string) => void }) {
+  const { data, loading, error, reload } = useInsight(
+    "payments",
+    () => papi.payments(session.token), [session.token]);
+
+  // The projection is manager-and-above because half of it is what we owe
+  // suppliers. Omitted rather than rendered and then 403'd — a panel that
+  // always fails teaches people the product is broken.
+  const mayReadCommitments = abilityFor(session).can("read", "supply");
+
+  return (
+    <div className="screen-stack">
+      {/* What is coming, then how they actually pay. The projection places
+          money at its due date; the panel below is the measured evidence
+          about whether that date is honoured, which is the right order to
+          read them in. */}
+      {mayReadCommitments && <CashProjection session={session} />}
+      <SettlementPanel data={data} loading={loading} error={error}
+                       reload={reload} side={RECEIVABLE_SIDE}
+                       onNavigate={onNavigate} />
+    </div>
+  );
+}
+
+/** The same measurement, from the other end. Manager and above — see the
+ *  endpoint's docstring for why this is scoped like Suppliers and not like
+ *  Cash collection. */
+export function PayablesScreen({
+  session, onNavigate,
+}: { session: PlatformSession; onNavigate: (r: string) => void }) {
+  const { data, loading, error, reload } = useInsight(
+    "payables",
+    () => papi.payables(session.token), [session.token]);
+
+  return (
+    <div className="screen-stack">
+      <SettlementPanel data={data} loading={loading} error={error}
+                       reload={reload} side={PAYABLE_SIDE}
+                       onNavigate={onNavigate} />
     </div>
   );
 }

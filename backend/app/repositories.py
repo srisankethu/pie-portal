@@ -18,10 +18,10 @@ from sqlalchemy.orm import Session
 
 from .domain import models
 from .domain.enums import DecisionStatus, HumanAction
-from .domain.schemas import (BillIn, CostRecordIn, CustomerIn, InvoiceIn,
-                            PaymentReceiptIn, ProductIn, PurchaseOrderIn,
-                            SalesOrderIn, SalesTxnIn, StockSnapshotIn, VendorIn,
-                            VendorPaymentIn)
+from .domain.schemas import (BillIn, CostRecordIn, CustomerIn,
+                            DocumentApplicationIn, InvoiceIn, PaymentReceiptIn,
+                            ProductIn, PurchaseOrderIn, SalesOrderIn, SalesTxnIn,
+                            StockSnapshotIn, VendorIn, VendorPaymentIn)
 
 
 class ReadModelRepository:
@@ -615,38 +615,60 @@ class ReadModelRepository:
         row.source_ref = p.source_ref.model_dump()
         self.s.flush()
 
-        # Applications are replaced wholesale rather than merged: a payment
-        # re-applied in Zoho can drop an invoice, and a merge would leave the
-        # old application behind as a settlement that no longer exists.
+        def assign(app_row: models.PaymentApplication,
+                   a: DocumentApplicationIn) -> None:
+            app_row.customer_id = customer_id
+            app_row.invoice_external_ref = a.document_external_ref
+            app_row.invoice_number = a.document_number
+            app_row.invoice_date = a.document_date
+            app_row.invoice_due_date = a.document_due_date
+
+        self._replace_applications(
+            models.PaymentApplication,
+            models.PaymentApplication.payment_receipt_id, row.payment_receipt_id,
+            p.applications, paid_on=p.date,
+            source_ref=p.source_ref.model_dump(), assign=assign)
+        return row
+
+    def _replace_applications(self, model: Any, parent_column: Any,
+                              parent_id: str, rows: list[DocumentApplicationIn],
+                              *, paid_on: date, source_ref: dict[str, Any],
+                              assign: Any) -> None:
+        """Write one payment's applications, wholesale.
+
+        Replaced rather than merged: a payment re-applied in Zoho can drop a
+        document, and a merge would leave the old application behind as a
+        settlement that no longer exists — which is a phantom observation in
+        exactly the series that decides how fast a party is thought to pay.
+
+        Generic over the two application tables because the lifecycle is the
+        rule, not the columns: the columns differ (``invoice_*`` against
+        ``bill_*``) and are written by ``assign``, but "replace, do not merge"
+        must be one decision. Two copies of this loop would be two chances for
+        one side to start merging quietly.
+        """
         existing = {
             a.external_ref: a
             for a in self.s.scalars(
-                select(models.PaymentApplication).where(
-                    models.PaymentApplication.organization_id == self.org,
-                    models.PaymentApplication.payment_receipt_id == row.payment_receipt_id,
-                )).all()
+                select(model).where(model.organization_id == self.org,
+                                    parent_column == parent_id)).all()
         }
         seen: set[str] = set()
-        for a in p.applications:
+        for a in rows:
             seen.add(a.external_ref)
             app_row = existing.get(a.external_ref)
             if app_row is None:
-                app_row = models.PaymentApplication(
-                    organization_id=self.org, external_ref=a.external_ref,
-                    payment_receipt_id=row.payment_receipt_id)
+                app_row = model(organization_id=self.org,
+                                external_ref=a.external_ref,
+                                **{parent_column.key: parent_id})
                 self.s.add(app_row)
-            app_row.customer_id = customer_id
-            app_row.invoice_external_ref = a.invoice_external_ref
-            app_row.invoice_number = a.invoice_number
-            app_row.invoice_date = a.invoice_date
-            app_row.invoice_due_date = a.invoice_due_date
-            app_row.paid_on = p.date
+            assign(app_row, a)
+            app_row.paid_on = paid_on
             app_row.amount_applied = a.amount_applied
-            app_row.source_ref = p.source_ref.model_dump()
+            app_row.source_ref = source_ref
         for ref, stale in existing.items():
             if ref not in seen:
                 self.s.delete(stale)
-        return row
 
     def upsert_sales_order(self, customer_id: Optional[str],
                            so: SalesOrderIn) -> models.SalesOrderDoc:
@@ -750,6 +772,23 @@ class ReadModelRepository:
         row.mode = vp.mode
         row.reference = vp.reference
         row.source_ref = vp.source_ref.model_dump()
+        self.s.flush()
+
+        def assign(app_row: models.BillPaymentApplication,
+                   a: DocumentApplicationIn) -> None:
+            # Nullable, unlike the receivable side: a payment we made is a fact
+            # about our own bank account whether or not the supplier resolved.
+            app_row.vendor_id = vendor_id
+            app_row.bill_external_ref = a.document_external_ref
+            app_row.bill_number = a.document_number
+            app_row.bill_date = a.document_date
+            app_row.bill_due_date = a.document_due_date
+
+        self._replace_applications(
+            models.BillPaymentApplication,
+            models.BillPaymentApplication.vendor_payment_id, row.vendor_payment_id,
+            vp.applications, paid_on=vp.date,
+            source_ref=vp.source_ref.model_dump(), assign=assign)
         return row
 
     def upsert_purchase_order(self, vendor_id: Optional[str],

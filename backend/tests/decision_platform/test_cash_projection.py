@@ -258,18 +258,26 @@ def test_the_projection_is_manager_and_above(session):
     assert len(body["buckets"]) == cashflow.WEEKS
     assert body["buckets"][0]["starts_on"] == THIS_MONDAY.isoformat()
 
+    # Same scope, same reason. How long we string a supplier along is a
+    # commercial position, not a call list — the mirror screen is not scoped
+    # like /payments, which a salesperson may read.
+    assert client.get("/api/v1/insight/payables",
+                      headers=token("r.nair@sanketh.in")).status_code == 403
+    assert client.get("/api/v1/insight/payables",
+                      headers=token("m.rao@sanketh.in")).status_code == 200
+
 
 # ── the band ────────────────────────────────────────────────────────────────
 #
 # Due dates answer "when is this money promised", which is not the question
-# somebody funding a week is asking. Every customer paying exactly on terms is
-# the *best* case, so a chart drawing only that line understates what the week
-# needs — and says nothing about by how much. The same committed book is placed
-# three times, shifted by each customer's own measured days-late.
+# somebody funding a week is asking. A chart drawing only that line understates
+# what the week needs — and says nothing about by how much. The same committed
+# book is placed three times, shifted by each party's own measured days-late,
+# at the corners named in `cashflow`'s docstring.
 
-def _lag(customer_id: str, early: int, expected: int, late: int):
+def _lag(party_id: str, early: int, expected: int, late: int):
     from app.commercial.insight.payments import Lag
-    return Lag(customer_id=customer_id, early_days=early, expected_days=expected,
+    return Lag(party_id=party_id, early_days=early, expected_days=expected,
                late_days=late, settlements=5)
 
 
@@ -279,12 +287,19 @@ def _party_of(session, external_id: str) -> str:
         .where(models.Customer.external_id == external_id)).one().customer_id
 
 
-def _projected(session, lags=None, weeks: int = 13) -> dict:
+def _vendor_of(session, external_id: str) -> str:
+    return session.scalars(
+        select(models.Vendor)
+        .where(models.Vendor.external_id == external_id)).one().vendor_id
+
+
+def _projected(session, lags=None, weeks: int = 13, payable_lags=None) -> dict:
     return cashflow.project(
         load(session, ORG, CASH_SCHEDULE, TODAY),
         load(session, ORG, COMMITMENTS, TODAY),
         load(session, ORG, RECEIVABLES, TODAY),
-        as_of=TODAY, weeks=weeks, lags=lags or {})
+        as_of=TODAY, weeks=weeks, lags=lags or {},
+        payable_lags=payable_lags or {})
 
 
 def _due_in(session, weeks_ahead: int, amount: str = "100000") -> None:
@@ -309,15 +324,19 @@ def _week_with(series: dict, amount: float) -> int:
 
 def test_a_customers_own_lateness_moves_their_money(session):
     """The whole point. A customer who has never paid inside three weeks of the
-    due date does not have their invoice sitting in the due week."""
+    due date does not have their invoice sitting in the due week.
+
+    Inflow arriving sooner is the *best* case for the week that has to be
+    funded, so their fastest observed behaviour is the one `best` stands on.
+    """
     _due_in(session, 2)
     party = _party_of(session, "c1")
 
     result = _projected(session, {party: _lag(party, 0, 7, 21)})
 
-    assert _week_with(result["scenarios"]["early"], 100000.0) == 2
+    assert _week_with(result["scenarios"]["best"], 100000.0) == 2
     assert _week_with(result["scenarios"]["expected"], 100000.0) == 3
-    assert _week_with(result["scenarios"]["late"], 100000.0) == 5
+    assert _week_with(result["scenarios"]["worst"], 100000.0) == 5
 
 
 def test_a_customer_with_no_measured_history_stays_on_their_due_date(session):
@@ -337,7 +356,7 @@ def test_a_customer_with_no_measured_history_stays_on_their_due_date(session):
 
 def test_the_requirement_is_the_deepest_trough_across_the_scenarios(session):
     """The number the screen exists to produce. Inflow arriving later cannot
-    make a trough shallower, so the requirement tracks the late case — taken as
+    make a trough shallower, so the requirement tracks the worst case — taken as
     a minimum over all three rather than assumed, because with nothing measured
     they are identical."""
     _due_in(session, 1)
@@ -347,7 +366,7 @@ def test_the_requirement_is_the_deepest_trough_across_the_scenarios(session):
 
     assert result["requirement"] == min(
         result["scenarios"][s]["lowest_cumulative"] for s in cashflow.SCENARIOS)
-    assert result["requirement"] <= result["scenarios"]["early"]["lowest_cumulative"]
+    assert result["requirement"] <= result["scenarios"]["best"]["lowest_cumulative"]
 
 
 def test_lateness_can_push_money_past_the_horizon_and_says_so(session):
@@ -360,7 +379,7 @@ def test_lateness_can_push_money_past_the_horizon_and_says_so(session):
     result = _projected(session, {party: _lag(party, 0, 0, 56)}, weeks=13)
 
     assert result["scenarios"]["expected"]["beyond_horizon"]["inflow"] == 0.0
-    assert result["scenarios"]["late"]["beyond_horizon"]["inflow"] == 100000.0
+    assert result["scenarios"]["worst"]["beyond_horizon"]["inflow"] == 100000.0
 
 
 def test_the_response_says_how_much_of_the_inflow_it_could_actually_move(session):
@@ -375,26 +394,134 @@ def test_the_response_says_how_much_of_the_inflow_it_could_actually_move(session
     assert result["basis"]["customers_measured"] == 1
     assert result["basis"]["share_measured"] == 1.0
     assert result["basis"]["inflow_unmeasured"] == 0.0
-    # Stated, not implied: nothing measures what we do to our own suppliers yet.
+    # The two sides are reported separately because they are measured from
+    # different evidence, and one can be thin while the other is not. Nothing
+    # measured about suppliers here, so the outflow half stays on its dates.
     assert result["basis"]["outflow_shifted"] is False
+    assert result["basis"]["vendors_measured"] == 0
 
 
-def test_bills_do_not_move_under_any_scenario(session):
-    """Days-late is measured from settled *invoices*. Shifting a bill by it
-    would borrow one party's behaviour to describe another's."""
-    due = TODAY + timedelta(weeks=3)
+def _bill_due_in(session, weeks_ahead: int, amount: str = "50000") -> None:
+    """One unpaid bill, due a whole number of weeks from the fold date."""
+    due = TODAY + timedelta(weeks=weeks_ahead)
     _seed(session, invoices=[], bills=[
         {"bill_id": "bill_lag", "bill_number": "BILL-LAG", "vendor_id": "v1",
          "date": TODAY.isoformat(), "due_date": due.isoformat(), "status": "open",
-         "total": "50000", "balance": "50000",
+         "total": amount, "balance": amount,
          "line_items": [{"line_item_id": "bl1", "item_id": "p1", "quantity": 1,
-                         "rate": "50000", "item_total": "50000"}]},
+                         "rate": amount, "item_total": amount}]},
     ], payments=[])
     _fold(session)
+
+
+def _week_with_outflow(series: dict, amount: float) -> int:
+    return [b["outflow"] for b in series["buckets"]].index(amount)
+
+
+def test_a_bill_stays_on_its_due_date_when_nothing_measures_this_supplier(session):
+    """The refusal that survives the payable side landing. A supplier we have
+    not settled often enough to measure is not assumed to be paid late for our
+    own convenience — their bill sits exactly where the document put it, in
+    every scenario."""
+    _bill_due_in(session, 3)
     party = _party_of(session, "c1")
 
     result = _projected(session, {party: _lag(party, 0, 30, 60)})
 
     for scenario in cashflow.SCENARIOS:
-        buckets = result["scenarios"][scenario]["buckets"]
-        assert [b["outflow"] for b in buckets].index(50000.0) == 3
+        assert _week_with_outflow(result["scenarios"][scenario], 50000.0) == 3
+
+
+def test_our_own_lateness_moves_the_money_we_owe_the_other_way(session):
+    """The payable mirror, and the direction is the whole subtlety.
+
+    Money leaving *later* is better for the week that has to fund it, so our
+    slowest observed behaviour belongs to `best` and our fastest to `worst` —
+    the opposite ends from the customer side, on the same three numbers.
+    """
+    _bill_due_in(session, 3)
+    vendor = _vendor_of(session, "v1")
+
+    result = _projected(session, payable_lags={vendor: _lag(vendor, 0, 7, 21)})
+
+    assert _week_with_outflow(result["scenarios"]["best"], 50000.0) == 6
+    assert _week_with_outflow(result["scenarios"]["expected"], 50000.0) == 4
+    assert _week_with_outflow(result["scenarios"]["worst"], 50000.0) == 3
+
+
+def _both_due_in(session, invoice_weeks: int, bill_weeks: int) -> None:
+    """One unpaid invoice and one unpaid bill, both inside the horizon.
+
+    Seeded in a single sync rather than by calling the two helpers above in
+    turn: each of them replaces the source's whole document list, so a second
+    call would retire what the first one wrote and leave only one side on the
+    timeline — which is exactly the condition that made an earlier version of
+    the corner test below pass whatever the outflow did.
+    """
+    invoice_due = TODAY + timedelta(weeks=invoice_weeks)
+    bill_due = TODAY + timedelta(weeks=bill_weeks)
+    _seed(session, invoices=[
+        {"invoice_id": "inv_lag", "invoice_number": "INV-LAG", "customer_id": "c1",
+         "date": TODAY.isoformat(), "due_date": invoice_due.isoformat(),
+         "status": "sent", "total": "100000", "balance": "100000",
+         "line_items": [{"line_item_id": "l1", "item_id": "p1", "quantity": 1,
+                         "rate": "100000", "item_total": "100000"}]},
+    ], bills=[
+        {"bill_id": "bill_lag", "bill_number": "BILL-LAG", "vendor_id": "v1",
+         "date": TODAY.isoformat(), "due_date": bill_due.isoformat(),
+         "status": "open", "total": "90000", "balance": "90000",
+         "line_items": [{"line_item_id": "bl1", "item_id": "p1", "quantity": 1,
+                         "rate": "90000", "item_total": "90000"}]},
+    ], payments=[])
+    _fold(session)
+
+
+def test_the_worst_case_is_a_corner_and_not_everybody_being_slow(session):
+    """The reason the scenarios are named for cash rather than for speed.
+
+    Both sides measured, and both moving. "Everybody at their slowest" mixes
+    late money in (bad for the week) with late money out (good for it) and is a
+    corner of nothing — under that reading the bill leaves in week 6 and the
+    trough is *shallower* than `best`. `worst` takes the genuinely worst end of
+    each side: customers slowest, us fastest.
+    """
+    _both_due_in(session, invoice_weeks=2, bill_weeks=2)
+    customer = _party_of(session, "c1")
+    vendor = _vendor_of(session, "v1")
+
+    result = _projected(session,
+                        lags={customer: _lag(customer, 0, 7, 28)},
+                        payable_lags={vendor: _lag(vendor, 0, 7, 28)})
+
+    # The bill is at its due week under `worst` (we pay fastest) and four weeks
+    # out under `best` (we pay slowest). Money out sooner is the deeper trough.
+    assert _week_with_outflow(result["scenarios"]["worst"], 90000.0) == 2
+    assert _week_with_outflow(result["scenarios"]["best"], 90000.0) == 6
+
+    worst = result["scenarios"]["worst"]["lowest_cumulative"]
+    assert worst == result["requirement"]
+    assert worst < result["scenarios"]["best"]["lowest_cumulative"]
+    assert result["basis"]["outflow_shifted"] is True
+    assert result["basis"]["vendors_measured"] == 1
+    assert result["basis"]["outflow_share_measured"] == 1.0
+
+
+def test_every_scenario_moves_the_same_money_only_at_different_times(session):
+    """A scenario that loses a rupee is a bug, not a timing. Each one places the
+    identical book — what changes is which week, never how much."""
+    _both_due_in(session, invoice_weeks=2, bill_weeks=3)
+    customer = _party_of(session, "c1")
+    vendor = _vendor_of(session, "v1")
+
+    result = _projected(session,
+                        lags={customer: _lag(customer, -3, 7, 28)},
+                        payable_lags={vendor: _lag(vendor, 0, 9, 40)})
+
+    def moved(series: dict) -> tuple[float, float]:
+        return (round(sum(b["inflow"] for b in series["buckets"])
+                      + series["beyond_horizon"]["inflow"], 2),
+                round(sum(b["outflow"] for b in series["buckets"])
+                      + series["beyond_horizon"]["outflow"], 2))
+
+    totals = {s: moved(result["scenarios"][s]) for s in cashflow.SCENARIOS}
+    assert len(set(totals.values())) == 1, totals

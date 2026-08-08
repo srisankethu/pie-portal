@@ -70,7 +70,7 @@ class _Source:
     def list_purchase_orders(self):
         return list(self._rows.get("purchase_orders", []))
 
-    def list_vendor_payments(self):
+    def list_vendor_payments(self, skip=None):
         return list(self._rows.get("vendor_payments", []))
 
 

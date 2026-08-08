@@ -568,7 +568,8 @@ class SyncService:
             self.report.sales_orders += 1
 
     def _sync_vendor_payments(self) -> None:
-        for raw in self.source.list_vendor_payments():
+        for raw in self.source.list_vendor_payments(
+                skip=self._skipper("vendorpayment")):
             ref = str(raw.get("payment_id", "?"))
             try:
                 vp = normalize_vendor_payment(raw)
@@ -582,7 +583,11 @@ class SyncService:
             self.repo.upsert_vendor_payment(vendor_id, vp)
             self.log.supersede("vendor_payment", vp.external_ref)
             self.log.record(ev.PAYMENT_MADE, vp.date,
-                       Source("vendor_payment", vp.external_ref), vp)
+                       Source("vendor_payment", vp.external_ref,
+                              modified_at=str(raw.get("last_modified_time") or "")),
+                       vp)
+            self.repo.mark_ingested("vendorpayment", ref,
+                                    str(raw.get("last_modified_time") or ""))
             self.report.vendor_payments += 1
 
     def finish(self) -> None:

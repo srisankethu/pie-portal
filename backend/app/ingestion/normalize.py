@@ -18,6 +18,12 @@ from ..domain.schemas import (BillIn, CostRecordIn, CustomerIn, InvoiceIn,
                              PurchaseOrderIn, SalesOrderIn, SalesTxnIn, SourceRef,
                              StockSnapshotIn, VendorIn, VendorPaymentIn)
 
+#: The system every record in this module came from. Stated once, and stated
+#: *here* rather than defaulted in ``SourceRef``, because this file is the Zoho
+#: adapter — it is the only layer entitled to know that. A second adapter names
+#: itself the same way, and neither can silently inherit the other's answer.
+ZOHO = "zoho"
+
 _HUNDRED = Decimal("100")
 
 
@@ -57,7 +63,7 @@ def normalize_customer(raw: dict[str, Any]) -> CustomerIn:
         external_id=str(cid),
         name=str(_require(raw, "contact_name", "contact")),
         status=CustomerStatus.ACTIVE if status == "active" else CustomerStatus.INACTIVE,
-        source_ref=SourceRef(record_type="contact", record_id=str(cid)),
+        source_ref=SourceRef(system=ZOHO, record_type="contact", record_id=str(cid)),
     )
 
 
@@ -69,8 +75,11 @@ def normalize_product(raw: dict[str, Any]) -> ProductIn:
         name=str(_require(raw, "name", "item")),
         uom=(str(raw["unit"]) if raw.get("unit") else None),
         hsn=(str(raw["hsn_or_sac"]) if raw.get("hsn_or_sac") else None),
+        category=(str(raw["category_name"]) if raw.get("category_name") else None),
+        manufacturer=(str(raw["manufacturer"]) if raw.get("manufacturer")
+                      else None),
         active=(status == "active"),
-        source_ref=SourceRef(record_type="item", record_id=str(iid)),
+        source_ref=SourceRef(system=ZOHO, record_type="item", record_id=str(iid)),
     )
 
 
@@ -107,7 +116,7 @@ def normalize_invoice(raw: dict[str, Any]) -> list[SalesTxnIn]:
             product_external_id=product_ext,
             date=when, qty=qty, unit_price=net_price, line_revenue=revenue,
             rate=rate, discount_percent=discount_pct,
-            source_ref=SourceRef(record_type="invoice", record_id=inv_id, line_id=line_id),
+            source_ref=SourceRef(system=ZOHO, record_type="invoice", record_id=inv_id, line_id=line_id),
         ))
     return out
 
@@ -207,7 +216,7 @@ def normalize_bill(raw: dict[str, Any]) -> list[CostRecordIn]:
             vendor_external_id=vendor_ext,
             date=when, qty=qty, unit_cost=unit_cost, rate=rate,
             discount_percent=discount_pct,
-            source_ref=SourceRef(record_type="bill", record_id=bill_id, line_id=line_id),
+            source_ref=SourceRef(system=ZOHO, record_type="bill", record_id=bill_id, line_id=line_id),
         ))
     return out
 
@@ -229,7 +238,7 @@ def normalize_vendor(raw: dict[str, Any]) -> VendorIn:
         # falsiness, which would erase every due-on-receipt supplier.
         payment_terms_days=(int(terms) if terms not in (None, "") else None),
         status=CustomerStatus.ACTIVE if status == "active" else CustomerStatus.INACTIVE,
-        source_ref=SourceRef(record_type="vendor", record_id=str(vid)),
+        source_ref=SourceRef(system=ZOHO, record_type="vendor", record_id=str(vid)),
     )
 
 
@@ -253,7 +262,7 @@ def normalize_stock(raw: dict[str, Any], as_of: date) -> StockSnapshotIn:
         # A service has no shelf. Counting it as "zero on hand" would put every
         # service line in the out-of-stock list forever.
         tracked=bool(raw.get("track_inventory")) and item_type != "service",
-        source_ref=SourceRef(record_type="item", record_id=str(iid)),
+        source_ref=SourceRef(system=ZOHO, record_type="item", record_id=str(iid)),
     )
 
 
@@ -289,7 +298,7 @@ def normalize_payment(raw: dict[str, Any]) -> PaymentReceiptIn:
         is_advance=bool(raw.get("is_advance_payment")),
         unapplied_amount=raw.get("unused_amount"),
         applications=applications,
-        source_ref=SourceRef(record_type="customerpayment", record_id=str(pid)),
+        source_ref=SourceRef(system=ZOHO, record_type="customerpayment", record_id=str(pid)),
     )
 
 
@@ -316,7 +325,7 @@ def normalize_sales_order(raw: dict[str, Any]) -> SalesOrderIn:
         total=raw.get("total"),
         salesperson_external_id=(str(raw["salesperson_id"])
                                  if raw.get("salesperson_id") else None),
-        source_ref=SourceRef(record_type="salesorder", record_id=str(soid)),
+        source_ref=SourceRef(system=ZOHO, record_type="salesorder", record_id=str(soid)),
     )
 
 
@@ -350,7 +359,7 @@ def normalize_bill_terms(raw: dict[str, Any]) -> BillIn:
         status=str(raw.get("status") or ""),
         total=raw.get("total"),
         balance=raw.get("balance"),
-        source_ref=SourceRef(record_type="bill", record_id=bill_id),
+        source_ref=SourceRef(system=ZOHO, record_type="bill", record_id=bill_id),
     )
 
 
@@ -385,7 +394,7 @@ def normalize_invoice_terms(raw: dict[str, Any]) -> InvoiceIn:
         status=str(raw.get("status") or ""),
         total=raw.get("total"),
         balance=raw.get("balance"),
-        source_ref=SourceRef(record_type="invoice", record_id=invoice_id),
+        source_ref=SourceRef(system=ZOHO, record_type="invoice", record_id=invoice_id),
     )
 
 
@@ -405,7 +414,7 @@ def normalize_vendor_payment(raw: dict[str, Any]) -> VendorPaymentIn:
         amount=_parse_decimal(_require(raw, "amount", ctx), ctx, "amount"),
         mode=(str(raw["payment_mode"]) if raw.get("payment_mode") else None),
         reference=(str(raw["reference_number"]) if raw.get("reference_number") else None),
-        source_ref=SourceRef(record_type="vendorpayment", record_id=str(pid)),
+        source_ref=SourceRef(system=ZOHO, record_type="vendorpayment", record_id=str(pid)),
     )
 
 
@@ -430,5 +439,5 @@ def normalize_purchase_order(raw: dict[str, Any]) -> PurchaseOrderIn:
         pending_qty=raw.get("quantity_yet_to_receive"),
         total=raw.get("total"),
         received_on=received_on,
-        source_ref=SourceRef(record_type="purchaseorder", record_id=str(poid)),
+        source_ref=SourceRef(system=ZOHO, record_type="purchaseorder", record_id=str(poid)),
     )

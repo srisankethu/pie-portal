@@ -536,13 +536,9 @@ def test_a_broken_supply_stage_keeps_everything_already_written(session):
         def list_vendors(self):
             raise RuntimeError("upstream exploded")
 
-    src = BadVendors(**{
-        "contacts": [{"contact_id": "c1", "contact_name": "Acme", "status": "active"}],
-        "items": [{"item_id": "i1", "name": "Insert", "unit": "pcs", "status": "active"}],
-        "invoices": [{"invoice_id": "inv1", "customer_id": "c1", "date": "2026-06-01",
+    src = BadVendors(contacts=[{"contact_id": "c1", "contact_name": "Acme", "status": "active"}], items=[{"item_id": "i1", "name": "Insert", "unit": "pcs", "status": "active"}], invoices=[{"invoice_id": "inv1", "customer_id": "c1", "date": "2026-06-01",
                       "line_items": [{"line_item_id": "l1", "item_id": "i1",
-                                      "quantity": 10, "rate": 500, "item_total": 5000}]}],
-    })
+                                      "quantity": 10, "rate": 500, "item_total": 5000}]}])
     report = SyncService(session, src, "org_a").run()
     session.commit()
 
@@ -719,7 +715,6 @@ def test_nothing_in_the_origin_layer_branches_on_a_connector_name():
     package, not in the projection every entity goes through."""
     import inspect
 
-    from app.domain import origin
 
     import ast
 

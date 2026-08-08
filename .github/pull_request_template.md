@@ -34,15 +34,22 @@ Closes #
 
 ## Checks
 
-<!-- CI runs all of these. Tick what you also ran locally, and say what you
-     could not run — "did not run" is information; a blank box is not. -->
+<!-- One command. `make verify` runs lint, the §1 invariants, the backend suite,
+     the frontend build, and migrations on an EMPTY database — and CI runs the
+     same script, so a green run here is a green run there.
 
-- [ ] `cd backend && python -m pytest tests -q`
-- [ ] `cd frontend && npx tsc -b && npm run build`
-- [ ] `ruff check backend/app`
-- [ ] Migrations, if models or migrations changed — **on an empty database**:
-      `rm -f /tmp/mig.db && DATABASE_URL="sqlite:////tmp/mig.db" python -m alembic upgrade head`
+     Paste the verdict. A blank box reads as "did not run", which is information;
+     a ticked box with nothing behind it is what CLAUDE.md §6 exists to prevent. -->
+
+- [ ] `make verify` passed
+
+```
+paste the verdict lines here
+```
+
 - [ ] Rendered in a browser, if a screen changed
+- [ ] `make verify-fast` only — **say why**, and note that the frontend build and
+      the empty-database migration check did not run
 
 ## Deploy
 

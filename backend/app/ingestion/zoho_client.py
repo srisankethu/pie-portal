@@ -157,10 +157,33 @@ class ZohoApiSource:
         # instead of every source walking the whole ledger.
         self._until = until
         self._last_call_at: float = 0.0
+        # ── incremental listing ─────────────────────────────────────────────
+        #
+        # ``{document kind: newest modification stamp already held}``. Set by
+        # ``SyncService`` on a nightly pull, so the listing sorts by
+        # modification time and stops as soon as it reaches something known,
+        # instead of paging through every document in the history window to
+        # discover that almost none of them moved.
+        #
+        # Per kind, not one stamp for the pull: invoices and bills move at
+        # different rates, and a single mark would either re-list one of them
+        # needlessly or — far worse — skip the other's changes.
+        #
+        # Empty for a full pass. A full pass costs those list calls on purpose:
+        # it is the only thing that sees the *whole* book, and so the only thing
+        # that can notice a document Zoho no longer has.
+        self.modified_since: dict[str, str] = {}
+        # Forces the complete, date-ordered listing even when a high-water mark
+        # is available — the weekly reconciliation.
+        self._full_listing = False
         # Observable so a sync run can report what the pull actually cost.
         self.calls = 0
         self.documents_fetched = 0
         self.documents_resumed = 0
+        # How many listings stopped early, for the run summary: a nightly pull
+        # that reports zero of these did not go incremental and nobody would
+        # otherwise know why it took an hour.
+        self.listings_short_circuited = 0
         # ── what the listing saw, for mirroring ──────────────────────────────
         #
         # Every document id Zoho currently reports as real trade inside this
@@ -425,6 +448,34 @@ class ZohoApiSource:
                 "sku": i.get("sku"),
                 "unit": i.get("unit"),
                 "hsn_or_sac": i.get("hsn_or_sac") or i.get("hsn_code"),
+                # The catalogue's own line for this item, where the books use
+                # Zoho's Inventory categories. Measured against the live
+                # masters it is set on **none** of them — 0 of 800 on SLS
+                # Engineers, 0 of 400 on 4U Precision — because the feature is
+                # not turned on. Kept because it costs nothing, is a person's
+                # answer where it exists, and reads as "no answer" otherwise;
+                # but the HSN map is what actually places an item here, not the
+                # fallback it was described as.
+                "category_name": i.get("category_name") or i.get("category"),
+                # Who makes the item. The one curated field these masters really
+                # do keep — 67% of SLS items and 92% of 4U's, and *clean*: six
+                # distinct principals in one book and two in the other, with no
+                # spelling variants at all. It matters because it has no sync
+                # horizon: an item sold today out of stock bought four years ago
+                # has no bill inside the window and therefore no vendor, but it
+                # still knows whose product it is. See
+                # ``commercial/principals.py`` for where that fallback applies
+                # and, more importantly, where it does not.
+                #
+                # ``brand`` is a *different* Zoho field, and these books do not
+                # use it — 0 of 800 items on SLS Engineers, 3 of 400 on 4U
+                # Precision. It is read behind ``manufacturer`` rather than
+                # dropped because it costs nothing and a book that starts
+                # filling it in should not need a code change to be heard. This
+                # is the only place the two are weighed against each other:
+                # everything downstream sees one value under one name, so
+                # nothing else has to know there were two candidates.
+                "manufacturer": i.get("manufacturer") or i.get("brand"),
                 "status": (i.get("status") or "active"),
                 # Stock travels on the item list Zoho already returns, so this
                 # costs nothing extra. Passed through raw — including the blank
@@ -468,8 +519,33 @@ class ZohoApiSource:
         until = self._until
         kind = detail_key
         seen: set[str] = self.listed.setdefault(kind, set())
-        for row in self._paginate(path, list_key, sort_column="date", sort_order="D",
-                                  **self._window()):
+
+        # Incremental listing: ask Zoho for the most recently *modified* first
+        # and stop at the newest stamp already held. The resume predicate below
+        # already saves the detail call for a document that has not changed —
+        # this saves the *list* call as well, which is the rest of the bill. A
+        # nightly pull over two years of history was paying one list call per
+        # 200 documents to discover that almost none of them had moved.
+        #
+        # The cost is completeness, and it is charged honestly: a listing that
+        # stopped early has not seen the whole book, so `listing_complete` is
+        # not set for it and the deletion sweep in SyncService correctly refuses
+        # to run. A document deleted or voided in Zoho is therefore caught by
+        # the periodic full pass, not by this one. See `modified_since`.
+        high_water = None if self._full_listing else self.modified_since.get(kind)
+        sort_column = "last_modified_time" if high_water else "date"
+        stopped_early = False
+
+        for row in self._paginate(path, list_key, sort_column=sort_column,
+                                  sort_order="D", **self._window()):
+            if high_water:
+                stamp = str(row.get("last_modified_time") or "")
+                # Sorted newest-modified first, so the first row at or below the
+                # high-water mark means every row after it is too.
+                if stamp and stamp <= high_water:
+                    stopped_early = True
+                    self.listings_short_circuited += 1
+                    break
             status = str(row.get("status") or "").lower()
             if status in excluded_status:
                 # Deliberately *not* recorded as seen. A voided or drafted
@@ -518,8 +594,13 @@ class ZohoApiSource:
                 detail = {**detail, "last_modified_time": listed_stamp}
                 yield detail
         # Reached only when the loop above was not abandoned by an exception or
-        # by the consumer breaking out early.
-        self.listing_complete.add(kind)
+        # by the consumer breaking out early. An incremental listing that
+        # stopped at the high-water mark is *deliberately* not complete: it saw
+        # only what changed, so the set of ids it produced says nothing about
+        # what Zoho no longer holds, and letting the deletion sweep read it as
+        # authoritative would delete the entire unchanged book.
+        if not stopped_early:
+            self.listing_complete.add(kind)
 
     def list_invoices(self, skip: Optional[SkipPredicate] = None) -> Iterable[dict[str, Any]]:
         for inv in self._documents("invoices", "invoices", "invoice", "invoice_id",

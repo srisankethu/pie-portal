@@ -29,6 +29,49 @@ sys.path.insert(0, str(BACKEND))
 os.environ.setdefault("PIE_PARSER_ROOT", str(REPO / "pie-parser"))
 os.environ.setdefault("PIE_CATALOG", str(BACKEND / "data" / "products.jsonl"))
 
+# pie-parser's own packages (`identity`, `engine`, `resolver`) must be importable
+# by name, because a few tests import them directly rather than through
+# `app.pie_service`.
+#
+# They used to arrive by side effect: both `app/catalog.py` and `app/pie_service.py`
+# insert this path immediately before their own `from engine import ...`. That
+# made the result depend on execution order *and* on a generated file —
+# `ensure_catalog()` returns early when `products.jsonl` already exists, several
+# lines before it touches `sys.path`. So with the engine present but the
+# catalogue already built, `test_confirmed_mappings` still failed with
+# `ModuleNotFoundError: No module named 'identity'`.
+#
+# The `requires_pie` marker below is about the engine being *absent*; this is the
+# separate case where it is present and merely unimportable. Both are needed.
+# Done at import time because a fixture cannot help — the failing import is
+# inside a test body, but nothing guarantees another test ran first.
+_PIE_ROOT = os.environ["PIE_PARSER_ROOT"]
+if _PIE_ROOT not in sys.path:
+    sys.path.insert(0, _PIE_ROOT)
+
+# Under pytest-xdist, give every worker its own database.
+#
+# Without this the workers race to bring up the same SQLite file and lose:
+# `sqlite3.OperationalError: table alembic_version already exists`, from two
+# processes running `alembic upgrade head` against one path. WAL fixes
+# concurrent *readers and writers*; it does not make two concurrent schema
+# migrations one migration.
+#
+# This must happen at import time, before anything reads `app.config` — the
+# settings object resolves DATABASE_URL once, on first import, and a later
+# assignment would be read by nothing.
+#
+# Serial runs are untouched, so `pytest tests` behaves exactly as before; only
+# `-n` opts into the isolated path. The migration suite passes its own explicit
+# URLs and is unaffected either way.
+_WORKER = os.environ.get("PYTEST_XDIST_WORKER")
+if _WORKER:
+    _worker_db = BACKEND / "data" / f"test_{_WORKER}.db"
+    _worker_db.parent.mkdir(parents=True, exist_ok=True)
+    # Not setdefault: an inherited DATABASE_URL would put every worker back on
+    # one file, which is the failure this exists to prevent.
+    os.environ["DATABASE_URL"] = f"sqlite:///{_worker_db}"
+
 #: Whether the engine is actually present. The orchestration entry point is the
 #: thing ``pie_service`` loads, so its absence is exactly what "no engine"
 #: means — a stale directory left by an interrupted fetch is not an engine.

@@ -144,9 +144,18 @@ class Snapshot:
 
 
 # ── evidence + sufficiency ───────────────────────────────────────────────────
+#: What a source ref says when the record does not carry its own system. Rows
+#: written before provenance was required have none, and nothing can attribute
+#: them after the fact — so this says so, rather than guessing "zoho". A guess
+#: here is worse than a blank: the evidence a decision cites is the thing that
+#: makes it auditable, and an audit trail that confidently names the wrong
+#: system is not a weaker audit trail, it is a misleading one.
+UNRECORDED_SOURCE = "unknown"
+
+
 def evidence_ref(source_ref: dict[str, Any]) -> dict[str, Any]:
     return {
-        "source_system": source_ref.get("system", "zoho"),
+        "source_system": source_ref.get("system") or UNRECORDED_SOURCE,
         "record_type": source_ref.get("record_type"),
         "record_id": source_ref.get("record_id"),
         "line_id": source_ref.get("line_id"),

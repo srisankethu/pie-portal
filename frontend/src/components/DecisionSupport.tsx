@@ -42,15 +42,6 @@ interface QuoteSupport {
   decision_id: string | null;
 }
 
-function platformToken(): string | null {
-  try {
-    const raw = localStorage.getItem("pie_platform_session");
-    return raw ? JSON.parse(raw).token || null : null;
-  } catch {
-    return null;
-  }
-}
-
 function fmt(value: QFact["value"], unit: string | null): string {
   if (typeof value === "boolean") return value ? "yes" : "no";
   if (typeof value === "string") {
@@ -77,8 +68,15 @@ const AI_STATE: Record<string, { mark: string; tone: "ok" | "degraded" | "failed
   PENDING: { mark: "Interpretation pending", tone: "withheld" },
 };
 
-export function DecisionSupport({ customer, line }: { customer: string; line: Line }) {
-  const token = platformToken();
+/** @param token the signed-in session's token, passed down from the screen.
+ *
+ *  This used to read `pie_platform_session` out of `localStorage` through a
+ *  private copy of a `platformToken()` helper — the third place in the bundle
+ *  doing that, and the reason this panel could be looking at one identity while
+ *  the grid behind it used another. */
+export function DecisionSupport({ customer, line, token }: {
+  customer: string; line: Line; token: string;
+}) {
   const [data, setData] = useState<QuoteSupport | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -87,7 +85,6 @@ export function DecisionSupport({ customer, line }: { customer: string; line: Li
   const [note, setNote] = useState("");
 
   useEffect(() => {
-    if (!token) return;
     let cancelled = false;
     setLoading(true);
     setError(null);
@@ -114,20 +111,12 @@ export function DecisionSupport({ customer, line }: { customer: string; line: Li
     // re-fetch when the line's product or price changes
   }, [token, customer, line.id, line.supplyCode, line.quoted]);
 
-  if (!token) {
-    return (
-      <div className="qs-connect">
-        <div className="qs-head">Commercial decision support</div>
-        <p>
-          Sign in to the Decisions platform to see this customer's history, last price, and an AI
-          recommendation alongside this line.
-        </p>
-      </div>
-    );
-  }
+  // No "sign in to the Decisions platform" state. It existed because the Quote
+  // Builder had a login of its own, so somebody could be on this screen holding
+  // no platform session at all; reaching it means the support call can be made.
 
   async function act(action: "ACT" | "DISMISS", label: string, reason?: string) {
-    if (!data?.decision_id || !token) return;
+    if (!data?.decision_id) return;
     try {
       const r = await fetch(`/api/v1/decisions/${data.decision_id}/action`, {
         method: "POST",

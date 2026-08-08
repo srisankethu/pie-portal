@@ -1,0 +1,146 @@
+# pie-portal, self-hosted: Postgres, the API, and a TLS edge that serves the
+# built app and proxies /api to the API on the same origin.
+#
+#   cp deploy/production.env.example .env.production   # then fill it in
+#   make deploy-build
+#   make deploy-release        # migrations + seed — the deliberate step
+#   make deploy-up
+#
+# The full runbook, including DNS and backups, is in docs/hosting.md.
+#
+# Note the shape of the dependency graph: `api` depends on `db`, and nothing
+# depends on `release`. Bringing the stack up cannot migrate the database — that
+# is CLAUDE.md §4, expressed in the topology rather than in a comment nobody
+# reads at 9pm.
+
+name: pie-portal
+
+# Everything the backend reads from the environment. Anchored rather than
+# repeated so `api` and `release` cannot drift apart — a release that migrated a
+# *different* database than the one the API serves is a bad afternoon.
+#
+# The full setting reference is docs/operations.md; this is the subset a
+# deployment actually has to decide.
+x-backend-env: &backend-env
+  APP_ENV: production
+  DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-pie_portal}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.production}@db:5432/${POSTGRES_DB:-pie_portal}
+
+  # Both refuse to boot the app while they hold their development defaults,
+  # because both defaults are published in the source. `:?` makes that a compose
+  # error with a readable message instead of a container that crash-loops.
+  AUTH_SECRET: ${AUTH_SECRET:?set AUTH_SECRET in .env.production — see docs/hosting.md}
+  CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY:?set CREDENTIAL_ENCRYPTION_KEY in .env.production — see docs/hosting.md}
+  SEED_PASSWORD: ${SEED_PASSWORD:-}
+
+  # Empty on purpose. The app and the API share one origin behind Caddy, so
+  # same-origin requests never consult CORS — and an empty allow-list means a
+  # page on any *other* origin gets nothing.
+  CORS_ORIGINS: ""
+
+  # The catalogue was decoded into the image at build time, so a request should
+  # never trigger a corpus decode. docs/operations.md: "Set 0 in constrained
+  # deploys and build out of band."
+  AUTO_BUILD_CATALOG: "0"
+  PIE_WARM: ${PIE_WARM:-1}
+  UVICORN_WORKERS: ${UVICORN_WORKERS:-2}
+
+  ZOHO_SOURCE: ${ZOHO_SOURCE:-fixture}
+
+  AI_PROVIDER: ${AI_PROVIDER:-mock}
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  AI_MODEL: ${AI_MODEL:-claude-haiku-4-5-20251001}
+  # Indicative defaults produce confidently wrong money. docs/operations.md
+  # calls setting these a go-live gate; they are here so it is one edit.
+  AI_COST_PER_MTOK_INPUT: ${AI_COST_PER_MTOK_INPUT:-1.0}
+  AI_COST_PER_MTOK_OUTPUT: ${AI_COST_PER_MTOK_OUTPUT:-5.0}
+
+  DEFAULT_ORG_ID: ${DEFAULT_ORG_ID:-org_sanketh}
+  DEFAULT_ORG_NAME: ${DEFAULT_ORG_NAME:-Sanketh}
+  DEFAULT_CURRENCY: ${DEFAULT_CURRENCY:-INR}
+
+x-api-build: &api-build
+  context: .
+  dockerfile: deploy/backend.Dockerfile
+
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-pie_portal}
+      POSTGRES_USER: ${POSTGRES_USER:-pie_portal}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.production}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      # `api` waits on this. Without it the first deploy races Postgres'
+      # initdb and the API's first connection attempt is the one that loses.
+      test: ["CMD-SHELL", "pg_isready -q -U ${POSTGRES_USER:-pie_portal} -d ${POSTGRES_DB:-pie_portal}"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+    restart: unless-stopped
+
+  api:
+    build: *api-build
+    image: pie-portal-api:latest
+    environment: *backend-env
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      # /api/health is the one that can fail: it reports 503 when the schema is
+      # behind the code, which is exactly the deploy that otherwise looks
+      # healthy right up until somebody opens the screen reading the new column.
+      # Before the first `deploy-release` this is *expected* to be red.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=5)"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      # Warming the pie-parser catalogue takes a while on a small box.
+      start_period: 90s
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: deploy/web.Dockerfile
+    image: pie-portal-web:latest
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:?set SITE_ADDRESS in .env.production — a hostname for automatic HTTPS, or :80 for local}
+      ACME_EMAIL: ${ACME_EMAIL:-}
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    volumes:
+      # Issued certificates and the ACME account key. Losing this volume is not
+      # fatal — Caddy re-issues — but it does burn Let's Encrypt rate limit, so
+      # keep it across deploys.
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      # Deliberately service_started, not service_healthy: when the API is down
+      # or its schema is behind, the edge should still come up and let the app
+      # say so. A blank browser tab diagnoses nothing.
+      api:
+        condition: service_started
+    restart: unless-stopped
+
+  # Migrations and seeding. Behind a profile so it never runs as part of
+  # `up` — see the header, and CLAUDE.md §4.
+  #
+  #   docker compose --profile release run --rm release
+  release:
+    build: *api-build
+    image: pie-portal-api:latest
+    environment: *backend-env
+    command: ["/app/deploy/release.sh"]
+    depends_on:
+      db:
+        condition: service_healthy
+    profiles: ["release"]
+    restart: "no"
+
+volumes:
+  db-data:
+  caddy-data:
+  caddy-config:

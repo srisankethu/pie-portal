@@ -13,7 +13,7 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 from typing import Any, Optional, Sequence
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from .domain import models
@@ -179,6 +179,8 @@ class ReadModelRepository:
         row.name = p.name
         row.uom = p.uom
         row.hsn = p.hsn
+        row.category = p.category
+        row.manufacturer = p.manufacturer
         row.active = p.active
         row.source_ref = p.source_ref.model_dump()
         return row
@@ -235,7 +237,8 @@ class ReadModelRepository:
         row.source_ref = t.source_ref.model_dump()
         return row
 
-    def upsert_cost_record(self, r: CostRecordIn, product_id: str) -> models.CostRecord:
+    def upsert_cost_record(self, r: CostRecordIn, product_id: str,
+                           vendor_id: Optional[str] = None) -> models.CostRecord:
         row = self.s.scalar(
             select(models.CostRecord).where(
                 models.CostRecord.organization_id == self.org,
@@ -246,6 +249,12 @@ class ReadModelRepository:
             row = models.CostRecord(organization_id=self.org, external_ref=r.external_ref)
             self.s.add(row)
         row.product_id = product_id
+        # Resolved by the caller against this repository's own source, the same
+        # way every other vendor reference in the sync is. Left as it was when
+        # the caller could not resolve one, so a re-sync that *can* fills it in
+        # and a pull from a connection with no vendor scope does not blank it.
+        if vendor_id is not None:
+            row.vendor_id = vendor_id
         row.date = r.date
         row.qty = r.qty
         row.unit_cost = r.unit_cost
@@ -296,6 +305,26 @@ class ReadModelRepository:
             models.IngestedDocument.connection_id == self.connection_id,
         )
         return {r.doc_id: (r.modified_at or "") for r in self.s.scalars(stmt)}
+
+    def ingested_high_water(self, doc_type: str) -> Optional[str]:
+        """The newest modification stamp this connection has already pulled.
+
+        What an incremental listing stops at. Derived from the rows actually
+        held rather than kept as a separate "last synced at" column, and that is
+        deliberate: a stored cursor is a second source of truth that can outrun
+        the data it claims to describe — a pull that recorded the cursor and then
+        died would skip forever the documents it never wrote. This cannot get
+        ahead of the rows, because it *is* the rows.
+
+        Returns None when nothing has been pulled yet, which correctly means
+        "there is no floor; list everything".
+        """
+        stmt = select(func.max(models.IngestedDocument.modified_at)).where(
+            models.IngestedDocument.organization_id == self.org,
+            models.IngestedDocument.doc_type == doc_type,
+            models.IngestedDocument.connection_id == self.connection_id,
+        )
+        return self.s.scalar(stmt) or None
 
     def mark_ingested(self, doc_type: str, doc_id: str, modified_at: str) -> None:
         """Record this document as held, at the stamp we will compare next time.

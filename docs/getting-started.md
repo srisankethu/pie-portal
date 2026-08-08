@@ -213,8 +213,9 @@ Worth doing on your first run, in this order:
    margin appears anywhere.
 3. **Open "Data & AI states".** These are the designed states for when the AI is
    unavailable, withheld, degraded, or when data is restricted.
-4. **Go to Quotes → Open the Quote Builder → Paste RFQ → Use sample RFQ →
-   Resolve & add.** Click a line to open its drawer: the same facts-vs-AI split
+4. **Go to Quotes → Paste RFQ → Use sample RFQ → Resolve & add.** The Quote
+   Builder is a screen in the same shell, on the same account — there is no
+   second sign-in. Click a line to open its drawer: the same facts-vs-AI split
    appears as decision support while pricing.
 
 ---

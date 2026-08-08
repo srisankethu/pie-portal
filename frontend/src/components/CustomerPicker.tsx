@@ -30,7 +30,6 @@ import TextField from "@mui/material/TextField";
 import { papi } from "../platform/api";
 import { optionLabel } from "../platform/EntityName";
 import type { Account } from "../platform/types";
-import { platformToken } from "../intelligence";
 
 export interface PickedCustomer {
   id: string;
@@ -38,9 +37,13 @@ export interface PickedCustomer {
 }
 
 export function CustomerPicker({
-  open, title, note, busy = false, onPick, onCancel,
+  open, token, title, note, busy = false, onPick, onCancel,
 }: {
   open: boolean;
+  /** The platform session token. Passed in rather than read from storage:
+   *  the Quote Builder runs on the platform's own session now, so its caller
+   *  already holds this and a second source would be one to keep in step. */
+  token: string;
   title: string;
   /** Why this is being asked, when the answer is not obvious. */
   note?: string;
@@ -55,7 +58,6 @@ export function CustomerPicker({
   const [loading, setLoading] = useState(false);
   const [choice, setChoice] = useState<Account | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
-  const token = platformToken();
 
   useEffect(() => {
     if (!open || !token) return;
@@ -76,24 +78,6 @@ export function CustomerPicker({
   // every line would say the same thing, which is width spent saying nothing.
   const showSource = useMemo(
     () => rows.some((r) => r.sources_differ), [rows]);
-
-  if (!token) {
-    return (
-      <Dialog open={open} onClose={onCancel} maxWidth="sm" fullWidth>
-        <DialogTitle>{title}</DialogTitle>
-        <DialogContent>
-          <DialogContentText>
-            The customer list comes from the platform, and this browser has no
-            platform sign-in. Sign in to the Decision Platform in this browser,
-            then reopen the Quote Builder.
-          </DialogContentText>
-        </DialogContent>
-        {onCancel && (
-          <DialogActions><Button onClick={onCancel}>Close</Button></DialogActions>
-        )}
-      </Dialog>
-    );
-  }
 
   return (
     <Dialog open={open} onClose={onCancel} maxWidth="sm" fullWidth>

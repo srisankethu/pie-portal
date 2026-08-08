@@ -1,19 +1,17 @@
-import type { Quote, Session } from "./types";
-import { platformToken } from "./intelligence";
+/** The Quote Builder's endpoints, on the platform's session.
+ *
+ * There is no login here any more, and no session of its own. Every call takes
+ * the platform token — the same one `platform/api.ts` holds — because the
+ * server now authenticates one identity for the whole product. What used to be
+ * here was a second `Session` in `localStorage` under its own key, minted by a
+ * second login against two fixed demo accounts, plus an `X-Platform-
+ * Authorization` header carrying the *real* identity alongside it. Two tokens
+ * on one request is how a screen ends up displaying one person's name while
+ * deciding what to show from another's role.
+ */
+import type { Quote } from "./types";
 
-const TOKEN_KEY = "pie_portal_session";
 const DRAFT_KEY = "pie_portal_draft";
-
-export function loadSession(): Session | null {
-  const raw = localStorage.getItem(TOKEN_KEY);
-  return raw ? (JSON.parse(raw) as Session) : null;
-}
-export function saveSession(s: Session) {
-  localStorage.setItem(TOKEN_KEY, JSON.stringify(s));
-}
-export function clearSession() {
-  localStorage.removeItem(TOKEN_KEY);
-}
 
 export function loadDraftQuote(): Quote | null {
   const raw = localStorage.getItem(DRAFT_KEY);
@@ -30,18 +28,6 @@ export function saveDraftQuote(quote: Quote | null) {
 
 export function clearDraftQuote() {
   localStorage.removeItem(DRAFT_KEY);
-}
-
-/** The org-scoped Decisions identity, when the browser holds one.
- *
- *  A second header rather than `Authorization`, which already carries the Quote
- *  Builder's own login. Sent on every call that can use an organization —
- *  resolution reads that org's confirmed mappings and equivalence policy, and
- *  without it the server correctly falls back to the packaged defaults, which
- *  looks exactly like the feature not working. */
-function platformHeaders(): Record<string, string> {
-  const t = platformToken();
-  return t ? { "X-Platform-Authorization": `Bearer ${t}` } : {};
 }
 
 async function req<T>(path: string, opts: RequestInit = {}, token?: string): Promise<T> {
@@ -61,9 +47,6 @@ async function req<T>(path: string, opts: RequestInit = {}, token?: string): Pro
 }
 
 export const api = {
-  login: (email: string, password: string) =>
-    req<Session>("/api/auth/login", { method: "POST", body: JSON.stringify({ email, password }) }),
-
   createQuote: (t: string, customer: string, customerId?: string) =>
     req<Quote>("/api/quotes", {
       method: "POST",
@@ -75,13 +58,12 @@ export const api = {
   getQuote: (t: string, id: string) => req<Quote>(`/api/quotes/${id}`, {}, t),
 
   intake: (t: string, id: string, text: string) =>
-    req<Quote>(`/api/quotes/${id}/intake`,
-      { method: "POST", body: JSON.stringify({ text }), headers: platformHeaders() }, t),
+    req<Quote>(`/api/quotes/${id}/intake`, { method: "POST", body: JSON.stringify({ text }) }, t),
 
   selectSupply: (t: string, id: string, lineId: string, code: string, manual = false) =>
     req<Quote>(
       `/api/quotes/${id}/lines/${lineId}/supply`,
-      { method: "POST", body: JSON.stringify({ code, manual }), headers: platformHeaders() },
+      { method: "POST", body: JSON.stringify({ code, manual }) },
       t,
     ),
 
@@ -107,18 +89,14 @@ export const api = {
 
   /** Create the Zoho estimate.
    *
-   *  ``platformToken`` is the org-scoped Decisions identity, sent in a second
-   *  header because the Quote Builder's own login carries no organization and
-   *  the approval gate needs one. The server refuses to send when the policy
-   *  requires approvals and this header is missing — a client that simply
-   *  omitted it would otherwise be the way around every approval. */
-  createEstimate: (t: string, id: string, platformToken?: string | null) =>
+   *  The approval gate is enforced server-side against the organization on this
+   *  token. It used to read a second, optional header for the organization,
+   *  which meant a client that simply omitted it was a client with no approvals
+   *  to satisfy. */
+  createEstimate: (t: string, id: string) =>
     req<{ ok: boolean; estimateNumber: string | null; lineCount: number | null; blockers: string[]; message: string }>(
       `/api/quotes/${id}/estimate`,
-      {
-        method: "POST",
-        headers: platformToken ? { "X-Platform-Authorization": `Bearer ${platformToken}` } : {},
-      },
+      { method: "POST" },
       t,
     ),
 };

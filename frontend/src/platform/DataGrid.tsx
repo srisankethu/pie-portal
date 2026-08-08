@@ -34,8 +34,51 @@ export interface DataGridProps<T> {
   columns: ColDef<T>[];
   /** Row click. Given only when clicking a row does something — the cursor and
    *  the hover state follow from this, so a decorative handler makes every row
-   *  look actionable. */
+   *  look actionable.
+   *
+   *  A column that carries its own control — an editable rate, a delete button,
+   *  the selection checkbox — sets `context.noRowClick` so clicking it does not
+   *  also fire this. Editing a price should not open a drawer over the field
+   *  being typed into. */
   onRowClick?: (row: T) => void;
+  /** Enter pressed on a row: the keyboard twin of `onRowClick`.
+   *
+   *  Separate because ag-grid already owns ↑↓ and Enter-to-edit inside the
+   *  grid; a window-level key handler beside it means two things listening to
+   *  one keystroke, which is how Enter ends up opening a drawer *and* entering
+   *  a cell editor. */
+  onRowActivate?: (row: T) => void;
+  /** This row's identity, stable across refetches.
+   *
+   *  Without it ag-grid treats every new array as new rows: it rebuilds the
+   *  body, and the cell somebody was editing loses focus mid-edit. Anything
+   *  whose rows are replaced by a server response after each change — a quote
+   *  is the extreme case, since setting one price returns the whole quote —
+   *  needs this. Required for `selection`, which is keyed by it. */
+  getRowId?: (row: T) => string;
+  /** A class per row, for rows that carry a state worth seeing at a glance.
+   *
+   *  Tinting a row is a *second* cue by design, never the only one: the state
+   *  is also a chip in the row, because colour alone is unreadable to a
+   *  substantial minority of people and gone in greyscale. */
+  rowClass?: (row: T) => string | undefined;
+  /** Row height in pixels, where `twoLineRows` is not the shape needed. Rows
+   *  that carry a code, a description and a row of state pills need three. */
+  rowHeight?: number;
+  /** Multi-row selection with checkboxes, controlled by the caller.
+   *
+   *  The ids stay upstream rather than inside the grid because the toolbar acts
+   *  on them too — "select visible", "clear", and a bulk discount over exactly
+   *  what is ticked. Requires `getRowId`. */
+  selection?: {
+    selectedIds: string[];
+    onChange: (ids: string[]) => void;
+  };
+  /** An editable cell was committed. Only fires for columns marked
+   *  `editable`; `value` has already been through the column's `valueParser`,
+   *  so it arrives in the type the caller declared rather than as the string
+   *  somebody typed. */
+  onCellValueChanged?: (row: T, field: string, value: unknown) => void;
   /** Rows per page. 25 suits a screen somebody scans; 10 suits a panel that
    *  sits under something else and must not push it off the page. */
   pageSize?: number;

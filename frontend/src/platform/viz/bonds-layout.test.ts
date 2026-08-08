@@ -14,8 +14,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   MOVEMENT_LOOKBACK, TRAIL_MIN_PTS,
-  arrivedAt, buildIndex, firstScoredFrame, frameLine, frameStory, laneTone,
-  layout, movementOf, names, packLanes, prepare, presenceAt, sinceFrom,
+  arrivedAt, biggestMoney, buildIndex, firstScoredFrame, frameLine, frameStory,
+  laneTone,
+  layout, movementOf, names, packLanes, prepare, presenceAt, radiusScale,
+  sinceFrom,
   toneOf, trailFrom, xOf,
   type Row, type SideData,
 } from "./bonds-layout";
@@ -318,5 +320,56 @@ describe("what is left off", () => {
     const sides = prepare([side({ a: ["unscored", "unscored"] }, 2)]);
     const { seat } = packLanes(sides, identity, WIDTH, false);
     expect(layout(sides, 1, identity, seat, WIDTH)).toHaveLength(0);
+  });
+});
+
+// ── the size channel, pinned ────────────────────────────────────────────────
+//
+// A dot's radius is the counterparty's revenue. The scale used to re-domain on
+// whatever rows it was handed, which was harmless only while the whole book was
+// always drawn. It is wrong per lane — the same money drew at different sizes
+// in "By line" than in "Together" — and it became a real defect the moment the
+// strip could be narrowed to a handful of watched accounts: those few re-domain
+// onto themselves, every one draws at the maximum, and the reading the channel
+// exists for is gone. A big dot on the left is material money in a weakening
+// relationship, and "big" only means anything measured against the book.
+describe("radiusScale", () => {
+  it("scales area, not radius, with money", () => {
+    const r = radiusScale(100);
+    // sqrt: four times the revenue is twice the radius, so the circle a reader
+    // perceives is four times the area. Linear would have made it sixteen.
+    expect((r(100) - 3) / (r(25) - 3)).toBeCloseTo(2, 5);
+  });
+
+  it("gives the same money the same size however much is filtered out", () => {
+    // The invariant narrowing depends on. Pinned to the book's largest, one
+    // account watched alone keeps the size it had among two hundred.
+    const book = radiusScale(1_000_000);
+    expect(book(70_000)).toBeLessThan(book(1_000_000));
+    expect(radiusScale(1_000_000)(70_000)).toBe(book(70_000));
+  });
+
+  it("keeps the smallest visible and the largest bounded", () => {
+    const r = radiusScale(1_000_000);
+    expect(r(0)).toBe(3);              // never an invisible zero-radius mark
+    expect(r(1_000_000)).toBe(13);
+  });
+
+  it("survives a book with no money in it", () => {
+    expect(radiusScale(0)(0)).toBe(3);
+  });
+});
+
+describe("biggestMoney", () => {
+  it("reads across both sides, so a supplier and a customer share one scale", () => {
+    expect(biggestMoney([
+      { bonds: [{ money: 10 }, { money: 40 }] },
+      { bonds: [{ money: 90 }] },
+    ])).toBe(90);
+  });
+
+  it("never returns zero, so the scale cannot divide by an empty domain", () => {
+    expect(biggestMoney([])).toBe(1);
+    expect(biggestMoney([{ bonds: [] }])).toBe(1);
   });
 });

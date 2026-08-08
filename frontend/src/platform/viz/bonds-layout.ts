@@ -325,11 +325,28 @@ export function laneTone(nodes: Node[], lane: number): {
 
 /** Marks sized by area, not by diameter — the same rule `Patterns.tsx` uses.
  *  Scaling the radius makes a counterparty with twice the revenue look four
- *  times as important. */
-export function radiusScale(list: Row[]) {
-  return scaleSqrt()
-    .domain([0, Math.max(...list.map((b) => num(b.money)), 1)])
-    .range([3, 13]);
+ *  times as important.
+ *
+ *  **The domain is passed in, not derived, so the caller can pin it to the
+ *  whole book.** Deriving it from the rows handed over re-domains on whatever
+ *  subset is being drawn, which was harmless only while the whole book was
+ *  always drawn. It is wrong per lane — the same money is a different size in
+ *  "By line" than in "Together" — and it is wrong the moment somebody watches
+ *  six accounts: those six re-domain onto themselves, every one draws at 13px,
+ *  and the reading the size channel exists for is gone. A big dot on the left
+ *  is material money in a weakening relationship; that only means anything if
+ *  "big" is measured against the book. */
+export function radiusScale(biggest: number) {
+  return scaleSqrt().domain([0, Math.max(biggest, 1)]).range([3, 13]);
+}
+
+/** The largest counterparty on the canvas, before any narrowing. What
+ *  ``radiusScale`` should be pinned to — and the packer and the renderer must
+ *  pass the same one, or a dot is drawn at one size and seated at another. */
+export function biggestMoney(
+  sides: { bonds: Row[] }[],
+): number {
+  return Math.max(1, ...sides.flatMap(({ bonds }) => bonds.map((b) => num(b.money))));
 }
 
 /** Score → x. The axis is the full panel width, which is the entire point of
@@ -360,6 +377,10 @@ export function packLanes(
   const seat = new Map<string, Seat>();
   const lanes: Lane[] = [];
   const perLane: { key: string; money: number }[] = [];
+  // Pinned before any narrowing — see `radiusScale`. Per lane and per selection
+  // this used to re-domain, so the same money drew at different sizes depending
+  // on what else was on screen.
+  const biggest = biggestMoney(sides);
 
   sides.forEach(({ side, bonds, frames }) => {
     // Only a counterparty the server sent frames for can be drawn — the frame
@@ -372,7 +393,7 @@ export function packLanes(
     if (!eligible.length) return;
 
     for (const group of splitBy(eligible, side, branch)) {
-      perLane.push(...packOne(group, side, seat, lanes, width));
+      perLane.push(...packOne(group, side, seat, lanes, width, biggest));
     }
   });
 
@@ -388,11 +409,11 @@ export function packLanes(
  *  candidates for a name. */
 function packOne(group: { label: string; rows: Row[] }, side: string,
                  seat: Map<string, Seat>, lanes: Lane[], width: number,
-                 ): { key: string; money: number }[] {
+                 biggest: number): { key: string; money: number }[] {
   // Ascending, so the packer places the crowded left end first and the sparse
   // right end settles around it rather than the other way round.
   const scored = group.rows.slice().sort((a, b) => num(a.score) - num(b.score));
-  const r = radiusScale(scored);
+  const r = radiusScale(biggest);
   const lane = lanes.length;
   const placed: { x: number; y: number; r: number }[] = [];
   let extent = 0;
@@ -518,9 +539,11 @@ export function layout(
   width: number,
 ): Node[] {
   const out: Node[] = [];
+  // The same pinned domain the packer used, and it has to be the same one or a
+  // dot would be drawn at one size and seated at another.
+  const r = radiusScale(biggestMoney(sides));
   sides.forEach(({ side, bonds, index }) => {
     const visible = apply(bonds as Sourced[]) as Row[];
-    const r = radiusScale(visible.filter((b) => b.score != null));
     for (const b of visible) {
       const id = String(b.counterparty_id);
       const here = seat.get(`${side}:${id}`);

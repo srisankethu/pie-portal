@@ -1358,3 +1358,12 @@
 }
 .cat-pick:hover { border-color: var(--color-text-secondary); }
 .cat-pick:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
+
+/* The watch picker: which counterparties are worth drawing.
+   Wraps rather than scrolls — the quick chips must stay reachable on a narrow
+   window, and a horizontal scrollbar on a filter is a control people miss. */
+.bond-watch {
+  display: flex; flex-wrap: wrap; gap: 10px;
+  align-items: center; margin-bottom: 12px;
+}
+.bond-watch-quick { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }

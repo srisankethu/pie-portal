@@ -50,6 +50,9 @@ import { formatDate } from "../../when";
 import { papi } from "../api";
 import { EntityName } from "../EntityName";
 import { ChartTip, InlineLink, StatusChip } from "../kit";
+import Autocomplete from "@mui/material/Autocomplete";
+import Chip from "@mui/material/Chip";
+import TextField from "@mui/material/TextField";
 import { CompanyFilter, useCompanyFilter } from "../CompanyFilter";
 import { DataGrid, numeric } from "../DataGrid";
 import type { EntityOrigin, PlatformSession, Sourced } from "../types";
@@ -88,6 +91,68 @@ const BAND_TONE: Record<string, "good" | "warn" | "bad" | "neutral"> = {
   LOOSENING: "warn",
   THIN: "neutral",
 };
+
+
+/** Pick the counterparties worth watching, out of a book of two hundred.
+ *
+ *  **This hides dots; it never restates a score.** The bond score contains the
+ *  Material facet — a share of the whole book's revenue — so a score is only
+ *  true of the book it was computed against. The caption says so, because a
+ *  reader who has narrowed to six names will reasonably wonder whether the
+ *  numbers moved with them, and the honest answer is that they must not.
+ *
+ *  Options are ordered by money, largest first, so the ones most likely wanted
+ *  are at the top before anybody types. Grouped by side, because a supplier and
+ *  a same-named customer are different rows and picking the wrong one is a
+ *  silent mistake.
+ */
+function WatchPicker({
+  options, picked, onChange, topN,
+}: {
+  options: { id: string; label: string; side: string; money: number }[];
+  picked: string[];
+  onChange: (ids: string[]) => void;
+  topN: (n: number) => string[];
+}) {
+  if (options.length < 2) return null;
+  const chosen = options.filter((o) => picked.includes(o.id));
+  return (
+    <div className="bond-watch">
+      <Autocomplete
+        multiple size="small" disableCloseOnSelect
+        options={options}
+        value={chosen}
+        groupBy={(o) => (o.side === "vendor" ? "Suppliers" : "Customers")}
+        getOptionLabel={(o) => o.label}
+        isOptionEqualToValue={(a, b) => a.id === b.id}
+        onChange={(_, v) => onChange(v.map((o) => o.id))}
+        renderInput={(params) => (
+          <TextField {...params} label="Watch only"
+                     placeholder={picked.length ? "" : "Everyone"} />
+        )}
+        renderOption={(props, o) => (
+          <li {...props} key={o.id}>
+            {o.label} <span className="viz-muted">· {money(o.money)}</span>
+          </li>
+        )}
+        sx={{ minWidth: 340, flex: "1 1 340px" }}
+      />
+      {/* "Not all of them are important" usually means "show me the ones that
+          are", and typing ten names is a worse answer than a button. */}
+      <div className="bond-watch-quick">
+        {[10, 25].map((n) => (
+          <Chip key={n} size="small" variant="outlined"
+                label={`Top ${n} by revenue`}
+                onClick={() => onChange(topN(n))} />
+        ))}
+        {picked.length > 0 && (
+          <Chip size="small" label={`Clear (${picked.length})`}
+                onClick={() => onChange([])} />
+        )}
+      </div>
+    </div>
+  );
+}
 
 export function BondsScreen({
   session, onNavigate,
@@ -138,7 +203,29 @@ export function BondsScreen({
   usePlayhead(playing, frameCount, at, setFrame, () => setPlaying(false));
 
   const [selected, setSelected] = useState<string | null>(null);
+  // Which counterparties to draw. Empty means all of them.
+  //
+  // **A filter, not a scope**, and here that is forced rather than chosen. The
+  // Material facet is a counterparty's share of the *whole book's* trailing
+  // revenue, so it carries 15% of every score. Narrow the input and recompute,
+  // and six accounts would each look like a sixth of the business — every score
+  // inflated, every band meaningless. Doing this in the browser over scores the
+  // server already computed is what makes that impossible: nothing here *could*
+  // recompute them.
+  const [picked, setPicked] = useState<string[]>([]);
   const [ref, room] = useMeasure<HTMLDivElement>();
+
+  // One seam for both narrowings, so the swarm, the play and the ledger cannot
+  // disagree about which dots exist.
+  const chosenIds = useMemo(() => new Set(picked), [picked]);
+  const narrow = useMemo(() => (
+    <R extends Sourced>(list: R[]): R[] => {
+      const byCompany = company.apply(list);
+      if (!chosenIds.size) return byCompany;
+      return byCompany.filter(
+        (r) => chosenIds.has(String((r as unknown as Row).counterparty_id)));
+    }
+  ), [company.company, chosenIds]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   // Indexed once per payload, and deliberately not per frame. Every mark that
   // needs last month — the trail, the arrival count, the band crossing — would
@@ -157,15 +244,44 @@ export function BondsScreen({
   // neighbours moved — see the note at the top of the file. The name set is
   // chosen in the same pass and for the same reason.
   const { lanes, seat, labels } = useMemo(
-    () => packLanes(sides, company.apply.bind(company), plotWidth,
+    () => packLanes(sides, narrow, plotWidth,
                     group === "line"),
-    [sides, company.company, plotWidth, group]);   // eslint-disable-line react-hooks/exhaustive-deps
+    [sides, narrow, plotWidth, group]);   // eslint-disable-line react-hooks/exhaustive-deps
   const nodes = useMemo(
-    () => layout(sides, at, company.apply.bind(company), seat, plotWidth),
-    [sides, at, company.company, seat, plotWidth]);   // eslint-disable-line react-hooks/exhaustive-deps
+    () => layout(sides, at, narrow, seat, plotWidth),
+    [sides, at, narrow, seat, plotWidth]);   // eslint-disable-line react-hooks/exhaustive-deps
 
-  const shownCustomers = company.apply(customerBonds as Sourced[]) as Row[];
-  const shownVendors = company.apply(vendorBonds as Sourced[]) as Row[];
+  // Built from the whole book rather than from what is on screen — a picker
+  // that only offered the names already showing could never widen a selection.
+  //
+  // **Only what the strip can actually draw.** A counterparty below the evidence
+  // floor has no score, and one outside the frame cover has no series to
+  // animate; either way it can be picked and nothing appears. Offering it would
+  // be inviting somebody into a dead end, which is the rule `CompanyFilter`
+  // already states about companies with no rows. The first cut of this offered
+  // all 227 and drew 201.
+  const watchOptions = useMemo(() => {
+    const drawable = (bonds: Row[], series: Row[], side: string) => {
+      const covered = new Set(
+        series.flatMap((f) => rows(f.bonds).map((e) => String(e.counterparty_id))));
+      return bonds
+        .filter((b) => b.score != null && covered.has(String(b.counterparty_id)))
+        .map((b) => ({
+          id: String(b.counterparty_id), label: String(b.label), side,
+          money: num(b.money),
+        }));
+    };
+    return [
+      ...(showSuppliers ? drawable(vendorBonds, vendorFrames, "vendor") : []),
+      ...(showCustomers ? drawable(customerBonds, frames, "customer") : []),
+    ].sort((a, z) => z.money - a.money);
+  }, [customerBonds, vendorBonds, frames, vendorFrames,
+      showCustomers, showSuppliers]);
+
+  const topByMoney = (n: number) => watchOptions.slice(0, n).map((o) => o.id);
+
+  const shownCustomers = narrow(customerBonds as Sourced[]) as Row[];
+  const shownVendors = narrow(vendorBonds as Sourced[]) as Row[];
   const ledger = [...(showCustomers ? shownCustomers : []),
                   ...(showSuppliers ? shownVendors : [])];
   const unscored = ledger.filter((b) => b.score == null);
@@ -215,7 +331,8 @@ export function BondsScreen({
         {showSuppliers && <>, {counted(shownVendors, "supplier")}</>}
         {" "}scored on five measured facets.{" "}
         {anchored(ledger) > 0 && (
-          <><strong>{anchored(ledger)}</strong> are anchored; </>
+          <><strong>{anchored(ledger)}</strong>{" "}
+            {anchored(ledger) === 1 ? "is" : "are"} anchored; </>
         )}
         <strong>{ledger.filter((b) => b.overdue).length}</strong> are past their
         own buying rhythm.
@@ -223,6 +340,17 @@ export function BondsScreen({
 
       <CompanyFilter options={company.options} value={company.company}
                      onChange={company.setCompany} show={company.show} />
+
+      <WatchPicker options={watchOptions} picked={picked} onChange={setPicked}
+                   topN={topByMoney} />
+      {picked.length > 0 && (
+        <p className="bond-unscored">
+          Showing <strong>{picked.length}</strong> of {watchOptions.length}.
+          Every score is unchanged — a bond is scored against the whole book,
+          and one of its five facets is this counterparty's share of it, so
+          narrowing hides dots rather than re-scoring the ones that are left.
+        </p>
+      )}
 
       <div ref={ref} className="bond-stage">
         <Figure

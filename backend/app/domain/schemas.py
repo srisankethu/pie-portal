@@ -57,9 +57,9 @@ class ProductIn(BaseModel):
     #: The catalogue's own words, carried through unnormalised. See
     #: ``models.Product.category`` for why it is not mapped on the way in.
     category: Optional[str] = None
-    #: The item master's manufacturer, likewise raw. See ``models.Product.brand``
+    #: Who makes the item, likewise raw. See ``models.Product.manufacturer``
     #: for why this is not a vendor.
-    brand: Optional[str] = None
+    manufacturer: Optional[str] = None
     active: bool = True
     source_ref: SourceRef
 

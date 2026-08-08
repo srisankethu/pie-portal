@@ -823,20 +823,20 @@ def _vendor_names(session: Session, org: str) -> dict[str, str]:
 
 def _principal_of_product(session: Session, org: str,
                           ) -> dict[str, principals.Principal]:
-    """Each item's principal for **sales** attribution — bill first, brand second.
+    """Each item's principal for **sales** — the bill first, the maker second.
 
     Sales only, and the boundary is the point. Anything reconciling against a
     principal's own statement — spend, sole-source, target progress — reads
     ``models.CostRecord.vendor_id`` directly and never comes through here. See
     ``commercial/principals.py`` for why the two must not be chained.
     """
-    brands = {
-        product_id: brand
-        for product_id, brand in session.execute(
-            select(models.Product.product_id, models.Product.brand)
+    makers = {
+        product_id: manufacturer
+        for product_id, manufacturer in session.execute(
+            select(models.Product.product_id, models.Product.manufacturer)
             .where(models.Product.organization_id == org)).all()
     }
-    return principals.resolve_all(brands, _purchases(session, org),
+    return principals.resolve_all(makers, _purchases(session, org),
                                   _vendor_names(session, org))
 
 
@@ -1095,8 +1095,8 @@ def product_mix(months: int = Query(12, ge=3, le=36),
     lines_of = _category_of(session, org, th, vendor_of)
 
     if by == mix.BY_VENDOR:
-        # Brands that matched no vendor row are principals too, and ``names_of``
-        # is what can name them — a ``brand:`` key is deliberately absent from
+        # Makers that matched no vendor row are principals too, and ``names_of``
+        # is what can name them — a ``maker:`` key is deliberately absent from
         # the Vendor table, so a screen reading that table alone would render an
         # id where a principal's name belongs.
         names = principals.names_of(principal_of, _vendor_names(session, org))
@@ -1197,8 +1197,8 @@ def book_dependency(principal: Principal = Depends(current_principal),
     principal_of = _principal_of_product(session, org)
     vendor_of = _principal_ids(principal_of)
     lines_of = _category_of(session, org, th, vendor_of)
-    # A superset of the Vendor table: real suppliers plus the brands that
-    # matched none. Purchase-side lookups are unaffected — a ``brand:`` key can
+    # A superset of the Vendor table: real suppliers plus the makers that
+    # matched none. Purchase-side lookups are unaffected — a ``maker:`` key can
     # never appear in a cost row — so this only names principals the sales side
     # already found.
     vendors = principals.names_of(principal_of, _vendor_names(session, org))
@@ -1408,7 +1408,7 @@ def catalogue_lines(unplaced_only: bool = Query(True),
             "source_label": cat.SOURCE_LABEL[resolved.source],
             "overridden": p.product_id in overrides,
             "note": overrides[p.product_id].note if p.product_id in overrides else None,
-            "brand": p.brand,
+            "manufacturer": p.manufacturer,
             "supplier": whose.name if whose and whose.known else None,
             "supplier_source": whose.source if whose else principals.BY_NOTHING,
             "supplier_source_label": principals.SOURCE_LABEL[

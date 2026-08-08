@@ -847,6 +847,57 @@ def _principal_ids(resolved: dict[str, principals.Principal]) -> dict[str, str]:
             for product_id, p in resolved.items() if p.known}
 
 
+def _customers_of_connection(session: Session, org: str,
+                             connection_id: Optional[str]) -> Optional[list[str]]:
+    """The customers belonging to one connected company, or None for all.
+
+    ``SalesTxn`` carries no connection — a sale is keyed on the organization,
+    the customer and the item — so the company a line belongs to is the
+    company its *customer* was synced from. Scoping the snapshot therefore
+    means scoping the customer set, which is exactly the bound
+    ``load_snapshot`` already takes.
+
+    None rather than a list when no company is chosen, because an empty list is
+    a real bound meaning "no customers at all" and would silently empty the
+    screen instead of showing everything.
+    """
+    if not connection_id:
+        return None
+    return [
+        row for (row,) in session.execute(
+            select(models.Customer.customer_id).where(
+                models.Customer.organization_id == org,
+                models.Customer.connection_id == connection_id)).all()
+    ]
+
+
+def _companies(session: Session, org: str) -> list[dict]:
+    """The companies a screen can scope itself to, with how many customers each
+    has actually traded with.
+
+    Read from the connections rather than from the rows on screen. A filter
+    built from row provenance disappears exactly when it is most needed: a book
+    synced before connections were stamped, or by a run that did not pass one,
+    leaves every row's origin null and the control silently never renders —
+    which is what happened here. The connection list is the truth about which
+    companies exist; the counts then say which of them have anything to show.
+    """
+    counts = dict(session.execute(
+        select(models.Customer.connection_id, func.count())
+        .where(models.Customer.organization_id == org,
+               models.Customer.connection_id.is_not(None))
+        .group_by(models.Customer.connection_id)).all())
+    return [
+        {"connection_id": c.connection_id,
+         "label": c.label or f"Zoho org {c.zoho_organization_id}",
+         "customers": counts.get(c.connection_id, 0)}
+        for c in session.scalars(
+            select(models.ZohoConnection).where(
+                models.ZohoConnection.organization_id == org)
+            .order_by(models.ZohoConnection.label)).all()
+    ]
+
+
 def _revenue_by_product(snapshot) -> dict[str, float]:
     """What each item has sold, for weighting a coverage figure by money.
 
@@ -1078,6 +1129,7 @@ def relationship_bonds(
 def product_mix(months: int = Query(12, ge=3, le=36),
                 by: str = Query(mix.BY_CATEGORY,
                                 pattern=f"^({mix.BY_CATEGORY}|{mix.BY_VENDOR})$"),
+                connection_id: Optional[str] = Query(None),
                 principal: Principal = Depends(current_principal),
                 session: Session = Depends(get_session)) -> dict:
     """Who takes which lines — or which principals — and where the gaps are.
@@ -1085,8 +1137,27 @@ def product_mix(months: int = Query(12, ge=3, le=36),
     Two pivots, one grid. "Who has never bought coolant" and "who has never
     bought a single Sandvik item" are the same conversation with different
     people, and an authorised distributor needs both.
+
+    ``connection_id`` scopes the whole grid to one connected company, **on the
+    server**, and that is the difference between this and the row filter every
+    other list uses. `CompanyFilter` hides rows and says so — it deliberately
+    never restates a total, because the platform pools companies on purpose and
+    a control that silently re-scoped an aggregate would be claiming something
+    the server did not compute.
+
+    On this screen the aggregates *are* the screen. "112 customers do not take
+    cutting tools" and "75 of 171 buy from only one line" are the output; a
+    filter that hid rows underneath them would leave both headline numbers
+    describing a book the reader is no longer looking at. So the bound goes
+    into the snapshot and every figure is recomputed for that company — which
+    is also the only reading that is true, since one firm buying from two of
+    the books is two relationships and a line SLS has never sold them is not a
+    gap in 4U.
     """
-    org, snapshot, th = _context(session, principal)
+    org, snapshot, th = _context(
+        session, principal,
+        sales_for_customers=_customers_of_connection(
+            session, principal.organization_id, connection_id))
     as_of = _as_of(snapshot)
     if as_of is None:
         return _no_data(th.currency, "product mix")
@@ -1138,6 +1209,11 @@ def product_mix(months: int = Query(12, ge=3, le=36),
         principals=principals.coverage_report(principal_of,
                                               _revenue_by_product(snapshot)),
         lines=cat.lines(),
+        # The companies this grid can be scoped to, and which one it currently
+        # is. Returned with the data rather than fetched separately so the
+        # picker and the numbers under it can never describe different books.
+        companies=_companies(session, org),
+        scoped_to=connection_id,
         unavailable=mix.unavailable())
 
 
@@ -1828,7 +1904,8 @@ def _last_two_syncs(session: Session, org: str) -> tuple[Optional[dict], Optiona
 
 
 def _moved_since(session: Session, org: str, since: datetime,
-                 companies: Companies) -> dict[str, Any]:
+                 companies: Companies,
+                 until: Optional[datetime] = None) -> dict[str, Any]:
     """What the platform first saw after ``since``, by kind and by company.
 
     Keyed on ``created_at`` — when PIE first wrote the row — not on the
@@ -1857,10 +1934,14 @@ def _moved_since(session: Session, org: str, since: datetime,
         if amount_col is not None and hasattr(model, amount_col):
             cols.append(func.sum(getattr(model, amount_col)))
         group = [model.connection_id] if has_conn else []
+        bounds = [model.organization_id == org, model.created_at >= since]
+        # Inclusive at the top: ``until`` already carries end-of-day when the
+        # caller chose a date, so a strict `<` here would drop everything that
+        # arrived on the last day of the range somebody asked for.
+        if until is not None:
+            bounds.append(model.created_at <= until)
         rows = session.execute(
-            select(*group, *cols)
-            .where(model.organization_id == org, model.created_at >= since)
-            .group_by(*group)).all()
+            select(*group, *cols).where(*bounds).group_by(*group)).all()
 
         total = 0
         amount = 0.0
@@ -1883,9 +1964,21 @@ def _moved_since(session: Session, org: str, since: datetime,
 
 
 @router.get("/daily")
-def daily(principal: Principal = Depends(require_manager_or_owner),
+def daily(moved_from: Optional[date] = Query(None),
+          moved_to: Optional[date] = Query(None),
+          principal: Principal = Depends(require_manager_or_owner),
           session: Session = Depends(get_session)) -> dict:
     """The morning read.
+
+    ``moved_from``/``moved_to`` set the window the **What moved** band reports
+    over — a single day when only ``moved_from`` is given, an inclusive range
+    when both are. They govern that band and no other, which is a deliberate
+    limit rather than an unfinished one: the remaining bands are not periods.
+    An approval is waiting *now*, an invoice is overdue *now*, a commitment
+    lands in the seven days *from now*. "What was overdue last Tuesday" would
+    mean reconstructing a past state, which this platform does not do — so a
+    date control spanning the whole page would return three numbers that either
+    ignored it or lied about it.
 
     Manager and above, for the same reason `/supply` and `/cashflow` are: two
     of its five bands are cash and supplier exposure, which is purchase cost by
@@ -1959,9 +2052,11 @@ def daily(principal: Principal = Depends(require_manager_or_owner),
         .group_by(models.Decision.priority_band)).all()
     decisions_by_band = {str(b): int(n) for b, n in band_rows}
 
-    since, _until = daily_view.window_since(last_sync, previous_sync,
-                                            now=clock.now())
-    moved = _moved_since(session, org, since, companies) if since else {}
+    since, until = daily_view.window_since(last_sync, previous_sync,
+                                           now=clock.now(),
+                                           frm=moved_from, to=moved_to)
+    moved = (_moved_since(session, org, since, companies, until=until)
+             if since else {})
 
     return _envelope(
         daily_view.assemble(
@@ -1969,5 +2064,6 @@ def daily(principal: Principal = Depends(require_manager_or_owner),
             last_sync=last_sync, approvals_pending=int(approvals_pending),
             decisions_by_band=decisions_by_band, stock=stock_result,
             supply=supply_result, cadence=cadence_result, cash=cash,
-            moved=moved, currency=th.currency),
+            moved=moved, moved_window=(moved_from, moved_to),
+            currency=th.currency),
         currency=th.currency, thresholds_version=th.version)

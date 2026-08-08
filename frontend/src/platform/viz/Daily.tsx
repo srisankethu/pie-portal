@@ -17,7 +17,10 @@ import AlertTitle from "@mui/material/AlertTitle";
 import Box from "@mui/material/Box";
 import Chip from "@mui/material/Chip";
 import Stack from "@mui/material/Stack";
+import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
+
+import { useState } from "react";
 
 import { money } from "../../money";
 import { InlineLink, LoadingState, MetricCard } from "../kit";
@@ -88,11 +91,68 @@ function Tile({ tile, onNavigate }: {
   );
 }
 
+/** The date control for the "What moved" band — and only that band.
+ *
+ *  It lives *inside* the band rather than at the top of the page, and that
+ *  placement is the whole argument. Three of the four bands are not periods: an
+ *  approval is waiting now, an invoice is overdue now, a commitment lands in
+ *  the seven days from now. A picker in the page header would look like it
+ *  governed all of them, and would then either be ignored by three or — worse —
+ *  appear to have re-scoped numbers it never touched. Put where it works, it
+ *  cannot make that claim.
+ *
+ *  Presets first because they are what somebody actually wants ("yesterday",
+ *  "this week"), with the two date inputs underneath for the case they do not
+ *  cover. "Since last sync" is the default and is offered as a way back — a
+ *  filter with no reset is one people leave set and then misread.
+ */
+function MovedRange({
+  frm, to, onChange,
+}: { frm: string; to: string; onChange: (f: string, t: string) => void }) {
+  const day = (back: number) => {
+    const d = new Date();
+    d.setDate(d.getDate() - back);
+    return d.toISOString().slice(0, 10);
+  };
+  const presets: [string, () => void][] = [
+    ["Since last sync", () => onChange("", "")],
+    ["Today", () => onChange(day(0), day(0))],
+    ["Yesterday", () => onChange(day(1), day(1))],
+    ["Last 7 days", () => onChange(day(6), "")],
+    ["Last 30 days", () => onChange(day(29), "")],
+  ];
+  return (
+    <Stack direction="row" spacing={1}
+           sx={{ flexWrap: "wrap", rowGap: 1, mb: 1, alignItems: "center" }}>
+      {presets.map(([label, set]) => (
+        <Chip key={label} label={label} size="small" onClick={set}
+              variant={label === "Since last sync" && !frm ? "filled" : "outlined"} />
+      ))}
+      <TextField
+        type="date" size="small" label="From" value={frm}
+        onChange={(e) => onChange(e.target.value, to)}
+        slotProps={{ inputLabel: { shrink: true } }} sx={{ width: 165 }} />
+      <TextField
+        type="date" size="small" label="To" value={to}
+        onChange={(e) => onChange(frm, e.target.value)}
+        // Meaningless without a start, and a lone end date would silently be
+        // ignored by the server rather than doing anything.
+        disabled={!frm}
+        slotProps={{ inputLabel: { shrink: true } }} sx={{ width: 165 }} />
+    </Stack>
+  );
+}
+
 export function DailyScreen({
   session, onNavigate,
 }: { session: PlatformSession; onNavigate: (route: string) => void }) {
+  // The window the "What moved" band reports over. Empty means the default:
+  // since the previous sync. Deliberately *not* page-wide — see MovedRange.
+  const [frm, setFrm] = useState("");
+  const [to, setTo] = useState("");
   const { data, loading, error } = useInsight(
-    "daily", () => papi.daily(session.token), [session.token]);
+    "daily", () => papi.daily(session.token, frm || undefined, to || undefined),
+    [session.token, frm, to]);
 
   const fresh = (data?.freshness as Row | undefined) ?? {};
   const bands = rows(data?.bands);
@@ -144,6 +204,10 @@ export function DailyScreen({
                         sx={{ display: "block", lineHeight: 1.6 }}>
               {String(band.label)} — {String(band.question)}
             </Typography>
+            {band.key === "MOVED" && (
+              <MovedRange frm={frm} to={to}
+                          onChange={(f, t) => { setFrm(f); setTo(t); }} />
+            )}
             <Box
               sx={{
                 display: "grid", gap: 1.5, mt: 0.5,

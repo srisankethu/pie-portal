@@ -20,9 +20,10 @@
 // and a real margin, of the shape a manager's response has, rendered with
 // `mgmt={false}`. The salesperson's grid must show neither.
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { LineGrid } from "./LineGrid";
+import { NARROW_BREAKPOINT } from "../platform/DataGrid";
 import type { Line, LineIntelligence } from "../types";
 
 /** A line the server would only ever send to a manager: cost and margin present. */
@@ -116,6 +117,25 @@ function intelWithEconomics(): Record<string, LineIntelligence> {
 
 const NOOP = () => {};
 
+/** Every prop `LineGrid` needs, with the two that vary named.
+ *
+ *  Extracted after a `jscpd --min-tokens 30` pass named three copies of the
+ *  same ten-prop element in this file. A fixture repeated three times is a
+ *  fixture that gets updated twice. */
+function props(mgmt: boolean, intel: Record<string, LineIntelligence> = {},
+               lines: Line[] = [lineWithEconomics()]) {
+  return {
+    lines, mgmt, intel,
+    selectedIds: [] as string[],
+    onSelectionChange: NOOP,
+    onOpen: NOOP,
+    onSetPrice: NOOP,
+    onDeleteLine: NOOP,
+    onCreateItem: NOOP,
+    onConfirmReading: NOOP,
+  };
+}
+
 /** Render, and wait for the grid to actually exist.
  *
  *  `DataGrid` is a `React.lazy` chunk behind `Suspense` — ag-grid is roughly the
@@ -131,20 +151,7 @@ const NOOP = () => {};
  *  stops rendering, these fail on the wait rather than passing vacuously.
  */
 async function renderGrid(mgmt: boolean, intel: Record<string, LineIntelligence> = {}) {
-  const view = render(
-    <LineGrid
-      lines={[lineWithEconomics()]}
-      mgmt={mgmt}
-      intel={intel}
-      selectedIds={[]}
-      onSelectionChange={NOOP}
-      onOpen={NOOP}
-      onSetPrice={NOOP}
-      onDeleteLine={NOOP}
-      onCreateItem={NOOP}
-      onConfirmReading={() => {}}
-    />,
-  );
+  const view = render(<LineGrid {...props(mgmt, intel)} />);
   // Present for every role, so it proves the grid mounted without asserting
   // anything about what this particular role is allowed to see.
   await screen.findByText("Line total");
@@ -204,22 +211,93 @@ describe("a manager's grid", () => {
   });
 });
 
+// ── the narrow rendering ─────────────────────────────────────────────────────
+//
+// jsdom has no `window.matchMedia` at all, which is why every test above
+// exercises the grid: MUI's `useMediaQuery` returns its default — false — when
+// the API is missing, so the wrapper takes the wide path. Installing a stub is
+// therefore not a convenience, it is the only way to reach the other branch.
+
+/** A `matchMedia` that answers one question honestly: is the viewport narrower
+ *  than the width the query names? Everything else about it is inert. */
+function pretendViewportIs(width: number) {
+  vi.stubGlobal("matchMedia", (query: string) => {
+    const max = /max-width:\s*([\d.]+)px/.exec(query);
+    return {
+      matches: max ? width <= Number.parseFloat(max[1]) : false,
+      media: query,
+      onchange: null,
+      addListener: () => {}, removeListener: () => {},
+      addEventListener: () => {}, removeEventListener: () => {},
+      dispatchEvent: () => false,
+    };
+  });
+}
+
+afterEach(() => vi.unstubAllGlobals());
+
+/** A phone. 412px is the Pixel 7 the finding was measured on. */
+function renderNarrowGrid(mgmt: boolean, intel: Record<string, LineIntelligence> = {}) {
+  pretendViewportIs(412);
+  return render(<LineGrid {...props(mgmt, intel)} />);
+}
+
+describe("on a phone", () => {
+  it("puts a rate field on screen for every line", () => {
+    // The whole finding, as an assertion. At 412px the grid rendered its
+    // "Quoted ₹" column at x=486 in a 412px viewport, with no horizontal
+    // scrollbar to say so — five editable cells in the DOM and none of them
+    // reachable. There is one field per line here, and it is a real input
+    // rather than a cell that becomes one on a second tap.
+    renderNarrowGrid(false);
+    const price = screen.getByLabelText("Quoted rate for CNMG120408");
+    expect(price).toBeInTheDocument();
+    expect(price).toHaveValue("1000");
+  });
+
+  it("shows the six things the line is worked on by", () => {
+    // Synchronous, unlike every test above: the cards are not behind the lazy
+    // ag-grid chunk, which is the other half of what this rendering buys — a
+    // phone never downloads the 1.16 MB grid at all.
+    const { container } = renderNarrowGrid(false);
+    expect(screen.getByText("CNMG120408")).toBeInTheDocument();   // requested
+    expect(screen.getByText("2001174")).toBeInTheDocument();      // supply
+    expect(screen.getByText("Supply product")).toBeInTheDocument();
+    expect(screen.getByText("Qty")).toBeInTheDocument();
+    expect(screen.getByText("Available")).toBeInTheDocument();
+    expect(screen.getByText("ready")).toBeInTheDocument();        // status
+    expect(container.textContent).toContain("10,000");            // line total
+  });
+
+  it("renders neither cost nor margin for a salesperson", () => {
+    // The same hostile fixture as the grid tests, against the second renderer.
+    // A card that read `line.economics` directly would put a margin on a
+    // salesperson's phone while every assertion above this block still passed.
+    const { container } = renderNarrowGrid(false, intelWithEconomics());
+    expect(container.textContent).not.toContain("24.0%");
+    expect(container.textContent).not.toContain("22.0%");
+    expect(container.textContent).not.toContain("760");
+    expect(container.textContent).not.toContain("780");
+  });
+
+  it("gives a manager the margin, as the grid does", () => {
+    const { container } = renderNarrowGrid(true, intelWithEconomics());
+    expect(container.textContent).toContain("22.0%");
+  });
+
+  it("leaves the grid in place at the width above the breakpoint", () => {
+    // The fix is a breakpoint, not a redesign: one pixel wider and this is the
+    // grid it has always been. Asserted against the exported constant so the
+    // two cannot drift.
+    pretendViewportIs(NARROW_BREAKPOINT);
+    const { container } = render(<LineGrid {...props(false)} />);
+    expect(container.querySelector("[data-line-card]")).toBeNull();
+  });
+});
+
 describe("the empty state", () => {
   it("explains itself instead of rendering a bare grid", () => {
-    render(
-      <LineGrid
-        lines={[]}
-        mgmt={false}
-        intel={{}}
-        selectedIds={[]}
-        onSelectionChange={NOOP}
-        onOpen={NOOP}
-        onSetPrice={NOOP}
-        onDeleteLine={NOOP}
-        onCreateItem={NOOP}
-        onConfirmReading={() => {}}
-      />,
-    );
+    render(<LineGrid {...props(false, {}, [])} />);
     expect(screen.getByText(/paste an RFQ/i)).toBeInTheDocument();
   });
 });

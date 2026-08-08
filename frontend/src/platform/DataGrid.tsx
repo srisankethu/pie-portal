@@ -16,12 +16,32 @@
 // application. Statically imported it would be in the bundle for a salesperson
 // who only ever opens the negotiation desk, so the grid is a lazy chunk and the
 // screens that use it get a skeleton for the moment it takes to arrive.
+//
+// **Below `NARROW_BREAKPOINT` a grid is not a grid.** A phone is narrower than
+// the columns of any list worth sorting, so the wrapper offers `renderNarrow`:
+// one card per row instead of a row of cells. This is the wrapper's job rather
+// than each screen's, for the reason `docs/ui-standards.md` §3 gives — a second
+// answer to "what does this list look like on a phone" is how two screens end
+// up disagreeing about it. It also means a phone never fetches the ag-grid
+// chunk at all.
 
-import { lazy, Suspense, useMemo } from "react";
+import { lazy, Suspense, useMemo, useState } from "react";
+import Button from "@mui/material/Button";
+import Stack from "@mui/material/Stack";
+import useMediaQuery from "@mui/material/useMediaQuery";
 import type { ColDef, GridOptions } from "ag-grid-community";
 import { LoadingState } from "./kit";
 
 export type { ColDef } from "ag-grid-community";
+
+/** The width below which a grid that offers `renderNarrow` draws cards.
+ *
+ *  A literal rather than a theme breakpoint, because it is not one: MUI's `sm`
+ *  is 600 and `md` is 900, and the question here is "is there room for six
+ *  columns and a price field", whose answer sits between them. Stated once,
+ *  exported, so a test can assert against the same number the component reads.
+ */
+export const NARROW_BREAKPOINT = 700;
 
 // `lazy` erases the generic, so the type is restored here. The cast is safe:
 // the implementation's props are exactly `DataGridProps<T>`, and without it
@@ -101,11 +121,30 @@ export interface DataGridProps<T> {
   /** Turns off the per-column filter row for narrow panels where it costs more
    *  vertical space than it earns. Sorting always stays on. */
   filters?: boolean;
+  /** One card per row, for a viewport narrower than `NARROW_BREAKPOINT`.
+   *
+   *  A grid narrower than its columns scrolls sideways inside its own box,
+   *  which is correct on a laptop and useless on a phone: at 412px the quote
+   *  grid put its 822px of columns in a 383px box, so the rate field — the one
+   *  thing a salesperson in a machine shop is there to fill in — sat at x=486
+   *  with nothing on screen to say it existed.
+   *
+   *  Given, the wrapper draws these instead of the grid below that width. The
+   *  card owns its own controls and its own tap targets: none of `onRowClick`,
+   *  `selection` or `onCellValueChanged` applies to it, because a card is not a
+   *  row of cells and pretending otherwise would put a second, half-working
+   *  copy of each behaviour here.
+   *
+   *  Omitted, a narrow screen gets the sideways-scrolling grid, unchanged. */
+  renderNarrow?: (row: T, index: number) => React.ReactNode;
   ariaLabel: string;
 }
 
 export function DataGrid<T>(props: DataGridProps<T>) {
-  const { rows, empty, height, pageSize = 25 } = props;
+  const { rows, empty, height, pageSize = 25, renderNarrow, ariaLabel } = props;
+  // `- 0.02` for the same reason MUI's own `down()` does it: at exactly 700 the
+  // two queries must not both match.
+  const narrow = useMediaQuery(`(max-width:${NARROW_BREAKPOINT - 0.02}px)`);
 
   // A skeleton the height the grid will be, so the page does not jump when the
   // chunk lands.
@@ -118,10 +157,45 @@ export function DataGrid<T>(props: DataGridProps<T>) {
   if (rows === null) return placeholder;
   if (rows.length === 0 && empty) return <>{empty}</>;
 
+  if (narrow && renderNarrow) {
+    return (
+      <NarrowRows rows={rows} render={renderNarrow} pageSize={pageSize}
+                  ariaLabel={ariaLabel} />
+    );
+  }
+
   return (
     <Suspense fallback={placeholder}>
       <Grid {...props} pageSize={pageSize} />
     </Suspense>
+  );
+}
+
+/** The narrow rendering: cards, stacked, one page at a time.
+ *
+ *  Paged rather than unbounded because the grid it stands in for is paged, and
+ *  a list whose length is the size of the business would otherwise mount four
+ *  hundred cards on the device least able to draw them. The button says how
+ *  many are left rather than "more", so the count is never a surprise. */
+function NarrowRows<T>({
+  rows, render, pageSize, ariaLabel,
+}: {
+  rows: T[];
+  render: (row: T, index: number) => React.ReactNode;
+  pageSize: number;
+  ariaLabel: string;
+}) {
+  const [shown, setShown] = useState(pageSize);
+  const rest = rows.length - shown;
+  return (
+    <Stack spacing={1.5} role="list" aria-label={ariaLabel}>
+      {rows.slice(0, shown).map((row, i) => render(row, i))}
+      {rest > 0 && (
+        <Button variant="outlined" onClick={() => setShown(shown + pageSize)}>
+          Show {Math.min(rest, pageSize)} more of {rows.length}
+        </Button>
+      )}
+    </Stack>
   );
 }
 

@@ -25,6 +25,7 @@ import MenuItem from "@mui/material/MenuItem";
 import TextField from "@mui/material/TextField";
 
 import { connectorMark } from "./EntityName";
+import { TOUCH } from "./kit";
 import type { Sourced } from "./types";
 
 /** All companies. Empty string rather than null so it is a valid select value. */
@@ -128,7 +129,10 @@ export function CompanyFilter({
       // of it. This also notches the outlined fieldset, since the notch follows
       // the label.
       slotProps={{ select: { displayEmpty: true }, inputLabel: { shrink: true } }}
-      sx={{ minWidth: 210 }}
+      // `TOUCH` because this sits in the same row as the filter chips and is
+      // the same kind of control: a 40px select beside 44px chips is both
+      // harder to hit and visibly out of line.
+      sx={{ minWidth: 210, "& .MuiInputBase-root": TOUCH }}
     >
       {/* The counts travel with the names. "4U Precision" alone does not say
           whether choosing it leaves eighty rows or two. */}

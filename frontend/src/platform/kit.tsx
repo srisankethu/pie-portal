@@ -20,6 +20,7 @@
 import type { ReactNode } from "react";
 import Alert from "@mui/material/Alert";
 import AlertTitle from "@mui/material/AlertTitle";
+import Avatar from "@mui/material/Avatar";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Chip from "@mui/material/Chip";
@@ -280,6 +281,68 @@ export function StatusChip({
     />
   );
   return tip ? <Tooltip title={tip}>{chip}</Tooltip> : chip;
+}
+
+// ── touch ────────────────────────────────────────────────────────────────────
+
+/** The smallest a control may be on a screen somebody works with a thumb.
+ *
+ *  44px is the figure WCAG 2.2 §2.5.8 and both platform guidelines settle on,
+ *  and it is not a rounding of MUI's defaults: a `small` `Chip` is 24px high
+ *  and a `small` `IconButton` about 30px, which is comfortable with a mouse and
+ *  a coin-toss with a thumb in a machine shop. Spread rather than wrapped in a
+ *  component, because the controls that need it are a chip, a button, an icon
+ *  button and a text field — four MUI components with nothing else in common. */
+export const TOUCH_TARGET = 44;
+
+/** `sx` spread that enforces it. `minHeight`/`minWidth`, never fixed sizes, so
+ *  a control whose content is already taller is left alone. */
+export const TOUCH = {
+  minHeight: TOUCH_TARGET,
+  minWidth: TOUCH_TARGET,
+} as const;
+
+/** One choice in a row of them, with how many rows it would leave.
+ *
+ *  Three screens had written this out — the quote's line-state chips, the
+ *  quote's margin-floor chip and the decision queue's type chips — as a `Chip`
+ *  with a count in the `avatar` slot, a `color`/`variant` pair keyed on whether
+ *  it is the current one, and an `onClick`. Identical in all three but for the
+ *  labels, which is §10 exactly; and when the tap target needed to grow, it
+ *  needed to grow in three places.
+ *
+ *  The count sits in the avatar slot rather than the label because a count
+ *  baked into the label loses its contrast when the chip is filled. */
+export function FilterChip({
+  label, count, selected, onClick, alert = false, tone,
+}: {
+  label: string;
+  count?: number;
+  selected: boolean;
+  onClick: () => void;
+  /** A count worth seeing even when this chip is not the current one —
+   *  unresolved lines and lines needing a decision stop a quote being sent. */
+  alert?: boolean;
+  /** Overrides the selected colour. `error` for a chip that selects a problem. */
+  tone?: "primary" | "error";
+}) {
+  return (
+    <Chip
+      label={label}
+      avatar={count === undefined ? undefined : (
+        <Avatar sx={{
+          bgcolor: "transparent", fontSize: 11, fontWeight: 700,
+          color: alert && !selected ? "var(--danger-fg)" : undefined,
+        }}>
+          {count}
+        </Avatar>
+      )}
+      color={selected ? (tone ?? "primary") : "default"}
+      variant={selected ? "filled" : "outlined"}
+      onClick={onClick}
+      sx={{ ...TOUCH, borderRadius: 999, px: 0.5 }}
+    />
+  );
 }
 
 const BAND_TONE: Record<string, Tone> = { HIGH: "bad", MEDIUM: "warn", LOW: "neutral" };

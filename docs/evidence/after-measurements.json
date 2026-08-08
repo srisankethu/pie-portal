@@ -1,0 +1,126 @@
+{
+  "home": {
+    "viewportWidth": 412,
+    "pageScrollsSideways": false,
+    "gridColumnsInDom": [],
+    "gridContentWidth": null,
+    "gridBoxWidth": null,
+    "priceHeader": null,
+    "gridPriceCells": 0,
+    "gridPriceCellsOnScreen": 0,
+    "lineCards": 0,
+    "cardPriceInputs": 0,
+    "cardPriceInputsOnScreen": 0,
+    "controlsMeasured": 7,
+    "controlsUnder44": [
+      {
+        "h": 36,
+        "what": "Open navigation"
+      },
+      {
+        "h": 30,
+        "what": "Sign out"
+      },
+      {
+        "h": 34,
+        "what": "3 months\u200b"
+      },
+      {
+        "h": 30,
+        "what": "Open the lost-revenue breakdown (3"
+      },
+      {
+        "h": 30,
+        "what": "See revenue by customer (3)"
+      }
+    ]
+  },
+  "decisions": {
+    "viewportWidth": 412,
+    "pageScrollsSideways": false,
+    "gridColumnsInDom": [
+      "Priority",
+      "Type",
+      "Account / subject",
+      "Why",
+      "Worth / confidence"
+    ],
+    "gridContentWidth": 636,
+    "gridBoxWidth": 383,
+    "priceHeader": null,
+    "gridPriceCells": 0,
+    "gridPriceCellsOnScreen": 0,
+    "lineCards": 0,
+    "cardPriceInputs": 0,
+    "cardPriceInputsOnScreen": 0,
+    "controlsMeasured": 5,
+    "controlsUnder44": [
+      {
+        "h": 36,
+        "what": "Open navigation"
+      },
+      {
+        "h": 30,
+        "what": "Sign out"
+      }
+    ]
+  },
+  "quote-lines": {
+    "viewportWidth": 412,
+    "pageScrollsSideways": false,
+    "gridColumnsInDom": [],
+    "gridContentWidth": null,
+    "gridBoxWidth": null,
+    "priceHeader": null,
+    "gridPriceCells": 0,
+    "gridPriceCellsOnScreen": 0,
+    "lineCards": 5,
+    "cardPriceInputs": 5,
+    "cardPriceInputsOnScreen": 5,
+    "controlsMeasured": 31,
+    "controlsUnder44": [
+      {
+        "h": 36,
+        "what": "Open navigation"
+      },
+      {
+        "h": 30,
+        "what": "Sign out"
+      }
+    ]
+  },
+  "priceTyped": "1234",
+  "desktop1440": {
+    "viewportWidth": 1440,
+    "pageScrollsSideways": false,
+    "gridColumnsInDom": [
+      "",
+      "Requested item",
+      "Qty",
+      "Supply product",
+      "Quoted \u20b9",
+      "Commercial",
+      "Status",
+      ""
+    ],
+    "gridContentWidth": 1137,
+    "gridBoxWidth": 1137,
+    "priceHeader": {
+      "left": 1054,
+      "right": 1099,
+      "onScreen": true
+    },
+    "gridPriceCells": 5,
+    "gridPriceCellsOnScreen": 5,
+    "lineCards": 0,
+    "cardPriceInputs": 0,
+    "cardPriceInputsOnScreen": 0,
+    "controlsMeasured": 25,
+    "controlsUnder44": [
+      {
+        "h": 30,
+        "what": "Sign out"
+      }
+    ]
+  }
+}

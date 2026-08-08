@@ -468,7 +468,7 @@ def test_an_override_survives_the_resync_that_rebuilds_the_product(client):
     ReadModelRepository(s, "org_sanketh").upsert_product(ProductIn(
         external_id="e-tool", name="CNMG 120408", hsn="82071900",
         category="Cutting Tools", active=True,
-        source_ref=SourceRef(record_type="item", record_id="e-tool")))
+        source_ref=SourceRef(system="zoho", record_type="item", record_id="e-tool")))
     s.commit()
     s.close()
 

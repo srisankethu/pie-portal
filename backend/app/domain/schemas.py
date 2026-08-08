@@ -20,9 +20,21 @@ from .enums import CustomerStatus
 
 
 class SourceRef(BaseModel):
-    """A pointer back to the originating ERP record (provenance)."""
+    """A pointer back to the originating ERP record (provenance).
 
-    system: str = "zoho"
+    ``system`` is required, and that is the point. It used to default to
+    ``"zoho"``, which meant no normalizer ever had to say where a record came
+    from — and every row in the database claimed Zoho whether or not it was
+    true. A second connector would have had to *remember* to override it, and
+    forgetting would have been silent: the evidence a decision cites would name
+    the wrong system, and nothing anywhere would disagree.
+
+    Provenance that defaults is not provenance. This is the layer that must not
+    know which ERP exists, so the value comes from the adapter that read the
+    record.
+    """
+
+    system: str = Field(min_length=1)
     record_type: str            # contact | item | invoice | bill
     record_id: str
     line_id: Optional[str] = None

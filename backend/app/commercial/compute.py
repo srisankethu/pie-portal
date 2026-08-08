@@ -22,7 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..domain import models
-from ..signals.base import CostRow, SaleRow
+from ..signals.base import UNRECORDED_SOURCE, CostRow, SaleRow
 from .benchmark import ItemBenchmark, compute_benchmark, peer_margin_gap
 from .config import CommercialThresholds
 from .policy import load_for_org
@@ -99,10 +99,19 @@ def _evidence(lines: Iterable[LineEconomics]) -> list[dict]:
     bounded — a signal should be traceable, not carry a thousand refs."""
     refs: list[dict] = []
     for ln in sorted(lines, key=lambda x: x.date, reverse=True)[:20]:
-        refs.append({"source_system": "zoho", "record_type": "invoice",
+        # Each ref names the system its own record came from. These were both
+        # hardcoded to "zoho", which ignored what the row actually said — so
+        # after a second connector every metric's evidence would have cited the
+        # wrong system, and the invoice and the bill would have been credited to
+        # the same one even when they came from different books.
+        refs.append({"source_system": (ln.source_ref or {}).get("system")
+                     or UNRECORDED_SOURCE,
+                     "record_type": "invoice",
                      "record_id": ln.invoice_id, "line_id": ln.external_ref})
         if ln.cost_source_ref:
-            refs.append({"source_system": "zoho", "record_type": "bill",
+            refs.append({"source_system": ln.cost_source_ref.get("system")
+                         or UNRECORDED_SOURCE,
+                         "record_type": "bill",
                          "record_id": ln.cost_source_ref.get("record_id"),
                          "line_id": ln.cost_source_ref.get("line_id")})
     return refs

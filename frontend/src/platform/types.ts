@@ -715,6 +715,10 @@ export interface ZohoConnection {
    *  one entity may have four years of books worth reading and another four
    *  months. */
   suggested_since: string;
+  /** How far back this company has actually been listed — not what the last
+   *  run asked for. Null until a run has finished. Picking a date before this
+   *  lists those months in full; a date at or after it is a cheap incremental. */
+  covered_from: string | null;
 }
 
 /** A check result: the row as stored, plus what the grant could actually see. */

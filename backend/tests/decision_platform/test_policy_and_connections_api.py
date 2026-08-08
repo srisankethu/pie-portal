@@ -468,3 +468,58 @@ def test_a_failed_pull_is_still_the_last_pull_and_says_so(client):
     assert last["status"] == "FAILED"
     # Still the window to offer: the intent was right, the pull was not.
     assert _conns(client)["SLS Engineers"]["suggested_since"] == "2025-01-01"
+
+
+# ── how far back this company has actually been read ────────────────────────
+#
+# Distinct from `suggested_since`, which is what the *last run asked for*. The
+# two diverge exactly where it is dangerous: a nightly pull can run for a year
+# and still cover only the window the first run wanted, so "last pulled from
+# 2025-01-01" says nothing about whether 2024 was ever read. Widening the
+# window used to be a silent no-op, and this is the number that shows it.
+
+
+def test_a_company_never_pulled_has_covered_nothing(client):
+    _add(client, OWNER, "111", "SLS Engineers")
+    assert _conns(client)["SLS Engineers"]["covered_from"] is None
+
+
+def test_coverage_is_the_earliest_window_a_run_finished(client):
+    """The floor of what has been listed — not the latest run's date, which is
+    what `suggested_since` reports and is a different question."""
+    _add(client, OWNER, "111", "SLS Engineers")
+    cid = _conns(client)["SLS Engineers"]["connection_id"]
+    _run(client, cid, date(2024, 1, 1),
+         started=datetime(2026, 7, 1, tzinfo=timezone.utc))
+    _run(client, cid, date(2025, 1, 1),
+         started=datetime(2026, 8, 2, tzinfo=timezone.utc))
+
+    row = _conns(client)["SLS Engineers"]
+    assert row["covered_from"] == "2024-01-01"     # the deepest finished pull
+    assert row["suggested_since"] == "2025-01-01"  # the most recent one
+
+
+def test_a_failed_pull_covers_nothing_however_far_back_it_asked(client):
+    """The conservative direction. A run that died in its third window of
+    twenty covered three months, and crediting it the whole window would leave
+    a hole no later pull ever fills — the incremental listing would skip
+    exactly the months it claimed."""
+    _add(client, OWNER, "111", "SLS Engineers")
+    cid = _conns(client)["SLS Engineers"]["connection_id"]
+    _run(client, cid, date(2020, 1, 1), status="FAILED")
+
+    row = _conns(client)["SLS Engineers"]
+    assert row["covered_from"] is None
+    # Still the window to offer again: the intent was right, the pull was not.
+    assert row["suggested_since"] == "2020-01-01"
+
+
+def test_one_companys_coverage_is_not_anothers(client):
+    _add(client, OWNER, "111", "SLS Engineers")
+    _add(client, OWNER, "222", "4U Precision")
+    sls = _conns(client)["SLS Engineers"]["connection_id"]
+    _run(client, sls, date(2022, 1, 1))
+
+    rows = _conns(client)
+    assert rows["SLS Engineers"]["covered_from"] == "2022-01-01"
+    assert rows["4U Precision"]["covered_from"] is None

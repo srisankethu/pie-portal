@@ -191,6 +191,35 @@ export const papi = {
   payments: (t: string) =>
     req<Record<string, unknown>>("/api/v1/insight/payments", {}, t),
 
+  // The same measurement from the other end of the ledger. Manager and above,
+  // scoped like `supply` rather than like `payments`: which customers pay us
+  // slowly is a call list, which suppliers we are stringing along is a
+  // commercial position.
+  payables: (t: string) =>
+    req<Record<string, unknown>>("/api/v1/insight/payables", {}, t),
+
+  // What we actually agreed to pay a supplier in, which Zoho's fixed dropdown
+  // often cannot express. Zoho's own value is never overwritten — both travel
+  // together, because the gap between them is the thing worth seeing.
+  vendorTerms: (t: string) =>
+    req<Record<string, unknown>>("/api/v1/insight/vendor-terms", {}, t),
+
+  setVendorTerm: (t: string, vendorId: string, days: number, basis: string,
+                  note?: string | null) =>
+    req<Record<string, unknown>>("/api/v1/insight/vendor-terms", {
+      method: "PUT",
+      body: JSON.stringify({ vendor_id: vendorId, days, basis,
+                             note: note ?? null }),
+    }, t),
+
+  /** Withdraw the agreement and fall back to the ERP's date. Deliberately not
+   *  "set it to Zoho's current number": that would freeze a value Zoho may
+   *  later change. */
+  clearVendorTerm: (t: string, vendorId: string) =>
+    req<Record<string, unknown>>(
+      `/api/v1/insight/vendor-terms/${encodeURIComponent(vendorId)}`,
+      { method: "DELETE" }, t),
+
   // Manager and above. The inflow half is receivables, but the outflow half is
   // what we owe suppliers — purchase cost by another name — so the endpoint is
   // scoped like `supply` and the panel is hidden rather than 403'd.

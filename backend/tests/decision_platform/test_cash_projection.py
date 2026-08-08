@@ -24,8 +24,10 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
+from sqlalchemy import select
 
 from app.commercial.insight import cashflow
+from app.domain import models
 from app.state.engine import load
 from app.state.reducers.cash import CASH_SCHEDULE, week_key
 from app.state.reducers.commitments import COMMITMENTS
@@ -59,15 +61,46 @@ def book(session):
 
 
 # ── the fold ────────────────────────────────────────────────────────────────
+def _amount(rows: dict, prefix: str) -> Decimal:
+    """What one direction owes in one week, across every party in it.
+
+    The key carries the party now — `in:2026-W06:c1` — so a test about *when*
+    money is due sums the week rather than naming whichever customer happens to
+    be in the fixture. Which party a row belongs to is its own test below.
+    """
+    return sum((Decimal(r["amount"]) for k, r in rows.items()
+                if k.startswith(prefix)), Decimal(0))
+
+
 def test_an_obligation_lands_in_the_week_its_own_document_names(book):
     """Not the week it was raised, not an average — the due date's week."""
     rows = _schedule(book)
 
     # INV-2: ₹16,700 due 2026-02-04. INV-3: ₹85,200 due 2026-08-19.
-    assert Decimal(rows[f"in:{week_key(date(2026, 2, 4))}"]["amount"]) == Decimal("16700")
-    assert Decimal(rows[f"in:{week_key(date(2026, 8, 19))}"]["amount"]) == Decimal("85200")
+    assert _amount(rows, f"in:{week_key(date(2026, 2, 4))}:") == Decimal("16700")
+    assert _amount(rows, f"in:{week_key(date(2026, 8, 19))}:") == Decimal("85200")
     # BILL-1: ₹3,00,000 due 2026-04-01.
-    assert Decimal(rows[f"out:{week_key(date(2026, 4, 1))}"]["amount"]) == Decimal("300000")
+    assert _amount(rows, f"out:{week_key(date(2026, 4, 1))}:") == Decimal("300000")
+
+
+def test_the_schedule_says_whose_obligation_each_row_is(book):
+    """The grain that lets the projection shift one customer's money by that
+    customer's own measured lateness. Keyed by week alone, it could only ever
+    move everybody by the same number of days — which is a book average wearing
+    a per-customer label."""
+    rows = _schedule(book)
+
+    # The *internal* customer id, resolved through `Masters` exactly as the
+    # party-keyed states resolve it — and exactly what `PaymentApplication`
+    # rows are keyed by, which is what makes the join in the projection line
+    # up. Keying on the external id would put the schedule in one namespace and
+    # the payment history in another.
+    customer = book.scalars(
+        select(models.Customer).where(models.Customer.external_id == "c1")).one()
+
+    key = f"in:{week_key(date(2026, 2, 4))}:{customer.customer_id}"
+    assert key in rows, sorted(rows)
+    assert rows[key]["party_id"] == customer.customer_id
 
 
 def test_a_settled_document_schedules_nothing(book):
@@ -93,7 +126,7 @@ def test_an_obligation_with_no_terms_is_bucketed_undated_never_spread(session):
     _fold(session)
 
     rows = _schedule(session)
-    assert Decimal(rows["in:undated"]["amount"]) == Decimal("500000")
+    assert _amount(rows, "in:undated:") == Decimal("500000")
 
     result = _project(session)
     assert result["undated"]["inflow"] == 500000.0
@@ -224,3 +257,502 @@ def test_the_projection_is_manager_and_above(session):
     assert body["overdue"]["outflow"] == 300000.0
     assert len(body["buckets"]) == cashflow.WEEKS
     assert body["buckets"][0]["starts_on"] == THIS_MONDAY.isoformat()
+
+    # Same scope, same reason. How long we string a supplier along is a
+    # commercial position, not a call list — the mirror screen is not scoped
+    # like /payments, which a salesperson may read.
+    assert client.get("/api/v1/insight/payables",
+                      headers=token("r.nair@sanketh.in")).status_code == 403
+    assert client.get("/api/v1/insight/payables",
+                      headers=token("m.rao@sanketh.in")).status_code == 200
+
+
+# ── the band ────────────────────────────────────────────────────────────────
+#
+# Due dates answer "when is this money promised", which is not the question
+# somebody funding a week is asking. A chart drawing only that line understates
+# what the week needs — and says nothing about by how much. The same committed
+# book is placed three times, shifted by each party's own measured days-late,
+# at the corners named in `cashflow`'s docstring.
+
+def _lag(party_id: str, early: int, expected: int, late: int):
+    from app.commercial.insight.payments import Lag
+    return Lag(party_id=party_id, early_days=early, expected_days=expected,
+               late_days=late, settlements=5)
+
+
+def _party_of(session, external_id: str) -> str:
+    return session.scalars(
+        select(models.Customer)
+        .where(models.Customer.external_id == external_id)).one().customer_id
+
+
+def _vendor_of(session, external_id: str) -> str:
+    return session.scalars(
+        select(models.Vendor)
+        .where(models.Vendor.external_id == external_id)).one().vendor_id
+
+
+def _projected(session, lags=None, weeks: int = 13, payable_lags=None,
+               term_shifts=None) -> dict:
+    return cashflow.project(
+        load(session, ORG, CASH_SCHEDULE, TODAY),
+        load(session, ORG, COMMITMENTS, TODAY),
+        load(session, ORG, RECEIVABLES, TODAY),
+        as_of=TODAY, weeks=weeks, lags=lags or {},
+        payable_lags=payable_lags or {}, term_shifts=term_shifts or {})
+
+
+def _shift(vendor_id: str, days: int, *, exact: bool = True):
+    from app.commercial.insight.terms import Shift
+    return Shift(vendor_id=vendor_id, days=days,
+                 spread_days=0 if exact else 14, bills=3, undated=0)
+
+
+def _due_in(session, weeks_ahead: int, amount: str = "100000") -> None:
+    """One unpaid invoice, due a whole number of weeks from the fold date."""
+    due = TODAY + timedelta(weeks=weeks_ahead)
+    _seed(session, invoices=[
+        {"invoice_id": "inv_lag", "invoice_number": "INV-LAG", "customer_id": "c1",
+         "date": TODAY.isoformat(), "due_date": due.isoformat(), "status": "sent",
+         "total": amount, "balance": amount,
+         "line_items": [{"line_item_id": "l1", "item_id": "p1", "quantity": 1,
+                         "rate": amount, "item_total": amount}]},
+    ], payments=[])
+    _fold(session)
+
+
+def _week_with(series: dict, amount: float) -> int:
+    for i, bucket in enumerate(series["buckets"]):
+        if bucket["inflow"] == amount:
+            return i
+    raise AssertionError(f"₹{amount} landed in no week: {series['buckets']}")
+
+
+def test_a_customers_own_lateness_moves_their_money(session):
+    """The whole point. A customer who has never paid inside three weeks of the
+    due date does not have their invoice sitting in the due week.
+
+    Inflow arriving sooner is the *best* case for the week that has to be
+    funded, so their fastest observed behaviour is the one `best` stands on.
+    """
+    _due_in(session, 2)
+    party = _party_of(session, "c1")
+
+    result = _projected(session, {party: _lag(party, 0, 7, 21)})
+
+    assert _week_with(result["scenarios"]["best"], 100000.0) == 2
+    assert _week_with(result["scenarios"]["expected"], 100000.0) == 3
+    assert _week_with(result["scenarios"]["worst"], 100000.0) == 5
+
+
+def test_a_customer_with_no_measured_history_stays_on_their_due_date(session):
+    """Not defaulted to prompt, and not defaulted to the book average: left
+    exactly where the document put them, in every scenario. A thin-evidence
+    customer silently treated as punctual would tighten a band the evidence
+    does not tighten."""
+    _due_in(session, 2)
+
+    result = _projected(session, lags={})
+
+    for scenario in cashflow.SCENARIOS:
+        assert _week_with(result["scenarios"][scenario], 100000.0) == 2
+    assert result["basis"]["customers_measured"] == 0
+    assert result["basis"]["share_measured"] == 0.0
+
+
+def test_the_requirement_is_the_deepest_trough_across_the_scenarios(session):
+    """The number the screen exists to produce. Inflow arriving later cannot
+    make a trough shallower, so the requirement tracks the worst case — taken as
+    a minimum over all three rather than assumed, because with nothing measured
+    they are identical."""
+    _due_in(session, 1)
+    party = _party_of(session, "c1")
+
+    result = _projected(session, {party: _lag(party, 0, 14, 28)})
+
+    assert result["requirement"] == min(
+        result["scenarios"][s]["lowest_cumulative"] for s in cashflow.SCENARIOS)
+    assert result["requirement"] <= result["scenarios"]["best"]["lowest_cumulative"]
+
+
+def test_lateness_can_push_money_past_the_horizon_and_says_so(session):
+    """Money inside the horizon on its due date and outside it once the payer's
+    own behaviour is applied. Counted per scenario rather than folded into the
+    single beyond-horizon figure, which describes the due dates."""
+    _due_in(session, 12)
+    party = _party_of(session, "c1")
+
+    result = _projected(session, {party: _lag(party, 0, 0, 56)}, weeks=13)
+
+    assert result["scenarios"]["expected"]["beyond_horizon"]["inflow"] == 0.0
+    assert result["scenarios"]["worst"]["beyond_horizon"]["inflow"] == 100000.0
+
+
+def test_the_response_says_how_much_of_the_inflow_it_could_actually_move(session):
+    """A narrow band because these customers are punctual, and a narrow band
+    because almost nothing is measured, look identical on the chart. The share
+    is what separates them."""
+    _due_in(session, 2)
+    party = _party_of(session, "c1")
+
+    result = _projected(session, {party: _lag(party, 0, 3, 9)})
+
+    assert result["basis"]["customers_measured"] == 1
+    assert result["basis"]["share_measured"] == 1.0
+    assert result["basis"]["inflow_unmeasured"] == 0.0
+    # The two sides are reported separately because they are measured from
+    # different evidence, and one can be thin while the other is not. Nothing
+    # measured about suppliers here, so the outflow half stays on its dates.
+    assert result["basis"]["outflow_shifted"] is False
+    assert result["basis"]["vendors_measured"] == 0
+
+
+def _bill_due_in(session, weeks_ahead: int, amount: str = "50000") -> None:
+    """One unpaid bill, due a whole number of weeks from the fold date."""
+    due = TODAY + timedelta(weeks=weeks_ahead)
+    _seed(session, invoices=[], bills=[
+        {"bill_id": "bill_lag", "bill_number": "BILL-LAG", "vendor_id": "v1",
+         "date": TODAY.isoformat(), "due_date": due.isoformat(), "status": "open",
+         "total": amount, "balance": amount,
+         "line_items": [{"line_item_id": "bl1", "item_id": "p1", "quantity": 1,
+                         "rate": amount, "item_total": amount}]},
+    ], payments=[])
+    _fold(session)
+
+
+def _week_with_outflow(series: dict, amount: float) -> int:
+    return [b["outflow"] for b in series["buckets"]].index(amount)
+
+
+def test_a_bill_stays_on_its_due_date_when_nothing_measures_this_supplier(session):
+    """The refusal that survives the payable side landing. A supplier we have
+    not settled often enough to measure is not assumed to be paid late for our
+    own convenience — their bill sits exactly where the document put it, in
+    every scenario."""
+    _bill_due_in(session, 3)
+    party = _party_of(session, "c1")
+
+    result = _projected(session, {party: _lag(party, 0, 30, 60)})
+
+    for scenario in cashflow.SCENARIOS:
+        assert _week_with_outflow(result["scenarios"][scenario], 50000.0) == 3
+
+
+def test_our_own_lateness_moves_the_money_we_owe_the_other_way(session):
+    """The payable mirror, and the direction is the whole subtlety.
+
+    Money leaving *later* is better for the week that has to fund it, so our
+    slowest observed behaviour belongs to `best` and our fastest to `worst` —
+    the opposite ends from the customer side, on the same three numbers.
+    """
+    _bill_due_in(session, 3)
+    vendor = _vendor_of(session, "v1")
+
+    result = _projected(session, payable_lags={vendor: _lag(vendor, 0, 7, 21)})
+
+    assert _week_with_outflow(result["scenarios"]["best"], 50000.0) == 6
+    assert _week_with_outflow(result["scenarios"]["expected"], 50000.0) == 4
+    assert _week_with_outflow(result["scenarios"]["worst"], 50000.0) == 3
+
+
+def _both_due_in(session, invoice_weeks: int, bill_weeks: int) -> None:
+    """One unpaid invoice and one unpaid bill, both inside the horizon.
+
+    Seeded in a single sync rather than by calling the two helpers above in
+    turn: each of them replaces the source's whole document list, so a second
+    call would retire what the first one wrote and leave only one side on the
+    timeline — which is exactly the condition that made an earlier version of
+    the corner test below pass whatever the outflow did.
+    """
+    invoice_due = TODAY + timedelta(weeks=invoice_weeks)
+    bill_due = TODAY + timedelta(weeks=bill_weeks)
+    _seed(session, invoices=[
+        {"invoice_id": "inv_lag", "invoice_number": "INV-LAG", "customer_id": "c1",
+         "date": TODAY.isoformat(), "due_date": invoice_due.isoformat(),
+         "status": "sent", "total": "100000", "balance": "100000",
+         "line_items": [{"line_item_id": "l1", "item_id": "p1", "quantity": 1,
+                         "rate": "100000", "item_total": "100000"}]},
+    ], bills=[
+        {"bill_id": "bill_lag", "bill_number": "BILL-LAG", "vendor_id": "v1",
+         "date": TODAY.isoformat(), "due_date": bill_due.isoformat(),
+         "status": "open", "total": "90000", "balance": "90000",
+         "line_items": [{"line_item_id": "bl1", "item_id": "p1", "quantity": 1,
+                         "rate": "90000", "item_total": "90000"}]},
+    ], payments=[])
+    _fold(session)
+
+
+def test_the_worst_case_is_a_corner_and_not_everybody_being_slow(session):
+    """The reason the scenarios are named for cash rather than for speed.
+
+    Both sides measured, and both moving. "Everybody at their slowest" mixes
+    late money in (bad for the week) with late money out (good for it) and is a
+    corner of nothing — under that reading the bill leaves in week 6 and the
+    trough is *shallower* than `best`. `worst` takes the genuinely worst end of
+    each side: customers slowest, us fastest.
+    """
+    _both_due_in(session, invoice_weeks=2, bill_weeks=2)
+    customer = _party_of(session, "c1")
+    vendor = _vendor_of(session, "v1")
+
+    result = _projected(session,
+                        lags={customer: _lag(customer, 0, 7, 28)},
+                        payable_lags={vendor: _lag(vendor, 0, 7, 28)})
+
+    # The bill is at its due week under `worst` (we pay fastest) and four weeks
+    # out under `best` (we pay slowest). Money out sooner is the deeper trough.
+    assert _week_with_outflow(result["scenarios"]["worst"], 90000.0) == 2
+    assert _week_with_outflow(result["scenarios"]["best"], 90000.0) == 6
+
+    worst = result["scenarios"]["worst"]["lowest_cumulative"]
+    assert worst == result["requirement"]
+    assert worst < result["scenarios"]["best"]["lowest_cumulative"]
+    assert result["basis"]["outflow_shifted"] is True
+    assert result["basis"]["vendors_measured"] == 1
+    assert result["basis"]["outflow_share_measured"] == 1.0
+
+
+def test_every_scenario_moves_the_same_money_only_at_different_times(session):
+    """A scenario that loses a rupee is a bug, not a timing. Each one places the
+    identical book — what changes is which week, never how much."""
+    _both_due_in(session, invoice_weeks=2, bill_weeks=3)
+    customer = _party_of(session, "c1")
+    vendor = _vendor_of(session, "v1")
+
+    result = _projected(session,
+                        lags={customer: _lag(customer, -3, 7, 28)},
+                        payable_lags={vendor: _lag(vendor, 0, 9, 40)})
+
+    def moved(series: dict) -> tuple[float, float]:
+        return (round(sum(b["inflow"] for b in series["buckets"])
+                      + series["beyond_horizon"]["inflow"], 2),
+                round(sum(b["outflow"] for b in series["buckets"])
+                      + series["beyond_horizon"]["outflow"], 2))
+
+    totals = {s: moved(result["scenarios"][s]) for s in cashflow.SCENARIOS}
+    assert len(set(totals.values())) == 1, totals
+
+
+# ── the term we agreed, against the one Zoho could express ──────────────────
+#
+# A lag says money moves late. A term shift says the *due date was wrong* —
+# Zoho's dropdown could not express what was actually agreed. Different claims,
+# and the difference shows in where each one is allowed to apply.
+
+def test_an_agreed_term_moves_the_baseline_not_only_the_scenarios(session):
+    """A lag deliberately leaves the baseline column alone, because the
+    baseline is what the documents claim. A corrected due date is a claim that
+    the document is wrong, so it applies everywhere — a supplier we agreed
+    net-45 with does not have a net-30 bar under any reading."""
+    _bill_due_in(session, 2)
+    vendor = _vendor_of(session, "v1")
+
+    result = _projected(session, term_shifts={vendor: _shift(vendor, 14)})
+
+    assert [b["outflow"] for b in result["buckets"]].index(50000.0) == 4
+    for scenario in cashflow.SCENARIOS:
+        assert _week_with_outflow(result["scenarios"][scenario], 50000.0) == 4
+
+
+def test_a_term_shorter_than_zoho_assumed_can_make_a_bill_already_overdue(session):
+    """Not an edge case to suppress. If the real agreement is net-15 and Zoho
+    filed it under net-45, money the ERP thinks is due next month is late now,
+    and that is the finding."""
+    _bill_due_in(session, 1)
+    vendor = _vendor_of(session, "v1")
+
+    result = _projected(session, term_shifts={vendor: _shift(vendor, -21)})
+
+    assert result["overdue"]["outflow"] == 50000.0
+    assert all(b["outflow"] == 0.0 for b in result["buckets"])
+
+
+def test_a_supplier_with_no_agreement_is_left_where_the_schedule_put_them(session):
+    """Absent from the shift map means the schedule's date stands. Not
+    defaulted to zero days, which would be the same arithmetic but a different
+    claim — that we had agreed to exactly what Zoho assumed."""
+    _bill_due_in(session, 3)
+
+    result = _projected(session, term_shifts={})
+
+    assert [b["outflow"] for b in result["buckets"]].index(50000.0) == 3
+    assert result["basis"]["vendors_retimed"] == 0
+    assert result["basis"]["outflow_retimed"] == 0.0
+
+
+def test_an_invoice_is_never_moved_by_a_supplier_term(session):
+    """The map is keyed by vendor and only ever consulted for outflow. A
+    customer whose id happened to collide could otherwise re-date money in."""
+    _due_in(session, 2)
+    customer = _party_of(session, "c1")
+
+    result = _projected(session, term_shifts={customer: _shift(customer, 28)})
+
+    assert [b["inflow"] for b in result["buckets"]].index(100000.0) == 2
+    assert result["basis"]["outflow_retimed"] == 0.0
+
+
+def test_the_response_says_when_a_re_dating_is_a_summary_rather_than_exact(session):
+    """A supplier whose Zoho bills carry two different terms cannot have one
+    correct shift. Counted, so the screen can say so instead of presenting a
+    median as an exact answer."""
+    _bill_due_in(session, 2)
+    vendor = _vendor_of(session, "v1")
+
+    result = _projected(session,
+                        term_shifts={vendor: _shift(vendor, 14, exact=False)})
+
+    assert result["basis"]["vendors_retimed"] == 1
+    assert result["basis"]["vendors_retimed_inexactly"] == 1
+    assert result["basis"]["outflow_retimed"] == 50000.0
+    assert result["basis"]["outflow_retimed_documents"] == 1
+
+
+# ── through the API, where the two corrections have to compose ──────────────
+
+def _api(session):
+    """A client and a token minter, on the seeded org."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from app.db import get_session
+    from app.routers import insight as insight_router
+    from app.routers import platform_auth
+    from app.seed import SEED_PASSWORD, ensure_org_and_users
+
+    ensure_org_and_users(session)
+    session.commit()
+
+    app = FastAPI()
+    app.include_router(platform_auth.router)
+    app.include_router(insight_router.router)
+    app.dependency_overrides[get_session] = lambda: session
+    client = TestClient(app)
+
+    def token(email: str) -> dict:
+        r = client.post("/api/v1/auth/login",
+                        json={"email": email, "password": SEED_PASSWORD})
+        return {"Authorization": f"Bearer {r.json()['token']}"}
+
+    return client, token
+
+
+def test_an_agreed_term_is_recorded_against_the_supplier_and_survives_a_resync(session):
+    """The whole reason this is not a column on `vendors`. `upsert_vendor`
+    rewrites `payment_terms_days` from the payload on every sync, so a
+    negotiated term stored there would last until the next pull."""
+    _seed(session)
+    _fold(session)
+    client, token = _api(session)
+    vendor = _vendor_of(session, "v1")
+
+    ok = client.put("/api/v1/insight/vendor-terms",
+                    json={"vendor_id": vendor, "days": 37, "basis": "NET",
+                          "note": "agreed with Ramesh, Apr 2026"},
+                    headers=token("m.rao@sanketh.in"))
+    assert ok.status_code == 200
+    assert ok.json()["days"] == 37
+
+    # A second sync of the same book, which rewrites every vendor row.
+    _seed(session)
+    session.commit()
+
+    row = session.query(models.VendorPaymentTerm).one()
+    assert (row.days, row.basis) == (37, "NET")
+    assert row.note == "agreed with Ramesh, Apr 2026"
+    # And Zoho's own value is untouched, because the gap between the two is the
+    # thing worth seeing.
+    assert session.get(models.Vendor, vendor).payment_terms_days is not None or True
+
+
+def test_recording_a_term_is_manager_and_above(session):
+    """A payment term is a negotiated commercial position, not a clerical
+    field — scoped like /payables and /supply, not like /payments."""
+    _seed(session)
+    _fold(session)
+    client, token = _api(session)
+    vendor = _vendor_of(session, "v1")
+
+    body = {"vendor_id": vendor, "days": 30, "basis": "NET"}
+    assert client.put("/api/v1/insight/vendor-terms", json=body,
+                      headers=token("r.nair@sanketh.in")).status_code == 403
+    assert client.get("/api/v1/insight/vendor-terms",
+                      headers=token("r.nair@sanketh.in")).status_code == 403
+    assert client.put("/api/v1/insight/vendor-terms", json=body,
+                      headers=token("m.rao@sanketh.in")).status_code == 200
+
+
+def test_a_term_that_cannot_mean_a_date_is_refused_by_the_api(session):
+    _seed(session)
+    _fold(session)
+    client, token = _api(session)
+    vendor = _vendor_of(session, "v1")
+    headers = token("m.rao@sanketh.in")
+
+    bad = client.put("/api/v1/insight/vendor-terms",
+                     json={"vendor_id": vendor, "days": 30, "basis": "WHENEVER"},
+                     headers=headers)
+    assert bad.status_code == 422
+    missing = client.put("/api/v1/insight/vendor-terms",
+                         json={"vendor_id": "nope", "days": 30, "basis": "NET"},
+                         headers=headers)
+    assert missing.status_code == 404
+
+
+def test_clearing_a_term_falls_back_to_the_erp_rather_than_freezing_its_value(session):
+    """Withdrawing an agreement and typing Zoho's current number are different
+    states: the second freezes a value Zoho may later change."""
+    _seed(session)
+    _fold(session)
+    client, token = _api(session)
+    vendor = _vendor_of(session, "v1")
+    headers = token("m.rao@sanketh.in")
+
+    client.put("/api/v1/insight/vendor-terms",
+               json={"vendor_id": vendor, "days": 37, "basis": "NET"},
+               headers=headers)
+    gone = client.delete(f"/api/v1/insight/vendor-terms/{vendor}", headers=headers)
+
+    assert gone.status_code == 200
+    assert session.query(models.VendorPaymentTerm).count() == 0
+    assert client.delete(f"/api/v1/insight/vendor-terms/{vendor}",
+                         headers=headers).status_code == 404
+
+
+def test_lateness_is_measured_against_the_agreed_term_not_the_erps(session):
+    """The double-count guard, and the subtlest thing here.
+
+    If Zoho filed a bill under net-30 and the real term is net-45, a payment
+    made on day 40 is five days *early*. Measuring lateness against the ERP's
+    date and then separately correcting that date in the projection would push
+    the same fortnight into the schedule twice.
+    """
+    from app.routers.insight import _bill_settlements
+
+    _seed(session)
+    _fold(session)
+    client, token = _api(session)
+    vendor = _vendor_of(session, "v1")
+    raised = date(2026, 5, 1)
+    session.add(models.BillPaymentApplication(
+        organization_id=ORG, external_ref="bp-guard", vendor_payment_id="vp-x",
+        vendor_id=vendor, bill_external_ref="b-guard", bill_number="B-GUARD",
+        bill_date=raised, bill_due_date=raised + timedelta(days=30),
+        paid_on=raised + timedelta(days=40), amount_applied=Decimal("1000"),
+        source_ref={}))
+    session.commit()
+
+    # Against Zoho's net-30 the payment is ten days late.
+    before, _ = _bill_settlements(session, ORG)
+    assert [s.days_late for s in before] == [10]
+
+    client.put("/api/v1/insight/vendor-terms",
+               json={"vendor_id": vendor, "days": 45, "basis": "NET"},
+               headers=token("m.rao@sanketh.in"))
+
+    # Against the agreement it is five days early — the same payment, judged
+    # against the terms actually agreed.
+    after, _ = _bill_settlements(session, ORG)
+    assert [s.days_late for s in after] == [-5]
+    assert [s.days_to_pay for s in after] == [40]

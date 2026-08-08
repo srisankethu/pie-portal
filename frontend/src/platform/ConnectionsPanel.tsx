@@ -770,6 +770,7 @@ export function ConnectionsPanel({
   canSync,
   onSync,
   busyConnections,
+  everyCompanyBusy = false,
   starting,
 }: {
   session: PlatformSession;
@@ -779,6 +780,10 @@ export function ConnectionsPanel({
   /** Companies with a pull in flight, from the server. Each card gates on its
    *  own membership here rather than on a single organization-wide flag. */
   busyConnections: string[];
+  /** An all-companies run is in flight, which covers every card here. It
+   *  reports itself with a NULL connection, so it is never in
+   *  `busyConnections` — this is how a card knows it is being pulled anyway. */
+  everyCompanyBusy?: boolean;
   /** A start request has been posted and not yet answered. */
   starting: boolean;
 }) {
@@ -920,7 +925,7 @@ export function ConnectionsPanel({
               await onSync(id, since, full);
               await load();   // last pulled / suggested date move with the run
             }}
-            syncing={busyConnections.includes(c.connection_id)}
+            syncing={busyConnections.includes(c.connection_id) || everyCompanyBusy}
             syncBusy={starting}
           />
         ))}

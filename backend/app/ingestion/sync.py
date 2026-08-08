@@ -23,7 +23,7 @@ exactly how far the pull got.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from datetime import date
 from typing import Any, Callable, Optional
 
@@ -178,6 +178,32 @@ class SyncReport:
                     or self.stock_snapshots or self.payments
                     or self.purchase_orders or self.sales_orders
                     or self.vendor_payments)
+
+    def merge(self, other: "SyncReport") -> "SyncReport":
+        """Fold another connected company's pull into this one.
+
+        A run that covers three Zoho companies is still one row on the sync
+        screen, and every number on that row has to be the total rather than
+        whichever company happened to go last. Counters add, lists concatenate,
+        and the touched-id sets union — the last of those is what keeps the
+        Customer × Item recompute afterwards targeting everything that moved
+        rather than only the final company's share of it.
+
+        Written by field kind rather than by name so a counter added to this
+        dataclass later is summed without anybody having to remember this
+        method exists.
+        """
+        for f in fields(self):
+            if f.name == "organization_id":
+                continue
+            mine, theirs = getattr(self, f.name), getattr(other, f.name)
+            if isinstance(mine, int):
+                setattr(self, f.name, mine + theirs)
+            elif isinstance(mine, list):
+                mine.extend(theirs)
+            elif isinstance(mine, set):
+                mine |= theirs
+        return self
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -542,7 +568,8 @@ class SyncService:
             self.report.sales_orders += 1
 
     def _sync_vendor_payments(self) -> None:
-        for raw in self.source.list_vendor_payments():
+        for raw in self.source.list_vendor_payments(
+                skip=self._skipper("vendorpayment")):
             ref = str(raw.get("payment_id", "?"))
             try:
                 vp = normalize_vendor_payment(raw)
@@ -556,7 +583,11 @@ class SyncService:
             self.repo.upsert_vendor_payment(vendor_id, vp)
             self.log.supersede("vendor_payment", vp.external_ref)
             self.log.record(ev.PAYMENT_MADE, vp.date,
-                       Source("vendor_payment", vp.external_ref), vp)
+                       Source("vendor_payment", vp.external_ref,
+                              modified_at=str(raw.get("last_modified_time") or "")),
+                       vp)
+            self.repo.mark_ingested("vendorpayment", ref,
+                                    str(raw.get("last_modified_time") or ""))
             self.report.vendor_payments += 1
 
     def finish(self) -> None:

@@ -839,13 +839,20 @@ class ZohoApiSource:
                 "salesperson_id": so.get("salesperson_id"),
             }
 
-    def list_vendor_payments(self) -> Iterable[dict[str, Any]]:
-        """Money out. The half of cash the platform has never read.
+    def list_vendor_payments(
+            self, skip: Optional[SkipPredicate] = None) -> Iterable[dict[str, Any]]:
+        """Money out, with the bills each payment settled.
 
         Customer payments have been read since the cash screen was built;
         without this, "cash" is receipts with nothing subtracted, which is not
         cash — it is revenue collected. Liquidity and working capital are not
         computable from one side of the ledger.
+
+        The detail call is here for the same reason it is on the receivable
+        side: the list row carries the amount and the date but not which bills
+        went out with it, and "how long do we take to pay" is per bill settled,
+        not per transfer sent. ``skip`` makes a resumed pull cost one list call
+        instead of hundreds of detail calls, exactly as for customer payments.
         """
         cutoff = self._cutoff()
         until = self._until
@@ -857,13 +864,45 @@ class ZohoApiSource:
                 continue
             if paid_on < cutoff or (until is not None and paid_on > until):
                 continue
+            payment_id = str(p.get("payment_id"))
+            if skip is not None and skip(payment_id,
+                                         str(p.get("last_modified_time") or "")):
+                self.documents_resumed += 1
+                continue
+            detail = self._get(f"vendorpayments/{payment_id}").get("vendorpayment") or {}
+            # The list row is a complete payment on its own — amount, date and
+            # supplier are all on it. A detail call that comes back empty costs
+            # the bill breakdown, not the payment, so the row is still yielded
+            # rather than dropped: money out with no measurable lag beats no
+            # money out at all.
+            if detail:
+                self.documents_fetched += 1
+            source = detail or p
             yield {
-                "payment_id": str(p.get("payment_id")),
-                "vendor_id": (str(p["vendor_id"]) if p.get("vendor_id") else None),
-                "date": p.get("date"),
-                "amount": p.get("amount"),
-                "payment_mode": p.get("payment_mode"),
-                "reference_number": p.get("reference_number"),
+                "payment_id": payment_id,
+                "vendor_id": (str(source["vendor_id"]) if source.get("vendor_id")
+                              else None),
+                "date": source.get("date"),
+                "last_modified_time": (source.get("last_modified_time")
+                                       or p.get("last_modified_time")),
+                "amount": source.get("amount"),
+                "payment_mode": source.get("payment_mode"),
+                "reference_number": source.get("reference_number"),
+                "bills": [
+                    {
+                        "bill_payment_id": str(a.get("bill_payment_id") or ""),
+                        "bill_id": str(a.get("bill_id") or ""),
+                        "bill_number": a.get("bill_number"),
+                        # The bill's own dates, carried on the application: a
+                        # bill older than the sync window still has to produce
+                        # a days-to-pay, and those are the slow ones.
+                        "date": a.get("date"),
+                        "due_date": a.get("due_date"),
+                        "amount_applied": a.get("amount_applied"),
+                    }
+                    for a in (detail.get("bills") or [])
+                    if a.get("bill_id")
+                ],
             }
 
     def list_users(self) -> Iterable[dict[str, Any]]:

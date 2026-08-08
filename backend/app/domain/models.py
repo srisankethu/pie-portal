@@ -391,6 +391,61 @@ class VendorTarget(Base):
                                                  onupdate=_now)
 
 
+class VendorPaymentTerm(Base):
+    """What we actually agreed to pay a supplier in — not what Zoho could express.
+
+    Zoho's payment terms are a fixed list, so a bill raised under a real
+    agreement of "net 37" or "45 days from month end" gets filed under the
+    nearest thing on the dropdown. Every due date derived from it is then wrong
+    by days, in a direction nobody chose, and the cash projection places money
+    on those dates. This table is the agreement itself.
+
+    A separate table rather than a column on ``Vendor``, and for the same reason
+    ``ItemCategoryOverride`` is separate from ``Product``: vendors are *derived*
+    — ``upsert_vendor`` rewrites ``payment_terms_days`` from the payload on
+    every sync — so a negotiated term stored there would survive exactly until
+    the next pull. This is typed, it is the only copy, and it must survive a
+    complete re-sync.
+
+    **Zoho's value is never overwritten.** ``Vendor.payment_terms_days`` keeps
+    saying what the ERP says; this says what was agreed. Both are shown, because
+    the difference between them is the thing worth seeing — and because a
+    schedule that quietly disagreed with Zoho with no way to see why is a
+    schedule nobody can reconcile.
+
+    ``basis`` is not decoration, the same way it is not on ``VendorTarget``.
+    "45 days" and "45 days from the end of the month" are up to a month apart on
+    the same bill, and a single day count would silently treat one as the other.
+    """
+
+    __tablename__ = "vendor_payment_terms"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "vendor_id",
+                         name="uq_vendor_payment_term_vendor"),
+    )
+
+    vendor_payment_term_id: Mapped[str] = mapped_column(String(64),
+                                                        primary_key=True,
+                                                        default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    vendor_id: Mapped[str] = mapped_column(String(64),
+                                           ForeignKey("vendors.vendor_id"),
+                                           index=True)
+    #: Days. Counted from the bill date under ``NET``, and from the last day of
+    #: the bill's month under ``END_OF_MONTH``.
+    days: Mapped[int] = mapped_column(Integer)
+    #: ``NET`` or ``END_OF_MONTH``. See ``commercial/insight/terms.py``, which
+    #: owns what each one means as a date.
+    basis: Mapped[str] = mapped_column(String(16), default="NET")
+    #: Who typed it, and what they were told. A term nobody can source is one
+    #: nobody can defend when a supplier disputes it.
+    set_by_user_id: Mapped[Optional[str]] = mapped_column(String(64))
+    note: Mapped[Optional[str]] = mapped_column(String(512))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
+                                                 onupdate=_now)
+
+
 class ItemCategoryOverride(Base):
     """What a person said an item's line is, when the catalogue could not say.
 
@@ -1746,10 +1801,10 @@ class VendorPaymentDoc(Base):
     working capital could not be computed from one side of the ledger. This is
     the other side.
 
-    No application table beside it, deliberately: Zoho's vendor payment carries
-    which bills it settled, but nothing in the platform computes supplier
-    ageing yet, and a table nobody reads is a table that silently rots. It is
-    added when the first reader exists.
+    ``BillPaymentApplication`` is the application table this docstring used to
+    say would be "added when the first reader exists". The reader exists: the
+    cash projection places money out on the dates our bills claim, and had no
+    way to know that this book settles them a fortnight after those dates.
     """
 
     __tablename__ = "vendor_payments"
@@ -1769,6 +1824,57 @@ class VendorPaymentDoc(Base):
     amount: Mapped[Any] = mapped_column(Numeric(18, 4))
     mode: Mapped[Optional[str]] = mapped_column(String(48))
     reference: Mapped[Optional[str]] = mapped_column(String(128))
+    source_ref: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class BillPaymentApplication(Base):
+    """One payment out against one bill — the row days-to-pay is computed from.
+
+    The mirror of ``PaymentApplication``, at the same grain and for the same
+    reason: one bank transfer settling ten bills is ten observations, each with
+    its own bill date, and measuring the payment instead would give a book that
+    batches its remittances a single flattering data point.
+
+    The bill's own date and due date are stored here rather than joined to
+    ``bills``, exactly as on the receivable side. A bill can predate the sync
+    window — a payment made today may settle one from before the platform's
+    history starts — and a join would silently drop precisely the slowest
+    settlements, which are the ones a supplier is already unhappy about.
+
+    ``vendor_id`` is nullable where ``PaymentApplication.customer_id`` is not,
+    and the asymmetry is real rather than an oversight: an inbound payment from
+    a customer the contact pull never returned is skipped at ingest, while a
+    payment *we* made is a fact about our own bank account whether or not the
+    supplier resolved. It is kept, and left out of the per-vendor behaviour with
+    the count reported, rather than dropped or filed under a placeholder.
+    """
+
+    __tablename__ = "bill_payment_applications"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "external_ref",
+                         name="uq_bill_payment_application_org_external"),
+        Index("ix_bill_payment_app_org_bill", "organization_id", "bill_external_ref"),
+    )
+
+    bill_payment_application_id: Mapped[str] = mapped_column(String(64),
+                                                             primary_key=True,
+                                                             default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    external_ref: Mapped[str] = mapped_column(String(128), index=True)
+    vendor_payment_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("vendor_payments.vendor_payment_id"), index=True)
+    vendor_id: Mapped[Optional[str]] = mapped_column(String(64),
+                                                     ForeignKey("vendors.vendor_id"),
+                                                     index=True)
+    bill_external_ref: Mapped[str] = mapped_column(String(128), index=True)
+    bill_number: Mapped[Optional[str]] = mapped_column(String(128))
+    bill_date: Mapped[date] = mapped_column(Date)
+    #: When it was contractually due. Absent on some bills; a missing due date
+    #: makes "days late" unanswerable, never zero.
+    bill_due_date: Mapped[Optional[date]] = mapped_column(Date)
+    paid_on: Mapped[date] = mapped_column(Date, index=True)
+    amount_applied: Mapped[Any] = mapped_column(Numeric(18, 4))
     source_ref: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 

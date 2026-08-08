@@ -60,6 +60,7 @@ import AccountTreeOutlined from "@mui/icons-material/AccountTreeOutlined";
 import TrackChangesOutlined from "@mui/icons-material/TrackChangesOutlined";
 import CategoryOutlined from "@mui/icons-material/CategoryOutlined";
 import PaymentsOutlined from "@mui/icons-material/PaymentsOutlined";
+import ReceiptLongOutlined from "@mui/icons-material/ReceiptLongOutlined";
 import StorageOutlined from "@mui/icons-material/StorageOutlined";
 import FingerprintOutlined from "@mui/icons-material/FingerprintOutlined";
 import PsychologyOutlined from "@mui/icons-material/PsychologyOutlined";
@@ -107,6 +108,7 @@ const ICON: Partial<Record<Screen, typeof MenuIcon>> = {
   targets: TrackChangesOutlined,
   catalogue: CategoryOutlined,
   payments: PaymentsOutlined,
+  payables: ReceiptLongOutlined,
 
   data: StorageOutlined,
   identity: FingerprintOutlined,

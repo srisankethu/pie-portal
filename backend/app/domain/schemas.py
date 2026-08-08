@@ -160,14 +160,29 @@ class StockSnapshotIn(BaseModel):
         return Decimal(str(v))
 
 
-class PaymentApplicationIn(BaseModel):
+class DocumentApplicationIn(BaseModel):
+    """One payment set against one document, in either direction.
+
+    Named for the document rather than for the invoice because the payable side
+    carries exactly this shape: a payment out, the bill it settled, and that
+    bill's own date and terms. The two tables it lands in keep their own column
+    names (``invoice_date`` / ``bill_date``), because a released column is not
+    worth renaming to match a DTO — but there is one description of what an
+    application *is*, so the two sides cannot drift on which dates they carry.
+    """
+
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     external_ref: str = Field(min_length=1)
-    invoice_external_ref: str = Field(min_length=1)
-    invoice_number: Optional[str] = None
-    invoice_date: date
-    invoice_due_date: Optional[date] = None
+    document_external_ref: str = Field(min_length=1)
+    document_number: Optional[str] = None
+    #: When the document was raised. Required: without it there is no
+    #: days-to-pay to compute, and defaulting it to the payment date would
+    #: manufacture a book that always settles same-day.
+    document_date: date
+    #: When it fell due. Absent on documents raised without terms, which makes
+    #: "days late" unanswerable for them — never zero.
+    document_due_date: Optional[date] = None
     amount_applied: Decimal
 
     @field_validator("amount_applied", mode="before")
@@ -186,7 +201,7 @@ class PaymentReceiptIn(BaseModel):
     mode: Optional[str] = None
     is_advance: bool = False
     unapplied_amount: Optional[Decimal] = None
-    applications: list[PaymentApplicationIn] = Field(default_factory=list)
+    applications: list[DocumentApplicationIn] = Field(default_factory=list)
     source_ref: SourceRef
 
     @field_validator("amount", "unapplied_amount", mode="before")
@@ -299,6 +314,10 @@ class VendorPaymentIn(BaseModel):
     amount: Decimal
     mode: Optional[str] = None
     reference: Optional[str] = None
+    #: Which bills this payment settled. The same shape the receivable side
+    #: carries, so how long *we* take to pay is measured from the same kind of
+    #: row — and by the same code — as how long our customers take.
+    applications: list[DocumentApplicationIn] = Field(default_factory=list)
     source_ref: SourceRef
 
     @field_validator("amount", mode="before")

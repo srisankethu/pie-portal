@@ -11,7 +11,7 @@ because eroding them makes screens look fuller.
 """
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
@@ -735,8 +735,8 @@ def test_orders_in_the_timeline_count_invoices_not_lines():
 def _settled(customer: str, invoiced: date, paid: date, amount=1000.0,
              due: date | None = None):
     from app.commercial.insight.payments import Settlement
-    return Settlement(customer_id=customer, invoice_ref=f"{customer}-{invoiced}",
-                      invoice_number=None, invoice_date=invoiced, due_date=due,
+    return Settlement(party_id=customer, document_ref=f"{customer}-{invoiced}",
+                      document_number=None, document_date=invoiced, due_date=due,
                       paid_on=paid, amount=amount)
 
 
@@ -1229,7 +1229,213 @@ def test_batching_and_part_payment_are_counted_because_they_change_the_call():
                                     date(2026, 5, 1), 500.0))
     got = payments.classify(rows)
     assert got["largest_batch"] == 3
-    assert got["part_paid_invoices"] == 1
+    assert got["part_paid_documents"] == 1
+
+
+# ── the payable side, on the same arithmetic ────────────────────────────────
+#
+# There is no `payables.py` to test. The measurement is identical whichever
+# direction the money runs, so these check the two things that genuinely differ:
+# the vocabulary the response comes back in, and the prose attached to a
+# pattern. Everything numeric is covered by the tests above and is the same
+# code path.
+
+def test_the_payable_side_answers_in_vendors_and_bills():
+    """Same figures, the other ledger. A screen reading this must not have to
+    know that `customers` sometimes means suppliers."""
+    from app.commercial.insight import payments
+
+    rows = [_pay("v1", date(2026, 1, i + 1), date(2026, 2, i + 1),
+                 due=date(2026, 1, i + 25), ref=f"bill-{i}") for i in range(4)]
+    got = payments.build(rows, {"v1": "Kalyani Steels"}, date(2026, 3, 1),
+                         side=payments.PAYABLE)
+
+    assert "customers" not in got
+    assert [v["vendor_id"] for v in got["vendors"]] == ["v1"]
+    assert got["vendors"][0]["label"] == "Kalyani Steels"
+    assert (got["side"], got["party"], got["document"]) == ("payable", "vendor", "bill")
+    assert "bill" in got["note"]
+
+
+def test_a_pattern_means_something_different_when_we_are_the_late_one():
+    """The one thing that is not shared arithmetic. A customer who is
+    predictably late is a conversation to have with them; we who are
+    predictably late are a position our own suppliers already price in."""
+    from app.commercial.insight import payments
+
+    assert "terms problem" in payments.PATTERNS["PREDICTABLY_LATE"]["meaning"]
+    payable = payments.PAYABLE_PATTERNS["PREDICTABLY_LATE"]
+    assert payable["label"].startswith("We are")
+    assert "planning around" in payable["meaning"]
+    # The keys have to match, or a response built for one side would carry a
+    # legend with a hole in it.
+    assert set(payments.PAYABLE_PATTERNS) == set(payments.PATTERNS)
+    assert set(payments.PAYABLE_TRENDS) == set(payments.TRENDS)
+
+
+def test_agreed_terms_sit_beside_the_measured_median_rather_than_replacing_it():
+    """Promised against actual, at the party grain. The gap is the number worth
+    acting on, and it needs both halves — a measured median alone cannot be
+    late, and terms alone are not evidence of anything."""
+    from app.commercial.insight import payments
+
+    # Agreed 30 days; settled at 45 every time.
+    rows = [_pay("v1", date(2026, 1, i + 1), date(2026, 2, 15 + i),
+                 due=date(2026, 1, 31 + i) if i == 0 else date(2026, 2, i),
+                 ref=f"bill-{i}") for i in range(4)]
+    got = payments.build(rows, {"v1": "Kalyani"}, date(2026, 3, 1),
+                         side=payments.PAYABLE, terms={"v1": 30})
+
+    row = got["vendors"][0]
+    assert row["agreed_terms_days"] == 30
+    assert row["terms_gap_days"] == round(row["median_days_to_pay"] - 30, 1)
+
+
+def test_no_terms_on_record_is_not_a_zero_gap():
+    """A supplier with no terms recorded is not a supplier being paid exactly
+    to terms, and a zero there would read as exactly that."""
+    from app.commercial.insight import payments
+
+    rows = [_pay("v2", date(2026, 1, i + 1), date(2026, 2, i + 1),
+                 ref=f"bill-{i}") for i in range(3)]
+    got = payments.build(rows, {}, date(2026, 3, 1), side=payments.PAYABLE)
+
+    assert got["vendors"][0]["agreed_terms_days"] is None
+    assert got["vendors"][0]["terms_gap_days"] is None
+
+
+def test_a_lag_is_the_same_three_numbers_whichever_side_it_came_from():
+    """`insight/cashflow` reads one `Lag` shape for both directions. What
+    differs is which end is good news, and that lives in the projection."""
+    from app.commercial.insight import payments
+
+    rows = [_pay("v1", date(2026, 1, 1), date(2026, 2, d),
+                 due=date(2026, 1, 31), ref=f"bill-{d}") for d in (1, 5, 20)]
+    measured = payments.lags(rows)
+
+    assert set(measured) == {"v1"}
+    assert measured["v1"].party_id == "v1"
+    assert (measured["v1"].early_days <= measured["v1"].expected_days
+            <= measured["v1"].late_days)
+
+
+# ── the term we actually agreed, against the one Zoho could express ─────────
+#
+# Zoho's payment terms are a fixed dropdown, so a real agreement of "net 37" is
+# filed under the nearest entry and every due date derived from it is wrong by
+# days. These pin the correction and, more importantly, the three things it
+# must not do: overwrite what the ERP says, invent a date for a supplier with
+# no agreement on record, or present a summary as though it were exact.
+
+def test_a_term_is_a_date_and_the_basis_changes_which_date():
+    """"45 days" and "45 days from month end" are up to a month apart on the
+    same bill. A single day count would silently treat one as the other."""
+    from app.commercial.insight import terms
+
+    raised = date(2026, 3, 5)
+    assert terms.Term(45).due(raised) == date(2026, 4, 19)
+    # March has 31 days, so month end is the 31st and 45 days on is 15 May.
+    assert terms.Term(45, terms.END_OF_MONTH).due(raised) == date(2026, 5, 15)
+
+
+def test_end_of_month_uses_the_bills_own_month_length():
+    """February is the case a naive +30 gets wrong, and a leap year is the case
+    a hardcoded 28 gets wrong."""
+    from app.commercial.insight import terms
+
+    assert terms.Term(0, terms.END_OF_MONTH).due(date(2026, 2, 3)) == date(2026, 2, 28)
+    assert terms.Term(0, terms.END_OF_MONTH).due(date(2028, 2, 3)) == date(2028, 2, 29)
+
+
+def test_a_term_that_cannot_mean_a_date_is_refused_on_write():
+    from app.commercial.insight import terms
+
+    with pytest.raises(terms.InvalidTerm):
+        terms.validate(30, "WHENEVER")
+    with pytest.raises(terms.InvalidTerm):
+        terms.validate(-5, terms.NET)
+    with pytest.raises(terms.InvalidTerm):
+        # A typo, not a term. Left unguarded it pushes a supplier's money off
+        # the end of every horizon the product can draw.
+        terms.validate(terms.MAX_TERM_DAYS + 1, terms.NET)
+    assert terms.validate(37, terms.NET) == terms.Term(37, terms.NET)
+
+
+def _bill(vendor: str, raised: date, stated_due: date | None, amount=1000.0):
+    from app.commercial.insight import terms
+    return terms.Bill(vendor_id=vendor, document_date=raised,
+                      stated_due=stated_due, amount=amount)
+
+
+def test_a_consistent_supplier_shifts_exactly():
+    """Zoho filed these under net-30; the agreement is net-45. Every bill moves
+    by the same fortnight, so the shift is exact and says so."""
+    from app.commercial.insight import terms
+
+    bills = [_bill("v1", date(2026, 1, i * 5 + 1),
+                   date(2026, 1, i * 5 + 1) + timedelta(days=30))
+             for i in range(4)]
+    moved = terms.shift(bills, terms.Term(45))
+
+    assert moved.days == 15
+    assert moved.spread_days == 0
+    assert moved.exact is True
+    assert moved.bills == 4
+
+
+def test_a_supplier_whose_zoho_terms_disagree_is_summarised_and_says_so():
+    """Two stated terms on one supplier means one shift cannot be right for
+    both. Reported rather than averaged silently — a summary presented as an
+    exact answer is the failure this module exists to fix."""
+    from app.commercial.insight import terms
+
+    raised = date(2026, 1, 1)
+    bills = [_bill("v1", raised, raised + timedelta(days=30)),
+             _bill("v1", raised, raised + timedelta(days=60))]
+    moved = terms.shift(bills, terms.Term(45))
+
+    assert moved.exact is False
+    assert moved.spread_days == 30
+
+
+def test_a_bill_with_no_stated_due_date_cannot_produce_a_displacement():
+    """A term is exactly what an undated bill was missing, but there is nothing
+    to measure a *shift* from. Counted, and left where the schedule put it
+    rather than given an invented displacement."""
+    from app.commercial.insight import terms
+
+    assert terms.shift([_bill("v1", date(2026, 1, 1), None)], terms.Term(45)) is None
+
+    mixed = terms.shift([_bill("v1", date(2026, 1, 1), None),
+                         _bill("v1", date(2026, 1, 1), date(2026, 1, 31))],
+                        terms.Term(45))
+    assert (mixed.bills, mixed.undated) == (1, 1)
+
+
+def test_a_supplier_with_no_agreement_is_absent_not_zero():
+    """Absent means "the schedule's date stands", which is a different claim
+    from "we agreed to exactly what Zoho assumed"."""
+    from app.commercial.insight import terms
+
+    raised = date(2026, 1, 1)
+    bills = [_bill("v1", raised, raised + timedelta(days=30)),
+             _bill("v2", raised, raised + timedelta(days=30))]
+
+    moved = terms.shifts(bills, {"v1": terms.Term(45)})
+
+    assert set(moved) == {"v1"}
+    assert "v2" not in moved
+
+
+def test_the_effective_term_prefers_the_agreement_and_falls_back_to_the_erp():
+    from app.commercial.insight import terms
+
+    assert terms.effective_days(terms.Term(37), 30) == 37
+    assert terms.effective_days(None, 30) == 30
+    assert terms.effective_days(None, None) is None
+    # The basis changes one bill's date, not the length of credit being
+    # described, so a days-to-pay comparison reads the day count either way.
+    assert terms.effective_days(terms.Term(45, terms.END_OF_MONTH), 30) == 45
 
 
 # ── the business day ────────────────────────────────────────────────────────

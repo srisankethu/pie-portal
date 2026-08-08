@@ -44,16 +44,15 @@
 // zero. They are counted, named and listed instead.
 
 import Button from "@mui/material/Button";
-import Autocomplete from "@mui/material/Autocomplete";
-import Chip from "@mui/material/Chip";
-import TextField from "@mui/material/TextField";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { scaleSqrt } from "d3-scale";
 import { money } from "../../money";
 import { formatDate } from "../../when";
 import { papi } from "../api";
 import { EntityName } from "../EntityName";
 import { ChartTip, InlineLink, StatusChip } from "../kit";
+import Autocomplete from "@mui/material/Autocomplete";
+import Chip from "@mui/material/Chip";
+import TextField from "@mui/material/TextField";
 import { CompanyFilter, useCompanyFilter } from "../CompanyFilter";
 import { DataGrid, numeric } from "../DataGrid";
 import type { EntityOrigin, PlatformSession, Sourced } from "../types";
@@ -61,11 +60,15 @@ import { Figure, Panel, stateOf } from "./Panel";
 import { Seg } from "./Seg";
 import { pct, useInsight } from "./useInsight";
 import { useMeasure } from "./useMeasure";
-
-type Row = Record<string, unknown>;
-
-const rows = (v: unknown): Row[] => (v as Row[] | undefined) ?? [];
-const num = (v: unknown): number => Number(v ?? 0);
+// The geometry, and the reading of the frame series. Pure, and tested — the
+// marks below depend on two frames rather than one, which is where a playback
+// starts telling a story the data does not support.
+import {
+  MOVEMENT_LOOKBACK, PAD_L, PAD_R, TRAIL_MIN_PTS,
+  anchored, counted, firstScored, frameLine, frameStory, laneTone, layout,
+  num, packLanes, prepare, rows, signed, sinceFrom, toneOf, xOf,
+  type Lane, type Node, type PreparedSide, type Row,
+} from "./bonds-layout";
 
 /** The five facets, in the order the score weights them. Named here so the
  *  breakdown and the ledger cannot disagree about what a facet is called. */
@@ -89,33 +92,6 @@ const BAND_TONE: Record<string, "good" | "warn" | "bad" | "neutral"> = {
   THIN: "neutral",
 };
 
-/** How far back movement is read, in frames. Six months is long enough that a
- *  seasonal dip does not read as a decaying relationship, and short enough that
- *  a real slide shows up before it is a recovery job. */
-const MOVEMENT_LOOKBACK = 6;
-
-/** A plotted node. Everything the strip needs, resolved once per frame.
- *
- *  `y` and `lane` are the counterparty's fixed seat and do not depend on the
- *  frame; `x`, `r`, `score` and `movement` do. That split is what makes the
- *  playback readable. */
-interface Node {
-  id: string;
-  label: string;
-  sector: string;
-  score: number;
-  money: number;
-  movement: number | null;
-  band: string;
-  side: string;
-  origin?: EntityOrigin;
-  overdue: boolean;
-  lane: number;
-  x: number;
-  y: number;
-  r: number;
-}
-
 
 /** Pick the counterparties worth watching, out of a book of two hundred.
  *
@@ -126,9 +102,9 @@ interface Node {
  *  numbers moved with them, and the honest answer is that they must not.
  *
  *  Options are ordered by money, largest first, so the ones most likely wanted
- *  are at the top before anybody types. Grouped by side, because "Kennametal"
- *  as a supplier and a same-named customer are different rows and picking the
- *  wrong one is a silent mistake.
+ *  are at the top before anybody types. Grouped by side, because a supplier and
+ *  a same-named customer are different rows and picking the wrong one is a
+ *  silent mistake.
  */
 function WatchPicker({
   options, picked, onChange, topN,
@@ -229,13 +205,13 @@ export function BondsScreen({
   const [selected, setSelected] = useState<string | null>(null);
   // Which counterparties to draw. Empty means all of them.
   //
-  // **A filter, not a scope**, and on this screen that is forced rather than
-  // chosen. The Material facet is a counterparty's share of the *whole book's*
-  // trailing revenue, so it carries 15% of every score. Narrow the input and
-  // recompute, and six accounts would each look like a sixth of the business —
-  // every score inflated, the bands meaningless. Doing this in the browser over
-  // scores the server already computed is what makes that impossible: there is
-  // nothing here that *could* recompute them.
+  // **A filter, not a scope**, and here that is forced rather than chosen. The
+  // Material facet is a counterparty's share of the *whole book's* trailing
+  // revenue, so it carries 15% of every score. Narrow the input and recompute,
+  // and six accounts would each look like a sixth of the business — every score
+  // inflated, every band meaningless. Doing this in the browser over scores the
+  // server already computed is what makes that impossible: nothing here *could*
+  // recompute them.
   const [picked, setPicked] = useState<string[]>([]);
   const [ref, room] = useMeasure<HTMLDivElement>();
 
@@ -251,19 +227,25 @@ export function BondsScreen({
     }
   ), [company.company, chosenIds]);   // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Indexed once per payload, and deliberately not per frame. Every mark that
+  // needs last month — the trail, the arrival count, the band crossing — would
+  // otherwise re-scan the whole book for one entry, several times per dot, two
+  // and a half times a second.
   const sides = useMemo(() => {
     const out: { side: string; bonds: Row[]; frames: Row[] }[] = [];
     if (showSuppliers) out.push({ side: "vendor", bonds: vendorBonds, frames: vendorFrames });
     if (showCustomers) out.push({ side: "customer", bonds: customerBonds, frames });
-    return out;
+    return prepare(out);
   }, [showCustomers, showSuppliers, customerBonds, vendorBonds, frames, vendorFrames]);
 
   const plotWidth = Math.max(320, room.width || 720);
   // Seats are packed from the *current* scores and deliberately do not depend
   // on `at`. Repacking per frame would make every dot hop rows as its
-  // neighbours moved — see the note at the top of the file.
-  const { lanes, seat } = useMemo(
-    () => packLanes(sides, narrow, plotWidth, group === "line"),
+  // neighbours moved — see the note at the top of the file. The name set is
+  // chosen in the same pass and for the same reason.
+  const { lanes, seat, labels } = useMemo(
+    () => packLanes(sides, narrow, plotWidth,
+                    group === "line"),
     [sides, narrow, plotWidth, group]);   // eslint-disable-line react-hooks/exhaustive-deps
   const nodes = useMemo(
     () => layout(sides, at, narrow, seat, plotWidth),
@@ -272,12 +254,12 @@ export function BondsScreen({
   // Built from the whole book rather than from what is on screen — a picker
   // that only offered the names already showing could never widen a selection.
   //
-  // **Only what the strip can actually draw.** A counterparty below the
-  // evidence floor has no score, and one outside the frame cover has no series
-  // to animate; either way it can be picked and nothing appears. Offering it
-  // would be inviting somebody into a dead end, which is the rule
-  // `CompanyFilter` already states about companies with no rows. The first cut
-  // of this offered all 227 and drew 201.
+  // **Only what the strip can actually draw.** A counterparty below the evidence
+  // floor has no score, and one outside the frame cover has no series to
+  // animate; either way it can be picked and nothing appears. Offering it would
+  // be inviting somebody into a dead end, which is the rule `CompanyFilter`
+  // already states about companies with no rows. The first cut of this offered
+  // all 227 and drew 201.
   const watchOptions = useMemo(() => {
     const drawable = (bonds: Row[], series: Row[], side: string) => {
       const covered = new Set(
@@ -306,8 +288,23 @@ export function BondsScreen({
   const frameLabel = String(
     (frames[at] ?? vendorFrames[at])?.label ?? data?.as_of ?? "");
 
-  const overdueCount = ledger.filter((b) => b.overdue).length;
   const chosen = ledger.find((b) => String(b.counterparty_id) === selected) ?? null;
+
+  // What changed between last frame and this one, as a sentence. Counts and
+  // names only — the same construct as `anchored()` and `counted()` above, and
+  // deliberately not a median or a percentile, which are commercial statistics
+  // and belong in `commercial/` stamped with a thresholds version.
+  //
+  // This is the channel that carries the play to a reader who cannot use any of
+  // the others: it survives a screenshot, it is the whole story for someone
+  // scrubbing under reduced motion with no Play button, and you cannot watch
+  // two hundred dots for the three that crossed a band — a counter you can
+  // read, a flash you cannot.
+  const bands = rows(customers.bands);
+  const story = useMemo(
+    () => frameStory(nodes, sides, at, bands),
+    [nodes, sides, at, bands]);
+  const sentence = nodes.length ? frameLine(story, frameLabel, bands) : "";
 
   return (
     <Panel
@@ -333,15 +330,12 @@ export function BondsScreen({
         {counted(shownCustomers, "customer")}
         {showSuppliers && <>, {counted(shownVendors, "supplier")}</>}
         {" "}scored on five measured facets.{" "}
-        {/* The verb agrees with its own count. Invisible while the strip always
-            showed two hundred; "1 are anchored" the moment somebody watches a
-            single account, which is exactly when they are reading closely. */}
         {anchored(ledger) > 0 && (
           <><strong>{anchored(ledger)}</strong>{" "}
             {anchored(ledger) === 1 ? "is" : "are"} anchored; </>
         )}
-        <strong>{overdueCount}</strong> {overdueCount === 1 ? "is" : "are"} past
-        {" "}their own buying rhythm.
+        <strong>{ledger.filter((b) => b.overdue).length}</strong> are past their
+        own buying rhythm.
       </p>
 
       <CompanyFilter options={company.options} value={company.company}
@@ -361,23 +355,48 @@ export function BondsScreen({
       <div ref={ref} className="bond-stage">
         <Figure
           caption={
-            `Left to right is bond strength, 0–100. Dots stack where scores `
-            + `cluster, so the mound is where most of the book sits. Dot size `
-            + `is ${showSuppliers && !showCustomers ? "spend" : "revenue"}. `
-            + `Colour is movement over the last ${MOVEMENT_LOOKBACK} months: `
-            + `blue strengthening, red weakening.`}
-          summary={nodes.map((n) =>
-            `${n.label}: ${n.score.toFixed(0)} of 100, ${n.band.toLowerCase()}, ${money(n.money)}`)
-            .join(". ") || "No scored relationship in this window."}
+            // Every mark on the canvas is named here, including the two
+            // thresholds. A deadband nobody is told about is a claim: a grey
+            // dot has not necessarily held still, and a dot with no trail has
+            // not necessarily stayed put.
+            `Left to right is bond strength, 0–100. Dot size is total `
+            + `${showSuppliers && !showCustomers ? "spend" : "revenue"} and `
+            + `does not change as the play runs. Colour is movement over the `
+            + `last ${MOVEMENT_LOOKBACK} months: blue strengthening, red `
+            + `weakening, grey no material move. A dashed amber ring means `
+            + `there is no score ${MOVEMENT_LOOKBACK} months back to compare `
+            + `against — so that grey is "not measurable" rather than "not `
+            + `moving". A short line behind a dot is where it stood last `
+            + `month, drawn where the month's move is at least `
+            + `${TRAIL_MIN_PTS} points. Seats are packed once from today's `
+            + `scores and then held, so the mound is the shape of the book as `
+            + `it stands now — not as it stood in the frame you are watching.`
+            + (group === "line"
+              ? ` Lines are each counterparty's dominant line today, held `
+                + `across the play.`
+              : "")}
+          // The sentence, not a clause per node. The old summary rebuilt a
+          // multi-thousand-character label two and a half times a second, which
+          // is not something anybody could listen to. Per-node detail is still
+          // reachable — the table below is a sibling of the figure, not inside
+          // the element that carries `role="img"`.
+          summary={sentence || "No scored relationship in this window."}
           table={<BondTable nodes={nodes} />}
         >
           {/* Only populated sides get a lane — an empty supplier band would
               read as "this business has no suppliers", which is never what it
               means. The emptiness is stated in words underneath instead. */}
-          <BondStrip nodes={nodes} lanes={lanes} bands={rows(customers.bands)}
+          <BondStrip nodes={nodes} lanes={lanes} bands={bands}
                      width={plotWidth} reduced={reduced} selected={selected}
+                     labels={labels} sides={sides} at={at} cramped={room.cramped}
+                     scrubbed={at < frameCount - 1}
                      onSelect={(id) => setSelected(id === selected ? null : id)} />
         </Figure>
+
+        {/* Between the strip and the scrubber: it reads as a caption to the
+            frame the reader is looking at, and it is the last thing their eye
+            passes on the way to the control that changes it. */}
+        {sentence && <p className="bond-frame-line">{sentence}</p>}
 
         <Timeline
           count={frameCount} at={at} label={frameLabel}
@@ -490,7 +509,8 @@ export function BondsScreen({
 
 // ── the strip ───────────────────────────────────────────────────────────────
 function BondStrip({
-  nodes, lanes, bands, width, reduced, selected, onSelect,
+  nodes, lanes, bands, width, reduced, selected, labels, sides, at, cramped,
+  scrubbed, onSelect,
 }: {
   nodes: Node[];
   lanes: Lane[];
@@ -498,6 +518,14 @@ function BondStrip({
   width: number;
   reduced: boolean;
   selected: string | null;
+  /** `side:id` keys allowed to carry a name. Fixed for the whole play. */
+  labels: Set<string>;
+  sides: PreparedSide[];
+  at: number;
+  cramped: boolean;
+  /** The playhead is behind the present, so per-frame money is a running total
+   *  rather than the current one. */
+  scrubbed: boolean;
   onSelect: (id: string) => void;
 }) {
   const HEAD = 20;
@@ -518,9 +546,16 @@ function BondStrip({
     .map((b) => ({ at: num(b.min_score), label: String(b.band).toLowerCase() }))
     .sort((a, b) => a.at - b.at);
 
+  const chosen = nodes.find((n) => n.id === selected) ?? null;
+  const sinceX = chosen
+    ? sinceFrom(sides.find((s) => s.side === chosen.side)?.index.get(chosen.id),
+                at, width)
+    : null;
+
   return (
     <svg viewBox={`0 0 ${width} ${height}`} width="100%" height={height}
-         className={`bond-strip${reduced ? " bond-still" : ""}`}>
+         className={`bond-strip${reduced ? " bond-still" : ""}`
+                    + (selected ? " bond-focus" : "")}>
       {/* Band regions, labelled. This replaces the radial's rings and is
           strictly better: a reader sees which band a dot is in without
           measuring anything, and the boundaries are policy rather than
@@ -546,15 +581,61 @@ function BondStrip({
         ))}
       </g>
 
-      {lanes.map((lane, i) => (
-        <g key={lane.side}>
-          <text x={2} y={tops[i] - lane.half - 6} className="bond-lane-label">
-            {lane.label} ({lane.count})
-          </text>
-          <line x1={PAD_L} x2={width - PAD_R} y1={tops[i]} y2={tops[i]}
-                className="bond-spine" aria-hidden="true" />
+      {/* The lane heading carries this frame's weather. It is the only channel
+          that answers a question about a *population* — which line of the
+          business is decaying — which no per-dot mark can, because nobody can
+          count a mound of red by looking at it. `unmeasured` is called out
+          separately from flat because it is a subset of it: that overlap is the
+          hole the dashed ring fills, said again in words. */}
+      {lanes.map((lane, i) => {
+        const tone = laneTone(nodes, i);
+        const weather = [
+          tone.down ? `${tone.down} weakening` : "",
+          tone.up ? `${tone.up} strengthening` : "",
+          tone.unmeasured ? `${tone.unmeasured} not yet measurable` : "",
+        ].filter(Boolean).join(" · ");
+        return (
+          <g key={`${lane.side}${lane.label}`}>
+            <text x={2} y={tops[i] - lane.half - 6} className="bond-lane-label">
+              {lane.label} ({lane.count})
+              {weather && <tspan className="bond-lane-weather"> · {weather}</tspan>}
+            </text>
+            <line x1={PAD_L} x2={width - PAD_R} y1={tops[i]} y2={tops[i]}
+                  className="bond-spine" aria-hidden="true" />
+          </g>
+        );
+      })}
+
+      {/* Beneath the dots, and outside the tooltips: a trail is scenery for the
+          mark that owns it, not a thing to hover. One segment from last month's
+          position to this one, so both ends are measured — a taper or a fading
+          comet would assert a path between monthly samples that nobody
+          sampled. */}
+      <g aria-hidden="true">
+        {nodes.map((n) => (n.trail == null ? null : (
+          <line key={`t${n.side}${n.id}`}
+                x1={n.trail} x2={n.x}
+                y1={tops[n.lane] + n.y} y2={tops[n.lane] + n.y}
+                strokeWidth={Math.max(1, n.r * 0.35)}
+                className="bond-trail" />
+        )))}
+      </g>
+
+      {/* Where the selected dot stood six months ago — the number the tooltip
+          already speaks, drawn. Hidden in exactly the case the dashed ring
+          marks, so it is never a line back to a month nothing was measured
+          in. */}
+      {chosen && sinceX != null && (
+        <g aria-hidden="true">
+          <line x1={sinceX} x2={chosen.x}
+                y1={tops[chosen.lane] + chosen.y} y2={tops[chosen.lane] + chosen.y}
+                className="bond-since" />
+          <line x1={sinceX} x2={sinceX}
+                y1={tops[chosen.lane] + chosen.y - 5}
+                y2={tops[chosen.lane] + chosen.y + 5}
+                className="bond-since" />
         </g>
-      ))}
+      )}
 
       {nodes.map((n) => {
         const on = selected === n.id;
@@ -562,13 +643,21 @@ function BondStrip({
           <ChartTip
             key={`${n.side}${n.id}`}
             title={`${n.label} — ${n.score.toFixed(0)}/100, ${n.band.toLowerCase()}. `
-              + `${money(n.money)} traded.`
-              + (n.movement == null ? "" : ` ${signed(n.movement)} over ${MOVEMENT_LOOKBACK} months.`)
+              // "by then" while scrubbed, because this figure is revenue
+              // accumulated to the displayed month, not the lifetime total the
+              // dot is sized by. Two definitions of money on one mark, so the
+              // one being spoken has to say which it is.
+              + `${money(n.money)} traded${scrubbed ? " by then" : ""}.`
+              + (n.movement == null
+                ? ` No score ${MOVEMENT_LOOKBACK} months back to compare with.`
+                : ` ${signed(n.movement)} over ${MOVEMENT_LOOKBACK} months.`)
               + (n.overdue ? " Past their own buying rhythm." : "")}
           >
             <circle
               cx={n.x} cy={tops[n.lane] + n.y} r={n.r + (on ? 3 : 0)}
-              className={`bond-node ${toneOf(n.movement)}${on ? " bond-on" : ""}`}
+              className={`bond-node ${toneOf(n.movement)}`
+                + (n.movement == null ? " bond-fresh" : "")
+                + (on ? " bond-on" : "")}
               tabIndex={0}
               role="button"
               aria-label={`${n.label}, bond ${n.score.toFixed(0)} of 100`}
@@ -578,6 +667,34 @@ function BondStrip({
           </ChartTip>
         );
       })}
+
+      {/* Names, last so they sit above everything, and on the largest marks
+          only. The strip had no identity on it at all until now: every name
+          needed a hover onto a target moving two and a half times a second, and
+          the per-circle labels are inside the element carrying `role="img"`, so
+          a screen reader never reached them either. Naming the dozen dots that
+          carry the money turns "a big one is sliding" into "*Ace Designers* is
+          sliding", which is the difference between a picture and a decision.
+
+          Dropped entirely when there is no room for them, following the same
+          rule the quadrant labels use. */}
+      {!cramped && (
+        <g aria-hidden="true">
+          {nodes.map((n) => {
+            if (!labels.has(`${n.side}:${n.id}`)) return null;
+            const right = n.x > width * 0.75;
+            return (
+              <text key={`n${n.side}${n.id}`}
+                    x={right ? n.x - n.r - 4 : n.x + n.r + 4}
+                    y={tops[n.lane] + n.y + 3.5}
+                    textAnchor={right ? "end" : "start"}
+                    className="bond-name viz-mark-halo">
+                {n.label.length > 22 ? `${n.label.slice(0, 21)}…` : n.label}
+              </text>
+            );
+          })}
+        </g>
+      )}
     </svg>
   );
 }
@@ -765,14 +882,21 @@ function Unavailable({ items }: { items: Row[] }) {
 
 /** The chart's table fallback. A `<table>` is right here for exactly the reason
  *  `ui-standards` §13 gives — it is the accessible twin of one figure, not the
- *  screen's list of the business. The ledger below is the grid. */
+ *  screen's list of the business. The ledger below is the grid.
+ *
+ *  It carries `.viz-table` rather than `.grid`, which stopped existing with the
+ *  Quote Builder migration and survives only as a tombstone comment in
+ *  `styles.css` — so this rendered with browser defaults and no tabular
+ *  numerals, in the one place a reader who cannot use the chart has to read
+ *  numbers. `BookFlow.tsx` and `Mix.tsx` still name the dead class; they are
+ *  not on this change's path, and are written down instead. */
 function BondTable({ nodes }: { nodes: Node[] }) {
   return (
-    <table className="grid">
+    <table className="viz-table">
       <thead>
         <tr>
           <th>Counterparty</th><th>Score</th><th>Bond</th>
-          <th>Traded</th><th>Movement</th>
+          <th>Traded</th><th>Movement</th><th>This month</th>
         </tr>
       </thead>
       <tbody>
@@ -782,7 +906,11 @@ function BondTable({ nodes }: { nodes: Node[] }) {
             <td>{n.score.toFixed(0)}</td>
             <td>{n.band.toLowerCase()}</td>
             <td>{money(n.money)}</td>
-            <td>{n.movement == null ? "—" : signed(n.movement)}</td>
+            {/* Not a bare dash. "No comparison exists" and "did not move" are
+                the same grey on the canvas until the ring says otherwise, and
+                they were the same "—" here. */}
+            <td>{n.movement == null ? "not yet measurable" : signed(n.movement)}</td>
+            <td>{n.trail == null ? "no material move" : "moved"}</td>
           </tr>
         ))}
       </tbody>
@@ -790,265 +918,3 @@ function BondTable({ nodes }: { nodes: Node[] }) {
   );
 }
 
-// ── geometry and small helpers ──────────────────────────────────────────────
-
-/** The lanes, and every counterparty's fixed seat inside one.
- *
- *  Computed from the *current* scores and never from the displayed frame — see
- *  the note at the top of the file. This is the whole reason the play reads as
- *  movement rather than as churn: a dot's row is its identity, and only its
- *  horizontal position is the measure.
- *
- *  Only a populated side gets a lane. An empty supplier half reserving a band
- *  of canvas says "this business has no suppliers", which is never what it
- *  means — the emptiness is stated in words below the chart instead.
- */
-function packLanes(
-  sides: { side: string; bonds: Row[]; frames: Row[] }[],
-  apply: <R extends Sourced>(rows: R[]) => R[],
-  width: number,
-  branch: boolean,
-): { lanes: Lane[]; seat: Map<string, Seat> } {
-  // The radius domain, pinned to every bond on the canvas *before* narrowing.
-  //
-  // ``radiusScale`` used to re-domain on whatever rows it was handed, which is
-  // one lane's worth. Harmless while the whole book was always shown and wrong
-  // the moment it is not: picking your six biggest accounts would re-domain on
-  // those six, draw them all at 13px, and destroy the one reading the size
-  // channel carries — a big dot on the left is material money in a weakening
-  // relationship. Pinned, a small customer stays small when you single it out,
-  // and the same money is the same size in every lane.
-  const biggest = Math.max(
-    1, ...sides.flatMap(({ bonds }) => bonds.map((b) => num(b.money))));
-  const seat = new Map<string, Seat>();
-  const lanes: Lane[] = [];
-
-  sides.forEach(({ side, bonds, frames }) => {
-    // Only a counterparty the server sent frames for can be drawn — the frame
-    // series is where a per-month score comes from. The lane label counts
-    // exactly these, so it can never claim more dots than are on the canvas.
-    const covered = new Set(
-      frames.flatMap((f) => rows(f.bonds).map((e) => String(e.counterparty_id))));
-    const eligible = (apply(bonds as Sourced[]) as Row[])
-      .filter((b) => b.score != null
-                     && covered.has(String(b.counterparty_id)));
-    if (!eligible.length) return;
-
-    // Split into one lane per line of the business, when asked. This is the
-    // branching the mix goal wants: "my coolant customers are all thin bonds"
-    // is a sentence with a decision attached, and it is invisible when every
-    // line is packed into one row.
-    for (const group of splitBy(eligible, side, branch)) {
-      packOne(group, side, seat, lanes, width, biggest);
-    }
-  });
-
-  return { lanes, seat };
-}
-
-/** One lane's worth: the swarm packing, and the lane it produces. */
-function packOne(group: { label: string; rows: Row[] }, side: string,
-                 seat: Map<string, Seat>, lanes: Lane[], width: number,
-                 biggest: number): void {
-  {
-    // Ascending, so the packer places the crowded left end first and the
-    // sparse right end settles around it rather than the other way round.
-    const scored = group.rows
-      .slice()
-      .sort((a, b) => num(a.score) - num(b.score));
-    const r = radiusScale(biggest);
-    const lane = lanes.length;
-    const placed: { x: number; y: number; r: number }[] = [];
-    let extent = 0;
-
-    for (const b of scored) {
-      const x = xOf(num(b.score), width);
-      const rr = r(num(b.money));
-      // Nearest free seat to the lane's spine, tried outward in both
-      // directions. A dot that cannot find one at all stays on the spine and
-      // overlaps rather than being pushed off the canvas — an overlap is
-      // survivable, a mark drawn outside its own lane is not.
-      let y = 0;
-      for (let k = 0; k <= MAX_STACK; k += 1) {
-        const options = k === 0 ? [0] : [k * STACK_STEP, -k * STACK_STEP];
-        const free = options.find((cy) => placed.every((p) => {
-          const dx = p.x - x, dy = p.y - cy;
-          const reach = p.r + rr + 1;
-          return dx * dx + dy * dy >= reach * reach;
-        }));
-        if (free !== undefined) { y = free; break; }
-      }
-      placed.push({ x, y, r: rr });
-      extent = Math.max(extent, Math.abs(y) + rr);
-      seat.set(`${side}:${String(b.counterparty_id)}`, { lane, y });
-    }
-
-    lanes.push({
-      side,
-      label: group.label,
-      count: scored.length,
-      half: Math.max(extent + 6, 26),
-    });
-  }
-}
-
-/** One group per lane: the whole side, or one per line of the business.
- *
- *  Splitting is opt-in because it costs vertical space and only earns it when
- *  the question is about mix. Lines are ordered by population so the crowded
- *  ones lead, and a counterparty whose trade is entirely uncategorised falls in
- *  a named lane rather than being dropped off the chart.
- */
-function splitBy(rows: Row[], side: string, branch: boolean,
-                 ): { label: string; rows: Row[] }[] {
-  const whole = side === "vendor" ? "Suppliers" : "Customers";
-  if (!branch) return [{ label: whole, rows }];
-
-  const groups = new Map<string, Row[]>();
-  for (const r of rows) {
-    const key = String(r.sector ?? "UNCATEGORISED");
-    groups.set(key, [...(groups.get(key) ?? []), r]);
-  }
-  return [...groups.entries()]
-    .sort((a, b) => b[1].length - a[1].length)
-    .map(([key, group]) => ({
-      label: `${whole} · ${LINE_LABEL[key] ?? key}`,
-      rows: group,
-    }));
-}
-
-/** Category code → the words the server uses for it. Kept beside the chart
- *  rather than fetched, because the strip renders before the label list would
- *  arrive and a lane briefly titled "CUTTING_TOOLS" is a lane that looks
- *  broken. Overridden by the server's own list where it is present. */
-const LINE_LABEL: Record<string, string> = {
-  CUTTING_TOOLS: "Cutting tools",
-  COOLANTS: "Coolants & lubricants",
-  CONSUMABLES: "Consumables",
-  METROLOGY: "Metrology",
-  MACHINES: "Machines",
-  UNCATEGORISED: "Not categorised",
-};
-
-interface Lane { side: string; label: string; count: number; half: number }
-interface Seat { lane: number; y: number }
-
-/** Marks sized by area, not by diameter — the same rule `Patterns.tsx` uses.
- *  Scaling the radius makes a counterparty with twice the revenue look four
- *  times as important. */
-/** Money → radius. Square-rooted because the eye reads a circle's *area*: a
- *  customer twice the size drawn at twice the radius looks four times as big.
- *
- *  Takes the domain's top rather than deriving it, so the caller can pin it to
- *  the whole book — see ``packLanes``. */
-export function radiusScale(biggest: number) {
-  return scaleSqrt().domain([0, Math.max(biggest, 1)]).range([3, 13]);
-}
-
-/** Score → x. The axis is the full panel width, which is the entire point of
- *  the strip: a radial had ~130px to spend on the same 0–100. */
-function xOf(score: number, width: number): number {
-  const s = Math.min(100, Math.max(0, score));
-  return PAD_L + (s / 100) * Math.max(1, width - PAD_L - PAD_R);
-}
-
-const PAD_L = 34;
-const PAD_R = 18;
-const STACK_STEP = 2;
-const MAX_STACK = 70;
-
-function layout(
-  sides: { side: string; bonds: Row[]; frames: Row[] }[],
-  at: number,
-  apply: <R extends Sourced>(rows: R[]) => R[],
-  seat: Map<string, Seat>,
-  width: number,
-): Node[] {
-  const out: Node[] = [];
-  // The same pinned domain the packer used, and it has to be the same one or a
-  // dot would be drawn at one size and seated at another.
-  const biggest = Math.max(
-    1, ...sides.flatMap(({ bonds }) => bonds.map((b) => num(b.money))));
-  sides.forEach(({ side, bonds, frames }) => {
-    const visible = apply(bonds as Sourced[]) as Row[];
-    const r = radiusScale(biggest);
-    for (const b of visible) {
-      const id = String(b.counterparty_id);
-      const here = seat.get(`${side}:${id}`);
-      if (!here) continue;
-      const point = frameFor(frames, at, id);
-      // Unscored *in this frame* means absent from it, not parked at zero.
-      if (point?.score == null) continue;
-      out.push({
-        id, label: String(b.label), sector: String(b.sector ?? "Other"), side,
-        score: Number(point.score),
-        money: num(point.money ?? b.money),
-        movement: movementOf(frames, at, id),
-        band: String(point.band ?? b.band ?? "THIN"),
-        origin: b.origin as EntityOrigin | undefined,
-        overdue: Boolean(b.overdue),
-        lane: here.lane,
-        y: here.y,
-        x: xOf(Number(point.score), width),
-        r: r(num(point.money ?? b.money)),
-      });
-    }
-  });
-  return out;
-}
-
-function frameFor(frames: Row[], at: number, id: string): Row | null {
-  const f = frames[at];
-  if (!f) return null;
-  return rows(f.bonds).find((e) => String(e.counterparty_id) === id) ?? null;
-}
-
-/** Score now minus score `MOVEMENT_LOOKBACK` frames back, in points.
- *
- *  `null` when there is nothing to compare against — a relationship that did
- *  not exist six months ago has not weakened, and drawing it as a full-strength
- *  gain would be just as wrong. */
-function movementOf(frames: Row[], at: number, id: string): number | null {
-  const now = frameFor(frames, at, id)?.score;
-  const then = frameFor(frames, at - MOVEMENT_LOOKBACK, id)?.score;
-  if (now == null || then == null) return null;
-  return Number(now) - Number(then);
-}
-
-/** Movement → colour class. Neutral inside a band that is not worth a claim:
- *  a two-point drift over six months is noise, and colouring it would put a
- *  red dot next to a relationship nothing has happened to. */
-function toneOf(movement: number | null): string {
-  if (movement == null) return "bond-flat";
-  if (movement >= 5) return "bond-up";
-  if (movement <= -5) return "bond-down";
-  return "bond-flat";
-}
-
-function signed(v: number): string {
-  return `${v > 0 ? "+" : ""}${v.toFixed(0)} pts`;
-}
-
-function counted(list: Row[], noun: string): string {
-  const n = list.filter((b) => b.score != null).length;
-  return `${n} ${noun}${n === 1 ? "" : "s"}`;
-}
-
-function anchored(list: Row[]): number {
-  return list.filter((b) => b.band === "ANCHORED").length;
-}
-
-/** The earliest frame in which anything at all was scored, across both sides.
- *
- *  A book that started trading last year has a long dead run at the front of
- *  its window, and scrubbing through it by hand to find where the picture
- *  begins is a worse first experience than being taken there. */
-function firstScored(...series: Row[][]): number | null {
-  const length = Math.max(...series.map((s) => s.length), 0);
-  for (let i = 0; i < length; i += 1) {
-    const any = series.some((frames) =>
-      rows(frames[i]?.bonds).some((e) => e.score != null));
-    if (any) return i;
-  }
-  return null;
-}

@@ -302,6 +302,15 @@ class CommercialThresholds:
         # Abrasives, abrasive cloth and paper; self-adhesive tapes.
         (6804, 6805, "CONSUMABLES"),
         (3919, 3919, "CONSUMABLES"),
+        # Screws, bolts, nuts and washers, and primary cells. Added after
+        # measuring the live masters: 7318 was the single largest unmapped
+        # heading in both books (22 items across SLS and 4U) and is
+        # unambiguously hardware, and 8506 is the battery in a digital gauge.
+        # Everything else left unmapped there is a one-off — a computer, a
+        # pump, a project import — and stays honestly unplaced rather than
+        # being swept into a line to flatter the coverage figure.
+        (7318, 7318, "CONSUMABLES"),
+        (8506, 8506, "CONSUMABLES"),
         # Petroleum oils. Broader than coolant, but in this book's purchase
         # pattern it is neat cutting oil far more often than anything else.
         (2710, 2710, "COOLANTS"),

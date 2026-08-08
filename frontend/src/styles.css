@@ -723,24 +723,12 @@ textarea.input { min-height: 160px; resize: vertical; font-family: ui-monospace,
   background: var(--caution-bg); border: 1px solid var(--caution-fg); font-size: 12.5px;
 }
 .st-issued code { font-size: 14px; font-weight: 700; letter-spacing: .04em; }
-.st-table { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 14px; }
-.st-table th {
-  text-align: left; font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em;
-  color: var(--color-neutral-600); padding: 6px 8px 6px 0;
-  border-bottom: 1px solid var(--color-divider);
-}
-.st-table td { padding: 8px 8px 8px 0; border-bottom: 1px solid var(--color-divider); vertical-align: top; }
-.st-table tr.st-inactive { opacity: .55; }
-.st-role { padding: 2px 6px; font-size: 12px; }
-.st-you {
-  margin-left: 6px; font-size: 10px; text-transform: uppercase; letter-spacing: .06em;
-  color: var(--color-accent-700);
-}
-.st-badge { font-size: 10.5px; padding: 1px 7px; border-radius: 10px; border: 1px solid currentColor; }
-.st-badge.ok { color: var(--color-accent-700); }
-.st-badge.warn { color: var(--warn); }
-.st-badge.off { color: var(--color-neutral-500); }
-.st-rowactions { display: flex; gap: 4px; flex-wrap: wrap; }
+/* The people-and-roles table lived here: `.st-table` with its own header rules,
+   `.st-inactive` for a deactivated row, `.st-you`, `.st-role`, the three
+   `.st-badge` tones and `.st-rowactions`. It is a `DataGrid` now and its states
+   are `StatusChip`s, so the tones come from the theme — see `UsersGrid` in
+   AdminScreens.tsx. It was the last table in this codebase whose row count is
+   the size of the business rather than the shape of the screen. */
 .st-switch {
   display: flex; gap: 10px; align-items: flex-start; padding: 9px 0;
   border-bottom: 1px solid var(--color-divider);
@@ -1163,6 +1151,11 @@ textarea.input { min-height: 160px; resize: vertical; font-family: ui-monospace,
 .ag-shell .ag-row.qb-row-attention:not(.ag-row-selected) {
   background: color-mix(in srgb, var(--caution-bg) 45%, transparent);
 }
+/* A row that is still listed but no longer live — a deactivated account. Dimmed
+   only; the row also carries the word in its Status chip, because opacity is
+   exactly the kind of cue that disappears in a screenshot or in print. */
+.ag-shell .ag-row.ag-row-dimmed:not(.ag-row-selected) { opacity: 0.55; }
+
 /* A margin below the floor, or a quantity we cannot cover. */
 .ag-shell .qb-thin { color: var(--danger-fg); font-weight: 700; }
 /* The one cell on the screen somebody types into. Marked, because a grid where

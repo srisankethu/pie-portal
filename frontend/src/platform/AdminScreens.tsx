@@ -12,11 +12,16 @@ import type {
   PolicyField,
   Role } from "./types";
 import Alert from "@mui/material/Alert";
+import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import MenuItem from "@mui/material/MenuItem";
+import Stack from "@mui/material/Stack";
 import Switch from "@mui/material/Switch";
 import TextField from "@mui/material/TextField";
+import Typography from "@mui/material/Typography";
 import { abilityFor } from "./ability";
+import { DataGrid, type ColDef } from "./DataGrid";
+import { EmptyState, StatusChip } from "./kit";
 import { policyProblems } from "./policySchema";
 import { Bp, Labelled } from "./ui";
 import { money, moneySymbol } from "../money";
@@ -838,6 +843,175 @@ function NewUserForm({
   );
 }
 
+/** The organization's people, as a grid.
+ *
+ * This was a hand-written `<table class="st-table">`, and it was the last table
+ * in the codebase whose row count is set by the size of the business rather than
+ * by the shape of the screen — which is the line `platform/DataGrid.tsx` draws.
+ * `docs/ui-standards.md` named it in as many words while the quote grid was
+ * being converted; this is that entry closed rather than carried.
+ *
+ * The reason it matters here and not on a fact panel: an owner asking "who can
+ * see cost?" wants the managers and owners together, and "who has never signed
+ * in?" wants the column sorted. Neither question is answerable by reading a
+ * list in insertion order, and a growing team makes that worse every hire.
+ *
+ * The role cell stays an editable `Select` rather than becoming an ag-grid cell
+ * editor. It is not a value being typed — it is an authority being granted, it
+ * writes to the server on change, and it is disabled on your own row. An
+ * inline editor with a commit-on-Enter contract would make that look like a
+ * draft you could abandon.
+ */
+function UsersGrid({
+  users, canManage, selfUserId, onRole, onActive, onReset,
+}: {
+  users: PlatformUser[];
+  canManage: boolean;
+  selfUserId: string;
+  onRole: (id: string, role: Role) => void;
+  onActive: (id: string, active: boolean) => void;
+  onReset: (id: string, email: string | null) => void;
+}) {
+  const columns = useMemo<ColDef<PlatformUser>[]>(() => [
+    {
+      field: "name", headerName: "Name", flex: 1, minWidth: 160,
+      cellRenderer: (p: { data?: PlatformUser }) =>
+        p.data ? (
+          <Stack direction="row" spacing={0.75} useFlexGap
+                 sx={{ alignItems: "center", minWidth: 0 }}>
+            <Box component="span" sx={{ overflow: "hidden", textOverflow: "ellipsis" }}>
+              {p.data.name}
+            </Box>
+            {p.data.user_id === selfUserId && (
+              <StatusChip label="you" tone="info" dense
+                          tip="Your own account. You cannot change your own role or deactivate yourself — an owner who could demote themselves could lock the organization out of its own settings." />
+            )}
+          </Stack>
+        ) : null,
+    },
+    {
+      field: "email", headerName: "Email", flex: 1.2, minWidth: 190,
+      cellClass: "mono",
+    },
+    {
+      field: "role", headerName: "Role", width: 210, flex: 0,
+      // Sorted and filtered on the label people actually read, not on the
+      // SALES_MANAGER enum behind it.
+      valueGetter: (p) => (p.data ? ROLE_LABEL[p.data.role] : ""),
+      cellRenderer: (p: { data?: PlatformUser }) => {
+        const u = p.data;
+        if (!u) return null;
+        if (!canManage || u.user_id === selfUserId) {
+          return (
+            <Box>
+              {ROLE_LABEL[u.role]}
+              {u.role_changed_by && (
+                <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
+                  changed by {u.role_changed_by}
+                </Typography>
+              )}
+            </Box>
+          );
+        }
+        return (
+          <TextField
+            select
+            size="small"
+            value={u.role}
+            onChange={(e) => onRole(u.user_id, e.target.value as Role)}
+            aria-label={`Role for ${u.name}`}
+            sx={{ width: "100%", "& .MuiInputBase-input": { py: 0.5, fontSize: 12.5 } }}
+            helperText={u.role_changed_by ? `changed by ${u.role_changed_by}` : undefined}
+            slotProps={{ formHelperText: { sx: { m: 0, fontSize: 10.5 } } }}
+          >
+            {(Object.keys(ROLE_LABEL) as Role[]).map((r) => (
+              <MenuItem key={r} value={r}>{ROLE_LABEL[r]}</MenuItem>
+            ))}
+          </TextField>
+        );
+      },
+    },
+    {
+      headerName: "Status", width: 150, flex: 0,
+      headerTooltip: "“Must change” means a temporary password was issued and "
+        + "has not been used yet. “No password” means the account was "
+        + "provisioned without one and cannot sign in until it is reset.",
+      valueGetter: (p) => {
+        const u = p.data;
+        if (!u) return "";
+        return !u.active ? "deactivated"
+          : !u.has_password ? "no password"
+            : u.must_change_password ? "must change" : "active";
+      },
+      cellRenderer: (p: { data?: PlatformUser; value?: string }) => {
+        const label = String(p.value ?? "");
+        const tone = label === "deactivated" ? "neutral"
+          : label === "active" ? "good" : "warn";
+        return <StatusChip label={label} tone={tone} />;
+      },
+    },
+    {
+      field: "last_login_at", headerName: "Last sign-in", width: 165, flex: 0,
+      cellStyle: { color: "var(--color-neutral-600)" },
+      valueFormatter: (p) => when(p.value as string | null),
+    },
+    ...(canManage
+      ? ([{
+          headerName: "", width: 210, flex: 0, sortable: false, filter: false,
+          resizable: false,
+          cellRenderer: (p: { data?: PlatformUser }) => {
+            const u = p.data;
+            // Your own row carries no actions at all, which is the same rule
+            // the role cell follows and the reason it is not merely disabled:
+            // a greyed "Deactivate" on your own account reads as a permission
+            // problem rather than as a deliberate boundary.
+            if (!u || u.user_id === selfUserId) return null;
+            return (
+              <Stack direction="row" spacing={0.5} useFlexGap sx={{ flexWrap: "wrap" }}>
+                <Button variant="text" size="small"
+                        onClick={() => onReset(u.user_id, u.email)}>
+                  Reset password
+                </Button>
+                <Button variant="text" size="small"
+                        onClick={() => onActive(u.user_id, !u.active)}>
+                  {u.active ? "Deactivate" : "Reactivate"}
+                </Button>
+              </Stack>
+            );
+          },
+        }] as ColDef<PlatformUser>[])
+      : []),
+  ], [canManage, selfUserId, onRole, onActive, onReset]);
+
+  return (
+    <Box sx={{ mt: 2 }}>
+      <DataGrid<PlatformUser>
+        ariaLabel="People and roles"
+        rows={users}
+        columns={columns}
+        pageSize={25}
+        rowHeight={54}
+        // Every write on this screen refetches the whole list, so without a
+        // stable id ag-grid rebuilds the body and the role select somebody just
+        // used loses focus mid-change.
+        getRowId={(u) => u.user_id}
+        // Dimmed, and the row also says "deactivated" in its Status chip — the
+        // tint is never the only thing carrying it.
+        rowClass={(u) => (u.active ? undefined : "ag-row-dimmed")}
+        // No column filters: a team is tens of people, the columns are all
+        // short, and sorting answers the questions this screen is asked.
+        filters={false}
+        empty={
+          <EmptyState
+            title="No accounts yet"
+            reason="An owner creates accounts from the form above; each one is issued a temporary password shown once."
+          />
+        }
+      />
+    </Box>
+  );
+}
+
 export function SettingsScreen({ session }: { session: PlatformSession }) {
   const [users, setUsers] = useState<PlatformUser[]>([]);
   const [canManage, setCanManage] = useState(false);
@@ -993,75 +1167,14 @@ export function SettingsScreen({ session }: { session: PlatformSession }) {
             </div>
           )}
 
-          <table className="st-table">
-            <thead>
-              <tr>
-                <th>Name</th><th>Email</th><th>Role</th>
-                <th>
-                  <Labelled tip="“Must change” means a temporary password was issued and has not been used yet. “No password” means the account was provisioned without one and cannot sign in until it is reset.">
-                    Status
-                  </Labelled>
-                </th>
-                <th>Last sign-in</th>
-                {canManage && <th></th>}
-              </tr>
-            </thead>
-            <tbody>
-              {users.map((u) => (
-                <tr key={u.user_id} className={u.active ? "" : "st-inactive"}>
-                  <td>
-                    {u.name}
-                    {u.user_id === session.user_id && <span className="st-you">you</span>}
-                  </td>
-                  <td className="mono">{u.email}</td>
-                  <td>
-                    {canManage && u.user_id !== session.user_id ? (
-                      <TextField
-                        select
-                        size="small"
-                        className="st-role"
-                        value={u.role}
-                        onChange={(e) => patchUser(u.user_id, { role: e.target.value as Role })}
-                        aria-label={`Role for ${u.name}`}
-                      >
-                        {(Object.keys(ROLE_LABEL) as Role[]).map((r) => (
-                          <MenuItem key={r} value={r}>{ROLE_LABEL[r]}</MenuItem>
-                        ))}
-                      </TextField>
-                    ) : (
-                      ROLE_LABEL[u.role]
-                    )}
-                    {u.role_changed_by && (
-                      <div className="st-help">changed by {u.role_changed_by}</div>
-                    )}
-                  </td>
-                  <td>
-                    {!u.active ? <span className="st-badge off">deactivated</span>
-                      : !u.has_password ? <span className="st-badge warn">no password</span>
-                      : u.must_change_password ? <span className="st-badge warn">must change</span>
-                      : <span className="st-badge ok">active</span>}
-                  </td>
-                  <td className="text-muted">{when(u.last_login_at)}</td>
-                  {canManage && (
-                    <td className="st-rowactions">
-                      {u.user_id !== session.user_id && (
-                        <>
-                          <Button variant="text" size="small"
-                                  onClick={() => reset(u.user_id, u.email)}>
-                            Reset password
-                          </Button>
-                          <Button variant="text" size="small"
-                                  onClick={() => patchUser(u.user_id, { active: !u.active })}>
-                            {u.active ? "Deactivate" : "Reactivate"}
-                          </Button>
-                        </>
-                      )}
-                    </td>
-                  )}
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <UsersGrid
+            users={users}
+            canManage={canManage}
+            selfUserId={session.user_id}
+            onRole={(id, role) => patchUser(id, { role })}
+            onActive={(id, active) => patchUser(id, { active })}
+            onReset={reset}
+          />
         </Bp>
       )}
 

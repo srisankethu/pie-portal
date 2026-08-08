@@ -74,7 +74,7 @@ def _get_line(quote: Quote, line_id: str) -> Line:
 
 @router.post("")
 def create_quote(body: CreateQuoteRequest, principal: Principal = Depends(current_principal)):
-    q = store.create(body.customer)
+    q = store.create(body.customer, body.customer_id)
     return q.to_dict(principal.is_mgmt)
 
 
@@ -93,7 +93,7 @@ def intake(quote_id: str, body: IntakeRequest,
     if not body.text.strip():
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "No RFQ text provided")
     store.add_rfq(q, body.text, zoho,
-                  _customer_scope(session, platform, q.customer),
+                  _customer_scope(session, platform, q.customer_ref),
                   _bands(session, platform),
                   _mapping_store(session, platform))
     return q.to_dict(principal.is_mgmt)

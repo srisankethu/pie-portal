@@ -64,8 +64,13 @@ export const api = {
   login: (email: string, password: string) =>
     req<Session>("/api/auth/login", { method: "POST", body: JSON.stringify({ email, password }) }),
 
-  createQuote: (t: string, customer: string) =>
-    req<Quote>("/api/quotes", { method: "POST", body: JSON.stringify({ customer }) }, t),
+  createQuote: (t: string, customer: string, customerId?: string) =>
+    req<Quote>("/api/quotes", {
+      method: "POST",
+      // The id travels with the name. Downstream resolution tries it first,
+      // which is what keeps two books' identically-named customers apart.
+      body: JSON.stringify({ customer, customer_id: customerId ?? null }),
+    }, t),
 
   getQuote: (t: string, id: string) => req<Quote>(`/api/quotes/${id}`, {}, t),
 

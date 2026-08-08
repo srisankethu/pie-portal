@@ -92,6 +92,9 @@ export interface MarginFloor {
 export interface Quote {
   id: string;
   customer: string;
+  /** The platform's id for the customer, when one was picked rather than typed.
+   *  Null on a quote started before the picker existed, or from a draft. */
+  customerId: string | null;
   number: string;
   savedAt: string | null;
   lines: Line[];

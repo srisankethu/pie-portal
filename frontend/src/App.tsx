@@ -11,6 +11,7 @@ import { SupplyDrawer } from "./components/SupplyDrawer";
 import { LineGrid } from "./components/LineGrid";
 import { SummaryBar } from "./components/SummaryBar";
 import { platformToken } from "./intelligence";
+import { CustomerPicker } from "./components/CustomerPicker";
 import { useQuoteIntelligence } from "./useQuoteIntelligence";
 
 const FILTERS: [string, string][] = [
@@ -58,6 +59,8 @@ export default function App({ onOpenPlatform }: { onOpenPlatform?: (path: string
   const [drawerLineId, setDrawerLineId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [draftStatus, setDraftStatus] = useState<string | null>(null);
+  // Open when there is no quote to work on, and on demand from the header.
+  const [pickerOpen, setPickerOpen] = useState(false);
 
   const mgmt = session?.role === "mgmt";
   // One assessment for the whole quote — see useQuoteIntelligence.
@@ -72,7 +75,13 @@ export default function App({ onOpenPlatform }: { onOpenPlatform?: (path: string
     enqueueSnackbar(msg, { variant, autoHideDuration: variant === "success" ? 8000 : 3000 });
   };
 
-  // Create a fresh quote on sign-in, or resume a locally saved draft.
+  // Resume a saved draft on sign-in, or ask who the quote is for.
+  //
+  // This used to create a quote against the literal string "Pitti Engineering
+  // Ltd", which is why every quote in the product was for one customer and the
+  // header's "Customer" was a label rather than a control. A quote cannot be
+  // priced without knowing whose price history to read, so the picker is the
+  // first thing rather than a setting to go and find.
   useEffect(() => {
     if (session && !quote) {
       const draft = loadDraftQuote();
@@ -82,12 +91,33 @@ export default function App({ onOpenPlatform }: { onOpenPlatform?: (path: string
         flash("Resumed your last draft");
         return;
       }
-      api
-        .createQuote(session.token, "Pitti Engineering Ltd")
-        .then(setQuote)
-        .catch((e) => flash((e as Error).message));
+      setPickerOpen(true);
     }
   }, [session, quote, flash]);
+
+  /** Start a quote for a customer. Also how the header changes customer: the
+   *  lines carry the scope they were resolved under, so re-pointing an existing
+   *  quote would leave resolutions filed against the previous customer. A new
+   *  quote is the honest answer, and the confirm says so. */
+  const startQuote = (c: { id: string; name: string }) => {
+    if (!session) return;
+    // Closed when the quote lands, not when the button is pressed. `flash` is
+    // rebuilt every render, so the effect above re-runs constantly — closing
+    // the picker here left it re-opened by that effect while the create was
+    // still in flight, and the reopened dialog then sat over the app swallowing
+    // every click. Holding it open until there is a quote makes the rule simple
+    // enough to not have a race: the picker is open exactly while this session
+    // has no quote to work on.
+    guard(async () => {
+      const q = await api.createQuote(session.token, c.name, c.id);
+      clearDraftQuote();
+      setQuote(q);
+      setSelected({});
+      setDraftStatus(null);
+      setPickerOpen(false);
+      flash(`Quote ${q.number} for ${c.name}`, "success");
+    });
+  };
 
   useEffect(() => {
     if (session && quote) {
@@ -226,9 +256,24 @@ export default function App({ onOpenPlatform }: { onOpenPlatform?: (path: string
   if (!session) return <SignIn onSignedIn={onSignedIn} />;
   if (!quote)
     return (
-      <div className="signin-wrap">
-        <div className="text-muted">Starting a new quote…</div>
-      </div>
+      <>
+        <div className="signin-wrap">
+          <div className="text-muted">
+            {busy ? "Starting the quote…" : "Choose who this quote is for."}
+          </div>
+        </div>
+        {/* No cancel: there is nothing behind this to go back to, and a quote
+            with no customer cannot be priced — there is no price history to
+            read. */}
+        <CustomerPicker
+          open={pickerOpen}
+          title="Who is this quote for?"
+          busy={busy}
+          note="Pricing reads this customer's own history, so the quote needs to
+                know whose. Start typing a name."
+          onPick={startQuote}
+        />
+      </>
     );
 
   const t = session.token;
@@ -323,7 +368,17 @@ export default function App({ onOpenPlatform }: { onOpenPlatform?: (path: string
             Quote <b>{quote.number}</b>
           </span>
           <span>
-            Customer <b>{quote.customer}</b>
+            Customer{" "}
+            <Button
+              type="button"
+              variant="text"
+              size="small"
+              sx={{ p: 0, minWidth: 0, fontWeight: 700, textTransform: "none",
+                    verticalAlign: "baseline" }}
+              onClick={() => setPickerOpen(true)}
+            >
+              {quote.customer}
+            </Button>
           </span>
         </div>
         <div className="spacer" />
@@ -541,6 +596,23 @@ export default function App({ onOpenPlatform }: { onOpenPlatform?: (path: string
           onRevert={doRevert}
         />
       )}
+
+      {/* Changing the customer starts a new quote rather than re-pointing this
+          one. Each line remembers the identity scope it was resolved under, so
+          re-pointing would leave those resolutions filed against the previous
+          customer — and silently wrong is worse than plainly starting again. */}
+      <CustomerPicker
+        open={pickerOpen}
+        title="Change customer"
+        busy={busy}
+        note={hasLines
+          ? `This quote has ${quote.lines.length} line(s) resolved for `
+            + `${quote.customer}. Choosing another customer starts a new quote; `
+            + `the current one is not kept.`
+          : "Pricing reads this customer's own history."}
+        onPick={startQuote}
+        onCancel={() => setPickerOpen(false)}
+      />
     </div>
   );
 }

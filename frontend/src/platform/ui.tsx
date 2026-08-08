@@ -15,7 +15,7 @@ import Alert from "@mui/material/Alert";
 import AlertTitle from "@mui/material/AlertTitle";
 import Box from "@mui/material/Box";
 import Paper from "@mui/material/Paper";
-import { PriorityChip, StatusChip } from "./kit";
+import { PriorityChip, StatusChip, TOUCH } from "./kit";
 export { Tip, Labelled } from "../Tip";
 
 type BpProps = {
@@ -337,7 +337,10 @@ export function DecisionCard({
         <Pri band={d.priority.band} />
         <span className="dcard-subject">{d.subject_label}</span>
         <span className="dp-spacer" />
-        <Button variant="text" size="small" onClick={() => onOpen(d.decision_id)}>
+        {/* The card's row action, and on a phone the only way into the
+            decision. `TOUCH` so it is hittable with a thumb — see kit.TOUCH. */}
+        <Button variant="text" size="small" sx={TOUCH}
+                onClick={() => onOpen(d.decision_id)}>
           Open →
         </Button>
       </div>

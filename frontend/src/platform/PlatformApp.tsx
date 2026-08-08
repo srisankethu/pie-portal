@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { DataGrid, numeric } from "./DataGrid";
 import { EntityName, EntitySource } from "./EntityName";
 import { CompanyFilter, useCompanyFilter } from "./CompanyFilter";
-import { EmptyState, ErrorState, LoadingState, StatusChip } from "./kit";
+import { EmptyState, ErrorState, FilterChip, LoadingState, StatusChip } from "./kit";
 import { formatDate } from "../when";
 import {
   clearPlatformSession,
@@ -15,11 +15,9 @@ import type { Account, DecisionDetail, DecisionSummary, DecisionTrace, PlatformS
 import { aiState, factLabel, factValue, isPrimaryFact, stateFieldLabel } from "./format";
 import { ActionsPanel, Bp, Conf, DecisionCard, ImpactPanel, Interpretation, Labelled,
          Pri, RankingPanel, Tip, WhyPanel, typeLabel } from "./ui";
-import Avatar from "@mui/material/Avatar";
 import Box from "@mui/material/Box";
 import Paper from "@mui/material/Paper";
 import Button from "@mui/material/Button";
-import Chip from "@mui/material/Chip";
 import Dialog from "@mui/material/Dialog";
 import DialogActions from "@mui/material/DialogActions";
 import DialogContent from "@mui/material/DialogContent";
@@ -36,27 +34,89 @@ import {
 } from "./route";
 import AppShell, { type NavItem } from "./AppShell";
 import { SignInCard } from "../SignInCard";
-import QuoteBuilder from "../QuoteBuilder";
 import { abilityFor } from "./ability";
-import { ApprovalsScreen, SettingsScreen } from "./AdminScreens";
-import { IdentityScreen } from "./IdentityScreen";
-import { DataScreen } from "./DataScreen";
-import { CustomerCommercial, CustomerItemScreen } from "./CommercialScreens";
-import { Storyboard } from "./viz/Storyboard";
-import { JourneyScreen, LostRevenueScreen, OpportunityScreen, SimulatorScreen, WeatherScreen } from "./viz/Screens";
-import { CadenceScreen, CompositionScreen, LandscapeScreen } from "./viz/Patterns";
-import { DailyScreen } from "./viz/Daily";
-import { BondsScreen } from "./viz/Bonds";
-import { MixScreen } from "./viz/Mix";
-import { DependencyScreen } from "./viz/Dependency";
-import { TargetWallScreen } from "./viz/TargetWall";
-import { CatalogueScreen } from "./viz/Catalogue";
-import { CustomerHealthTimeline, MigrationMatrix } from "./viz/History";
-import { PayablesScreen, PaymentsScreen, StockScreen, SupplyScreen } from "./viz/TheBook";
-import { NegotiateScreen } from "./viz/Negotiate";
 import { Seg } from "./viz/Seg";
 import { money } from "../money";
 import "./viz/viz.css";
+
+/* ── screens, loaded when they are opened ───────────────────────────────────
+ *
+ * Everything above this line is the shell: the nav, the sign-in card, the
+ * shared vocabulary, the router. Everything below is a screen, and a screen is
+ * only worth downloading when somebody goes to it.
+ *
+ * The measurement that put them here: the built bundle was a 1.07 MB main chunk
+ * plus the 1.16 MB ag-grid chunk that `DataGrid` already splits off, and the
+ * API responses behind all of it are 2–31 kB. A salesperson in a machine shop
+ * on a phone was paying for the twenty analysis screens — the target wall, the
+ * bond swarm, the migration matrix — to open a quote.
+ *
+ * Written out one import at a time rather than through a `lazyScreen(module,
+ * "Name")` helper. The helper is four lines shorter and has to cast, which
+ * throws away the check that the props at the call site match the component: a
+ * renamed prop would compile and fail in the browser, on the screen nobody
+ * opens in development. `.then(m => ({ default: m.X }))` keeps the inference.
+ *
+ * Screens that share a module share a chunk, which is deliberate — `Screens`
+ * and `Patterns` are each a set of views somebody moves between.
+ */
+const QuoteBuilder = lazy(() => import("../QuoteBuilder"));
+const ApprovalsScreen = lazy(() =>
+  import("./AdminScreens").then((m) => ({ default: m.ApprovalsScreen })));
+const SettingsScreen = lazy(() =>
+  import("./AdminScreens").then((m) => ({ default: m.SettingsScreen })));
+const IdentityScreen = lazy(() =>
+  import("./IdentityScreen").then((m) => ({ default: m.IdentityScreen })));
+const DataScreen = lazy(() =>
+  import("./DataScreen").then((m) => ({ default: m.DataScreen })));
+const CustomerCommercial = lazy(() =>
+  import("./CommercialScreens").then((m) => ({ default: m.CustomerCommercial })));
+const CustomerItemScreen = lazy(() =>
+  import("./CommercialScreens").then((m) => ({ default: m.CustomerItemScreen })));
+const Storyboard = lazy(() =>
+  import("./viz/Storyboard").then((m) => ({ default: m.Storyboard })));
+const JourneyScreen = lazy(() =>
+  import("./viz/Screens").then((m) => ({ default: m.JourneyScreen })));
+const LostRevenueScreen = lazy(() =>
+  import("./viz/Screens").then((m) => ({ default: m.LostRevenueScreen })));
+const OpportunityScreen = lazy(() =>
+  import("./viz/Screens").then((m) => ({ default: m.OpportunityScreen })));
+const SimulatorScreen = lazy(() =>
+  import("./viz/Screens").then((m) => ({ default: m.SimulatorScreen })));
+const WeatherScreen = lazy(() =>
+  import("./viz/Screens").then((m) => ({ default: m.WeatherScreen })));
+const CadenceScreen = lazy(() =>
+  import("./viz/Patterns").then((m) => ({ default: m.CadenceScreen })));
+const CompositionScreen = lazy(() =>
+  import("./viz/Patterns").then((m) => ({ default: m.CompositionScreen })));
+const LandscapeScreen = lazy(() =>
+  import("./viz/Patterns").then((m) => ({ default: m.LandscapeScreen })));
+const DailyScreen = lazy(() =>
+  import("./viz/Daily").then((m) => ({ default: m.DailyScreen })));
+const BondsScreen = lazy(() =>
+  import("./viz/Bonds").then((m) => ({ default: m.BondsScreen })));
+const MixScreen = lazy(() =>
+  import("./viz/Mix").then((m) => ({ default: m.MixScreen })));
+const DependencyScreen = lazy(() =>
+  import("./viz/Dependency").then((m) => ({ default: m.DependencyScreen })));
+const TargetWallScreen = lazy(() =>
+  import("./viz/TargetWall").then((m) => ({ default: m.TargetWallScreen })));
+const CatalogueScreen = lazy(() =>
+  import("./viz/Catalogue").then((m) => ({ default: m.CatalogueScreen })));
+const CustomerHealthTimeline = lazy(() =>
+  import("./viz/History").then((m) => ({ default: m.CustomerHealthTimeline })));
+const MigrationMatrix = lazy(() =>
+  import("./viz/History").then((m) => ({ default: m.MigrationMatrix })));
+const PayablesScreen = lazy(() =>
+  import("./viz/TheBook").then((m) => ({ default: m.PayablesScreen })));
+const PaymentsScreen = lazy(() =>
+  import("./viz/TheBook").then((m) => ({ default: m.PaymentsScreen })));
+const StockScreen = lazy(() =>
+  import("./viz/TheBook").then((m) => ({ default: m.StockScreen })));
+const SupplyScreen = lazy(() =>
+  import("./viz/TheBook").then((m) => ({ default: m.SupplyScreen })));
+const NegotiateScreen = lazy(() =>
+  import("./viz/Negotiate").then((m) => ({ default: m.NegotiateScreen })));
 
 const ROLE_HOME: Record<Role, { title: string; sub: string; nav: string }> = {
   SALESPERSON: { title: "Today", sub: "Decisions that need you, most urgent first", nav: "Today" },
@@ -465,6 +525,13 @@ export default function PlatformApp() {
         {error ? (
           <LoadFailed error={error} onRetry={load} busy={loading} />
         ) : (
+          /* One boundary for every route, rather than one per screen: the
+             fallback is only ever on screen for the moment a chunk is in
+             flight, and thirty boundaries would be thirty places to get the
+             shape of that moment wrong. `LoadingState` reserves height, so the
+             page does not jump when the chunk lands — the same reason
+             `DataGrid` sizes its own placeholder. */
+          <Suspense fallback={<LoadingState rows={3} label="Opening…" />}>
           <Routes>
             {/* ── HOME: the Commercial Storyboard ──
                 A briefing, not a queue. The decision list it used to show is
@@ -606,6 +673,7 @@ export default function PlatformApp() {
                 not disagree. */}
             <Route path="*" element={<Navigate to={PATH.home} replace />} />
           </Routes>
+          </Suspense>
         )}
       </div>
 
@@ -758,6 +826,12 @@ function HomeScreen({
   onSeeAll: () => void;
   onNavigate: (route: string) => void;
 }) {
+  // Same subject as `CashProjection`'s gate, and for the same reason: the
+  // morning read carries what we owe suppliers alongside what is owed to us.
+  // `supply` mirrors `require_manager_or_owner`, which is the dependency on the
+  // endpoint — see ability.ts.
+  const mayReadDaily = abilityFor(session).can("read", "supply");
+
   // Already sorted by the server on priority then recency; take the head.
   const top = open.slice(0, HOME_CARDS);
   // The morning read sits above the queue rather than replacing it. The queue
@@ -779,8 +853,23 @@ function HomeScreen({
           trust this and what is going on", and the queue is one tile inside the
           answer. It loads independently and degrades in place — a landing page
           that blanks because one endpoint failed is worse than one that says
-          which part is missing. */}
-      <DailyScreen session={session} onNavigate={onNavigate} />
+          which part is missing.
+
+          Offered only to the roles that can load it. `GET /insight/daily` is
+          `require_manager_or_owner`, half of it being what we owe suppliers, so
+          rendering it for a salesperson put an amber "The morning read did not
+          load — Manager or owner role required" at the top of the first screen
+          they see every day. Omitted rather than rendered and then 403'd, for
+          the reason `PaymentsScreen` gives about `CashProjection`: a panel that
+          always fails teaches people the product is broken. */}
+      {/* Its own boundary, not the route's: the queue below is the reason
+          somebody opened this page, and holding it behind a chunk that belongs
+          to the panel above it would trade one blank screen for another. */}
+      {mayReadDaily && (
+        <Suspense fallback={<LoadingState rows={2} label="Reading this morning…" />}>
+          <DailyScreen session={session} onNavigate={onNavigate} />
+        </Suspense>
+      )}
 
       {loading && open.length === 0 ? (
         <Stack spacing={1.5} sx={{ mb: 4 }}>
@@ -841,7 +930,12 @@ function HomeScreen({
             The evidence behind them
           </Labelled>
         </div>
-        <Storyboard session={session} onNavigate={onNavigate} />
+        {/* Below the fold and below the queue, so its chunk arrives while
+            somebody is already reading — and never at all for somebody who
+            only came to work the queue. */}
+        <Suspense fallback={<LoadingState rows={3} />}>
+          <Storyboard session={session} onNavigate={onNavigate} />
+        </Suspense>
       </div>
     </div>
   );
@@ -898,19 +992,11 @@ function ListScreen({
           a row of things that will do something. */}
       <Stack direction="row" spacing={1} useFlexGap sx={{ mb: 2, flexWrap: "wrap" }}>
         {types.map((t) => (
-          <Chip
+          <FilterChip
             key={t || "all"}
             label={t ? typeLabel(t) : "All"}
-            // The count sits in the avatar slot so it stays legible when the
-            // chip is filled — a count baked into the label loses its contrast
-            // against the selected background.
-            avatar={
-              <Avatar sx={{ bgcolor: "transparent", fontSize: 11, fontWeight: 700 }}>
-                {t ? counts.get(t) : (summaries || []).length}
-              </Avatar>
-            }
-            color={listType === t ? "primary" : "default"}
-            variant={listType === t ? "filled" : "outlined"}
+            count={t ? counts.get(t) : (summaries || []).length}
+            selected={listType === t}
             onClick={() => setListType(t)}
           />
         ))}

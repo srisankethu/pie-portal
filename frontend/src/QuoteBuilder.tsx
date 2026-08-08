@@ -17,7 +17,6 @@
  */
 import Alert from "@mui/material/Alert";
 import AlertTitle from "@mui/material/AlertTitle";
-import Avatar from "@mui/material/Avatar";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Chip from "@mui/material/Chip";
@@ -35,8 +34,10 @@ import type { Line, Quote } from "./types";
 import { IntakeModal } from "./components/IntakeModal";
 import { SupplyDrawer } from "./components/SupplyDrawer";
 import { LineGrid } from "./components/LineGrid";
+import { NARROW_BREAKPOINT } from "./platform/DataGrid";
 import { SummaryBar } from "./components/SummaryBar";
-import { EmptyState, LoadingState, SectionHeader } from "./platform/kit";
+import { EmptyState, FilterChip, FilterPanel, LoadingState, SectionHeader, TOUCH }
+  from "./platform/kit";
 import { abilityFor } from "./platform/ability";
 import type { PlatformSession } from "./platform/types";
 import { useQuoteIntelligence } from "./useQuoteIntelligence";
@@ -385,10 +386,13 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
         sub={SUB}
         actions={
           <>
-            <Button variant="outlined" size="small" onClick={startNewQuote}>
+            {/* The two things this screen is opened to do, so they carry a
+                full tap target like the controls below them. */}
+            <Button variant="outlined" size="small" sx={TOUCH} onClick={startNewQuote}>
               New quote
             </Button>
-            <Button variant="contained" size="small" onClick={() => setIntakeOpen(true)}>
+            <Button variant="contained" size="small" sx={TOUCH}
+                    onClick={() => setIntakeOpen(true)}>
               Paste RFQ
             </Button>
           </>
@@ -425,7 +429,8 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
             variant="text"
             size="small"
             onClick={() => setPickerOpen(true)}
-            sx={{ p: 0, minWidth: 0, textTransform: "none", lineHeight: 1.4,
+            sx={{ ...TOUCH, p: 0, justifyContent: "flex-start",
+                  textTransform: "none", lineHeight: 1.4,
                   fontFamily: "var(--font-heading)", fontWeight: 600 }}
           >
             {quote.customer}
@@ -435,63 +440,48 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
         {draftStatus && (
           <Chip size="small" variant="outlined" label={draftStatus} />
         )}
-        <Button variant="text" size="small" onClick={saveDraft} disabled={!hasLines}>
+        <Button variant="text" size="small" sx={TOUCH} onClick={saveDraft}
+                disabled={!hasLines}>
           Save draft
         </Button>
       </Paper>
 
       {/* Chips, matching the decision queue's filter row. These select what the
           grid shows; they are not actions, and rendering them as buttons said
-          otherwise on both screens. */}
-      <Paper
-        variant="outlined"
-        sx={{
-          p: 1.5, mb: 2,
-          display: "flex", flexWrap: "wrap", alignItems: "center", gap: 1, rowGap: 1,
-        }}
-      >
-        {FILTERS.map(([key, label]) => {
-          const count = quote.filterCounts[key] ?? 0;
-          // Unresolved lines and lines needing a decision are the two states
-          // that stop a quote being sent, so their count is coloured even when
-          // the chip is not the active one.
-          const alert = (key === "NEEDS" || key === "UNRES") && count > 0;
-          return (
-            <Chip
-              key={key}
-              label={label}
-              avatar={
-                <Avatar
-                  sx={{
-                    bgcolor: "transparent",
-                    fontSize: 11,
-                    fontWeight: 700,
-                    color: alert && filter !== key ? "var(--danger-fg)" : undefined,
-                  }}
-                >
-                  {count}
-                </Avatar>
-              }
-              color={filter === key ? "primary" : "default"}
-              variant={filter === key ? "filled" : "outlined"}
-              onClick={() => setFilter(key)}
-            />
-          );
-        })}
+          otherwise on both screens.
+
+          `FilterPanel` rather than a `Paper` spelling out the same six sx
+          properties: kit.tsx §10 already owns "the controls above a list", and
+          a duplicate scan named this strip and the header strip above it as one
+          clone. The header strip is not this — it identifies the quote — so
+          only this one moves. */}
+      <FilterPanel>
+        {FILTERS.map(([key, label]) => (
+          <FilterChip
+            key={key}
+            label={label}
+            count={quote.filterCounts[key] ?? 0}
+            selected={filter === key}
+            // Unresolved lines and lines needing a decision are the two states
+            // that stop a quote being sent, so their count is coloured even when
+            // the chip is not the active one.
+            alert={(key === "NEEDS" || key === "UNRES")
+                   && (quote.filterCounts[key] ?? 0) > 0}
+            onClick={() => setFilter(key)}
+          />
+        ))}
         {mgmt && (quote.filterCounts.MFLOOR ?? 0) > 0 && (
-          <Chip
+          <FilterChip
             label="Below margin floor"
-            avatar={
-              <Avatar sx={{ bgcolor: "transparent", fontSize: 11, fontWeight: 700 }}>
-                {quote.filterCounts.MFLOOR}
-              </Avatar>
-            }
-            color={filter === "MFLOOR" ? "error" : "default"}
-            variant={filter === "MFLOOR" ? "filled" : "outlined"}
+            count={quote.filterCounts.MFLOOR}
+            selected={filter === "MFLOOR"}
+            tone="error"
             onClick={() => setFilter(filter === "MFLOOR" ? "ALL" : "MFLOOR")}
           />
         )}
         <Box sx={{ flex: 1 }} />
+        {/* Full width on a phone: a 220px search box beside a wrapped row of
+            chips left ~90px of usable field, which is not a search box. */}
         <TextField
           id="qb-search"
           size="small"
@@ -499,15 +489,17 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
           aria-label="Search quote lines"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          sx={{ maxWidth: 220 }}
+          sx={{ width: { xs: "100%", sm: 220 }, "& .MuiInputBase-root": TOUCH }}
         />
-        <Button variant="outlined" size="small" onClick={selectVisible} disabled={!visible.length}>
+        <Button variant="outlined" size="small" sx={TOUCH}
+                onClick={selectVisible} disabled={!visible.length}>
           Select visible
         </Button>
-        <Button variant="outlined" size="small" onClick={clearSelection} disabled={!selectedCount}>
+        <Button variant="outlined" size="small" sx={TOUCH}
+                onClick={clearSelection} disabled={!selectedCount}>
           Clear
         </Button>
-      </Paper>
+      </FilterPanel>
 
       {/* An `Alert`, not a hand-coloured banner: the severity carries an icon
           and a role as well as a hue, which is the standard everywhere else in
@@ -584,7 +576,21 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
             onCreateItem={doCreateItem}
             onConfirmReading={doConfirmReading}
           />
-          <div className="kbd-hints" style={{ marginTop: "var(--space-4)" }}>
+          {/* Hidden on the phone rendering. Every hint here is about the grid
+              — ↑↓ moves the focused row, F2 opens the rate editor, Enter opens
+              the supply drawer — and none of it is true of the cards, which
+              have no keyboard and no editor to open. A legend for controls that
+              are not there is worse than no legend. */}
+          <Box
+            className="kbd-hints"
+            sx={{
+              mt: "var(--space-4)",
+              display: "none",
+              // The wrapper's own breakpoint, read rather than restated: the
+              // legend must appear exactly when the grid it describes does.
+              [`@media (min-width:${NARROW_BREAKPOINT}px)`]: { display: "flex" },
+            }}
+          >
             <span>
               <span className="kbd">↑↓</span> navigate
             </span>
@@ -603,7 +609,7 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
             <span>
               <span className="kbd">Esc</span> close
             </span>
-          </div>
+          </Box>
         </>
       )}
 

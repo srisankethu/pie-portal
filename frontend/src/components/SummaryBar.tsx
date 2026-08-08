@@ -5,7 +5,7 @@ import Paper from "@mui/material/Paper";
 import Typography from "@mui/material/Typography";
 import type { Quote } from "../types";
 import { Tip } from "../Tip";
-import { CurrencyValue } from "../platform/kit";
+import { CurrencyValue, TOUCH } from "../platform/kit";
 
 /** What the quote comes to, and the one action that sends it.
  *
@@ -83,6 +83,7 @@ export function SummaryBar({
           <Button
             variant="outlined"
             size="small"
+            sx={TOUCH}
             title="Apply a 10% discount to the selected lines"
             onClick={() => onDiscount(10)}
           >
@@ -93,6 +94,7 @@ export function SummaryBar({
 
       <Button
         variant="contained"
+        sx={TOUCH}
         title={
           gateBlockedReason ?? (hasLines
             ? "Create a Zoho estimate from the current quote"

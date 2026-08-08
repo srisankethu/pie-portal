@@ -1,0 +1,29 @@
+{
+  "home": {
+    "totalBytes": 770989,
+    "files": {
+      "index-BDUV5-by.js": 735550,
+      "linear-BGgJ81e6.js": 18782,
+      "Storyboard-8VvUPiDR.js": 10249,
+      "band-Be2u989w.js": 2427,
+      "Panel-DxCd8T4t.js": 1916,
+      "useMeasure-Dtkhy-R5.js": 1208,
+      "tokens-DxlVhqwU.js": 857
+    }
+  },
+  "quote": {
+    "totalBytes": 851420,
+    "files": {
+      "index-BDUV5-by.js": 735550,
+      "QuoteBuilder-DzzYj2ri.js": 53346,
+      "Autocomplete-DMpGcfG5.js": 24649,
+      "linear-BGgJ81e6.js": 18782,
+      "Storyboard-8VvUPiDR.js": 10249,
+      "SwitchBase-9LPzDj-N.js": 2436,
+      "band-Be2u989w.js": 2427,
+      "Panel-DxCd8T4t.js": 1916,
+      "useMeasure-Dtkhy-R5.js": 1208,
+      "tokens-DxlVhqwU.js": 857
+    }
+  }
+}

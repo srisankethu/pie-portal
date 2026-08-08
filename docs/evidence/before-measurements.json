@@ -1,0 +1,328 @@
+{
+  "home": {
+    "viewportWidth": 412,
+    "pageScrollsSideways": false,
+    "gridColumnsInDom": [],
+    "gridContentWidth": null,
+    "gridBoxWidth": null,
+    "priceHeader": null,
+    "gridPriceCells": 0,
+    "gridPriceCellsOnScreen": 0,
+    "lineCards": 0,
+    "cardPriceInputs": 0,
+    "cardPriceInputsOnScreen": 0,
+    "controlsMeasured": 7,
+    "controlsUnder44": [
+      {
+        "h": 36,
+        "what": "Open navigation"
+      },
+      {
+        "h": 30,
+        "what": "Sign out"
+      },
+      {
+        "h": 30,
+        "what": "Open \u2192"
+      },
+      {
+        "h": 30,
+        "what": "Open \u2192"
+      },
+      {
+        "h": 34,
+        "what": "3 months\u200b"
+      },
+      {
+        "h": 30,
+        "what": "Open the lost-revenue breakdown (3"
+      },
+      {
+        "h": 30,
+        "what": "See revenue by customer (3)"
+      }
+    ]
+  },
+  "decisions": {
+    "viewportWidth": 412,
+    "pageScrollsSideways": false,
+    "gridColumnsInDom": [
+      "Priority",
+      "Type",
+      "Account / subject",
+      "Why",
+      "Worth / confidence"
+    ],
+    "gridContentWidth": 636,
+    "gridBoxWidth": 383,
+    "priceHeader": null,
+    "gridPriceCells": 0,
+    "gridPriceCellsOnScreen": 0,
+    "lineCards": 0,
+    "cardPriceInputs": 0,
+    "cardPriceInputsOnScreen": 0,
+    "controlsMeasured": 5,
+    "controlsUnder44": [
+      {
+        "h": 36,
+        "what": "Open navigation"
+      },
+      {
+        "h": 30,
+        "what": "Sign out"
+      },
+      {
+        "h": 32,
+        "what": "2All"
+      },
+      {
+        "h": 32,
+        "what": "1Customer decline"
+      },
+      {
+        "h": 32,
+        "what": "1Customer dormancy"
+      }
+    ]
+  },
+  "quote-lines": {
+    "viewportWidth": 412,
+    "pageScrollsSideways": false,
+    "gridColumnsInDom": [
+      "",
+      "Requested item",
+      "Supply product",
+      "Quoted \u20b9",
+      "Commercial"
+    ],
+    "gridContentWidth": 822,
+    "gridBoxWidth": 383,
+    "priceHeader": {
+      "left": 486,
+      "right": 531,
+      "onScreen": false
+    },
+    "gridPriceCells": 5,
+    "gridPriceCellsOnScreen": 0,
+    "lineCards": 0,
+    "cardPriceInputs": 0,
+    "cardPriceInputsOnScreen": 0,
+    "controlsMeasured": 21,
+    "controlsUnder44": [
+      {
+        "h": 36,
+        "what": "Open navigation"
+      },
+      {
+        "h": 30,
+        "what": "Sign out"
+      },
+      {
+        "h": 30,
+        "what": "New quote"
+      },
+      {
+        "h": 30,
+        "what": "Paste RFQ"
+      },
+      {
+        "h": 28,
+        "what": "Pitti Engineering Ltd"
+      },
+      {
+        "h": 30,
+        "what": "Save draft"
+      },
+      {
+        "h": 32,
+        "what": "5All"
+      },
+      {
+        "h": 32,
+        "what": "3Needs attention"
+      },
+      {
+        "h": 32,
+        "what": "0Potential procurement"
+      },
+      {
+        "h": 32,
+        "what": "3Missing Zoho item"
+      },
+      {
+        "h": 32,
+        "what": "0Manual review"
+      },
+      {
+        "h": 32,
+        "what": "0Unresolved"
+      },
+      {
+        "h": 32,
+        "what": "5Substituted"
+      },
+      {
+        "h": 32,
+        "what": "0Commercial exceptions"
+      },
+      {
+        "h": 34,
+        "what": "\u200b"
+      },
+      {
+        "h": 30,
+        "what": "Select visible"
+      },
+      {
+        "h": 30,
+        "what": "Clear"
+      },
+      {
+        "h": 28,
+        "what": "+ Zoho"
+      },
+      {
+        "h": 28,
+        "what": "+ Zoho"
+      },
+      {
+        "h": 28,
+        "what": "+ Zoho"
+      },
+      {
+        "h": 37,
+        "what": "Create Zoho estimate"
+      }
+    ]
+  },
+  "priceTyped": "no card input; 5 grid cells, none on screen",
+  "desktop1440": {
+    "viewportWidth": 1440,
+    "pageScrollsSideways": false,
+    "gridColumnsInDom": [
+      "",
+      "Requested item",
+      "Qty",
+      "Supply product",
+      "Quoted \u20b9",
+      "Commercial",
+      "Status",
+      ""
+    ],
+    "gridContentWidth": 1137,
+    "gridBoxWidth": 1137,
+    "priceHeader": {
+      "left": 1054,
+      "right": 1099,
+      "onScreen": true
+    },
+    "gridPriceCells": 5,
+    "gridPriceCellsOnScreen": 5,
+    "lineCards": 0,
+    "cardPriceInputs": 0,
+    "cardPriceInputsOnScreen": 0,
+    "controlsMeasured": 25,
+    "controlsUnder44": [
+      {
+        "h": 30,
+        "what": "Sign out"
+      },
+      {
+        "h": 30,
+        "what": "New quote"
+      },
+      {
+        "h": 30,
+        "what": "Paste RFQ"
+      },
+      {
+        "h": 28,
+        "what": "Pitti Engineering Ltd"
+      },
+      {
+        "h": 30,
+        "what": "Save draft"
+      },
+      {
+        "h": 32,
+        "what": "5All"
+      },
+      {
+        "h": 32,
+        "what": "3Needs attention"
+      },
+      {
+        "h": 32,
+        "what": "0Potential procurement"
+      },
+      {
+        "h": 32,
+        "what": "3Missing Zoho item"
+      },
+      {
+        "h": 32,
+        "what": "0Manual review"
+      },
+      {
+        "h": 32,
+        "what": "0Unresolved"
+      },
+      {
+        "h": 32,
+        "what": "5Substituted"
+      },
+      {
+        "h": 32,
+        "what": "0Commercial exceptions"
+      },
+      {
+        "h": 34,
+        "what": "\u200b"
+      },
+      {
+        "h": 30,
+        "what": "Select visible"
+      },
+      {
+        "h": 30,
+        "what": "Clear"
+      },
+      {
+        "h": 31,
+        "what": "Remove CNMG 120408 MP KCP25 from t"
+      },
+      {
+        "h": 28,
+        "what": "+ Zoho"
+      },
+      {
+        "h": 31,
+        "what": "Remove DCMT 11T304 HP KCP10 from t"
+      },
+      {
+        "h": 31,
+        "what": "Remove TNMG 160408 MS KCP25 from t"
+      },
+      {
+        "h": 28,
+        "what": "+ Zoho"
+      },
+      {
+        "h": 31,
+        "what": "Remove WNMG 080408 MP KCP25 qty fr"
+      },
+      {
+        "h": 28,
+        "what": "+ Zoho"
+      },
+      {
+        "h": 31,
+        "what": "Remove SNMG 120408 MP KCP25 from t"
+      },
+      {
+        "h": 37,
+        "what": "Create Zoho estimate"
+      }
+    ]
+  }
+}

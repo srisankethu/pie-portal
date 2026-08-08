@@ -24,11 +24,14 @@
  * Cell *content* is MUI: every state is a `Chip` carrying a word, so none of
  * them is colour alone.
  */
-import { useMemo } from "react";
+import { useCallback, useMemo } from "react";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
+import Card from "@mui/material/Card";
+import Checkbox from "@mui/material/Checkbox";
 import IconButton from "@mui/material/IconButton";
 import Stack from "@mui/material/Stack";
+import TextField from "@mui/material/TextField";
 import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 import DeleteOutlineOutlined from "@mui/icons-material/DeleteOutlineOutlined";
@@ -38,7 +41,7 @@ import { relTone, statusTone } from "../rel";
 import { Labelled } from "../Tip";
 import { money } from "../money";
 import { DataGrid, numeric, type ColDef } from "../platform/DataGrid";
-import { EmptyState, StatusChip, type Tone } from "../platform/kit";
+import { EmptyState, StatusChip, TOUCH, TOUCH_TARGET, type Tone } from "../platform/kit";
 
 /** One line, joined to its assessment.
  *
@@ -68,15 +71,33 @@ function marginIsMeasured(intel?: LineIntelligence): boolean {
 /** A code and its description, stacked. The description is one line and
  *  elides — the full text is a tooltip rather than a row that grows. */
 function CodeCell({
-  code, desc, accent = false, children,
+  code, desc, accent = false, wrap = false, children,
 }: {
   code: React.ReactNode;
   desc?: string | null;
   /** The supply code when it is not the requested one — a substitution is the
    *  one thing on this row somebody must not read past. */
   accent?: boolean;
+  /** Let both lines wrap instead of eliding. For the card rendering, where the
+   *  constraint is the opposite of a grid's: height is free and there is no
+   *  column beside this one to steal width from, so a truncated tool name is a
+   *  loss with nothing bought by it — and a tooltip is not reachable by touch. */
+  wrap?: boolean;
   children?: React.ReactNode;
 }) {
+  const clamp = wrap
+    ? { overflowWrap: "anywhere" as const }
+    : { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const };
+  const description = desc ? (
+    <Typography
+      component="div"
+      variant="caption"
+      color="text.secondary"
+      sx={{ display: "block", ...clamp }}
+    >
+      {desc}
+    </Typography>
+  ) : null;
   return (
     <Box sx={{ lineHeight: 1.35, py: 0.5, minWidth: 0 }}>
       <Typography
@@ -84,23 +105,14 @@ function CodeCell({
         sx={{
           fontFamily: "ui-monospace, monospace", fontSize: 12.5, fontWeight: 700,
           color: accent ? "var(--color-accent-800)" : "text.primary",
-          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+          ...clamp,
         }}
       >
         {code}
       </Typography>
-      {desc ? (
-        <Tooltip title={desc}>
-          <Typography
-            component="div"
-            variant="caption"
-            color="text.secondary"
-            sx={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
-          >
-            {desc}
-          </Typography>
-        </Tooltip>
-      ) : null}
+      {description && !wrap ? (
+        <Tooltip title={desc}>{description}</Tooltip>
+      ) : description}
       {children}
     </Box>
   );
@@ -193,6 +205,246 @@ function fixed(width: number): Partial<ColDef<Row>> {
   return { width, minWidth: width, maxWidth: width, flex: 0, suppressSizeToFit: true };
 }
 
+/** Whether this line is holding the quote up, wants a look, or neither.
+ *
+ *  One function because two renderings ask it: the grid turns it into a row
+ *  class and the card into a background. Written twice, the two would drift and
+ *  a line would be tinted on a laptop and plain on a phone.
+ *
+ *  Always a *second* cue. The same fact is a `Chip` in both renderings, so
+ *  nothing here is colour alone. */
+function lineTone(line: Line): "blocked" | "attention" | undefined {
+  if (line.flags.unresolved || line.status.kind === "technical") return "blocked";
+  if (line.substituted || line.flags.procurement || line.flags.attention) return "attention";
+  return undefined;
+}
+
+/** The card's tint for each tone, matching `.qb-row-blocked`/`.qb-row-attention`
+ *  in `styles.css` — same tokens, same mix. */
+const CARD_TINT: Record<"blocked" | "attention", string> = {
+  blocked: "color-mix(in srgb, var(--danger-bg) 55%, transparent)",
+  attention: "color-mix(in srgb, var(--caution-bg) 45%, transparent)",
+};
+
+/** One line, as a card, for a screen too narrow to be a grid.
+ *
+ *  A `Card` rather than a `Paper` under `docs/ui-standards.md` §2: a quote line
+ *  is a business entity with an identity — it has a requested item, a chosen
+ *  supply product, a price somebody set, and it is the thing the drawer opens
+ *  and the delete button removes.
+ *
+ *  It carries the six things the brief names — requested item, supply, qty,
+ *  price, availability, status — and nothing else. The columns the grid hides
+ *  on a laptop are hidden here too: `#` identifies nothing the code beside it
+ *  does not, and shortage is availability restated as a subtraction.
+ *
+ *  **The price is a real field, not a cell that becomes one.** ag-grid's
+ *  editable cell is the right control with a keyboard and the wrong one with a
+ *  thumb: it needs a second tap to enter edit mode, and Escape and Tab — the
+ *  two things that make it good on a desktop — have no touch equivalent. So
+ *  this is a `TextField`, always open, committing on blur and on Enter.
+ */
+function LineCard({
+  line, intel, mgmt, selected, onToggle, onOpen, onSetPrice,
+  onDeleteLine, onCreateItem, onConfirmReading,
+}: {
+  line: Line;
+  intel?: LineIntelligence;
+  mgmt: boolean;
+  selected: boolean;
+  onToggle: (id: string) => void;
+  onOpen: (id: string) => void;
+  onSetPrice: (id: string, price: number | null) => void;
+  onDeleteLine: (id: string) => void;
+  onCreateItem: (id: string) => void;
+  onConfirmReading: (id: string) => void;
+}) {
+  const margin = marginOf(line, intel);
+  const tone = lineTone(line);
+  const commit = (raw: string) => {
+    const v = raw.replace(/[^0-9.]/g, "");
+    const next = v === "" ? null : Number.parseFloat(v);
+    if (next !== line.quoted) onSetPrice(line.id, Number.isNaN(next!) ? null : next);
+  };
+
+  return (
+    <Card
+      variant="outlined"
+      role="listitem"
+      data-line-card={line.id}
+      sx={{
+        p: 1.5,
+        bgcolor: tone ? CARD_TINT[tone] : undefined,
+      }}
+    >
+      <Stack direction="row" spacing={1} sx={{ alignItems: "flex-start" }}>
+        <Checkbox
+          checked={selected}
+          onChange={() => onToggle(line.id)}
+          slotProps={{ input: { "aria-label": `Select ${line.reqCode}` } }}
+          sx={{ ...TOUCH, mt: -0.5 }}
+        />
+        <Box sx={{ flex: 1, minWidth: 0 }}>
+          {/* The whole heading is the way into the line's supply options — the
+              card's equivalent of the grid's row click. A button, so it is
+              reachable by keyboard and announces itself as one. */}
+          <Box
+            component="button"
+            type="button"
+            onClick={() => onOpen(line.id)}
+            aria-label={`Open supply options for ${line.reqCode}`}
+            sx={{
+              ...TOUCH, display: "block", width: "100%", textAlign: "left",
+              background: "none", border: 0, p: 0, cursor: "pointer", font: "inherit",
+            }}
+          >
+            <CodeCell code={line.reqCode} desc={line.reqDesc} wrap>
+              <Flags line={line} />
+            </CodeCell>
+          </Box>
+        </Box>
+        <IconButton
+          aria-label={`Remove ${line.reqCode} from this quote`}
+          onClick={() => onDeleteLine(line.id)}
+          sx={TOUCH}
+        >
+          <DeleteOutlineOutlined fontSize="small" />
+        </IconButton>
+      </Stack>
+
+      <Field label="Supply product">
+        {line.supplyCode ? (
+          <CodeCell code={line.supplyCode} desc={line.supplyDesc}
+                    accent={line.substituted} wrap>
+            <Stack direction="row" spacing={0.5} useFlexGap
+                   sx={{ flexWrap: "wrap", alignItems: "center", mt: 0.5 }}>
+              <StatusChip label={line.relLabel} tone={relTone(line.rel)} dense />
+              {(line.sel === "USER" || line.sel === "MANUAL") && (
+                <StatusChip label={line.sel === "MANUAL" ? "manual" : "user set"}
+                            tone={line.sel === "MANUAL" ? "warn" : "neutral"} dense />
+              )}
+              {line.inBooks === false && (
+                <Button size="small" sx={TOUCH} onClick={() => onCreateItem(line.id)}>
+                  + Create in Zoho
+                </Button>
+              )}
+            </Stack>
+          </CodeCell>
+        ) : (
+          <Typography variant="body2" color="text.secondary">
+            {line.rel === "PIE_DOWN" ? "awaiting PIE"
+              : line.rel === "AMBIGUOUS" ? "select product" : "not resolved"}
+          </Typography>
+        )}
+      </Field>
+
+      {/* Qty and availability read together — "twenty asked for, forty on the
+          shelf" is one fact — so they share a row rather than stacking. */}
+      <Stack direction="row" spacing={2} sx={{ mt: 1 }}>
+        <Field label="Qty" inline>
+          <Typography variant="body2">{line.reqQty}</Typography>
+        </Field>
+        <Field label="Available" inline>
+          <Typography variant="body2">
+            {!line.supplyCode ? "—" : line.availUnknown ? "?" : line.avail}
+            {line.shortage !== null && line.shortage > 0
+              ? ` · short ${line.shortage}` : ""}
+          </Typography>
+        </Field>
+      </Stack>
+
+      <Stack direction="row" spacing={1.5}
+             sx={{ mt: 1.5, alignItems: "flex-end", flexWrap: "wrap", rowGap: 1 }}>
+        <TextField
+          label="Quoted ₹"
+          size="small"
+          defaultValue={line.quoted ?? ""}
+          // Remounts when the server sends a different price back, which it does
+          // after a bulk discount. Without it the field keeps the old number.
+          key={`${line.id}-${line.quoted}`}
+          placeholder="—"
+          slotProps={{
+            htmlInput: {
+              inputMode: "decimal",
+              "aria-label": `Quoted rate for ${line.reqCode}`,
+              "data-line-price": line.id,
+            },
+          }}
+          onBlur={(e) => commit(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+          }}
+          sx={{ width: 130, "& .MuiInputBase-root": TOUCH }}
+        />
+        <Box sx={{ pb: 0.75 }}>
+          <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
+            Line total
+          </Typography>
+          <Typography variant="body2" sx={{ fontVariantNumeric: "tabular-nums" }}>
+            {money(line.lineTotal)}
+          </Typography>
+        </Box>
+        {mgmt && margin !== null && (
+          <Box sx={{ pb: 0.75 }}>
+            <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
+              Margin
+            </Typography>
+            <Typography
+              variant="body2"
+              color={intel?.blocking || line.economics?.below_floor
+                ? "error.main" : undefined}
+              sx={{ fontVariantNumeric: "tabular-nums" }}
+            >
+              {(margin * 100).toFixed(1)}%
+            </Typography>
+          </Box>
+        )}
+      </Stack>
+
+      <Stack direction="row" spacing={0.5} useFlexGap
+             sx={{ mt: 1.5, flexWrap: "wrap", alignItems: "center" }}>
+        <StatusChip label={line.status.label} tone={statusTone(line.status.kind)} />
+        <CommercialChip intel={intel} />
+      </Stack>
+
+      {line.proposed && (
+        <Box sx={{ mt: 1.5 }}>
+          <Typography variant="body2" sx={{ fontStyle: "italic" }}>
+            “{line.raw}”
+          </Typography>
+          {line.reading ? (
+            <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
+              interpreted: {line.reading}
+            </Typography>
+          ) : null}
+          <Button size="small" variant="outlined" sx={{ ...TOUCH, mt: 0.5 }}
+                  onClick={() => onConfirmReading(line.id)}>
+            Accept
+          </Button>
+        </Box>
+      )}
+    </Card>
+  );
+}
+
+/** A label above its value, inside a card. The card's answer to a column
+ *  header — without it a bare product code has nothing saying which of the two
+ *  codes on the card it is. */
+function Field({
+  label, inline = false, children,
+}: { label: string; inline?: boolean; children: React.ReactNode }) {
+  return (
+    <Box sx={{ mt: inline ? 0 : 1.5, minWidth: 0 }}>
+      <Typography variant="caption" color="text.secondary"
+                  sx={{ display: "block", textTransform: "uppercase",
+                        letterSpacing: "0.06em" }}>
+        {label}
+      </Typography>
+      {children}
+    </Box>
+  );
+}
+
 export function LineGrid({
   lines,
   mgmt,
@@ -217,6 +469,16 @@ export function LineGrid({
    *  store.confirm_reading. */
   onConfirmReading: (id: string) => void;
 }) {
+  // Toggling one line's selection, for the card rendering. The grid speaks
+  // "here is the whole selected set"; a card has one checkbox and knows only
+  // about itself, so the set is edited here rather than reconstructed in the
+  // card from a list it would have to be handed.
+  const toggle = useCallback((id: string) => {
+    onSelectionChange(selectedIds.includes(id)
+      ? selectedIds.filter((x) => x !== id)
+      : [...selectedIds, id]);
+  }, [selectedIds, onSelectionChange]);
+
   const rows: Row[] = useMemo(
     () => lines.map((l) => ({
       ...l,
@@ -290,7 +552,11 @@ export function LineGrid({
               )}
               {l.inBooks === false && (
                 <Button
-                  variant="text" size="small" sx={{ minWidth: 0, px: 0.75, fontSize: 11 }}
+                  variant="text" size="small"
+                  // The 66px row has the height for a full tap target; the
+                  // width is the scarce thing, so `minWidth` is the one part of
+                  // `TOUCH` this cannot take.
+                  sx={{ minHeight: TOUCH_TARGET, minWidth: 0, px: 0.75, fontSize: 11 }}
                   title={`Create ${l.reqCode} in Zoho Books`}
                   onClick={() => onCreateItem(l.id)}
                 >
@@ -406,6 +672,7 @@ export function LineGrid({
           <Tooltip title={`Remove ${p.data.reqCode} from this quote`}>
             <IconButton
               size="small"
+              sx={TOUCH}
               aria-label={`Remove ${p.data.reqCode} from this quote`}
               onClick={() => onDeleteLine(p.data!.id)}
             >
@@ -430,11 +697,28 @@ export function LineGrid({
       getRowId={(r) => r.id}
       // A tint behind the rows that are holding the quote up. Second cue only:
       // the same fact is a chip in the Status column of the same row.
-      rowClass={(r) =>
-        r.flags.unresolved || r.status.kind === "technical" ? "qb-row-blocked"
-          : r.substituted || r.flags.procurement || r.flags.attention ? "qb-row-attention"
-            : undefined}
+      rowClass={(r) => {
+        const tone = lineTone(r);
+        return tone ? `qb-row-${tone}` : undefined;
+      }}
       selection={{ selectedIds, onChange: onSelectionChange }}
+      // Below 700px the columns above do not fit and the rate field lands off
+      // screen — see DataGridProps.renderNarrow. The grid is untouched above it.
+      renderNarrow={(r) => (
+        <LineCard
+          key={r.id}
+          line={r}
+          intel={r.intel}
+          mgmt={mgmt}
+          selected={selectedIds.includes(r.id)}
+          onToggle={toggle}
+          onOpen={onOpen}
+          onSetPrice={onSetPrice}
+          onDeleteLine={onDeleteLine}
+          onCreateItem={onCreateItem}
+          onConfirmReading={onConfirmReading}
+        />
+      )}
       onRowClick={(r) => onOpen(r.id)}
       onRowActivate={(r) => onOpen(r.id)}
       onCellValueChanged={(row, field, value) =>

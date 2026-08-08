@@ -128,9 +128,20 @@ export const papi = {
   // Every one of these returns the same envelope: data, currency, and an
   // `empty_reason` written where the query happened. The client never decides
   // why something is empty — it could only guess, and the server knows.
-  /** The morning read. One request for the whole landing page's top. */
-  daily: (t: string) =>
-    req<Record<string, unknown>>("/api/v1/insight/daily", {}, t),
+  /** The morning read. One request for the whole landing page's top.
+   *
+   *  `movedFrom`/`movedTo` set the window the **What moved** band reports over
+   *  — that band and no other. The rest are states as of now, not periods, so
+   *  a page-wide date control would be answering a question three of the four
+   *  bands cannot be asked. */
+  daily: (t: string, movedFrom?: string, movedTo?: string) => {
+    const p = new URLSearchParams();
+    if (movedFrom) p.set("moved_from", movedFrom);
+    if (movedTo) p.set("moved_to", movedTo);
+    const qs = p.toString();
+    return req<Record<string, unknown>>(
+      `/api/v1/insight/daily${qs ? "?" + qs : ""}`, {}, t);
+  },
 
   storyboard: (t: string, months = 3) =>
     req<Record<string, unknown>>(`/api/v1/insight/storyboard?months=${months}`, {}, t),

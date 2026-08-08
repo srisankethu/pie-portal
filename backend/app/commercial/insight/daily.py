@@ -96,12 +96,17 @@ class Tile:
         }
 
 
-def _tiles(band: str, tiles: Iterable[Tile]) -> dict[str, Any]:
+def _tiles(band: str, tiles: Iterable[Tile],
+           question: Optional[str] = None) -> dict[str, Any]:
     rows = [t for t in tiles if t is not None]
     return {
         "key": band,
         "label": BAND_LABEL[band],
-        "question": BAND_QUESTION[band],
+        # Overridden only where the band is actually reporting over a window
+        # somebody chose. The default question describes the default window, so
+        # leaving it in place while the numbers came from a different range
+        # would be the screen contradicting itself in its own subtitle.
+        "question": question or BAND_QUESTION[band],
         "tiles": [t.to_dict() for t in rows],
         # A band with nothing in it is an answer, and a good one. The screen
         # says so rather than rendering an empty rectangle.
@@ -210,19 +215,27 @@ def assemble(*, now: datetime, as_of: Optional[date], state_on: Optional[date],
              cadence: Optional[dict] = None,
              cash: Optional[dict] = None,
              moved: Optional[dict] = None,
+             moved_window: Optional[tuple[Optional[date], Optional[date]]] = None,
              currency: str = "INR") -> dict[str, Any]:
     """The five bands, from what the other builders already computed."""
     bands = [
         _tiles(NEEDS_YOU, _needs_you(approvals_pending, decisions_by_band or {})),
         _tiles(AT_RISK, _at_risk(stock or {}, supply or {}, cadence or {}, cash or {})),
         _tiles(COMMITTED, _committed(supply or {}, cash or {})),
-        _tiles(MOVED, _moved(moved or {})),
+        _tiles(MOVED, _moved(moved or {}), moved_question(moved_window)),
     ]
     return {
         "as_of": as_of.isoformat() if as_of else None,
         "currency": currency,
         "freshness": freshness(now=now, last_sync=last_sync, state_on=state_on),
         "bands": bands,
+        # The range the MOVED band is reporting over, echoed so the control can
+        # show what the server actually used rather than what was asked for.
+        # Null both ways means the default: since the previous sync.
+        "moved_window": {
+            "from": moved_window[0].isoformat() if moved_window and moved_window[0] else None,
+            "to": moved_window[1].isoformat() if moved_window and moved_window[1] else None,
+        },
         # One number the screen leads with: how many tiles actually want
         # something. Not a sum of money — dead stock and overdue cash are
         # different claims and adding them produces a figure that means nothing.
@@ -325,14 +338,56 @@ def _moved(moved: dict) -> list[Tile]:
     return out
 
 
+def moved_question(window: Optional[tuple[Optional[date], Optional[date]]]
+                   ) -> Optional[str]:
+    """What the MOVED band is reporting over, in words, or None for the default.
+
+    Written as "first seen by the platform" rather than a bare date range,
+    because the band counts ``created_at`` — when PIE learned of a row — not the
+    document's own date. A purchase order dated in March that arrived in
+    yesterday's sync belongs to yesterday here, and a subtitle saying only
+    "1–7 August" would invite the other reading.
+    """
+    if not window or window[0] is None:
+        return None
+    frm, to = window
+    if to == frm:
+        return f"What the platform first saw on {frm.isoformat()}"
+    if to is None:
+        # Open at the top — "last 30 days" runs to now, and calling that a day
+        # is how a caught-in-review wording bug reads on a live screen: the
+        # band said "first saw on 2026-07-10" over a month of rows.
+        return f"What the platform first saw since {frm.isoformat()}"
+    return f"What the platform first saw between {frm.isoformat()} and {to.isoformat()}"
+
+
 def window_since(last_sync: Optional[dict], previous_sync: Optional[dict],
-                 *, now: datetime) -> tuple[Optional[datetime], Optional[datetime]]:
+                 *, now: datetime,
+                 frm: Optional[date] = None, to: Optional[date] = None,
+                 ) -> tuple[Optional[datetime], Optional[datetime]]:
     """The ingest window the "what moved" band reports over.
 
-    From the end of the previous sync to now, rather than the *start* of the
-    last one: a sync writes throughout its run, so anything keyed to its start
-    would count rows the run before it had already reported.
+    Defaults to the end of the previous sync through now, rather than the
+    *start* of the last one: a sync writes throughout its run, so anything keyed
+    to its start would count rows the run before it had already reported.
+
+    ``frm``/``to`` override that with a day or a range somebody chose. Both are
+    inclusive dates and ``to`` is taken to the end of its day, because a reader
+    picking "the 7th" means the whole of the 7th and a half-open bound would
+    silently drop everything that arrived after midnight.
+
+    **This window governs the ``MOVED`` band alone**, and the reason is worth
+    stating where somebody might be tempted to widen it. The other three bands
+    are not periods: an approval is waiting *now*, an invoice is overdue *now*,
+    a commitment lands in the next seven days *from now*. Answering "what was
+    overdue last Tuesday" would mean reconstructing a past state, which this
+    module does not do and must not appear to. A control that silently
+    re-scoped them would return three numbers that either ignored it or lied.
     """
+    if frm is not None:
+        end = (datetime.combine(to, datetime.max.time(), tzinfo=now.tzinfo)
+               if to is not None else now)
+        return datetime.combine(frm, datetime.min.time(), tzinfo=now.tzinfo), end
     start = (_parse((previous_sync or {}).get("finished_at"))
              or _parse((last_sync or {}).get("started_at")))
     if start is None:

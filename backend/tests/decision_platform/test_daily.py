@@ -171,3 +171,83 @@ def test_with_no_previous_sync_the_window_is_the_last_day():
     now = _now()
     start, _ = daily.window_since(None, None, now=now)
     assert abs((now - start).total_seconds() - 86400) < 5
+
+
+# ── picking a day, or a range ───────────────────────────────────────────────
+#
+# The window governs the MOVED band and nothing else, and that limit is the
+# design rather than an unfinished edge. The other three bands are not periods:
+# an approval is waiting *now*, an invoice is overdue *now*, a commitment lands
+# in the seven days *from now*. "What was overdue last Tuesday" would mean
+# reconstructing a past state this platform does not keep, so a control that
+# spanned the page would return three numbers that either ignored it or lied.
+
+
+def test_a_chosen_day_covers_the_whole_of_that_day():
+    """A reader picking "the 7th" means all of the 7th. A half-open bound would
+    silently drop everything that arrived after midnight — which, since the
+    band counts ingest time and syncs run in the morning, is most of it."""
+    now = datetime(2026, 8, 8, 9, 0, tzinfo=timezone.utc)
+    start, end = daily.window_since(None, None, now=now, frm=date(2026, 8, 7))
+
+    assert start == datetime(2026, 8, 7, 0, 0, tzinfo=timezone.utc)
+    assert end == now                      # open at the top for a single day
+
+
+def test_a_range_is_inclusive_at_both_ends():
+    now = datetime(2026, 8, 8, 9, 0, tzinfo=timezone.utc)
+    start, end = daily.window_since(None, None, now=now,
+                                    frm=date(2026, 8, 1), to=date(2026, 8, 7))
+
+    assert start == datetime(2026, 8, 1, 0, 0, tzinfo=timezone.utc)
+    assert end.date() == date(2026, 8, 7)
+    assert (end.hour, end.minute) == (23, 59)
+
+
+def test_no_range_still_means_since_the_previous_sync():
+    """The default is unchanged. A control nobody has touched must not quietly
+    move the numbers that were there before it existed."""
+    now = datetime(2026, 8, 8, 9, 0, tzinfo=timezone.utc)
+    previous = {"finished_at": "2026-08-07T18:00:00+00:00"}
+    start, end = daily.window_since({"started_at": "2026-08-08T08:00:00+00:00"},
+                                    previous, now=now)
+
+    assert start == datetime(2026, 8, 7, 18, 0, tzinfo=timezone.utc)
+    assert end == now
+
+
+def test_the_band_says_which_window_it_is_reporting_over():
+    """Otherwise the subtitle still reads "what the last sync brought in" while
+    the numbers under it came from a fortnight in March — the screen
+    contradicting itself in its own heading."""
+    assert daily.moved_question(None) is None
+    assert daily.moved_question((None, None)) is None
+
+    # A range whose ends are the same day reads as a day, not as a range.
+    assert daily.moved_question((date(2026, 8, 7), date(2026, 8, 7))) == (
+        "What the platform first saw on 2026-08-07")
+    # Open at the top is a *range* running to now, and calling it a day is how
+    # a live screen came to say "first saw on 2026-07-10" over a month of rows.
+    assert daily.moved_question((date(2026, 7, 10), None)) == (
+        "What the platform first saw since 2026-07-10")
+
+    assert daily.moved_question((date(2026, 8, 1), date(2026, 8, 7))) == (
+        "What the platform first saw between 2026-08-01 and 2026-08-07")
+
+
+def test_only_the_moved_band_takes_the_window():
+    """The claim the docstring makes, asserted rather than trusted."""
+    out = daily.assemble(
+        now=datetime(2026, 8, 8, 9, 0, tzinfo=timezone.utc),
+        as_of=date(2026, 8, 8), state_on=date(2026, 8, 8), last_sync=None,
+        moved_window=(date(2026, 8, 1), date(2026, 8, 7)))
+
+    by_key = {b["key"]: b for b in out["bands"]}
+    assert by_key["MOVED"]["question"].startswith("What the platform first saw")
+    # Every other band keeps the question it always had — none of them is a
+    # period, so none of them may appear to have been re-scoped.
+    for key in ("NEEDS_YOU", "AT_RISK", "COMMITTED"):
+        assert by_key[key]["question"] == daily.BAND_QUESTION[key]
+
+    # And the window is echoed, so the control can show what was actually used.
+    assert out["moved_window"] == {"from": "2026-08-01", "to": "2026-08-07"}

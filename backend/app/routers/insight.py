@@ -871,6 +871,26 @@ def _customers_of_connection(session: Session, org: str,
     ]
 
 
+def _vendors_of_connection(session: Session, org: str,
+                           connection_id: Optional[str]) -> Optional[list[str]]:
+    """The suppliers belonging to one connected company, or None for all.
+
+    The purchase-side mirror of ``_customers_of_connection``, and a separate
+    function rather than a parameterised one because the two are not
+    interchangeable: a bound built from customers would silently return nothing
+    on the supply half, which reads as "this company buys from nobody" instead
+    of as a mistake.
+    """
+    if not connection_id:
+        return None
+    return [
+        row for (row,) in session.execute(
+            select(models.Vendor.vendor_id).where(
+                models.Vendor.organization_id == org,
+                models.Vendor.connection_id == connection_id)).all()
+    ]
+
+
 def _companies(session: Session, org: str) -> list[dict]:
     """The companies a screen can scope itself to, with how many customers each
     has actually traded with.
@@ -1262,10 +1282,26 @@ def _targets(session: Session, org: str) -> list[dependency.Target]:
 
 
 @router.get("/dependency")
-def book_dependency(principal: Principal = Depends(current_principal),
+def book_dependency(connection_id: Optional[str] = Query(None),
+                    principal: Principal = Depends(current_principal),
                     session: Session = Depends(get_session)) -> dict:
-    """Who this book leans on, in both directions."""
-    org, snapshot, th = _context(session, principal)
+    """Who this book leans on, in both directions.
+
+    ``connection_id`` scopes both halves to one connected company, on the
+    server, for the reason the mix grid does: this screen's output is *shares
+    of a total*. "Kennametal is 38% of spend" is the sentence somebody acts on,
+    and a filter that narrowed the rows while leaving that headline org-wide
+    would put one company's list under three companies' arithmetic.
+
+    The two halves take different bounds because the two sides of a book are
+    keyed differently. Sales scope by **customer** — a sale belongs to the
+    company whose customer bought it. Purchases scope by **vendor** — neither
+    ``CostRecord`` nor ``SalesTxn`` carries a connection, but ``Customer`` and
+    ``Vendor`` both do, and those are the ends the money is attributed to.
+    """
+    scope = _customers_of_connection(session, principal.organization_id,
+                                     connection_id)
+    org, snapshot, th = _context(session, principal, sales_for_customers=scope)
     as_of = _as_of(snapshot)
     if as_of is None:
         return _no_data(th.currency, "dependency")
@@ -1288,6 +1324,11 @@ def book_dependency(principal: Principal = Depends(current_principal),
             category=_line_of(lines_of, row.product_id))
         for row in snapshot.sales
     ]
+    only_vendors = _vendors_of_connection(session, org, connection_id)
+    spend_where = [models.CostRecord.organization_id == org,
+                   models.CostRecord.vendor_id.is_not(None)]
+    if only_vendors is not None:
+        spend_where.append(models.CostRecord.vendor_id.in_(only_vendors))
     spends = [
         dependency.Spend(vendor_id=r.vendor_id, product_id=r.product_id,
                          date=r.date,
@@ -1295,17 +1336,22 @@ def book_dependency(principal: Principal = Depends(current_principal),
         for r in session.execute(
             select(models.CostRecord.vendor_id, models.CostRecord.product_id,
                    models.CostRecord.date, models.CostRecord.qty,
-                   models.CostRecord.unit_cost)
-            .where(models.CostRecord.organization_id == org,
-                   models.CostRecord.vendor_id.is_not(None))).all()
+                   models.CostRecord.unit_cost).where(*spend_where)).all()
     ] if with_suppliers else []
+
+    # Targets and sole-source counts narrow with the suppliers they describe.
+    # A target left in for a vendor whose spend has been scoped out would show
+    # as 0% achieved against a company that never buys from them.
+    keep = set(only_vendors) if only_vendors is not None else None
+    targets = [t for t in _targets(session, org)
+               if keep is None or t.vendor_id in keep] if with_suppliers else []
+    sole = {v: n for v, n in _sole_source_counts(session, org).items()
+            if keep is None or v in keep} if with_suppliers else {}
 
     result = dependency.build(
         flows, spends, as_of, thresholds=th,
         vendor_names=vendors, customer_names=snapshot.customer_names,
-        targets=_targets(session, org) if with_suppliers else [],
-        sole_source=_sole_source_counts(session, org) if with_suppliers else {},
-        with_suppliers=with_suppliers)
+        targets=targets, sole_source=sole, with_suppliers=with_suppliers)
 
     # The whole book as one picture, on the same rows the lists were built
     # from — so a band and a row can never disagree about a number.
@@ -1328,7 +1374,9 @@ def book_dependency(principal: Principal = Depends(current_principal),
         supplier_side_visible=with_suppliers,
         catalogue=cat.coverage_report(lines_of),
         principals=principals.coverage_report(principal_of,
-                                              _revenue_by_product(snapshot)))
+                                              _revenue_by_product(snapshot)),
+        companies=_companies(session, org),
+        scoped_to=connection_id)
 
 
 class TargetIn(BaseModel):
@@ -1966,6 +2014,7 @@ def _moved_since(session: Session, org: str, since: datetime,
 @router.get("/daily")
 def daily(moved_from: Optional[date] = Query(None),
           moved_to: Optional[date] = Query(None),
+          committed_weeks: int = Query(1, ge=1, le=13),
           principal: Principal = Depends(require_manager_or_owner),
           session: Session = Depends(get_session)) -> dict:
     """The morning read.
@@ -1979,6 +2028,14 @@ def daily(moved_from: Optional[date] = Query(None),
     mean reconstructing a past state, which this platform does not do — so a
     date control spanning the whole page would return three numbers that either
     ignored it or lied about it.
+
+    ``committed_weeks`` is the **Committed** band's own horizon, and it is a
+    separate control because it is a separate axis: forward, on the dates
+    documents already carry, rather than backward over when the platform
+    learned of a row. It counts weeks because the cash fold is bucketed by ISO
+    week — an arbitrary range would have to be answered approximately, which is
+    precision the data does not have. Capped at a quarter, past which the
+    committed book is mostly empty and the tile stops saying anything.
 
     Manager and above, for the same reason `/supply` and `/cashflow` are: two
     of its five bands are cash and supplier exposure, which is purchase cost by
@@ -1999,7 +2056,7 @@ def daily(moved_from: Optional[date] = Query(None),
             state_engine.load(session, org, CASH_SCHEDULE, cash_on),
             state_engine.load(session, org, COMMITMENTS, cash_on),
             state_engine.load(session, org, RECEIVABLES, cash_on),
-            as_of=cash_on, weeks=1)
+            as_of=cash_on, weeks=committed_weeks)
 
     stock_result: dict[str, Any] = {}
     stock_on = state_engine.latest_as_of(session, org, INVENTORY)
@@ -2065,5 +2122,6 @@ def daily(moved_from: Optional[date] = Query(None),
             decisions_by_band=decisions_by_band, stock=stock_result,
             supply=supply_result, cadence=cadence_result, cash=cash,
             moved=moved, moved_window=(moved_from, moved_to),
+            committed_weeks=committed_weeks,
             currency=th.currency),
         currency=th.currency, thresholds_version=th.version)

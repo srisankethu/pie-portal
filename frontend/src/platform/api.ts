@@ -134,10 +134,14 @@ export const papi = {
    *  — that band and no other. The rest are states as of now, not periods, so
    *  a page-wide date control would be answering a question three of the four
    *  bands cannot be asked. */
-  daily: (t: string, movedFrom?: string, movedTo?: string) => {
+  daily: (t: string, movedFrom?: string, movedTo?: string,
+          committedWeeks?: number) => {
     const p = new URLSearchParams();
     if (movedFrom) p.set("moved_from", movedFrom);
     if (movedTo) p.set("moved_to", movedTo);
+    if (committedWeeks && committedWeeks !== 1) {
+      p.set("committed_weeks", String(committedWeeks));
+    }
     const qs = p.toString();
     return req<Record<string, unknown>>(
       `/api/v1/insight/daily${qs ? "?" + qs : ""}`, {}, t);
@@ -225,8 +229,14 @@ export const papi = {
 
   // What this book leans on, at both ends. The supplier half is manager+ and
   // is omitted from a salesperson's response rather than 403-ing the screen.
-  dependency: (t: string) =>
-    req<Record<string, unknown>>("/api/v1/insight/dependency", {}, t),
+  // `connectionId` scopes both halves on the server. Like the mix grid and
+  // unlike the row filters: this screen's figures are shares of a total, so
+  // narrowing has to recompute them.
+  dependency: (t: string, connectionId?: string) =>
+    req<Record<string, unknown>>(
+      "/api/v1/insight/dependency"
+      + (connectionId ? `?connection_id=${encodeURIComponent(connectionId)}` : ""),
+      {}, t),
 
   // Vendor targets. The one thing in the platform that is typed rather than
   // synced, so it has a write path.

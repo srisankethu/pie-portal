@@ -31,12 +31,12 @@
 // a block you can see the size of instead of a count you have to trust.
 
 import { useMemo, useState } from "react";
-import MenuItem from "@mui/material/MenuItem";
-import TextField from "@mui/material/TextField";
 import { money } from "../../money";
 import { formatDate } from "../../when";
 import { papi } from "../api";
 import { EntityName } from "../EntityName";
+import { CompanyScope } from "../CompanyFilter";
+import type { CompanyScopeOption } from "../CompanyFilter";
 import { DataGrid, numeric } from "../DataGrid";
 import type { EntityOrigin, PlatformSession } from "../types";
 import { Figure, Panel, stateOf } from "./Panel";
@@ -170,33 +170,11 @@ export function MixScreen({
         </p>
       )}
 
-      {/* Server-scoped, so every figure above and below is recomputed for the
-          company chosen. Rendered whenever more than one company is connected
-          — not when the rows happen to carry provenance, which is the test the
-          shared row filter uses and the reason this control was invisible on a
-          book whose customers were synced without a connection stamp.
-
-          A company with no customers is still offered, and says so. Hiding it
-          would leave somebody wondering which of their three books is missing;
-          "0 customers" answers that in place. */}
-      {companies.length > 1 && (
-        <TextField
-          select size="small" label="Company" value={scope}
-          onChange={(e) => setScope(e.target.value)}
-          slotProps={{ select: { displayEmpty: true },
-                       inputLabel: { shrink: true } }}
-          sx={{ minWidth: 240, mb: 2 }}
-        >
-          <MenuItem value="">All companies</MenuItem>
-          {companies.map((c) => (
-            <MenuItem key={String(c.connection_id)}
-                      value={String(c.connection_id)}>
-              {String(c.label)} · {num(c.customers)} customer
-              {num(c.customers) === 1 ? "" : "s"}
-            </MenuItem>
-          ))}
-        </TextField>
-      )}
+      {/* Server-scoped: every figure above and below is recomputed for the
+          company chosen. See CompanyScope for why this is not the row filter
+          the directories use. */}
+      <CompanyScope options={companies as unknown as CompanyScopeOption[]}
+                    value={scope} onChange={setScope} />
 
       {/* The whitespace picker. Each button is a line and a count of who is
           missing it — the count is the point, because "43 customers do not buy

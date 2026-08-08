@@ -251,3 +251,64 @@ def test_only_the_moved_band_takes_the_window():
 
     # And the window is echoed, so the control can show what was actually used.
     assert out["moved_window"] == {"from": "2026-08-01", "to": "2026-08-07"}
+
+
+# ── the committed band's own horizon ────────────────────────────────────────
+#
+# A separate control from the moved window because it is a separate axis:
+# forward over dates documents already carry, rather than backward over when
+# the platform learned of a row. Counted in weeks because the cash fold is
+# bucketed by ISO week — an arbitrary range would have to be answered
+# approximately, which is precision the data does not have.
+
+
+def _cash(*weeks: tuple[float, float]) -> dict:
+    return {"buckets": [{"inflow": i, "outflow": o} for i, o in weeks]}
+
+
+def _committed_tile(cash: dict, weeks: int = 1) -> dict:
+    out = daily.assemble(
+        now=datetime(2026, 8, 8, 9, 0, tzinfo=timezone.utc),
+        as_of=date(2026, 8, 8), state_on=date(2026, 8, 8), last_sync=None,
+        cash=cash, committed_weeks=weeks)
+    band = next(b for b in out["bands"] if b["key"] == "COMMITTED")
+    return {"band": band,
+            "tile": next(t for t in band["tiles"] if t["key"] == "cash_this_week")}
+
+
+def test_one_week_reads_exactly_as_it_always_did():
+    """The default must not move. A control nobody has touched changes nothing."""
+    got = _committed_tile(_cash((100.0, 40.0)))
+    assert got["tile"]["label"] == "Cash due this week"
+    assert got["tile"]["amount"] == 100.0 and got["tile"]["amount_out"] == 40.0
+    assert got["band"]["question"] == daily.BAND_QUESTION[daily.COMMITTED]
+
+
+def test_a_longer_horizon_sums_the_weeks_rather_than_reading_the_first():
+    """Reading `buckets[0]` was right for a one-week horizon and would silently
+    under-report every longer one — the tile would show week one's cash under a
+    heading promising a quarter."""
+    got = _committed_tile(_cash((100.0, 40.0), (50.0, 10.0), (25.0, 5.0)),
+                          weeks=3)
+    assert got["tile"]["amount"] == 175.0
+    assert got["tile"]["amount_out"] == 55.0
+    assert got["tile"]["label"] == "Cash due in 3 weeks"
+    assert got["band"]["question"] == "What lands in the next 3 weeks"
+
+
+def test_the_committed_horizon_is_counted_in_weeks_not_days():
+    """The fold buckets by ISO week from the Monday `as_of` falls in, so days
+    would promise a precision it does not carry."""
+    assert daily.committed_question(1) is None
+    assert daily.committed_question(4) == "What lands in the next 4 weeks"
+
+
+def test_an_empty_committed_book_still_names_the_horizon_that_was_asked_for():
+    """Caught by rendering it. The label used to come from ``len(buckets)``, so
+    a book with no cash fold yet snapped the heading back to "this week" while
+    the control beside it still read 8w — the screen disagreeing with its own
+    input, which is worse than admitting the horizon is empty."""
+    got = _committed_tile({"buckets": []}, weeks=8)
+    assert got["tile"]["label"] == "Cash due in 8 weeks"
+    assert got["band"]["question"] == "What lands in the next 8 weeks"
+    assert got["tile"]["settled"] is True

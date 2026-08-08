@@ -202,7 +202,8 @@ export function LineGrid({
   onOpen,
   onSetPrice,
   onDeleteLine,
-  onCreateItem }: {
+  onCreateItem,
+  onConfirmReading }: {
   lines: Line[];
   mgmt: boolean;
   intel: Record<string, LineIntelligence>;
@@ -212,6 +213,9 @@ export function LineGrid({
   onSetPrice: (id: string, price: number | null) => void;
   onDeleteLine: (id: string) => void;
   onCreateItem: (id: string) => void;
+  /** Accept one line's reading. One at a time by design — see
+   *  store.confirm_reading. */
+  onConfirmReading: (id: string) => void;
 }) {
   const rows: Row[] = useMemo(
     () => lines.map((l) => ({
@@ -353,6 +357,41 @@ export function LineGrid({
         + "optimal.",
       cellRenderer: (p: { data?: Row }) => <CommercialChip intel={p.data?.intel} />,
     },
+    // Only while something is unconfirmed. A permanently empty column is width
+    // spent on a state the quote is usually not in.
+    ...(lines.some((l) => l.proposed) ? [{
+      headerName: "Read from the message",
+      minWidth: 300, flex: 1, sortable: false, filter: false,
+      context: { noRowClick: true },
+      headerTooltip: "What the customer actually wrote, beside what was read "
+        + "from it. Check the two match — a grade suffix is the difference "
+        + "between two different tools — then accept the line.",
+      cellRenderer: (p: { data?: Row }) => {
+        if (!p.data?.proposed) return null;
+        return (
+          <Stack direction="row" spacing={1} sx={{ alignItems: "center", py: 0.5 }}>
+            <Stack sx={{ minWidth: 0 }}>
+              {/* The customer's words, not the tidied version. Confirming
+                  against the reading would be confirming against itself. */}
+              <Typography variant="body2" sx={{ fontStyle: "italic" }} noWrap
+                          title={p.data.raw}>
+                “{p.data.raw}”
+              </Typography>
+              {p.data.reading ? (
+                <Typography variant="caption" color="text.secondary" noWrap
+                            title={p.data.reading}>
+                  interpreted: {p.data.reading}
+                </Typography>
+              ) : null}
+            </Stack>
+            <Button size="small" variant="outlined"
+                    onClick={() => onConfirmReading(p.data!.id)}>
+              Accept
+            </Button>
+          </Stack>
+        );
+      },
+    } as ColDef<Row>] : []),
     {
       headerName: "Status", ...fixed(116),
       valueGetter: (p) => p.data?.status.label ?? "",

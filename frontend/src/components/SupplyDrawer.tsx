@@ -2,7 +2,8 @@ import Button from "@mui/material/Button";
 import Box from "@mui/material/Box";
 import Drawer from "@mui/material/Drawer";
 import type { Line, LineIntelligence } from "../types";
-import { REL_STYLE } from "../rel";
+import { relTone } from "../rel";
+import { StatusChip } from "../platform/kit";
 import { DecisionSupport } from "./DecisionSupport";
 import { QuoteIntelligence } from "./QuoteIntelligence";
 import { money } from "../money";
@@ -11,11 +12,11 @@ import { pathFor } from "../platform/route";
 export function SupplyDrawer({
   line,
   customer,
+  token,
   mgmt,
   intel,
   intelLoading,
   intelError,
-  intelConnected,
   onRecordOverride,
   onRequestApproval,
   approvalStatus,
@@ -25,11 +26,12 @@ export function SupplyDrawer({
   onRevert }: {
   line: Line;
   customer: string;
+  /** The signed-in session's token, for the panels that call the platform. */
+  token: string;
   mgmt: boolean;
   intel: LineIntelligence | null;
   intelLoading: boolean;
   intelError: string | null;
-  intelConnected: boolean;
   onRecordOverride: (lineId: string, reasonCode: string, reason: string) => Promise<void>;
   onRequestApproval: (lineId: string, reasonCode: string, reason: string) => Promise<void>;
   approvalStatus: { status: string; required_authority: string; decision_note: string | null } | null;
@@ -122,7 +124,6 @@ export function SupplyDrawer({
             intel={intel}
             loading={intelLoading}
             error={intelError}
-            connected={intelConnected}
             onOverride={onRecordOverride}
             onRequestApproval={onRequestApproval}
             approvalStatus={approvalStatus}
@@ -133,7 +134,7 @@ export function SupplyDrawer({
               onOpenPlatform?.(pathFor("customerItem", customerId, productId))
             }
           />
-          <DecisionSupport customer={customer} line={line} />
+          <DecisionSupport customer={customer} line={line} token={token} />
 
           {line.candidates.length === 0 && (
             <div className="empty">
@@ -155,9 +156,10 @@ export function SupplyDrawer({
               <div key={c.code} className={"cand" + (selected ? " selected" : "")}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   <span className="code">{c.code}</span>
-                  <span className="chip" style={REL_STYLE[c.rel] || REL_STYLE.NONE}>
-                    {c.rel}
-                  </span>
+                  {/* The same chip the grid behind this drawer draws, from the
+                      same tone table. Two spellings of one term is how a line
+                      reads AMBIGUOUS in amber on the grid and in grey here. */}
+                  <StatusChip label={c.rel} tone={relTone(c.rel)} dense />
                   {c.score !== null && (
                     <span className="text-muted" style={{ fontSize: 11 }}>
                       match {(c.score * 100).toFixed(0)}%

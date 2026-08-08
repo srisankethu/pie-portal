@@ -27,13 +27,23 @@ export type Screen =
   /** The visualization layer. `home` is the Storyboard; these are the screens
    *  its beats link out to, each answering one question in depth. */
   | "weather" | "opportunities" | "lostRevenue" | "journey" | "simulate"
-  /** Tier 2: position, mix and rhythm. Each is one screen serving two of the
+  /** Patterns: position, mix and rhythm. Each is one screen serving two of the
    *  specified views, because the pairs differ only in which measure is on the
    *  vertical or which quantity is summed. */
   | "landscape" | "composition" | "cadence"
-  /** Tier 3: the shelf, the suppliers and the cash — the three things the book
+  /** The book itself: the shelf, the suppliers and the cash — the three things the book
    *  always knew and the platform did not read until it ingested them. */
   | "payments" | "stock" | "supply"
+  /** Who is actually close to this book, on both sides of it, over time. */
+  | "bonds"
+  /** Which lines of the business each customer takes, and which they do not. */
+  | "mix"
+  /** What the book leans on, at both ends: principals and customers. */
+  | "dependency"
+  /** Where each principal's number stands. */
+  | "targets"
+  /** Which line of the business each item belongs to. */
+  | "catalogue"
   /** The negotiation desk: the one screen a salesperson uses to decide rather
    *  than to read. */
   | "negotiate"
@@ -75,6 +85,11 @@ export const PATH: Record<Screen, string> = {
   payments: "/payments",
   stock: "/stock",
   supply: "/supply",
+  bonds: "/bonds",
+  mix: "/mix",
+  dependency: "/dependency",
+  targets: "/targets",
+  catalogue: "/item-lines",
   negotiate: "/negotiate",
 };
 
@@ -141,8 +156,14 @@ export function screenAt(pathname: string): Screen {
  * nothing else. A name nobody recognises lands on the storyboard rather than
  * nowhere. */
 export function vizPath(route: string): string {
-  const [head, id] = route.split("/");
-  if (head === "customer" && id) return pathFor("customer", id);
+  // The query is split off before the path is read, not after. A token like
+  // `stock?item=abc` otherwise makes the whole string the head, matches no
+  // screen, and lands on the home page — a link that goes somewhere plausible
+  // instead of nowhere, which is the harder kind to notice.
+  const q = route.indexOf("?");
+  const search = q === -1 ? "" : route.slice(q);
+  const [head, id] = (q === -1 ? route : route.slice(0, q)).split("/");
+  if (head === "customer" && id) return pathFor("customer", id) + search;
   const map: Record<string, Screen> = {
     "lost-revenue": "lostRevenue",
     opportunities: "opportunities",
@@ -163,5 +184,5 @@ export function vizPath(route: string): string {
     // rather than only ever a link carrying an account.
     customer: "customer",
   };
-  return pathFor(map[head] ?? "home");
+  return pathFor(map[head] ?? "home") + search;
 }

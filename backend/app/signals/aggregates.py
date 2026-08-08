@@ -22,31 +22,24 @@ from .config import SignalThresholds
 
 # ── DB loader ────────────────────────────────────────────────────────────────
 #
-# Two things this has to get right at scale, and it used to get neither.
+# **Columns, not entities.** A snapshot reads nine columns and never writes, so
+# it asks for nine columns rather than building an ORM instance per row.
 #
-# **Load the columns, not the entities.** ``select(models.SalesTxn)`` builds a
-# full ORM instance per row and parks it in the identity map. A snapshot reads
-# nine columns and never writes, so it asks for nine columns.
+# **Only the rows the caller can use.** Bounds default to unbounded. A caller
+# that passes one asserts the excluded rows could not change its answer, which
+# ``test_bounded_loads.py`` verifies against the unbounded result.
 #
-# **Load the rows the caller can actually use.** The bounds below default to
-# unbounded, so an unqualified call behaves exactly as before. A caller that
-# passes one is asserting that the rows it excluded could not have changed its
-# answer — which is a claim ``test_bounded_loads.py`` checks by comparing the
-# bounded result against the unbounded one, rather than taking on trust.
+# ``last_sale_on`` is deliberately *not* bounded: it is the last day the
+# business traded, and every screen hangs its periods off it. Deriving it from
+# whatever was loaded would make a quote screen think the business stopped when
+# its own customer did.
 #
-# What is *not* bounded is ``last_sale_on``. It is the last day the business
-# traded, a fact about the whole book, and every screen hangs its periods off
-# it. Deriving it from whatever happened to be loaded would make a quote screen
-# think the business stopped trading when its own customer did.
-#
-# **There is deliberately no date bound.** It is the obvious one and it is
-# wrong here: the detectors gate on ``history_span_months`` and on the first
-# order date, and ``cost_pass_through`` needs whatever the previous cost was
-# however old. Cutting history would change which signals fire — it would look
-# like a speed-up and behave like a quietly loosened evidence rule, which
-# CLAUDE.md §1 calls a defect rather than a fix. The right answer for the
-# screens that need whole-book aggregates is to read the folded state rows
-# instead of the lines, which is what ``state/`` now makes possible.
+# **No date bound**, though it is the obvious one. Detectors gate on
+# ``history_span_months`` and the first order date, and ``cost_pass_through``
+# needs the previous cost however old — so cutting history would change which
+# signals fire: a speed-up that behaves like a loosened evidence rule (§1 calls
+# that a defect). Screens needing whole-book aggregates read the folded state
+# rows instead.
 
 _SALE_COLUMNS = (
     models.SalesTxn.customer_id, models.SalesTxn.product_id, models.SalesTxn.date,

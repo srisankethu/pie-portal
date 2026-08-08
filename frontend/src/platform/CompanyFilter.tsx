@@ -113,11 +113,21 @@ export function CompanyFilter({
       label={label}
       value={value}
       onChange={(e) => onChange(e.target.value)}
-      // Without this the control renders *blank* while showing every row:
-      // MUI treats an empty value as "nothing selected" and hides the option
-      // that represents it. A filter whose resting state looks unset is one
-      // people set twice and then wonder why nothing changed.
-      slotProps={{ select: { displayEmpty: true } }}
+      // `displayEmpty` because without it the control renders *blank* while
+      // showing every row: MUI treats an empty value as "nothing selected" and
+      // hides the option that represents it. A filter whose resting state looks
+      // unset is one people set twice and then wonder why nothing changed.
+      //
+      // `shrink` because the two settings disagree otherwise. The label floats
+      // when MUI thinks the field is filled, and "filled" means a non-empty
+      // value — but "All companies" *is* the empty value, so the label stayed
+      // in its resting position and sat on top of the text the select was
+      // already showing. Opening the menu focused the field and floated it,
+      // which is why it looked correct only while open. `displayEmpty` means
+      // there is always content to clear, so the label should always be clear
+      // of it. This also notches the outlined fieldset, since the notch follows
+      // the label.
+      slotProps={{ select: { displayEmpty: true }, inputLabel: { shrink: true } }}
       sx={{ minWidth: 210 }}
     >
       {/* The counts travel with the names. "4U Precision" alone does not say

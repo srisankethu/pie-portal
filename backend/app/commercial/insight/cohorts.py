@@ -39,28 +39,48 @@ DORMANT = "DORMANT"
 #: Ordered smallest to largest, so a matrix renders in a natural direction.
 BANDS = ("NONE", "SMALL", "MID", "LARGE", "KEY")
 
+#: How many customers travel with a drilled-into cell or band.
+#:
+#: A cell is a drill-down *target*, not a table dump — the whole population of
+#: one state in one month can be thousands of rows, and sending twelve months
+#: of them to draw a chart is a payload nobody asked for. The ``count`` beside
+#: the members is always the honest total, so a screen can say "the 20 largest
+#: of 214" rather than quietly implying 20 is all there is.
+MEMBERS_PER_CELL = 20
+
 
 @dataclass
 class JourneyPoint:
     period: Period
     counts: dict[str, int]
     revenue: float
+    #: state -> the largest customers in it that month, capped at
+    #: ``MEMBERS_PER_CELL``. ``counts`` remains the honest total.
+    members: dict[str, list[dict]]
 
     def to_dict(self) -> dict:
         return {**self.period.to_dict(), "counts": self.counts,
-                "revenue": round(self.revenue, 2)}
+                "revenue": round(self.revenue, 2), "members": self.members}
 
 
-def journey(sales: Iterable[SaleRow], as_of: date, months: int = 12) -> list[JourneyPoint]:
-    """Per month, how many customers were in each state.
+def journey(sales: Iterable[SaleRow], as_of: date, months: int = 12, *,
+            names: Optional[dict[str, str]] = None) -> list[JourneyPoint]:
+    """Per month, how many customers were in each state — and which ones.
 
     Each month is classified against the month before it, using the same
     ``classify`` the revenue waterfall uses — so the two views cannot disagree
     about whether a customer grew.
+
+    The members travel with the counts because a band on this chart is a
+    question ("who are the 21 that shrank?") that a count alone cannot answer,
+    and the classification that produced the count is right here. Recomputing
+    it behind a second endpoint would be a second place for the two answers to
+    drift apart. They are capped and shaped exactly like ``migration``'s.
     """
     rows = list(sales)
     grouped = agg.by_customer(rows)
     periods = months_back(as_of, months)
+    labels = names or {}
     out: list[JourneyPoint] = []
 
     for i, period in enumerate(periods):
@@ -68,6 +88,7 @@ def journey(sales: Iterable[SaleRow], as_of: date, months: int = 12) -> list[Jou
             continue                     # no prior month inside the window
         prior = periods[i - 1]
         counts: dict[str, int] = {}
+        members: dict[str, list[dict]] = {}
         for customer_id, customer_rows in grouped.items():
             prev = revenue_in(customer_rows, prior)
             cur = revenue_in(customer_rows, period)
@@ -76,8 +97,19 @@ def journey(sales: Iterable[SaleRow], as_of: date, months: int = 12) -> list[Jou
             traded_earlier = any(r.date < prior.start for r in customer_rows)
             kind = classify(prev, cur, traded_earlier)
             counts[kind] = counts.get(kind, 0) + 1
-        out.append(JourneyPoint(period=period, counts=counts,
-                                revenue=revenue_in(rows, period)))
+            members.setdefault(kind, []).append({
+                "customer_id": customer_id,
+                "label": labels.get(customer_id, customer_id),
+                "previous": round(prev, 2), "current": round(cur, 2),
+                "delta": round(cur - prev, 2),
+            })
+        out.append(JourneyPoint(
+            period=period, counts=counts, revenue=revenue_in(rows, period),
+            # Largest movement first: the reason to open a band is to find the
+            # customer worth a phone call, not to read the state alphabetically.
+            members={k: sorted(v, key=lambda m: abs(m["delta"]),
+                               reverse=True)[:MEMBERS_PER_CELL]
+                     for k, v in members.items()}))
     return out
 
 
@@ -143,10 +175,11 @@ def migration(sales: Iterable[SaleRow], names: dict[str, str],
         "cells": [
             {"from": frm, "to": to, "count": len(members),
              "revenue_delta": round(sum(m["delta"] for m in members), 2),
-             # Capped: a cell is a drill-down target, not a table dump. The
-             # count above is the honest total.
+             # Capped — see MEMBERS_PER_CELL. `journey` caps the same way, and
+             # the two drill-downs staying the same size is what lets one
+             # screen component read either.
              "members": sorted(members, key=lambda m: abs(m["delta"]),
-                               reverse=True)[:20]}
+                               reverse=True)[:MEMBERS_PER_CELL]}
             for (frm, to), members in sorted(cells.items())
         ],
     }

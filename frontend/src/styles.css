@@ -47,72 +47,17 @@ a { color: var(--color-accent); text-underline-offset: 3px; }
 .input:focus-visible { border-color: var(--color-accent); outline-offset: 0; }
 textarea.input { min-height: 160px; resize: vertical; font-family: ui-monospace, monospace; font-size: 13px; }
 
-.chip {
-  display: inline-flex; align-items: center; gap: 5px;
-  font-family: var(--font-heading); font-size: 11px; font-weight: 600;
-  letter-spacing: 0.03em; padding: 2px 7px; border-radius: 2px;
-  text-transform: uppercase; white-space: nowrap;
-}
 
 /* ── app layout ─────────────────────────────────────────────────────────── */
-.app { min-height: 100vh; display: flex; flex-direction: column; }
+/* The Quote Builder's own shell used to live here: `.app`, a `.topbar` with a
+   second brand mark and a role badge, a `.toolbar` of hand-rolled `.filter`
+   buttons, a `.floor-banner` coloured by hand, and a `.grid-wrap` that owned
+   the page scroll. All of it existed because the builder was a separate
+   application in the same bundle. It is a screen inside the platform shell now,
+   built from `platform/kit.tsx` and MUI like every other screen — the shell
+   already has a brand bar, and two of them was most of why moving between the
+   two halves felt like leaving the product. */
 
-.topbar {
-  display: flex; align-items: center; gap: var(--space-4);
-  padding: var(--space-3) var(--space-6);
-  border-bottom: 1px solid var(--color-divider);
-  background: var(--color-neutral-100);
-  position: sticky; top: 0; z-index: 20;
-  flex-wrap: wrap;
-}
-.topbar .brand { font-family: var(--font-heading); font-weight: 700; letter-spacing: 0.02em; }
-.topbar .meta { display: flex; gap: var(--space-4); font-size: 13px; }
-.topbar .meta b { font-family: var(--font-heading); font-weight: 600; }
-.topbar .spacer { flex: 1; }
-.role-badge {
-  font-family: var(--font-heading); font-size: 11px; font-weight: 600;
-  text-transform: uppercase; letter-spacing: 0.05em;
-  padding: 3px 9px; border-radius: 2px;
-  background: var(--color-accent-100); color: var(--color-accent-800);
-}
-.role-badge.mgmt { background: var(--color-accent); color: var(--color-bg); }
-.status-pill {
-  display: inline-flex; align-items: center; gap: 6px;
-  font-family: var(--font-heading); font-size: 11px; font-weight: 600;
-  text-transform: uppercase; letter-spacing: 0.05em;
-  padding: 3px 9px; border-radius: 999px; background: var(--color-neutral-200); color: var(--color-neutral-800);
-}
-
-.toolbar {
-  display: flex; align-items: center; gap: var(--space-3);
-  padding: var(--space-2) var(--space-6);
-  border-bottom: 1px solid var(--color-divider);
-  flex-wrap: wrap;
-}
-.toolbar .input { min-width: min(220px, 100%); }
-.filter {
-  display: inline-flex; align-items: center; gap: 6px;
-  font-family: var(--font-heading); font-size: 12.5px; padding: 5px 10px;
-  cursor: pointer; border: 1px solid transparent; background: transparent;
-  color: var(--color-text); border-radius: var(--radius-sm);
-}
-.filter.active { border-color: var(--color-accent); background: var(--color-accent-100); color: var(--color-accent-800); }
-.filter .count {
-  font-size: 11px; padding: 0 5px; border-radius: 2px;
-  background: color-mix(in srgb, var(--color-text) 8%, transparent);
-}
-.filter .count.alert { background: var(--danger-bg); color: var(--danger-fg); }
-
-.floor-banner {
-  display: flex; align-items: center; gap: var(--space-3);
-  margin: var(--space-3) var(--space-6) 0;
-  padding: var(--space-2) var(--space-4);
-  border: 1px solid var(--caution-fg); background: var(--caution-bg); color: var(--caution-fg);
-  border-radius: var(--radius-md); font-size: 13px;
-  flex-wrap: wrap;
-}
-
-.grid-wrap { flex: 1; overflow: auto; padding: var(--space-3) var(--space-6) 120px; }
 .empty-state-card {
   max-width: 780px; margin: 8px auto 0; padding: var(--space-6);
   border: 1px solid var(--color-divider); background: linear-gradient(135deg, var(--color-neutral-100), var(--color-bg));
@@ -126,78 +71,23 @@ textarea.input { min-height: 160px; resize: vertical; font-family: ui-monospace,
 }
 .empty-state-card h3 { margin-bottom: var(--space-2); }
 .empty-state-card p { margin: 0; color: color-mix(in srgb, var(--color-text) 65%, transparent); }
-.empty-state-actions { display: flex; gap: var(--space-3); flex-wrap: wrap; margin-top: var(--space-4); }
-.inline-help {
-  display: flex; gap: var(--space-4); flex-wrap: wrap; margin-top: var(--space-4);
-  font-size: 12px; color: color-mix(in srgb, var(--color-text) 60%, transparent);
-}
-.helper-stack { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-3); margin-top: var(--space-3); }
-.bulk-actions {
-  display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap;
-  padding: var(--space-3) var(--space-6) 0; color: color-mix(in srgb, var(--color-text) 70%, transparent);
-}
-.bulk-actions span { font-size: 12px; font-weight: 600; }
-.helper-card {
-  padding: var(--space-3) var(--space-4); border: 1px solid var(--color-divider); border-radius: var(--radius-md);
-  background: var(--color-neutral-100);
-}
-.helper-card strong { display: block; margin-bottom: 6px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
-.helper-card ul { margin: 0; padding-left: 18px; font-size: 12px; color: color-mix(in srgb, var(--color-text) 70%, transparent); }
-.helper-card p { margin: 0; font-size: 12px; color: color-mix(in srgb, var(--color-text) 70%, transparent); }
-table.grid { width: 100%; border-collapse: collapse; font-size: 13px; }
-table.grid th {
-  text-align: left; font-family: var(--font-heading); font-weight: 600;
-  font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase;
-  color: color-mix(in srgb, var(--color-text) 55%, transparent);
-  padding: 6px 8px; border-bottom: 1px solid var(--color-divider);
-  position: sticky; top: 0; background: var(--color-bg); z-index: 5;
-}
-table.grid td { padding: 7px 8px; border-bottom: 1px solid color-mix(in srgb, var(--color-text) 8%, transparent); vertical-align: top; }
-table.grid tr.focused td { background: var(--color-accent-100); }
-table.grid tr.attention td { box-shadow: inset 3px 0 0 var(--warn); }
-table.grid tr.tech td { box-shadow: inset 3px 0 0 var(--danger-fg); }
-table.grid tr.severity-high td { box-shadow: inset 3px 0 0 var(--danger-fg); background: color-mix(in srgb, var(--danger-bg) 60%, transparent); }
-table.grid tr.severity-medium td { box-shadow: inset 3px 0 0 var(--warn); background: color-mix(in srgb, var(--caution-bg) 60%, transparent); }
-table.grid tr.severity-low td { box-shadow: inset 3px 0 0 var(--color-accent-500); }
-table.grid tbody tr:hover td { background: color-mix(in srgb, var(--color-accent-100) 50%, transparent); }
-.mono { font-family: ui-monospace, monospace; font-size: 12px; }
-.req-desc { color: color-mix(in srgb, var(--color-text) 62%, transparent); font-size: 11.5px; }
-.row-hints { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
-.row-hint-pill {
-  display: inline-flex; align-items: center; padding: 2px 6px; border-radius: 999px;
-  font-size: 10px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
-  background: var(--color-neutral-200); color: var(--color-neutral-800);
-}
-.row-meta-pill {
-  display: inline-flex; align-items: center; gap: 4px; margin-top: 4px;
-  font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
-  color: var(--color-neutral-700); background: var(--color-neutral-200); padding: 2px 6px; border-radius: 999px;
-}
-.row-meta-pill.accent { background: var(--color-accent-100); color: var(--color-accent-800); }
-.rate-input { width: 78px; text-align: right; min-height: 28px; padding: 3px 6px; }
+/* The quote's line table lived here: `table.grid` with its own header, its own
+   row tints (`tr.focused`, `tr.attention`, `tr.severity-*`), the `.row-hint-pill`
+   and `.row-meta-pill` chips it printed under each code, and `.rate-input`, the
+   78px text box that saved a price on blur. It is ag-grid through
+   `platform/DataGrid` now, with MUI chips in the cells — see
+   `components/LineGrid.tsx`. The `.num` right-alignment survives because other
+   tables still use it; the grid's own is `.ag-num`. */
 .num { text-align: right; font-variant-numeric: tabular-nums; }
-.subst { color: var(--color-accent-800); font-weight: 700; }
 .warn { color: var(--warn); }
 
-/* summary bar */
-.summary {
-  position: fixed; bottom: 0; left: 0; right: 0;
-  display: flex; align-items: center; gap: var(--space-6);
-  padding: var(--space-3) var(--space-6);
-  border-top: 1px solid var(--color-divider);
-  background: var(--color-neutral-100); box-shadow: var(--shadow-md); z-index: 15;
-  flex-wrap: wrap;
-}
-.summary .stat .label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: color-mix(in srgb, var(--color-text) 55%, transparent); }
-.summary .stat .value { font-family: var(--font-heading); font-size: 20px; }
-.summary .spacer { flex: 1; }
-.summary-actions { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
-.summary-help { font-size: 12px; color: color-mix(in srgb, var(--color-text) 62%, transparent); }
+/* The summary bar is a `Paper` in `components/SummaryBar.tsx`. It was fixed to
+   the viewport here, which was right while the Quote Builder owned the whole
+   window and wrong the moment it became a screen inside the shell: a bar
+   spanning the viewport sits under the navigation drawer and over the bottom of
+   every other screen. It is sticky within the content column now. */
 
 /* drawer + modal */
-.overlay { position: fixed; inset: 0; background: color-mix(in srgb, #000 34%, transparent); z-index: 40; display: flex; }
-.drawer { margin-left: auto; width: min(560px, 92vw); background: var(--color-bg); height: 100%; overflow: auto; box-shadow: var(--shadow-lg); }
-.modal-center { margin: auto; }
 .drawer-alert {
   margin-bottom: 10px; padding: 8px 10px; border-left: 3px solid var(--warn); background: var(--caution-bg); color: var(--caution-fg);
   border-radius: var(--radius-sm); font-size: 12px;
@@ -220,15 +110,9 @@ table.grid tbody tr:hover td { background: color-mix(in srgb, var(--color-accent
 .cand .code { font-family: ui-monospace, monospace; font-weight: 700; }
 .cand .reason { font-size: 12px; color: color-mix(in srgb, var(--color-text) 62%, transparent); margin-top: 4px; }
 
-/* sign-in */
-.signin-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: var(--space-6); }
-.signin { width: min(430px, 94vw); }
-.signin-card {
-  padding: var(--space-6); border: 1px solid var(--color-divider); border-radius: var(--radius-lg);
-  background: linear-gradient(135deg, var(--color-neutral-100), var(--color-bg)); box-shadow: var(--shadow-md);
-}
-.signin .demo { font-size: 12px; color: color-mix(in srgb, var(--color-text) 55%, transparent); margin-top: var(--space-4); line-height: 1.5; }
-.err { color: var(--danger-fg); font-size: 13px; margin-top: var(--space-2); }
+/* There is one sign-in screen, `src/SignInCard.tsx`, and it is MUI throughout —
+   so the `.signin*` rules that dressed the Quote Builder's second copy of it
+   are gone with that copy. */
 
 /* The Quote Builder's toast was a fixed-position div on a 2.4s timer, and
    `.toast-undo` beside it was already dead — nothing rendered it. Both are
@@ -240,25 +124,13 @@ table.grid tbody tr:hover td { background: color-mix(in srgb, var(--color-accent
 .kbd { font-family: ui-monospace, monospace; background: color-mix(in srgb, var(--color-text) 8%, transparent); padding: 1px 5px; border-radius: 3px; }
 .empty { text-align: center; padding: var(--space-8); color: color-mix(in srgb, var(--color-text) 55%, transparent); }
 
-@media (max-width: 900px) {
-  .topbar, .toolbar, .grid-wrap, .summary, .floor-banner { padding-left: var(--space-4); padding-right: var(--space-4); }
-  .topbar { gap: var(--space-3); }
-  .meta { width: 100%; order: 3; }
-  .summary { gap: var(--space-3); }
-  .helper-stack { grid-template-columns: 1fr; }
-}
-
+/* The narrow-screen rules that lived here re-padded the Quote Builder's own
+   shell — a topbar, a toolbar, a scrolling grid wrapper and a fixed summary
+   bar. Those are MUI components inside the platform shell now, and they wrap
+   from their own `sx`, which is the only place that can stay in step with the
+   theme's spacing. */
 @media (max-width: 640px) {
-  .topbar { padding-top: var(--space-4); padding-bottom: var(--space-4); }
-  .toolbar { gap: var(--space-2); }
-  .filter { flex: 1 1 calc(50% - 6px); justify-content: center; }
-  .grid-wrap { padding-bottom: 160px; }
-  .summary { align-items: stretch; }
-  .summary .spacer { display: none; }
-  .summary-actions { width: 100%; justify-content: space-between; }
   .empty-state-card { padding: var(--space-4); }
-  .empty-state-actions { flex-direction: column; align-items: stretch; }
-  .inline-help { flex-direction: column; gap: 8px; }
 }
 
 /* ════════════════════════════════════════════════════════════════════════
@@ -428,7 +300,10 @@ table.grid tbody tr:hover td { background: color-mix(in srgb, var(--color-accent
 }
 
 /* ── Quote-line commercial decision support (Decision Platform integration) ── */
-.qs, .qs-connect {
+/* `.qs-connect` is gone with the panel state it dressed: "sign in to the
+   Decisions platform", which could only ever appear while the Quote Builder
+   had a login of its own. */
+.qs {
   margin: 14px 0;
   border-top: 1px solid var(--color-divider);
   padding-top: 14px;
@@ -450,7 +325,6 @@ table.grid tbody tr:hover td { background: color-mix(in srgb, var(--color-accent
 .qs-conf.Low { color: #6b6b6e; background: var(--color-neutral-100); }
 .qs-skel { color: var(--color-neutral-700); font-size: 13px; padding: 6px 0; }
 .qs-error { color: #9a2c2c; font-size: 13px; }
-.qs-connect p { color: var(--color-neutral-700); font-size: 13px; margin: 0; }
 
 .qs-note {
   background: #fbf3df; border: 1px solid #ecdcae; border-radius: var(--radius-md);
@@ -693,7 +567,6 @@ table.grid tbody tr:hover td { background: color-mix(in srgb, var(--color-accent
   border-left: 3px solid var(--color-accent); border-radius: 4px;
   background: var(--color-neutral-100);
 }
-.qi-connect { border-left-color: var(--color-neutral-500); }
 .qi-head {
   font-family: "Barlow Condensed", sans-serif; text-transform: uppercase;
   letter-spacing: .06em; font-weight: 600; font-size: 13px;
@@ -767,16 +640,8 @@ table.grid tbody tr:hover td { background: color-mix(in srgb, var(--color-accent
 }
 
 /* Per-line chip in the grid */
-.qi-chip {
-  display: inline-flex; align-items: center; gap: 4px; font-size: 10.5px;
-  padding: 1px 7px; border-radius: 10px; border: 1px solid currentColor;
-  white-space: nowrap;
-}
-.qi-chip.ok { color: var(--color-neutral-500); border-style: dashed; }
-.qi-chip.info { color: var(--color-neutral-700); }
-.qi-chip.warning { color: var(--warn); background: var(--caution-bg); }
-.qi-chip.critical { color: var(--danger-fg); background: var(--danger-bg); font-weight: 600; }
-.qi-chip-more { opacity: .7; }
+/* `.qi-chip*` is gone: the commercial exception chip in the quote grid is a
+   `StatusChip`, so its four severity colours come from the theme. */
 
 /* ── approvals and settings ──────────────────────────────────────────────────
  * The queue that makes the margin floor a boundary rather than an annotation,
@@ -1286,6 +1151,28 @@ table.grid tbody tr:hover td { background: color-mix(in srgb, var(--color-accent
  * because of it. */
 .ag-shell .ag-root-wrapper { border: 0; }
 
+/* Quote grid: the state of a line, as a tint behind the row.
+ *
+ * A *second* cue, never the only one — the same fact is a chip in the Status
+ * column of the same row, so nothing here is lost in greyscale or under
+ * forced-colours. `:not(.ag-row-selected)` so a tint cannot bury the selection
+ * highlight, which is the one thing the person is actively controlling. */
+.ag-shell .ag-row.qb-row-blocked:not(.ag-row-selected) {
+  background: color-mix(in srgb, var(--danger-bg) 55%, transparent);
+}
+.ag-shell .ag-row.qb-row-attention:not(.ag-row-selected) {
+  background: color-mix(in srgb, var(--caution-bg) 45%, transparent);
+}
+/* A margin below the floor, or a quantity we cannot cover. */
+.ag-shell .qb-thin { color: var(--danger-fg); font-weight: 700; }
+/* The one cell on the screen somebody types into. Marked, because a grid where
+ * one column is editable and nothing says which is a grid people double-click
+ * at random to find out. */
+.ag-shell .qb-editable {
+  background: color-mix(in srgb, var(--color-accent) 6%, transparent);
+  box-shadow: inset 1px 0 0 color-mix(in srgb, var(--color-accent) 45%, transparent);
+}
+
 /* Rotating a connection's Zoho token. Closed until asked for: a token box
    sitting open on a working connection invites somebody to paste into it. */
 .cx-rotate-open { margin-top: 4px; padding-left: 0; }
@@ -1303,8 +1190,30 @@ table.grid tbody tr:hover td { background: color-mix(in srgb, var(--color-accent
  * colour alone — the connector shows a mark and a word, so the badge survives
  * colour-blindness, greyscale printing and a screen reader.
  */
-.ent { display: inline-grid; gap: 1px; }
+/* An inline-grid is an *atomic* inline: it cannot be split, so it cannot be
+   ellipsised by its container either. Inside an ag-grid cell — which is
+   `overflow:hidden; text-overflow:ellipsis; white-space:nowrap` — a name wider
+   than the column was therefore sliced mid-word with no ellipsis at all, and
+   no tooltip to recover it: "IN-0200-0046 PRIMO RPS + LTS + CONDUIT KIT
+   ASSEMBLY LIMITED" rendered as "…CONDUIT KIT ASSEMB". The cell's own ellipsis
+   never applied because there was nothing splittable to apply it to.
+
+   Capping the width is not enough on its own. `max-width: 100%` resolves
+   against the cell, so a sibling in the same cell — the Stock screen's health
+   dot — still pushes the pair past the content box, and an atomic box that
+   overflows is replaced wholesale by a single "…". That is the Stock symptom:
+   not a clipped name, no name at all.
+
+   Being *block-level* is what removes the failure rather than narrowing it. A
+   block box is not inline content, so the cell's ellipsis has no claim on it;
+   it takes the space left over and each line truncates on its own. `min-width:
+   0` is load-bearing too — a grid item's automatic minimum size is its
+   content, which would otherwise hold the full intrinsic width regardless. */
+.ent { display: grid; gap: 1px; min-width: 0; max-width: 100%; }
 .ent-name { font-weight: 600; }
+/* Where the name is not the emphasis — a supplier in a distribution list. */
+.ent-name-plain { font-weight: 400; }
+.ent-name, .ent-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ent-meta { font-size: 11.5px; color: var(--color-neutral-600); line-height: 1.3; }
 .ent-src { white-space: nowrap; }
 .ent-mark { margin-right: 4px; opacity: .75; }

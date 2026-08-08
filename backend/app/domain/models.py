@@ -310,8 +310,122 @@ class Product(Base):
     name: Mapped[str] = mapped_column(String(255))
     uom: Mapped[Optional[str]] = mapped_column(String(32))
     hsn: Mapped[Optional[str]] = mapped_column(String(32))
+    #: The catalogue's own category, exactly as Zoho words it — "Cutting Tools",
+    #: "Coolant", whatever somebody typed. Stored raw and interpreted at read
+    #: time by ``commercial/categories.py``, not normalised on the way in: the
+    #: mapping from these words to a line of the business is policy, it is
+    #: versioned, and a value rewritten at sync time could never be re-read
+    #: under a corrected map without a full re-sync.
+    category: Mapped[Optional[str]] = mapped_column(String(128))
+    #: Who makes this, as the item master words it — "KENNAMETAL INDIA
+    #: LIMITED", "YG1", "NOGA". Stored raw for the same reason ``category`` is:
+    #: mapping a maker onto a principal is policy, and a value rewritten at sync
+    #: time could never be re-read under a corrected map.
+    #:
+    #: Named for the Zoho field that fills it. Items also carry a separate
+    #: ``brand`` field, which these books leave empty — ``zoho_client`` reads it
+    #: only as a last resort behind ``manufacturer``, so one column holds one
+    #: answer and nothing downstream has to know there were two candidates.
+    #:
+    #: **This is not the vendor and must never be used as one.** The
+    #: manufacturer is whose product this is; the vendor on a bill is who we
+    #: actually paid. For an authorised distributor they usually coincide, which
+    #: is exactly what makes the divergences worth seeing — stock bought from
+    #: another distributor to cover a shortfall, a competing make filled through
+    #: a trader, an import through an intermediary. ``commercial/principals.py``
+    #: chains the two for *sales* attribution and documents where it must not
+    #: be chained.
+    manufacturer: Mapped[Optional[str]] = mapped_column(String(128))
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     source_ref: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
+                                                 onupdate=_now)
+
+
+class VendorTarget(Base):
+    """What a principal expects this distributor to do, in a period.
+
+    An authorised distributor does not choose its own numbers — Kennametal,
+    Sandvik and the rest set them, per period, and the year is run against them.
+    Nothing in Zoho holds a target and nothing derives one, so this is the one
+    table in the platform whose contents are *typed rather than synced*. It is
+    not derived, it is not rebuildable from a re-sync, and it must survive one.
+
+    ``basis`` is not decoration. A principal's target is usually on what you
+    **buy** from them; some are on what you **sell** of their product. Those are
+    different numbers against different actuals, and a single "target" column
+    would quietly compare one to the other — which is the kind of error nobody
+    catches until a quarter closes wrong.
+
+    Periods are stored as explicit start and end dates rather than as a quarter
+    label, because principals do not agree on a financial year: an Indian
+    principal's Q1 is April to June and a European parent's is January to March.
+    A label would have to be interpreted; two dates cannot be misread.
+    """
+
+    __tablename__ = "vendor_targets"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "vendor_id", "period_start",
+                         "period_end", "basis", name="uq_vendor_target_period"),
+        Index("ix_vendor_target_org_period", "organization_id", "period_start"),
+    )
+
+    target_id: Mapped[str] = mapped_column(String(64), primary_key=True,
+                                           default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    vendor_id: Mapped[str] = mapped_column(String(64),
+                                           ForeignKey("vendors.vendor_id"),
+                                           index=True)
+    period_start: Mapped[date] = mapped_column(Date)
+    period_end: Mapped[date] = mapped_column(Date)
+    #: ``PURCHASE`` — what we buy from them. ``SALES`` — what we sell of theirs.
+    basis: Mapped[str] = mapped_column(String(16), default="PURCHASE")
+    amount: Mapped[Any] = mapped_column(Numeric(18, 4))
+    #: Who typed it, and what they were told. A target nobody can source is one
+    #: nobody argues with when it is missed.
+    set_by_user_id: Mapped[Optional[str]] = mapped_column(String(64))
+    note: Mapped[Optional[str]] = mapped_column(String(512))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
+                                                 onupdate=_now)
+
+
+class ItemCategoryOverride(Base):
+    """What a person said an item's line is, when the catalogue could not say.
+
+    A separate table rather than a column on ``Product``, and that is the whole
+    point of it. Products are *derived*: Zoho is the system of record and a full
+    re-sync rebuilds every product row from nothing (§4). A mapping somebody sat
+    down and typed is not derived — it is the only copy — and putting it on a
+    derived row means the next complete re-sync silently deletes an afternoon of
+    somebody's work.
+
+    Keyed by ``product_id`` because that is what the rest of the platform joins
+    on, and it survives a re-sync: ``upsert_product`` matches on the source key
+    and keeps the row it already had.
+    """
+
+    __tablename__ = "item_category_overrides"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "product_id",
+                         name="uq_item_category_override"),
+    )
+
+    override_id: Mapped[str] = mapped_column(String(64), primary_key=True,
+                                             default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    product_id: Mapped[str] = mapped_column(String(64),
+                                            ForeignKey("products.product_id"),
+                                            index=True)
+    #: One of ``commercial.categories.ORDER``. Validated at the router rather
+    #: than by an enum column, so adding a line is a code change and not a
+    #: migration against every historical row.
+    category: Mapped[str] = mapped_column(String(48))
+    #: Who decided, and when. An override is a judgement, and a judgement with
+    #: no name on it is one nobody can ask about.
+    set_by_user_id: Mapped[Optional[str]] = mapped_column(String(64))
+    note: Mapped[Optional[str]] = mapped_column(String(512))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
                                                  onupdate=_now)
@@ -366,12 +480,33 @@ class CostRecord(Base):
         # makes the effective-cost lookup for a customer-item pair cheap.
         Index("ix_cost_records_org_product_date",
               "organization_id", "product_id", "date"),
+        # The mirror of the pair above, for the other direction: "what did we
+        # buy from this supplier, and when". Spend-by-supplier over a window
+        # was a full scan without it.
+        Index("ix_cost_records_org_vendor_date",
+              "organization_id", "vendor_id", "date"),
     )
 
     cost_record_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
     organization_id: Mapped[str] = mapped_column(String(64), index=True)
     external_ref: Mapped[str] = mapped_column(String(160), index=True)  # bill_id:line_id
     product_id: Mapped[str] = mapped_column(String(64), index=True)
+    #: Who this was bought from, copied down from the bill header.
+    #:
+    #: ``CostRecordIn`` has carried ``vendor_external_id`` since the supply pull
+    #: landed, and the state reducers read it off the event payload — but the
+    #: read model dropped it here, so the only way to ask "which items does this
+    #: supplier actually supply" was to re-derive the bill id out of
+    #: ``external_ref`` and join back to ``bills``. A dimension at line grain,
+    #: not a measure: copying ``balance`` down would turn a sum into a
+    #: de-duplication problem, copying the *vendor* down does not.
+    #:
+    #: Nullable, and left null rather than guessed. A bill from a supplier the
+    #: vendor pull did not return is still a real cost — dropping the line to
+    #: say who sold it would understate what an item cost.
+    vendor_id: Mapped[Optional[str]] = mapped_column(String(64),
+                                                     ForeignKey("vendors.vendor_id"),
+                                                     index=True)
     date: Mapped[date] = mapped_column(Date, index=True)
     qty: Mapped[Any] = mapped_column(Numeric(18, 4))
     # Effective, post-discount unit cost — every margin/pricing consumer reads this.
@@ -1304,7 +1439,7 @@ class ErasureReceipt(Base):
 #
 # These are *ingested facts*, in the same class as SalesTxn and CostRecord: raw
 # rows from Zoho with a source_ref, no interpretation and no thresholds_version.
-# The Tier 3 views compute from them at request time, the way every other
+# The the book views views compute from them at request time, the way every other
 # insight module computes from the sales snapshot. Nothing here decides
 # anything; a stock number that has been rounded, banded or judged on its way
 # in is a stock number nobody can reconcile against Zoho.

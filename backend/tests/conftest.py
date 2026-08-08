@@ -1,30 +1,17 @@
-"""Test fixtures: point the app at the pinned pie-parser clone, and build the
-decoded catalogue for the tests that actually resolve a product code.
+"""Test fixtures: point the app at the pinned pie-parser submodule and build a
+small catalogue once for the whole session.
 
-Why this is opt-in rather than autouse
---------------------------------------
-It used to be a session-scoped ``autouse`` fixture, which made a pie-parser
-checkout a precondition for *every* test in the suite — including the migration
-integrity tests, which state in their own docstring that they do not load
-pie-parser.
+pie-parser is a *private* submodule, so a checkout without access to it — CI's
+default token cannot fetch it — has no engine and no corpus to decode. That
+must cost only the tests that actually resolve a product code. It used to cost
+the entire suite: this fixture is session-scoped and autouse, so building the
+catalogue unconditionally meant a missing engine raised during setup for every
+one of the ~1180 tests, including the migration and schema tests whose own
+conftest says in as many words that they do not load pie-parser.
 
-pie-parser is a separate private repository. CI does not have it, so the fixture
-raised ``FileNotFoundError`` during setup and took the entire run down with it:
-the `migrations on an empty database` job failed with 25 collection errors that
-named a missing CSV, and no test in it had ever run. A precondition that broad
-is indistinguishable from a broken suite, and it hid a real gate behind a
-misleading error.
-
-Now the catalogue is a fixture a test asks for. A file that resolves product
-codes declares::
-
-    pytestmark = pytest.mark.usefixtures("pie_catalog")
-
-and everything else — 1,153 tests covering the database, the commercial engine,
-the signal detectors, trust and the HTTP surface — runs with no clone present.
-When the clone *is* present (a developer's machine, or CI with
-``PIE_PARSER_TOKEN`` set) all 1,182 run, the 29 resolution tests included,
-exactly as before.
+So: the catalogue is built when the engine is there, and tests that need it are
+marked ``requires_pie`` and skip when it is not. Skipped, never silently
+passed — the `pie-contract` gate job fetches the engine and runs them for real.
 """
 from __future__ import annotations
 
@@ -38,92 +25,114 @@ BACKEND = Path(__file__).resolve().parents[1]
 REPO = BACKEND.parent
 sys.path.insert(0, str(BACKEND))
 
-# Ensure the app uses the vendored clone + a test catalogue location. `setdefault`
-# so an explicitly-exported PIE_PARSER_ROOT (a sibling checkout, CI's clone path)
-# still wins.
-#
-# An *empty* value is discarded first. `setdefault` treats "" as set, and CI
-# passes `PIE_PARSER_ROOT: ${{ steps.parser.outputs.root }}`, which is the empty
-# string on the run where no clone happened — that would resolve the corpus to a
-# bare relative path rather than falling back to the vendored location.
-if not os.environ.get("PIE_PARSER_ROOT"):
-    os.environ.pop("PIE_PARSER_ROOT", None)
+# Ensure the app uses the vendored submodule + a test catalogue location.
 os.environ.setdefault("PIE_PARSER_ROOT", str(REPO / "pie-parser"))
 os.environ.setdefault("PIE_CATALOG", str(BACKEND / "data" / "products.jsonl"))
 
+# pie-parser's own packages (`identity`, `engine`, `resolver`) must be importable
+# by name, because a few tests import them directly rather than through
+# `app.pie_service`.
+#
+# They used to arrive by side effect: both `app/catalog.py` and `app/pie_service.py`
+# insert this path immediately before their own `from engine import ...`. That
+# made the result depend on execution order *and* on a generated file —
+# `ensure_catalog()` returns early when `products.jsonl` already exists, several
+# lines before it touches `sys.path`. So with the engine present but the
+# catalogue already built, `test_confirmed_mappings` still failed with
+# `ModuleNotFoundError: No module named 'identity'`.
+#
+# The `requires_pie` marker below is about the engine being *absent*; this is the
+# separate case where it is present and merely unimportable. Both are needed.
+# Done at import time because a fixture cannot help — the failing import is
+# inside a test body, but nothing guarantees another test ran first.
+_PIE_ROOT = os.environ["PIE_PARSER_ROOT"]
+if _PIE_ROOT not in sys.path:
+    sys.path.insert(0, _PIE_ROOT)
+
+# Under pytest-xdist, give every worker its own database.
+#
+# Without this the workers race to bring up the same SQLite file and lose:
+# `sqlite3.OperationalError: table alembic_version already exists`, from two
+# processes running `alembic upgrade head` against one path. WAL fixes
+# concurrent *readers and writers*; it does not make two concurrent schema
+# migrations one migration.
+#
+# This must happen at import time, before anything reads `app.config` — the
+# settings object resolves DATABASE_URL once, on first import, and a later
+# assignment would be read by nothing.
+#
+# Serial runs are untouched, so `pytest tests` behaves exactly as before; only
+# `-n` opts into the isolated path. The migration suite passes its own explicit
+# URLs and is unaffected either way.
+_WORKER = os.environ.get("PYTEST_XDIST_WORKER")
+if _WORKER:
+    _worker_db = BACKEND / "data" / f"test_{_WORKER}.db"
+    _worker_db.parent.mkdir(parents=True, exist_ok=True)
+    # Not setdefault: an inherited DATABASE_URL would put every worker back on
+    # one file, which is the failure this exists to prevent.
+    os.environ["DATABASE_URL"] = f"sqlite:///{_worker_db}"
+
+#: Whether the engine is actually present. The orchestration entry point is the
+#: thing ``pie_service`` loads, so its absence is exactly what "no engine"
+#: means — a stale directory left by an interrupted fetch is not an engine.
+PIE_AVAILABLE = (Path(os.environ["PIE_PARSER_ROOT"]) / "tools" / "resolve_rfq.py").exists()
+
+_SKIP_REASON = (
+    "pie-parser is not checked out, so there is no engine to resolve against. "
+    "Fetch it with ./scripts/setup_pie_parser.sh, or set PIE_PARSER_ROOT."
+)
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    config.addinivalue_line(
+        "markers",
+        "requires_pie: needs the pie-parser engine; skipped when it is absent.",
+    )
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list) -> None:
+    if PIE_AVAILABLE:
+        return
+    skip = pytest.mark.skip(reason=_SKIP_REASON)
+    for item in items:
+        if "requires_pie" in item.keywords:
+            item.add_marker(skip)
+
 
 @pytest.fixture(scope="session", autouse=True)
-def _data_dir():
-    """Create ``backend/data/`` before anything opens the app's engine.
+def _catalog():
+    """Build the catalogue once (idempotent) so resolution tests have data.
 
-    A fresh clone has no ``backend/data/`` — the .db files are gitignored and
-    nothing else in the directory is tracked — and SQLite will not create a
-    missing directory: it fails with ``unable to open database file``.
-    ``bootstrap.ensure_data_dir`` exists precisely for this and runs on a real
-    startup, but ``TestClient`` never runs the app's lifespan, so the tests that
-    touch ``app.db.engine`` directly (``test_db_concurrency``) never got it.
-    They passed on every developer machine, where the directory already exists,
-    and failed the first time the suite ran on a clean checkout.
-
-    Autouse here, unlike the catalogue below, and the difference is the point: a
-    `mkdir` has no external dependency and cannot fail in a way that says
-    something misleading about the code under test. Making a *private repository
-    checkout* a session-wide precondition is what took the whole suite down.
+    A no-op without the engine: the tests that would read it are already
+    skipped, and raising here would take the rest of the suite with it.
     """
-    from app.bootstrap import ensure_data_dir
-
-    ensure_data_dir()
-
-
-@pytest.fixture(scope="session")
-def pie_catalog():
-    """Build the decoded catalogue once, or skip the tests that need it.
-
-    Skipping is deliberate and loud. The alternative — resolving against an
-    empty catalogue — would let a resolution test pass by finding nothing, which
-    is worse than not running it.
-    """
+    if not PIE_AVAILABLE:
+        return
     from app.catalog import ensure_catalog
-    from app.config import settings
-
-    # The *clone* is the precondition, not the catalogue. A prebuilt
-    # products.jsonl is not enough: resolution imports pie-parser's engine and
-    # `identity` package from PIE_PARSER_ROOT at call time, so with a catalogue
-    # and no clone these tests fail with `ModuleNotFoundError: No module named
-    # 'identity'` — which is the confusing failure this fixture exists to
-    # replace with a sentence.
-    if not settings.PIE_PARSER_ROOT.is_dir():
-        pytest.skip(
-            f"pie-parser not found at {settings.PIE_PARSER_ROOT} — product "
-            "resolution tests need the pinned clone. Run "
-            "./scripts/setup_pie_parser.sh, or set PIE_PARSER_ROOT."
-        )
-    if not settings.PIE_CATALOG.exists() and not settings.PIE_CORPUS.exists():
-        pytest.skip(
-            f"pie-parser is present but its corpus is not, at "
-            f"{settings.PIE_CORPUS}. The clone looks incomplete — re-run "
-            "./scripts/setup_pie_parser.sh."
-        )
     ensure_catalog()
 
 
-@pytest.fixture(scope="session")
-def platform_db():
-    """Bring the configured database to head and seed the demo org + users.
+@pytest.fixture(scope="session", autouse=True)
+def _platform_database():
+    """Create and seed the real database once, for the tests that drive the
+    real app rather than an in-memory fixture.
 
-    ``TestClient(app)`` built at module scope never runs the app's ``lifespan``,
-    so the ``AUTO_BOOTSTRAP`` step that prepares the database on a real startup
-    does not happen under test. Anything reaching the platform identity
-    endpoints (``/api/v1/auth/login``) therefore hit an unmigrated database and
-    failed with ``no such table: users`` — the exact symptom ``bootstrap.py``
-    was written to make impossible, reappearing because the test client takes a
-    different path into the app than uvicorn does.
+    `test_quote_flow` and `test_db_concurrency` go through `app.main`, which
+    binds the configured engine at import and reads `backend/data/` — a
+    directory that is gitignored and therefore absent on any fresh checkout.
+    Nothing in the suite created it, so those tests passed only where somebody
+    had run `make bootstrap` by hand and failed everywhere else, CI included,
+    with `unable to open database file`.
 
-    ``bootstrap()`` is idempotent and is the only sanctioned way to build this
-    schema (§4: Alembic only, never ``create_all``), so calling it here costs a
-    second on an already-migrated database and builds a working one from nothing
-    in CI.
+    The subtler one: without a database the approval gate has nothing to check
+    against, so `POST /estimate` answered 200 where the test demands 403. That
+    test exists because sending without a platform identity would otherwise be
+    the way around every approval in the product — it must never be able to
+    pass or fail for an incidental reason.
+
+    Alembic-only and idempotent, so this is `make bootstrap` rather than a
+    second schema path (CLAUDE.md §4 — never `create_all` outside a fixture,
+    and this is not one of those either).
     """
     from app.bootstrap import bootstrap
-
     bootstrap()

@@ -5,10 +5,8 @@ import pytest
 
 from app.pie_service import pie_service
 
-# Resolves real corpus codes, so it needs the pinned pie-parser clone. Skips
-# with a reason when there isn't one rather than failing collection for the
-# whole suite — see tests/conftest.py.
-pytestmark = pytest.mark.usefixtures("pie_catalog")
+# Every test here resolves through the real engine against the real catalogue.
+pytestmark = pytest.mark.requires_pie
 
 
 def test_exact_identity_resolves_to_exact():

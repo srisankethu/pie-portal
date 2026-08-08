@@ -1,0 +1,44 @@
+# What never belongs in a build context.
+#
+# Two of these are correctness, not size. `.env*` would bake a developer's
+# secrets into a layer that anyone who can pull the image can read; and the
+# generated artefacts below (`products.jsonl`, `dist/`, `node_modules/`) are
+# rebuilt inside the image from source, so copying a host-built copy in would
+# make the image depend on whichever machine happened to build it.
+
+.git
+.github
+.gitignore
+.gitmodules
+
+# Secrets. Never in a layer.
+.env
+.env.*
+!.env.example
+
+# Python
+**/__pycache__
+**/*.py[cod]
+.venv
+venv
+.pytest_cache
+.ruff_cache
+**/*.egg-info
+
+# Node — reinstalled from package-lock.json inside the build.
+**/node_modules
+frontend/dist
+frontend/.vite
+frontend/tsconfig.tsbuildinfo
+
+# Generated at build time from the pie-parser corpus, and the dev database.
+backend/data/*.jsonl
+backend/data/*.db
+backend/data/*.db-wal
+backend/data/*.db-shm
+
+# Local gate state — one machine's green run, not a fact about the image.
+.verify-stamp
+.claude
+
+.DS_Store

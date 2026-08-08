@@ -8,7 +8,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { LineIntelligence, Quote, QuoteIntelligence } from "./types";
-import { AssessLine, QuoteGate, byLine, intelligence, platformToken } from "./intelligence";
+import { AssessLine, QuoteGate, byLine, intelligence } from "./intelligence";
 
 function assessLines(quote: Quote | null): AssessLine[] {
   if (!quote) return [];
@@ -27,15 +27,15 @@ export interface QuoteIntelligenceState {
   byLineId: Record<string, LineIntelligence>;
   loading: boolean;
   error: string | null;
-  connected: boolean;
   recordOverride: (lineId: string, reasonCode: string, reason: string) => Promise<void>;
   requestApproval: (lineId: string, reasonCode: string, reason: string) => Promise<void>;
   gate: QuoteGate | null;
   refresh: () => void;
 }
 
-export function useQuoteIntelligence(quote: Quote | null): QuoteIntelligenceState {
-  const token = platformToken();
+/** @param token the signed-in platform session's token. Passed in rather than
+ *  re-read from storage: one session, one place that owns it. */
+export function useQuoteIntelligence(quote: Quote | null, token: string): QuoteIntelligenceState {
   const [data, setData] = useState<QuoteIntelligence | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -54,7 +54,7 @@ export function useQuoteIntelligence(quote: Quote | null): QuoteIntelligenceStat
   latest.current = lines;
 
   useEffect(() => {
-    if (!token || !customer || lines.length === 0) {
+    if (!customer || lines.length === 0) {
       setData(null);
       return;
     }
@@ -75,7 +75,7 @@ export function useQuoteIntelligence(quote: Quote | null): QuoteIntelligenceStat
   // The gate is re-read whenever the quote changes or something is submitted:
   // an approval granted in another tab must show up here without a reload.
   useEffect(() => {
-    if (!token || !quoteId) return;
+    if (!quoteId) return;
     let cancelled = false;
     intelligence
       .gate(token, quoteId)
@@ -89,7 +89,7 @@ export function useQuoteIntelligence(quote: Quote | null): QuoteIntelligenceStat
 
   const recordOverride = useCallback(
     async (lineId: string, reasonCode: string, reason: string) => {
-      if (!token || !quoteId) throw new Error("Not connected to the Decisions platform");
+      if (!quoteId) throw new Error("There is no quote open to record this against");
       const line = latest.current.find((l) => l.line_id === lineId);
       if (!line) throw new Error("That line is no longer on the quote");
       await intelligence.snapshot(token, quoteId, customer, [
@@ -104,7 +104,7 @@ export function useQuoteIntelligence(quote: Quote | null): QuoteIntelligenceStat
    *  behaviour, and it let a below-floor price go out with a note attached. */
   const requestApproval = useCallback(
     async (lineId: string, reasonCode: string, reason: string) => {
-      if (!token || !quoteId) throw new Error("Not connected to the Decisions platform");
+      if (!quoteId) throw new Error("There is no quote open to record this against");
       const line = latest.current.find((l) => l.line_id === lineId);
       if (!line) throw new Error("That line is no longer on the quote");
       if (line.proposed_price === null) throw new Error("Set a price first");
@@ -126,7 +126,6 @@ export function useQuoteIntelligence(quote: Quote | null): QuoteIntelligenceStat
     byLineId: useMemo(() => byLine(data), [data]),
     loading,
     error,
-    connected: !!token,
     recordOverride,
     requestApproval,
     gate,

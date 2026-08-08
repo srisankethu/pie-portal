@@ -11,10 +11,23 @@ day-to-day loop. This file is the part that constrains how code gets *added*.
 **Writing or changing UI? Read `docs/ui-standards.md` first.** It is a standing
 standard, not a style preference: Material UI as the design system, `Paper` for
 dashboard surfaces and `Card` only for a business entity, status as a `Chip`
-rather than coloured text, MUI's own loading components rather than a
-hand-rolled shimmer, theme tokens rather than literals, and a shared component
-in `platform/kit.tsx` wherever a pattern appears twice. New UI follows it;
-existing screens move toward it as they are touched.
+rather than coloured text, **AG Grid through `platform/DataGrid.tsx` for any
+table whose row count is set by the size of the business — never a hand-written
+`<table>`**, MUI's own loading components rather than a hand-rolled shimmer,
+theme tokens rather than literals, and a shared component in `platform/kit.tsx`
+wherever a pattern appears twice. New UI follows it; existing screens move
+toward it as they are touched.
+
+The grid rule is stated here because leaving it only in `ui-standards.md` §3 is
+how the Quote Builder's line table stayed a hand-written `<table class="grid">`
+through three UI passes: this paragraph is the summary people actually read
+before writing a screen, it listed six rules, and the one it left out was the
+one that screen was breaking. A rule that is not in the digest is a rule that
+gets followed by whoever happens to open the long document.
+
+`<table>` is still right for a fact panel (a label and a value, four rows) and
+for the accessible table under a chart. `platform/DataGrid.tsx` states the line;
+the check in §6 finds the cases worth thinking about.
 
 ---
 
@@ -400,37 +413,62 @@ Deterministic tools first, judgement second. Never report "no duplication"
 without a tool having actually looked.
 
 ```bash
-# 1. Tests. Non-negotiable; the suite is the contract.
-cd backend && python -m pytest tests -q
-
-# 2. Frontend tests, types and build.
-cd frontend && npm test && npx tsc -b && npm run build
-
-# 3. Lint. The rule set lives in `backend/ruff.toml` and the version is pinned
-#    in gate.yml — an unpinned linter once turned this step red on untouched
-#    code and, because it runs before pytest in the same job, stopped the whole
-#    backend suite from running for days.
-ruff check backend/app
-
-# 4. The invariant checks from §1 — must print nothing.
-
-# 5. Migrations, whenever models or migrations changed. Note the `rm` — this
-#    checks the EMPTY case, which is the one that breaks in production and the
-#    one your already-migrated development database can never exercise.
-cd backend && rm -f /tmp/mig.db \
-  && DATABASE_URL="sqlite:////tmp/mig.db" python -m alembic upgrade head \
-  && python -m pytest tests/decision_platform/test_migrations_integrity.py -q
+make verify        # the whole gate, ~4 min
+make verify-fast   # the edit loop, ~2.5 min — not enough to merge on
 ```
 
-Step 5 is not optional after a model change. It is the check that would have
-caught the incident in §4: the schema and the models had drifted apart in 130
-places, and the drift was invisible because nobody ran autogenerate against a
-fresh database.
+That is the entire list, and it is deliberately not written out here a second
+time. This section used to enumerate five commands, `.github/workflows/gate.yml`
+enumerated them again, and the two drifted:
+
+- CI installed `ruff` unpinned. A newer release shipped a broader default rule
+  set, so the gate reported **1314 lint errors with no code change behind them**.
+  Lint ran *before* `pytest` in the same job, so the 1174-test backend suite was
+  skipped entirely.
+- CI never fetched pie-parser, which the backend imports in-process. All 25
+  migration-integrity tests died at collection with `PIE corpus not found` — so
+  the drift check this document leans on had never actually run.
+
+Both survived **eight consecutive merges to `main`**, because a check that is
+always red is a check nobody reads. `scripts/verify.sh` is now the single
+definition of "verified": `make verify` runs it, CI runs it, and the Claude Code
+stop-hook checks against it. Change the checks there and every caller changes
+with it.
+
+What it runs, in order: `ruff check .` (rule set in `ruff.toml`, version pinned
+in `backend/requirements-dev.txt`) · the §1 layer invariants · the backend suite
+in parallel · `tsc -b` and the production build · `alembic upgrade head` **on an
+empty database**, then the drift test and the single-head check.
+
+It runs every step and reports all failures at the end rather than stopping at
+the first, so one red build tells you everything that is wrong.
+
+**The empty-database run is not optional after a model change.** It is the check
+that would have caught the incident in §4 — the schema and the models had
+drifted apart in 130 places, invisibly, because nobody ran autogenerate against
+a fresh database. Your own database is already migrated and can never exercise
+the empty case; production only ever runs it.
 
 Optional, if you want a real similarity scan and are willing to install it:
 `npx jscpd --min-tokens 30 backend/app frontend/src`. Treat >30 duplicated
 tokens in a contiguous block as a flag, not a failure — some repetition is
 clearer than the abstraction that removes it.
+
+Also optional, and deliberately not in `verify.sh`: if you added or changed a
+screen, look at the tables in it.
+
+```bash
+git diff --name-only --diff-filter=d origin/main...HEAD -- 'frontend/src/**/*.tsx' \
+  | xargs -r rg -n '<table' || true
+```
+
+A `<table>` is right for a fact panel and for the accessible table under a
+chart, and wrong for anything whose row count is the size of the business —
+which is a judgement, so this prints and you decide. It stays out of the gate
+for the reason the paragraphs above give: seven of the eight raw tables left in
+this codebase are correct, and a check that is usually wrong is a check people
+learn to scroll past. It is here because the Quote Builder's line table stayed
+hand-written through three UI passes and no tool ever mentioned it.
 
 Then fill in §8 against the output.
 

@@ -5,6 +5,13 @@ __pycache__/
 venv/
 *.egg-info/
 .pytest_cache/
+.ruff_cache/
+
+# Local gate state, not shared: .verify-stamp records that THIS working tree
+# passed, and the nag file is the stop-hook's loop-breaker. Committing either
+# would let one machine's green run silence the hook on another.
+.verify-stamp
+.claude/.verify-nag
 
 # Generated PIE catalog (built from pie-parser corpus via scripts/build_catalog.py)
 backend/data/products.jsonl
@@ -18,11 +25,19 @@ frontend/.vite/
 # Env / editor
 .env
 .env.local
+# The self-hosted deployment's real secrets (deploy/production.env.example is
+# the committed template). Named, not globbed, so a new .env.something is a
+# deliberate decision rather than something .gitignore quietly swallows.
+.env.production
 .DS_Store
 
 # TS build info
 frontend/tsconfig.tsbuildinfo
-/pie-parser/
+
+# NOTE: /pie-parser/ is deliberately NOT ignored — it is a submodule, and the
+# commit it is pinned to lives in this repository's index. Ignoring the path
+# would make `git submodule` unable to record a pin change, which is the whole
+# point of vendoring it this way.
 
 # Dev SQLite database (Decision Platform).
 # The -wal and -shm sidecars appeared when the engine moved to WAL journalling;

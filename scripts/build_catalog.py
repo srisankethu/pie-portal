@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build the decoded PIE product catalogue (backend/data/products.jsonl).
 
-Runs pie-parser (a pinned clone at ./pie-parser) over the Kennametal/WIDIA nomenclature
+Runs pie-parser (the ./pie-parser submodule) over the Kennametal/WIDIA nomenclature
 corpus. The output is deterministic and large (~13 MB), so it is gitignored and
 rebuilt from source rather than committed.
 

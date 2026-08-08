@@ -1,0 +1,79 @@
+# What the linter checks, written down.
+#
+# This file exists because of a specific incident, in the same spirit as
+# CLAUDE.md §4. On 2026-08-07 the gate had been red on `main` for eight
+# consecutive merges and not one line of code was responsible.
+#
+# The mechanism: `gate.yml` ran `pip install -r backend/requirements.txt ruff`.
+# Unpinned. A newer ruff shipped a broader *default* rule set, and with no config
+# committed here, "what the linter checks" was whatever ruff released that
+# morning. The next run reported 1314 errors. Worse, `ruff` ran before `pytest`
+# in the same job, so the backend suite — 1174 tests — was skipped every time.
+# A check that is always red is a check nobody reads, which is why it survived
+# eight merges.
+#
+# Proven on a three-line file with no config:
+#   ruff 0.15.8  ->  All checks passed
+#   ruff 0.16.1  ->  3 errors  (UP045, UP035)
+#
+# So the rule set is explicit and the version is pinned in
+# backend/requirements-dev.txt. Both halves are needed: a written rule can still
+# change meaning between versions, and a pinned version with implicit rules
+# breaks the moment somebody bumps it.
+
+target-version = "py311"
+line-length = 100
+
+# Lint everything the gate can reach, not just backend/app. The old gate checked
+# one directory, so the tests and the deploy script — the two places a mistake is
+# least likely to be noticed by a human reader — were never linted at all.
+extend-exclude = ["frontend", "pie-parser", "backend/data"]
+
+[lint]
+# The rules this codebase satisfies today. The first four are ruff's
+# long-standing default (pyflakes, plus the pycodestyle subset that catches real
+# errors rather than whitespace opinions); the rest were each *already* clean
+# when this file was written, so they cost nothing to keep and catch the next one.
+select = [
+    "E4",    # imports: shadowed, multiple on a line
+    "E7",    # statement-level errors — comparison to None/True, bare mixed types
+    "E9",    # syntax and IO errors that stop the file being read at all
+    "F",     # pyflakes: unused imports and names, undefined names, f-string bugs
+    "ASYNC", # blocking calls inside async — this is a FastAPI app; it matters
+    "PIE",   # misc lints: unnecessary dict kwargs, duplicate class fields
+    "PYI",   # stub-file correctness
+    "RSE",   # `raise X()` rather than `raise X`, so the traceback is a real object
+    "INT",   # gettext mistakes
+    "FLY",   # static `str.join` that should be an f-string
+    "NPY",   # numpy legacy APIs (not used here — kept so it stays that way)
+    "EXE",   # shebang present but file not executable, and the reverse
+    "ICN",   # import conventions
+    "G",     # logging-format mistakes: an f-string in a log call loses lazy
+             # formatting, and CLAUDE.md forbids logging prompt/response content —
+             # eager formatting is how that leaks
+    "LOG",   # logging misuse
+]
+
+# Deliberately NOT selected, with the reason, so this is a decision rather than an
+# oversight. Each is a real backlog item, not a rule that is wrong here:
+#
+#   UP    (pyupgrade)   ~930 findings — `Optional[X]` -> `X | None`, `List` -> `list`
+#   TID   (tidy-imports) 537 — relative-import policy, which this repo uses on purpose
+#   B     (bugbear)      197 — almost all B008, FastAPI's `Depends()` in a default,
+#                        which is the framework's documented idiom
+#   I     (isort)        35 — import order has never been enforced
+#   FURB  / RUF / SIM    a long tail, mostly `Decimal("0")` verbosity and unused noqa
+#
+# Adopt them one family per commit, so a review can tell a mechanical rewrite from
+# a behaviour change. Never widen this list in the same commit as a feature.
+
+[lint.per-file-ignores]
+# A migration is a historical record. It runs against schemas from months ago and
+# must not import application models (CLAUDE.md §4), so its imports look unusual
+# on purpose and it is never edited once released.
+"backend/alembic/versions/*" = ["E402", "F401"]
+
+# Tests bind names to document intent, and an unused local in a test is usually
+# an assertion still being written — which the test result reports more clearly
+# than the linter would.
+"backend/tests/**" = ["F841"]

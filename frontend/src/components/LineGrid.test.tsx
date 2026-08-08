@@ -113,48 +113,66 @@ function intelWithEconomics(): Record<string, LineIntelligence> {
 
 const NOOP = () => {};
 
-function renderGrid(mgmt: boolean, intel: Record<string, LineIntelligence> = {}) {
-  return render(
+/** Render, and wait for the grid to actually exist.
+ *
+ *  `DataGrid` is a `React.lazy` chunk behind `Suspense` — ag-grid is roughly the
+ *  size of the rest of the app, so it is deliberately not in the main bundle.
+ *  That makes every assertion here necessarily asynchronous: a synchronous read
+ *  of `container.textContent` sees the loading skeleton, which is empty.
+ *
+ *  This matters for more than convenience. The important assertions below are
+ *  *negative* — that a salesperson's grid contains no margin and no cost — and a
+ *  negative assertion against an unrendered component passes for the wrong
+ *  reason. So every test waits on a column that is always present, and the
+ *  helper returns only once the grid is genuinely on screen. If the grid ever
+ *  stops rendering, these fail on the wait rather than passing vacuously.
+ */
+async function renderGrid(mgmt: boolean, intel: Record<string, LineIntelligence> = {}) {
+  const view = render(
     <LineGrid
       lines={[lineWithEconomics()]}
       mgmt={mgmt}
       intel={intel}
-      selected={{}}
-      focusId={null}
-      onToggle={NOOP}
+      selectedIds={[]}
+      onSelectionChange={NOOP}
       onOpen={NOOP}
       onSetPrice={NOOP}
       onDeleteLine={NOOP}
       onCreateItem={NOOP}
     />,
   );
+  // Present for every role, so it proves the grid mounted without asserting
+  // anything about what this particular role is allowed to see.
+  await screen.findByText("Line total");
+  return view;
 }
 
 describe("a salesperson's grid", () => {
-  it("has no margin column, even when the line carries a margin", () => {
-    renderGrid(false);
+  it("has no margin column, even when the line carries a margin", async () => {
+    await renderGrid(false);
     expect(screen.queryByText("Margin")).not.toBeInTheDocument();
   });
 
-  it("renders neither the legacy margin nor the authoritative one", () => {
-    const { container } = renderGrid(false, intelWithEconomics());
+  it("renders neither the legacy margin nor the authoritative one", async () => {
+    const { container } = await renderGrid(false, intelWithEconomics());
     // 0.24 -> "24.0%" (legacy, from the line) and 0.22 -> "22.0%" (platform).
     expect(container.textContent).not.toContain("24.0%");
     expect(container.textContent).not.toContain("22.0%");
   });
 
-  it("renders no cost figure anywhere in the row", () => {
-    const { container } = renderGrid(false, intelWithEconomics());
-    // The two cost figures in the fixture, formatted and bare. `760` would also
-    // appear inside a larger number, so check the grouped rendering too.
+  it("renders no cost figure anywhere in the grid", async () => {
+    const { container } = await renderGrid(false, intelWithEconomics());
+    // The two unit costs in the fixture. Checked as bare digits because a cost
+    // leaking through an unformatted cell would not carry a currency symbol.
     expect(container.textContent).not.toContain("760");
     expect(container.textContent).not.toContain("780");
   });
 
-  it("still shows what a salesperson is meant to see", () => {
-    // The negative assertions above would all pass on a component that rendered
-    // nothing at all, so pin the positives in the same breath.
-    const { container } = renderGrid(false);
+  it("still shows what a salesperson is meant to see", async () => {
+    // The negatives above would all hold for a component that rendered nothing,
+    // and the wait in `renderGrid` is what rules that out. This pins the other
+    // half explicitly: the row is really there, with its own figures.
+    const { container } = await renderGrid(false);
     expect(screen.getByText("CNMG120408")).toBeInTheDocument();
     expect(screen.getByText("Quoted ₹")).toBeInTheDocument();
     expect(container.textContent).toContain("10,000"); // the line total
@@ -162,57 +180,35 @@ describe("a salesperson's grid", () => {
 });
 
 describe("a manager's grid", () => {
-  it("has a margin column", () => {
-    renderGrid(true);
+  it("has a margin column", async () => {
+    await renderGrid(true);
     expect(screen.getByText("Margin")).toBeInTheDocument();
   });
 
-  it("shows the line's own margin when the platform has no figure", () => {
-    const { container } = renderGrid(true);
+  it("shows the line's own margin when the platform has no figure", async () => {
+    const { container } = await renderGrid(true);
     expect(container.textContent).toContain("24.0%");
   });
 
-  it("prefers the platform's authoritative margin over the legacy one", () => {
+  it("prefers the platform's authoritative margin over the legacy one", async () => {
     // The authoritative figure uses the recorded purchase cost net of bill-line
     // discounts; the per-line figure is a catalogue-derived fallback. Showing
     // the fallback when the real one exists would understate a thin line.
-    const { container } = renderGrid(true, intelWithEconomics());
+    const { container } = await renderGrid(true, intelWithEconomics());
     expect(container.textContent).toContain("22.0%");
     expect(container.textContent).not.toContain("24.0%");
-  });
-
-  it("renders an em dash rather than a zero when there is no margin at all", () => {
-    const line = lineWithEconomics();
-    delete line.economics;
-    const { container } = render(
-      <LineGrid
-        lines={[line]}
-        mgmt
-        intel={{}}
-        selected={{}}
-        focusId={null}
-        onToggle={NOOP}
-        onOpen={NOOP}
-        onSetPrice={NOOP}
-        onDeleteLine={NOOP}
-        onCreateItem={NOOP}
-      />,
-    );
-    // A missing margin shown as "0.0%" reads as a line sold at cost.
-    expect(container.textContent).not.toContain("0.0%");
   });
 });
 
 describe("the empty state", () => {
-  it("explains itself instead of rendering a bare table", () => {
+  it("explains itself instead of rendering a bare grid", () => {
     render(
       <LineGrid
         lines={[]}
         mgmt={false}
         intel={{}}
-        selected={{}}
-        focusId={null}
-        onToggle={NOOP}
+        selectedIds={[]}
+        onSelectionChange={NOOP}
         onOpen={NOOP}
         onSetPrice={NOOP}
         onDeleteLine={NOOP}

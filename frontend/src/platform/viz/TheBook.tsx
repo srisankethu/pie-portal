@@ -15,13 +15,14 @@
 
 import Button from "@mui/material/Button";
 import { useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { scaleBand, scaleLinear } from "d3-scale";
 import { money } from "../../money";
 import { formatDate } from "../../when";
 import { papi } from "../api";
 import { abilityFor } from "../ability";
 import { EntityName } from "../EntityName";
-import { VarianceIndicator } from "../kit";
+import { ChartTip, InlineLink, VarianceIndicator } from "../kit";
 import { CompanyFilter, useCompanyFilter } from "../CompanyFilter";
 import { DataGrid, numeric } from "../DataGrid";
 import type { EntityOrigin, PlatformSession, Sourced } from "../types";
@@ -137,24 +138,31 @@ function CashProjection({ session }: { session: PlatformSession }) {
             `Week of ${formatDate(b.starts_on as string)}: in ${money(num(b.inflow))}, out ${money(num(b.outflow))}, running ${money(num(b.cumulative))}`,
           ).join("; ")}
           table={
-            <table className="viz-table">
-              <thead><tr>
-                <th scope="col">Week of</th><th scope="col">In</th>
-                <th scope="col">Out</th><th scope="col">Net</th>
-                <th scope="col">Running</th>
-              </tr></thead>
-              <tbody>
-                {buckets.map((b, i) => (
-                  <tr key={i}>
-                    <th scope="row">{formatDate(b.starts_on as string)}</th>
-                    <td>{money(num(b.inflow))}</td>
-                    <td>{money(num(b.outflow))}</td>
-                    <td>{money(num(b.net))}</td>
-                    <td>{money(num(b.cumulative))}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <DataGrid<Row>
+              ariaLabel="Committed cash by week"
+              pageSize={26}
+              filters={false}
+              rows={buckets}
+              columns={[
+                {
+                  field: "starts_on", headerName: "Week of", width: 150, flex: 0,
+                  valueFormatter: (p) => (p.value ? formatDate(String(p.value)) : "—"),
+                },
+                numeric<Row>("inflow", "Money in", (v) => money(v),
+                             { width: 160, flex: 0 }),
+                numeric<Row>("outflow", "Money out", (v) => money(v),
+                             { width: 160, flex: 0 }),
+                numeric<Row>("net", "Net", (v) =>
+                  `${v >= 0 ? "+" : "−"}${money(Math.abs(v))}`,
+                  { width: 160, flex: 0 }),
+                numeric<Row>("cumulative", "Running total", (v) => money(v), {
+                  width: 180, flex: 0,
+                  headerTooltip: "The bars added up from zero, week by week. "
+                    + "Movement, not a balance — the platform reads payments, "
+                    + "never bank balances.",
+                }),
+              ]}
+            />
           }
         >
           {room.width > 0 && buckets.length > 0 && (
@@ -239,12 +247,32 @@ function CashChart({
         const inflow = num(b.inflow);
         const outflow = num(b.outflow);
         const label = String(b.starts_on ?? "");
+        const net = num(b.net);
+        // One tooltip for the whole week, on a transparent strip covering the
+        // band. Per-bar tooltips would mean hovering a 6px rectangle to learn
+        // what a week does, and the out-bar of a week with no outflow does not
+        // exist to hover at all.
+        const tip = (
+          <>
+            <strong>Week of {formatDate(label)}</strong>
+            <br />
+            Money in {money(inflow)}
+            <br />
+            Money out {money(outflow)}
+            <br />
+            Net {net >= 0 ? "+" : "−"}{money(Math.abs(net))} this week
+            <br />
+            <span style={{ opacity: 0.85 }}>
+              Running total from zero: {money(num(b.cumulative))}
+            </span>
+            <br />
+            <span style={{ opacity: 0.8 }}>
+              Invoices and bills already raised — not a forecast
+            </span>
+          </>
+        );
         return (
           <g key={i}>
-            <title>
-              {`Week of ${formatDate(label)}\nIn ${money(inflow)}\nOut ${money(outflow)}\n`}
-              {`Running ${money(num(b.cumulative))}`}
-            </title>
             {inflow > 0 && (
               <rect x={left} y={y(inflow)} width={barW}
                     height={Math.max(1, zero - y(inflow))}
@@ -255,6 +283,11 @@ function CashChart({
                     height={Math.max(1, y(-outflow) - zero)}
                     className="cash-bar cash-bar-out" rx="1.5" />
             )}
+            <ChartTip title={tip}>
+              <rect x={left} y={PAD.top} width={band.bandwidth()}
+                    height={Math.max(1, H - 26 - PAD.top)}
+                    className="cash-hit" />
+            </ChartTip>
             {/* Every fourth week carries a date. Thirteen dates at this width
                 overlap into a grey smear, and a label nobody can read is worse
                 than none because it still costs the space. */}
@@ -482,6 +515,13 @@ export function StockScreen({ session }: { session: PlatformSession }) {
     "stock",
     () => papi.stock(session.token), [session.token]);
   const [active, setActive] = useState<string[]>([]);
+  // `?item=` narrows the shelf to one product. The landscape sends items here
+  // because there is no product screen and Stock is the closest thing to one —
+  // arriving at a 3,000-row grid and being told to find it yourself is not a
+  // drill-down. Read from the URL so the view is linkable and the back button
+  // returns to the whole shelf.
+  const [params, setParams] = useSearchParams();
+  const focusItem = params.get("item");
 
   const items = rows(data?.items);
   const counts = (data?.counts as Record<string, number>) ?? {};
@@ -515,7 +555,19 @@ export function StockScreen({ session }: { session: PlatformSession }) {
       : items.filter((r) => chosen.every((f) => passes(r, f, deciles)));
   }, [items, filters, active, deciles]);
   // Company last, so the band chips keep counting the whole shelf.
-  const shown = company.apply(banded as Sourced[]) as Row[];
+  const byCompany = company.apply(banded as Sourced[]) as Row[];
+  // The `?item=` narrowing is applied after everything else and is *not* a
+  // filter chip: it came from a link somebody followed, so it is announced and
+  // dismissible rather than hidden among the controls. An unknown id shows
+  // nothing and says so, instead of silently falling back to the whole shelf —
+  // a stale link that quietly returns 3,000 rows reads as the link having
+  // worked.
+  const shown = focusItem
+    ? byCompany.filter((r) => String(r.product_id) === focusItem)
+    : byCompany;
+  const focusLabel = focusItem
+    ? String(items.find((r) => String(r.product_id) === focusItem)?.label ?? "")
+    : "";
 
   const toggle = (key: string) =>
     setActive((a) => a.includes(key) ? a.filter((k) => k !== key) : [...a, key]);
@@ -530,6 +582,20 @@ export function StockScreen({ session }: { session: PlatformSession }) {
       state={stateOf(loading, error, data?.empty_reason as string)}
       error={error} emptyReason={data?.empty_reason as string} onRetry={reload} wide
     >
+      {focusItem && (
+        <p className="quad-focus">
+          {shown.length > 0 ? (
+            <>Showing one item — <strong>{focusLabel || focusItem}</strong>.</>
+          ) : (
+            <>No item on this shelf matches <strong>{focusItem}</strong>. It may
+            have been removed from the books since that link was made.</>
+          )}{" "}
+          <InlineLink onClick={() => { params.delete("item"); setParams(params); }}>
+            Show the whole shelf
+          </InlineLink>
+        </p>
+      )}
+
       {/* The summary, each card a way into the rows behind it. A headline a
           person cannot drill into is one they have to take on trust. */}
       <ul className="kpi-row">
@@ -810,28 +876,82 @@ export function SupplyScreen({ session }: { session: PlatformSession }) {
         {open.length === 0 ? (
           <p className="tier3-none">Nothing outstanding.</p>
         ) : (
-          <ol className="cadence-rows">
-            {open.map((o, i) => (
-              <li key={i}
-                  className={num(o.age_days) >= staleAfter ? "cadence-row late" : "cadence-row"}>
-                <span className="cadence-hit as-row">
-                  <span className="cadence-name">
-                    {String(o.number || "—")}
-                    <span className="viz-muted"> · {String(o.vendor_label)}</span>
-                  </span>
-                  <span className="cadence-figures">
-                    <span>{num(o.pending_qty)} of {num(o.ordered_qty)} to come</span>
-                    <span className="viz-muted">
-                      ordered {String(o.ordered_on)} · {String(o.age_days)} days ago
-                    </span>
-                  </span>
-                  {num(o.age_days) >= staleAfter ? (
-                    <span className="cadence-flag">ageing</span>
-                  ) : null}
-                </span>
-              </li>
-            ))}
-          </ol>
+          <>
+            {/* A grid rather than the hand-rolled `<ol>` this used to be. The
+                list could not be sorted by value or age, filtered to one
+                supplier, or copied out — and "which of these should I chase"
+                is a question you answer by re-sorting. The standard says AG
+                Grid for tabular data; this was tabular data wearing a list. */}
+            <DataGrid<Row>
+              ariaLabel="Open purchase orders"
+              twoLineRows
+              pageSize={25}
+              rows={open}
+              columns={[
+                {
+                  field: "number", headerName: "Order", flex: 1.4, minWidth: 240,
+                  filter: "agTextColumnFilter",
+                  cellRenderer: (p: { data?: Row }) => (
+                    <EntityName
+                      name={String(p.data?.number || "—")}
+                      sub={String(p.data?.vendor_label ?? "")}
+                      origin={p.data?.origin as EntityOrigin | undefined}
+                      show={vendorSourcesDiffer}
+                    />
+                  ),
+                },
+                {
+                  // "Placed", not "Ordered": the quantity column two along is
+                  // also an "ordered", and two columns under one word is a
+                  // table you have to decode rather than read.
+                  field: "ordered_on", headerName: "Placed", width: 130, flex: 0,
+                  filter: "agDateColumnFilter",
+                  valueFormatter: (p) => (p.value ? formatDate(String(p.value)) : "—"),
+                },
+                numeric<Row>("age_days", "Age", (v) => `${v} d`, {
+                  width: 110, flex: 0, sort: "desc",
+                  headerTooltip: "Days since the order was placed. With no "
+                    + "promised date on most of this book's orders, age is the "
+                    + "only thing that ranks what to chase.",
+                  // The ageing flag as a cell state rather than a separate
+                  // column: it is derived from this number, so it belongs on it.
+                  cellClass: (p) =>
+                    `ag-num${num(p.value) >= staleAfter ? " po-ageing" : ""}`,
+                }),
+                // Ordered then outstanding, left to right, so the pair reads
+                // as the order shrinking rather than as two unrelated counts.
+                numeric<Row>("ordered_qty", "Ordered qty", (v) => v.toLocaleString("en-IN"),
+                             { width: 140, flex: 0 }),
+                numeric<Row>("pending_qty", "Still to come", (v) => v.toLocaleString("en-IN"),
+                             { width: 150, flex: 0 }),
+                // The whole order's value. Already on the payload and simply
+                // never rendered. Safe here because `/supply` is
+                // manager-or-owner at the door — purchase cost never reaches a
+                // salesperson because they cannot reach this endpoint at all.
+                numeric<Row>("total", "Order value", (v) => money(v), {
+                  width: 160, flex: 0,
+                  headerTooltip: "What the whole order is worth. The platform "
+                    + "stores purchase orders at header grain, with no line "
+                    + "rates, so the part already received and the part still "
+                    + "to come cannot be valued separately — see the note "
+                    + "below the table.",
+                }),
+              ]}
+            />
+            {/* Naming the gap rather than filling it, which is the rule this
+                screen is built on. Splitting the value by quantity would need
+                every line on the order to carry the same rate; on an order
+                reading "460 of 500 to come" across a dozen different tools it
+                would be a number nobody could reproduce from the book. */}
+            <p className="viz-muted viz-footnote">
+              {money(open.reduce((t, o) => t + num(o.total), 0))} of open orders
+              on this page. The value dispatched and the value still to come are
+              not shown because purchase orders are held at header grain — the
+              line rates that would split the total are not ingested, and
+              apportioning it by quantity would assume every line on an order
+              costs the same.
+            </p>
+          </>
         )}
       </div>
 

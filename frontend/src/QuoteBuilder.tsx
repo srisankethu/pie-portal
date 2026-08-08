@@ -1,0 +1,649 @@
+/** The Quote Builder — a screen of the platform, not a second application.
+ *
+ * It used to be the other half of a two-app shell: a `mode` flag swapped the
+ * whole interface for one with its own brand bar, its own sign-in form and its
+ * own session in `localStorage`. Opening it from Quotes therefore asked you to
+ * sign in again and then displayed somebody else's name and role, because the
+ * account you signed into there was one of two fixed demo accounts that
+ * accepted any password. The URL did not change either, so Back went to
+ * whatever preceded the platform rather than out of the builder.
+ *
+ * Now it is a route inside the shell, on the platform's own session: same nav,
+ * same user, same sign-out, and `/quotes` is a link somebody can send.
+ *
+ * The draft still survives navigation — it is written to `localStorage` on
+ * every change and read back on mount — which is what made a mode flag look
+ * necessary in the first place.
+ */
+import Alert from "@mui/material/Alert";
+import AlertTitle from "@mui/material/AlertTitle";
+import Avatar from "@mui/material/Avatar";
+import Box from "@mui/material/Box";
+import Button from "@mui/material/Button";
+import Chip from "@mui/material/Chip";
+import Paper from "@mui/material/Paper";
+import Stack from "@mui/material/Stack";
+import TextField from "@mui/material/TextField";
+import Typography from "@mui/material/Typography";
+import { useSnackbar } from "notistack";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
+
+import { api, clearDraftQuote, loadDraftQuote, saveDraftQuote } from "./api";
+import { CustomerPicker } from "./components/CustomerPicker";
+import type { Line, Quote } from "./types";
+import { IntakeModal } from "./components/IntakeModal";
+import { SupplyDrawer } from "./components/SupplyDrawer";
+import { LineGrid } from "./components/LineGrid";
+import { SummaryBar } from "./components/SummaryBar";
+import { EmptyState, LoadingState, SectionHeader } from "./platform/kit";
+import { abilityFor } from "./platform/ability";
+import type { PlatformSession } from "./platform/types";
+import { useQuoteIntelligence } from "./useQuoteIntelligence";
+
+const FILTERS: [string, string][] = [
+  ["ALL", "All"],
+  ["NEEDS", "Needs attention"],
+  ["PROC", "Potential procurement"],
+  ["BOOKS", "Missing Zoho item"],
+  ["MANUAL", "Manual review"],
+  ["UNRES", "Unresolved"],
+  ["SUBST", "Substituted"],
+  ["EXC", "Commercial exceptions"],
+];
+
+
+/** What this screen answers — the sentence the Quotes door used to carry on a
+ *  page of its own, in front of the thing it was describing. */
+const SUB =
+  "Paste an RFQ and the engine resolves each line into a quote-ready product. "
+  + "Quote context shows this customer's own price history and — for managers — the "
+  + "cost and margin, then leaves the price in your hands. It never pre-fills the field.";
+
+/** Said once per page load, not once per visit to this screen.
+ *
+ * Resuming is a fact worth announcing when the browser was closed and reopened.
+ * Announcing it again every time somebody comes back from Approvals — which is
+ * a mount, now that this is a route — is noise, and the status chip in the
+ * header says it anyway. */
+let resumeAnnounced = false;
+
+function passesFilter(l: Line, f: string, flagged: Set<string>): boolean {
+  switch (f) {
+    case "EXC":
+      return flagged.has(l.id);
+    case "NEEDS":
+      return l.flags.attention;
+    case "PROC":
+      return l.flags.procurement;
+    case "BOOKS":
+      return l.flags.missingBooks;
+    case "MANUAL":
+      return l.flags.manualReview;
+    case "UNRES":
+      return l.flags.unresolved;
+    case "SUBST":
+      return l.flags.substituted;
+    case "MFLOOR":
+      return !!l.economics?.below_floor;
+    default:
+      return true;
+  }
+}
+
+export default function QuoteBuilder({ session }: { session: PlatformSession }) {
+  const t = session.token;
+  // Mirrors the server, which omits cost and margin for a salesperson rather
+  // than sending them for the browser to hide. `ability.ts` is the one table
+  // that answers this, so the answer here cannot drift from the nav's.
+  const mgmt = abilityFor(session).can("read", "economics");
+  const navigate = useNavigate();
+
+  const [quote, setQuote] = useState<Quote | null>(null);
+  const [filter, setFilter] = useState("ALL");
+  const [search, setSearch] = useState("");
+  // Ids, not a `Record<id, boolean>`: the grid speaks ids, the discount call
+  // takes ids, and a map that kept `false` entries made "how many are selected"
+  // a filter over the keys rather than a length.
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [intakeOpen, setIntakeOpen] = useState(false);
+  const [drawerLineId, setDrawerLineId] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  // Open when there is no quote to work on, and on demand from the header.
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [draftStatus, setDraftStatus] = useState<string | null>(null);
+
+  // One assessment for the whole quote — see useQuoteIntelligence.
+  const ci = useQuoteIntelligence(quote, t);
+
+  // The same `SnackbarProvider` the rest of the platform uses, rather than the
+  // fixed-position div and 2.4s timer this used to hand-roll: two of them in
+  // quick succession replaced each other, and 2.4s is too short to read a
+  // sentence. `flash` keeps its name so every call site is unchanged.
+  const { enqueueSnackbar } = useSnackbar();
+  const flash = useCallback(
+    (msg: string, variant: "default" | "success" = "default") => {
+      enqueueSnackbar(msg, { variant, autoHideDuration: variant === "success" ? 8000 : 3000 });
+    },
+    [enqueueSnackbar],
+  );
+
+  // Resume the saved draft, or start a quote. Runs on mount rather than on
+  // sign-in: the session is already established by the time this screen exists.
+  useEffect(() => {
+    if (quote) return;
+    const draft = loadDraftQuote();
+    if (draft) {
+      setQuote(draft);
+      setDraftStatus("Resumed draft");
+      if (!resumeAnnounced) {
+        resumeAnnounced = true;
+        flash("Resumed your last draft");
+      }
+      return;
+    }
+    // Ask who the quote is for rather than opening one against a literal.
+    // This used to be `createQuote(t, "Pitti Engineering Ltd")`, so every quote
+    // in the product was for one customer and the header's "Customer" was a
+    // label with nothing behind it. A quote cannot be priced without knowing
+    // whose price history to read, so it is the first question, not a setting.
+    setPickerOpen(true);
+  }, [quote, t, flash]);
+
+  useEffect(() => {
+    if (!quote) return;
+    saveDraftQuote(quote);
+    setDraftStatus(
+      `Saved ${new Date().toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit" })}`,
+    );
+  }, [quote]);
+
+  const flaggedLines = useMemo(
+    () =>
+      new Set(
+        Object.values(ci.byLineId)
+          .filter((i) => i.exceptions.some((e) => e.severity !== "INFO"))
+          .map((i) => i.line_id),
+      ),
+    [ci.byLineId],
+  );
+
+  const visible = useMemo(() => {
+    if (!quote) return [];
+    const q = search.trim().toLowerCase();
+    return quote.lines.filter(
+      (l) =>
+        passesFilter(l, filter, flaggedLines) &&
+        (!q ||
+          [l.reqCode, l.reqDesc, l.supplyCode, l.raw].filter(Boolean).join(" ").toLowerCase().includes(q)),
+    );
+  }, [quote, filter, search, flaggedLines]);
+
+  const saveDraft = () => {
+    if (!quote) return;
+    saveDraftQuote(quote);
+    setDraftStatus(`Saved ${new Date().toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit" })}`);
+    flash("Draft saved locally");
+  };
+
+  /** Abandon the draft and open a fresh quote.
+   *
+   *  The way out of a finished quote, which used to be "sign out" — the only
+   *  control that cleared the draft, and it also ended the session. */
+  const startNewQuote = () => {
+    clearDraftQuote();
+    setSelectedIds([]);
+    setFilter("ALL");
+    setSearch("");
+    setDraftStatus(null);
+    setQuote(null);   // the effect above opens the next one
+    flash("Started a new quote");
+  };
+
+  const clearSelection = () => {
+    setSelectedIds([]);
+    flash("Selection cleared");
+  };
+
+  const selectVisible = () => {
+    const ids = visible.map((l) => l.id);
+    setSelectedIds((prev) => [...new Set([...prev, ...ids])]);
+    flash(`${ids.length} visible line(s) selected`);
+  };
+
+  /** A line deleted, or filtered out of the grid, must not keep counting
+   *  towards "3 selected" — or towards a discount applied to it. */
+  const visibleIds = useMemo(() => new Set(visible.map((l) => l.id)), [visible]);
+  const selection = useMemo(
+    () => selectedIds.filter((id) => visibleIds.has(id)), [selectedIds, visibleIds]);
+
+  // Keyboard: `/` to search and Escape to close, both of which belong to the
+  // page. Everything *inside* the grid — ↑↓, Enter to open a line, Space to
+  // select — is ag-grid's now. It used to be re-implemented here over a
+  // `focusId` of our own, which meant two listeners for one keystroke and a
+  // focus ring that could disagree with the row the grid thought was current.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      const tag = (document.activeElement?.tagName || "").toUpperCase();
+      const typing = tag === "INPUT" || tag === "TEXTAREA";
+      if (e.key === "Escape") {
+        if (intakeOpen) setIntakeOpen(false);
+        else if (drawerLineId) setDrawerLineId(null);
+        else if (typing) (document.activeElement as HTMLElement).blur();
+        return;
+      }
+      if (e.key === "/" && !typing) {
+        e.preventDefault();
+        document.getElementById("qb-search")?.focus();
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [intakeOpen, drawerLineId]);
+
+  // No "could not be started" screen any more. It existed for the auto-create
+  // that opened a quote against a literal customer on mount; starting a quote
+  // is now something a person does, and a failure to do it belongs next to the
+  // control they pressed. `guard` reports it through `flash`, like every other
+  // action on this screen.
+
+  /** Start a quote for a customer. Also how the header changes customer: each
+   *  line remembers the identity scope it was resolved under, so re-pointing an
+   *  existing quote would leave those resolutions filed against the previous
+   *  customer. A new quote is the honest answer, and the confirm says so.
+   *
+   *  The dialog closes when the quote *lands*, not on the press, so the rule
+   *  has no race in it: open exactly while there is no quote to work on. */
+  const startQuote = (c: { id: string; name: string }) =>
+    guard(async () => {
+      const q = await api.createQuote(t, c.name, c.id);
+      clearDraftQuote();
+      setQuote(q);
+      setSelectedIds([]);
+      setDraftStatus(null);
+      setPickerOpen(false);
+      flash(`Quote ${q.number} for ${c.name}`, "success");
+    });
+
+  if (!quote) {
+    return (
+      <Box>
+        <SectionHeader title="Quote Builder" sub={SUB} />
+        <LoadingState rows={3} label="Choose who this quote is for…" />
+        {/* No cancel: there is nothing behind this to return to, and a quote
+            with no customer cannot be priced — there is no price history to
+            read. */}
+        <CustomerPicker
+          open={pickerOpen}
+          token={t}
+          busy={busy}
+          title="Who is this quote for?"
+          note="Pricing reads this customer's own history, so the quote needs to
+                know whose. Start typing a name."
+          onPick={startQuote}
+        />
+      </Box>
+    );
+  }
+
+  const drawerLine = quote.lines.find((l) => l.id === drawerLineId) || null;
+
+  async function guard<T>(fn: () => Promise<T>): Promise<T | undefined> {
+    setBusy(true);
+    try {
+      return await fn();
+    } catch (e) {
+      flash((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const doIntake = (text: string) =>
+    guard(async () => {
+      const q = await api.intake(t, quote!.id, text);
+      setQuote(q);
+      setIntakeOpen(false);
+      flash(`${q.summary.total} line(s) in quote`);
+    });
+
+  const doSelect = (code: string, manual: boolean) =>
+    guard(async () => {
+      const q = await api.selectSupply(t, quote!.id, drawerLineId!, code, manual);
+      setQuote(q);
+      // A confirmed mapping is a durable fact the person just taught the
+      // system — it outranks the routine "supply set" acknowledgement, and is
+      // held longer because it is a sentence rather than a status.
+      if (q.note) flash(q.note, "success");
+      else flash(code === drawerLine?.reqCode
+        ? "Reverted to requested product" : `Supply set to ${code}`);
+    });
+
+  const doRevert = () =>
+    guard(async () => {
+      const q = await api.selectSupply(t, quote!.id, drawerLineId!, drawerLine!.reqCode, false);
+      setQuote(q);
+    });
+
+  const doSetPrice = (id: string, price: number | null) =>
+    guard(async () => setQuote(await api.setPrice(t, quote!.id, id, price)));
+
+  const doDeleteLine = (id: string) =>
+    guard(async () => {
+      const q = await api.deleteLine(t, quote!.id, id);
+      setQuote(q);
+      flash("Line removed from quote");
+    });
+
+  const doCreateItem = (id: string) =>
+    guard(async () => {
+      setQuote(await api.createItem(t, quote!.id, id));
+      flash("Item created in Zoho Books");
+    });
+
+  const doDiscount = (pct: number) =>
+    guard(async () => {
+      const q = await api.discount(t, quote!.id, selection, pct);
+      setQuote(q);
+      flash(`${q.applied} line(s) discounted ${pct}%`);
+    });
+
+  const doEstimate = () =>
+    guard(async () => {
+      // The server re-checks the approval gate; this only avoids a round trip
+      // that is certain to be refused, and says why in the same words.
+      if (ci.gate && !ci.gate.can_submit) {
+        flash(ci.gate.blocked_reason ?? "This quote needs approval before it can be sent.");
+        setFilter("EXC");
+        return;
+      }
+      const r = await api.createEstimate(t, quote!.id);
+      flash(r.message);
+      if (!r.ok && r.blockers.length) {
+        setFilter("NEEDS");
+      }
+    });
+
+  const selectedCount = selection.length;
+  const hasLines = quote.lines.length > 0;
+
+  return (
+    <Box>
+      <SectionHeader
+        title="Quote Builder"
+        sub={SUB}
+        actions={
+          <>
+            <Button variant="outlined" size="small" onClick={startNewQuote}>
+              New quote
+            </Button>
+            <Button variant="contained" size="small" onClick={() => setIntakeOpen(true)}>
+              Paste RFQ
+            </Button>
+          </>
+        }
+      />
+
+      {/* Which quote this is, and whether the draft is safe. A `Paper` strip
+          rather than the brand bar this used to occupy: the shell above already
+          says who is signed in and what the product is called, and repeating it
+          here was half of why the screen felt like a different application. */}
+      <Paper
+        variant="outlined"
+        sx={{
+          p: 1.5, mb: 2,
+          display: "flex", flexWrap: "wrap", alignItems: "center", gap: 2, rowGap: 1,
+        }}
+      >
+        <Box>
+          <Typography variant="overline" color="text.secondary" sx={{ display: "block", lineHeight: 1.3 }}>
+            Quote
+          </Typography>
+          <Typography sx={{ fontFamily: "var(--font-heading)", fontWeight: 600 }}>
+            {quote.number}
+          </Typography>
+        </Box>
+        <Box sx={{ minWidth: 0 }}>
+          <Typography variant="overline" color="text.secondary" sx={{ display: "block", lineHeight: 1.3 }}>
+            Customer
+          </Typography>
+          {/* A control, not a caption. There was no way to change the
+              customer at all before this. */}
+          <Button
+            type="button"
+            variant="text"
+            size="small"
+            onClick={() => setPickerOpen(true)}
+            sx={{ p: 0, minWidth: 0, textTransform: "none", lineHeight: 1.4,
+                  fontFamily: "var(--font-heading)", fontWeight: 600 }}
+          >
+            {quote.customer}
+          </Button>
+        </Box>
+        <Box sx={{ flex: 1 }} />
+        {draftStatus && (
+          <Chip size="small" variant="outlined" label={draftStatus} />
+        )}
+        <Button variant="text" size="small" onClick={saveDraft} disabled={!hasLines}>
+          Save draft
+        </Button>
+      </Paper>
+
+      {/* Chips, matching the decision queue's filter row. These select what the
+          grid shows; they are not actions, and rendering them as buttons said
+          otherwise on both screens. */}
+      <Paper
+        variant="outlined"
+        sx={{
+          p: 1.5, mb: 2,
+          display: "flex", flexWrap: "wrap", alignItems: "center", gap: 1, rowGap: 1,
+        }}
+      >
+        {FILTERS.map(([key, label]) => {
+          const count = quote.filterCounts[key] ?? 0;
+          // Unresolved lines and lines needing a decision are the two states
+          // that stop a quote being sent, so their count is coloured even when
+          // the chip is not the active one.
+          const alert = (key === "NEEDS" || key === "UNRES") && count > 0;
+          return (
+            <Chip
+              key={key}
+              label={label}
+              avatar={
+                <Avatar
+                  sx={{
+                    bgcolor: "transparent",
+                    fontSize: 11,
+                    fontWeight: 700,
+                    color: alert && filter !== key ? "var(--danger-fg)" : undefined,
+                  }}
+                >
+                  {count}
+                </Avatar>
+              }
+              color={filter === key ? "primary" : "default"}
+              variant={filter === key ? "filled" : "outlined"}
+              onClick={() => setFilter(key)}
+            />
+          );
+        })}
+        {mgmt && (quote.filterCounts.MFLOOR ?? 0) > 0 && (
+          <Chip
+            label="Below margin floor"
+            avatar={
+              <Avatar sx={{ bgcolor: "transparent", fontSize: 11, fontWeight: 700 }}>
+                {quote.filterCounts.MFLOOR}
+              </Avatar>
+            }
+            color={filter === "MFLOOR" ? "error" : "default"}
+            variant={filter === "MFLOOR" ? "filled" : "outlined"}
+            onClick={() => setFilter(filter === "MFLOOR" ? "ALL" : "MFLOOR")}
+          />
+        )}
+        <Box sx={{ flex: 1 }} />
+        <TextField
+          id="qb-search"
+          size="small"
+          placeholder="Search  ( / )"
+          aria-label="Search quote lines"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          sx={{ maxWidth: 220 }}
+        />
+        <Button variant="outlined" size="small" onClick={selectVisible} disabled={!visible.length}>
+          Select visible
+        </Button>
+        <Button variant="outlined" size="small" onClick={clearSelection} disabled={!selectedCount}>
+          Clear
+        </Button>
+      </Paper>
+
+      {/* An `Alert`, not a hand-coloured banner: the severity carries an icon
+          and a role as well as a hue, which is the standard everywhere else in
+          this product. */}
+      {mgmt && quote.marginFloor && (
+        <Alert
+          severity="warning"
+          sx={{ mb: 2 }}
+          action={
+            <Button
+              color="inherit"
+              size="small"
+              onClick={() => setFilter(filter === "MFLOOR" ? "ALL" : "MFLOOR")}
+            >
+              {filter === "MFLOOR" ? "Show all" : "Review these"}
+            </Button>
+          }
+        >
+          <AlertTitle>
+            {quote.marginFloor.count} line(s) priced below the{" "}
+            {Math.round(quote.marginFloor.floor * 100)}% margin floor
+          </AlertTitle>
+          Lowest margin {(quote.marginFloor.worst * 100).toFixed(1)}% — review before creating the
+          estimate.
+        </Alert>
+      )}
+
+      {/* No selection strip here. "3 selected · Apply 10% discount" was on this
+          screen twice — once above the grid and once in the summary bar, which
+          is sticky and therefore always on screen anyway — and "Clear selection"
+          was a third spelling of the toolbar's own Clear. A jscpd pass named it;
+          it is the kind of duplicate that reads as thoroughness until somebody
+          asks which of the two buttons is the real one. */}
+
+      {!hasLines ? (
+        <EmptyState
+          title="Paste an RFQ to start building the quote"
+          reason={
+            "Each line becomes a reviewed item with supplier options, availability and the right "
+            + "next action. Nothing is priced for you — the engine resolves the product, you set "
+            + "the number."
+          }
+          action={
+            <Stack direction="row" spacing={1} useFlexGap sx={{ justifyContent: "center", flexWrap: "wrap" }}>
+              <Button variant="contained" onClick={() => setIntakeOpen(true)}>
+                Paste RFQ
+              </Button>
+            </Stack>
+          }
+        />
+      ) : visible.length === 0 ? (
+        <EmptyState
+          title="Nothing matches the current filter or search"
+          reason="Clear the filter, change the search term, or add a fresh RFQ."
+          action={
+            <Button variant="outlined" onClick={() => { setFilter("ALL"); setSearch(""); }}>
+              Show all {quote.lines.length} lines
+            </Button>
+          }
+        />
+      ) : (
+        <>
+          {/* The grid scrolls inside its own box; the page never scrolls
+              sideways (ui-standards §3). */}
+          <LineGrid
+            lines={visible}
+            mgmt={mgmt}
+            intel={ci.byLineId}
+            selectedIds={selection}
+            onSelectionChange={setSelectedIds}
+            onOpen={setDrawerLineId}
+            onSetPrice={doSetPrice}
+            onDeleteLine={doDeleteLine}
+            onCreateItem={doCreateItem}
+          />
+          <div className="kbd-hints" style={{ marginTop: "var(--space-4)" }}>
+            <span>
+              <span className="kbd">↑↓</span> navigate
+            </span>
+            <span>
+              <span className="kbd">Enter</span> supply options
+            </span>
+            <span>
+              <span className="kbd">Space</span> select
+            </span>
+            <span>
+              <span className="kbd">F2</span> edit the rate
+            </span>
+            <span>
+              <span className="kbd">/</span> search
+            </span>
+            <span>
+              <span className="kbd">Esc</span> close
+            </span>
+          </div>
+        </>
+      )}
+
+      <SummaryBar
+        quote={quote}
+        selectedCount={selectedCount}
+        onDiscount={doDiscount}
+        onCreateEstimate={doEstimate}
+        gateBlockedReason={ci.gate && !ci.gate.can_submit ? ci.gate.blocked_reason : null}
+        busy={busy}
+      />
+
+      {intakeOpen && <IntakeModal onClose={() => setIntakeOpen(false)} onSubmit={doIntake} />}
+      {drawerLine && (
+        <SupplyDrawer
+          line={drawerLine}
+          customer={quote.customer}
+          token={t}
+          mgmt={mgmt}
+          intel={ci.byLineId[drawerLine.id] ?? null}
+          intelLoading={ci.loading}
+          intelError={ci.error}
+          onRecordOverride={ci.recordOverride}
+          onRequestApproval={ci.requestApproval}
+          approvalStatus={
+            ci.gate?.requests.find((r) => r.subject_line_id === drawerLine.id) ?? null
+          }
+          // A real navigation now: the drawer's "open the analysis" link lands
+          // on a platform URL in the same shell, rather than swapping the app.
+          onOpenPlatform={(path) => navigate(path)}
+          onClose={() => setDrawerLineId(null)}
+          onSelect={doSelect}
+          onRevert={doRevert}
+        />
+      )}
+
+      {/* Changing the customer starts a new quote rather than re-pointing this
+          one — each line remembers the identity scope it was resolved under,
+          and silently wrong is worse than plainly starting again. */}
+      <CustomerPicker
+        open={pickerOpen}
+        token={t}
+        busy={busy}
+        title="Change customer"
+        note={quote.lines.length
+          ? `This quote has ${quote.lines.length} line(s) resolved for `
+            + `${quote.customer}. Choosing another customer starts a new quote; `
+            + `the current one is not kept.`
+          : "Pricing reads this customer's own history."}
+        onPick={startQuote}
+        onCancel={() => setPickerOpen(false)}
+      />
+    </Box>
+  );
+}

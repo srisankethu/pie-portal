@@ -29,7 +29,7 @@ from ..domain.enums import (
     QuoteOutcomeStatus,
     Role,
 )
-from ..signals.base import CostRow, SaleRow
+from ..signals.base import UNRECORDED_SOURCE, CostRow, SaleRow
 from .benchmark import ItemBenchmark, compute_benchmark
 from .config import CommercialThresholds
 from .policy import load_for_org
@@ -441,7 +441,13 @@ def _evidence_refs(intel: QuoteLineIntelligence) -> list[dict]:
     if econ is None or not econ.cost_source_ref:
         return []
     ref = econ.cost_source_ref
-    return [{"source_system": "zoho", "record_type": "bill",
+    # The system comes off the record, not off an assumption about which ERP
+    # this deployment happens to run. Hardcoding "zoho" made every quote
+    # decision's evidence claim Zoho for a bill that a second connector might
+    # have written — and a citation that names the wrong system is worse than
+    # one that admits it does not know.
+    return [{"source_system": ref.get("system") or UNRECORDED_SOURCE,
+             "record_type": "bill",
              "record_id": ref.get("record_id"), "line_id": ref.get("line_id")}]
 
 

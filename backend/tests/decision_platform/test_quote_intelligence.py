@@ -11,7 +11,6 @@ from __future__ import annotations
 from datetime import date, timedelta
 from decimal import Decimal
 
-import pytest
 
 from app.commercial.config import CommercialThresholds
 from app.commercial.economics import line_economics
@@ -19,7 +18,6 @@ from app.commercial.metrics import compute_relationship
 from app.commercial.quantity import band_for, bands
 from app.commercial.quote_exceptions import (
     ABOVE_PEER_MEDIAN,
-    BELOW_BAND_PRICE,
     BELOW_LAST_PRICE,
     BELOW_MARGIN_FLOOR,
     BELOW_MIN_MARGIN,

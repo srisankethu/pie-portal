@@ -41,25 +41,94 @@ delete head branches** and it happens without anybody remembering.
 
 ## The gate
 
-`.github/workflows/gate.yml` runs everything CLAUDE.md §6 tells a person to run,
-on every pull request:
+### One command
 
-| Job | What it protects |
-|---|---|
-| **§1 invariants** | A deterministic layer importing `ai/`, or `ai/` importing `commercial/`. The rule that makes every number auditable. |
-| **backend** | `ruff check backend/app`, then the whole suite. |
-| **migrations on an empty database** | `alembic upgrade head` from nothing, the drift test, and exactly one head. |
-| **frontend** | `tsc -b` and the production build. |
+```bash
+make setup      # once, from a bare clone: pie-parser, pinned tooling, npm, database
+make verify     # the gate — ~4 min
+```
 
-The third job is the one worth understanding. A developer's own database is
-already migrated, so it can never exercise the empty case — and the empty case
-is the one production runs. §4 of CLAUDE.md is an account of what happens when
-nobody checks it: the schema and the models had drifted apart in 130 places,
-invisibly.
+`make verify` runs `scripts/verify.sh`, and **CI runs that same script**. That is
+the whole design, and it is a correction rather than a preference — see the next
+section for what it replaced.
 
-`main` should require these to pass: **Settings → Branches → Add rule**, require
-status checks `§1 invariants`, `backend — ruff + tests`,
-`migrations on an empty database`, `frontend — types + build`.
+| # | Check | Guards |
+|---|---|---|
+| 1 | `ruff check .` | The rule set in `ruff.toml`, at the version pinned in `backend/requirements-dev.txt`. Now covers tests and scripts, not just `backend/app` |
+| 2 | §1 layer invariants | A deterministic layer importing `ai/`, or `ai/` importing `commercial/`. The rule that makes every number auditable |
+| 3 | backend suite | 1174 tests, parallel, each worker on its own database |
+| 4 | frontend | `tsc -b` and the production build |
+| 5 | migrations from nothing | `alembic upgrade head` on an **empty** database, the drift test, and exactly one head |
+
+Check 5 is the one worth understanding. A developer's own database is already
+migrated, so it can never exercise the empty case — and the empty case is the one
+production runs. CLAUDE.md §4 is an account of what happens when nobody checks:
+the schema and the models had drifted apart in 130 places, invisibly.
+
+`verify.sh` runs every step and reports all failures at the end rather than
+stopping at the first, so one red build tells you everything that is wrong.
+
+For the edit loop, `make verify-fast` drops 4 and 5 and finishes in about two and
+a half minutes. It deliberately does **not** stamp, so it cannot be mistaken for
+a verified state, and it is not enough to merge on.
+
+### Why it is one script now
+
+This used to be four jobs in `gate.yml` that restated what CLAUDE.md §6 told a
+person to run. Two lists of the same checks drift, and the drift was invisible:
+
+- **CI installed `ruff` unpinned.** A newer release shipped a broader default
+  rule set, so the gate reported **1314 lint errors with no code change behind
+  them**. Because `ruff` and `pytest` were steps in one job, the backend suite
+  was **skipped on every run**.
+- **CI never fetched pie-parser**, which the backend imports in-process. All 25
+  migration-integrity tests died at collection with `PIE corpus not found` — so
+  the drift check above had never actually executed.
+
+Both survived **eight consecutive merges to `main`**. A check that is always red
+is a check nobody reads, and it takes the checks that mattered with it.
+
+The fix has three parts, and all three are needed:
+
+1. **One list.** `scripts/verify.sh`, called by `make verify`, by CI, and by the
+   Claude Code stop-hook.
+2. **Pinned tooling.** `backend/requirements-dev.txt` pins `ruff`, `pytest`,
+   `pytest-xdist` and `cffi` exactly; `ruff.toml` writes the rule set down. A
+   gate whose meaning changes on someone else's release schedule is not a gate.
+   Upgrading is now a deliberate commit that does nothing else.
+3. **Loud preconditions.** `verify.sh` stops immediately with a legible message
+   when pie-parser is missing, instead of producing twenty-five collection
+   errors that look like a data problem.
+
+`main` should require all three checks to pass: **Settings → Branches → Add
+rule**, requiring `§1 invariants`, `frontend — types + build`, and
+`verify — lint, tests, frontend, migrations`. Without that rule the gate is
+advisory, and an advisory gate is how a repository ends up eight merges deep in
+a red build.
+
+**CI needs one secret.** pie-parser is private and the automatic `GITHUB_TOKEN`
+is scoped to this repository only. Create a fine-grained PAT with `Contents:read`
+on `srisankethu/pie-parser` and add it as the repository secret
+`PIE_PARSER_TOKEN` (**Settings → Secrets and variables → Actions**). Without it
+the `verify` job stops at the checkout and says so in four lines that name the
+fix — which is what it did on this workflow's first run.
+
+### Why two jobs repeat what `verify` already does
+
+`§1 invariants` and `frontend — types + build` run commands `verify` runs again.
+That is deliberate, and it is the one place duplication earns its keep:
+
+- Both are fast and **independent of pie-parser**, so they keep giving signal
+  when a credential problem in *another repository* stops `verify` at its second
+  step. That is not hypothetical — it is exactly what happened first time out.
+- A failure names itself in the checks list without anyone opening a log.
+
+The rule that keeps this from becoming the drift it replaced: **`verify` stays
+complete.** It still lints and still builds the frontend, because a developer
+running `make verify` locally must get the whole gate from one command. Never
+"simplify" this by deleting a step from `verify.sh` because a CI job covers it —
+the jobs may repeat a check, but the checks themselves are never allowed to
+differ.
 
 ### What is deliberately not in the gate
 
@@ -68,6 +137,36 @@ tests, types and the §1 invariants block; the heuristics advise. A check that
 fires on things that turn out to be fine gets muted, and it takes the checks
 that mattered with it. They belong in the PR template, where a person answers
 them.
+
+---
+
+## Working with Claude Code
+
+`.claude/` is committed, because the process belongs to the repository rather
+than to whoever's session is open. It automates the two steps that were actually
+being missed:
+
+**`SessionStart`** installs the pinned toolchain and locates pie-parser. This
+matters more than it looks. A fresh container cannot run this suite at all —
+Debian's `cryptography` binds to Rust bindings that import `_cffi_backend`, and
+without `cffi` installed, `import app.main` dies with
+`pyo3_runtime.PanicException` and takes 22 test modules with it at collection.
+An agent that meets that does not stop to fix the toolchain; it reasons about the
+diff and writes "tests should pass", which reads exactly like a result.
+
+**`Stop`** refuses to end a turn that leaves source edited but unverified. It
+does not run the suite on a timer: `verify.sh` stamps a content signature when it
+passes, and the hook compares against that stamp, so a turn that changed nothing
+costs nothing. When the change touches `backend/app/domain` or `backend/alembic`
+it names the empty-database check specifically, because that is the one a local
+database cannot exercise. A second consecutive block is allowed through — if the
+gate is genuinely failing, the right outcome is to say so with the output, not to
+be held in a retry that cannot succeed.
+
+`/verify` runs the gate and asks for the real numbers back.
+
+Both hooks fail open. A missing helper or a broken install lets the turn end
+rather than wedging the session.
 
 ---
 

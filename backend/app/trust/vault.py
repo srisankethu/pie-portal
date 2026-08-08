@@ -24,6 +24,7 @@ from __future__ import annotations
 from typing import Iterable, Optional
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..domain import models
@@ -42,18 +43,42 @@ def _get(session: Session, organization_id: str, entity_type: str,
 
 def put(session: Session, organization_id: str, entity_type: str,
         entity_id: str, name: str) -> None:
-    """Store (or update) a display name. Idempotent."""
+    """Store (or update) a display name. Idempotent, and safe concurrently.
+
+    Read-then-insert is a race, and this is called from the pull — which now
+    runs several connected companies at once. Two pulls vaulting the same entity
+    together both saw no row, both inserted, and one died on
+    ``UNIQUE constraint failed: name_vault.organization_id, ...``, taking its
+    whole sync with it.
+
+    The insert goes through a SAVEPOINT so losing that race costs one statement
+    rather than the caller's entire transaction, and the loser then updates the
+    winner's row — which is what it would have done had it read a moment later.
+    """
     if not (name or "").strip():
         return
-    row = _get(session, organization_id, entity_type, entity_id)
     ciphertext = keys.encrypt_for(session, organization_id, name.strip())
-    if row is None:
-        session.add(models.NameVaultEntry(
-            organization_id=organization_id, entity_type=entity_type.upper(),
-            entity_id=entity_id, name_ciphertext=ciphertext))
-    else:
+    row = _get(session, organization_id, entity_type, entity_id)
+    if row is not None:
         row.name_ciphertext = ciphertext
-    session.flush()
+        session.flush()
+        return
+
+    fresh = models.NameVaultEntry(
+        organization_id=organization_id, entity_type=entity_type.upper(),
+        entity_id=entity_id, name_ciphertext=ciphertext)
+    try:
+        with session.begin_nested():
+            session.add(fresh)
+            session.flush()
+    except IntegrityError:
+        if fresh in session:
+            session.expunge(fresh)
+        winner = _get(session, organization_id, entity_type, entity_id)
+        if winner is None:
+            raise
+        winner.name_ciphertext = ciphertext
+        session.flush()
 
 
 def resolve(session: Session, organization_id: str, entity_type: str,

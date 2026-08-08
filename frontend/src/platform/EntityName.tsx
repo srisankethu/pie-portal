@@ -94,7 +94,15 @@ export function EntityName({
 }) {
   return (
     <span className="ent">
-      <span className={strong ? "ent-name" : undefined}>{name}</span>
+      {/* Always classed, and always carrying the full name as a tooltip.
+          `strong` used to decide whether the name got a class at all, which
+          left the unstyled variant with nothing for the stylesheet to hold on
+          to — so it could not be told to truncate, and a long one was cut
+          mid-word with no ellipsis and no way to read the rest. Weight is a
+          modifier; truncation belongs to every name. */}
+      <span className={`ent-name${strong ? "" : " ent-name-plain"}`} title={name}>
+        {name}
+      </span>
       {(sub || (show && origin)) && (
         <span className="ent-meta">
           {sub}

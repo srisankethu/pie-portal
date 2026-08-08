@@ -1,11 +1,9 @@
-export type Role = "sales" | "mgmt";
-
-export interface Session {
-  token: string;
-  role: Role;
-  name: string;
-  email: string;
-}
+/* There is no `Session` type here any more, and no `"sales" | "mgmt"` role
+ * beside it. Both belonged to the Quote Builder's own login, which was a second
+ * identity with a second role vocabulary — so "is this person management?" had
+ * two answers in one browser, and the one the quote screen used came from a
+ * demo account. The session is `platform/types.PlatformSession`, and the role
+ * question is answered by `platform/ability.ts`. */
 
 export interface Candidate {
   code: string;
@@ -92,6 +90,9 @@ export interface MarginFloor {
 export interface Quote {
   id: string;
   customer: string;
+  /** The platform's id for the customer, when one was picked rather than typed.
+   *  Null on a quote started before the picker existed, or from a draft. */
+  customerId: string | null;
   number: string;
   savedAt: string | null;
   lines: Line[];

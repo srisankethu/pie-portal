@@ -67,7 +67,7 @@ deployment needs no migration step.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `PIE_PARSER_ROOT` | `./pie-parser` | Path to the pinned pie-parser checkout. |
+| `PIE_PARSER_ROOT` | `./pie-parser` | Path to the pie-parser submodule (or your own checkout). |
 | `PIE_CATALOG` | `backend/data/products.jsonl` | Decoded catalogue path. |
 | `AUTO_BUILD_CATALOG` | `1` | Build the catalogue lazily if missing. Set `0` in constrained deploys and build out of band. |
 | `PIE_WARM` | `1` | Warm the engine at startup. `0` starts much faster. |
@@ -120,6 +120,11 @@ deployment needs no migration step.
 
 ### Deploy sequence
 
+Packaged, with Postgres and TLS already wired together:
+**[hosting.md](hosting.md)** — `make deploy-build`, `make deploy-release`,
+`make deploy-up`. Prefer it. What follows is the same sequence by hand, for a
+deployment that supplies its own process manager and reverse proxy.
+
 ```bash
 export APP_ENV=production
 export AUTH_SECRET="$(openssl rand -base64 32)"
@@ -148,9 +153,13 @@ cd frontend && npm ci && npm run build     # → frontend/dist/
 These are deployment decisions, not code defects, and the platform is **not
 ready for real customer data** until they are closed:
 
-1. **Replace the demo login.** `routers/platform_auth.py` accepts any password
-   for a known email. It is explicitly demo-grade auth and must be swapped for
-   the organization's identity provider.
+1. **Move sign-in onto the organization's identity provider.** This gate has
+   partly closed and the rest of it is unchanged. `routers/platform_auth.py` no
+   longer accepts any password for a known email — it verifies a PBKDF2 hash, a
+   user row without one cannot sign in at all, and every failure returns one
+   indistinguishable 401. What is still missing is SSO, MFA, per-person
+   provisioning, and a password reset that does not go through an operator
+   running `python -m app.seed --set-password`.
 2. **Give every salesperson a Zoho account with a matching email.** The sync now
    maps the salesperson on a customer's most recent invoice to a platform user,
    but only on an exact email match. Salesperson scope is
@@ -267,20 +276,23 @@ Two workflows, and they answer different questions.
 
 ### `gate.yml` — does this change hold up?
 
-Runs on every pull request and every push to `main`. Four jobs: the §1 layer
-invariants, `ruff` + the backend suite, the migrations-on-an-empty-database
-check, and the frontend's tests, types and build. Everything here is under this
-repository's control, so everything here blocks.
+Runs on every pull request and every push to `main`, and blocks: everything it
+checks is under this repository's control. It calls `./scripts/verify.sh`
+rather than restating the steps, so `make verify` on a laptop and the gate in CI
+are the same list — see the header of that script for why that matters.
 
-Two settings in it are load-bearing and easy to undo by accident:
+The frontend step inside `verify.sh` runs `npm test` before `tsc -b` and
+`vite build`. Until those tests existed the build *was* the entire frontend
+gate, which meant a screen could render the wrong number and pass as long as the
+types lined up. `LineGrid.test.tsx` is the one to keep: it renders the quote grid
+for a sales role from a fixture deliberately carrying cost and margin and asserts
+neither appears. The server omitting them is the real guarantee and is tested in
+the backend suite; this covers the other way it could break.
 
-| Setting | Why |
-|---|---|
-| `ruff==0.15.8` in the install step | Unpinned, a ruff release grew the pyupgrade family in its *default* rule set and found 1,314 errors in untouched code. Because `ruff` runs before `pytest` in the same job, the backend suite stopped running entirely — for days, behind a red X that read like a test failure. The rule set itself is now stated in `backend/ruff.toml`; this pin stops the binary moving under it. |
-| `PIE_PARSER_TOKEN` (optional secret) | pie-parser is a separate private repository, so CI cannot clone it by default. With this secret set, the product-resolution tests run for real; without it they skip **and say so**. What they no longer do is take the rest of the suite down — a session-wide fixture used to make a pie-parser checkout a precondition for all 1,182 tests, including the migration checks that do not use it. |
-
-A read-only fine-grained PAT (or deploy key) with `Contents: read` on
-`srisankethu/pie-parser` is enough for `PIE_PARSER_TOKEN`.
+The `pie-contract` job is the only one needing a credential, and it is separate
+so that an expired token fails it alone instead of taking the gate with it. See
+`backend/tests/conftest.py` for the `requires_pie` marker that lets the other
+~1,150 tests run with no engine checked out.
 
 ### `live.yml` — has the world moved?
 
@@ -299,9 +311,8 @@ It still cannot block anyone: there is no `pull_request` trigger, so it never
 appears as a check on a PR. A failure here means the world moved, not that a
 commit is broken.
 
-Note that a `schedule:` trigger only fires from the **default branch**. Until
-this is merged to `main`, the weekly run does not exist and the workflow can
-only be started by hand from the Actions tab.
+Note that a `schedule:` trigger only fires from the **default branch**, so the
+weekly run begins only once this is on `main`.
 
 | Secret | Enables |
 |---|---|

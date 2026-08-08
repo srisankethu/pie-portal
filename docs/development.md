@@ -40,9 +40,9 @@ pie-portal/
 │       └── test_*.py          Quote Builder tests
 │
 ├── frontend/src/
-│   ├── platform/              Decision Platform UI
+│   ├── platform/              app shell, routing, and the platform screens
+│   ├── QuoteBuilder.tsx       the Quotes screen, inside that shell
 │   ├── components/            Quote Builder UI + DecisionSupport panel
-│   ├── Root.tsx               chooses platform vs quotes surface
 │   └── styles.css             the whole design system
 │
 ├── scripts/                   setup_pie_parser.sh · build_catalog.py

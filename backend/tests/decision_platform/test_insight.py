@@ -731,7 +731,7 @@ def test_orders_in_the_timeline_count_invoices_not_lines():
     assert next(p for p in result["series"] if p["label"] == "Jun 2026")["orders"] == 1
 
 
-# ── Tier 3: the shelf, the suppliers and the cash ───────────────────────────
+# ── The book itself: the shelf, the suppliers and the cash ───────────────────────────
 def _settled(customer: str, invoiced: date, paid: date, amount=1000.0,
              due: date | None = None):
     from app.commercial.insight.payments import Settlement

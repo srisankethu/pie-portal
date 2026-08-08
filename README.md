@@ -24,6 +24,7 @@ nothing, macOS/Linux and Windows, in about 15 minutes.
 | [Getting started](docs/getting-started.md) | Prerequisites, install, first run, troubleshooting |
 | [Architecture](docs/architecture.md) | How the system works and why it is built this way |
 | [Development](docs/development.md) | Codebase map, tests, migrations, conventions |
+| [Hosting](docs/hosting.md) | Running it on your own machine: Docker Compose, TLS, backups |
 | [Operations](docs/operations.md) | Configuration reference, production deploy, runbook |
 | [Zoho setup](docs/zoho-setup.md) | Connecting a live Zoho Books account (read-only) |
 
@@ -34,10 +35,10 @@ nothing, macOS/Linux and Windows, in about 15 minutes.
 Requires Python 3.11+ and Node 20+.
 
 ```bash
-git clone https://github.com/srisankethu/pie-portal
+git clone --recurse-submodules https://github.com/srisankethu/pie-portal
 cd pie-portal
 
-./scripts/setup_pie_parser.sh                        # PIE engine (private repo)
+./scripts/setup_pie_parser.sh                        # PIE engine (private submodule)
 python -m pip install -r backend/requirements.txt
 python scripts/build_catalog.py
 (cd frontend && npm install)
@@ -51,7 +52,9 @@ cd frontend && npm run dev
 Open **http://localhost:5173**. The backend creates and seeds its own database
 on first start — there is no separate migrate/seed step.
 
-Sign in with any password:
+Sign in with the seed password — `change-me-now` unless `SEED_PASSWORD` was set.
+Each account is flagged to change it at first sign-in; a wrong password is
+rejected, so there is no "any password" shortcut:
 
 | Email | Role | Sees |
 |---|---|---|
@@ -66,7 +69,10 @@ On Windows, or if anything goes wrong, see
 
 ## The two surfaces
 
-One backend, one frontend build, two surfaces:
+One backend, one frontend build, one sign-in — and two surfaces reached through
+the same navigation. The Quote Builder used to be a second application in the
+bundle with a login of its own; it is a screen at `#/quotes` now, on the account
+you signed in with.
 
 **Commercial Decision Platform** (primary) — detects five commercial situations,
 grounds an AI interpretation on deterministic facts, and routes role-scoped

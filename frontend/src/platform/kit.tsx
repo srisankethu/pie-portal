@@ -253,13 +253,16 @@ const TONE_COLOR: Record<Tone, "default" | "success" | "warning" | "error" | "in
  *  described in two visual languages. `tip` is where the *meaning* goes — a
  *  badge reading "PARTIAL" that cannot say what was partial is decoration. */
 export function StatusChip({
-  label, tone = "neutral", tip, size = "small", icon,
+  label, tone = "neutral", tip, size = "small", icon, dense = false,
 }: {
   label: ReactNode;
   tone?: Tone;
   tip?: string;
   size?: "small" | "medium";
   icon?: React.ReactElement;
+  /** Tighter, for several chips inside one grid cell. A row of default chips
+   *  under a product code costs more vertical space than the code itself. */
+  dense?: boolean;
 }) {
   const chip = (
     <Chip
@@ -268,7 +271,12 @@ export function StatusChip({
       size={size}
       icon={icon}
       variant={tone === "neutral" ? "outlined" : "filled"}
-      sx={{ fontWeight: 600, letterSpacing: "0.02em" }}
+      sx={{
+        fontWeight: 600, letterSpacing: "0.02em",
+        ...(dense
+          ? { height: 18, fontSize: 10.5, "& .MuiChip-label": { px: 0.75 } }
+          : null),
+      }}
     />
   );
   return tip ? <Tooltip title={tip}>{chip}</Tooltip> : chip;
@@ -415,5 +423,44 @@ export function FilterPanel({
     >
       {children}
     </Paper>
+  );
+}
+
+/** A hover-and-focus tooltip for a mark inside a chart.
+ *
+ * Charts here were relying on the SVG `<title>` element and the HTML `title`
+ * attribute. Both are technically tooltips and neither is usable one: the
+ * browser decides the delay (around a second), the styling, and the placement,
+ * they do not appear on focus so a keyboard never sees them, and on a phone
+ * they do not exist at all. A reader hovering a band and getting nothing
+ * concludes the chart has no detail rather than that they waited too briefly.
+ *
+ * MUI's Tooltip is already the house primitive — `StatusChip` uses it — so
+ * this is that, with the delays a *chart* wants rather than the ones a form
+ * control wants: fast in, because the whole point is sweeping across marks to
+ * compare them, and immediate on touch.
+ *
+ * `Tip` remains the right thing for explaining a *term*; it is a button with a
+ * visible "?" affordance, which is correct for prose and wrong for a mark you
+ * are already pointing at. This is for the value under the cursor.
+ */
+export function ChartTip({
+  title, children,
+}: { title: React.ReactNode; children: React.ReactElement }) {
+  return (
+    <Tooltip
+      title={title}
+      arrow
+      placement="top"
+      enterDelay={60}
+      enterNextDelay={30}
+      enterTouchDelay={0}
+      leaveTouchDelay={4000}
+      // Charts live inside `overflow-x: auto` boxes; a portalled popper is not
+      // clipped by them, which an absolutely positioned bubble would be.
+      slotProps={{ popper: { modifiers: [{ name: "offset", options: { offset: [0, 6] } }] } }}
+    >
+      {children}
+    </Tooltip>
   );
 }

@@ -7,7 +7,7 @@
 # errors against an unchanged tree, and because lint ran before pytest in one
 # job the 1174-test suite was skipped every run. One list, run from both places.
 #
-# Four jobs, and the split is on a real axis rather than a cosmetic one:
+# Five jobs, and the split is on a real axis rather than a cosmetic one:
 #
 #   invariants / frontend  fast, and independent of the pie-parser engine, so
 #                          they keep giving signal whatever happens to it. They
@@ -16,11 +16,16 @@
 #   verify                 the whole gate, including `alembic upgrade head` on an
 #                          EMPTY database — the check §4 was written about, and
 #                          the one nobody runs on an already-migrated laptop.
-#   pie-contract           the only job that needs a credential. A missing one
-#                          now fails this job and nothing else — the split is
-#                          what keeps an expired token from taking the whole
-#                          gate down with it, while still refusing to call the
-#                          seam tested when it was not.
+#   pie-credential         six seconds and one question: is PIE_PARSER_TOKEN
+#                          set? It exists as a job because the `secrets` context
+#                          cannot be read from a job-level `if`, and `needs`
+#                          can.
+#   pie-contract           the only job that needs a credential. Without one it
+#                          is SKIPPED — not failed, and never reported as
+#                          passed. The split is what keeps a missing or expired
+#                          token from taking the whole gate down with it, while
+#                          still refusing to call the seam tested when it was
+#                          not.
 name: gate
 
 on:
@@ -86,16 +91,6 @@ jobs:
         working-directory: frontend
         run: npm run build
 
-  # The check that would have caught the pin skew. pie-parser is vendored as a
-  # submodule, so the commit this repo resolves against is a line in the index —
-  # but a pin that nothing executes is a pin nobody has tested. Moving it used
-  # to be verified by hand, and the last move was made *because* the previous
-  # commit made every scoped line resolve to nothing at all, which is exactly
-  # the kind of failure a green build should not survive.
-  #
-  # Deliberately its own job rather than steps inside `backend`: the seam is
-  # what this proves, and a failure here should name the engine rather than
-  # hide behind an unrelated lint or unit failure.
   verify:
     name: verify — lint, tests, frontend, migrations
     runs-on: ubuntu-latest
@@ -151,45 +146,97 @@ jobs:
       - name: verify
         run: ./scripts/verify.sh
 
+  # pie-parser is a private repository and the automatic GITHUB_TOKEN is scoped
+  # to *this* one, so fetching the submodule needs a credential of its own.
+  # Whether that credential exists decides whether the contract job can run at
+  # all — and the `secrets` context is not readable from a job-level `if`, so
+  # the question gets asked here and answered through `needs`.
+  #
+  # This job never fails. Its whole purpose is to turn a missing secret into a
+  # value the next job can branch on.
+  pie-credential:
+    name: pie-parser credential
+    runs-on: ubuntu-latest
+    outputs:
+      present: ${{ steps.probe.outputs.present }}
+    steps:
+      - name: Is PIE_PARSER_TOKEN set?
+        id: probe
+        env:
+          PIE_PARSER_TOKEN: ${{ secrets.PIE_PARSER_TOKEN }}
+        run: |
+          if [ -n "${PIE_PARSER_TOKEN}" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+            echo "pie-parser credential present — the contract job will run."
+            exit 0
+          fi
+          echo "present=false" >> "$GITHUB_OUTPUT"
+          # A warning, not an error, and the same words in the run summary. The
+          # annotation is what a reader sees without opening a job; the summary
+          # is what survives on the run page after the annotation scrolls away.
+          echo "::warning title=pie-parser contract SKIPPED::\
+          PIE_PARSER_TOKEN is unset or empty, so the pinned engine was not \
+          fetched and the seam is UNTESTED this run. Either no secret has been \
+          added yet, or a fine-grained token expired. Issue one with \
+          Contents:Read on srisankethu/pie-parser only, and set it under \
+          Settings -> Secrets and variables -> Actions."
+          {
+            echo "### pie-parser contract: SKIPPED"
+            echo
+            echo "\`PIE_PARSER_TOKEN\` is unset or empty, so the pinned engine"
+            echo "was not fetched and **the engine seam is untested this run**."
+            echo "Every other check still ran and still means what it says."
+            echo
+            echo "To cover it: issue a fine-grained PAT with \`Contents:Read\`"
+            echo "on \`srisankethu/pie-parser\` only, and add it as the"
+            echo "repository secret \`PIE_PARSER_TOKEN\` under"
+            echo "**Settings → Secrets and variables → Actions**."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # The check that would have caught the pin skew. pie-parser is vendored as a
+  # submodule, so the commit this repo resolves against is a line in the index —
+  # but a pin that nothing executes is a pin nobody has tested. Moving it used
+  # to be verified by hand, and the last move was made *because* the previous
+  # commit made every scoped line resolve to nothing at all, which is exactly
+  # the kind of failure a green build should not survive.
+  #
+  # Deliberately its own job rather than steps inside `verify`: the seam is
+  # what this proves, and a failure here should name the engine rather than
+  # hide behind an unrelated lint or unit failure.
   pie-contract:
     name: pie-parser contract — the pinned engine still resolves
+    needs: pie-credential
+    # Skipped, never silently passed. This job once failed outright on a missing
+    # credential, on the reasoning that a fine-grained PAT expires and a step
+    # that merely warns would go back to reporting success in six seconds having
+    # fetched and run nothing. The failure mode is real; making the job red was
+    # the wrong answer to it. No secret had in fact been added, so every run of
+    # the gate went red — on main and on PRs that were entirely fine — for a
+    # cause no contributor without repository admin could fix. That is the
+    # always-red check this repository already has an incident about, and an
+    # always-red check takes the checks that mattered down with it.
+    #
+    # `skipped` is the honest third state, and it is not `success`: the check
+    # appears greyed out in the list rather than ticked, pie-credential leaves a
+    # warning annotation and a run-summary block naming exactly what went
+    # uncovered, and the day the secret is added — or reissued after it expires
+    # — this job runs again with no change to this file.
+    #
+    # The trade-off, stated rather than hidden: an expired token now produces a
+    # warning where it used to produce a failure. If this repository ever needs
+    # the engine seam to be a blocking condition of merge, the way to get that
+    # is a branch-protection rule requiring this check, not a job that goes red
+    # for everyone the moment a credential lapses.
+    if: needs.pie-credential.outputs.present == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      # pie-parser is a private repository and the default GITHUB_TOKEN is
-      # scoped to *this* one, so fetching the submodule needs a credential of
-      # its own. This step used to warn and let the job pass without it, and
-      # that was right while no such secret existed: a red check nobody has the
-      # means to fix is a check people learn to scroll past.
-      #
-      # The secret exists now, so the correct behaviour inverts — and the reason
-      # is a date. A fine-grained PAT expires, a year at most. On the morning it
-      # does, a step that only warns would go back to reporting success in six
-      # seconds having fetched nothing and run nothing, and every PR after that
-      # would carry a green tick for a seam that stopped being tested. That is
-      # precisely the failure this job exists to prevent, reintroduced on a
-      # timer and harder to notice the second time.
-      #
-      # So absence is a failure, and the message leads with expiry, because
-      # after today that is what will actually have happened.
-      - name: The engine must be reachable
-        id: reachable
-        env:
-          PIE_PARSER_TOKEN: ${{ secrets.PIE_PARSER_TOKEN }}
-        run: |
-          # The pin, read out of this repo's index — exact, and available
-          # before the submodule is fetched.
-          echo "pin=$(git rev-parse HEAD:pie-parser)" >> "$GITHUB_OUTPUT"
-          if [ -z "${PIE_PARSER_TOKEN}" ]; then
-            echo "::error title=pie-parser contract cannot run::\
-          PIE_PARSER_TOKEN is unset or empty, so the pinned engine was not \
-          fetched and the seam is untested. The usual cause is an expired \
-          fine-grained token. Reissue one with Contents:Read on \
-          srisankethu/pie-parser only, and update the secret under \
-          Settings -> Secrets and variables -> Actions."
-            exit 1
-          fi
+      - name: Read the pinned commit
+        id: pin
+        # Read out of this repo's index — exact, and available before the
+        # submodule is fetched. The cache key below is keyed on it.
+        run: echo "pin=$(git rev-parse HEAD:pie-parser)" >> "$GITHUB_OUTPUT"
 
       - name: Fetch pie-parser at the pinned commit
         env:
@@ -214,7 +261,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: backend/data/products.jsonl
-          key: pie-catalog-${{ steps.reachable.outputs.pin }}
+          key: pie-catalog-${{ steps.pin.outputs.pin }}
 
       # Selected by marker, not by a list of files: `requires_pie` is already
       # how conftest decides what to skip without an engine, so the set this

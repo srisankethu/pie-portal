@@ -106,12 +106,31 @@ rule**, requiring `§1 invariants`, `frontend — types + build`, and
 advisory, and an advisory gate is how a repository ends up eight merges deep in
 a red build.
 
-**CI needs one secret.** pie-parser is private and the automatic `GITHUB_TOKEN`
-is scoped to this repository only. Create a fine-grained PAT with `Contents:read`
-on `srisankethu/pie-parser` and add it as the repository secret
-`PIE_PARSER_TOKEN` (**Settings → Secrets and variables → Actions**). Without it
-the `verify` job stops at the checkout and says so in four lines that name the
-fix — which is what it did on this workflow's first run.
+**One check needs a secret, and only that one.** pie-parser is private and the
+automatic `GITHUB_TOKEN` is scoped to this repository only, so fetching the
+submodule needs a credential of its own: a fine-grained PAT with
+`Contents:read` on `srisankethu/pie-parser`, added as the repository secret
+`PIE_PARSER_TOKEN` (**Settings → Secrets and variables → Actions**).
+
+Without it, `pie-parser contract` is **skipped** — not failed, and never
+reported as passed. The `pie-parser credential` job leaves a warning annotation
+and a run-summary block saying the engine seam went untested; every other check
+still ran and still means what it says. Adding the secret makes the job start
+running again on the next push, with no change to the workflow.
+
+That is deliberately not a failure, and the history is the argument. The job
+briefly *did* fail on a missing credential, reasoning that a PAT expires and a
+step that merely warns would go back to reporting success in six seconds having
+run nothing. The expiry risk is real; a red job was the wrong answer to it. No
+secret had actually been added, so every run of the gate went red — on `main`
+and on PRs that were entirely fine — for a cause no contributor without
+repository admin could fix. This document's own incident is about exactly that:
+a check that is always red is a check nobody reads, and it takes the checks that
+mattered with it. `skipped` is the third state, and it is the honest one.
+
+If the engine seam ever needs to *block* a merge, the way to get that is a
+branch-protection rule requiring the `pie-parser contract` check — not a job
+that goes red for everyone the moment a credential lapses.
 
 ### Why two jobs repeat what `verify` already does
 

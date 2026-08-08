@@ -45,6 +45,7 @@ import { CustomerCommercial, CustomerItemScreen } from "./CommercialScreens";
 import { Storyboard } from "./viz/Storyboard";
 import { JourneyScreen, LostRevenueScreen, OpportunityScreen, SimulatorScreen, WeatherScreen } from "./viz/Screens";
 import { CadenceScreen, CompositionScreen, LandscapeScreen } from "./viz/Patterns";
+import { DailyScreen } from "./viz/Daily";
 import { BondsScreen } from "./viz/Bonds";
 import { MixScreen } from "./viz/Mix";
 import { DependencyScreen } from "./viz/Dependency";
@@ -753,6 +754,10 @@ function HomeScreen({
 }) {
   // Already sorted by the server on priority then recency; take the head.
   const top = open.slice(0, HOME_CARDS);
+  // The morning read sits above the queue rather than replacing it. The queue
+  // answers "what needs deciding"; the bands answer "what is going on" — and
+  // the queue is one tile inside them, so the tile links down to the list
+  // rather than the two competing for the same space.
   const bands = BAND_ORDER
     .map((b) => [b, open.filter((s) => s.priority_band === b).length] as const)
     .filter(([, n]) => n > 0);
@@ -763,6 +768,13 @@ function HomeScreen({
         <h1>{title}</h1>
         <p>{sub}</p>
       </div>
+
+      {/* The morning read. Above the queue because the first question is "can I
+          trust this and what is going on", and the queue is one tile inside the
+          answer. It loads independently and degrades in place — a landing page
+          that blanks because one endpoint failed is worse than one that says
+          which part is missing. */}
+      <DailyScreen session={session} onNavigate={onNavigate} />
 
       {loading && open.length === 0 ? (
         <Stack spacing={1.5} sx={{ mb: 4 }}>

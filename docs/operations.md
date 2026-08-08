@@ -267,3 +267,62 @@ Three mechanisms are already in place, in order of impact:
 
 If cost is still too high, lower the run cadence before reaching for a smaller
 model — most spend is call volume, not tokens per call.
+
+---
+
+## Continuous integration
+
+Two workflows, and they answer different questions.
+
+### `gate.yml` — does this change hold up?
+
+Runs on every pull request and every push to `main`, and blocks: everything it
+checks is under this repository's control. It calls `./scripts/verify.sh`
+rather than restating the steps, so `make verify` on a laptop and the gate in CI
+are the same list — see the header of that script for why that matters.
+
+The frontend step inside `verify.sh` runs `npm test` before `tsc -b` and
+`vite build`. Until those tests existed the build *was* the entire frontend
+gate, which meant a screen could render the wrong number and pass as long as the
+types lined up. `LineGrid.test.tsx` is the one to keep: it renders the quote grid
+for a sales role from a fixture deliberately carrying cost and margin and asserts
+neither appears. The server omitting them is the real guarantee and is tested in
+the backend suite; this covers the other way it could break.
+
+The `pie-contract` job is the only one needing a credential, and it is separate
+so that an expired token fails it alone instead of taking the gate with it. See
+`backend/tests/conftest.py` for the `requires_pie` marker that lets the other
+~1,150 tests run with no engine checked out.
+
+### `live.yml` — has the world moved?
+
+Runs weekly (Mondays, 04:00 UTC / 09:30 IST) and on demand via
+**Actions → live contracts → Run workflow**, where the `suite` input selects
+`ai`, `zoho` or both.
+
+It exercises `backend/tests/live/`, which the default suite deliberately
+excludes (`pytest.ini` carries `addopts = -m "not live"`) because these tests
+call a real model and a real Zoho book. That exclusion was right and the suites
+still ended up never running anywhere, which is why this workflow exists.
+
+It fails loudly when a contract breaks — a red scheduled workflow emails the
+repository owner, and that notification is the only channel a weekly check has.
+It still cannot block anyone: there is no `pull_request` trigger, so it never
+appears as a check on a PR. A failure here means the world moved, not that a
+commit is broken.
+
+Note that a `schedule:` trigger only fires from the **default branch**, so the
+weekly run begins only once this is on `main`.
+
+| Secret | Enables |
+|---|---|
+| `ANTHROPIC_API_KEY` | The AI provider contract suite — that the grounding gate still refuses ungrounded figures and injected instructions when pointed at a real model rather than the offline mock. |
+| `ZOHO_ORGANIZATION_ID`, `ZOHO_CLIENT_ID`, `ZOHO_CLIENT_SECRET`, `ZOHO_REFRESH_TOKEN` | The Zoho contract suite — that the live API still returns the fields the client maps. Read-only scope is sufficient; the suite asserts that no non-GET ever reaches the API host. |
+
+Set `ZOHO_ACCOUNTS_BASE` and `ZOHO_API_BASE` as repository **variables** (not
+secrets) if the account is outside the `.in` data centre.
+
+Each suite skips itself, with its reason printed by `-ra`, when its credentials
+are absent — so configuring one and not the other still runs the one.
+
+Locally: `make test-live`.

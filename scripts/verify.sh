@@ -95,12 +95,31 @@ if [ "$FAST" = "1" ]; then
   printf '      Do not merge on --fast.\n'
 else
   # ── 4. Frontend ────────────────────────────────────────────────────────────
-  step "4/5  frontend — types + production build"
+  step "4/5  frontend — tests, types, production build"
   if [ ! -d frontend/node_modules ]; then
     printf '      installing frontend dependencies (npm ci)…\n'
     (cd frontend && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci >/dev/null 2>&1) \
       || fail "npm ci"
   fi
+
+  # Tests before the build: a failing assertion names what broke, where a
+  # failing bundle only says the bundle failed. Until these landed, `tsc -b` and
+  # `vite build` were the *entire* frontend gate — a screen could render the
+  # wrong number and pass, so long as the types lined up.
+  #
+  # The one to watch is LineGrid.test.tsx. It renders the quote grid for a sales
+  # role from a fixture deliberately carrying cost and margin, and asserts
+  # neither appears. The server omitting them is the real guarantee and is
+  # tested in the backend suite; this catches the other way it could break — a
+  # component rendering whatever it is handed.
+  if (cd frontend && npm test >/dev/null 2>&1); then
+    pass "vitest"
+  else
+    printf '      re-running to show the failure:\n'
+    (cd frontend && npm test 2>&1 | tail -30)
+    fail "frontend tests"
+  fi
+
   if (cd frontend && npm run build >/dev/null 2>&1); then
     pass "tsc -b + vite build"
   else

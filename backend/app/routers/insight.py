@@ -33,8 +33,8 @@ from ..commercial import categories as cat
 from ..commercial.insight import (bonds, cadence, cashflow, cohorts, composition,
                                   daily as daily_view,
                                   dependency, flow, landscape, mix, payments,
-                                  periods, radar, simulate, stock, story, supply,
-                                  terms as vendor_terms, weather)
+                                  periods, radar, schemes, simulate, stock, story,
+                                  supply, terms as vendor_terms, weather)
 from ..db import get_session
 from ..domain import models
 from ..domain.enums import ApprovalStatus, DecisionStatus, Role
@@ -1437,7 +1437,7 @@ def _targets(session: Session, org: str) -> list[dependency.Target]:
         dependency.Target(
             vendor_id=row.vendor_id, period_start=row.period_start,
             period_end=row.period_end, basis=row.basis,
-            amount=float(row.amount or 0))
+            amount=float(row.amount or 0), target_id=row.target_id)
         for row in session.scalars(
             select(models.VendorTarget).where(
                 models.VendorTarget.organization_id == org)).all()
@@ -1679,8 +1679,17 @@ def list_vendor_terms(principal: Principal = Depends(require_manager_or_owner),
         sources_differ=companies.count > 1)
 
 
+class SlabIn(BaseModel):
+    """One rung of the scheme attached to a target: buy this much, earn this rate."""
+
+    threshold: Decimal = Field(ge=0)
+    #: A ratio — ``0.025`` is two and a half percent. Bounded here only against
+    #: nonsense; ``schemes.validate`` owns what a *set* of them may mean.
+    rate: Decimal = Field(gt=0, le=1)
+
+
 class TargetIn(BaseModel):
-    """One principal's number for one period."""
+    """One principal's number for one period, and what hitting it pays."""
 
     vendor_id: str = Field(min_length=1)
     period_start: date
@@ -1688,17 +1697,30 @@ class TargetIn(BaseModel):
     amount: Decimal = Field(ge=0)
     basis: str = Field(default=dependency.ON_PURCHASE)
     note: Optional[str] = Field(default=None, max_length=512)
+    #: The whole scheme, every time. A PUT states the target's full state, so an
+    #: empty list clears the scheme rather than leaving whatever was there —
+    #: a partial write here would make "the rebate" a question about which
+    #: request last touched which rung.
+    slabs: list[SlabIn] = Field(default_factory=list, max_length=schemes.MAX_SLABS)
 
 
 @router.put("/targets", status_code=status.HTTP_200_OK)
 def set_vendor_target(body: TargetIn,
                       principal: Principal = Depends(require_manager_or_owner),
                       session: Session = Depends(get_session)) -> dict:
-    """Record what a principal expects, for one period.
+    """Record what a principal expects, for one period, and what hitting it pays.
 
     An upsert on (vendor, period, basis) rather than an insert: a target gets
     revised, and a second row for the same quarter would make "the target" a
     question about which row won.
+
+    The scheme travels with the target rather than having a write path of its
+    own. A rebate with no number to hit is not a scheme, and two endpoints would
+    let one be saved without the other — which is how a screen ends up showing a
+    rate against a period nobody set. The slab set is **replaced** on every
+    write, for the same reason the target row is: what arrives is the whole
+    state, so a rung that was removed is gone rather than surviving because
+    nothing mentioned it.
     """
     org = principal.organization_id
     if body.basis not in (dependency.ON_PURCHASE, dependency.ON_SALES):
@@ -1710,6 +1732,15 @@ def set_vendor_target(body: TargetIn,
     vendor = session.get(models.Vendor, body.vendor_id)
     if vendor is None or vendor.organization_id != org:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "No such supplier")
+    # Validated before anything is written, so a scheme that cannot mean a
+    # rebate does not leave a target behind it with the old slabs deleted.
+    scheme: Optional[schemes.Scheme] = None
+    if body.slabs:
+        try:
+            scheme = schemes.validate((s.threshold, s.rate) for s in body.slabs)
+        except schemes.InvalidScheme as e:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                                str(e)) from e
 
     row = session.scalar(
         select(models.VendorTarget).where(
@@ -1728,16 +1759,62 @@ def set_vendor_target(body: TargetIn,
     row.note = body.note
     row.set_by_user_id = principal.user_id
     session.flush()
+
+    _replace_slabs(session, org, row.target_id, scheme,
+                   set_by_user_id=principal.user_id)
+    session.flush()
     return {"target_id": row.target_id, "vendor_id": row.vendor_id,
             "amount": float(row.amount), "basis": row.basis,
             "period_start": row.period_start.isoformat(),
-            "period_end": row.period_end.isoformat()}
+            "period_end": row.period_end.isoformat(),
+            "slabs": [] if scheme is None else scheme.to_dict()["slabs"]}
+
+
+def _replace_slabs(session: Session, org: str, target_id: str,
+                   scheme: Optional[schemes.Scheme], *,
+                   set_by_user_id: Optional[str]) -> None:
+    """The scheme on one target, as the rows that say it. Replaced, not merged."""
+    for old in session.scalars(
+            select(models.VendorSchemeSlab).where(
+                models.VendorSchemeSlab.target_id == target_id)).all():
+        session.delete(old)
+    # Flushed between the delete and the insert or the unique constraint on
+    # (target, threshold) fires against rows this statement is about to remove.
+    session.flush()
+    for slab in (scheme.slabs if scheme else ()):
+        session.add(models.VendorSchemeSlab(
+            organization_id=org, target_id=target_id,
+            threshold_amount=slab.threshold, rate=slab.rate,
+            set_by_user_id=set_by_user_id))
+
+
+def _schemes_by_target(session: Session, org: str) -> dict[str, schemes.Scheme]:
+    """Every scheme on record, keyed by the target it hangs off.
+
+    Read back through ``schemes.validate`` rather than assembled directly: the
+    ordering and the rising-rate rule are properties of a scheme, not of the
+    write path, and a row edited in the database by hand should surface as a
+    refusal rather than as a quietly wrong rebate.
+    """
+    rungs: dict[str, list[tuple[Decimal, Decimal]]] = {}
+    for row in session.scalars(
+            select(models.VendorSchemeSlab).where(
+                models.VendorSchemeSlab.organization_id == org)).all():
+        rungs.setdefault(row.target_id, []).append(
+            (Decimal(row.threshold_amount), Decimal(row.rate)))
+    out: dict[str, schemes.Scheme] = {}
+    for target_id, pairs in rungs.items():
+        try:
+            out[target_id] = schemes.validate(pairs)
+        except schemes.InvalidScheme:
+            log.warning("scheme on target %s is not readable; omitted", target_id)
+    return out
 
 
 @router.get("/targets")
 def list_vendor_targets(principal: Principal = Depends(require_manager_or_owner),
                         session: Session = Depends(get_session)) -> dict:
-    """Every target on record, newest period first."""
+    """Every target on record with its scheme, newest period first."""
     org = principal.organization_id
     vendors = {v.vendor_id: v.name for v in session.scalars(
         select(models.Vendor).where(models.Vendor.organization_id == org)).all()}
@@ -1745,13 +1822,19 @@ def list_vendor_targets(principal: Principal = Depends(require_manager_or_owner)
         select(models.VendorTarget)
         .where(models.VendorTarget.organization_id == org)
         .order_by(models.VendorTarget.period_start.desc())).all()
+    by_target = _schemes_by_target(session, org)
     return {
         "targets": [
             {"target_id": r.target_id, "vendor_id": r.vendor_id,
              "vendor_label": vendors.get(r.vendor_id, r.vendor_id),
              "period_start": r.period_start.isoformat(),
              "period_end": r.period_end.isoformat(),
-             "basis": r.basis, "amount": float(r.amount or 0), "note": r.note}
+             "basis": r.basis, "amount": float(r.amount or 0), "note": r.note,
+             # The editor reads this back to fill its rows, so a revision starts
+             # from what is stored rather than from an empty form that would
+             # clear the scheme on save.
+             "slabs": ([] if r.target_id not in by_target
+                       else by_target[r.target_id].to_dict()["slabs"])}
             for r in rows
         ],
         "vendors": [{"vendor_id": vid, "label": name}
@@ -1768,7 +1851,149 @@ def delete_vendor_target(target_id: str,
     row = session.get(models.VendorTarget, target_id)
     if row is None or row.organization_id != principal.organization_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "No such target")
+    # The scheme goes with it. A rebate whose target no longer exists is not
+    # merely untidy — it is unreachable, since every read of a scheme starts
+    # from the target it hangs off.
+    _replace_slabs(session, row.organization_id, target_id, None,
+                   set_by_user_id=principal.user_id)
     session.delete(row)
+
+
+# ── principal schemes: what hitting the number is worth ─────────────────────
+#
+# Manager and above, and for the same reason ``/supply`` and ``/payables`` are:
+# purchase spend is cost by another name, and a rebate is a percentage of it.
+# Scoped by the role rather than by field-stripping because there is nothing
+# left of this screen once the money is removed.
+#
+# The target half is not recomputed here. ``dependency.progress_of`` owns
+# actual-against-target, pace and the run rate that closes the gap; this
+# endpoint calls it and adds the two things it deliberately does not do — what
+# the scheme pays, and where the period lands if the book keeps buying at the
+# rate it has.
+
+
+def _purchase_lines(session: Session, org: str) -> list[tuple[str, date, Decimal, str]]:
+    """Every cost line that names a supplier: (vendor, date, amount, bill).
+
+    Money as ``Decimal`` all the way from the column, because a rebate is a rate
+    times this sum and the number it produces has to agree with a principal's
+    own statement to the paise.
+
+    The bill reference is the ``bill_id`` half of ``CostRecord.external_ref``,
+    which ``ingestion/normalize.normalize_bill`` writes as ``bill:line``. It is
+    evidence rather than money: a fortnight of purchasing whose whole total came
+    off one order is not a rate, and the projection floor needs to be able to
+    see that.
+    """
+    return [
+        (r.vendor_id, r.date,
+         Decimal(r.qty or 0) * Decimal(r.unit_cost or 0),
+         (r.external_ref or "").split(":")[0])
+        for r in session.execute(
+            select(models.CostRecord.vendor_id, models.CostRecord.date,
+                   models.CostRecord.qty, models.CostRecord.unit_cost,
+                   models.CostRecord.external_ref)
+            .where(models.CostRecord.organization_id == org,
+                   models.CostRecord.vendor_id.is_not(None))).all()
+    ]
+
+
+@router.get("/schemes")
+def principal_schemes(principal: Principal = Depends(require_manager_or_owner),
+                      session: Session = Depends(get_session)) -> dict:
+    """Every live target with its rebate: secured, at stake, and where it lands.
+
+    Only the periods ``as_of`` falls inside. A quarter that closed in March is
+    settled — the principal has paid or has not — and a wall of finished periods
+    would bury the one thing this screen exists for, which is the number still
+    winnable this quarter.
+
+    Which target is live is ``dependency.current_target``'s answer, not a second
+    one: the shortest covering period wins, so a quarter set inside an annual
+    number is what gets chased.
+    """
+    org, snapshot, th = _context(session, principal)
+    as_of = _as_of(snapshot)
+    if as_of is None:
+        return _no_data(th.currency, "target progress")
+
+    targets = _targets(session, org)
+    live = {t.vendor_id: t for t in
+            (dependency.current_target(vendor_id, targets, as_of)
+             for vendor_id in {t.vendor_id for t in targets})
+            if t is not None}
+    if not live:
+        return _envelope(
+            {"rows": [], "at_stake_total": 0.0, "as_of": as_of.isoformat()},
+            currency=th.currency,
+            empty_reason=("No principal has a target covering today. Nothing in "
+                          "Zoho holds one, so they are typed in — add this "
+                          "quarter's numbers and their schemes and this fills "
+                          "in."))
+
+    purchases = _purchase_lines(session, org)
+    # Sell-through targets are measured on sales of that maker's product, which
+    # is the one figure here that runs through the manufacturer fallback. That
+    # is correct and it is stated in ``commercial/principals.py``: what a
+    # sell-through target measures *is* sales of their product. A purchase
+    # target never touches this map.
+    needs_sales = any(t.basis == dependency.ON_SALES for t in live.values())
+    vendor_of = (_principal_ids(_principal_of_product(session, org))
+                 if needs_sales else {})
+
+    by_target = _schemes_by_target(session, org)
+    names = _vendor_names(session, org)
+    rows = []
+    for vendor_id, target in live.items():
+        on_purchase = target.basis == dependency.ON_PURCHASE
+        if on_purchase:
+            lines = [(amount, bill) for vid, day, amount, bill in purchases
+                     if vid == vendor_id and target.covers(day)]
+        else:
+            lines = [(Decimal(s.line_revenue),
+                      (s.source_ref or {}).get("record_id") or s.external_ref)
+                     for s in snapshot.sales
+                     if vendor_of.get(s.product_id) == vendor_id
+                     and target.covers(s.date)]
+        # Σ amount, never an average of anything: a target is a total and the
+        # rebate is a rate on that total.
+        actual = sum((amount for amount, _ in lines), Decimal("0"))
+        documents = len({ref for _, ref in lines if ref})
+
+        rows.append({
+            "vendor_id": vendor_id,
+            "label": names.get(vendor_id) or f"Unnamed supplier (id {vendor_id})",
+            "target_id": target.target_id,
+            # Actual, pace and the run rate that closes the gap — computed
+            # where they already are, not restated here.
+            "progress": dependency.progress_of(
+                vendor_id, targets, as_of,
+                purchased=float(actual) if on_purchase else 0.0,
+                sold=0.0 if on_purchase else float(actual)),
+            "rebate": schemes.outlook(
+                target, by_target.get(target.target_id or ""),
+                actual=actual, documents=documents, as_of=as_of),
+        })
+
+    # Behind pace first: the wall answers "where does this month go", and that is
+    # only true if the principal furthest off their own pace leads it.
+    rows.sort(key=lambda r: ((r["progress"] or {}).get("achieved") or 0.0)
+              - ((r["progress"] or {}).get("period_elapsed") or 0.0))
+    companies = Companies(session, org)
+    companies.stamp(rows, index_of(session, org, models.Vendor), by="vendor_id")
+    return _envelope(
+        {"rows": rows,
+         # What the quarter is worth if every principal's next rung is reached.
+         # A sum of uplifts, so nothing already secured is counted into it.
+         "at_stake_total": round(sum(r["rebate"]["at_stake"] or 0.0
+                                     for r in rows), 2),
+         "as_of": as_of.isoformat()},
+        currency=th.currency,
+        empty_reason=None,
+        sources_differ=companies.count > 1,
+        floors={"min_elapsed_days": schemes.MIN_ELAPSED_DAYS,
+                "min_documents": schemes.MIN_DOCUMENTS})
 
 
 # ── the catalogue: which line each item belongs to ──────────────────────────

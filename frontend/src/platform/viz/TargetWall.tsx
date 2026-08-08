@@ -1,4 +1,4 @@
-// Am I going to hit my numbers?
+// Am I going to hit my numbers, and what do they pay?
 //
 // An authorised distributor's year is run against numbers the principals set,
 // and that question deserves a wall you scan in five seconds — not a pace track
@@ -11,13 +11,25 @@
 // gone. An achievement percentage on its own hides that until the last week,
 // which is exactly when it stops being fixable.
 //
+// **And what it is worth.** A target on its own does not say why anybody should
+// chase it. The scheme does — two to three points of purchases on this book —
+// so every card carries what is already secured and what the next rung is worth,
+// and the headline carries the total still winnable this quarter. That total is
+// a sum of *uplifts*, never of rebates: money already earned is not at stake.
+//
+// **A projection, or a stated refusal.** Where the period is old enough and the
+// evidence thick enough, the card says where the book closes at the rate it is
+// buying. Where it is not, it says so in words and shows nothing — the server
+// makes that call, and a screen that filled the gap with a confident number
+// would be inventing the one thing the platform refuses to.
+//
 // **Behind is amber, not red.** Red is reserved for a loss on this palette, and
 // a supplier target that is behind in week six is a thing to work, not a thing
 // that has gone wrong. Every card also says it in words — colour is never the
 // only cue.
 //
-// **Sorted by what needs attention.** Furthest behind pace first, so the wall
-// answers "where do I put this month" by being read top-left to bottom-right.
+// **Sorted by what needs attention.** Furthest behind pace first — on the
+// server, which is where the arithmetic that decides it already lives.
 
 import Button from "@mui/material/Button";
 import { useState } from "react";
@@ -35,28 +47,24 @@ type Row = Record<string, unknown>;
 
 const rows = (v: unknown): Row[] => (v as Row[] | undefined) ?? [];
 const num = (v: unknown): number => Number(v ?? 0);
+const obj = (v: unknown): Row | null => (v as Row | null | undefined) ?? null;
 
 export function TargetWallScreen({ session }: { session: PlatformSession }) {
   const { data, loading, error, reload } = useInsight(
-    "dependency", () => papi.dependency(session.token), [session.token]);
+    "schemes", () => papi.schemes(session.token), [session.token]);
   const [editing, setEditing] = useState(false);
 
-  const vendors = (data?.vendors as Row | null | undefined) ?? null;
   const sourcesDiffer = Boolean(data?.sources_differ);
-
-  // Only principals with a live number. A card per supplier would be a wall of
-  // blanks, and a blank is not a missed target — it is a target nobody has
-  // entered.
-  const withTargets = rows(vendors?.rows)
-    .filter((r) => r.target != null)
-    .sort((a, b) => slack(a) - slack(b));
-
-  const behind = withTargets.filter((r) => (r.target as Row).on_pace === false);
+  // Every row here has a live target — the server only returns periods today
+  // falls inside — so there is no blank card to filter out.
+  const live = rows(data?.rows);
+  const behind = live.filter((r) => obj(r.progress)?.on_pace === false);
+  const atStake = num(data?.at_stake_total);
 
   return (
     <Panel
       title="Supplier targets"
-      question="Where each principal's number stands, and whether the pace clears it"
+      question="Where each principal's number stands, what it pays, and whether the pace clears it"
       state={stateOf(loading, error, data?.empty_reason as string)}
       error={error} emptyReason={data?.empty_reason as string} onRetry={reload} wide
       actions={
@@ -66,13 +74,14 @@ export function TargetWallScreen({ session }: { session: PlatformSession }) {
         </Button>
       }
     >
-      {withTargets.length === 0 ? (
+      {live.length === 0 ? (
         <div className="viz-state">
           <p className="viz-state-title">No targets on record</p>
           <p className="viz-muted">
-            Nothing in Zoho holds a principal's target, so they are typed in
-            once and kept. Add one and this wall fills in — actual against
-            target, with how much of the period has gone.
+            Nothing in Zoho holds a principal's target or the rebate behind it,
+            so they are typed in once and kept. Add one and this wall fills in —
+            actual against target, how much of the period has gone, and what
+            hitting it is worth.
           </p>
           <Button type="button" variant="contained" size="small"
                   onClick={() => setEditing(true)}>
@@ -84,15 +93,23 @@ export function TargetWallScreen({ session }: { session: PlatformSession }) {
           <p className="viz-headline">
             {/* The noun agrees with the total and the verb with the count —
                 "1 of 2 principal is" reads as a bug in the page. */}
-            <strong>{behind.length}</strong> of {withTargets.length}{" "}
-            {withTargets.length === 1 ? "principal" : "principals"}{" "}
+            <strong>{behind.length}</strong> of {live.length}{" "}
+            {live.length === 1 ? "principal" : "principals"}{" "}
             {behind.length === 1 ? "is" : "are"} behind the pace of their
             period.
+            {atStake > 0 && (
+              <>
+                {" "}
+                <strong>{money(atStake)}</strong> of rebate is still to play
+                for — what reaching the next rung pays, over what is already
+                earned.
+              </>
+            )}
           </p>
 
           <ul className="wall">
-            {withTargets.map((r) => (
-              <Bullet key={String(r.entity_id)} row={r}
+            {live.map((r) => (
+              <Bullet key={String(r.vendor_id)} row={r}
                       sourcesDiffer={sourcesDiffer} />
             ))}
           </ul>
@@ -107,14 +124,11 @@ export function TargetWallScreen({ session }: { session: PlatformSession }) {
   );
 }
 
-/** How far behind pace, as a signed number. Negative sorts first. */
-function slack(row: Row): number {
-  const t = row.target as Row;
-  return num(t.achieved) - num(t.period_elapsed);
-}
-
 function Bullet({ row, sourcesDiffer }: { row: Row; sourcesDiffer: boolean }) {
-  const t = row.target as Row;
+  const t = obj(row.progress);
+  const rebate = obj(row.rebate);
+  if (!t) return null;
+
   const achieved = num(t.achieved);
   const elapsed = num(t.period_elapsed);
   const onPace = t.on_pace === true;
@@ -157,6 +171,75 @@ function Bullet({ row, sourcesDiffer }: { row: Row; sourcesDiffer: boolean }) {
           <> · <strong>{money(num(t.required_run_rate))}/day</strong> to close it</>
         )}
       </p>
+
+      {rebate && <Rebate rebate={rebate} />}
     </li>
+  );
+}
+
+/** What the scheme pays, and where the period lands. */
+function Rebate({ rebate }: { rebate: Row }) {
+  const secured = obj(rebate.secured);
+  const next = obj(rebate.next_slab);
+  const projection = obj(rebate.projection);
+  const absent = obj(rebate.absent);
+
+  // Absent, not zero. Nobody having said what the rebate is differs from a
+  // principal who pays none, and the wall must not read the first as the second.
+  if (!rebate.scheme) {
+    return (
+      <p className="viz-muted wall-note">
+        No scheme recorded, so nothing here says what hitting this number pays.
+        {projection != null && (
+          <> At this rate it closes at{" "}
+            <strong>{money(num(projection.projected_close))}</strong>.</>
+        )}
+      </p>
+    );
+  }
+
+  return (
+    <>
+      <div className="wall-head" style={{ marginTop: 6 }}>
+        <StatusChip
+          dense
+          tone={secured ? "good" : "neutral"}
+          label={secured
+            ? `${pct(num(secured.rate), 1)} secured · ${money(num(secured.rebate))}`
+            : "no rung reached yet"}
+          tip={secured
+            ? "Earned on everything bought so far, if the period closed today."
+            : "Nothing is earned below the first rung of this scheme."} />
+      </div>
+
+      {next && (
+        <p className="viz-muted wall-note">
+          <strong>{money(num(next.gap))}</strong> more reaches{" "}
+          {pct(num(next.rate), 1)} — worth{" "}
+          <strong>{money(num(next.uplift))}</strong> on top.
+        </p>
+      )}
+
+      {projection ? (
+        <p className="viz-muted wall-note">
+          At this rate it closes at{" "}
+          <strong>{money(num(projection.projected_close))}</strong>
+          {projection.clears_target === true
+            ? <> — clears the number</>
+            : <>, {money(num(projection.shortfall))} short</>}
+          {projection.rebate != null && (
+            <> · rebate <strong>{money(num(projection.rebate))}</strong></>
+          )}
+        </p>
+      ) : (
+        absent && (
+          // The refusal, in the words the server chose. A screen that guessed
+          // here would be putting a confident number on a week of evidence.
+          <p className="viz-muted wall-note">
+            <em>{String(absent.label)}.</em> {String(absent.why)}
+          </p>
+        )
+      )}
+    </>
   );
 }

@@ -391,6 +391,64 @@ class VendorTarget(Base):
                                                  onupdate=_now)
 
 
+class VendorSchemeSlab(Base):
+    """One rung of a principal's rebate: buy this much, earn this rate.
+
+    A target is only half of what a principal puts in writing. The other half is
+    the scheme — "and if you do, you earn 2.5%" — which on this book is two to
+    three percent of purchases and the difference between a good year and an
+    ordinary one. Nothing in Zoho holds it either, so like ``VendorTarget`` this
+    is typed rather than synced, it is the only copy, and it must survive a
+    complete re-sync.
+
+    **The scheme is the set of slabs, and there is no header row.** The common
+    shape here is not one number — it is 2% at forty lakh and 3% at sixty — so
+    slabs are the model and a flat percentage is the one-slab case. A parent
+    table would carry a note and a kind, both of which either duplicate the
+    target's or invite a "flat" scheme that computes down a different path from
+    the single-slab scheme saying the same thing.
+
+    **Hung off the target, not off the vendor.** A rebate with no number to hit
+    is not a scheme, and the vendor, the period and the basis are already stated
+    once on ``VendorTarget``. Repeating them here would let the two disagree
+    about which quarter a scheme belongs to, and the one that is wrong at year
+    end is ours. Deleting a target takes its slabs with it — see the router;
+    a slab with no target is unreachable rather than merely untidy.
+
+    ``rate`` is a ratio (``0.025``), never a percentage, matching how margin is
+    held everywhere in this platform. ``threshold`` is money, in the same
+    currency and at the same grain as ``VendorTarget.amount``.
+    ``commercial/insight/schemes.py`` owns what a valid set of them means:
+    ascending thresholds, rising rates, and a ceiling that catches ``2.5``
+    entered where the field wanted ``0.025``.
+    """
+
+    __tablename__ = "vendor_scheme_slabs"
+    __table_args__ = (
+        UniqueConstraint("target_id", "threshold_amount",
+                         name="uq_vendor_scheme_slab_threshold"),
+    )
+
+    slab_id: Mapped[str] = mapped_column(String(64), primary_key=True,
+                                         default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    target_id: Mapped[str] = mapped_column(String(64),
+                                           ForeignKey("vendor_targets.target_id"),
+                                           index=True)
+    #: What has to be bought (or sold, per the target's basis) to reach this rung.
+    threshold_amount: Mapped[Any] = mapped_column(Numeric(18, 4))
+    #: A ratio. ``0.025`` is two and a half percent, paid on the whole amount
+    #: rather than on the excess above the threshold — which is how every scheme
+    #: on this book settles, and is stated in ``insight/schemes.py``.
+    rate: Mapped[Any] = mapped_column(Numeric(9, 6))
+    #: Who typed it, and what they were told. A rebate nobody can source is one
+    #: nobody can argue for when the principal's statement says otherwise.
+    set_by_user_id: Mapped[Optional[str]] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
+                                                 onupdate=_now)
+
+
 class VendorPaymentTerm(Base):
     """What we actually agreed to pay a supplier in — not what Zoho could express.
 

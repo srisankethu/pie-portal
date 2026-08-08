@@ -26,6 +26,7 @@ import { money } from "../../money";
 import { InlineLink, LoadingState, MetricCard } from "../kit";
 import { papi } from "../api";
 import type { PlatformSession } from "../types";
+import { Seg } from "./Seg";
 import { useInsight } from "./useInsight";
 
 type Row = Record<string, unknown>;
@@ -150,9 +151,16 @@ export function DailyScreen({
   // since the previous sync. Deliberately *not* page-wide — see MovedRange.
   const [frm, setFrm] = useState("");
   const [to, setTo] = useState("");
+  // How far ahead the Committed band looks. Its own control, and its own axis:
+  // forward over dates documents already carry, where the moved window is
+  // backward over when the platform learned of a row. Counted in weeks because
+  // the cash fold is bucketed by ISO week — see daily.committed_question.
+  const [weeks, setWeeks] = useState("1");
   const { data, loading, error } = useInsight(
-    "daily", () => papi.daily(session.token, frm || undefined, to || undefined),
-    [session.token, frm, to]);
+    "daily",
+    () => papi.daily(session.token, frm || undefined, to || undefined,
+                     Number(weeks)),
+    [session.token, frm, to, weeks]);
 
   const fresh = (data?.freshness as Row | undefined) ?? {};
   const bands = rows(data?.bands);
@@ -204,6 +212,13 @@ export function DailyScreen({
                         sx={{ display: "block", lineHeight: 1.6 }}>
               {String(band.label)} — {String(band.question)}
             </Typography>
+            {band.key === "COMMITTED" && (
+              <Box sx={{ mb: 1 }}>
+                <Seg label="Ahead" value={weeks} onChange={setWeeks}
+                     options={[["1", "1w"], ["2", "2w"], ["4", "4w"],
+                               ["8", "8w"], ["13", "13w"]]} />
+              </Box>
+            )}
             {band.key === "MOVED" && (
               <MovedRange frm={frm} to={to}
                           onChange={(f, t) => { setFrm(f); setTo(t); }} />

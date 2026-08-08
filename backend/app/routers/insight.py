@@ -2014,6 +2014,7 @@ def _moved_since(session: Session, org: str, since: datetime,
 @router.get("/daily")
 def daily(moved_from: Optional[date] = Query(None),
           moved_to: Optional[date] = Query(None),
+          committed_weeks: int = Query(1, ge=1, le=13),
           principal: Principal = Depends(require_manager_or_owner),
           session: Session = Depends(get_session)) -> dict:
     """The morning read.
@@ -2027,6 +2028,14 @@ def daily(moved_from: Optional[date] = Query(None),
     mean reconstructing a past state, which this platform does not do — so a
     date control spanning the whole page would return three numbers that either
     ignored it or lied about it.
+
+    ``committed_weeks`` is the **Committed** band's own horizon, and it is a
+    separate control because it is a separate axis: forward, on the dates
+    documents already carry, rather than backward over when the platform
+    learned of a row. It counts weeks because the cash fold is bucketed by ISO
+    week — an arbitrary range would have to be answered approximately, which is
+    precision the data does not have. Capped at a quarter, past which the
+    committed book is mostly empty and the tile stops saying anything.
 
     Manager and above, for the same reason `/supply` and `/cashflow` are: two
     of its five bands are cash and supplier exposure, which is purchase cost by
@@ -2047,7 +2056,7 @@ def daily(moved_from: Optional[date] = Query(None),
             state_engine.load(session, org, CASH_SCHEDULE, cash_on),
             state_engine.load(session, org, COMMITMENTS, cash_on),
             state_engine.load(session, org, RECEIVABLES, cash_on),
-            as_of=cash_on, weeks=1)
+            as_of=cash_on, weeks=committed_weeks)
 
     stock_result: dict[str, Any] = {}
     stock_on = state_engine.latest_as_of(session, org, INVENTORY)
@@ -2113,5 +2122,6 @@ def daily(moved_from: Optional[date] = Query(None),
             decisions_by_band=decisions_by_band, stock=stock_result,
             supply=supply_result, cadence=cadence_result, cash=cash,
             moved=moved, moved_window=(moved_from, moved_to),
+            committed_weeks=committed_weeks,
             currency=th.currency),
         currency=th.currency, thresholds_version=th.version)

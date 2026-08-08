@@ -134,10 +134,14 @@ export const papi = {
    *  — that band and no other. The rest are states as of now, not periods, so
    *  a page-wide date control would be answering a question three of the four
    *  bands cannot be asked. */
-  daily: (t: string, movedFrom?: string, movedTo?: string) => {
+  daily: (t: string, movedFrom?: string, movedTo?: string,
+          committedWeeks?: number) => {
     const p = new URLSearchParams();
     if (movedFrom) p.set("moved_from", movedFrom);
     if (movedTo) p.set("moved_to", movedTo);
+    if (committedWeeks && committedWeeks !== 1) {
+      p.set("committed_weeks", String(committedWeeks));
+    }
     const qs = p.toString();
     return req<Record<string, unknown>>(
       `/api/v1/insight/daily${qs ? "?" + qs : ""}`, {}, t);

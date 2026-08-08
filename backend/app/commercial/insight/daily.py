@@ -216,12 +216,14 @@ def assemble(*, now: datetime, as_of: Optional[date], state_on: Optional[date],
              cash: Optional[dict] = None,
              moved: Optional[dict] = None,
              moved_window: Optional[tuple[Optional[date], Optional[date]]] = None,
+             committed_weeks: int = 1,
              currency: str = "INR") -> dict[str, Any]:
     """The five bands, from what the other builders already computed."""
     bands = [
         _tiles(NEEDS_YOU, _needs_you(approvals_pending, decisions_by_band or {})),
         _tiles(AT_RISK, _at_risk(stock or {}, supply or {}, cadence or {}, cash or {})),
-        _tiles(COMMITTED, _committed(supply or {}, cash or {})),
+        _tiles(COMMITTED, _committed(supply or {}, cash or {}, committed_weeks),
+               committed_question(committed_weeks)),
         _tiles(MOVED, _moved(moved or {}), moved_question(moved_window)),
     ]
     return {
@@ -290,17 +292,34 @@ def _at_risk(stock: dict, supply: dict, cadence: dict, cash: dict) -> list[Tile]
     return tiles
 
 
-def _committed(supply: dict, cash: dict) -> list[Tile]:
+def _committed(supply: dict, cash: dict, weeks: int = 1) -> list[Tile]:
+    """What the committed book does next, over however many weeks were asked for.
+
+    Summed across the buckets rather than reading the first, because the
+    horizon is now a choice. The committed book is bucketed by ISO week from
+    the Monday of ``as_of`` — which is why the control counts *weeks* and not
+    an arbitrary date range: a range of "the next three days" cannot be
+    answered from weekly buckets, and answering it approximately would be
+    inventing precision the fold does not have.
+
+    ``weeks`` is what was **asked for**, not ``len(buckets)``. Deriving it from
+    the buckets read correctly whenever there were any and lied whenever there
+    were none: a book with no cash fold yet returned zero buckets, so a reader
+    who had chosen eight weeks saw the heading snap back to "this week" while
+    the control still said 8w. A label that disagrees with the control beside
+    it is worse than one that admits the horizon is empty.
+    """
     buckets = cash.get("buckets") or []
-    week = buckets[0] if buckets else {}
     supply_counts = supply.get("counts") or {}
     return [
-        Tile(key="cash_this_week", label="Cash due this week",
-             why=("Invoices and bills falling due in the week their own "
-                  "document names. Movement, never a balance — the platform "
+        Tile(key="cash_this_week",
+             label=("Cash due this week" if weeks <= 1
+                    else f"Cash due in {weeks} weeks"),
+             why=("Invoices and bills falling due in the weeks their own "
+                  "documents name. Movement, never a balance — the platform "
                   "reads payments, not bank positions."),
-             amount=float(week.get("inflow") or 0),
-             amount_out=float(week.get("outflow") or 0),
+             amount=sum(float(b.get("inflow") or 0) for b in buckets),
+             amount_out=sum(float(b.get("outflow") or 0) for b in buckets),
              route="payments", settled=not buckets),
         Tile(key="open_orders", label="Purchase orders still open",
              why="Placed with a supplier, with stock still to arrive.",
@@ -336,6 +355,19 @@ def _moved(moved: dict) -> list[Tile]:
             breakdown=_breakdown(entry.get("by_company") or [], value="count"),
             settled=not entry.get("count")))
     return out
+
+
+def committed_question(weeks: int) -> Optional[str]:
+    """How far ahead the committed band is looking, or None for the default.
+
+    Counted in weeks rather than days because the underlying fold is bucketed
+    by ISO week — see ``_committed``. Saying "the next 28 days" over four weekly
+    buckets would promise a precision the data does not carry, and the first
+    bucket is the week ``as_of`` falls in rather than the seven days from it.
+    """
+    if weeks <= 1:
+        return None
+    return f"What lands in the next {weeks} weeks"
 
 
 def moved_question(window: Optional[tuple[Optional[date], Optional[date]]]

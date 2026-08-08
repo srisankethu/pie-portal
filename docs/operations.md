@@ -199,6 +199,58 @@ cd backend && python3 ../scripts/scheduled_sync.py
 | `PIE_SYNC_EMAIL` | an owner or manager account — a salesperson is refused |
 | `PIE_SYNC_PASSWORD` | that account's password |
 | `PIE_SYNC_TIMEOUT` | seconds to wait for the pull (default 3600; `0` starts it and returns) |
+| `PIE_SYNC_FULL` | `1` to discard the resume cursor and re-read every document in the window |
+| `PIE_SYNC_SINCE` | `YYYY-MM-DD` to override how far back to read; the server's `ZOHO_SYNC_FROM` applies when unset |
+
+`--full` and `--since YYYY-MM-DD` do the same two things from a terminal,
+without editing the timer's environment and putting it back.
+
+### Incremental nightly, full weekly
+
+**A full pull is not the nightly one.** Incremental stops listing at the
+high-water mark, so a nightly run over two years of history costs a handful of
+calls instead of thousands. A full pull re-reads everything in the window —
+minutes to hours against a real book — and Zoho's rate limit is a shared daily
+budget, so running one every night spends the allowance the day's real work
+needs.
+
+What it is for is *repair*: a document that changed in a way its
+`last_modified_time` did not record, or history skipped by a bug since fixed
+that has to be read again to come back.
+
+Two lines, so the schedule stays in cron where you can see it rather than in
+the script:
+
+```cron
+# nightly, incremental — replace HH:MM
+MM HH * * 1-6  pie  set -a; . /etc/pie/sync.env; set +a; cd /srv/pie/backend && /usr/bin/python3 ../scripts/scheduled_sync.py
+
+# weekly, full. Give it a longer ceiling: the default hour is generous for an
+# incremental pull and can be short for a full one on a large book.
+MM HH * * 0    pie  set -a; . /etc/pie/sync.env; set +a; PIE_SYNC_FULL=1 PIE_SYNC_TIMEOUT=21600 cd /srv/pie/backend && /usr/bin/python3 ../scripts/scheduled_sync.py
+```
+
+### Recovering history after a fix
+
+When a bug caused documents to be read wrongly, an incremental pull will not
+bring them back: nothing about them changed in Zoho, so the high-water mark
+skips them. Re-read the affected period once, by hand:
+
+```bash
+cd backend && python3 ../scripts/scheduled_sync.py --full --since 2024-04-01
+```
+
+It prints which mode it is running before it starts, because the first question
+about a job that has been going for an hour is always which one it is:
+
+```
+requesting a full sync from 2024-04-01
+started sync 3d9552e8-…
+sync 3d9552e8-… finished OK — customers 3, products 2, sales_txns 87, …
+```
+
+Pick `--since` to cover the period in question, not the whole history —
+re-reading four years to repair four months is the same answer for more money.
 
 | Exit | Meaning |
 |---|---|

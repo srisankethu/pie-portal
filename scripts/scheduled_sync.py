@@ -26,6 +26,25 @@ Environment:
     PIE_SYNC_PASSWORD   that account's password
     PIE_SYNC_TIMEOUT    seconds to wait for the pull to finish (default 3600;
                         0 means start it and do not wait)
+    PIE_SYNC_FULL       1 to discard the resume cursor and re-read every
+                        document in the window (default 0)
+    PIE_SYNC_SINCE      YYYY-MM-DD to override how far back to read; the
+                        server's own ZOHO_SYNC_FROM applies when unset
+
+``--full`` and ``--since`` do the same as those two, for a one-off from a
+terminal without editing the timer's environment.
+
+**A full pull is not the nightly one.** Incremental is the default because it
+stops listing at the high-water mark, so a nightly run over two years of history
+costs a handful of calls instead of thousands. A full pull re-reads everything
+inside the window: minutes to hours against a real book, and Zoho's rate limiter
+is a shared daily budget, so running one every night spends the allowance that
+the day's real work needs.
+
+What it is for is *repair* — a document that changed in a way its
+``last_modified_time`` did not record, or history that was skipped by a bug
+since fixed and has to be read again to come back. Weekly is a reasonable
+rhythm; nightly is not.
 
 Exit codes, which are the whole interface to cron:
 
@@ -42,12 +61,14 @@ See docs/operations.md for the crontab and systemd forms.
 """
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import sys
 import time
 import urllib.error
 import urllib.request
+from datetime import date
 from typing import Any, Optional
 
 DEFAULT_BASE = "http://localhost:8000"
@@ -101,10 +122,28 @@ def _fail(msg: str, code: int = 1) -> int:
     return code
 
 
-def main() -> int:
+def _truthy(raw: Optional[str]) -> bool:
+    return str(raw or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__ and __doc__.splitlines()[0])
+    ap.add_argument("--full", action="store_true", default=None,
+                    help="discard the resume cursor and re-read every document "
+                         "in the window; slow, and for repair rather than the "
+                         "nightly run")
+    ap.add_argument("--since", metavar="YYYY-MM-DD", default=None,
+                    help="how far back to read; the server's ZOHO_SYNC_FROM "
+                         "applies when this is not given")
+    args = ap.parse_args(argv)
+
     base = os.environ.get("PIE_BASE_URL", DEFAULT_BASE).rstrip("/")
     email = os.environ.get("PIE_SYNC_EMAIL")
     password = os.environ.get("PIE_SYNC_PASSWORD")
+    # The flag wins over the variable, so a one-off from a terminal does not
+    # need the timer's environment edited and put back.
+    full = args.full if args.full is not None else _truthy(os.environ.get("PIE_SYNC_FULL"))
+    since = args.since or os.environ.get("PIE_SYNC_SINCE") or ""
     try:
         wait_for = int(os.environ.get("PIE_SYNC_TIMEOUT", "3600"))
     except ValueError:
@@ -112,6 +151,15 @@ def main() -> int:
 
     if not email or not password:
         return _fail("PIE_SYNC_EMAIL and PIE_SYNC_PASSWORD must both be set")
+
+    if since:
+        # Checked here rather than posted and left to a 422. A timer that fires
+        # nightly with a malformed date should say so on the first run, in the
+        # mail, with the value it was given.
+        try:
+            date.fromisoformat(since)
+        except ValueError:
+            return _fail(f"since must be YYYY-MM-DD, not {since!r}")
 
     try:
         token = _call(f"{base}/api/v1/auth/login",
@@ -127,8 +175,15 @@ def main() -> int:
     if not token:
         return _fail("sign-in returned no token")
 
+    body: dict[str, Any] = {"full": full}
+    if since:
+        body["since"] = since
+    # Printed before it starts, because a full pull can run for hours and the
+    # first question about a long-running job is always which one it is.
+    _log(f"requesting a {'full' if full else 'incremental'} sync"
+         + (f" from {since}" if since else ""))
     try:
-        started = _call(f"{base}/api/v1/data/sync", token=token, body={})
+        started = _call(f"{base}/api/v1/data/sync", token=token, body=body)
     except urllib.error.HTTPError as e:
         if e.code == 403:
             return _fail(f"{email} is not a manager or owner, so it cannot start a sync")

@@ -439,7 +439,50 @@ def test_an_unresolvable_item_is_reported_with_enough_to_find_it(session):
     assert ctx["party"] == "Kennametal India"
     assert ctx["document_date"] == "2026-05-01"
     assert ctx["line_value"] == 18600
-    assert "inactive" in ctx["fix"]
+    assert "still counted" in ctx["fix"]
+
+
+def test_a_missing_item_does_not_delete_the_trade(session):
+    """The line is kept, against a placeholder.
+
+    Dropping it is how real revenue went missing: an item deleted in Zoho still
+    has documents pointing at it, and skipping those lines removed the money
+    from revenue, from the customer's history and from margin — leaving a
+    plausible wrong number rather than a visible gap. The sale happened; the
+    item's *name* is the only thing the platform does not know.
+    """
+    from app.domain import models
+
+    report = SyncService(session, _bill_for_missing_item(), "org_a").run()
+    assert report.cost_records == 1, "the cost line was dropped"
+
+    cost = session.query(models.CostRecord).one()
+    assert float(cost.unit_cost) == 372
+
+    prod = session.get(models.Product, cost.product_id)
+    assert prod.external_id == "itm-gone"
+    # Marked as standing in for a master entry rather than reflecting one, so a
+    # screen can say so and the next pull that sees the item overwrites it in
+    # place — same upsert key, no duplicate, no manual repair.
+    assert prod.source_ref["provisional"] is True
+    assert prod.active is False
+
+
+def test_a_later_pull_that_finds_the_item_fills_the_placeholder_in(session):
+    """No duplicate and no manual repair: the placeholder was written under the
+    same key the real item upserts on."""
+    from app.domain import models
+
+    SyncService(session, _bill_for_missing_item(), "org_a").run()
+    found = _bill_for_missing_item()
+    found._i = [{"item_id": "itm-gone", "name": "CNMG 120408-MP TN2000",
+                 "sku": "CN120408", "status": "inactive"}]
+    SyncService(session, found, "org_a").run()
+
+    rows = session.query(models.Product).filter_by(external_id="itm-gone").all()
+    assert len(rows) == 1, "the real item was inserted beside the placeholder"
+    assert rows[0].name == "CNMG 120408-MP TN2000"
+    assert not (rows[0].source_ref or {}).get("provisional")
 
 
 def test_one_missing_item_on_many_lines_is_one_problem_not_many(session):

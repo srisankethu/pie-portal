@@ -128,9 +128,20 @@ export const papi = {
   // Every one of these returns the same envelope: data, currency, and an
   // `empty_reason` written where the query happened. The client never decides
   // why something is empty — it could only guess, and the server knows.
-  /** The morning read. One request for the whole landing page's top. */
-  daily: (t: string) =>
-    req<Record<string, unknown>>("/api/v1/insight/daily", {}, t),
+  /** The morning read. One request for the whole landing page's top.
+   *
+   *  `movedFrom`/`movedTo` set the window the **What moved** band reports over
+   *  — that band and no other. The rest are states as of now, not periods, so
+   *  a page-wide date control would be answering a question three of the four
+   *  bands cannot be asked. */
+  daily: (t: string, movedFrom?: string, movedTo?: string) => {
+    const p = new URLSearchParams();
+    if (movedFrom) p.set("moved_from", movedFrom);
+    if (movedTo) p.set("moved_to", movedTo);
+    const qs = p.toString();
+    return req<Record<string, unknown>>(
+      `/api/v1/insight/daily${qs ? "?" + qs : ""}`, {}, t);
+  },
 
   storyboard: (t: string, months = 3) =>
     req<Record<string, unknown>>(`/api/v1/insight/storyboard?months=${months}`, {}, t),
@@ -203,9 +214,14 @@ export const papi = {
   // Every role: the grid is revenue and dates, and the conversation it exists
   // for is a salesperson's.
   // Two pivots, one endpoint: lines of the business, or principals.
-  mix: (t: string, months: number, by = "category") =>
+  // `connectionId` scopes the whole grid to one connected company on the
+  // server, rather than filtering rows in the browser: the headline counts are
+  // what this screen is for, so narrowing has to recompute them.
+  mix: (t: string, months: number, by = "category", connectionId?: string) =>
     req<Record<string, unknown>>(
-      `/api/v1/insight/mix?months=${months}&by=${by}`, {}, t),
+      `/api/v1/insight/mix?months=${months}&by=${by}`
+      + (connectionId ? `&connection_id=${encodeURIComponent(connectionId)}` : ""),
+      {}, t),
 
   // What this book leans on, at both ends. The supplier half is manager+ and
   // is omitted from a salesperson's response rather than 403-ing the screen.

@@ -31,13 +31,14 @@
 // a block you can see the size of instead of a count you have to trust.
 
 import { useMemo, useState } from "react";
+import MenuItem from "@mui/material/MenuItem";
+import TextField from "@mui/material/TextField";
 import { money } from "../../money";
 import { formatDate } from "../../when";
 import { papi } from "../api";
 import { EntityName } from "../EntityName";
-import { CompanyFilter, useCompanyFilter } from "../CompanyFilter";
 import { DataGrid, numeric } from "../DataGrid";
-import type { EntityOrigin, PlatformSession, Sourced } from "../types";
+import type { EntityOrigin, PlatformSession } from "../types";
 import { Figure, Panel, stateOf } from "./Panel";
 import { Seg } from "./Seg";
 import { pct, useInsight } from "./useInsight";
@@ -64,9 +65,14 @@ export function MixScreen({
   // key — see mix.py. An authorised distributor needs both: "who has never
   // bought coolant" and "who has never bought a single Sandvik item".
   const [by, setBy] = useState("category");
+  // Which connected company the grid is for. Server-side, unlike the row
+  // filter every other list uses — see the endpoint. The totals *are* this
+  // screen, so scoping has to recompute them rather than hide rows underneath
+  // a headline that still describes all three books.
+  const [scope, setScope] = useState("");
   const { data, loading, error, reload } = useInsight(
-    "mix", () => papi.mix(session.token, Number(months), by),
-    [session.token, months, by]);
+    "mix", () => papi.mix(session.token, Number(months), by, scope || undefined),
+    [session.token, months, by, scope]);
 
   const columns = rows(data?.categories);
   const customers = rows(data?.customers);
@@ -76,8 +82,12 @@ export function MixScreen({
   const counts = (data?.counts as Record<string, number>) ?? {};
   const sourcesDiffer = Boolean(data?.sources_differ);
 
-  const company = useCompanyFilter(customers as Sourced[]);
-  const shown = company.apply(customers as Sourced[]) as Row[];
+  // Offered from the connection list the server returns, not from the rows'
+  // provenance. A picker built from row origins disappears exactly when it is
+  // most needed: a book synced before connections were stamped leaves every
+  // origin null and the control silently never renders.
+  const companies = rows(data?.companies);
+  const shown = customers as Row[];
 
   // Which line the reader is hunting whitespace in. Narrowing to one column
   // turns the grid from "everything about everyone" into a call list, which is
@@ -106,8 +116,12 @@ export function MixScreen({
         <div className="seg-controls">
           <Seg label="Columns" value={by} onChange={setBy}
                options={[["category", "By line"], ["vendor", "By supplier"]]} />
+          {/* A quarter, a half and a year — the horizons this trade actually
+              plans in. "Lapsed" scales with the window (see mix.py), so a 3m
+              view means "bought this line before, nothing in the last quarter",
+              which is the question a salesperson is asking. */}
           <Seg label="Window" value={months} onChange={setMonths}
-               options={[["12", "1y"], ["24", "2y"], ["36", "3y"]]} />
+               options={[["3", "3m"], ["6", "6m"], ["12", "1y"]]} />
         </div>
       }
     >
@@ -156,8 +170,33 @@ export function MixScreen({
         </p>
       )}
 
-      <CompanyFilter options={company.options} value={company.company}
-                     onChange={company.setCompany} show={company.show} />
+      {/* Server-scoped, so every figure above and below is recomputed for the
+          company chosen. Rendered whenever more than one company is connected
+          — not when the rows happen to carry provenance, which is the test the
+          shared row filter uses and the reason this control was invisible on a
+          book whose customers were synced without a connection stamp.
+
+          A company with no customers is still offered, and says so. Hiding it
+          would leave somebody wondering which of their three books is missing;
+          "0 customers" answers that in place. */}
+      {companies.length > 1 && (
+        <TextField
+          select size="small" label="Company" value={scope}
+          onChange={(e) => setScope(e.target.value)}
+          slotProps={{ select: { displayEmpty: true },
+                       inputLabel: { shrink: true } }}
+          sx={{ minWidth: 240, mb: 2 }}
+        >
+          <MenuItem value="">All companies</MenuItem>
+          {companies.map((c) => (
+            <MenuItem key={String(c.connection_id)}
+                      value={String(c.connection_id)}>
+              {String(c.label)} · {num(c.customers)} customer
+              {num(c.customers) === 1 ? "" : "s"}
+            </MenuItem>
+          ))}
+        </TextField>
+      )}
 
       {/* The whitespace picker. Each button is a line and a count of who is
           missing it — the count is the point, because "43 customers do not buy

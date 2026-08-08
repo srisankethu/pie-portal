@@ -31,12 +31,19 @@ customer who is slow from one who has stopped.
 
 Deliberately absent:
 
-**No ageing buckets, no "days sales outstanding", no credit limit.** Buckets
-need band edges with a version; DSO needs a revenue window this state does not
-hold; a credit limit is a commercial term Zoho does not expose on the contact
-in this book. What is stored is the balance, the earliest due date and the
-overdue portion — who is late enough to chase is a judgement made from that,
-with a policy attached.
+**No ageing buckets and no "days sales outstanding".** Buckets need band edges
+with a version; DSO needs a revenue window this state does not hold. What is
+stored is the balance, the earliest due date and the overdue portion — who is
+late enough to chase is a judgement made from that, with a policy attached.
+
+**No credit limit, and now for a different reason than when this was written.**
+Zoho exposes none on a contact in this book, so there was nothing to fold;
+``CustomerCreditLimit`` now holds one, and it is *typed*, not derived. A fold is
+rebuilt from events on every re-sync, so a limit folded into this state would be
+erased by the next complete rebuild — the same reason an agreed payment term is
+not folded into ``CASH_SCHEDULE``. The balance here is one half of the
+comparison and the limit is the other; ``commercial/insight/credit`` reads both
+and owns the arithmetic between them.
 
 **No collection probability and no expected recovery.** Both are predictions.
 The platform has payment history and no defaults to calibrate against, so any

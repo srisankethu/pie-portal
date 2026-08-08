@@ -1,5 +1,5 @@
 .PHONY: help setup verify verify-fast catalog bootstrap migrate seed \
-        backend frontend dev test lint \
+        backend frontend dev test test-frontend test-live lint \
         deploy-build deploy-release deploy-up deploy-down deploy-logs \
         deploy-runbook deploy-sync
 
@@ -18,6 +18,8 @@ help:
 	@echo "  make frontend     run the Vite dev server on :5173"
 	@echo ""
 	@echo "  make test         backend tests only"
+	@echo "  make test-frontend  frontend tests only (vitest)"
+	@echo "  make test-live    the live contract suites — real AI, real Zoho"
 	@echo "  make lint         ruff only"
 	@echo "  make bootstrap    create the DB, migrate, seed users + demo data"
 	@echo "  make migrate      apply database migrations"
@@ -76,6 +78,17 @@ dev:
 # PYTEST_WORKERS=0 forces the serial path.
 test:
 	cd backend && python3 -m pytest tests -q -n $${PYTEST_WORKERS:-auto}
+
+test-frontend:
+	cd frontend && npm test
+
+# Excluded from `make verify` and from `make test`, for the reason pytest.ini
+# gives: these call a real model and a real Zoho book, so they cost money and
+# need credentials. Both suites skip themselves — with a reason — when theirs
+# are absent, so this is safe to run without a full .env. CI runs them weekly
+# from .github/workflows/live.yml.
+test-live:
+	cd backend && python3 -m pytest tests/live -m live -q -ra
 
 lint:
 	python3 -m ruff check .

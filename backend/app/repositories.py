@@ -306,8 +306,43 @@ class ReadModelRepository:
         )
         return {r.doc_id: (r.modified_at or "") for r in self.s.scalars(stmt)}
 
+    def covered_since(self) -> Optional[date]:
+        """The earliest document date this connection has ever *listed*.
+
+        The floor of what has been looked at, which is a different question from
+        what is held — and the difference is the whole point. ``ingested_*``
+        answers "what did we find"; nothing in the rows can answer "where did we
+        look and find nothing", because an absent document and an unsearched
+        month look identical from the read model. Only the searcher knows, so
+        this reads the runs rather than the data.
+
+        **Only runs that finished OK count.** A run that died in its third
+        window of twenty covered three months, and reconstructing which three
+        from ``windows_done`` would make this a second thing to keep in step
+        with the loop that increments it. Forgetting a partial run's coverage
+        costs a re-listing — list calls, with the detail cursor still skipping
+        everything already held — and never loses a document. The conservative
+        direction is the cheap one, so it is the one taken.
+
+        Returns None when this connection has never completed a run, which
+        correctly means "nothing has been covered; list everything".
+        """
+        stmt = select(func.min(models.SyncRun.since)).where(
+            models.SyncRun.organization_id == self.org,
+            models.SyncRun.connection_id == self.connection_id,
+            models.SyncRun.status == "OK",
+            models.SyncRun.since.is_not(None),
+        )
+        return self.s.scalar(stmt)
+
     def ingested_high_water(self, doc_type: str) -> Optional[str]:
         """The newest modification stamp this connection has already pulled.
+
+        Valid **only inside a window already covered** — see ``covered_since``.
+        The mark is the newest modification stamp held, and documents older than
+        the window that earned it are older-modified almost by definition, so a
+        listing sorted by modification time stops before reaching any of them.
+        ``SyncService.arm_incremental_listing`` is what enforces that.
 
         What an incremental listing stops at. Derived from the rows actually
         held rather than kept as a separate "last synced at" column, and that is

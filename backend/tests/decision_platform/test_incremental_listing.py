@@ -155,21 +155,32 @@ def test_a_reconciliation_pass_ignores_the_mark_entirely():
 
 # ── which mode the sync asks for ────────────────────────────────────────────
 class _Repo:
-    def __init__(self, marks):
+    def __init__(self, marks, covered):
         self.marks = marks
+        self.covered = covered
 
     def ingested_high_water(self, kind):
         return self.marks.get(kind)
 
+    def covered_since(self):
+        return self.covered
 
-def _svc(*, resume=True, incremental=True, marks=None):
-    from app.ingestion.sync import SyncService
+
+#: The floor these tests run under. ``_source`` builds a window starting
+#: 2024-01-01, so a connection covered from 2023 has already listed it — which
+#: is the state every "nightly pull" test below is describing.
+COVERED = date(2023, 1, 1)
+
+
+def _svc(*, resume=True, incremental=True, marks=None, covered=COVERED):
+    from app.ingestion.sync import SyncReport, SyncService
 
     svc = SyncService.__new__(SyncService)
     svc.resume = resume
     svc.incremental = incremental
-    svc.repo = _Repo(marks or {})
+    svc.repo = _Repo(marks or {}, covered)
     svc.source = None
+    svc.report = SyncReport(organization_id="o")
     return svc
 
 
@@ -222,3 +233,117 @@ def test_a_row_with_no_stamp_never_stops_the_listing():
     got = _documents(src)
 
     assert [d["invoice_id"] for d in got] == ["new-1", "odd", "new-2"]
+
+
+# ── the window the mark is allowed to speak for ─────────────────────────────
+#
+# The mark is `max(modified_at)` over everything held, with no notion of which
+# window earned it. That is fine for a window already listed and catastrophic
+# for one that has not been: an incremental listing sorts newest-modified first
+# and stops at the mark, so every document in a newly-added *older* window is
+# below it — older-modified precisely because it is older — and the listing
+# stops on its first row. The run then reports success having fetched nothing,
+# and asking again never helps, because the mark only moves forward.
+
+
+def test_widening_the_window_backwards_lists_the_new_months_in_full():
+    """The reported bug. Synced 2025 in January, want 2024 in August.
+
+    Without this the backfill is a silent no-op: the operator picks an earlier
+    date, the run goes green, and not one document arrives.
+    """
+    svc = _svc(marks={"invoice": "2026-08-01"}, covered=date(2025, 1, 1))
+    src = _source([])
+    src._since = date(2024, 1, 1)          # the window being added
+
+    assert svc.arm_incremental_listing(src) == {}
+    assert src.modified_since == {}
+    # And it says so, rather than backfilling invisibly.
+    assert svc.report.windows_listed_in_full == 1
+
+
+def test_a_window_already_covered_keeps_the_short_circuit():
+    """The saving this must not destroy. A widened pull re-lists only the new
+    months; every month covered before still stops at the mark."""
+    svc = _svc(marks={"invoice": "2026-08-01"}, covered=date(2025, 1, 1))
+    src = _source([])
+    src._since = date(2025, 6, 1)          # inside what has been covered
+
+    assert svc.arm_incremental_listing(src) == {"invoice": "2026-08-01"}
+    assert svc.report.windows_listed_in_full == 0
+
+
+def test_the_window_that_starts_exactly_at_the_floor_is_covered():
+    """The floor is the earliest date *listed*, not the first one not listed."""
+    svc = _svc(marks={"invoice": "2026-08-01"}, covered=date(2025, 1, 1))
+    src = _source([])
+    src._since = date(2025, 1, 1)
+
+    assert svc.arm_incremental_listing(src) == {"invoice": "2026-08-01"}
+
+
+def test_a_connection_that_has_never_finished_a_run_covers_nothing():
+    """Rows can say what was found; only a finished run can say where we
+    looked. Until one has, every window is new."""
+    svc = _svc(marks={"invoice": "2026-08-01"}, covered=None)
+    src = _source([])
+
+    assert svc.arm_incremental_listing(src) == {}
+    assert svc.report.windows_listed_in_full == 1
+
+
+def test_a_window_with_no_lower_bound_is_treated_as_uncovered():
+    """Listing too much is a cost; listing too little is a hole. An
+    uncomparable window takes the cost."""
+    svc = _svc(marks={"invoice": "2026-08-01"}, covered=date(2020, 1, 1))
+    src = _source([])
+    src._since = None
+    src._cutoff = lambda: None
+
+    assert svc.arm_incremental_listing(src) == {}
+
+
+# ── what history is actually held ───────────────────────────────────────────
+def test_coverage_reads_finished_runs_only(tmp_path):
+    """"Last synced 2 hours ago" does not answer "what history do I have".
+
+    A nightly pull can run for a year and still cover only the window the first
+    run asked for, so coverage is reported separately — and only a run that
+    finished may contribute it. A run that died in window three of twenty
+    covered three months, and reconstructing which three from ``windows_done``
+    would be a second thing to keep in step with the loop that increments it.
+    Forgetting a partial run costs a re-listing and never loses a document.
+    """
+    from datetime import datetime, timezone
+
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    from app.db import Base
+    from app.domain import models
+    from app.repositories import ReadModelRepository
+
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False},
+                           poolclass=StaticPool, future=True)
+    Base.metadata.create_all(engine)
+    s = sessionmaker(bind=engine, future=True)()
+
+    def _run(since, status):
+        s.add(models.SyncRun(organization_id="o", connection_id="c1",
+                             source="api", status=status, since=since,
+                             started_at=datetime.now(timezone.utc)))
+
+    _run(date(2025, 1, 1), "OK")
+    _run(date(2023, 1, 1), "FAILED")     # asked for more, never delivered it
+    _run(date(2024, 1, 1), "OK")
+    s.commit()
+
+    repo = ReadModelRepository(s, "o", connection_id="c1")
+    # The earliest window a run actually finished — not the earliest requested.
+    assert repo.covered_since() == date(2024, 1, 1)
+
+    # And a connection of its own has its own floor: one company's history
+    # says nothing about another's.
+    assert ReadModelRepository(s, "o", connection_id="c2").covered_since() is None
+    s.close()

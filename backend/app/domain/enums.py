@@ -236,7 +236,7 @@ class AiFailureReason(str, Enum):
 
     - *Rejections* raise from the validation gate and degrade the decision:
       SCHEMA_INVALID, UNKNOWN_FACT_LABEL, UNKNOWN_SIGNAL_ID, UNGROUNDED_NUMBER,
-      SCALE_VIOLATION.
+      SCALE_VIOLATION, NO_GROUNDED_FIGURE.
     - *Corrections* are repaired deterministically and recorded, not raised
       (the output stays usable): PRIORITY_OUT_OF_RANGE, ACTION_TEXT_ON_WITHHELD.
     - *Provider* failures never reach the gate at all.
@@ -248,6 +248,11 @@ class AiFailureReason(str, Enum):
     UNKNOWN_SIGNAL_ID = "UNKNOWN_SIGNAL_ID"
     UNGROUNDED_NUMBER = "UNGROUNDED_NUMBER"
     SCALE_VIOLATION = "SCALE_VIOLATION"
+    #: Nothing was invented — nothing was said either. A surfaced reading of a
+    #: bundle that carried figures quoted none of them, which is a caption, not
+    #: an interpretation. Distinguished from the rejections above because it
+    #: points at the prompt rather than at the model's arithmetic.
+    NO_GROUNDED_FIGURE = "NO_GROUNDED_FIGURE"
     # deterministic corrections (recorded, not fatal)
     PRIORITY_OUT_OF_RANGE = "PRIORITY_OUT_OF_RANGE"
     ACTION_TEXT_ON_WITHHELD = "ACTION_TEXT_ON_WITHHELD"

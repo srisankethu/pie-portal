@@ -839,3 +839,56 @@ export interface IdentityPolicy {
   can_manage: boolean;
   note: string;
 }
+
+/** Whether the AI is actually on, and what the next decision run would cost.
+ *
+ *  Both halves come from `/internal/ai-readiness`, which builds the prompts a
+ *  run would send and then stops — nothing here costs a provider call. */
+export interface AiProviderStatus {
+  /** What `AI_PROVIDER` says. */
+  configured: string;
+  /** What will really run. Differs from `configured` when the live provider
+   *  could not be built — a missing key is the usual reason. */
+  effective: string;
+  model: string;
+  api_key_present: boolean;
+  live: boolean;
+  /** Why the two differ, in words, or null when they do not. */
+  detail: string | null;
+}
+
+export interface AiReadiness {
+  provider: AiProviderStatus;
+  signals_considered: number;
+  would_call_provider: number;
+  would_reuse_cached: number;
+  would_suppress_up_front: number;
+  by_type: Record<string, number>;
+  estimated_input_tokens: number;
+  estimated_output_tokens: number;
+  rates: {
+    currency: string;
+    per_mtok_input: number;
+    per_mtok_output: number;
+    max_output_tokens_per_call: number;
+  };
+  estimated_cost_usd: number;
+  estimated_cost_per_decision_usd: number;
+  note: string;
+}
+
+export interface AiWindowSummary {
+  calls: number;
+  provider_calls: number;
+  by_status: Record<string, number>;
+  rates: Record<string, number>;
+  failure_reasons: Record<string, number>;
+  cost: { currency: string; total_estimated: number; per_decision: number; per_day: number };
+  latency_ms: { median: number | null; max: number | null };
+  health: { degraded_rate: number; band: string; note: string };
+}
+
+export interface AiMetricsReport {
+  generated_at: string;
+  windows: Record<string, AiWindowSummary>;
+}

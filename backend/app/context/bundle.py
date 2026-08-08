@@ -10,9 +10,27 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Optional
+
+#: The two halves of the grounding contract live together deliberately: what a
+#: bundle *permits* a model to say and how a number is *recognised* in prose have
+#: to agree, and two regexes in two modules would eventually not. ``ai/contract``
+#: imports this rather than owning a second copy.
+_NUMBER_RE = re.compile(r"-?\d[\d,]*(?:\.\d+)?")
+
+
+def numbers_in(text: str) -> list[float]:
+    """Every number a reader would see in a piece of text."""
+    out: list[float] = []
+    for m in _NUMBER_RE.findall(text or ""):
+        try:
+            out.append(float(m.replace(",", "")))
+        except ValueError:
+            continue
+    return out
 
 
 @dataclass
@@ -69,12 +87,39 @@ class ContextBundle:
     def signal_ids(self) -> set[str]:
         return {s.signal_id for s in self.signals}
 
+    def has_numeric_facts(self) -> bool:
+        """Whether this bundle gives the model anything to quote.
+
+        Read by the gate: a narrative with no figure in it is only a defect when
+        a figure was available. A bundle carrying nothing but a subject label
+        cannot be blamed for a wordy reading.
+        """
+        return any(not isinstance(f.value, bool) and isinstance(f.value, (int, float))
+                   for f in self.facts)
+
     def allowed_numbers(self) -> set[float]:
-        """Numeric values the AI may cite (from visible facts only, with common
-        representations: raw and 2-dp rounding, plus the ×100 percent form ONLY
-        for fractional ratios). The ×100 form is deliberately withheld for values
-        with magnitude > 1 (money, counts, days): otherwise a ₹430 fact would
-        also 'ground' a fabricated ₹43,000, inflating a monetary claim 100×."""
+        """Numeric values the AI may cite (raw and 2-dp rounding, plus the ×100
+        percent form ONLY for fractional ratios). The ×100 form is deliberately
+        withheld for values with magnitude > 1 (money, counts, days): otherwise a
+        ₹430 fact would also 'ground' a fabricated ₹43,000, inflating a monetary
+        claim 100×.
+
+        Two sources, and the split is the whole point:
+
+        * **numeric fact values** — what the deterministic layer computed;
+        * **the policy lines** — sentences this codebase *wrote*, from the
+          configured thresholds, and put in front of the model. "Down 40%, past
+          the 25% decline threshold" is a better sentence than "down 40%", and
+          the 25 in it is as deterministic as the 40. Excluding them meant the
+          gate rejected the model for quoting our own policy back at us, and a
+          rejection degrades the decision to a template — so the rule as written
+          made narratives worse without making any number less traceable.
+
+        Free-text *fact values* are deliberately NOT harvested. "CNMG 120408-MP
+        insert, box of 10" is data supplied by a customer or a catalogue, and
+        letting its digits ground a financial claim is exactly the hole the live
+        suite's adversarial fixtures exist to catch.
+        """
         out: set[float] = set()
         for f in self.facts:
             v = f.value
@@ -86,6 +131,8 @@ class ContextBundle:
                 out.update({base, round(base, 2), float(round(base))})
                 if abs(base) <= 1:  # a ratio like 0.4 → "40%"
                     out.update({round(base * 100, 2), round(base * 100, 1)})
+        for policy in self.policies:
+            out.update(numbers_in(policy))
         return out
 
     def context_hash(self) -> str:

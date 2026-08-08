@@ -39,3 +39,43 @@ def session(engine) -> Session:
     finally:
         s.rollback()
         s.close()
+
+
+@pytest.fixture()
+def api_client():
+    """A minimal app wired to an isolated DB, with the seeded users signed in.
+
+    Here rather than in one test module because two suites now need the same
+    owner/manager/salesperson harness to check the internal endpoints' scoping,
+    and a fixture copied into the second file is a fixture that drifts.
+    """
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from app.db import get_session
+    from app.routers import internal, platform_auth
+    from app.seed import ensure_org_and_users
+
+    eng = create_engine("sqlite://", connect_args={"check_same_thread": False},
+                        poolclass=StaticPool, future=True)
+    Base.metadata.create_all(eng)
+    maker = sessionmaker(bind=eng, autoflush=False, expire_on_commit=False, future=True)
+    s = maker()
+    ensure_org_and_users(s)
+    s.commit()
+    s.close()
+
+    app = FastAPI()
+    app.include_router(platform_auth.router)
+    app.include_router(internal.router)
+
+    def _override():
+        sess = maker()
+        try:
+            yield sess
+            sess.commit()
+        finally:
+            sess.close()
+
+    app.dependency_overrides[get_session] = _override
+    return TestClient(app)

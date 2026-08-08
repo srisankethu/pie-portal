@@ -125,3 +125,55 @@ def test_telemetry_is_populated_on_a_live_call(provider):
     # A live provider reports usage, so cost must be a real estimate.
     assert t.input_tokens and t.output_tokens
     assert t.estimated_cost_usd is not None and t.estimated_cost_usd > 0
+
+
+# ── the reason this branch exists: is it saying anything? ──────────────────
+def test_two_different_accounts_do_not_get_the_same_sentence(provider):
+    """The complaint that started this, as a test.
+
+    A mock returning one fixed sentence produced five identical decision cards.
+    A real model given different figures must produce different prose — if it
+    does not, the AI is decoration and the product should stop claiming it.
+    Wording is not asserted; difference is.
+    """
+    steep = _bundle(facts=[("subject", "Acme Industrial"), ("pct_change", -0.62),
+                           ("baseline_revenue", 80000.0), ("recent_revenue", 30400.0)])
+    slight = _bundle(facts=[("subject", "Rane Madras"), ("pct_change", -0.11),
+                            ("baseline_revenue", 22000.0), ("recent_revenue", 19580.0)])
+    a = _run(provider, steep, {"pct_change": -0.62})
+    b = _run(provider, slight, {"pct_change": -0.11})
+
+    assert a.status is AiStatus.OK and b.status is AiStatus.OK, (
+        "both readings degraded; the narrative layer is not working")
+    assert a.explanation != b.explanation
+    assert a.recommended_action != b.recommended_action
+
+
+def test_a_live_reading_quotes_the_figures_it_was_given(provider):
+    """Check 6 of the gate, live. A reading that names no figure never reaches
+    a person, so an OK status here means the model quoted something real."""
+    b = _bundle(facts=[("subject", "Acme Industrial"), ("pct_change", -0.4),
+                       ("baseline_revenue", 30000.0), ("recent_revenue", 12000.0)])
+    r = _run(provider, b, {"pct_change": -0.4})
+    if r.status is AiStatus.OK:
+        assert _numbers(r), "an OK reading with no figure escaped the gate"
+
+
+def test_a_live_call_costs_what_the_preflight_predicted(provider):
+    """The estimate an owner is shown before switching this on, checked against
+    a real call. Order of magnitude only — the point is that the rate card and
+    the token heuristic are not wildly wrong, not that they are exact."""
+    from app.ai.telemetry import estimate_cost
+    from app.ai.prompt import build_system, build_user
+
+    b = _bundle(facts=[("subject", "Acme"), ("pct_change", -0.4),
+                       ("baseline_revenue", 30000.0), ("recent_revenue", 12000.0)])
+    predicted_input = len(build_system(b) + build_user(b)) // 4
+    r = _run(provider, b, {"pct_change": -0.4})
+
+    actual = r.telemetry.input_tokens
+    assert actual, "no usage reported; the cost screen would show nothing"
+    assert 0.25 <= predicted_input / actual <= 4.0, (
+        f"the preflight's ~4-chars-per-token estimate ({predicted_input}) is far "
+        f"from the provider's count ({actual}); the cost screen would mislead")
+    assert estimate_cost(predicted_input, settings.AI_MAX_TOKENS) > 0

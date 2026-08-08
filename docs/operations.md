@@ -83,9 +83,58 @@ deployment needs no migration step.
 | `AI_TIMEOUT_SECONDS` | `20` | Per-call timeout; on expiry the decision degrades to FAILED. |
 | `ANTHROPIC_API_KEY` | — | Required when `AI_PROVIDER=anthropic`. |
 | `ANTHROPIC_API_BASE` | `https://api.anthropic.com` | Override for a gateway/proxy. |
-| `PROMPT_VERSION` | `p1` | Stamped on every decision for provenance. |
+| `PROMPT_VERSION` | `p2` | Stamped on every decision and every telemetry row for provenance. Bump it when the system prompt changes. |
 | `PRIORITY_HIGH_AT` / `PRIORITY_MEDIUM_AT` | `70` / `40` | Priority band cutoffs. |
 | `AI_PRIORITY_ADJUST_BOUND` | `20` | Hard clamp on the AI's priority influence. |
+
+### Turning the AI on
+
+The shipped default is **`AI_PROVIDER=mock`** — an offline stand-in that
+restates the signal's own figures and labels itself as a stand-in on every
+card. Nothing is sent anywhere and nothing is charged. The deterministic engine
+is unaffected either way: it computes every number on every screen, with or
+without a model.
+
+To run the narrative layer on a real model:
+
+1. **Set two variables and restart.**
+
+   ```bash
+   export AI_PROVIDER=anthropic
+   export ANTHROPIC_API_KEY="sk-ant-..."
+   ```
+
+   Set `AI_COST_PER_MTOK_INPUT` / `_OUTPUT` to your actual contracted rates at
+   the same time. Every cost figure in the product derives from them, and the
+   defaults are indicative only.
+
+2. **Check the screen before the bill.** Sign in as the owner →
+   **Settings → AI layer**. It says which provider is *really* running (a
+   configured provider that cannot be built falls back to the mock rather than
+   failing the screen — the panel names that case explicitly), how many provider
+   calls the next decision run would make, and what it would cost at your rates.
+   It calls nothing to work that out.
+
+3. **Generate decisions and read them.** `POST /api/v1/internal/decisions/generate`,
+   or the button on the decisions screen. Then look at the cards: a live reading
+   names the account, quotes the figures it was given, and proposes something
+   specific. If several cards read alike, the AI is not earning its place and
+   the honest response is to turn it back off.
+
+4. **Watch the same panel afterwards.** Spend over seven days, median latency,
+   and the share of readings the validation gate refused. A refused reading
+   still surfaces the decision with the deterministic sentence, so a bad model
+   costs money and clarity, never correctness.
+
+**What the model can and cannot do, mechanically.** It receives the curated
+fact bundle and nothing else — no raw records, no customer names (those are
+pseudonymised on the way out and restored on the way back), and no cost or
+margin for a salesperson recipient. On the way out, every number in its text
+must trace to a supplied fact or to the policy lines it was shown; a surfaced
+reading that quotes no figure at all is refused too. Anything refused degrades
+to the deterministic template. `backend/tests/live/test_live_provider_contract.py`
+asserts all of this against a real model — `make test-live`, which skips itself
+cleanly when no key is set.
 
 ### AI observability
 

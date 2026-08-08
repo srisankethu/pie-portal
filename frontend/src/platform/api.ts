@@ -1,4 +1,4 @@
-import type { Account, AccountItem, StatusFilter, ApprovalRequest, EntityKind, Identity, IdentityPolicy, IdentitySuggestion, ConnectionCheck, ConnectionsView, FixedThresholds, MarginPolicy, MarginPolicyPatch, NewConnectionInput, ZohoConnection, ZohoCredential, ZohoVisibleOrg, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, DecisionTrace, OrgPolicy, PlatformSession, PlatformUser, QuoteGate, Role, SyncOptions, SyncStartResponse, SyncState, ThresholdView, ZohoConnectionInput } from "./types";
+import type { AiMetricsReport, AiReadiness, Account, AccountItem, StatusFilter, ApprovalRequest, EntityKind, Identity, IdentityPolicy, IdentitySuggestion, ConnectionCheck, ConnectionsView, FixedThresholds, MarginPolicy, MarginPolicyPatch, NewConnectionInput, ZohoConnection, ZohoCredential, ZohoVisibleOrg, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, DecisionTrace, OrgPolicy, PlatformSession, PlatformUser, QuoteGate, Role, SyncOptions, SyncStartResponse, SyncState, ThresholdView, ZohoConnectionInput } from "./types";
 
 import { setMoneyCurrency } from "../money";
 import { setBusinessTimezone } from "../when";
@@ -495,6 +495,14 @@ export const papi = {
 
   checkConnection: (t: string, id: string) =>
     req<ConnectionCheck>(`/api/v1/connections/${id}/check`, { method: "POST" }, t),
+
+  // ── the AI layer, from the outside (owner only) ───────────────────────────
+  /** Which provider will really run, and what the next decision run would
+   *  cost. Safe to call whenever the panel is open: it sends nothing. */
+  aiReadiness: (t: string) => req<AiReadiness>("/api/v1/internal/ai-readiness", {}, t),
+
+  /** What the AI has actually cost and how often it degraded. */
+  aiMetrics: (t: string) => req<AiMetricsReport>("/api/v1/internal/ai-metrics", {}, t),
 };
 
 /** True when a request failed because the session is no longer valid. */

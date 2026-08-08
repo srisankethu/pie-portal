@@ -17,7 +17,7 @@ from ..context.bundle import ContextBundle
 from ..domain.enums import AiFailureReason, AiStatus
 from . import fallback
 from .contract import AIValidationError, validate_output
-from .prompt import SYSTEM, build_user
+from .prompt import build_system, build_user
 from .provider import AIProvider, ProviderError
 from .telemetry import CallTelemetry, failure_reason_for_provider_error, usage_of
 
@@ -111,7 +111,7 @@ def interpret(bundle: ContextBundle, provider: AIProvider, *, signal_type: str,
                              note="Recommendation withheld: insufficient evidence.")
         return _done(r)
 
-    system, user = SYSTEM, build_user(bundle)
+    system, user = build_system(bundle), build_user(bundle)
     sent["payload"] = f"{system}\n\n---\n\n{user}"
     corrections: list[AiFailureReason] = []
     started = time.monotonic()

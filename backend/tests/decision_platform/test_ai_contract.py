@@ -1,23 +1,14 @@
 """AI output contract + validation gate."""
 from __future__ import annotations
 
-import json
 
 import pytest
 
 from app.ai.contract import AIValidationError, validate_output
 
-from .ai_helpers import make_bundle
+from .ai_helpers import make_bundle, valid_output as _out
 
 
-def _out(**over):
-    base = {"should_surface": True, "concise_title": "Revenue decline: Acme",
-            "explanation": "Revenue is materially down versus the prior period.",
-            "recommended_action": "Review the account.", "priority_adjustment": 5,
-            "cannot_recommend_reliably": False, "cited_fact_labels": ["pct_change"],
-            "cited_signal_ids": ["sig1"]}
-    base.update(over)
-    return json.dumps(base)
 
 
 def test_valid_output_passes():

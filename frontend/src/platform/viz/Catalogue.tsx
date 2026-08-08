@@ -133,10 +133,30 @@ export function CatalogueScreen({ session }: { session: PlatformSession }) {
             { field: "hsn", headerName: "HSN", width: 130, flex: 0,
               valueFormatter: (p: { value: unknown }) =>
                 p.value ? String(p.value) : "—" },
-            { field: "supplier", headerName: "Supplier", width: 180, flex: 0,
+            {
+              // Whose product it is, and on what evidence — a bill this book
+              // paid, or the brand on the item master. Both read as a supplier
+              // name, and they are not equally strong: a bill is a transaction,
+              // a brand is an attribute somebody typed. Somebody reviewing a
+              // catalogue has to be able to tell them apart before trusting
+              // either, so the source travels with the name rather than being
+              // available somewhere else.
+              field: "supplier", headerName: "Supplier", width: 210, flex: 0,
               filter: "agTextColumnFilter",
-              valueFormatter: (p: { value: unknown }) =>
-                p.value ? String(p.value) : "—" },
+              cellRenderer: (p: { data: Row }) => (
+                p.data.supplier ? (
+                  <span className="cat-attrib">
+                    <span title={String(p.data.supplier)}>
+                      {String(p.data.supplier)}
+                    </span>
+                    <StatusChip label={String(p.data.supplier_source_label)}
+                                tone={p.data.supplier_source === "BILL"
+                                      ? "good" : "neutral"}
+                                dense />
+                  </span>
+                ) : <span className="viz-muted">—</span>
+              ),
+            },
             numeric<Row>("revenue", "Revenue", (v) => money(v),
                          { width: 150, flex: 0 }),
             {

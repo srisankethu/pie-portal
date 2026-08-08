@@ -86,8 +86,15 @@ def test_a_range_covers_a_run_of_headings_and_the_narrower_one_wins():
 
 
 def test_a_heading_in_no_range_stays_unplaced():
-    """Better an honest gap than an item in the wrong column."""
-    assert cat.from_hsn("7318", TH) is None
+    """Better an honest gap than an item in the wrong column.
+
+    8471 is a computer and 8413 is a pump. Both appear exactly once in the live
+    masters, and both are deliberately unmapped: sweeping a one-off into a line
+    to flatter the coverage figure is how a mix grid starts lying.
+    """
+    assert cat.from_hsn("8471", TH) is None
+    assert cat.from_hsn("8413", TH) is None
+    assert cat.from_hsn("6109", TH) is None
 
 
 def test_an_item_nothing_can_place_is_uncategorised_and_never_guessed():
@@ -113,7 +120,7 @@ def test_the_hsn_ranges_are_inside_the_thresholds_version():
     is the whole reason the map is policy rather than a module constant."""
     other = CommercialThresholds(
         hsn_category_ranges=TH.hsn_category_ranges
-        + ((7318, 7318, cat.CONSUMABLES),))
+        + ((6109, 6109, cat.CONSUMABLES),))
     assert other.version != TH.version
 
 
@@ -526,3 +533,30 @@ def test_the_list_leads_with_the_items_revenue_runs_through(client):
     # And the headline is revenue, because a count can look alarming while the
     # unplaced items sell nothing.
     assert listing["unplaced_revenue"] == 910.0
+
+
+def test_the_headings_the_live_masters_actually_use_are_all_mapped():
+    """Measured against the real item masters rather than assumed.
+
+    Sampling 800 items from SLS Engineers and 400 from 4U Precision, these are
+    every heading that carries more than a one-off. 7318 was the largest
+    unmapped one in both books until it was added. The one-offs a real
+    catalogue always has — a computer, a pump, a project import — are
+    deliberately absent and stay honestly unplaced.
+    """
+    live = {
+        "8209": cat.CUTTING_TOOLS,   # 379 items — inserts and cermet tips
+        "8466": cat.CUTTING_TOOLS,   # 257 — holders, arbors, work holders
+        "8207": cat.CUTTING_TOOLS,   # 87  — interchangeable tools
+        "8202": cat.CUTTING_TOOLS,   # 5   — saws and blades
+        "7318": cat.CONSUMABLES,     # 22 across both books — fasteners
+        "6804": cat.CONSUMABLES,     # 8   — abrasives
+        "8204": cat.CONSUMABLES,     # 3   — spanners
+        "8205": cat.CONSUMABLES,     # 2   — hand tools
+        "8203": cat.CONSUMABLES,     # 2   — files and pliers
+        "8506": cat.CONSUMABLES,     # 1   — the battery in a digital gauge
+        "9031": cat.METROLOGY,       # 4   — measuring instruments
+        "8458": cat.MACHINES,        # 1   — a lathe
+    }
+    for heading, expected in live.items():
+        assert cat.from_hsn(heading, TH) == expected, heading

@@ -1246,6 +1246,22 @@
    hand-set answer. Kept on one line so the grid row stays two lines tall. */
 .cat-source { display: inline-flex; align-items: center; gap: 8px; }
 
+/* The supplier column, where a *name* and its evidence share a cell. Stacked
+   rather than side by side, which `.cat-source` can be because a chip on its
+   own is narrow and predictable. A principal's name is neither — "EMUGE
+   FRANKEN INDIA PVT LTD" beside "From a purchase bill" overran the column and
+   clipped the chip to "From a purcha", which is worse than not showing the
+   evidence at all: a truncated label still looks like an answer. The row is
+   already two lines tall, so the second line is free. */
+.cat-attrib {
+  display: flex; flex-direction: column; align-items: flex-start;
+  gap: 2px; line-height: 1.25; min-width: 0; width: 100%;
+}
+.cat-attrib > span:first-child {
+  max-width: 100%; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap;
+}
+
 /* The line picker, in the cell. Styled to read as part of the row rather than
    as a form control dropped into a grid — a work queue of 200 rows with 200
    chunky selects in it looks like a form nobody wants to fill in. */

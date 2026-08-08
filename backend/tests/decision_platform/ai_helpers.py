@@ -1,6 +1,8 @@
 """Helpers to build ContextBundles for AI-layer unit tests (no DB)."""
 from __future__ import annotations
 
+import json
+
 from app.context.bundle import ContextBundle, FactView, SignalView
 
 
@@ -24,3 +26,24 @@ def make_bundle(*, decision_type="CUSTOMER_DECLINE", level="SUFFICIENT",
         evidence_sufficiency={"level": level, "reasons": []},
         unknowns=[], policies=[], evidence_refs=[],
     )
+
+
+def valid_output(**over) -> str:
+    """A model response that passes every gate — the baseline the rejection
+    tests vary one field of.
+
+    The explanation quotes ``40%`` deliberately: it grounds against
+    ``pct_change`` -0.4, and the specificity gate rejects a surfaced reading of
+    numeric facts that quotes nothing. A baseline that could not pass check 6
+    would make every test built on it a test of check 6.
+
+    One copy, in the helper module, because the two AI test files had grown one
+    each and had to be edited together.
+    """
+    base = {"should_surface": True, "concise_title": "Revenue decline: Acme",
+            "explanation": "Revenue is down 40% versus the prior period.",
+            "recommended_action": "Review the account.", "priority_adjustment": 5,
+            "cannot_recommend_reliably": False, "cited_fact_labels": ["pct_change"],
+            "cited_signal_ids": ["sig1"]}
+    base.update(over)
+    return json.dumps(base)

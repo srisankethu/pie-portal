@@ -132,13 +132,20 @@ def test_the_user_still_sees_the_real_name(seeded):
     signal = _signal(seeded)
     bundle = assemble_from_signal(seeded, signal, Role.OWNER)
 
+    # A figure from the bundle's own facts, quoted verbatim: the gate rejects a
+    # surfaced reading of numeric facts that names none, so a fake provider that
+    # writes prose only would degrade and this test would be measuring the
+    # fallback's wording instead of rehydration.
+    figure = next(f.value for f in bundle.facts
+                  if isinstance(f.value, (int, float)) and not isinstance(f.value, bool))
+
     class NamesTheSubject(Recorder):
         def complete(self, system: str, user: str) -> str:
             self.seen.append(f"{system}\n{user}")
             label = bundle.subject_ref["label"]
             return (
                 f'{{"should_surface": true, "concise_title": "{label} margin slipped",'
-                f' "explanation": "{label} is earning less than it did.",'
+                f' "explanation": "{label} is earning less than it did ({figure}).",'
                 ' "recommended_action": "Review the price.",'
                 ' "priority_adjustment": 0, "cannot_recommend_reliably": false,'
                 ' "cited_fact_labels": [], "cited_signal_ids": []}')

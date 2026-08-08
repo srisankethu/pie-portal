@@ -12,6 +12,14 @@ interpret those facts, and routes the result to the person who owns the call.
 > reads those figures and writes a short recommendation. A human accepts,
 > modifies, or rejects it — and that decision is captured.
 
+**Out of the box the AI is off.** `AI_PROVIDER` defaults to `mock`, a
+deterministic offline stand-in: it restates the signal's own figures and says on
+every card that it is doing so. The deterministic engine underneath is the
+valuable half and it is real either way. To run the narrative layer on a real
+model — one setting, one key, and one screen that tells you what it will cost
+before you point it at a live book — see
+**[Turning the AI on](docs/operations.md#turning-the-ai-on)**.
+
 ---
 
 ## New here?

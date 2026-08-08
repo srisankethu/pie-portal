@@ -7,22 +7,37 @@ enforces, deterministically:
   3. fact-grounding — every number in user-facing text must trace to a supplied
      fact value (no fabricated financials),
   4. a withheld recommendation carries no action text,
-  5. priority_adjustment clamped to bounds.
+  5. priority_adjustment clamped to bounds,
+  6. specificity — a surfaced reading of a bundle that contained figures must
+     quote at least one of them.
 Any failure raises :class:`AIValidationError`; the caller falls back.
+
+Check 6 is the newest and needs its reason stated. Grounding alone permits a
+sentence that is true of every signal and useful for none — *"the deterministic
+signal indicates a material change worth a look"* cites nothing, invents
+nothing, and passes. Five decisions rendered five identical sentences that way.
+A reading that names no figure is not a reading of the figures, so it is
+rejected and the decision falls back to the deterministic template — which does
+carry the numbers, and is therefore strictly more informative than the sentence
+it replaced.
+
+The trade-off is real and deliberate: a model writing "revenue has more than
+halved" without digits is refused a perfectly good sentence. That is the right
+side to err on here — the fallback still says what happened, and the alternative
+is a gate that cannot tell interpretation from filler. ``metrics.health_band``
+is where a prompt that trips this too often becomes visible.
 """
 from __future__ import annotations
 
 import json
-import re
 from typing import Optional
 
 from pydantic import BaseModel, Field, ValidationError
 
 from ..config import settings
 from ..context.bundle import ContextBundle
+from ..context.bundle import numbers_in as _numbers_in
 from ..domain.enums import AiFailureReason
-
-_NUMBER_RE = re.compile(r"-?\d[\d,]*(?:\.\d+)?")
 
 # Scale factors a model plausibly confuses (ratio<->percent, and the ×100 money
 # inflation the grounding set deliberately refuses to admit).
@@ -54,16 +69,6 @@ class AIDecisionOutput(BaseModel):
     caveat: Optional[str] = Field(default=None, max_length=600)
     cited_fact_labels: list[str] = Field(default_factory=list)
     cited_signal_ids: list[str] = Field(default_factory=list)
-
-
-def _numbers_in(text: str) -> list[float]:
-    out: list[float] = []
-    for m in _NUMBER_RE.findall(text or ""):
-        try:
-            out.append(float(m.replace(",", "")))
-        except ValueError:
-            continue
-    return out
 
 
 def _grounded(value: float, allowed: set[float]) -> bool:
@@ -131,11 +136,20 @@ def validate_output(raw: str, bundle: ContextBundle,
     allowed = bundle.allowed_numbers()
     text = " ".join(filter(None, [out.concise_title, out.explanation,
                                   out.recommended_action, out.caveat]))
-    for n in _numbers_in(text):
+    cited = _numbers_in(text)
+    for n in cited:
         if not _grounded(n, allowed):
             scale = _is_scale_error(n, allowed)
             raise AIValidationError(
                 "ungrounded_number",
                 f"{n} {'is a supplied fact at the wrong scale' if scale else 'not traceable to a supplied fact'}",
                 AiFailureReason.SCALE_VIOLATION if scale else AiFailureReason.UNGROUNDED_NUMBER)
+
+    # 6) specificity — a surfaced reading of numeric facts must contain a number
+    if out.should_surface and not out.cannot_recommend_reliably \
+            and bundle.has_numeric_facts() and not cited:
+        raise AIValidationError(
+            "unspecific_narrative",
+            "no supplied figure appears in the text",
+            AiFailureReason.NO_GROUNDED_FIGURE)
     return out

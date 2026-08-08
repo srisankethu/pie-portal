@@ -100,12 +100,16 @@ def test_pseudonym_contains_no_digits():
     as the numbers 67 and 1, so a model that politely names its subject would
     fail grounding and every interpretation would degrade to the deterministic
     fallback — quietly, since degrading is a supported outcome.
+
+    Asserted through ``numbers_in`` — the same function the gate calls, which
+    now lives beside ``allowed_numbers`` in ``context/bundle.py`` so the two
+    halves of the grounding contract cannot drift apart.
     """
-    from app.ai.contract import _NUMBER_RE
+    from app.context.bundle import numbers_in
 
     for entity_id in (f"c{i}" for i in range(200)):
         label = pseudonym.label_for(ORG, "CUSTOMER", entity_id)
-        assert not _NUMBER_RE.findall(label), (
+        assert not numbers_in(label), (
             f"{label!r} parses as a number and would break output grounding")
 
 

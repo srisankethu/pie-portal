@@ -49,6 +49,24 @@ def ai_metrics(
     return report(AiTelemetryRepository(session, principal.organization_id))
 
 
+@router.get("/ai-readiness")
+def ai_readiness(
+    principal: Principal = Depends(require_owner),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Is the AI actually on, and what would the next run cost? (owner only)
+
+    The two questions that belong together and were previously answerable only
+    by reading environment variables on the server: which provider will really
+    run — a configured one that cannot be built falls back to the mock — and,
+    for the signals standing right now, how many provider calls that is and what
+    they would cost at the configured rates. Calls nothing and sends nothing.
+    """
+    from ..decisions.preflight import estimate
+
+    return estimate(session, principal.organization_id)
+
+
 @router.get("/zoho/check")
 def zoho_check(
     principal: Principal = Depends(require_manager_or_owner),

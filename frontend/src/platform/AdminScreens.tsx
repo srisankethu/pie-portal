@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { formatDateTime } from "../when";
 import { papi } from "./api";
 import type {
+  AiMetricsReport,
+  AiReadiness,
   ApprovalRequest,
   FixedThresholds,
   MarginPolicy,
@@ -21,7 +23,7 @@ import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 import { abilityFor } from "./ability";
 import { DataGrid, type ColDef } from "./DataGrid";
-import { EmptyState, StatusChip } from "./kit";
+import { EmptyState, ErrorState, LoadingState, MetricCard, StatusChip, type Tone } from "./kit";
 import { policyProblems } from "./policySchema";
 import { Bp, Labelled } from "./ui";
 import { money, moneySymbol } from "../money";
@@ -1012,6 +1014,126 @@ function UsersGrid({
   );
 }
 
+/* ── the AI layer, from the outside ───────────────────────────────────────── */
+
+/** USD, to the precision the numbers actually have.
+ *
+ *  Not `money()`: that formats the organization's own currency, and provider
+ *  rates are quoted in dollars. Showing a dollar figure with a rupee sign
+ *  because a shared helper was handy would be the wrong kind of reuse. */
+function usd(n: number): string {
+  if (!n) return "$0.00";
+  return n < 0.01 ? `$${n.toFixed(5)}` : `$${n.toFixed(2)}`;
+}
+
+const BAND_TONE: Record<string, Tone> = {
+  OK: "good", HIGH: "bad", SUSPICIOUSLY_LOW: "warn", INSUFFICIENT_DATA: "neutral" };
+
+/**
+ * Is the AI on, what would the next run cost, and what has it cost so far.
+ *
+ * This panel exists because "AI-native" was a claim nobody could check from
+ * inside the product. `AI_PROVIDER` defaults to an offline stand-in, so the
+ * shipped default writes deterministic sentences and says nothing about it —
+ * and the one place that knew was an environment variable on the server. Now
+ * the first line of this panel says which provider is really running and why,
+ * and the figures beside it say what turning the real one on would cost before
+ * it is pointed at a real book.
+ *
+ * Everything here is read-only. Switching providers is a deployment decision
+ * (a key, a restart), not a toggle a browser session should own.
+ */
+function AiLayerSection({ token }: { token: string }) {
+  const [ready, setReady] = useState<AiReadiness | null>(null);
+  const [metrics, setMetrics] = useState<AiMetricsReport | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    Promise.all([papi.aiReadiness(token), papi.aiMetrics(token)])
+      .then(([r, m]) => { if (live) { setReady(r); setMetrics(m); setError(null); } })
+      .catch((e) => { if (live) setError((e as Error).message); });
+    return () => { live = false; };
+  }, [token]);
+
+  if (error) return <ErrorState title="The AI layer did not load" error={error} />;
+  if (!ready) return <LoadingState rows={2} />;
+
+  const w = metrics?.windows?.["7d"];
+  const p = ready.provider;
+
+  return (
+    <Bp className="st-section">
+      <h3>
+        <Labelled tip="The narrative layer only. Every figure in a decision is computed deterministically and validated on the way out, whichever provider is running.">
+          AI layer
+        </Labelled>
+      </h3>
+
+      <Stack direction="row" spacing={1} sx={{ flexWrap: "wrap", rowGap: 1, mb: 1 }}>
+        <StatusChip
+          label={p.live ? `Live · ${p.model}` : "Offline stand-in"}
+          tone={p.live ? "good" : "warn"}
+          tip={p.live
+            ? "Decision narratives are written by a model, from the computed facts."
+            : "Decision narratives are deterministic text, not model output."}
+        />
+        <StatusChip label={`configured: ${p.configured}`} tone="neutral" />
+        {w && (
+          <StatusChip
+            label={`health: ${w.health.band}`}
+            tone={BAND_TONE[w.health.band] ?? "neutral"}
+            tip={w.health.note}
+          />
+        )}
+      </Stack>
+
+      {p.detail && <p className="st-help">{p.detail}</p>}
+
+      <Box sx={{
+        display: "grid", gap: 2, mt: 2,
+        gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))" }}>
+        <MetricCard
+          label="Next run"
+          value={ready.would_call_provider}
+          sub={`${ready.would_reuse_cached} cached, ${ready.would_suppress_up_front} withheld`}
+          tip="Provider calls the next decision generation would make. Unchanged context is reused rather than re-inferred, and thin evidence is withheld without asking the model."
+        />
+        <MetricCard
+          label="Next run costs"
+          value={usd(ready.estimated_cost_usd)}
+          sub={`${usd(ready.estimated_cost_per_decision_usd)} per decision`}
+          tip={ready.note}
+        />
+        <MetricCard
+          label="Spent, 7 days"
+          value={usd(w?.cost.total_estimated ?? 0)}
+          sub={w ? `${w.provider_calls} provider calls of ${w.calls}` : "no calls yet"}
+          tip="Estimated from the token counts the provider reported, at the configured rates."
+        />
+        <MetricCard
+          label="Median latency"
+          value={w?.latency_ms.median != null ? `${w.latency_ms.median} ms` : "—"}
+          sub={w?.latency_ms.max != null ? `${w.latency_ms.max} ms worst` : undefined}
+          tip="How long a decision waits on the model. The deterministic signal is never blocked by it — a slow or failed call degrades to the template."
+        />
+        <MetricCard
+          label="Degraded, 7 days"
+          value={pct(w?.rates.degraded ?? 0)}
+          sub="model output the gate refused"
+          tip="A refused reading still surfaces the decision, with the signal's own numbers. Consistently high points at the prompt or the model; consistently zero means the gate is not doing anything."
+        />
+      </Box>
+
+      <p className="st-help">
+        Rates: {usd(ready.rates.per_mtok_input)} per million input tokens,{" "}
+        {usd(ready.rates.per_mtok_output)} per million output, capped at{" "}
+        {ready.rates.max_output_tokens_per_call} output tokens a call. {ready.note}
+      </p>
+    </Bp>
+  );
+}
+
 export function SettingsScreen({ session }: { session: PlatformSession }) {
   const [users, setUsers] = useState<PlatformUser[]>([]);
   const [canManage, setCanManage] = useState(false);
@@ -1177,6 +1299,9 @@ export function SettingsScreen({ session }: { session: PlatformSession }) {
           />
         </Bp>
       )}
+
+      {/* ── the AI layer ── */}
+      {canManage && <AiLayerSection token={session.token} />}
 
       {/* ── approval policy ── */}
       {!isSales && policy && (

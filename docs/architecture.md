@@ -284,7 +284,7 @@ without credentials.
 |---|---|
 | Backend | Python 3.11, FastAPI, SQLAlchemy 2.0, Pydantic v2, Alembic |
 | Database | SQLite (dev/test), Postgres-ready (production) |
-| AI | Swappable provider: deterministic offline mock, or Anthropic Claude |
+| AI | Swappable provider: deterministic offline mock (the default), or Anthropic Claude — see [Turning the AI on](operations.md#turning-the-ai-on) |
 | Frontend | React 18, Vite, TypeScript — screen-state driven, plain `fetch` |
 | Product intelligence | PIE (pie-parser) for RFQ resolution |
 | Source of record | Zoho Books, read-only |

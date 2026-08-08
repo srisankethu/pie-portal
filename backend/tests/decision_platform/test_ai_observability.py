@@ -9,7 +9,6 @@ Acceptance criteria under test:
 """
 from __future__ import annotations
 
-import json
 
 import pytest
 
@@ -22,19 +21,11 @@ from app.config import settings
 from app.domain import models
 from app.domain.enums import AiFailureReason, AiStatus
 
-from .ai_helpers import make_bundle
+from .ai_helpers import make_bundle, valid_output as _out
 
 METRICS = {"pct_change": -0.4, "baseline_revenue": 30000, "recent_revenue": 12000}
 
 
-def _out(**over):
-    base = {"should_surface": True, "concise_title": "Revenue decline: Acme",
-            "explanation": "Revenue is materially down versus the prior period.",
-            "recommended_action": "Review the account.", "priority_adjustment": 5,
-            "cannot_recommend_reliably": False, "cited_fact_labels": ["pct_change"],
-            "cited_signal_ids": ["sig1"]}
-    base.update(over)
-    return json.dumps(base)
 
 
 def _run(mode, **bundle_kw):
@@ -233,44 +224,6 @@ def test_health_band_flags_high_and_suspiciously_low(monkeypatch):
     assert health_band(0.10, 100)[0] == "OK"
     # below the minimum sample no inference is drawn in either direction
     assert health_band(0.0, 3)[0] == "INSUFFICIENT_DATA"
-
-
-@pytest.fixture()
-def api_client():
-    """A minimal app wired to an isolated DB (mirrors the authz test harness)."""
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
-    from sqlalchemy import create_engine
-    from sqlalchemy.orm import sessionmaker
-    from sqlalchemy.pool import StaticPool
-
-    from app.db import Base, get_session
-    from app.routers import internal, platform_auth
-    from app.seed import ensure_org_and_users
-
-    engine = create_engine("sqlite://", connect_args={"check_same_thread": False},
-                           poolclass=StaticPool, future=True)
-    Base.metadata.create_all(engine)
-    Maker = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False, future=True)
-    s = Maker()
-    ensure_org_and_users(s)
-    s.commit()
-    s.close()
-
-    app = FastAPI()
-    app.include_router(platform_auth.router)
-    app.include_router(internal.router)
-
-    def _override():
-        sess = Maker()
-        try:
-            yield sess
-            sess.commit()
-        finally:
-            sess.close()
-
-    app.dependency_overrides[get_session] = _override
-    return TestClient(app)
 
 
 def test_ai_metrics_endpoint_is_owner_only(api_client):

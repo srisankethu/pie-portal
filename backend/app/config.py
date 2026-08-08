@@ -172,7 +172,10 @@ class Settings:
     AI_MODEL: str = os.environ.get("AI_MODEL", "claude-haiku-4-5-20251001")
     AI_MAX_TOKENS: int = int(os.environ.get("AI_MAX_TOKENS", "400"))   # bounded output
     AI_TIMEOUT_SECONDS: float = float(os.environ.get("AI_TIMEOUT_SECONDS", "20"))
-    PROMPT_VERSION: str = os.environ.get("PROMPT_VERSION", "p1")
+    # Stamped on every telemetry row, so a change in narrative quality can be
+    # attributed to the prompt that produced it. Bumped whenever the system
+    # prompt changes: p2 added the per-decision-type guidance.
+    PROMPT_VERSION: str = os.environ.get("PROMPT_VERSION", "p2")
     ANTHROPIC_API_KEY: str = os.environ.get("ANTHROPIC_API_KEY", "")
     ANTHROPIC_API_BASE: str = os.environ.get("ANTHROPIC_API_BASE", "https://api.anthropic.com")
     # Priority banding (deterministic base + bounded AI adjustment).

@@ -822,6 +822,26 @@ class SyncService:
                         })
                     continue
                 if prod is None:
+                    # The line is kept, against a placeholder. Dropping it is
+                    # how real revenue went missing: an item deleted in Zoho
+                    # still has invoices pointing at it, and skipping those
+                    # lines removed the sale from revenue, from the customer's
+                    # history and from margin — visible only in a diagnostics
+                    # panel nobody reads daily. The sale happened; the item's
+                    # name is what we do not know, and that is a much smaller
+                    # thing to be missing.
+                    line_raw = by_line.get(t.source_ref.line_id or "") or {}
+                    prod = self.repo.placeholder_product(
+                        t.product_external_id,
+                        hint=str(line_raw.get("name") or line_raw.get("description") or ""))
+                # Reported on *every* affected line, not only the one that
+                # created the placeholder. Keying this off `prod is None` meant
+                # the second line naming the same missing item resolved happily
+                # against the row the first had just made, so a worklist that
+                # exists to say "this is blocking 39 lines worth ₹41.9L" said
+                # "1 line, ₹1,07,000" — technically about the same problem and
+                # useless for ranking it.
+                if (prod.source_ref or {}).get("provisional"):
                     self.report.skip(
                         "sales_txn", t.external_ref, "UNKNOWN_PRODUCT",
                         f"no product {t.product_external_id}",
@@ -832,7 +852,6 @@ class SyncService:
                             document_date=t.date.isoformat(),
                             party=str(raw.get("customer_name") or ""),
                             what="invoice"))
-                    continue
                 self.repo.upsert_sales_txn(t, cust.customer_id, prod.product_id)
                 self.report.sales_txns += 1
                 # Which relationships this pull actually moved, so the
@@ -901,14 +920,15 @@ class SyncService:
             "qty": ln.get("quantity"),
             "line_value": value,
             "fix": (
-                "This item is on the "
-                f"{what} but not in the item master this pull read. The usual "
-                "cause is an item marked inactive in Zoho: until now the pull "
-                "asked only for active items, so every historical line for a "
-                "discontinued tool was skipped. Re-run a full sync — the item "
-                "list now includes inactive items. If it still does not "
-                "resolve, the item was deleted in Zoho and the document needs "
-                "repointing there."),
+                f"This item is on the {what} but not in the item master this "
+                "pull read. **The line is still counted** — it is attached to "
+                "a placeholder item, so the money is in revenue, in this "
+                "customer's history and in margin, and only the item's name is "
+                "missing. It shows as \"Unnamed product\" until the master "
+                "has it. To give it a name: if the item exists in Zoho, the "
+                "next sync picks it up and fills this in by itself. If it was "
+                "deleted there, either restore it or repoint the document at "
+                "the item that replaced it."),
         }
 
     def _sync_bills(self) -> None:
@@ -940,6 +960,18 @@ class SyncService:
             for r in lines:
                 prod = self.repo.get_product_by_external(r.product_external_id)
                 if prod is None:
+                    # Kept, for the same reason as the sales line — and this
+                    # side matters more, not less: bills are where cost comes
+                    # from, so a dropped cost line does not leave a hole, it
+                    # leaves a *wrong margin* on trade that otherwise looks
+                    # complete. A missing number announces itself; a plausible
+                    # one computed from half the costs does not.
+                    line_raw = by_line.get(r.source_ref.line_id or "") or {}
+                    prod = self.repo.placeholder_product(
+                        r.product_external_id,
+                        hint=str(line_raw.get("name") or line_raw.get("description") or ""))
+                # Every affected line, not only the first — see the invoice side.
+                if (prod.source_ref or {}).get("provisional"):
                     self.report.skip(
                         "cost_record", r.external_ref, "UNKNOWN_PRODUCT",
                         f"no product {r.product_external_id}",
@@ -950,7 +982,6 @@ class SyncService:
                             document_date=r.date.isoformat(),
                             party=str(raw.get("vendor_name") or ""),
                             what="bill"))
-                    continue
                 self.repo.upsert_cost_record(
                     r, prod.product_id,
                     vendor.vendor_id if vendor is not None else None)

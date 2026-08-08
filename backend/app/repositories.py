@@ -185,6 +185,60 @@ class ReadModelRepository:
         row.source_ref = p.source_ref.model_dump()
         return row
 
+    def placeholder_product(self, external_id: str, *,
+                            hint: str = "") -> models.Product:
+        """A product row for an item a document references and the master lacks.
+
+        The alternative was dropping the line, and that is how real revenue went
+        missing: an item deleted in Zoho still has invoices pointing at it, and
+        skipping those lines removed the sale from revenue, from the customer's
+        history and from margin — silently, because the only trace was a row in
+        a diagnostics panel. On one live book that was 1,256 lines, ₹41.9L on a
+        single item.
+
+        A placeholder is not an invention. The item demonstrably exists — a real
+        invoice names it — and every field here comes from that document or is
+        left empty. What the platform does not know is the item's *name*, and
+        ``label_for`` already has a way of saying that: "Unnamed product (id …)".
+
+        ``active=False`` because the master does not list it, which is exactly
+        what an item retired in Zoho looks like. ``source_ref.provisional``
+        marks the row as standing in for a master entry rather than reflecting
+        one, so a screen can say so and the next pull that *does* see the item
+        overwrites it in place — same upsert key, no duplicate, and no manual
+        repair.
+        """
+        row = self._for_upsert(models.Product, external_id)
+        if row is not None and not (row.source_ref or {}).get("provisional"):
+            # Already a real master row. Never downgrade one: a pull that raced
+            # the item listing would otherwise blank a name the platform had.
+            return row
+
+        provenance = {"provisional": True, "document_description": hint,
+                      "reason": ("referenced by a document but absent from the "
+                                 "item master this pull read")}
+        if row is not None:
+            row.source_ref = provenance
+            return row
+
+        # Name left empty rather than filled from the document line: the line
+        # says what the customer was billed for, which is not reliably the
+        # master's name for the item, and `label_for` already renders an empty
+        # name as "Unnamed product (id …)". The description travels in
+        # `source_ref` where it is labelled as coming from the document.
+        row = models.Product(organization_id=self.org, external_id=external_id,
+                             connector=self.connector,
+                             connection_id=self.connection_id,
+                             name="", active=False, source_ref=provenance)
+        self.s.add(row)
+        # Flushed because the caller needs `product_id` *now* for the line's
+        # foreign key, and the primary key is a column default that does not
+        # fire until the row reaches the database. One flush per distinct
+        # missing item, not per line — the next line naming the same item finds
+        # this row.
+        self.s.flush()
+        return row
+
     def get_product_by_external(self, external_id: str) -> Optional[models.Product]:
         """Resolve within this repository's own source.
 

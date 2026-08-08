@@ -18,6 +18,7 @@ was missing, which looks exactly like the feature not working.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Optional
 
@@ -34,7 +35,7 @@ from ..config import settings
 from ..identity import service as identity_service
 from ..identity.mapping_store import OrgMappingStore
 from ..db import get_session
-from ..deps import get_zoho
+from ..ingestion import connections as conn
 from ..schemas import (
     CreateQuoteRequest,
     DiscountRequest,
@@ -45,7 +46,12 @@ from ..schemas import (
 )
 from ..pie_service import Bands
 from ..store import Line, Quote, store
-from ..zoho import ZohoService
+from ..zoho import (
+    ZohoService,
+    ZohoWriteRefused,
+    ZohoWriteUnknown,
+    select_zoho_service,
+)
 
 log = logging.getLogger("pie_portal.quote")
 router = APIRouter(prefix="/api/quotes", tags=["quotes"])
@@ -56,6 +62,59 @@ def _get_quote(quote_id: str) -> Quote:
     if q is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Quote not found")
     return q
+
+
+@dataclass(frozen=True)
+class QuoteBooks:
+    """The Zoho adapter this quote may use, and the account it writes to.
+
+    Resolved together, once, because they are one fact: which company's books
+    this quote belongs to. Reading a list price out of SLS and writing the
+    estimate into 4U looks identical on screen and is wrong in a way nobody can
+    reproduce later — so both come from the same connection, or neither does.
+    ``contact_id`` is empty exactly when ``zoho`` is the refusing adapter.
+    """
+
+    zoho: ZohoService
+    contact_id: str = ""
+
+
+def books_for_quote(quote_id: str,
+                    principal: Principal = Depends(current_principal),
+                    session: Session = Depends(get_session)) -> QuoteBooks:
+    """Bind this quote to one connected company, or to an adapter that says it cannot.
+
+    In mock mode nothing is resolved and nothing is queried: the demo, the test
+    suite and a fresh clone keep the deterministic adapter they have always had.
+
+    In live mode the quote's customer is resolved through the same tolerant
+    matcher the analysis uses — so a customer resolvable on one screen is
+    resolvable on the other — and then to the company that customer was
+    imported from. Anything unresolvable yields ``UnavailableZoho`` carrying
+    why, which reads as BOOKS OFFLINE on a line and as a refusal on a write. It
+    never falls back to a book.
+    """
+    if settings.ZOHO_QUOTE_SERVICE != "live":
+        return QuoteBooks(zoho=select_zoho_service())
+
+    quote = _get_quote(quote_id)
+    org = principal.organization_id
+    customer = quote_service.resolve_customer(session, org, quote.customer_ref)
+    if customer is None:
+        return QuoteBooks(zoho=select_zoho_service(reason=(
+            f"{quote.customer!r} does not match any customer in this "
+            f"organization, so no set of books can be identified.")))
+    try:
+        book = conn.book_for_customer(session, org, customer)
+        creds = conn.credentials_for(session, book.connection)
+    except (conn.ConnectionNotFound, conn.CredentialNotUsable) as e:
+        return QuoteBooks(zoho=select_zoho_service(reason=str(e)))
+    return QuoteBooks(zoho=select_zoho_service(creds), contact_id=book.contact_id)
+
+
+def zoho_for_quote(books: QuoteBooks = Depends(books_for_quote)) -> ZohoService:
+    """Just the adapter, for the endpoints that only read prices and stock."""
+    return books.zoho
 
 
 def _get_line(quote: Quote, line_id: str) -> Line:
@@ -79,7 +138,7 @@ def get_quote(quote_id: str, principal: Principal = Depends(current_principal)):
 @router.post("/{quote_id}/intake")
 def intake(quote_id: str, body: IntakeRequest,
            principal: Principal = Depends(current_principal),
-           zoho: ZohoService = Depends(get_zoho),
+           zoho: ZohoService = Depends(zoho_for_quote),
            session: Session = Depends(get_session)):
     q = _get_quote(quote_id)
     if not body.text.strip():
@@ -179,7 +238,7 @@ def line_options(quote_id: str, line_id: str,
 @router.post("/{quote_id}/lines/{line_id}/supply")
 def select_supply(quote_id: str, line_id: str, body: SelectSupplyRequest,
                   principal: Principal = Depends(current_principal),
-                  zoho: ZohoService = Depends(get_zoho),
+                  zoho: ZohoService = Depends(zoho_for_quote),
                   session: Session = Depends(get_session)):
     q = _get_quote(quote_id)
     ln = _get_line(q, line_id)
@@ -267,19 +326,26 @@ def apply_discount(quote_id: str, body: DiscountRequest,
 @router.post("/{quote_id}/lines/{line_id}/create-item")
 def create_item(quote_id: str, line_id: str,
                 principal: Principal = Depends(current_principal),
-                zoho: ZohoService = Depends(get_zoho)):
+                zoho: ZohoService = Depends(zoho_for_quote)):
     q = _get_quote(quote_id)
     ln = _get_line(q, line_id)
     if not ln.supplyCode:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Line has no supply product to create")
-    store.create_item(ln, zoho)
-    return q.to_dict(principal.is_manager_or_owner)
+    # A failed write is reported as state on the line (CREATE FAILED) rather
+    # than as an error status, because the rest of the quote is untouched and
+    # still worth looking at. The reason travels with it so the screen does not
+    # have to say "something went wrong".
+    failure = store.create_item(ln, zoho)
+    result = q.to_dict(principal.is_manager_or_owner)
+    if failure:
+        result["createItemError"] = failure
+    return result
 
 
 @router.post("/{quote_id}/estimate", response_model=EstimateResponse)
 def create_estimate(quote_id: str,
                     principal: Principal = Depends(current_principal),
-                    zoho: ZohoService = Depends(get_zoho),
+                    books: QuoteBooks = Depends(books_for_quote),
                     session: Session = Depends(get_session)):
     q = _get_quote(quote_id)
     blockers = store.blockers(q)
@@ -346,13 +412,16 @@ def create_estimate(quote_id: str,
                             for ln in q.lines if ln.economics().below_floor})
         if blocked:
             raise HTTPException(status.HTTP_403_FORBIDDEN, blocked)
-
     # ── sending twice ────────────────────────────────────────────────────────
     # Three presses used to create three estimates in Zoho, because nothing on
     # the quote remembered that it had been sent and the button never changed.
     # Re-sending an *amended* quote is ordinary work, so this is not a lock: the
     # same content returns the estimate it already produced, and changed content
     # produces a new one.
+    #
+    # This is the local half. The write below also carries ``q.reference``, so
+    # Zoho can recognise a repeat whose reply we never heard. Both are needed:
+    # this one saves the round trip, that one survives a lost answer.
     fingerprint = store.priced_fingerprint(q)
     if q.estimateNumber and q.estimateFingerprint == fingerprint:
         return EstimateResponse(
@@ -360,20 +429,47 @@ def create_estimate(quote_id: str,
             message=(f"Zoho estimate {q.estimateNumber} already covers this quote — "
                      "nothing has changed since it was created."))
 
-    lines = [{"code": ln.supplyCode, "qty": ln.reqQty, "rate": ln.quoted}
+    lines = [{"code": ln.supplyCode, "itemId": ln.itemId,
+              "qty": ln.reqQty, "rate": ln.quoted}
              for ln in q.lines if ln.supplyCode]
-    est = zoho.create_estimate(q.customer, lines)
+
+    # ── the write, and the three answers it is allowed to give ───────────────
+    # Never a fourth. A refusal names the lines so the screen can point at them;
+    # an unresolvable outcome says so and carries the reference to look up. What
+    # this must not do is report a created estimate that may not exist, which is
+    # exactly what the mock could never get wrong and a real ledger can.
+    try:
+        est = books.zoho.create_estimate(q.customer, lines,
+                                         customer_ref=books.contact_id,
+                                         reference=q.reference)
+    except ZohoWriteRefused as e:
+        refused = {c for c in e.codes if c}
+        return EstimateResponse(
+            ok=False,
+            blockers=[ln.id for ln in q.lines if ln.supplyCode in refused],
+            message=str(e))
+    except ZohoWriteUnknown as e:
+        return EstimateResponse(ok=False, message=str(e))
+
+    # Past here the estimate exists — including when Zoho recognised the
+    # reference as one it had already landed. Recorded either way, so the local
+    # check above can answer the next press without a round trip, and so the
+    # quote leaves DRAFT: the DRAFT → SENT → WON/LOST path is modelled, served
+    # and typed on the client, and nothing ever moved a quote off DRAFT.
     store.record_estimate(q, number=est.number, line_count=est.line_count,
                           fingerprint=fingerprint)
-    # The quote lifecycle has a start and no way to reach its second state: the
-    # DRAFT → SENT → WON/LOST path is modelled, served and typed on the client,
-    # and nothing ever moved a quote off DRAFT. Sending it is what SENT means.
     try:
         quote_service.set_outcome(
             session, org, quote_id=quote_id, status=QuoteOutcomeStatus.SENT,
             customer_ref=q.customer_ref, user_id=principal.user_id)
     except Exception:  # noqa: BLE001 — the estimate exists; bookkeeping must not undo it
         log.exception("could not mark quote %s as sent", quote_id)
+
+    if est.already_existed:
+        return EstimateResponse(
+            ok=True, estimateNumber=est.number, lineCount=est.line_count,
+            message=(f"This quote was already sent — Zoho estimate {est.number} "
+                     f"exists under reference {q.reference}. Nothing was created twice."))
     return EstimateResponse(ok=True, estimateNumber=est.number,
                             lineCount=est.line_count,
                             message=f"Zoho estimate {est.number} created — {est.line_count} lines.")

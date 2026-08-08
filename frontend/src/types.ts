@@ -122,6 +122,11 @@ export interface Quote {
    *  Null on a quote started before the picker existed, or from a draft. */
   customerId: string | null;
   number: string;
+  /** The key any Zoho estimate for this quote is written under. It is what
+   *  makes sending twice return the first estimate rather than create a second,
+   *  and what a person searches Zoho for when a send fails in a way the screen
+   *  cannot resolve. */
+  reference: string;
   savedAt: string | null;
   lines: Line[];
   summary: QuoteSummary;
@@ -135,6 +140,10 @@ export interface Quote {
    *  that is a confirmed "this customer's code means that product". Server-
    *  written prose, shown as-is; the client does not compose it. */
   note?: string;
+  /** Present only when creating the item in the books failed, and carrying why.
+   *  The line already reads CREATE FAILED; this is the reason, so the screen
+   *  does not have to say "something went wrong". */
+  createItemError?: string;
 }
 
 /* ── Quote intelligence (deterministic; app/commercial) ──────────────────────

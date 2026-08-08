@@ -11,7 +11,7 @@ because eroding them makes screens look fuller.
 """
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
@@ -1317,6 +1317,125 @@ def test_a_lag_is_the_same_three_numbers_whichever_side_it_came_from():
     assert measured["v1"].party_id == "v1"
     assert (measured["v1"].early_days <= measured["v1"].expected_days
             <= measured["v1"].late_days)
+
+
+# ── the term we actually agreed, against the one Zoho could express ─────────
+#
+# Zoho's payment terms are a fixed dropdown, so a real agreement of "net 37" is
+# filed under the nearest entry and every due date derived from it is wrong by
+# days. These pin the correction and, more importantly, the three things it
+# must not do: overwrite what the ERP says, invent a date for a supplier with
+# no agreement on record, or present a summary as though it were exact.
+
+def test_a_term_is_a_date_and_the_basis_changes_which_date():
+    """"45 days" and "45 days from month end" are up to a month apart on the
+    same bill. A single day count would silently treat one as the other."""
+    from app.commercial.insight import terms
+
+    raised = date(2026, 3, 5)
+    assert terms.Term(45).due(raised) == date(2026, 4, 19)
+    # March has 31 days, so month end is the 31st and 45 days on is 15 May.
+    assert terms.Term(45, terms.END_OF_MONTH).due(raised) == date(2026, 5, 15)
+
+
+def test_end_of_month_uses_the_bills_own_month_length():
+    """February is the case a naive +30 gets wrong, and a leap year is the case
+    a hardcoded 28 gets wrong."""
+    from app.commercial.insight import terms
+
+    assert terms.Term(0, terms.END_OF_MONTH).due(date(2026, 2, 3)) == date(2026, 2, 28)
+    assert terms.Term(0, terms.END_OF_MONTH).due(date(2028, 2, 3)) == date(2028, 2, 29)
+
+
+def test_a_term_that_cannot_mean_a_date_is_refused_on_write():
+    from app.commercial.insight import terms
+
+    with pytest.raises(terms.InvalidTerm):
+        terms.validate(30, "WHENEVER")
+    with pytest.raises(terms.InvalidTerm):
+        terms.validate(-5, terms.NET)
+    with pytest.raises(terms.InvalidTerm):
+        # A typo, not a term. Left unguarded it pushes a supplier's money off
+        # the end of every horizon the product can draw.
+        terms.validate(terms.MAX_TERM_DAYS + 1, terms.NET)
+    assert terms.validate(37, terms.NET) == terms.Term(37, terms.NET)
+
+
+def _bill(vendor: str, raised: date, stated_due: date | None, amount=1000.0):
+    from app.commercial.insight import terms
+    return terms.Bill(vendor_id=vendor, document_date=raised,
+                      stated_due=stated_due, amount=amount)
+
+
+def test_a_consistent_supplier_shifts_exactly():
+    """Zoho filed these under net-30; the agreement is net-45. Every bill moves
+    by the same fortnight, so the shift is exact and says so."""
+    from app.commercial.insight import terms
+
+    bills = [_bill("v1", date(2026, 1, i * 5 + 1),
+                   date(2026, 1, i * 5 + 1) + timedelta(days=30))
+             for i in range(4)]
+    moved = terms.shift(bills, terms.Term(45))
+
+    assert moved.days == 15
+    assert moved.spread_days == 0
+    assert moved.exact is True
+    assert moved.bills == 4
+
+
+def test_a_supplier_whose_zoho_terms_disagree_is_summarised_and_says_so():
+    """Two stated terms on one supplier means one shift cannot be right for
+    both. Reported rather than averaged silently — a summary presented as an
+    exact answer is the failure this module exists to fix."""
+    from app.commercial.insight import terms
+
+    raised = date(2026, 1, 1)
+    bills = [_bill("v1", raised, raised + timedelta(days=30)),
+             _bill("v1", raised, raised + timedelta(days=60))]
+    moved = terms.shift(bills, terms.Term(45))
+
+    assert moved.exact is False
+    assert moved.spread_days == 30
+
+
+def test_a_bill_with_no_stated_due_date_cannot_produce_a_displacement():
+    """A term is exactly what an undated bill was missing, but there is nothing
+    to measure a *shift* from. Counted, and left where the schedule put it
+    rather than given an invented displacement."""
+    from app.commercial.insight import terms
+
+    assert terms.shift([_bill("v1", date(2026, 1, 1), None)], terms.Term(45)) is None
+
+    mixed = terms.shift([_bill("v1", date(2026, 1, 1), None),
+                         _bill("v1", date(2026, 1, 1), date(2026, 1, 31))],
+                        terms.Term(45))
+    assert (mixed.bills, mixed.undated) == (1, 1)
+
+
+def test_a_supplier_with_no_agreement_is_absent_not_zero():
+    """Absent means "the schedule's date stands", which is a different claim
+    from "we agreed to exactly what Zoho assumed"."""
+    from app.commercial.insight import terms
+
+    raised = date(2026, 1, 1)
+    bills = [_bill("v1", raised, raised + timedelta(days=30)),
+             _bill("v2", raised, raised + timedelta(days=30))]
+
+    moved = terms.shifts(bills, {"v1": terms.Term(45)})
+
+    assert set(moved) == {"v1"}
+    assert "v2" not in moved
+
+
+def test_the_effective_term_prefers_the_agreement_and_falls_back_to_the_erp():
+    from app.commercial.insight import terms
+
+    assert terms.effective_days(terms.Term(37), 30) == 37
+    assert terms.effective_days(None, 30) == 30
+    assert terms.effective_days(None, None) is None
+    # The basis changes one bill's date, not the length of credit being
+    # described, so a days-to-pay comparison reads the day count either way.
+    assert terms.effective_days(terms.Term(45, terms.END_OF_MONTH), 30) == 45
 
 
 # ── the business day ────────────────────────────────────────────────────────

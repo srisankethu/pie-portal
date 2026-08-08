@@ -13,7 +13,11 @@
 // delivery date, stock value for a salesperson — and the discipline that keeps
 // them trustworthy is naming the gap rather than filling it.
 
+import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
+import MenuItem from "@mui/material/MenuItem";
+import Stack from "@mui/material/Stack";
+import TextField from "@mui/material/TextField";
 import { useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { scaleBand, scaleLinear } from "d3-scale";
@@ -22,9 +26,10 @@ import { formatDate } from "../../when";
 import { papi } from "../api";
 import { abilityFor } from "../ability";
 import { EntityName } from "../EntityName";
-import { ChartTip, InlineLink, VarianceIndicator } from "../kit";
+import { ChartTip, InlineLink, StatusChip, VarianceIndicator } from "../kit";
 import { CompanyFilter, useCompanyFilter } from "../CompanyFilter";
 import { DataGrid, numeric } from "../DataGrid";
+import type { ColDef } from "../DataGrid";
 import type { EntityOrigin, PlatformSession, Sourced } from "../types";
 import { Figure, Panel, ValueAxis, stateOf } from "./Panel";
 import { Seg } from "./Seg";
@@ -664,6 +669,216 @@ export function PaymentsScreen({
   );
 }
 
+// ── The term we actually agreed, beside the one the ERP could express ───────
+//
+// Zoho's payment terms are a fixed dropdown, so a real agreement of "net 37" or
+// "45 days from month end" gets filed under the nearest entry — and every due
+// date derived from it is wrong by days, in a direction nobody chose. This is
+// where the agreement itself is recorded.
+//
+// Both numbers are always shown. A screen that displayed only our figure would
+// be a schedule quietly disagreeing with the books it was drawn from, with no
+// way to see where the disagreement came from.
+//
+// A grid rather than a list: the row count is the number of suppliers, which is
+// set by the size of the business — `platform/DataGrid.tsx`, per the standing
+// rule. Sorting by what is owed is the whole point, because a term worth
+// recording is one with money behind it.
+
+type TermRow = Sourced & {
+  vendor_id: string; label: string;
+  zoho_terms_days: number | null;
+  agreed_days: number | null;
+  basis: string;
+  note: string | null;
+  shift_days: number | null;
+  shift_exact: boolean | null;
+  open_bills: number;
+  open_value: number;
+};
+
+function VendorTermsPanel({ session }: { session: PlatformSession }) {
+  const { data, loading, error, reload } = useInsight(
+    "vendor-terms",
+    () => papi.vendorTerms(session.token), [session.token]);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [failed, setFailed] = useState<string | null>(null);
+
+  const bases = (data?.bases as Record<string, string>) ?? {};
+  const all = useMemo(
+    () => (data?.terms as TermRow[] | undefined) ?? [], [data]);
+  const filter = useCompanyFilter(all);
+  const terms = filter.filtered;
+
+  async function save(row: TermRow, days: number | null, basis: string) {
+    setBusy(row.vendor_id);
+    setFailed(null);
+    try {
+      if (days === null) await papi.clearVendorTerm(session.token, row.vendor_id);
+      else await papi.setVendorTerm(session.token, row.vendor_id, days, basis,
+                                    row.note);
+      // Refetched rather than patched in place: recording a term changes the
+      // *shift* the schedule will apply, which is computed from this
+      // supplier's open bills and is not derivable in the browser.
+      reload();
+    } catch (e) {
+      setFailed(e instanceof Error ? e.message : "Could not save that term");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const columns = useMemo<ColDef<TermRow>[]>(() => [
+    {
+      field: "label", headerName: "Supplier", flex: 1.4, minWidth: 190,
+      cellRenderer: (p: { data?: TermRow }) => (p.data ? (
+        <EntityName name={p.data.label} origin={p.data.origin}
+                    show={filter.show} strong={false} />
+      ) : null),
+    },
+    numeric<TermRow>("open_value", "Owed now", (v) => money(v), {
+      width: 140, flex: 0,
+      headerTooltip: "The balance on their open bills. Sorted on it, because a "
+        + "term worth recording is one with money behind it.",
+    }),
+    {
+      field: "zoho_terms_days", headerName: "Zoho says", width: 120, flex: 0,
+      type: "numericColumn",
+      valueFormatter: (p) => (p.value == null ? "—" : `${p.value}d`),
+      headerTooltip: "What the ERP holds. Never overwritten — the gap between "
+        + "this and the agreed term is the thing worth seeing.",
+    },
+    {
+      headerName: "Agreed term", width: 230, flex: 0,
+      valueGetter: (p) => p.data?.agreed_days ?? null,
+      cellRenderer: (p: { data?: TermRow }) => {
+        const row = p.data;
+        if (!row) return null;
+        return (
+          <Stack direction="row" spacing={0.5} sx={{ alignItems: "center", py: 0.25 }}>
+            <TextField
+              size="small" type="number"
+              defaultValue={row.agreed_days ?? ""}
+              placeholder={row.zoho_terms_days == null ? "—" : String(row.zoho_terms_days)}
+              disabled={busy === row.vendor_id}
+              aria-label={`Agreed payment term in days for ${row.label}`}
+              // Commit on blur and on Enter. A term is a value being typed, not
+              // an authority being granted, so an explicit save button per row
+              // would be ceremony — but it commits only when the field is
+              // finished with, never per keystroke.
+              onKeyDown={(e) => {
+                if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+              }}
+              onBlur={(e) => {
+                const raw = e.target.value.trim();
+                const next = raw === "" ? null : Number(raw);
+                if (next !== null && (!Number.isFinite(next) || next < 0)) return;
+                if (next === row.agreed_days) return;
+                void save(row, next, row.basis);
+              }}
+              sx={{ width: 84, "& .MuiInputBase-input": { py: 0.5, fontSize: 12.5 } }}
+            />
+            <TextField
+              select size="small" value={row.basis}
+              disabled={busy === row.vendor_id || row.agreed_days == null}
+              aria-label={`What the days are counted from, for ${row.label}`}
+              onChange={(e) => {
+                if (row.agreed_days == null) return;
+                void save(row, row.agreed_days, e.target.value);
+              }}
+              sx={{ width: 128, "& .MuiInputBase-input": { py: 0.5, fontSize: 12.5 } }}
+            >
+              {Object.keys(bases).map((key) => (
+                <MenuItem key={key} value={key}>
+                  {key === "NET" ? "from bill date" : "from month end"}
+                </MenuItem>
+              ))}
+            </TextField>
+          </Stack>
+        );
+      },
+    },
+    {
+      headerName: "Effect on the schedule", flex: 1, minWidth: 210,
+      valueGetter: (p) => p.data?.shift_days ?? null,
+      cellRenderer: (p: { data?: TermRow }) => {
+        const row = p.data;
+        if (!row) return null;
+        if (row.agreed_days == null) {
+          return <Box component="span" className="viz-muted">on the ERP's dates</Box>;
+        }
+        if (row.shift_days == null) {
+          // A term is exactly what an undated bill was missing, but there is
+          // nothing to measure a displacement from.
+          return (
+            <StatusChip label="no dated bills" tone="neutral" dense
+                        tip="None of this supplier's open bills carries a due date to move from, so their money stays where the schedule put it." />
+          );
+        }
+        const d = row.shift_days;
+        return (
+          <Stack direction="row" spacing={0.75} sx={{ alignItems: "center" }}>
+            <Box component="span">
+              {d === 0 ? "no change"
+                : `${Math.abs(d)}d ${d > 0 ? "later" : "earlier"}`}
+              <Box component="span" className="viz-muted">
+                {" "}· {row.open_bills} bill{row.open_bills === 1 ? "" : "s"}
+              </Box>
+            </Box>
+            {row.shift_exact === false && (
+              <StatusChip label="summary" tone="warn" dense
+                          tip="Zoho holds more than one term for this supplier, so a single shift cannot be right for every bill. The figure is a median, not an exact correction." />
+            )}
+          </Stack>
+        );
+      },
+    },
+    {
+      headerName: "", width: 96, flex: 0, sortable: false, filter: false,
+      cellRenderer: (p: { data?: TermRow }) => (
+        p.data && p.data.agreed_days != null ? (
+          <Button size="small" color="inherit"
+                  disabled={busy === p.data.vendor_id}
+                  onClick={() => void save(p.data!, null, p.data!.basis)}>
+            Clear
+          </Button>
+        ) : null
+      ),
+    },
+  ], [bases, busy, filter.show]);
+
+  return (
+    <Panel
+      title="Payment terms on record"
+      question="What did we actually agree to pay each supplier in"
+      state={stateOf(loading, error, data?.empty_reason as string)}
+      error={error} emptyReason={data?.empty_reason as string} onRetry={reload} wide
+      actions={
+        <CompanyFilter options={filter.options} value={filter.company}
+                       onChange={filter.setCompany} show={filter.show} />
+      }
+    >
+      <p className="viz-headline viz-muted">
+        Zoho's payment terms are a fixed list, so an agreement of net-37 gets
+        filed under the nearest entry and every due date from it is wrong by
+        days. Recording the real term re-dates that supplier's bills on the cash
+        chart. What the ERP holds is never overwritten — both are shown, because
+        a schedule that quietly disagreed with the books would be one nobody
+        could reconcile.
+      </p>
+      {failed && <p className="viz-muted" role="alert">{failed}</p>}
+      <DataGrid<TermRow>
+        ariaLabel="Supplier payment terms"
+        rows={terms}
+        columns={columns}
+        pageSize={20}
+        rowHeight={54}
+        getRowId={(r) => r.vendor_id}
+      />
+    </Panel>
+  );
+}
+
 /** The same measurement, from the other end. Manager and above — see the
  *  endpoint's docstring for why this is scoped like Suppliers and not like
  *  Cash collection. */
@@ -679,6 +894,11 @@ export function PayablesScreen({
       <SettlementPanel data={data} loading={loading} error={error}
                        reload={reload} side={PAYABLE_SIDE}
                        onNavigate={onNavigate} />
+      {/* Measured behaviour first, then the terms it is judged against. A
+          person arrives here asking "are we paying late", and the answer
+          depends on which term is on record — so the evidence comes first and
+          the lever second. */}
+      <VendorTermsPanel session={session} />
     </div>
   );
 }

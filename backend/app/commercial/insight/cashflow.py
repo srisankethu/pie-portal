@@ -171,7 +171,8 @@ def project(schedule: dict[str, dict[str, Any]],
             receivables: dict[str, dict[str, Any]],
             *, as_of: date, weeks: int = WEEKS,
             lags: Optional[dict[str, Any]] = None,
-            payable_lags: Optional[dict[str, Any]] = None) -> dict:
+            payable_lags: Optional[dict[str, Any]] = None,
+            term_shifts: Optional[dict[str, Any]] = None) -> dict:
     """The committed book's effect on cash, week by week.
 
     ``schedule`` is the ``CASH_SCHEDULE`` fold; ``commitments`` and
@@ -194,9 +195,19 @@ def project(schedule: dict[str, dict[str, Any]],
     direction explicit at the one place it matters: a bill is never shifted by
     how its supplier pays *us*, which is a different fact about a party that can
     be both.
+
+    ``term_shifts`` (``insight/terms.shifts``) corrects the *due date itself*
+    for a supplier whose agreed term Zoho could not express, and it is a
+    different kind of correction from a lag. A lag says how far past a due date
+    money actually moves; a term shift says the due date was wrong. It is
+    therefore applied to the baseline column as well as to the scenarios — a
+    supplier we agreed net-45 with does not have a net-30 bar on the chart under
+    *any* reading — while a lag deliberately leaves the baseline alone, because
+    the baseline is what the documents claim.
     """
     lags = lags or {}
     payable_lags = payable_lags or {}
+    term_shifts = term_shifts or {}
     first_monday = _monday_of(as_of)
     mondays = [first_monday + timedelta(weeks=i) for i in range(weeks)]
     horizon_end = mondays[-1] + timedelta(days=6)
@@ -213,6 +224,7 @@ def project(schedule: dict[str, dict[str, Any]],
     scheduled_rows = 0
     measured = {IN: _ZERO, OUT: _ZERO}
     unmeasured = {IN: _ZERO, OUT: _ZERO}
+    retimed, retimed_documents, retimed_inexact = _ZERO, 0, 0
 
     for key, row in schedule.items():
         direction, bucket, party = _parse(key)
@@ -227,6 +239,21 @@ def project(schedule: dict[str, dict[str, Any]],
         if starts_on is None:
             undated.add(direction, amount, documents)
             continue
+
+        # The agreed term corrects the due date itself, so it is applied before
+        # anything decides which bucket this money belongs in — including
+        # whether it is already overdue. A term shorter than the one Zoho
+        # assumed genuinely does make a bill overdue that the ERP thinks is not,
+        # and that is a finding rather than an edge case to suppress.
+        moved = term_shifts.get(party) if direction == OUT else None
+        if moved is not None:
+            days = int(getattr(moved, "days", 0) or 0)
+            starts_on = _monday_of(starts_on + timedelta(days=days))
+            retimed += amount
+            retimed_documents += documents
+            if not getattr(moved, "exact", True):
+                retimed_inexact += 1
+
         if starts_on < first_monday:
             overdue.add(direction, amount, documents)
             continue
@@ -291,7 +318,9 @@ def project(schedule: dict[str, dict[str, Any]],
     result = {
         "scenarios": scenarios,
         "requirement": requirement,
-        "basis": _basis(measured, unmeasured, lags, payable_lags),
+        "basis": _basis(measured, unmeasured, lags, payable_lags,
+                        term_shifts, retimed, retimed_documents,
+                        retimed_inexact),
         "as_of": as_of.isoformat(),
         "weeks": weeks,
         "horizon_ends_on": horizon_end.isoformat(),
@@ -372,7 +401,9 @@ def _series(by_week: dict[date, Flow], mondays: list[date],
 
 
 def _basis(measured: dict[str, Decimal], unmeasured: dict[str, Decimal],
-           lags: dict[str, Any], payable_lags: dict[str, Any]) -> dict:
+           lags: dict[str, Any], payable_lags: dict[str, Any],
+           term_shifts: dict[str, Any], retimed: Decimal,
+           retimed_documents: int, retimed_inexact: int) -> dict:
     """What the band is standing on, in the reader's terms.
 
     A range is only worth as much as the evidence under it, and the two ways it
@@ -401,6 +432,16 @@ def _basis(measured: dict[str, Decimal], unmeasured: dict[str, Decimal],
         # behaviour behind it". It does, whenever any bill has been settled
         # often enough to clear the evidence floor.
         "outflow_shifted": bool(payable_lags),
+        # What was re-dated because the agreed term differs from the one the
+        # ERP could express. Reported separately from the lag, and never folded
+        # into it, because they are different claims: a lag says money moves
+        # late, a re-dating says the due date was wrong. `retimed_inexact` is
+        # how many suppliers had more than one stated term, where the shift is
+        # a summary rather than an exact correction.
+        "vendors_retimed": len(term_shifts),
+        "outflow_retimed": _out(retimed),
+        "outflow_retimed_documents": retimed_documents,
+        "vendors_retimed_inexactly": retimed_inexact,
     }
 
 

@@ -34,7 +34,7 @@ from ..commercial.insight import (bonds, cadence, cashflow, cohorts, composition
                                   daily as daily_view,
                                   dependency, flow, landscape, mix, payments,
                                   periods, radar, simulate, stock, story, supply,
-                                  weather)
+                                  terms as vendor_terms, weather)
 from ..db import get_session
 from ..domain import models
 from ..domain.enums import ApprovalStatus, DecisionStatus, Role
@@ -560,8 +560,41 @@ def _settlements(session: Session, org: str,
     ]
 
 
+def _agreed_terms(session: Session, org: str) -> dict[str, vendor_terms.Term]:
+    """Every supplier term somebody typed, keyed by vendor id.
+
+    Absent means "no agreement on record", which is a different claim from "we
+    agreed to whatever Zoho assumed" — see ``insight/terms.shifts``.
+    """
+    return {
+        row.vendor_id: vendor_terms.Term(days=row.days, basis=row.basis)
+        for row in session.scalars(
+            select(models.VendorPaymentTerm).where(
+                models.VendorPaymentTerm.organization_id == org)).all()
+    }
+
+
+def _open_bills(session: Session, org: str) -> list[vendor_terms.Bill]:
+    """The bills a re-dating can move: attributable, and still owed.
+
+    Scoped to bills with a balance for the same reason the fold is — a settled
+    bill is not money that will move, and including it would let old documents
+    drag a supplier's shift away from the one their open book actually needs.
+    """
+    rows = session.scalars(
+        select(models.BillDoc).where(
+            models.BillDoc.organization_id == org,
+            models.BillDoc.vendor_id.is_not(None))).all()
+    return [
+        vendor_terms.Bill(vendor_id=b.vendor_id, document_date=b.date,
+                          stated_due=b.due_date, amount=float(b.balance or 0))
+        for b in rows if (b.balance or 0) > 0
+    ]
+
+
 def _bill_settlements(session: Session, org: str,
                       vendor_id: Optional[str] = None,
+                      terms: Optional[dict[str, vendor_terms.Term]] = None,
                       ) -> tuple[list[payments.Settlement], int]:
     """Bill payment applications, and how many of them belong to nobody.
 
@@ -570,19 +603,32 @@ def _bill_settlements(session: Session, org: str,
     beside the list because a bill payment can carry no vendor — money we
     genuinely sent, to a supplier the contact pull never returned — and dropping
     it silently would make the vendor list look shorter than the book is.
+
+    **The due date is the agreed one where we have recorded an agreement.** This
+    is what stops the correction being counted twice: if Zoho filed a bill under
+    net-30 and the real term is net-45, then a payment made on day 40 is five
+    days *early*, not ten days late. Measuring lateness against the ERP's date
+    and then separately correcting that date in the projection would push the
+    same fortnight into the schedule twice.
     """
+    terms = terms if terms is not None else _agreed_terms(session, org)
     stmt = select(models.BillPaymentApplication).where(
         models.BillPaymentApplication.organization_id == org)
     if vendor_id:
         stmt = stmt.where(models.BillPaymentApplication.vendor_id == vendor_id)
     rows = session.scalars(stmt).all()
+
+    def due(row: models.BillPaymentApplication) -> Optional[date]:
+        term = terms.get(row.vendor_id or "")
+        return term.due(row.bill_date) if term else row.bill_due_date
+
     return [
         payments.Settlement(
             party_id=row.vendor_id or "",
             document_ref=row.bill_external_ref,
             document_number=row.bill_number,
             document_date=row.bill_date,
-            due_date=row.bill_due_date,
+            due_date=due(row),
             paid_on=row.paid_on,
             amount=float(row.amount_applied or 0),
         )
@@ -643,7 +689,8 @@ def payable_behaviour(principal: Principal = Depends(require_manager_or_owner),
 
     vendors = {v.vendor_id: v for v in session.scalars(
         select(models.Vendor).where(models.Vendor.organization_id == org)).all()}
-    settled, unattributed = _bill_settlements(session, org)
+    agreed = _agreed_terms(session, org)
+    settled, unattributed = _bill_settlements(session, org, terms=agreed)
     made = session.scalars(
         select(models.VendorPaymentDoc).where(
             models.VendorPaymentDoc.organization_id == org)).all()
@@ -653,15 +700,28 @@ def payable_behaviour(principal: Principal = Depends(require_manager_or_owner),
     result = payments.build(
         settled, {vid: v.name for vid, v in vendors.items()}, as_of,
         side=payments.PAYABLE,
-        # The terms on record, so a row can state what was agreed beside what
-        # actually happened. This is the comparison the screen exists for, and
-        # it needs both numbers — a measured median alone cannot be late.
-        terms={vid: v.payment_terms_days for vid, v in vendors.items()},
+        # The term to be judged against: ours where we recorded one, the ERP's
+        # otherwise. This is the comparison the screen exists for, and it needs
+        # both numbers — a measured median alone cannot be late.
+        terms={vid: vendor_terms.effective_days(agreed.get(vid),
+                                                v.payment_terms_days)
+               for vid, v in vendors.items()},
         unattributed=unattributed)
+    # Which of those terms is an agreement somebody typed and which is what
+    # Zoho happened to hold. Without this the screen would present a number
+    # from the nearest dropdown entry as though it had been negotiated.
+    for row in result.get("vendors") or []:
+        term = agreed.get(str(row.get("vendor_id")))
+        row["terms_agreed"] = term is not None
+        row["terms_basis"] = term.basis if term else vendor_terms.NET
+        row["zoho_terms_days"] = (
+            vendors[row["vendor_id"]].payment_terms_days
+            if row["vendor_id"] in vendors else None)
     companies = Companies(session, org)
     companies.stamp(result.get("vendors") or [],
                     index_of(session, org, models.Vendor), by="vendor_id")
     result["sources_differ"] = companies.count > 1
+    result["bases"] = vendor_terms.BASIS_LABELS
     return _envelope(
         result, currency=th.currency,
         empty_reason=(None if result["vendors"] else
@@ -699,7 +759,8 @@ def cash_projection(weeks: int = Query(cashflow.WEEKS, ge=1, le=26),
     on = latest_as_of(session, org, CASH_SCHEDULE)
     if on is None:
         return _no_data(th.currency, "a cash projection")
-    settled_bills, _unattributed = _bill_settlements(session, org)
+    agreed = _agreed_terms(session, org)
+    settled_bills, _unattributed = _bill_settlements(session, org, terms=agreed)
     return _envelope(
         cashflow.project(
             state_engine.load(session, org, CASH_SCHEDULE, on),
@@ -710,7 +771,12 @@ def cash_projection(weeks: int = Query(cashflow.WEEKS, ge=1, le=26),
             # first bucket into the overdue column over the weekend.
             as_of=on, weeks=weeks,
             lags=payments.lags(_settlements(session, org)),
-            payable_lags=payments.lags(settled_bills)),
+            payable_lags=payments.lags(settled_bills),
+            # Read from the bills rather than the fold, because the fold has
+            # already aggregated away the individual due dates a re-dating needs
+            # to measure itself against. The money still comes from the fold —
+            # this only says how far each supplier's week moves.
+            term_shifts=vendor_terms.shifts(_open_bills(session, org), agreed)),
         currency=th.currency, thresholds_version=th.version)
 
 
@@ -854,10 +920,18 @@ def supplier_position(principal: Principal = Depends(require_manager_or_owner),
         )
         for po in rows
     ]
+    # The agreed term where one was recorded, the ERP's otherwise. A supplier
+    # screen quoting terms the ERP could only approximate would disagree with
+    # the payables screen about the same relationship.
+    agreed = _agreed_terms(session, org)
+    effective = {
+        vid: vendor_terms.effective_days(agreed.get(vid), v.payment_terms_days)
+        for vid, v in vendors.items()
+    }
     result = supply.build(
         orders, as_of,
-        terms_by_vendor={vid: v.payment_terms_days for vid, v in vendors.items()
-                         if v.payment_terms_days is not None})
+        terms_by_vendor={vid: days for vid, days in effective.items()
+                         if days is not None})
     # A supplier is per connected company too: the same vendor invoicing two of
     # the books is two rows, and concentration read across them without saying
     # so would look like one dependency where there are two relationships.
@@ -1468,6 +1542,143 @@ def book_dependency(connection_id: Optional[str] = Query(None),
         scoped_to=connection_id)
 
 
+class VendorTermIn(BaseModel):
+    """The term actually agreed with one supplier."""
+
+    vendor_id: str = Field(min_length=1)
+    days: int = Field(ge=0, le=vendor_terms.MAX_TERM_DAYS)
+    basis: str = Field(default=vendor_terms.NET)
+    note: Optional[str] = Field(default=None, max_length=512)
+
+
+@router.put("/vendor-terms", status_code=status.HTTP_200_OK)
+def set_vendor_term(body: VendorTermIn,
+                    principal: Principal = Depends(require_manager_or_owner),
+                    session: Session = Depends(get_session)) -> dict:
+    """Record what we actually agreed to pay a supplier in.
+
+    Manager and above, and scoped that way for the same reason ``/payables`` is:
+    a payment term is a negotiated commercial position, not a clerical field.
+
+    An upsert on the supplier rather than an insert. A term gets renegotiated,
+    and a second row for the same vendor would make "the term" a question about
+    which row won — the schedule cannot be drawn from an ambiguous answer.
+
+    Zoho's own value is left exactly as it is. Both are shown on the payables
+    screen, because the gap between what the ERP could express and what was
+    agreed is the thing this table exists to make visible.
+    """
+    org = principal.organization_id
+    try:
+        term = vendor_terms.validate(body.days, body.basis)
+    except vendor_terms.InvalidTerm as e:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e)) from e
+    vendor = session.get(models.Vendor, body.vendor_id)
+    if vendor is None or vendor.organization_id != org:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such supplier")
+
+    row = session.scalar(
+        select(models.VendorPaymentTerm).where(
+            models.VendorPaymentTerm.organization_id == org,
+            models.VendorPaymentTerm.vendor_id == body.vendor_id))
+    if row is None:
+        row = models.VendorPaymentTerm(organization_id=org,
+                                       vendor_id=body.vendor_id)
+        session.add(row)
+    row.days = term.days
+    row.basis = term.basis
+    row.note = body.note
+    row.set_by_user_id = principal.user_id
+    session.flush()
+    return {"vendor_id": row.vendor_id, "days": row.days, "basis": row.basis,
+            "note": row.note, "zoho_terms_days": vendor.payment_terms_days}
+
+
+@router.delete("/vendor-terms/{vendor_id}", status_code=status.HTTP_200_OK)
+def clear_vendor_term(vendor_id: str,
+                      principal: Principal = Depends(require_manager_or_owner),
+                      session: Session = Depends(get_session)) -> dict:
+    """Drop the agreement and fall back to what Zoho holds.
+
+    A real operation rather than "set it to Zoho's number": those are different
+    states. An agreement that has been withdrawn means the schedule should use
+    the ERP's date again, and typing the ERP's current value instead would
+    freeze it against a term Zoho may later change.
+    """
+    org = principal.organization_id
+    row = session.scalar(
+        select(models.VendorPaymentTerm).where(
+            models.VendorPaymentTerm.organization_id == org,
+            models.VendorPaymentTerm.vendor_id == vendor_id))
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND,
+                            "No agreed term on record for that supplier")
+    session.delete(row)
+    session.flush()
+    return {"vendor_id": vendor_id, "cleared": True}
+
+
+@router.get("/vendor-terms")
+def list_vendor_terms(principal: Principal = Depends(require_manager_or_owner),
+                      session: Session = Depends(get_session)) -> dict:
+    """Every supplier, what Zoho holds, and what we agreed.
+
+    Every supplier rather than only those with an agreement: the screen this
+    feeds is where somebody goes *to* record one, and a list of the rows already
+    filled in is not the list somebody with work to do needs.
+    """
+    org = principal.organization_id
+    th = policy.load_for_org(session, org)
+    vendors = session.scalars(
+        select(models.Vendor).where(
+            models.Vendor.organization_id == org)).all()
+    agreed = _agreed_terms(session, org)
+    notes = {
+        r.vendor_id: r
+        for r in session.scalars(
+            select(models.VendorPaymentTerm).where(
+                models.VendorPaymentTerm.organization_id == org)).all()
+    }
+    open_bills = _open_bills(session, org)
+    moved = vendor_terms.shifts(open_bills, agreed)
+    owed: dict[str, float] = {}
+    for b in open_bills:
+        owed[b.vendor_id] = owed.get(b.vendor_id, 0.0) + b.amount
+
+    rows = [
+        {
+            "vendor_id": v.vendor_id, "label": v.name,
+            "zoho_terms_days": v.payment_terms_days,
+            "agreed_days": agreed[v.vendor_id].days if v.vendor_id in agreed else None,
+            "basis": (agreed[v.vendor_id].basis if v.vendor_id in agreed
+                      else vendor_terms.NET),
+            "note": notes[v.vendor_id].note if v.vendor_id in notes else None,
+            # What recording this term actually does to the schedule, so the
+            # consequence is visible at the point of editing rather than only
+            # on the cash chart afterwards.
+            "shift_days": moved[v.vendor_id].days if v.vendor_id in moved else None,
+            "shift_exact": (moved[v.vendor_id].exact if v.vendor_id in moved
+                            else None),
+            "open_bills": moved[v.vendor_id].bills if v.vendor_id in moved else 0,
+            "open_value": round(owed.get(v.vendor_id, 0.0), 2),
+        }
+        for v in vendors
+    ]
+    # Suppliers we owe most first: a term worth recording is one with money
+    # behind it, and an alphabetical list buries those among the dormant.
+    rows.sort(key=lambda r: (-r["open_value"], r["label"]))
+    companies = Companies(session, org)
+    companies.stamp(rows, index_of(session, org, models.Vendor), by="vendor_id")
+    return _envelope(
+        {"terms": rows, "bases": vendor_terms.BASIS_LABELS,
+         "max_days": vendor_terms.MAX_TERM_DAYS},
+        currency=th.currency,
+        empty_reason=(None if rows else
+                      "No suppliers have synced yet, so there is nothing to "
+                      "record a term against."),
+        sources_differ=companies.count > 1)
+
+
 class TargetIn(BaseModel):
     """One principal's number for one period."""
 
@@ -1943,6 +2154,7 @@ def _state_scenario(session: Session, org: str, th, body: "SimulationRequest",
     commitments = state_engine.load(session, org, COMMITMENTS, on)
     vendors = {v.vendor_id: v for v in session.scalars(
         select(models.Vendor).where(models.Vendor.organization_id == org)).all()}
+    agreed = _agreed_terms(session, org)
     return simulate.supplier_delay(
         [simulate.OpenCommitment(
             vendor_id=key,
@@ -1953,7 +2165,12 @@ def _state_scenario(session: Session, org: str, th, body: "SimulationRequest",
             open_orders=int(value.get("open_purchase_orders") or 0),
             open_value=float(value.get("open_purchase_value") or 0),
             oldest_open_on=value.get("oldest_open_purchase_on"),
-            payment_terms_days=getattr(vendors.get(key), "payment_terms_days", None))
+            # The agreed term where one exists. "What if we delayed suppliers
+            # by N days" is only answerable against the terms we are actually
+            # on, not the ones the ERP's dropdown could express.
+            payment_terms_days=vendor_terms.effective_days(
+                agreed.get(key),
+                getattr(vendors.get(key), "payment_terms_days", None)))
          for key, value in commitments.items()
          if value.get("direction") == "supplier"],
         days=body.delay_days, as_of=as_of)

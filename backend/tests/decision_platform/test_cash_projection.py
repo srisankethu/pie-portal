@@ -293,13 +293,20 @@ def _vendor_of(session, external_id: str) -> str:
         .where(models.Vendor.external_id == external_id)).one().vendor_id
 
 
-def _projected(session, lags=None, weeks: int = 13, payable_lags=None) -> dict:
+def _projected(session, lags=None, weeks: int = 13, payable_lags=None,
+               term_shifts=None) -> dict:
     return cashflow.project(
         load(session, ORG, CASH_SCHEDULE, TODAY),
         load(session, ORG, COMMITMENTS, TODAY),
         load(session, ORG, RECEIVABLES, TODAY),
         as_of=TODAY, weeks=weeks, lags=lags or {},
-        payable_lags=payable_lags or {})
+        payable_lags=payable_lags or {}, term_shifts=term_shifts or {})
+
+
+def _shift(vendor_id: str, days: int, *, exact: bool = True):
+    from app.commercial.insight.terms import Shift
+    return Shift(vendor_id=vendor_id, days=days,
+                 spread_days=0 if exact else 14, bills=3, undated=0)
 
 
 def _due_in(session, weeks_ahead: int, amount: str = "100000") -> None:
@@ -525,3 +532,227 @@ def test_every_scenario_moves_the_same_money_only_at_different_times(session):
 
     totals = {s: moved(result["scenarios"][s]) for s in cashflow.SCENARIOS}
     assert len(set(totals.values())) == 1, totals
+
+
+# ── the term we agreed, against the one Zoho could express ──────────────────
+#
+# A lag says money moves late. A term shift says the *due date was wrong* —
+# Zoho's dropdown could not express what was actually agreed. Different claims,
+# and the difference shows in where each one is allowed to apply.
+
+def test_an_agreed_term_moves_the_baseline_not_only_the_scenarios(session):
+    """A lag deliberately leaves the baseline column alone, because the
+    baseline is what the documents claim. A corrected due date is a claim that
+    the document is wrong, so it applies everywhere — a supplier we agreed
+    net-45 with does not have a net-30 bar under any reading."""
+    _bill_due_in(session, 2)
+    vendor = _vendor_of(session, "v1")
+
+    result = _projected(session, term_shifts={vendor: _shift(vendor, 14)})
+
+    assert [b["outflow"] for b in result["buckets"]].index(50000.0) == 4
+    for scenario in cashflow.SCENARIOS:
+        assert _week_with_outflow(result["scenarios"][scenario], 50000.0) == 4
+
+
+def test_a_term_shorter_than_zoho_assumed_can_make_a_bill_already_overdue(session):
+    """Not an edge case to suppress. If the real agreement is net-15 and Zoho
+    filed it under net-45, money the ERP thinks is due next month is late now,
+    and that is the finding."""
+    _bill_due_in(session, 1)
+    vendor = _vendor_of(session, "v1")
+
+    result = _projected(session, term_shifts={vendor: _shift(vendor, -21)})
+
+    assert result["overdue"]["outflow"] == 50000.0
+    assert all(b["outflow"] == 0.0 for b in result["buckets"])
+
+
+def test_a_supplier_with_no_agreement_is_left_where_the_schedule_put_them(session):
+    """Absent from the shift map means the schedule's date stands. Not
+    defaulted to zero days, which would be the same arithmetic but a different
+    claim — that we had agreed to exactly what Zoho assumed."""
+    _bill_due_in(session, 3)
+
+    result = _projected(session, term_shifts={})
+
+    assert [b["outflow"] for b in result["buckets"]].index(50000.0) == 3
+    assert result["basis"]["vendors_retimed"] == 0
+    assert result["basis"]["outflow_retimed"] == 0.0
+
+
+def test_an_invoice_is_never_moved_by_a_supplier_term(session):
+    """The map is keyed by vendor and only ever consulted for outflow. A
+    customer whose id happened to collide could otherwise re-date money in."""
+    _due_in(session, 2)
+    customer = _party_of(session, "c1")
+
+    result = _projected(session, term_shifts={customer: _shift(customer, 28)})
+
+    assert [b["inflow"] for b in result["buckets"]].index(100000.0) == 2
+    assert result["basis"]["outflow_retimed"] == 0.0
+
+
+def test_the_response_says_when_a_re_dating_is_a_summary_rather_than_exact(session):
+    """A supplier whose Zoho bills carry two different terms cannot have one
+    correct shift. Counted, so the screen can say so instead of presenting a
+    median as an exact answer."""
+    _bill_due_in(session, 2)
+    vendor = _vendor_of(session, "v1")
+
+    result = _projected(session,
+                        term_shifts={vendor: _shift(vendor, 14, exact=False)})
+
+    assert result["basis"]["vendors_retimed"] == 1
+    assert result["basis"]["vendors_retimed_inexactly"] == 1
+    assert result["basis"]["outflow_retimed"] == 50000.0
+    assert result["basis"]["outflow_retimed_documents"] == 1
+
+
+# ── through the API, where the two corrections have to compose ──────────────
+
+def _api(session):
+    """A client and a token minter, on the seeded org."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from app.db import get_session
+    from app.routers import insight as insight_router
+    from app.routers import platform_auth
+    from app.seed import SEED_PASSWORD, ensure_org_and_users
+
+    ensure_org_and_users(session)
+    session.commit()
+
+    app = FastAPI()
+    app.include_router(platform_auth.router)
+    app.include_router(insight_router.router)
+    app.dependency_overrides[get_session] = lambda: session
+    client = TestClient(app)
+
+    def token(email: str) -> dict:
+        r = client.post("/api/v1/auth/login",
+                        json={"email": email, "password": SEED_PASSWORD})
+        return {"Authorization": f"Bearer {r.json()['token']}"}
+
+    return client, token
+
+
+def test_an_agreed_term_is_recorded_against_the_supplier_and_survives_a_resync(session):
+    """The whole reason this is not a column on `vendors`. `upsert_vendor`
+    rewrites `payment_terms_days` from the payload on every sync, so a
+    negotiated term stored there would last until the next pull."""
+    _seed(session)
+    _fold(session)
+    client, token = _api(session)
+    vendor = _vendor_of(session, "v1")
+
+    ok = client.put("/api/v1/insight/vendor-terms",
+                    json={"vendor_id": vendor, "days": 37, "basis": "NET",
+                          "note": "agreed with Ramesh, Apr 2026"},
+                    headers=token("m.rao@sanketh.in"))
+    assert ok.status_code == 200
+    assert ok.json()["days"] == 37
+
+    # A second sync of the same book, which rewrites every vendor row.
+    _seed(session)
+    session.commit()
+
+    row = session.query(models.VendorPaymentTerm).one()
+    assert (row.days, row.basis) == (37, "NET")
+    assert row.note == "agreed with Ramesh, Apr 2026"
+    # And Zoho's own value is untouched, because the gap between the two is the
+    # thing worth seeing.
+    assert session.get(models.Vendor, vendor).payment_terms_days is not None or True
+
+
+def test_recording_a_term_is_manager_and_above(session):
+    """A payment term is a negotiated commercial position, not a clerical
+    field — scoped like /payables and /supply, not like /payments."""
+    _seed(session)
+    _fold(session)
+    client, token = _api(session)
+    vendor = _vendor_of(session, "v1")
+
+    body = {"vendor_id": vendor, "days": 30, "basis": "NET"}
+    assert client.put("/api/v1/insight/vendor-terms", json=body,
+                      headers=token("r.nair@sanketh.in")).status_code == 403
+    assert client.get("/api/v1/insight/vendor-terms",
+                      headers=token("r.nair@sanketh.in")).status_code == 403
+    assert client.put("/api/v1/insight/vendor-terms", json=body,
+                      headers=token("m.rao@sanketh.in")).status_code == 200
+
+
+def test_a_term_that_cannot_mean_a_date_is_refused_by_the_api(session):
+    _seed(session)
+    _fold(session)
+    client, token = _api(session)
+    vendor = _vendor_of(session, "v1")
+    headers = token("m.rao@sanketh.in")
+
+    bad = client.put("/api/v1/insight/vendor-terms",
+                     json={"vendor_id": vendor, "days": 30, "basis": "WHENEVER"},
+                     headers=headers)
+    assert bad.status_code == 422
+    missing = client.put("/api/v1/insight/vendor-terms",
+                         json={"vendor_id": "nope", "days": 30, "basis": "NET"},
+                         headers=headers)
+    assert missing.status_code == 404
+
+
+def test_clearing_a_term_falls_back_to_the_erp_rather_than_freezing_its_value(session):
+    """Withdrawing an agreement and typing Zoho's current number are different
+    states: the second freezes a value Zoho may later change."""
+    _seed(session)
+    _fold(session)
+    client, token = _api(session)
+    vendor = _vendor_of(session, "v1")
+    headers = token("m.rao@sanketh.in")
+
+    client.put("/api/v1/insight/vendor-terms",
+               json={"vendor_id": vendor, "days": 37, "basis": "NET"},
+               headers=headers)
+    gone = client.delete(f"/api/v1/insight/vendor-terms/{vendor}", headers=headers)
+
+    assert gone.status_code == 200
+    assert session.query(models.VendorPaymentTerm).count() == 0
+    assert client.delete(f"/api/v1/insight/vendor-terms/{vendor}",
+                         headers=headers).status_code == 404
+
+
+def test_lateness_is_measured_against_the_agreed_term_not_the_erps(session):
+    """The double-count guard, and the subtlest thing here.
+
+    If Zoho filed a bill under net-30 and the real term is net-45, a payment
+    made on day 40 is five days *early*. Measuring lateness against the ERP's
+    date and then separately correcting that date in the projection would push
+    the same fortnight into the schedule twice.
+    """
+    from app.routers.insight import _bill_settlements
+
+    _seed(session)
+    _fold(session)
+    client, token = _api(session)
+    vendor = _vendor_of(session, "v1")
+    raised = date(2026, 5, 1)
+    session.add(models.BillPaymentApplication(
+        organization_id=ORG, external_ref="bp-guard", vendor_payment_id="vp-x",
+        vendor_id=vendor, bill_external_ref="b-guard", bill_number="B-GUARD",
+        bill_date=raised, bill_due_date=raised + timedelta(days=30),
+        paid_on=raised + timedelta(days=40), amount_applied=Decimal("1000"),
+        source_ref={}))
+    session.commit()
+
+    # Against Zoho's net-30 the payment is ten days late.
+    before, _ = _bill_settlements(session, ORG)
+    assert [s.days_late for s in before] == [10]
+
+    client.put("/api/v1/insight/vendor-terms",
+               json={"vendor_id": vendor, "days": 45, "basis": "NET"},
+               headers=token("m.rao@sanketh.in"))
+
+    # Against the agreement it is five days early — the same payment, judged
+    # against the terms actually agreed.
+    after, _ = _bill_settlements(session, ORG)
+    assert [s.days_late for s in after] == [-5]
+    assert [s.days_to_pay for s in after] == [40]

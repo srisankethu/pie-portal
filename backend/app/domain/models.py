@@ -391,6 +391,61 @@ class VendorTarget(Base):
                                                  onupdate=_now)
 
 
+class VendorPaymentTerm(Base):
+    """What we actually agreed to pay a supplier in — not what Zoho could express.
+
+    Zoho's payment terms are a fixed list, so a bill raised under a real
+    agreement of "net 37" or "45 days from month end" gets filed under the
+    nearest thing on the dropdown. Every due date derived from it is then wrong
+    by days, in a direction nobody chose, and the cash projection places money
+    on those dates. This table is the agreement itself.
+
+    A separate table rather than a column on ``Vendor``, and for the same reason
+    ``ItemCategoryOverride`` is separate from ``Product``: vendors are *derived*
+    — ``upsert_vendor`` rewrites ``payment_terms_days`` from the payload on
+    every sync — so a negotiated term stored there would survive exactly until
+    the next pull. This is typed, it is the only copy, and it must survive a
+    complete re-sync.
+
+    **Zoho's value is never overwritten.** ``Vendor.payment_terms_days`` keeps
+    saying what the ERP says; this says what was agreed. Both are shown, because
+    the difference between them is the thing worth seeing — and because a
+    schedule that quietly disagreed with Zoho with no way to see why is a
+    schedule nobody can reconcile.
+
+    ``basis`` is not decoration, the same way it is not on ``VendorTarget``.
+    "45 days" and "45 days from the end of the month" are up to a month apart on
+    the same bill, and a single day count would silently treat one as the other.
+    """
+
+    __tablename__ = "vendor_payment_terms"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "vendor_id",
+                         name="uq_vendor_payment_term_vendor"),
+    )
+
+    vendor_payment_term_id: Mapped[str] = mapped_column(String(64),
+                                                        primary_key=True,
+                                                        default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    vendor_id: Mapped[str] = mapped_column(String(64),
+                                           ForeignKey("vendors.vendor_id"),
+                                           index=True)
+    #: Days. Counted from the bill date under ``NET``, and from the last day of
+    #: the bill's month under ``END_OF_MONTH``.
+    days: Mapped[int] = mapped_column(Integer)
+    #: ``NET`` or ``END_OF_MONTH``. See ``commercial/insight/terms.py``, which
+    #: owns what each one means as a date.
+    basis: Mapped[str] = mapped_column(String(16), default="NET")
+    #: Who typed it, and what they were told. A term nobody can source is one
+    #: nobody can defend when a supplier disputes it.
+    set_by_user_id: Mapped[Optional[str]] = mapped_column(String(64))
+    note: Mapped[Optional[str]] = mapped_column(String(512))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
+                                                 onupdate=_now)
+
+
 class ItemCategoryOverride(Base):
     """What a person said an item's line is, when the catalogue could not say.
 

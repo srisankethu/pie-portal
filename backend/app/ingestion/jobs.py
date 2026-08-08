@@ -428,6 +428,14 @@ def execute_sync(session: Session, run: models.SyncRun, *,
             svc.source if svc is not None else None, "documents_fetched", 0)
         run.documents_resumed = report.documents_resumed or getattr(
             svc.source if svc is not None else None, "documents_resumed", 0)
+        # Whether this run was a backfill, and how much of one. A widened
+        # window costs list calls over the months it had never covered; a run
+        # that reports zero here read nothing it had not already read, which is
+        # the difference between "the backfill worked" and "the backfill was a
+        # no-op" — indistinguishable from the outside until now.
+        if report.windows_listed_in_full:
+            run.notes = {**(run.notes or {}),
+                         "windows_listed_in_full": report.windows_listed_in_full}
         run.skipped_count = len(report.skipped)
         run.skipped_sample = report.skipped[:20]
         # Capped, but on *distinct problems* rather than on rows: forty things

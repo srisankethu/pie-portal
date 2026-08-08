@@ -74,6 +74,11 @@ class SyncReport:
     vendor_payments: int = 0
     documents_fetched: int = 0
     documents_resumed: int = 0
+    #: Calendar windows this run listed in full because they had never been
+    #: covered before. Counted so a backfill can *say* it was a backfill: a run
+    #: that widens the window costs list calls over the new months, and a run
+    #: that reports zero here read nothing it had not already read.
+    windows_listed_in_full: int = 0
     skipped: list[dict[str, str]] = field(default_factory=list)
     # Relationships this pull actually moved. Lets the Customer × Item
     # recompute afterwards target what changed instead of rebuilding the whole
@@ -657,6 +662,9 @@ class SyncService:
         source = source if source is not None else self.source
         if not (self.resume and self.incremental):
             return {}
+        if not self._window_already_covered(source):
+            self.report.windows_listed_in_full += 1
+            return {}
         marks = {kind: mark for kind in self.INCREMENTAL_KINDS
                  if (mark := self.repo.ingested_high_water(kind))}
         # A source that has never heard of this is left alone — the fixture
@@ -664,6 +672,38 @@ class SyncService:
         if hasattr(source, "modified_since"):
             source.modified_since = dict(marks)
         return marks
+
+    def _window_already_covered(self, source: ZohoSource) -> bool:
+        """Whether the high-water mark says anything about *this* window.
+
+        It does not, for a window that has never been listed — and that was a
+        silent, total data-loss bug rather than a missed optimisation.
+
+        The mark is ``max(modified_at)`` over everything held, with no notion of
+        which window earned it. An incremental listing sorts newest-modified
+        first and stops at the mark. So the first time an operator widens the
+        window backwards — synced 2025 in January, wants 2024 in August — every
+        document in the new months is *older-modified than the mark precisely
+        because it is older*, the listing stops on its first row, and the run
+        reports success having fetched nothing. Asking again never helps: the
+        mark only moves forward.
+
+        The check is per window rather than per run because ``run_documents``
+        already gets one source per calendar slice. A pull that widens from 2025
+        back to 2024 lists 2024 in full and keeps the short-circuit for every
+        month it has covered before — the backfill costs list calls over the new
+        months only, and the detail cursor still skips anything already held.
+
+        A window with no lower bound cannot be compared, and is treated as
+        uncovered: listing too much is a cost, listing too little is a hole.
+        """
+        floor = self.repo.covered_since()
+        if floor is None:
+            return False
+        start = getattr(source, "_since", None)
+        if start is None:
+            start = getattr(source, "_cutoff", lambda: None)()
+        return start is not None and start >= floor
 
     def _skipper(self, doc_type: str):
         """A predicate the source can use to avoid re-fetching known documents."""

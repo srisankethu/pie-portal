@@ -14,7 +14,7 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, status
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..authz import Principal, current_principal, require_manager_or_owner, require_owner
@@ -35,6 +35,39 @@ def _last_run(session: Session, org: str) -> Optional[models.SyncRun]:
         .where(models.SyncRun.organization_id == org)
         .order_by(models.SyncRun.started_at.desc())
         .limit(1))
+
+
+def _coverage(session: Session, org: str) -> list[dict[str, Any]]:
+    """How far back each connected company has actually been listed.
+
+    The answer to "what history do I have", which "last synced 2 hours ago"
+    does not give: a nightly pull can run for a year and still only cover the
+    window the first run asked for.
+
+    Read from the runs rather than from the rows, and only from runs that
+    finished, for the reason ``ReadModelRepository.covered_since`` states — an
+    absent document and an unsearched month are indistinguishable in the data,
+    so only the searcher can say which it was.
+    """
+    rows = session.execute(
+        select(models.SyncRun.connection_id,
+               func.min(models.SyncRun.since),
+               func.max(models.SyncRun.finished_at))
+        .where(models.SyncRun.organization_id == org,
+               models.SyncRun.status == "OK",
+               models.SyncRun.since.is_not(None))
+        .group_by(models.SyncRun.connection_id)).all()
+    names = {c.connection_id: (c.label or "")
+             for c in session.scalars(
+                 select(models.ZohoConnection).where(
+                     models.ZohoConnection.organization_id == org)).all()}
+    return [
+        {"connection_id": connection_id,
+         "label": names.get(connection_id) or "",
+         "covered_from": since.isoformat() if since else None,
+         "covered_to": finished.date().isoformat() if finished else None}
+        for connection_id, since, finished in rows
+    ]
 
 
 def _run_dict(r: Optional[models.SyncRun]) -> Optional[dict[str, Any]]:
@@ -174,6 +207,12 @@ def data_status(
     return {
         "connection": _connection(session, org),
         "last_sync": _run_dict(_last_run(session, org)),
+        # What history this organization actually holds, per connected company.
+        # Distinct from "when did we last sync": a nightly pull that runs for a
+        # year still only covers the window the first run asked for, and until
+        # this was reported there was no way to tell a book with two years of
+        # history from one with two months.
+        "coverage": _coverage(session, org),
         # Carried here as well so a page opened mid-pull renders the running job
         # on its first paint, without a second round trip to discover it.
         "sync": _sync_state(session, org),

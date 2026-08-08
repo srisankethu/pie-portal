@@ -30,4 +30,7 @@ Modules:
   ``bonds``     how strong the tie is to each customer and each supplier, as
                 five published facets rather than one opaque score — and the
                 same measure at every month end, so the trajectory is watchable
+  ``schemes``   what hitting a principal's target actually pays: the rebate
+                slabs, what is secured, what is at stake, and — only above an
+                evidence floor — where the period lands at the current rate
 """

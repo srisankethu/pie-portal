@@ -267,10 +267,17 @@ export const papi = {
       + (connectionId ? `?connection_id=${encodeURIComponent(connectionId)}` : ""),
       {}, t),
 
-  // Vendor targets. The one thing in the platform that is typed rather than
-  // synced, so it has a write path.
+  // Vendor targets, and the rebate scheme attached to each. The one thing in
+  // the platform that is typed rather than synced, so it has a write path.
   targets: (t: string) =>
     req<Record<string, unknown>>("/api/v1/insight/targets", {}, t),
+
+  // What hitting those numbers is worth: every live target with its scheme,
+  // what is secured, what is at stake and — above the evidence floor — where
+  // the period lands. Manager and above, like everything denominated in
+  // purchase spend.
+  schemes: (t: string) =>
+    req<Record<string, unknown>>("/api/v1/insight/schemes", {}, t),
 
   setTarget: (t: string, body: Record<string, unknown>) =>
     req<Record<string, unknown>>("/api/v1/insight/targets",

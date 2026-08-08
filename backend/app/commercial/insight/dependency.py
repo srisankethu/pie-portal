@@ -100,6 +100,12 @@ class Target:
     period_end: date
     basis: str
     amount: float
+    #: The row this came from, where a caller needs to reach what hangs off it —
+    #: today, the rebate scheme in ``schemes.py``. Optional because nothing in
+    #: *this* module needs an identity: pace and progress are arithmetic on the
+    #: dates and the amount, and a required id would make every test construct
+    #: one that means nothing.
+    target_id: Optional[str] = None
 
     def covers(self, day: date) -> bool:
         return self.period_start <= day <= self.period_end

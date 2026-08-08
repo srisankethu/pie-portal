@@ -30,6 +30,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { api, clearDraftQuote, loadDraftQuote, saveDraftQuote } from "./api";
+import { CustomerPicker } from "./components/CustomerPicker";
 import type { Line, Quote } from "./types";
 import { IntakeModal } from "./components/IntakeModal";
 import { SupplyDrawer } from "./components/SupplyDrawer";
@@ -51,8 +52,6 @@ const FILTERS: [string, string][] = [
   ["EXC", "Commercial exceptions"],
 ];
 
-/** The account a fresh quote opens against until somebody says otherwise. */
-const DEFAULT_CUSTOMER = "Pitti Engineering Ltd";
 
 /** What this screen answers — the sentence the Quotes door used to carry on a
  *  page of its own, in front of the thing it was describing. */
@@ -110,7 +109,8 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
   const [intakeOpen, setIntakeOpen] = useState(false);
   const [drawerLineId, setDrawerLineId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // Open when there is no quote to work on, and on demand from the header.
+  const [pickerOpen, setPickerOpen] = useState(false);
   const [draftStatus, setDraftStatus] = useState<string | null>(null);
 
   // One assessment for the whole quote — see useQuoteIntelligence.
@@ -142,14 +142,12 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
       }
       return;
     }
-    let live = true;
-    api
-      .createQuote(t, DEFAULT_CUSTOMER)
-      .then((q) => live && setQuote(q))
-      .catch((e) => live && setError((e as Error).message));
-    return () => {
-      live = false;
-    };
+    // Ask who the quote is for rather than opening one against a literal.
+    // This used to be `createQuote(t, "Pitti Engineering Ltd")`, so every quote
+    // in the product was for one customer and the header's "Customer" was a
+    // label with nothing behind it. A quote cannot be priced without knowing
+    // whose price history to read, so it is the first question, not a setting.
+    setPickerOpen(true);
   }, [quote, t, flash]);
 
   useEffect(() => {
@@ -243,23 +241,47 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
     return () => window.removeEventListener("keydown", onKey);
   }, [intakeOpen, drawerLineId]);
 
-  if (error) {
-    return (
-      <Box>
-        <SectionHeader title="Quote Builder" sub={SUB} />
-        <Alert severity="error">
-          <AlertTitle>The quote could not be started</AlertTitle>
-          {error}
-        </Alert>
-      </Box>
-    );
-  }
+  // No "could not be started" screen any more. It existed for the auto-create
+  // that opened a quote against a literal customer on mount; starting a quote
+  // is now something a person does, and a failure to do it belongs next to the
+  // control they pressed. `guard` reports it through `flash`, like every other
+  // action on this screen.
+
+  /** Start a quote for a customer. Also how the header changes customer: each
+   *  line remembers the identity scope it was resolved under, so re-pointing an
+   *  existing quote would leave those resolutions filed against the previous
+   *  customer. A new quote is the honest answer, and the confirm says so.
+   *
+   *  The dialog closes when the quote *lands*, not on the press, so the rule
+   *  has no race in it: open exactly while there is no quote to work on. */
+  const startQuote = (c: { id: string; name: string }) =>
+    guard(async () => {
+      const q = await api.createQuote(t, c.name, c.id);
+      clearDraftQuote();
+      setQuote(q);
+      setSelectedIds([]);
+      setDraftStatus(null);
+      setPickerOpen(false);
+      flash(`Quote ${q.number} for ${c.name}`, "success");
+    });
 
   if (!quote) {
     return (
       <Box>
         <SectionHeader title="Quote Builder" sub={SUB} />
-        <LoadingState rows={3} label="Starting a new quote…" />
+        <LoadingState rows={3} label="Choose who this quote is for…" />
+        {/* No cancel: there is nothing behind this to return to, and a quote
+            with no customer cannot be priced — there is no price history to
+            read. */}
+        <CustomerPicker
+          open={pickerOpen}
+          token={t}
+          busy={busy}
+          title="Who is this quote for?"
+          note="Pricing reads this customer's own history, so the quote needs to
+                know whose. Start typing a name."
+          onPick={startQuote}
+        />
       </Box>
     );
   }
@@ -385,9 +407,18 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
           <Typography variant="overline" color="text.secondary" sx={{ display: "block", lineHeight: 1.3 }}>
             Customer
           </Typography>
-          <Typography sx={{ fontFamily: "var(--font-heading)", fontWeight: 600 }}>
+          {/* A control, not a caption. There was no way to change the
+              customer at all before this. */}
+          <Button
+            type="button"
+            variant="text"
+            size="small"
+            onClick={() => setPickerOpen(true)}
+            sx={{ p: 0, minWidth: 0, textTransform: "none", lineHeight: 1.4,
+                  fontFamily: "var(--font-heading)", fontWeight: 600 }}
+          >
             {quote.customer}
-          </Typography>
+          </Button>
         </Box>
         <Box sx={{ flex: 1 }} />
         {draftStatus && (
@@ -596,6 +627,23 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
           onRevert={doRevert}
         />
       )}
+
+      {/* Changing the customer starts a new quote rather than re-pointing this
+          one — each line remembers the identity scope it was resolved under,
+          and silently wrong is worse than plainly starting again. */}
+      <CustomerPicker
+        open={pickerOpen}
+        token={t}
+        busy={busy}
+        title="Change customer"
+        note={quote.lines.length
+          ? `This quote has ${quote.lines.length} line(s) resolved for `
+            + `${quote.customer}. Choosing another customer starts a new quote; `
+            + `the current one is not kept.`
+          : "Pricing reads this customer's own history."}
+        onPick={startQuote}
+        onCancel={() => setPickerOpen(false)}
+      />
     </Box>
   );
 }

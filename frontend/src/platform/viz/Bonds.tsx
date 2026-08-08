@@ -44,6 +44,9 @@
 // zero. They are counted, named and listed instead.
 
 import Button from "@mui/material/Button";
+import Autocomplete from "@mui/material/Autocomplete";
+import Chip from "@mui/material/Chip";
+import TextField from "@mui/material/TextField";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { scaleSqrt } from "d3-scale";
 import { money } from "../../money";
@@ -113,6 +116,68 @@ interface Node {
   r: number;
 }
 
+
+/** Pick the counterparties worth watching, out of a book of two hundred.
+ *
+ *  **This hides dots; it never restates a score.** The bond score contains the
+ *  Material facet — a share of the whole book's revenue — so a score is only
+ *  true of the book it was computed against. The caption says so, because a
+ *  reader who has narrowed to six names will reasonably wonder whether the
+ *  numbers moved with them, and the honest answer is that they must not.
+ *
+ *  Options are ordered by money, largest first, so the ones most likely wanted
+ *  are at the top before anybody types. Grouped by side, because "Kennametal"
+ *  as a supplier and a same-named customer are different rows and picking the
+ *  wrong one is a silent mistake.
+ */
+function WatchPicker({
+  options, picked, onChange, topN,
+}: {
+  options: { id: string; label: string; side: string; money: number }[];
+  picked: string[];
+  onChange: (ids: string[]) => void;
+  topN: (n: number) => string[];
+}) {
+  if (options.length < 2) return null;
+  const chosen = options.filter((o) => picked.includes(o.id));
+  return (
+    <div className="bond-watch">
+      <Autocomplete
+        multiple size="small" disableCloseOnSelect
+        options={options}
+        value={chosen}
+        groupBy={(o) => (o.side === "vendor" ? "Suppliers" : "Customers")}
+        getOptionLabel={(o) => o.label}
+        isOptionEqualToValue={(a, b) => a.id === b.id}
+        onChange={(_, v) => onChange(v.map((o) => o.id))}
+        renderInput={(params) => (
+          <TextField {...params} label="Watch only"
+                     placeholder={picked.length ? "" : "Everyone"} />
+        )}
+        renderOption={(props, o) => (
+          <li {...props} key={o.id}>
+            {o.label} <span className="viz-muted">· {money(o.money)}</span>
+          </li>
+        )}
+        sx={{ minWidth: 340, flex: "1 1 340px" }}
+      />
+      {/* "Not all of them are important" usually means "show me the ones that
+          are", and typing ten names is a worse answer than a button. */}
+      <div className="bond-watch-quick">
+        {[10, 25].map((n) => (
+          <Chip key={n} size="small" variant="outlined"
+                label={`Top ${n} by revenue`}
+                onClick={() => onChange(topN(n))} />
+        ))}
+        {picked.length > 0 && (
+          <Chip size="small" label={`Clear (${picked.length})`}
+                onClick={() => onChange([])} />
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function BondsScreen({
   session, onNavigate,
 }: { session: PlatformSession; onNavigate: (r: string) => void }) {
@@ -162,7 +227,29 @@ export function BondsScreen({
   usePlayhead(playing, frameCount, at, setFrame, () => setPlaying(false));
 
   const [selected, setSelected] = useState<string | null>(null);
+  // Which counterparties to draw. Empty means all of them.
+  //
+  // **A filter, not a scope**, and on this screen that is forced rather than
+  // chosen. The Material facet is a counterparty's share of the *whole book's*
+  // trailing revenue, so it carries 15% of every score. Narrow the input and
+  // recompute, and six accounts would each look like a sixth of the business —
+  // every score inflated, the bands meaningless. Doing this in the browser over
+  // scores the server already computed is what makes that impossible: there is
+  // nothing here that *could* recompute them.
+  const [picked, setPicked] = useState<string[]>([]);
   const [ref, room] = useMeasure<HTMLDivElement>();
+
+  // One seam for both narrowings, so the swarm, the play and the ledger cannot
+  // disagree about which dots exist.
+  const chosenIds = useMemo(() => new Set(picked), [picked]);
+  const narrow = useMemo(() => (
+    <R extends Sourced>(list: R[]): R[] => {
+      const byCompany = company.apply(list);
+      if (!chosenIds.size) return byCompany;
+      return byCompany.filter(
+        (r) => chosenIds.has(String((r as unknown as Row).counterparty_id)));
+    }
+  ), [company.company, chosenIds]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   const sides = useMemo(() => {
     const out: { side: string; bonds: Row[]; frames: Row[] }[] = [];
@@ -176,21 +263,50 @@ export function BondsScreen({
   // on `at`. Repacking per frame would make every dot hop rows as its
   // neighbours moved — see the note at the top of the file.
   const { lanes, seat } = useMemo(
-    () => packLanes(sides, company.apply.bind(company), plotWidth,
-                    group === "line"),
-    [sides, company.company, plotWidth, group]);   // eslint-disable-line react-hooks/exhaustive-deps
+    () => packLanes(sides, narrow, plotWidth, group === "line"),
+    [sides, narrow, plotWidth, group]);   // eslint-disable-line react-hooks/exhaustive-deps
   const nodes = useMemo(
-    () => layout(sides, at, company.apply.bind(company), seat, plotWidth),
-    [sides, at, company.company, seat, plotWidth]);   // eslint-disable-line react-hooks/exhaustive-deps
+    () => layout(sides, at, narrow, seat, plotWidth),
+    [sides, at, narrow, seat, plotWidth]);   // eslint-disable-line react-hooks/exhaustive-deps
 
-  const shownCustomers = company.apply(customerBonds as Sourced[]) as Row[];
-  const shownVendors = company.apply(vendorBonds as Sourced[]) as Row[];
+  // Built from the whole book rather than from what is on screen — a picker
+  // that only offered the names already showing could never widen a selection.
+  //
+  // **Only what the strip can actually draw.** A counterparty below the
+  // evidence floor has no score, and one outside the frame cover has no series
+  // to animate; either way it can be picked and nothing appears. Offering it
+  // would be inviting somebody into a dead end, which is the rule
+  // `CompanyFilter` already states about companies with no rows. The first cut
+  // of this offered all 227 and drew 201.
+  const watchOptions = useMemo(() => {
+    const drawable = (bonds: Row[], series: Row[], side: string) => {
+      const covered = new Set(
+        series.flatMap((f) => rows(f.bonds).map((e) => String(e.counterparty_id))));
+      return bonds
+        .filter((b) => b.score != null && covered.has(String(b.counterparty_id)))
+        .map((b) => ({
+          id: String(b.counterparty_id), label: String(b.label), side,
+          money: num(b.money),
+        }));
+    };
+    return [
+      ...(showSuppliers ? drawable(vendorBonds, vendorFrames, "vendor") : []),
+      ...(showCustomers ? drawable(customerBonds, frames, "customer") : []),
+    ].sort((a, z) => z.money - a.money);
+  }, [customerBonds, vendorBonds, frames, vendorFrames,
+      showCustomers, showSuppliers]);
+
+  const topByMoney = (n: number) => watchOptions.slice(0, n).map((o) => o.id);
+
+  const shownCustomers = narrow(customerBonds as Sourced[]) as Row[];
+  const shownVendors = narrow(vendorBonds as Sourced[]) as Row[];
   const ledger = [...(showCustomers ? shownCustomers : []),
                   ...(showSuppliers ? shownVendors : [])];
   const unscored = ledger.filter((b) => b.score == null);
   const frameLabel = String(
     (frames[at] ?? vendorFrames[at])?.label ?? data?.as_of ?? "");
 
+  const overdueCount = ledger.filter((b) => b.overdue).length;
   const chosen = ledger.find((b) => String(b.counterparty_id) === selected) ?? null;
 
   return (
@@ -217,15 +333,30 @@ export function BondsScreen({
         {counted(shownCustomers, "customer")}
         {showSuppliers && <>, {counted(shownVendors, "supplier")}</>}
         {" "}scored on five measured facets.{" "}
+        {/* The verb agrees with its own count. Invisible while the strip always
+            showed two hundred; "1 are anchored" the moment somebody watches a
+            single account, which is exactly when they are reading closely. */}
         {anchored(ledger) > 0 && (
-          <><strong>{anchored(ledger)}</strong> are anchored; </>
+          <><strong>{anchored(ledger)}</strong>{" "}
+            {anchored(ledger) === 1 ? "is" : "are"} anchored; </>
         )}
-        <strong>{ledger.filter((b) => b.overdue).length}</strong> are past their
-        own buying rhythm.
+        <strong>{overdueCount}</strong> {overdueCount === 1 ? "is" : "are"} past
+        {" "}their own buying rhythm.
       </p>
 
       <CompanyFilter options={company.options} value={company.company}
                      onChange={company.setCompany} show={company.show} />
+
+      <WatchPicker options={watchOptions} picked={picked} onChange={setPicked}
+                   topN={topByMoney} />
+      {picked.length > 0 && (
+        <p className="bond-unscored">
+          Showing <strong>{picked.length}</strong> of {watchOptions.length}.
+          Every score is unchanged — a bond is scored against the whole book,
+          and one of its five facets is this counterparty's share of it, so
+          narrowing hides dots rather than re-scoring the ones that are left.
+        </p>
+      )}
 
       <div ref={ref} className="bond-stage">
         <Figure
@@ -678,6 +809,17 @@ function packLanes(
   width: number,
   branch: boolean,
 ): { lanes: Lane[]; seat: Map<string, Seat> } {
+  // The radius domain, pinned to every bond on the canvas *before* narrowing.
+  //
+  // ``radiusScale`` used to re-domain on whatever rows it was handed, which is
+  // one lane's worth. Harmless while the whole book was always shown and wrong
+  // the moment it is not: picking your six biggest accounts would re-domain on
+  // those six, draw them all at 13px, and destroy the one reading the size
+  // channel carries — a big dot on the left is material money in a weakening
+  // relationship. Pinned, a small customer stays small when you single it out,
+  // and the same money is the same size in every lane.
+  const biggest = Math.max(
+    1, ...sides.flatMap(({ bonds }) => bonds.map((b) => num(b.money))));
   const seat = new Map<string, Seat>();
   const lanes: Lane[] = [];
 
@@ -697,7 +839,7 @@ function packLanes(
     // is a sentence with a decision attached, and it is invisible when every
     // line is packed into one row.
     for (const group of splitBy(eligible, side, branch)) {
-      packOne(group, side, seat, lanes, width);
+      packOne(group, side, seat, lanes, width, biggest);
     }
   });
 
@@ -706,14 +848,15 @@ function packLanes(
 
 /** One lane's worth: the swarm packing, and the lane it produces. */
 function packOne(group: { label: string; rows: Row[] }, side: string,
-                 seat: Map<string, Seat>, lanes: Lane[], width: number): void {
+                 seat: Map<string, Seat>, lanes: Lane[], width: number,
+                 biggest: number): void {
   {
     // Ascending, so the packer places the crowded left end first and the
     // sparse right end settles around it rather than the other way round.
     const scored = group.rows
       .slice()
       .sort((a, b) => num(a.score) - num(b.score));
-    const r = radiusScale(scored);
+    const r = radiusScale(biggest);
     const lane = lanes.length;
     const placed: { x: number; y: number; r: number }[] = [];
     let extent = 0;
@@ -793,10 +936,13 @@ interface Seat { lane: number; y: number }
 /** Marks sized by area, not by diameter — the same rule `Patterns.tsx` uses.
  *  Scaling the radius makes a counterparty with twice the revenue look four
  *  times as important. */
-function radiusScale(rows: Row[]) {
-  return scaleSqrt()
-    .domain([0, Math.max(...rows.map((b) => num(b.money)), 1)])
-    .range([3, 13]);
+/** Money → radius. Square-rooted because the eye reads a circle's *area*: a
+ *  customer twice the size drawn at twice the radius looks four times as big.
+ *
+ *  Takes the domain's top rather than deriving it, so the caller can pin it to
+ *  the whole book — see ``packLanes``. */
+export function radiusScale(biggest: number) {
+  return scaleSqrt().domain([0, Math.max(biggest, 1)]).range([3, 13]);
 }
 
 /** Score → x. The axis is the full panel width, which is the entire point of
@@ -819,9 +965,13 @@ function layout(
   width: number,
 ): Node[] {
   const out: Node[] = [];
+  // The same pinned domain the packer used, and it has to be the same one or a
+  // dot would be drawn at one size and seated at another.
+  const biggest = Math.max(
+    1, ...sides.flatMap(({ bonds }) => bonds.map((b) => num(b.money))));
   sides.forEach(({ side, bonds, frames }) => {
     const visible = apply(bonds as Sourced[]) as Row[];
-    const r = radiusScale(visible.filter((b) => b.score != null));
+    const r = radiusScale(biggest);
     for (const b of visible) {
       const id = String(b.counterparty_id);
       const here = seat.get(`${side}:${id}`);

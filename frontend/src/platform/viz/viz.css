@@ -972,3 +972,288 @@
 .journey-seg:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
 .journey-seg.on { outline: 2px solid var(--color-text); outline-offset: 1px; }
 .journey-drill { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--color-divider); }
+
+/* ── the bond strip ────────────────────────────────────────────────────────
+   Left to right is bond strength, and it gets the full panel width because
+   that is the whole reason this is a strip and not the radial it replaced:
+   scores cluster, a circle had ~130px of radius to separate them in, and on a
+   200-customer book the middle half of the book landed inside 36% of it.
+
+   Dots stack perpendicular where scores collide, so a cluster reads as a mound
+   — the shape of the book — instead of as overlap. Colour is spent on movement,
+   the only signed dimension here, using the loss/gain pair the palette already
+   validated; never green↔red.
+
+   Motion is a real encoding rather than decoration: a dot sliding left between
+   frames is a relationship decaying. That is also why the reduced-motion rule
+   turns the transition off completely instead of shortening it — a shortened
+   slide is still a slide, and the scrubber works without one. */
+.bond-stage { margin-top: 6px; }
+.bond-strip { display: block; width: 100%; overflow: visible; }
+
+.bond-band-label {
+  fill: var(--color-text-secondary); font-size: 10px;
+  text-transform: uppercase; letter-spacing: .08em;
+}
+.bond-edge { stroke: var(--viz-rule); stroke-width: 1px; stroke-dasharray: 2 3; }
+.bond-spine { stroke: var(--viz-rule); stroke-width: 1px; stroke-opacity: .7; }
+.bond-lane-label {
+  fill: var(--color-text); font-size: 11px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .06em;
+}
+
+.bond-node {
+  cursor: pointer;
+  stroke: var(--viz-surface);
+  stroke-width: 1.25px;
+  /* Only cx animates. `cy` is the counterparty's fixed seat and never moves,
+     which is what keeps the play readable at two hundred dots. */
+  transition: cx .38s ease, r .2s ease;
+}
+.bond-node:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.bond-node.bond-on { stroke: var(--color-text); stroke-width: 2px; }
+/* Direction of travel. Also carried by the tooltip's signed number and by the
+   Movement column in the table fallback, so colour is never the only cue. */
+.bond-up { fill: var(--viz-gain); }
+.bond-down { fill: var(--viz-loss); }
+.bond-flat { fill: var(--viz-neutral); }
+
+.bond-still .bond-node { transition: none; }
+@media (prefers-reduced-motion: reduce) {
+  .bond-node { transition: none; }
+}
+
+.bond-timeline {
+  display: flex; align-items: center; gap: 12px;
+  margin: 10px auto 0; max-width: 620px; flex-wrap: wrap;
+}
+.bond-timeline input[type="range"] { flex: 1; min-width: 160px; accent-color: var(--color-accent); }
+.bond-month {
+  font-variant-numeric: tabular-nums; font-weight: 600;
+  min-width: 84px; text-align: right;
+}
+
+.bond-unscored { margin-top: 10px; color: var(--color-text-secondary); font-size: 13px; }
+.bond-late { color: var(--viz-loss); font-weight: 600; }
+
+.bond-detail {
+  margin-top: 16px; padding: 14px 16px;
+  border: 1px solid var(--color-divider); border-radius: 6px;
+}
+.bond-detail-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.bond-detail-head h4 { margin: 0; }
+.bond-detail-head > div { display: inline-flex; align-items: center; gap: 10px; }
+
+/* The decomposition. Bars rather than a radar: a spider chart encodes area,
+   which depends on the order the axes happen to be in and is not a quantity
+   anybody chose. Five labelled bars compare directly and survive greyscale. */
+.bond-facets { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 7px; }
+.bond-facets li { display: grid; grid-template-columns: 130px 1fr 92px; align-items: center; gap: 10px; }
+.bond-facet-label { font-size: 13px; }
+.bond-facet-track { background: var(--color-neutral-200); border-radius: 2px; height: 12px; }
+.bond-facet-fill { display: block; height: 100%; background: var(--viz-gain); border-radius: 2px; }
+.bond-facet-value {
+  font-size: 12px; text-align: right; font-variant-numeric: tabular-nums;
+  color: var(--color-text-secondary);
+}
+
+@media (max-width: 720px) {
+  .bond-facets li { grid-template-columns: 1fr 74px; }
+  .bond-facet-track { grid-column: 1 / -1; order: 3; }
+}
+
+/* ── the mix grid ──────────────────────────────────────────────────────────
+   Three cell states, and every one of them says a word as well as carrying a
+   tint. A grid whose only signal is colour is unreadable in greyscale and to a
+   substantial minority of people, and this one is meant to be printed and
+   argued over.
+
+   Lapsed is the loudest cell on purpose: the line was already approved and the
+   buying stopped, which is a shorter conversation than a line nobody has ever
+   taken. "Never" is deliberately quiet — it is not a failure, and tinting every
+   blank as an opportunity is how a whitespace grid stops being trusted. */
+.mix-cell { font-variant-numeric: tabular-nums; font-weight: 600; font-size: 12.5px; }
+.mix-buys { color: var(--viz-gain); }
+.mix-lapsed {
+  color: var(--viz-accent);
+  border-bottom: 2px solid color-mix(in srgb, var(--viz-accent) 55%, transparent);
+}
+.mix-never { color: var(--color-text-secondary); font-weight: 400; }
+
+/* The whitespace picker: one button per line, counting who is missing it. The
+   count leads because "43 customers do not buy coolant" is the sentence
+   somebody acts on — the label alone is a category name. */
+.mix-lines {
+  list-style: none; margin: 12px 0 4px; padding: 0;
+  display: flex; flex-wrap: wrap; gap: 8px;
+}
+.mix-line {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 12px; border: 1px solid var(--color-divider);
+  border-radius: 6px; background: none; cursor: pointer; font: inherit;
+  text-align: left;
+}
+.mix-line:disabled { opacity: .5; cursor: default; }
+.mix-line:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
+.mix-line-on { outline: 2px solid var(--color-text); outline-offset: 1px; }
+.mix-line-count {
+  font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums;
+  min-width: 34px; text-align: right;
+}
+.mix-line-body { display: flex; flex-direction: column; line-height: 1.3; }
+.mix-line-body .viz-muted { font-size: 11.5px; }
+
+.mix-affinity { margin-top: 16px; }
+
+/* `.tl-unavailable strong` capitalises every word, which is right for the
+   one-word series names it was written for ("stock", "margin") and wrong for a
+   label that is a sentence — it rendered "Whether A Gap Is An Opportunity".
+   Screens whose gaps are described in words opt out rather than the shared rule
+   changing under the screens that still want it. */
+.tl-unavailable.said-plain strong { text-transform: none; }
+
+/* ── dependency, both ends of the book ─────────────────────────────────────
+   Two halves, one encoding, mirrored — so "we depend on them" and "we depend
+   on this customer" are comparable at a glance rather than being two screens
+   somebody opens in sequence.
+
+   The vendor row draws two bars on one track: revenue riding on the principal,
+   and what we spend with them. The gap between them is the finding, and two
+   bars show it where two columns of numbers make somebody do the subtraction. */
+.dep-halves { display: grid; gap: 28px; margin-top: 14px; }
+@media (min-width: 1100px) { .dep-halves { grid-template-columns: 1fr 1fr; } }
+
+.dep-side h4 { margin: 0 0 2px; }
+.dep-rows { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 10px; }
+.dep-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 1.1fr) minmax(80px, 1fr) auto auto;
+  align-items: center; gap: 10px;
+}
+.dep-name { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
+
+.dep-track {
+  position: relative; height: 16px; border-radius: 2px;
+  background: var(--color-neutral-200);
+}
+.dep-fill {
+  position: absolute; inset: 0 auto 0 0; height: 100%;
+  background: var(--viz-gain); border-radius: 2px;
+}
+/* Spend, drawn over the revenue bar rather than beside it: the question is how
+   much of one the other is, and stacking makes that a length comparison
+   instead of an arithmetic one. */
+.dep-spend { background: var(--viz-neutral); height: 6px; top: 5px; bottom: 5px; }
+
+.dep-figures { display: flex; flex-direction: column; line-height: 1.35; text-align: right; }
+.dep-figures .viz-muted { font-size: 11.5px; }
+
+/* Achievement and elapsed period on one track. An achievement bar alone says
+   60% and sounds fine; what decides whether it is fine is how much of the
+   quarter has gone, so the pace marker sits on the same track. */
+.dep-target { grid-column: 1 / -1; display: grid; gap: 4px; }
+.dep-target-track {
+  position: relative; height: 8px; border-radius: 2px;
+  background: var(--color-neutral-200);
+}
+.dep-target-fill { position: absolute; inset: 0 auto 0 0; height: 100%; border-radius: 2px; }
+.dep-target-fill.ok { background: var(--viz-gain); }
+.dep-target-fill.behind { background: var(--viz-accent); }
+.dep-target-pace {
+  position: absolute; top: -3px; width: 2px; height: 14px;
+  background: var(--color-text);
+}
+.dep-target .viz-muted { font-size: 11.5px; }
+
+@media (max-width: 720px) {
+  .dep-row { grid-template-columns: 1fr auto; }
+  .dep-track { grid-column: 1 / -1; }
+}
+
+/* ── the flow map ──────────────────────────────────────────────────────────
+   Principals → lines → customers, band width is money. Hovering lights one
+   path, which is the interaction the shape exists for: "where does Kennametal
+   end up" is answered by following a ribbon, not by reading twenty rows.
+
+   Residual bands — revenue no principal could be traced to, trade in items no
+   line resolved — are drawn muted rather than omitted. A picture that dropped
+   them would show a smaller, tidier business than the real one. */
+.flow-map { display: block; width: 100%; overflow: visible; }
+.flow-ribbon {
+  fill: none; stroke: var(--viz-gain); stroke-opacity: .28;
+  transition: stroke-opacity .15s ease;
+}
+.flow-ribbon:hover { stroke-opacity: .6; }
+.flow-ribbon.dim { stroke-opacity: .06; }
+.flow-ribbon.residual { stroke: var(--viz-neutral); }
+.flow-bar { fill: var(--viz-gain); }
+.flow-bar.residual { fill: var(--viz-neutral); }
+.flow-node { cursor: default; }
+.flow-label { fill: var(--color-text); font-size: 11px; }
+
+/* ── the target wall ───────────────────────────────────────────────────────
+   A bullet chart per principal: one bar for what is done, one marker for where
+   the period is. The comparison between the two is the whole judgement, and an
+   achievement bar alone hides it until the last week.
+
+   Behind is amber, never red — red is a loss on this palette, and a target
+   behind in week six is a thing to work rather than a thing that went wrong.
+   Every card says it in words as well. */
+.wall {
+  list-style: none; margin: 14px 0 0; padding: 0;
+  display: grid; gap: 14px;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+}
+.wall-card {
+  border: 1px solid var(--color-divider); border-radius: 6px;
+  padding: 12px 14px; display: grid; gap: 6px;
+}
+.wall-card.behind { border-left: 3px solid var(--viz-accent); }
+.wall-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.wall-figures { display: flex; align-items: baseline; gap: 6px; }
+.wall-figures strong { font-size: 19px; font-variant-numeric: tabular-nums; }
+.wall-track {
+  position: relative; height: 12px; border-radius: 2px;
+  background: var(--color-neutral-200);
+}
+.wall-fill { position: absolute; inset: 0 auto 0 0; height: 100%; border-radius: 2px; }
+.wall-fill.ok { background: var(--viz-gain); }
+.wall-fill.behind { background: var(--viz-accent); }
+.wall-pace {
+  position: absolute; top: -3px; width: 2px; height: 18px;
+  background: var(--color-text);
+}
+.wall-note { margin: 0; font-size: 11.5px; }
+
+/* ── the mix heatmap ───────────────────────────────────────────────────────
+   The same three states as the grid below it, in the same colours. What this
+   adds is shape: rows sorted by how much each customer takes, so the
+   whitespace collects into a block whose size you can see rather than count. */
+.heat { display: grid; gap: 1px; margin: 10px 0 4px; }
+.heat-cell { display: block; border-radius: 1px; }
+.heat-buys { background: var(--viz-gain); }
+.heat-lapsed { background: var(--viz-accent); }
+.heat-never { background: color-mix(in srgb, var(--color-text) 7%, transparent); }
+
+.heat-head {
+  display: grid; gap: 1px; margin-top: 14px;
+  font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--color-text-secondary);
+}
+.heat-head span { padding-bottom: 4px; }
+
+/* The catalogue's source column: what placed this item, and a way out of a
+   hand-set answer. Kept on one line so the grid row stays two lines tall. */
+.cat-source { display: inline-flex; align-items: center; gap: 8px; }
+
+/* The line picker, in the cell. Styled to read as part of the row rather than
+   as a form control dropped into a grid — a work queue of 200 rows with 200
+   chunky selects in it looks like a form nobody wants to fill in. */
+.cat-pick {
+  font: inherit; font-size: 12.5px; width: 100%;
+  padding: 3px 4px; border-radius: 4px;
+  border: 1px solid var(--color-divider);
+  background: transparent; color: var(--color-text);
+}
+.cat-pick:hover { border-color: var(--color-text-secondary); }
+.cat-pick:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }

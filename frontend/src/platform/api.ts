@@ -185,6 +185,57 @@ export const papi = {
   supply: (t: string) =>
     req<Record<string, unknown>>("/api/v1/insight/supply", {}, t),
 
+  // Relationship bonds — the one view that reads both sides of the book.
+  //
+  // Not scoped like `supply` even though it carries a supplier half: the
+  // customer half contains no cost and no margin, so a salesperson gets a real
+  // answer rather than a 403. The server omits the supplier half from their
+  // response entirely, which is why this takes no `side` parameter — asking is
+  // not what decides, the role is.
+  bonds: (t: string, months: number) =>
+    req<Record<string, unknown>>(`/api/v1/insight/bonds?months=${months}`, {}, t),
+
+  // Product mix — who takes which lines of the business, and which they do not.
+  // Every role: the grid is revenue and dates, and the conversation it exists
+  // for is a salesperson's.
+  // Two pivots, one endpoint: lines of the business, or principals.
+  mix: (t: string, months: number, by = "category") =>
+    req<Record<string, unknown>>(
+      `/api/v1/insight/mix?months=${months}&by=${by}`, {}, t),
+
+  // What this book leans on, at both ends. The supplier half is manager+ and
+  // is omitted from a salesperson's response rather than 403-ing the screen.
+  dependency: (t: string) =>
+    req<Record<string, unknown>>("/api/v1/insight/dependency", {}, t),
+
+  // Vendor targets. The one thing in the platform that is typed rather than
+  // synced, so it has a write path.
+  targets: (t: string) =>
+    req<Record<string, unknown>>("/api/v1/insight/targets", {}, t),
+
+  setTarget: (t: string, body: Record<string, unknown>) =>
+    req<Record<string, unknown>>("/api/v1/insight/targets",
+      { method: "PUT", body: JSON.stringify(body) }, t),
+
+  // The catalogue's last mile: which line an item belongs to, set by hand.
+  // Manager and above — placing an item moves every mix figure downstream.
+  catalogue: (t: string, unplacedOnly: boolean) =>
+    req<Record<string, unknown>>(
+      `/api/v1/insight/catalogue?unplaced_only=${unplacedOnly}`, {}, t),
+
+  setItemLine: (t: string, productId: string, category: string) =>
+    req<Record<string, unknown>>(
+      `/api/v1/insight/catalogue/${encodeURIComponent(productId)}`,
+      { method: "PUT", body: JSON.stringify({ category }) }, t),
+
+  clearItemLine: (t: string, productId: string) =>
+    req<unknown>(`/api/v1/insight/catalogue/${encodeURIComponent(productId)}`,
+      { method: "DELETE" }, t),
+
+  deleteTarget: (t: string, targetId: string) =>
+    req<unknown>(`/api/v1/insight/targets/${encodeURIComponent(targetId)}`,
+      { method: "DELETE" }, t),
+
   // The negotiation desk. A POST because it computes on what the salesperson
   // is proposing, not on what is stored — nothing is persisted by asking.
   negotiate: (t: string, body: Record<string, unknown>) =>

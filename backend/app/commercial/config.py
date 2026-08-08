@@ -235,6 +235,108 @@ class CommercialThresholds:
     # distribution, while being owed most of your money by one customer is not.
     supplier_spend_share: float = 0.40
 
+    # ── relationship bond strength ───────────────────────────────────────────
+    #
+    # How the five measured facets in ``insight/bonds.py`` combine into one
+    # score. They are settings rather than constants for the same reason the
+    # margin floor is: what makes a relationship strong is a judgement about
+    # this business, and burying it in a module would make the score a black
+    # box that nobody can argue with.
+    #
+    # Being here also means they are inside ``version`` — so re-weighting the
+    # bond does not make last quarter's bonds unexplainable. A screen rendered
+    # before and after a change is distinguishable, which is the whole reason
+    # the version hash exists.
+    #
+    # They need not sum to 1: the composite renormalises over whichever facets
+    # are measurable for a given counterparty, because a customer whose
+    # invoices carry no due dates has *unknown* payment behaviour rather than
+    # bad payment behaviour.
+    #
+    # Recency leads on purpose. Everything else describes what a relationship
+    # has been; only recency says whether it still is.
+    bond_weight_recency: float = 0.30
+    bond_weight_consistency: float = 0.25
+    bond_weight_breadth: float = 0.15
+    #: Their share of this company's book. Named ``share`` rather than
+    #: ``weight`` because ``weight`` already means "the weight of a facet" two
+    #: lines up, and one word meaning two things in one block is how a
+    #: mis-tuning happens.
+    bond_weight_share: float = 0.15
+    bond_weight_reliability: float = 0.15
+
+    # ── which line of the business an item belongs to ────────────────────────
+    #
+    # HSN prefix → category, the last resort in ``commercial/categories.py``
+    # after the item's own Zoho category and any manual override. Here rather
+    # than in that module for the same reason ``target_margin_by_family`` is
+    # here: it is a policy that moves every mix figure downstream of it, so it
+    # belongs inside ``version``. Re-map a prefix and last quarter's coverage
+    # stays explainable, because the version says what the map was.
+    #
+    # Matched as inclusive ranges over the four-digit HSN *heading*, numerically.
+    # Ranges rather than string prefixes because the tariff is organised as
+    # runs — 8456 through 8465 is "machine tools" as one block — and eleven
+    # prefix entries to say one range is eleven places for somebody to leave a
+    # gap. A single heading is written as a range whose ends are equal.
+    #
+    # Tuple-of-triples rather than a dict so the dataclass stays frozen,
+    # hashable and JSON-stable for the version hash.
+    #
+    # Deliberately conservative: a heading is here only where it really does
+    # mean one line. Chapter 82 as a whole covers spanners and files as well as
+    # cutting tools, so the chapter is not mapped — its headings are, and they
+    # split across two lines. An item this map cannot place is reported as
+    # uncategorised, which is a much smaller problem than an item placed in the
+    # wrong column.
+    hsn_category_ranges: tuple[tuple[int, int, str], ...] = (
+        # 8202 saws and saw blades; 8207–8209 interchangeable tools, knives and
+        # blades for machines, and cermet tips — the carbide/HSS core.
+        (8202, 8202, "CUTTING_TOOLS"),
+        (8207, 8209, "CUTTING_TOOLS"),
+        # Tool holders, arbors and work holders.
+        (8466, 8466, "CUTTING_TOOLS"),
+        # 8203–8206 hand tools, files, spanners and sets: real lines for this
+        # trade, but not cutting tools.
+        (8203, 8206, "CONSUMABLES"),
+        # Abrasives, abrasive cloth and paper; self-adhesive tapes.
+        (6804, 6805, "CONSUMABLES"),
+        (3919, 3919, "CONSUMABLES"),
+        # Petroleum oils. Broader than coolant, but in this book's purchase
+        # pattern it is neat cutting oil far more often than anything else.
+        (2710, 2710, "COOLANTS"),
+        # Lubricating preparations — cutting fluids, way lubes, rust preventives.
+        (3403, 3403, "COOLANTS"),
+        # Drawing and measuring instruments; measuring, checking and regulating
+        # instruments.
+        (9017, 9017, "METROLOGY"),
+        (9031, 9032, "METROLOGY"),
+        # Machine tools as one block: 8456 laser/EDM, 8457 machining centres,
+        # 8458 lathes, 8459 drilling/boring/milling, 8460 grinding, 8461
+        # planing/shaping, 8462 forging/pressing, 8463 other working, 8464
+        # stone/glass, 8465 wood.
+        (8456, 8465, "MACHINES"),
+    )
+
+    # ── inferring a line from the principal who supplies it ──────────────────
+    #
+    # An authorised distributor's suppliers are mostly single-line: everything
+    # from a coolant principal is coolant. So where the tariff code is blank,
+    # the vendor's own catalogue is real evidence — but only where there is
+    # enough of it, and only where that vendor is actually concentrated.
+    #
+    # Both floors are policy, so both are in the version hash. Loosening them
+    # is loosening how much of the mix grid is inference rather than fact, and
+    # that must be visible in the version a figure was stamped with.
+    #
+    # Fewer placed items than this from one vendor and their "dominant line" is
+    # a coincidence.
+    vendor_category_min_items: int = 4
+    # And that dominant line must actually dominate. Kennametal sells inserts,
+    # holders and gauges; at 0.7 a genuinely mixed principal infers nothing and
+    # their unplaced items stay honestly uncategorised.
+    vendor_category_dominance: float = 0.7
+
     @classmethod
     def from_env(cls) -> "CommercialThresholds":
         return cls(
@@ -256,6 +358,16 @@ class CommercialThresholds:
                                          _default("receivable_exposure_share")),
             supplier_spend_share=_f("CI_SUPPLIER_SPEND_SHARE",
                                     _default("supplier_spend_share")),
+            bond_weight_recency=_f("CI_BOND_WEIGHT_RECENCY",
+                                   _default("bond_weight_recency")),
+            bond_weight_consistency=_f("CI_BOND_WEIGHT_CONSISTENCY",
+                                       _default("bond_weight_consistency")),
+            bond_weight_breadth=_f("CI_BOND_WEIGHT_BREADTH",
+                                   _default("bond_weight_breadth")),
+            bond_weight_share=_f("CI_BOND_WEIGHT_SHARE",
+                                 _default("bond_weight_share")),
+            bond_weight_reliability=_f("CI_BOND_WEIGHT_RELIABILITY",
+                                       _default("bond_weight_reliability")),
             recent_days=_i("CI_RECENT_DAYS", 90),
             previous_days=_i("CI_PREVIOUS_DAYS", 90),
             historical_lookback_days=_i("CI_HISTORICAL_LOOKBACK_DAYS", 730),

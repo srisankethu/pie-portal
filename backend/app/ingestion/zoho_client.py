@@ -425,6 +425,13 @@ class ZohoApiSource:
                 "sku": i.get("sku"),
                 "unit": i.get("unit"),
                 "hsn_or_sac": i.get("hsn_or_sac") or i.get("hsn_code"),
+                # The catalogue's own line for this item. Free — it is already
+                # on the payload the item list returns — and the best category
+                # source there is wherever the catalogue is maintained, because
+                # it is a person's answer rather than an inference from a tax
+                # code. Blank on plenty of items, which reads as "no answer"
+                # and falls through to the HSN map.
+                "category_name": i.get("category_name") or i.get("category"),
                 "status": (i.get("status") or "active"),
                 # Stock travels on the item list Zoho already returns, so this
                 # costs nothing extra. Passed through raw — including the blank

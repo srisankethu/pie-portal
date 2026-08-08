@@ -21,7 +21,13 @@ cd "${CLAUDE_PROJECT_DIR:-$(dirname "$0")/../..}" || exit 0
 [ -x scripts/source_signature.sh ] || exit 0
 
 SIG="$(./scripts/source_signature.sh 2>/dev/null)" || exit 0
-CLEAN="$(printf '' | sha256sum | cut -d' ' -f1)"
+# Truncated the same way source_signature.sh truncates, which is the whole
+# point: it cuts to 32 hex characters so the stamp is not credential-shaped
+# (test_no_live_secret_is_committed scans for long hex runs). Comparing against
+# the untruncated 64-character hash meant this branch could never be true, so a
+# committed, fully-verified tree still asked for a run that could not change
+# anything — the check nagged hardest exactly when there was nothing to check.
+CLEAN="$(printf '' | sha256sum | cut -d' ' -f1 | cut -c1-32)"
 
 # Nothing uncommitted: there is nothing this hook could usefully ask for.
 [ "$SIG" = "$CLEAN" ] && exit 0

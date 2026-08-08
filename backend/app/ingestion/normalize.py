@@ -69,6 +69,7 @@ def normalize_product(raw: dict[str, Any]) -> ProductIn:
         name=str(_require(raw, "name", "item")),
         uom=(str(raw["unit"]) if raw.get("unit") else None),
         hsn=(str(raw["hsn_or_sac"]) if raw.get("hsn_or_sac") else None),
+        category=(str(raw["category_name"]) if raw.get("category_name") else None),
         active=(status == "active"),
         source_ref=SourceRef(record_type="item", record_id=str(iid)),
     )

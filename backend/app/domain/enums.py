@@ -355,6 +355,35 @@ QUOTE_OUTCOME_TRANSITIONS: dict[QuoteOutcomeStatus, frozenset] = {
 }
 
 
+class QuoteLossReason(str, Enum):
+    """Why a quote was lost, from a list short enough that people use it.
+
+    Five entries, because the owner's question has four answers and one of them
+    is "they never came back": *losing at 8% below my quote is a pricing
+    problem; losing on delivery is a stock problem*. A free-text field alone
+    could not separate those two — every loss would be a sentence, and nobody
+    counts sentences. The note beside this is what stops the list from lying
+    when reality does not fit one of the five.
+
+    Deliberately about *the customer's reason*, not ours. "Priced too high" and
+    "cost too high" are the same loss to the person recording it and two
+    different problems to the person fixing it, so this records only what was
+    heard and leaves the diagnosis to ``commercial/insight/outcomes``.
+    """
+
+    PRICE = "PRICE"
+    DELIVERY = "DELIVERY"
+    COMPETITOR = "COMPETITOR"
+    CUSTOMER_CANCELLED = "CUSTOMER_CANCELLED"
+    NO_DECISION = "NO_DECISION"
+
+
+#: Losses recorded before the vocabulary existed. Not a member of the enum —
+#: nothing may ever be *written* with it — but the analysis has to name the
+#: bucket rather than quietly dropping those quotes out of the denominator.
+LOSS_REASON_NOT_RECORDED = "NOT_RECORDED"
+
+
 # Data classes for permission redaction (§14). RESTRICTED fields are visible to
 # SALES_MANAGER and OWNER only. Enforced downstream (context assembly / API);
 # defined here so every layer references one source of truth.

@@ -12,7 +12,8 @@
  * organisation on it. There is one session now, and the caller passes its token
  * in like every other client in this codebase does.
  */
-import type { LineIntelligence, QuoteIntelligence, QuoteOutcome, QuoteOutcomeStatus } from "./types";
+import type { LineIntelligence, QuoteIntelligence, QuoteLossReason, QuoteOutcome,
+              QuoteOutcomeStatus } from "./types";
 
 export interface AssessLine {
   line_id: string;
@@ -58,8 +59,14 @@ export const intelligence = {
       token,
     ),
 
-  outcome: (token: string, quoteId: string, status: QuoteOutcomeStatus, customer: string, note?: string) =>
-    post<QuoteOutcome>("/api/v1/quote-intelligence/outcome", { quote_id: quoteId, status, customer, note }, token),
+  /** Move a quote along the lifecycle. A LOST quote needs `lossReason` — the
+   *  server refuses it otherwise, deliberately, because a loss nobody explained
+   *  is a row that can be counted and never learned from. */
+  outcome: (token: string, quoteId: string, status: QuoteOutcomeStatus, customer: string,
+            note?: string, lossReason?: QuoteLossReason) =>
+    post<QuoteOutcome>("/api/v1/quote-intelligence/outcome",
+                       { quote_id: quoteId, status, customer, note,
+                         loss_reason: lossReason ?? null }, token),
 
   /** Ask a manager or owner to sign off this line at the price on it now.
    *  Recording a reason is not the same as being allowed — this is the ask. */

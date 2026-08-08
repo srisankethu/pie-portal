@@ -381,10 +381,15 @@ def test_a_decision_records_which_catalogue_resolved_it(client):
 
 
 # ── the outcome path ────────────────────────────────────────────────────────
-def _outcome(c, email, status, quote_id="q1", note=None):
+def _outcome(c, email, status, quote_id="q1", note=None, loss_reason=None):
+    """A loss needs a reason, so this supplies one unless a caller says
+    otherwise. The refusal itself is tested in ``test_quote_outcomes``."""
+    if status == "LOST" and loss_reason is None:
+        loss_reason = "PRICE"
     return c.post("/api/v1/quote-intelligence/outcome",
                   json={"quote_id": quote_id, "status": status,
-                        "customer": "Acme Engineering", "note": note},
+                        "customer": "Acme Engineering", "note": note,
+                        "loss_reason": loss_reason},
                   headers=_hdr(c, email))
 
 

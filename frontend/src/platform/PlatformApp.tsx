@@ -82,6 +82,8 @@ const JourneyScreen = lazy(() =>
   import("./viz/Screens").then((m) => ({ default: m.JourneyScreen })));
 const LostRevenueScreen = lazy(() =>
   import("./viz/Screens").then((m) => ({ default: m.LostRevenueScreen })));
+const QuoteOutcomesScreen = lazy(() =>
+  import("./viz/QuoteOutcomes").then((m) => ({ default: m.QuoteOutcomesScreen })));
 const OpportunityScreen = lazy(() =>
   import("./viz/Screens").then((m) => ({ default: m.OpportunityScreen })));
 const SimulatorScreen = lazy(() =>
@@ -466,6 +468,10 @@ export default function PlatformApp() {
       ? ([{ key: "simulate", label: "Simulator", group: "decide" }] as NavItem[])
       : []),
     { key: "quotes", label: "Quotes", group: "decide" },
+    // Every role: a win rate carries no cost, and a salesperson sees their
+    // own accounts. The margin behind the losses is a second request the
+    // server only answers for a manager, so the nav item is not scoped.
+    { key: "quoteOutcomes", label: "Won & lost", group: "decide" },
     { key: "approvals", label: "Approvals", group: "decide", count: pendingApprovals },
 
     // ── Understand ──
@@ -697,6 +703,7 @@ export default function PlatformApp() {
             <Route path={PATH.targets} element={<TargetWallScreen session={session} />} />
             <Route path={PATH.catalogue} element={<CatalogueScreen session={session} />} />
             <Route path={PATH.negotiate} element={<NegotiateScreen session={session} />} />
+            <Route path={PATH.quoteOutcomes} element={<QuoteOutcomesScreen session={session} />} />
 
             {/* ── QUOTES ──
                 The Quote Builder itself, not a door in front of it. It used to

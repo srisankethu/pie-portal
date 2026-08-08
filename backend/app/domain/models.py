@@ -1191,6 +1191,20 @@ class QuoteOutcome(Base):
 
     status: Mapped[str] = mapped_column(String(16), default="DRAFT", index=True)
     note: Mapped[Optional[str]] = mapped_column(String(1024))
+    #: Why the customer did not take it, from ``QuoteLossReason``. Set only on
+    #: a LOST quote and required there — a loss with no reason is a row that
+    #: can be counted and not learned from, and the whole point of recording
+    #: outcomes is to separate a pricing problem from a stock one.
+    #:
+    #: On the *outcome*, never on ``QuoteDecision``. The priced snapshot is
+    #: append-only evidence about a judgement made on a particular day; why the
+    #: customer walked away is learned weeks later and belongs with the other
+    #: things that are learned late.
+    #:
+    #: Null on quotes decided before this column existed. Those are reported as
+    #: an explicit "not recorded" bucket rather than dropped from the
+    #: denominator, which would flatter every win rate computed over them.
+    loss_reason: Mapped[Optional[str]] = mapped_column(String(32), index=True)
     sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     decided_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     updated_by_user_id: Mapped[Optional[str]] = mapped_column(String(64))

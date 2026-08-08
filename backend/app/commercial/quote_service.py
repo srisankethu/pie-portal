@@ -27,6 +27,7 @@ from ..domain import models
 from ..domain.enums import (
     QUOTE_OUTCOME_TRANSITIONS,
     EvidenceSufficiency,
+    QuoteLossReason,
     QuoteOutcomeStatus,
     Role,
 )
@@ -569,15 +570,39 @@ class InvalidTransition(ValueError):
     """A quote outcome change the lifecycle does not permit."""
 
 
+class InvalidLossReason(ValueError):
+    """A loss reason missing where it is required, or present where it is not.
+
+    Missing is refused rather than accepted as a null, because the null is
+    permanent: nobody goes back through last quarter's losses to fill one in,
+    and a win rate whose losses are unexplained is exactly the number this
+    feature exists to replace. ``NO_DECISION`` is in the vocabulary for the
+    honest case where the customer simply never came back.
+
+    Present on a won quote is refused because it would be a fact about nothing
+    that nevertheless *counts* — the loss mix is read straight off this column.
+    """
+
+
 def set_outcome(session: Session, org: str, *, quote_id: str,
                 status: QuoteOutcomeStatus, customer_ref: str = "",
                 customer_id: Optional[str] = None, note: Optional[str] = None,
+                loss_reason: Optional[QuoteLossReason] = None,
                 user_id: Optional[str] = None) -> models.QuoteOutcome:
     """Move a quote along DRAFT → SENT → WON/LOST.
 
     Won and lost are terminal. Reopening a decided quote would rewrite history a
     margin analysis has already counted, so it is refused rather than silently
     allowed.
+
+    ``loss_reason`` is required when — and accepted only when — the status is
+    LOST. A reason on a won quote would be a fact about nothing, and it would
+    count: the loss mix is read straight off this column.
+
+    Re-recording LOST on an already-lost quote is permitted by the transition
+    table (``status is current`` short-circuits the check) and that is what lets
+    a mis-typed reason be corrected. The reason moves with the correction; the
+    priced snapshots it is read against do not move at all.
     """
     row = session.scalar(
         select(models.QuoteOutcome).where(
@@ -597,12 +622,22 @@ def set_outcome(session: Session, org: str, *, quote_id: str,
         raise InvalidTransition(
             f"A quote that is {current.value} cannot become {status.value}")
 
+    if status is QuoteOutcomeStatus.LOST and loss_reason is None:
+        raise InvalidLossReason(
+            "A lost quote needs a reason: "
+            + ", ".join(r.value for r in QuoteLossReason))
+    if status is not QuoteOutcomeStatus.LOST and loss_reason is not None:
+        raise InvalidLossReason(
+            f"A quote that is {status.value} cannot carry a loss reason")
+
     now = datetime.now(timezone.utc)
     row.status = status.value
     if status is QuoteOutcomeStatus.SENT:
         row.sent_at = row.sent_at or now
     if status in (QuoteOutcomeStatus.WON, QuoteOutcomeStatus.LOST):
         row.decided_at = now
+    if loss_reason is not None:
+        row.loss_reason = loss_reason.value
     if note is not None:
         row.note = note[:1024]
     if customer_ref:
@@ -622,6 +657,7 @@ def outcome_to_dict(row: Optional[models.QuoteOutcome]) -> Optional[dict]:
         "quote_id": row.quote_id,
         "status": row.status,
         "note": row.note,
+        "loss_reason": row.loss_reason,
         "customer_ref": row.customer_ref,
         "customer_id": row.customer_id,
         "sent_at": clock.iso(row.sent_at),

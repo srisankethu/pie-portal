@@ -216,10 +216,17 @@ export interface LineIntelligence {
 
 export type QuoteOutcomeStatus = "DRAFT" | "SENT" | "WON" | "LOST";
 
+/** Why a quote was lost. Mirrors `QuoteLossReason` on the server, which is the
+ *  authority — the server refuses a loss without one, and the labels the screen
+ *  shows come down with the win-rate response rather than being written here. */
+export type QuoteLossReason =
+  | "PRICE" | "DELIVERY" | "COMPETITOR" | "CUSTOMER_CANCELLED" | "NO_DECISION";
+
 export interface QuoteOutcome {
   quote_id: string;
   status: QuoteOutcomeStatus;
   note: string | null;
+  loss_reason: QuoteLossReason | null;
   sent_at: string | null;
   decided_at: string | null;
   allowed_next: QuoteOutcomeStatus[];

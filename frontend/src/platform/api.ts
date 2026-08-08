@@ -201,6 +201,20 @@ export const papi = {
   payables: (t: string) =>
     req<Record<string, unknown>>("/api/v1/insight/payables", {}, t),
 
+  // Which quotes were won and which were lost. No cost anywhere in it, so
+  // every role reads it — a salesperson sees their own accounts, scoped by the
+  // server exactly as `/api/v1/accounts` is.
+  quoteOutcomes: (t: string, months = 12) =>
+    req<Record<string, unknown>>(
+      `/api/v1/insight/quote-outcomes?months=${months}`, {}, t),
+
+  // Where a losing price sat, against what wins and against what that customer
+  // has paid — and the margin behind both. Manager and above, scoped like
+  // `payables`: a win rate is a fact about a relationship, where the margin
+  // sits on the ones we lose is a commercial position.
+  quotePricing: (t: string) =>
+    req<Record<string, unknown>>("/api/v1/insight/quote-pricing", {}, t),
+
   // What we actually agreed to pay a supplier in, which Zoho's fixed dropdown
   // often cannot express. Zoho's own value is never overwritten — both travel
   // together, because the gap between them is the thing worth seeing.

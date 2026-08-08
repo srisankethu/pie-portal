@@ -10,7 +10,10 @@ immutable ``quote_decisions`` audit trail, optionally with the reason a
 salesperson went ahead anyway.
 
 ``POST /api/v1/quote-intelligence/outcome`` moves the quote along
-DRAFT → SENT → WON/LOST, so a price can later be joined to whether it won.
+DRAFT → SENT → WON/LOST, so a price can later be joined to whether it won. A
+loss carries a reason from ``QuoteLossReason`` and is refused without one —
+``/api/v1/insight/quote-outcomes`` reads that column directly, and a loss
+recorded without it is a row that can be counted and never learned from.
 
 No endpoint here calls a model. Every number is computed by ``app.commercial``.
 Role scoping is enforced server-side: a salesperson's response contains no cost,
@@ -31,6 +34,7 @@ from ..authz import Principal, current_principal
 from ..store import store
 from ..commercial.policy import load_for_org
 from ..commercial.quote_service import (
+    InvalidLossReason,
     InvalidTransition,
     QuoteLineInput,
     assess_and_record,
@@ -45,7 +49,7 @@ from ..commercial.quote_service import (
     summarize,
 )
 from ..db import get_session
-from ..domain.enums import QuoteOutcomeStatus
+from ..domain.enums import QuoteLossReason, QuoteOutcomeStatus
 
 router = APIRouter(prefix="/api/v1/quote-intelligence", tags=["quote-intelligence"])
 
@@ -210,6 +214,9 @@ class OutcomeRequest(BaseModel):
     status: QuoteOutcomeStatus
     customer: str = ""
     note: Optional[str] = None
+    #: Required when ``status`` is LOST, refused otherwise. See
+    #: ``quote_service.set_outcome`` for why this is not simply nullable.
+    loss_reason: Optional[QuoteLossReason] = None
 
 
 @router.post("/outcome")
@@ -226,9 +233,14 @@ def quote_outcome(
             session, org, quote_id=body.quote_id.strip(), status=body.status,
             customer_ref=body.customer.strip(),
             customer_id=customer.customer_id if customer else None,
-            note=body.note, user_id=principal.user_id)
+            note=body.note, loss_reason=body.loss_reason,
+            user_id=principal.user_id)
     except InvalidTransition as e:
         raise HTTPException(status.HTTP_409_CONFLICT, str(e)) from e
+    except InvalidLossReason as e:
+        # 422, not 409: the lifecycle allows this move, the request is
+        # incomplete. A 409 would send the caller looking at the state machine.
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(e)) from e
     return outcome_to_dict(row) or {}
 
 

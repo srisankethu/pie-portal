@@ -17,6 +17,7 @@ honest 403.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Optional
@@ -33,12 +34,15 @@ from ..commercial import floor, incentive, policy, portfolio, principals
 from ..commercial import categories as cat
 from ..commercial.insight import (bonds, cadence, cashflow, cohorts, composition,
                                   daily as daily_view,
-                                  dependency, flow, landscape, mix, payments,
-                                  periods, radar, schemes, simulate, stock, story,
-                                  supply, terms as vendor_terms, weather)
+                                  dependency, flow, landscape, mix,
+                                  outcomes as outcomes_view, payments,
+                                  periods, radar, schemes, simulate, stock,
+                                  story, supply, terms as vendor_terms, weather)
 from ..db import get_session
 from ..domain import models
-from ..domain.enums import DecisionStatus, Role
+from ..domain.enums import (LOSS_REASON_NOT_RECORDED,
+                            QUOTE_OUTCOME_TRANSITIONS, DecisionStatus,
+                            QuoteOutcomeStatus, Role)
 from ..domain.origin import Companies, index_of
 from ..signals.aggregates import label_for, load_snapshot
 from ..commercial.insight import series
@@ -810,6 +814,329 @@ def payable_behaviour(principal: Principal = Depends(require_manager_or_owner),
                       "a bill yet — so there is no bill date to measure from. "
                       "A sync run before bill breakdowns were read will fill "
                       "this in on its next pass."))
+
+
+# ── quotes: what was won, what was lost, and whether price is the reason ────
+#
+# Two endpoints, split exactly the way ``/payments`` and ``/payables`` are, and
+# for the same reason rather than a new one. A win rate carries no cost — how
+# often this customer says yes is a fact about a relationship a salesperson
+# owns, and they see their own. Where a losing price sat against the price that
+# wins, and what margin the two carry, is commercial position: it compares one
+# customer's price with another's, which is the thing a salesperson is not
+# given anywhere else in this router either.
+
+
+#: Answered, and still in flight. Named rather than written inline twice: the
+#: screen shows both lists and they must not disagree about which is which.
+_DECIDED = ("WON", "LOST")
+_AWAITING = ("DRAFT", "SENT")
+
+
+def _scoped_outcomes(session: Session, org: str, principal: Principal,
+                     statuses: tuple[str, ...]) -> list[models.QuoteOutcome]:
+    """Every quote in these states this principal may see, and nothing else.
+
+    A salesperson is narrowed to their own accounts, the same rule
+    ``/api/v1/accounts`` and ``_require_visible_customer`` apply — a win rate is
+    theirs to see, but the book's is not, and an unscoped list here would be a
+    way around the account scoping everywhere else. The scope is applied here
+    rather than at each caller for the same reason: a count taken outside it
+    leaks the size of the book a salesperson cannot see.
+
+    Quotes whose customer never resolved are included when *they* recorded the
+    outcome. Those are usually a walk-in or a name typed slightly differently,
+    and dropping them would quietly remove a salesperson's own losses from
+    their own denominator.
+    """
+    stmt = select(models.QuoteOutcome).where(
+        models.QuoteOutcome.organization_id == org,
+        models.QuoteOutcome.status.in_(statuses))
+    if principal.is_salesperson:
+        mine = [c for (c,) in session.execute(
+            select(models.Customer.customer_id).where(
+                models.Customer.organization_id == org,
+                models.Customer.assigned_user_id == principal.user_id)).all()]
+        stmt = stmt.where(
+            models.QuoteOutcome.customer_id.in_(mine)
+            | (models.QuoteOutcome.customer_id.is_(None)
+               & (models.QuoteOutcome.updated_by_user_id == principal.user_id)))
+    return list(session.scalars(stmt).all())
+
+
+def _latest_lines(session: Session, org: str,
+                  quote_ids: list[str]) -> dict[str, list[models.QuoteDecision]]:
+    """The last snapshot of each line, per quote.
+
+    ``quote_decisions`` is append-only, so a line re-priced three times has
+    three rows and the customer answered the third. Taking the latest is not
+    discarding the earlier ones — they stay in the audit trail, where the
+    negotiation is the point; they are simply not the price that was accepted
+    or refused, and summing all three would triple that line's value.
+    """
+    if not quote_ids:
+        return {}
+    rows = session.scalars(
+        select(models.QuoteDecision)
+        .where(models.QuoteDecision.organization_id == org,
+               models.QuoteDecision.quote_id.in_(quote_ids))
+        .order_by(models.QuoteDecision.created_at)).all()
+    latest: dict[tuple[str, str], models.QuoteDecision] = {}
+    for row in rows:
+        latest[(row.quote_id, row.quote_line_id)] = row
+    out: dict[str, list[models.QuoteDecision]] = {}
+    for (quote_id, _line), row in latest.items():
+        out.setdefault(quote_id, []).append(row)
+    return out
+
+
+def _line_value(row: models.QuoteDecision) -> Decimal:
+    """What this line was quoted at, in money.
+
+    ``line_revenue`` where the engine computed one; quantity × price otherwise.
+    A line with neither is worth zero to this sum and is counted nowhere else,
+    which is correct: it is a line nobody put a price on.
+    """
+    if row.line_revenue is not None:
+        return Decimal(row.line_revenue)
+    if row.quoted_unit_price is None:
+        return Decimal("0")
+    return Decimal(row.quantity or 0) * Decimal(row.quoted_unit_price)
+
+
+def _decided_quotes(outcomes: list[models.QuoteOutcome],
+                    lines_by_quote: dict[str, list[models.QuoteDecision]],
+                    customer_names: dict[str, str],
+                    principal_of: dict[str, str],
+                    line_of: dict[str, str]) -> list[outcomes_view.DecidedQuote]:
+    """Outcome rows and their priced lines, as the grain the view computes on.
+
+    A quote with no snapshot behind it is skipped rather than counted at zero.
+    That is a quote somebody marked won or lost without ever recording what it
+    was priced at — real, and it belongs in a data-quality note rather than in a
+    denominator where it would drag every value figure down.
+    """
+    out = []
+    for row in outcomes:
+        lines = lines_by_quote.get(row.quote_id) or []
+        if not lines or row.decided_at is None:
+            continue
+        value = sum((_line_value(ln) for ln in lines), Decimal("0"))
+        # Only a fully-costed quote carries a profit. See ``DecidedQuote``.
+        profits = [ln.gross_profit for ln in lines]
+        gross_profit = (sum((Decimal(p) for p in profits), Decimal("0"))
+                        if all(p is not None for p in profits) else None)
+        won = row.status == "WON"
+        out.append(outcomes_view.DecidedQuote(
+            quote_id=row.quote_id,
+            customer_id=row.customer_id or "",
+            customer_label=(customer_names.get(row.customer_id or "")
+                            or row.customer_ref or "Unattributed"),
+            won=won,
+            loss_reason=("" if won
+                         else (row.loss_reason or LOSS_REASON_NOT_RECORDED)),
+            decided_on=clock.aware(row.decided_at).date(),
+            lines=len(lines),
+            value=value,
+            gross_profit=gross_profit,
+            principals=tuple(sorted({principal_of[ln.product_id]
+                                     for ln in lines
+                                     if ln.product_id in principal_of})),
+            product_lines=tuple(sorted({line_of[ln.product_id]
+                                        for ln in lines
+                                        if ln.product_id in line_of})),
+        ))
+    return out
+
+
+def _priced_lines(outcomes: list[models.QuoteOutcome],
+                  lines_by_quote: dict[str, list[models.QuoteDecision]],
+                  product_names: dict[str, str],
+                  paid_before: dict[tuple[str, str], Decimal],
+                  ) -> list[outcomes_view.PricedLine]:
+    """The per-line grain the price comparison needs, and nothing else.
+
+    Separate from ``_decided_quotes`` because it is a different question at a
+    different grain: how often we win is counted per quote, what we quoted is
+    observed per line. Folding both into one loader would put the line grain in
+    front of the win rate, which is the mistake the module docstring exists to
+    prevent.
+    """
+    out = []
+    for row in outcomes:
+        won = row.status == "WON"
+        for line in lines_by_quote.get(row.quote_id) or []:
+            if not line.product_id or line.quoted_unit_price is None:
+                continue
+            out.append(outcomes_view.PricedLine(
+                quote_id=row.quote_id,
+                product_id=line.product_id,
+                product_label=product_names.get(line.product_id,
+                                                line.product_ref or line.product_id),
+                quantity_band=line.quantity_band or "",
+                unit_price=Decimal(line.quoted_unit_price),
+                won=won,
+                customer_id=row.customer_id or "",
+                customer_paid=paid_before.get(
+                    (row.customer_id or "", line.product_id)),
+            ))
+    return out
+
+
+def _quote_facets(session: Session, org: str, th):
+    """product_id → principal, and product_id → line of the business.
+
+    Both resolved through the one place each already lives, so this screen and
+    the mix grid cannot disagree about whose product an item is or what kind of
+    thing it is.
+    """
+    principal_of = _principal_of_product(session, org)
+    vendor_of = _principal_ids(principal_of)
+    lines_of = _category_of(session, org, th, vendor_of)
+    return (principals.names_of(principal_of, _vendor_names(session, org)),
+            vendor_of,
+            {pid: r.category for pid, r in lines_of.items() if r.known})
+
+
+@dataclass
+class _QuoteEvidence:
+    """What both quote endpoints load before they diverge.
+
+    Extracted after a duplicate scan flagged the six-line preamble in both:
+    the scoping rule, which snapshot each line belongs to, and which of them are
+    the latest — three things that must be identical on the two screens or the
+    win rate and the price analysis will disagree about the same quote.
+    """
+
+    org: str
+    snapshot: Any
+    th: Any
+    as_of: date
+    decided: list[models.QuoteOutcome]
+    awaiting: list[models.QuoteOutcome]
+    lines_by_quote: dict[str, list[models.QuoteDecision]]
+    principal_names: dict[str, str]
+    quotes: list[outcomes_view.DecidedQuote]
+
+
+def _quote_evidence(session: Session, principal: Principal) -> _QuoteEvidence:
+    org, snapshot, th = _labels_only(session, principal)
+    decided = _scoped_outcomes(session, org, principal, _DECIDED)
+    awaiting = _scoped_outcomes(session, org, principal, _AWAITING)
+    lines_by_quote = _latest_lines(
+        session, org, [o.quote_id for o in decided + awaiting])
+    principal_names, principal_of, line_of = _quote_facets(session, org, th)
+    return _QuoteEvidence(
+        org=org, snapshot=snapshot, th=th, as_of=clock.today(th.timezone),
+        decided=decided, awaiting=awaiting, lines_by_quote=lines_by_quote,
+        principal_names=principal_names,
+        quotes=_decided_quotes(decided, lines_by_quote, snapshot.customer_names,
+                               principal_of, line_of))
+
+
+@router.get("/quote-outcomes")
+def quote_outcomes(months: int = Query(12, ge=1, le=36),
+                   principal: Principal = Depends(current_principal),
+                   session: Session = Depends(get_session)) -> dict:
+    """How often quotes are won, sliced the ways this business asks.
+
+    Every role. Nothing in the response is derived from cost: counts, rates,
+    quoted values and the loss mix. The margin behind those losses is the other
+    endpoint.
+    """
+    ev = _quote_evidence(session, principal)
+    org, snapshot, th, as_of = ev.org, ev.snapshot, ev.th, ev.as_of
+    awaiting, lines_by_quote, quotes = ev.awaiting, ev.lines_by_quote, ev.quotes
+
+    result = outcomes_view.build(
+        quotes, as_of=as_of,
+        customer_names=snapshot.customer_names,
+        principal_names=ev.principal_names,
+        product_line_names={c: cat.LABELS[c] for c in cat.ORDER},
+        months=months, open_quotes=len(awaiting))
+    # The quotes still waiting for an answer, so the screen that reads the win
+    # rate is also the screen an outcome is recorded on. Kept out of every
+    # figure above — a quote nobody has answered is not a loss.
+    result["awaiting"] = [
+        {
+            "quote_id": row.quote_id,
+            "customer_id": row.customer_id,
+            "customer_label": (snapshot.customer_names.get(row.customer_id or "")
+                               or row.customer_ref or "Unattributed"),
+            "status": row.status,
+            "sent_at": row.sent_at.isoformat() if row.sent_at else None,
+            "lines": len(lines_by_quote.get(row.quote_id) or []),
+            "value": float(sum((_line_value(ln) for ln
+                                in lines_by_quote.get(row.quote_id) or []),
+                               Decimal("0"))),
+            "allowed_next": sorted(
+                s.value for s in
+                QUOTE_OUTCOME_TRANSITIONS[QuoteOutcomeStatus(row.status)]),
+        }
+        for row in sorted(awaiting, key=lambda r: r.updated_at, reverse=True)
+    ]
+    # Two books can hold a customer of the same name, and two quotes to "the
+    # same" account are then two different conversations. Same projection as
+    # every other list in this router.
+    companies = Companies(session, org)
+    companies.stamp(result["customers"],
+                    index_of(session, org, models.Customer), by="key")
+    result["sources_differ"] = companies.count > 1
+    #: Quotes decided without a priced snapshot behind them — real, and named
+    #: rather than silently absent from the counts above.
+    result["unpriced_quotes"] = len(ev.decided) - len(quotes)
+    return _envelope(
+        result, th=th,
+        empty_reason=(None if quotes else
+                      "No quote has been marked won or lost yet. Record an "
+                      "outcome on a quote and its result appears here — a win "
+                      "rate is not computed until "
+                      f"{outcomes_view.MIN_DECIDED_QUOTES} quotes have been "
+                      "decided."))
+
+
+@router.get("/quote-pricing")
+def quote_pricing(principal: Principal = Depends(require_manager_or_owner),
+                  session: Session = Depends(get_session)) -> dict:
+    """Where a losing price sat, against what wins and against what they paid.
+
+    Manager and above, and scoped that way for the reason ``/payables`` is:
+    this compares one customer's price against another's and reads the margin
+    behind both. A win rate is a fact about a relationship; where the margin
+    sits on the ones we lose is a commercial position.
+
+    Empty is a legitimate answer here and a common one. Most products will not
+    have been quoted often enough on both sides to compare, and a book with a
+    thin quote history produces nothing at all — which is the honest reply to
+    "are we losing on price" when the evidence cannot say.
+    """
+    ev = _quote_evidence(session, principal)
+
+    # What each customer has historically paid, from the metrics layer that
+    # already computes it. Recomputing a price history here would be a second
+    # answer to a question ``commercial/metrics`` has one answer to.
+    paid_before = {
+        (row.customer_id, row.product_id): Decimal(row.current_sell_price)
+        for row in session.scalars(
+            select(models.CustomerItemMetric).where(
+                models.CustomerItemMetric.organization_id == ev.org)).all()
+        if row.current_sell_price is not None
+    }
+
+    lines = _priced_lines(ev.decided, ev.lines_by_quote,
+                          ev.snapshot.product_names, paid_before)
+
+    result = outcomes_view.pricing(ev.quotes, lines, as_of=ev.as_of)
+    return _envelope(
+        result, th=ev.th,
+        empty_reason=(None if result["comparisons"] else
+                      "No product has been quoted often enough on both sides to "
+                      "compare: a comparison needs "
+                      f"{outcomes_view.MIN_PRICE_OBSERVATIONS} won and "
+                      f"{outcomes_view.MIN_PRICE_OBSERVATIONS} lost quotes of "
+                      "the same item at the same quantity band. The margin "
+                      "figures above are computed over every fully-costed "
+                      "quote and do not need that."))
 
 
 @router.get("/cashflow")

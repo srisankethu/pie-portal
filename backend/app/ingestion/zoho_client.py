@@ -457,7 +457,7 @@ class ZohoApiSource:
                 # but the HSN map is what actually places an item here, not the
                 # fallback it was described as.
                 "category_name": i.get("category_name") or i.get("category"),
-                # Whose brand it is. The one curated field these masters really
+                # Who makes the item. The one curated field these masters really
                 # do keep — 67% of SLS items and 92% of 4U's, and *clean*: six
                 # distinct principals in one book and two in the other, with no
                 # spelling variants at all. It matters because it has no sync
@@ -466,6 +466,15 @@ class ZohoApiSource:
                 # still knows whose product it is. See
                 # ``commercial/principals.py`` for where that fallback applies
                 # and, more importantly, where it does not.
+                #
+                # ``brand`` is a *different* Zoho field, and these books do not
+                # use it — 0 of 800 items on SLS Engineers, 3 of 400 on 4U
+                # Precision. It is read behind ``manufacturer`` rather than
+                # dropped because it costs nothing and a book that starts
+                # filling it in should not need a code change to be heard. This
+                # is the only place the two are weighed against each other:
+                # everything downstream sees one value under one name, so
+                # nothing else has to know there were two candidates.
                 "manufacturer": i.get("manufacturer") or i.get("brand"),
                 "status": (i.get("status") or "active"),
                 # Stock travels on the item list Zoho already returns, so this

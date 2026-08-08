@@ -135,12 +135,12 @@ export function CatalogueScreen({ session }: { session: PlatformSession }) {
                 p.value ? String(p.value) : "—" },
             {
               // Whose product it is, and on what evidence — a bill this book
-              // paid, or the brand on the item master. Both read as a supplier
-              // name, and they are not equally strong: a bill is a transaction,
-              // a brand is an attribute somebody typed. Somebody reviewing a
-              // catalogue has to be able to tell them apart before trusting
-              // either, so the source travels with the name rather than being
-              // available somewhere else.
+              // paid, or the manufacturer on the item master. Both read as a
+              // supplier name, and they are not equally strong: a bill is a
+              // transaction, a maker is an attribute somebody typed. Anybody
+              // reviewing a catalogue has to be able to tell them apart before
+              // trusting either, so the source travels with the name rather
+              // than being available somewhere else.
               field: "supplier", headerName: "Supplier", width: 210, flex: 0,
               filter: "agTextColumnFilter",
               cellRenderer: (p: { data: Row }) => (

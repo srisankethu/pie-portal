@@ -180,7 +180,7 @@ class ReadModelRepository:
         row.uom = p.uom
         row.hsn = p.hsn
         row.category = p.category
-        row.brand = p.brand
+        row.manufacturer = p.manufacturer
         row.active = p.active
         row.source_ref = p.source_ref.model_dump()
         return row

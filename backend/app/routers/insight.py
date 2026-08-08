@@ -608,6 +608,13 @@ def cash_projection(weeks: int = Query(cashflow.WEEKS, ge=1, le=26),
     Every figure is an obligation already entered into. Reads three folded
     states and does no arithmetic here — the money lives in ``insight/cashflow``
     and the routing lives here.
+
+    The fourth read is the payment history, which is what turns one line into a
+    range: each customer's own days-late distribution, measured from settled
+    invoices, so the same committed book can be placed on the timeline at the
+    speed they actually pay rather than the speed their terms claim. Measured
+    per customer, and absent for a customer with too little history — see
+    ``payments.lag`` for why that is left absent rather than defaulted.
     """
     org, _snapshot, th = _labels_only(session, principal)
     on = latest_as_of(session, org, CASH_SCHEDULE)
@@ -621,7 +628,8 @@ def cash_projection(weeks: int = Query(cashflow.WEEKS, ge=1, le=26),
             # The state's own build date, not today: a projection dated today
             # from a fold that last ran on Friday would silently age its own
             # first bucket into the overdue column over the weekend.
-            as_of=on, weeks=weeks),
+            as_of=on, weeks=weeks,
+            lags=payments.lags(_settlements(session, org))),
         currency=th.currency, thresholds_version=th.version)
 
 

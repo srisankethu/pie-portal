@@ -23,7 +23,7 @@ exactly how far the pull got.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from datetime import date
 from typing import Any, Callable, Optional
 
@@ -178,6 +178,32 @@ class SyncReport:
                     or self.stock_snapshots or self.payments
                     or self.purchase_orders or self.sales_orders
                     or self.vendor_payments)
+
+    def merge(self, other: "SyncReport") -> "SyncReport":
+        """Fold another connected company's pull into this one.
+
+        A run that covers three Zoho companies is still one row on the sync
+        screen, and every number on that row has to be the total rather than
+        whichever company happened to go last. Counters add, lists concatenate,
+        and the touched-id sets union — the last of those is what keeps the
+        Customer × Item recompute afterwards targeting everything that moved
+        rather than only the final company's share of it.
+
+        Written by field kind rather than by name so a counter added to this
+        dataclass later is summed without anybody having to remember this
+        method exists.
+        """
+        for f in fields(self):
+            if f.name == "organization_id":
+                continue
+            mine, theirs = getattr(self, f.name), getattr(other, f.name)
+            if isinstance(mine, int):
+                setattr(self, f.name, mine + theirs)
+            elif isinstance(mine, list):
+                mine.extend(theirs)
+            elif isinstance(mine, set):
+                mine |= theirs
+        return self
 
     def to_dict(self) -> dict[str, Any]:
         return {

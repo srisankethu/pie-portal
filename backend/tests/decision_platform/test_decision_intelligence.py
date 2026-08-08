@@ -61,8 +61,9 @@ class _Source:
         self._over = over
 
     def list_contacts(self):
-        return [{"contact_id": "c1", "contact_name": "Pitti Engineering",
-                 "status": "active"}]
+        return self._over.get("contacts", [
+            {"contact_id": "c1", "contact_name": "Pitti Engineering",
+             "status": "active"}])
 
     def list_vendors(self):
         # Two, so a share is a real fraction rather than trivially 100%, and so

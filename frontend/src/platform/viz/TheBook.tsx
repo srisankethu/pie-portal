@@ -87,6 +87,18 @@ function CashProjection({ session }: { session: PlatformSession }) {
   const unattributed = (data?.unattributed ?? {}) as Row;
   const net = num(data?.net_over_horizon);
   const lowest = num(data?.lowest_cumulative);
+  // The band. `scenarios.late` is the deepest whenever anything is measured —
+  // money arriving later cannot make a trough shallower — but `requirement` is
+  // taken from the server, which minimises across all three rather than
+  // assuming which one wins.
+  const scenarios = (data?.scenarios ?? {}) as Record<string, Row>;
+  const basis = (data?.basis ?? {}) as Row;
+  const requirement = num(data?.requirement);
+  const early = rows(scenarios.early?.buckets);
+  const expected = rows(scenarios.expected?.buckets);
+  const late = rows(scenarios.late?.buckets);
+  const measuredShare = num(basis.share_measured);
+  const banded = expected.length > 0 && measuredShare > 0;
 
   /** Named beside the chart, never drawn on it. Zero rows are dropped rather
    *  than shown as "₹0" — an empty row teaches a reader to skip the list. */
@@ -123,17 +135,43 @@ function CashProjection({ session }: { session: PlatformSession }) {
         <strong>{net >= 0 ? "+" : "−"}{money(Math.abs(net))}</strong>
         {lowest < 0 && Boolean(data?.lowest_week_starts_on) && (
           <> · deepest at <strong>−{money(Math.abs(lowest))}</strong> in the week
-          of {formatDate(String(data?.lowest_week_starts_on))}</>
+          of {formatDate(String(data?.lowest_week_starts_on))} if everyone pays
+          to terms</>
         )}.{" "}
+        {/* The number somebody funding a week actually wants. Due dates are the
+            best case — they assume every customer pays on the day — so the
+            headline says what the worst measured timing needs, and the band on
+            the chart shows the space between. */}
+        {banded && requirement < lowest && (
+          <>
+            At the speed these customers actually pay, the deepest point is{" "}
+            <strong>−{money(Math.abs(requirement))}</strong>
+            {Boolean(scenarios.late?.lowest_week_starts_on) && (
+              <> in the week of{" "}
+              {formatDate(String(scenarios.late?.lowest_week_starts_on))}</>
+            )}.{" "}
+          </>
+        )}
         <span className="viz-muted">
           Movement, not a balance — the platform reads payments, never bank
           balances, so there is no position to run this from.
+          {banded && (
+            <>
+              {" "}The band covers {pct(measuredShare)} of the money coming in:
+              the rest is customers with too little settled history to measure,
+              left on their due dates rather than given a made-up one. Bills do
+              not move at all — nothing measures what we do to our own suppliers
+              yet, so the early case is the conservative one.
+            </>
+          )}
         </span>
       </p>
 
       <div ref={ref}>
         <Figure
-          caption="Bars are invoices and bills falling due, in the week their own document names. The line is the running total of those bars, from zero. Nothing here is a forecast of trade that has not happened."
+          caption={banded
+            ? "Bars are invoices and bills falling due, in the week their own document names. The shaded band is the running total between the fastest and slowest each customer has actually paid; the line inside it is their median. Nothing here is a forecast of trade that has not happened — it is the same committed money, on the dates the payers have used."
+            : "Bars are invoices and bills falling due, in the week their own document names. The line is the running total of those bars, from zero. Nothing here is a forecast of trade that has not happened."}
           summary={buckets.map((b) =>
             `Week of ${formatDate(b.starts_on as string)}: in ${money(num(b.inflow))}, out ${money(num(b.outflow))}, running ${money(num(b.cumulative))}`,
           ).join("; ")}
@@ -167,7 +205,10 @@ function CashProjection({ session }: { session: PlatformSession }) {
         >
           {room.width > 0 && buckets.length > 0 && (
             <CashChart buckets={buckets} width={room.width}
-                       currency={String(data?.currency ?? "INR")} />
+                       currency={String(data?.currency ?? "INR")}
+                       early={banded ? early : []}
+                       expected={banded ? expected : []}
+                       late={banded ? late : []} />
           )}
         </Figure>
       </div>
@@ -217,15 +258,29 @@ function CashProjection({ session }: { session: PlatformSession }) {
  *  pays ₹5L out is not the same week as one where nothing happens, and a net
  *  bar draws them identically. */
 function CashChart({
-  buckets, width, currency,
-}: { buckets: Row[]; width: number; currency: string }) {
+  buckets, width, currency, early = [], expected = [], late = [],
+}: {
+  buckets: Row[]; width: number; currency: string;
+  /** The same committed book at each customer's fastest, median and slowest
+   *  measured payment behaviour. Empty when nothing is measured, in which case
+   *  the chart is exactly what it was: bars and one running line. */
+  early?: Row[]; expected?: Row[]; late?: Row[];
+}) {
   const H = 260;
   const PAD = { top: 14, right: 10, bottom: 46, left: 62 };
 
   const flows = buckets.flatMap((b) => [num(b.inflow), -num(b.outflow)]);
   const running = buckets.map((b) => num(b.cumulative));
+  const earlyRun = early.map((b) => num(b.cumulative));
+  const expectedRun = expected.map((b) => num(b.cumulative));
+  const lateRun = late.map((b) => num(b.cumulative));
+  const banded = expectedRun.length === buckets.length
+    && earlyRun.length === buckets.length && lateRun.length === buckets.length;
+  // The scale has to hold the whole band, or the worst case — the one number
+  // this chart exists to show — is drawn off the bottom of its own axis.
   const y = scaleLinear()
-    .domain([Math.min(...flows, ...running, 0), Math.max(...flows, ...running, 0)])
+    .domain([Math.min(...flows, ...running, ...lateRun, ...earlyRun, 0),
+             Math.max(...flows, ...running, ...lateRun, ...earlyRun, 0)])
     .range([H - PAD.bottom, PAD.top])
     .nice();
   const band = scaleBand<number>()
@@ -303,15 +358,47 @@ function CashChart({
 
       <line x1={PAD.left} x2={width - PAD.right} y1={zero} y2={zero}
             stroke="var(--viz-rule)" strokeWidth="1" />
+      {/* The band between the fastest and slowest each customer has actually
+          paid. Drawn under the lines so neither is obscured, and filled rather
+          than outlined because its *width* is the message: a narrow band is a
+          book that can be planned, a wide one is not. */}
+      {banded && (
+        <path
+          className="cash-band"
+          d={[
+            ...earlyRun.map((v, i) =>
+              `${i === 0 ? "M" : "L"}${(band(i) ?? PAD.left) + band.bandwidth() / 2},${y(v)}`),
+            // Back along the late edge, so the two lines close into one shape.
+            ...lateRun.map((_, j) => {
+              const i = lateRun.length - 1 - j;
+              return `L${(band(i) ?? PAD.left) + band.bandwidth() / 2},${y(lateRun[i])}`;
+            }),
+            "Z",
+          ].join(" ")}
+        />
+      )}
       {/* The running total. A line rather than a third bar: it is a level at a
-          point in time, not a quantity arriving in that week. */}
+          point in time, not a quantity arriving in that week.
+
+          On terms — every customer paying on the day — which is the best case
+          and is kept as the reference line because it is the only one that
+          asserts nothing beyond what the documents say. */}
       <polyline
         className="cash-running"
         points={buckets.map((_, i) =>
           `${(band(i) ?? PAD.left) + band.bandwidth() / 2},${y(running[i])}`).join(" ")}
       />
+      {banded && (
+        <polyline
+          className="cash-running cash-running-expected"
+          points={expectedRun.map((v, i) =>
+            `${(band(i) ?? PAD.left) + band.bandwidth() / 2},${y(v)}`).join(" ")}
+        />
+      )}
       <text x={PAD.left} y={H - 8} className="viz-axis-note">
-        running total, from zero
+        {banded
+          ? "running total from zero · solid: on terms · dashed: how they actually pay · band: fastest to slowest"
+          : "running total, from zero"}
       </text>
     </svg>
   );

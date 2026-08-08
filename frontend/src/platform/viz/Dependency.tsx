@@ -28,9 +28,10 @@ import { formatDate } from "../../when";
 import { papi } from "../api";
 import { EntityName } from "../EntityName";
 import { InlineLink, StatusChip } from "../kit";
-import { CompanyFilter, useCompanyFilter } from "../CompanyFilter";
+import { CompanyScope } from "../CompanyFilter";
+import type { CompanyScopeOption } from "../CompanyFilter";
 import { DataGrid, numeric } from "../DataGrid";
-import type { EntityOrigin, PlatformSession, Sourced } from "../types";
+import type { EntityOrigin, PlatformSession } from "../types";
 import { Panel, stateOf } from "./Panel";
 import { pct, useInsight } from "./useInsight";
 import { TargetEditor } from "./Targets";
@@ -44,8 +45,12 @@ const num = (v: unknown): number => Number(v ?? 0);
 export function DependencyScreen({
   session, onNavigate,
 }: { session: PlatformSession; onNavigate: (r: string) => void }) {
+  // Server-side, because this screen's output is shares of a total: a row
+  // filter would put one company's list under three companies' arithmetic.
+  const [scope, setScope] = useState("");
   const { data, loading, error, reload } = useInsight(
-    "dependency", () => papi.dependency(session.token), [session.token]);
+    "dependency", () => papi.dependency(session.token, scope || undefined),
+    [session.token, scope]);
 
   const customers = (data?.customers as Row | undefined) ?? {};
   const vendors = (data?.vendors as Row | null | undefined) ?? null;
@@ -57,7 +62,7 @@ export function DependencyScreen({
 
   const customerRows = rows(customers.rows);
   const vendorRows = rows(vendors?.rows);
-  const company = useCompanyFilter([...customerRows, ...vendorRows] as Sourced[]);
+  const companies = rows(data?.companies);
 
   const attributed = attribution.share as number | null | undefined;
 
@@ -74,8 +79,8 @@ export function DependencyScreen({
         </Button>
       ) : undefined}
     >
-      <CompanyFilter options={company.options} value={company.company}
-                     onChange={company.setCompany} show={company.show} />
+      <CompanyScope options={companies as unknown as CompanyScopeOption[]}
+                    value={scope} onChange={setScope} />
 
       {/* How much of revenue could be traced to a principal at all. A share of
           a fraction of the book, shown without saying so, is the single most
@@ -102,7 +107,7 @@ export function DependencyScreen({
           <Side
             title="Suppliers we lean on"
             question="Spend, and the revenue riding on their product"
-            rows={company.apply(vendorRows as Sourced[]) as Row[]}
+            rows={vendorRows}
             concentration={(vendors?.concentration as Row) ?? {}}
             sourcesDiffer={sourcesDiffer}
             side="vendor"
@@ -112,7 +117,7 @@ export function DependencyScreen({
         <Side
           title="Customers we lean on"
           question="Revenue, and how many principals their spend runs through"
-          rows={company.apply(customerRows as Sourced[]) as Row[]}
+          rows={customerRows}
           concentration={(customers.concentration as Row) ?? {}}
           sourcesDiffer={sourcesDiffer}
           side="customer"

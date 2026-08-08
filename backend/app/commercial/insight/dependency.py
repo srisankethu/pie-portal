@@ -342,9 +342,13 @@ def progress_of(vendor_id: str, targets: list[Target], as_of: date, *,
 def _concentration(rows: list[Standing]) -> dict:
     """How much of this side sits with the largest few.
 
-    Shares of a *total*, so they are only meaningful over the whole book — which
-    is why the screen's company filter narrows the rows it lists and never
-    restates these. ``CompanyFilter`` documents the same rule.
+    Shares of a *total*, so they are only ever true of the exact set of rows
+    they were computed from. That is why this screen scopes to a company on the
+    **server** rather than filtering rows in the browser: these figures are the
+    output, and a narrowed list under an org-wide share would put one company's
+    rows beneath three companies' arithmetic. ``CompanyFilter`` — which hides
+    rows and deliberately never restates a total — is the right control for a
+    directory and the wrong one here, for exactly this reason.
     """
     total = sum(r.money for r in rows)
     if not rows or not total:

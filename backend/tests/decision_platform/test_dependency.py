@@ -284,3 +284,153 @@ def test_an_empty_book_draws_no_bands_rather_than_failing():
     chart = _sankey([])
     assert chart["nodes"] == [] and chart["links"] == []
     assert chart["total"] == 0.0
+
+
+# ── scoping both halves to one connected company ────────────────────────────
+#
+# This screen's output is *shares of a total* — "Kennametal is 38% of spend" is
+# the sentence somebody acts on. The shared row filter hides rows and
+# deliberately never restates a total, which would have put one company's list
+# under three companies' arithmetic. So the scope goes to the server.
+#
+# The two halves take different bounds, and that is the part worth testing:
+# neither `SalesTxn` nor `CostRecord` carries a connection, so sales scope by
+# **customer** and purchases by **vendor** — the two ends the money is actually
+# attributed to.
+
+
+@pytest.fixture()
+def client():
+    from decimal import Decimal
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    from app.db import Base, get_session
+    from app.domain import models
+    from app.routers import insight, platform_auth
+    from app.seed import ensure_org_and_users
+
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False},
+                           poolclass=StaticPool, future=True)
+    Base.metadata.create_all(engine)
+    Maker = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False,
+                         future=True)
+    s = Maker()
+    ensure_org_and_users(s)
+    org = "org_sanketh"
+    for conn, label in (("c_sls", "SLS Engineers"), ("c_4u", "4U Precision")):
+        s.add(models.ZohoConnection(connection_id=conn, organization_id=org,
+                                    label=label, zoho_organization_id=conn))
+    # One customer, one vendor, one item and one sale per company — so every
+    # figure on both halves differs between the two.
+    for i, conn in enumerate(("c_sls", "c_4u")):
+        s.add(models.Customer(customer_id=f"cust_{conn}", organization_id=org,
+                              external_id=f"ec_{conn}", name=f"Buyer {conn}",
+                              connection_id=conn))
+        s.add(models.Vendor(vendor_id=f"v_{conn}", organization_id=org,
+                            external_id=f"ev_{conn}", name=f"Principal {conn}",
+                            connection_id=conn))
+        s.add(models.Product(product_id=f"p_{conn}", organization_id=org,
+                             external_id=f"ep_{conn}", name=f"Item {conn}",
+                             hsn="82071900", active=True, source_ref={}))
+        s.add(models.CostRecord(
+            cost_record_id=f"cr_{conn}", organization_id=org,
+            external_ref=f"b_{conn}:1", product_id=f"p_{conn}",
+            vendor_id=f"v_{conn}", date=date(2026, 1, 5),
+            qty=10, unit_cost=100 * (i + 1)))
+        s.add(models.SalesTxn(
+            organization_id=org, external_ref=f"inv_{conn}",
+            customer_id=f"cust_{conn}", product_id=f"p_{conn}",
+            date=date(2026, 6, 1), qty=Decimal("1"),
+            unit_price=Decimal("500"), line_revenue=Decimal("500"),
+            source_ref={"record_id": f"inv_{conn}"}))
+    s.add(models.VendorTarget(target_id="t1", organization_id=org,
+                              vendor_id="v_c_sls",
+                              period_start=date(2026, 1, 1),
+                              period_end=date(2026, 12, 31),
+                              basis="PURCHASE", amount=5000))
+    s.commit()
+    s.close()
+
+    app = FastAPI()
+    app.include_router(platform_auth.router)
+    app.include_router(insight.router)
+
+    def _override():
+        sess = Maker()
+        try:
+            yield sess
+            sess.commit()
+        finally:
+            sess.close()
+
+    app.dependency_overrides[get_session] = _override
+    return TestClient(app)
+
+
+def _head(client):
+    from app.seed import SEED_PASSWORD
+    r = client.post("/api/v1/auth/login",
+                    json={"email": "m.rao@sanketh.in", "password": SEED_PASSWORD})
+    assert r.status_code == 200, r.text
+    return {"Authorization": f"Bearer {r.json()['token']}"}
+
+
+def _dep(client, head, scope=""):
+    q = f"?connection_id={scope}" if scope else ""
+    r = client.get(f"/api/v1/insight/dependency{q}", headers=head)
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_the_screen_offers_every_connected_company(client):
+    body = _dep(client, _head(client))
+    assert [c["label"] for c in body["companies"]] == ["4U Precision",
+                                                       "SLS Engineers"]
+    assert body["scoped_to"] is None
+
+
+def test_scoping_narrows_the_customer_half_by_customer(client):
+    head = _head(client)
+    assert len(_dep(client, head)["customers"]["rows"]) == 2
+
+    one = _dep(client, head, "c_sls")
+    assert [r["label"] for r in one["customers"]["rows"]] == ["Buyer c_sls"]
+    assert one["scoped_to"] == "c_sls"
+
+
+def test_scoping_narrows_the_supplier_half_by_vendor(client):
+    """The half that needed its own bound. A customer-derived bound would have
+    returned nothing here, which reads as "this company buys from nobody"
+    rather than as a mistake."""
+    head = _head(client)
+    assert len(_dep(client, head)["vendors"]["rows"]) == 2
+
+    one = _dep(client, head, "c_4u")
+    assert [r["label"] for r in one["vendors"]["rows"]] == ["Principal c_4u"]
+
+
+def test_the_concentration_headline_is_restated_not_left_org_wide(client):
+    """The whole reason this is server-side. Two principals at ₹1,000 and
+    ₹2,000 make the larger 67% of the book; alone, it is all of its own."""
+    head = _head(client)
+    assert _dep(client, head)["vendors"]["concentration"]["top_share"] == 0.6667
+
+    one = _dep(client, head, "c_4u")
+    assert one["vendors"]["concentration"]["top_share"] == 1.0
+    assert one["vendors"]["concentration"]["count"] == 1
+
+
+def test_a_target_for_a_scoped_out_supplier_does_not_follow(client):
+    """It would show as 0% achieved against a company that never buys from
+    them — a principal apparently missed by a book that was never theirs."""
+    head = _head(client)
+    sls = _dep(client, head, "c_sls")["vendors"]["rows"]
+    assert any(r["target"] for r in sls)
+
+    four_u = _dep(client, head, "c_4u")["vendors"]["rows"]
+    assert all(r["target"] is None for r in four_u)

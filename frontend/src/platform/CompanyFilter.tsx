@@ -141,3 +141,68 @@ export function CompanyFilter({
     </TextField>
   );
 }
+
+// ── the other kind: narrowing the numbers, not the rows ─────────────────────
+//
+// `CompanyFilter` above hides rows and never restates a total, and that is
+// right for a directory: the platform pools companies on purpose, so a control
+// that quietly re-scoped an aggregate would claim something the server never
+// computed.
+//
+// It is wrong wherever the aggregate *is* the screen. "112 customers do not
+// take cutting tools", "Kennametal is 38% of spend" — those are the output, and
+// a narrowed list underneath an org-wide headline puts one company's rows
+// beneath three companies' arithmetic. Those screens ask the server for one
+// company and re-render everything.
+//
+// The two live next to each other so the choice is a choice. If you are adding
+// a filter and cannot say which of these you want, the question to ask is
+// whether any number on the screen is a share, a count of the whole, or a
+// total. If one is, it needs this.
+
+export interface CompanyScopeOption {
+  connection_id: string;
+  label: string;
+  customers?: number;
+}
+
+/** A server-side company scope: the caller refetches when it changes.
+ *
+ *  Options come from the *connection list*, not from row provenance. A picker
+ *  built from the rows disappears exactly when it is most needed — a book
+ *  synced before connections were stamped leaves every origin null and the
+ *  control silently never renders, which is how the mix grid shipped without
+ *  one on a live three-company book.
+ *
+ *  A company with nothing in it is still offered, and says so. Hiding it leaves
+ *  somebody wondering which of their books went missing; "0 customers" answers
+ *  that in place.
+ */
+export function CompanyScope({
+  options, value, onChange, unit = "customer",
+}: {
+  options: CompanyScopeOption[];
+  value: string;
+  onChange: (connectionId: string) => void;
+  unit?: string;
+}) {
+  if (options.length < 2) return null;
+  return (
+    <TextField
+      select size="small" label="Company" value={value}
+      onChange={(e) => onChange(e.target.value)}
+      slotProps={{ select: { displayEmpty: true }, inputLabel: { shrink: true } }}
+      sx={{ minWidth: 240, mb: 2 }}
+    >
+      <MenuItem value={ALL}>All companies</MenuItem>
+      {options.map((o) => (
+        <MenuItem key={o.connection_id} value={o.connection_id}>
+          {o.label}
+          {o.customers != null && (
+            <> · {o.customers} {unit}{o.customers === 1 ? "" : "s"}</>
+          )}
+        </MenuItem>
+      ))}
+    </TextField>
+  );
+}

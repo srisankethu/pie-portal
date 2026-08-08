@@ -225,8 +225,14 @@ export const papi = {
 
   // What this book leans on, at both ends. The supplier half is manager+ and
   // is omitted from a salesperson's response rather than 403-ing the screen.
-  dependency: (t: string) =>
-    req<Record<string, unknown>>("/api/v1/insight/dependency", {}, t),
+  // `connectionId` scopes both halves on the server. Like the mix grid and
+  // unlike the row filters: this screen's figures are shares of a total, so
+  // narrowing has to recompute them.
+  dependency: (t: string, connectionId?: string) =>
+    req<Record<string, unknown>>(
+      "/api/v1/insight/dependency"
+      + (connectionId ? `?connection_id=${encodeURIComponent(connectionId)}` : ""),
+      {}, t),
 
   // Vendor targets. The one thing in the platform that is typed rather than
   // synced, so it has a write path.

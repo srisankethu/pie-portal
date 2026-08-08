@@ -176,6 +176,115 @@ accepted recommendations.
 
 ---
 
+## Scheduling the sync
+
+**Nothing in the application schedules a pull.** `POST /api/v1/data/sync` is
+started by a person pressing the button on Data & connection, or by something
+outside this repo calling it. Until a timer exists, every screen shows whatever
+the last manual sync left behind — and the morning read says so, in as many
+words, at the top of the landing page.
+
+`scripts/scheduled_sync.py` is that something. It signs in, calls the same
+endpoint the screen calls, waits for the run it started, and exits non-zero if
+it failed — which is the whole interface, because a non-zero exit is what makes
+cron mail you.
+
+```bash
+cd backend && python3 ../scripts/scheduled_sync.py
+```
+
+| Variable | |
+|---|---|
+| `PIE_BASE_URL` | where the API is (default `http://localhost:8000`) |
+| `PIE_SYNC_EMAIL` | an owner or manager account — a salesperson is refused |
+| `PIE_SYNC_PASSWORD` | that account's password |
+| `PIE_SYNC_TIMEOUT` | seconds to wait for the pull (default 3600; `0` starts it and returns) |
+
+| Exit | Meaning |
+|---|---|
+| 0 | finished, or a pull was already running |
+| 1 | configuration or network problem — nothing was started |
+| 2 | the sync ran and failed, or did not finish in time |
+
+**Give it its own account** rather than a person's. A password change should not
+silently stop the nightly pull, and the sync's activity should be attributable
+to the sync. Any owner or manager works; a salesperson is refused with a 403 the
+script names.
+
+**It signs in on every run rather than carrying a token.** Tokens here have no
+expiry — `verify_token` checks the signature and never reads `iat` — so a token
+in a crontab is an unexpiring credential with an owner's authority, and
+withdrawing it means rotating `AUTH_SECRET` and signing every user out. A
+password can be changed for one account without touching anyone else.
+
+### crontab
+
+Pick the hour to suit the business: the pull should land before the first person
+looks, and after the day's invoicing is done in Zoho. The environment belongs in
+a file only root can read, not in the crontab line.
+
+```cron
+# /etc/cron.d/pie-sync   — replace HH:MM with your time
+MM HH * * *  pie  set -a; . /etc/pie/sync.env; set +a; cd /srv/pie/backend && /usr/bin/python3 ../scripts/scheduled_sync.py
+```
+
+```bash
+# /etc/pie/sync.env   — chmod 600, owned by the user cron runs as
+PIE_BASE_URL=http://localhost:8000
+PIE_SYNC_EMAIL=sync@yourdomain
+PIE_SYNC_PASSWORD=...
+```
+
+Cron mails the job's output to the crontab's owner, so set `MAILTO` — a job
+nobody hears from is a job nobody notices has stopped.
+
+### systemd timer
+
+Preferable where it is available: `systemctl list-timers` answers "did it run"
+without reading a log, and a missed run while the machine was off is caught by
+`Persistent=true`.
+
+```ini
+# /etc/systemd/system/pie-sync.service
+[Service]
+Type=oneshot
+User=pie
+EnvironmentFile=/etc/pie/sync.env
+WorkingDirectory=/srv/pie/backend
+ExecStart=/usr/bin/python3 ../scripts/scheduled_sync.py
+```
+
+```ini
+# /etc/systemd/system/pie-sync.timer     — replace HH:MM with your time
+[Timer]
+OnCalendar=*-*-* HH:MM:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+```bash
+systemctl enable --now pie-sync.timer
+systemctl list-timers pie-sync.timer     # when it next fires, when it last did
+journalctl -u pie-sync.service -n 50     # what it said
+```
+
+### Checking it is working
+
+The morning read is the check that matters, because it is the one somebody
+already looks at: a green "Synced N hours ago" strip means the timer is running,
+and an amber "this is not today's picture" means it is not. `GET /api/v1/data/sync`
+answers the same question for a monitor, in `last.status` and `last.finished_at`.
+
+A run firing while the previous one is still going does **not** start a second
+pull and does **not** fail — the endpoint returns the job already in flight and
+the script reports it and exits 0. That is ordinary during a first sync reading
+years of documents, and mailing about it nightly would teach people to filter
+the mail that also carries the real failures.
+
+---
+
 ## Runbook
 
 ### Health

@@ -26,6 +26,9 @@ from sqlalchemy.orm import Session
 from .. import approvals
 from ..authz import Principal, current_principal
 from ..commercial import policy as policy_service, quote_service
+from ..ai import reading
+from ..ai.provider import select_provider
+from ..config import settings
 from ..identity import service as identity_service
 from ..identity.mapping_store import OrgMappingStore
 from ..db import get_session
@@ -79,11 +82,27 @@ def intake(quote_id: str, body: IntakeRequest,
     q = _get_quote(quote_id)
     if not body.text.strip():
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "No RFQ text provided")
-    store.add_rfq(q, body.text, zoho,
-                  _customer_scope(session, principal, q.customer_ref),
-                  _bands(session, principal),
-                  _mapping_store(session, principal))
-    return q.to_dict(principal.is_manager_or_owner)
+    # Read the enquiry into rows first. This is the one place in the quote
+    # path where a model touches the input, and what it produces is a *code and
+    # a quantity* — pie-parser still decides what the code means, against the
+    # same catalogue and the same score bands as typed input. A reading that
+    # fails for any reason falls through to the regex, so the worst case is the
+    # product exactly as it was before.
+    read = reading.read(body.text, select_provider())
+    lines = store.add_rfq(q, body.text, zoho,
+                          _customer_scope(session, principal, q.customer_ref),
+                          _bands(session, principal),
+                          _mapping_store(session, principal),
+                          rows=[ln.to_row() for ln in read.lines] or None)
+    if read.used_ai:
+        log.info("rfq read by %s into %d line(s) for quote %s",
+                 settings.AI_PROVIDER, len(lines), quote_id)
+    return {**q.to_dict(principal.is_manager_or_owner),
+            # How the lines were produced, so the screen can say "read from
+            # your message — check each line" rather than presenting a model's
+            # reading as though somebody had typed it.
+            "intake": {"read_by": "ai" if read.used_ai else "pattern",
+                       "detail": read.detail}}
 
 
 def _mapping_store(session: Session, principal: Principal) -> Optional[Any]:
@@ -199,6 +218,20 @@ def _confirm_identity(session: Session, principal: Principal,
         log.exception("could not record a confirmed mapping for line %s", ln.id)
         session.rollback()
         return False
+
+
+@router.post("/{quote_id}/lines/{line_id}/confirm-reading")
+def confirm_reading(quote_id: str, line_id: str,
+                    principal: Principal = Depends(current_principal)):
+    """A person has checked this line against the customer's own words.
+
+    Every role, because the salesperson who received the enquiry is the one who
+    knows what was meant — and because a confirmation queue that only a manager
+    can clear is a quote that waits for a manager.
+    """
+    q = _get_quote(quote_id)
+    store.confirm_reading(_get_line(q, line_id))
+    return q.to_dict(principal.is_manager_or_owner)
 
 
 @router.post("/{quote_id}/lines/{line_id}/price")

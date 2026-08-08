@@ -304,7 +304,18 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
       const q = await api.intake(t, quote!.id, text);
       setQuote(q);
       setIntakeOpen(false);
-      flash(`${q.summary.total} line(s) in quote`);
+      const read = q.lines.filter((l) => l.proposed).length;
+      // Says which produced the lines. A reading presented as though somebody
+      // had typed it is the one outcome worth avoiding here.
+      flash(read
+        ? `${q.summary.total} line(s) read from your message — check each one`
+        : `${q.summary.total} line(s) in quote`);
+    });
+
+  const doConfirmReading = (id: string) =>
+    guard(async () => {
+      const q = await api.confirmReading(t, quote!.id, id);
+      setQuote(q);
     });
 
   const doSelect = (code: string, manual: boolean) =>
@@ -571,6 +582,7 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
             onSetPrice={doSetPrice}
             onDeleteLine={doDeleteLine}
             onCreateItem={doCreateItem}
+            onConfirmReading={doConfirmReading}
           />
           <div className="kbd-hints" style={{ marginTop: "var(--space-4)" }}>
             <span>

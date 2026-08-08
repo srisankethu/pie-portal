@@ -60,6 +60,11 @@ export const api = {
   intake: (t: string, id: string, text: string) =>
     req<Quote>(`/api/quotes/${id}/intake`, { method: "POST", body: JSON.stringify({ text }) }, t),
 
+  /** One line at a time, deliberately — see store.confirm_reading. */
+  confirmReading: (t: string, id: string, lineId: string) =>
+    req<Quote>(`/api/quotes/${id}/lines/${lineId}/confirm-reading`,
+               { method: "POST" }, t),
+
   selectSupply: (t: string, id: string, lineId: string, code: string, manual = false) =>
     req<Quote>(
       `/api/quotes/${id}/lines/${lineId}/supply`,

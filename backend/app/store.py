@@ -121,6 +121,14 @@ class Line:
     #: keeping; selecting anything else is a substitution on one quote, which
     #: is not. See store.select_supply.
     identityCandidate: Optional[str] = None
+    #: True when a model read this line out of prose rather than a person
+    #: typing it. Cleared by ``confirm_reading`` and by nothing else.
+    proposed: bool = False
+    #: What the reader had to interpret, where it did — an abbreviation
+    #: expanded, a quantity implied. Empty for a line taken straight off the
+    #: text. Shown next to the customer's own words so the confirmation is
+    #: against what they wrote, not against the tidied version.
+    reading: str = ""
     # supply selection
     sel: str = "AUTO"                 # AUTO | USER | MANUAL
     # zoho-derived
@@ -150,6 +158,13 @@ class Line:
 
     def status(self) -> Dict[str, str]:
         """(kind, label) — matches the design's status taxonomy."""
+        # First, and `technical` on purpose. `blockers` is every technical line,
+        # so this one classification is what stops a quote going out on a line
+        # a model read and nobody checked — rather than a second gate beside
+        # the one that already exists. CNMG 120408-MP and -MS are different
+        # tools and the difference reaches a customer.
+        if self.proposed:
+            return {"kind": "technical", "label": "CONFIRM READING"}
         rel = self.rel
         if self.service == "PIE" or rel == "PIE_DOWN":
             return {"kind": "technical", "label": "PIE OFFLINE"}
@@ -194,6 +209,7 @@ class Line:
             "id": self.id, "raw": self.raw,
             "reqCode": self.reqCode, "reqDesc": self.reqDesc, "reqQty": self.reqQty,
             "rel": self.rel, "relLabel": _REL_LABELS.get(self.rel, self.rel),
+            "proposed": self.proposed, "reading": self.reading,
             "supplyCode": self.supplyCode, "supplyDesc": self.supplyDesc,
             "sel": self.sel,
             "avail": self.avail, "availUnknown": self.avail is None and bool(self.supplyCode),
@@ -325,6 +341,8 @@ class QuoteStore:
                                                   mapping_store)
             ln = Line(
                 id=f"l{next(_ids)}",
+                proposed=bool(row.get("proposed")),
+                reading=str(row.get("reading") or ""),
                 raw=row["raw"],
                 reqCode=res.reqCode or row["code"],
                 reqDesc=res.reqDesc or row["code"],
@@ -346,7 +364,8 @@ class QuoteStore:
     def add_rfq(self, quote: Quote, text: str, zoho: ZohoService,
                 customer_scope: Optional[str] = None,
                 bands: Optional[Bands] = None,
-                mapping_store: Any = None) -> List[Line]:
+                mapping_store: Any = None,
+                rows: Optional[List[Dict[str, Any]]] = None) -> List[Line]:
         """``customer_scope`` is the customer's cross-connector identity.
 
         It arrives as an opaque string rather than being looked up here: this
@@ -354,8 +373,12 @@ class QuoteStore:
         Zoho, and nothing else — and giving it a session to resolve an identity
         would be the first crack in that.
         """
-        rows = _split_rfq(text)
-        new = self.build_lines(rows, zoho, customer_scope, bands, mapping_store)
+        # `rows` when something upstream already read the enquiry — see
+        # ai/reading.py. Falling back to the regex here rather than at the call
+        # site keeps the store's behaviour identical with no reader present,
+        # which is what makes the whole feature removable.
+        new = self.build_lines(rows or _split_rfq(text), zoho, customer_scope,
+                               bands, mapping_store)
         with self._lock:
             quote.lines.extend(new)
         return new
@@ -438,6 +461,16 @@ class QuoteStore:
         ln.cost = item.cost
         if ln.quoted is None and item.list_price is not None:
             ln.quoted = item.list_price
+
+    def confirm_reading(self, ln: Line) -> None:
+        """A person has checked this line against what the customer wrote.
+
+        One line at a time, and there is deliberately no "confirm all": the
+        whole risk this guards against is a grade suffix nobody looked at, and
+        a button that clears forty lines at once is a button that gets pressed
+        without reading forty lines.
+        """
+        ln.proposed = False
 
     def blockers(self, quote: Quote) -> List[Line]:
         """Technical-status lines that must be resolved before an estimate."""

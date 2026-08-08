@@ -47,6 +47,12 @@ export interface Line {
   reqQty: number;
   rel: string;
   relLabel: string;
+  /** A model read this line out of the customer's prose; a person has not yet
+   *  checked it. Blocks the estimate until confirmed, one line at a time. */
+  proposed: boolean;
+  /** What the reader had to interpret, where it did. Empty for a line taken
+   *  straight off the text. */
+  reading: string;
   supplyCode: string | null;
   supplyDesc: string;
   sel: "AUTO" | "USER" | "MANUAL";

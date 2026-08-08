@@ -30,6 +30,9 @@ function lineWithEconomics(): Line {
   return {
     id: "l1",
     raw: "CNMG 120408 KCP25 x 10",
+    // Typed by a person, not read from prose — so no confirmation is pending.
+    proposed: false,
+    reading: "",
     reqCode: "CNMG120408",
     reqDesc: "Turning insert",
     reqQty: 10,
@@ -139,6 +142,7 @@ async function renderGrid(mgmt: boolean, intel: Record<string, LineIntelligence>
       onSetPrice={NOOP}
       onDeleteLine={NOOP}
       onCreateItem={NOOP}
+      onConfirmReading={() => {}}
     />,
   );
   // Present for every role, so it proves the grid mounted without asserting
@@ -213,6 +217,7 @@ describe("the empty state", () => {
         onSetPrice={NOOP}
         onDeleteLine={NOOP}
         onCreateItem={NOOP}
+        onConfirmReading={() => {}}
       />,
     );
     expect(screen.getByText(/paste an RFQ/i)).toBeInTheDocument();

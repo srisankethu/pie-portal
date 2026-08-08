@@ -23,6 +23,7 @@ the second but not the first.
 """
 from __future__ import annotations
 
+import math
 import statistics
 from dataclasses import dataclass
 from datetime import date
@@ -138,6 +139,88 @@ def _trend(settled: list[Settlement]) -> str:
     if before - after >= TREND_DAYS:
         return "IMPROVING"
     return "STEADY"
+
+
+@dataclass(frozen=True)
+class Lag:
+    """How late one customer pays, as three days-late figures.
+
+    The spread of what they have actually done, not a forecast: ``early`` and
+    ``late`` are the tenth and ninetieth percentiles of their own settled
+    invoices, and ``expected`` is their median. A customer who has always paid
+    on the day has ``0, 0, 0``, which is correct and says so.
+
+    Percentiles rather than best-and-worst, because a single freak payment —
+    one invoice settled six months late after a dispute — would otherwise
+    become the whole worst case for that customer for ever. The tails are where
+    that lands, and clipping them is the difference between a planning range
+    and a chart driven by two outliers.
+    """
+    customer_id: str
+    early_days: int
+    expected_days: int
+    late_days: int
+    settlements: int
+
+
+def _percentile(values: list[int], fraction: float) -> int:
+    """The nearest-rank percentile, rounded to a whole day.
+
+    Nearest-rank rather than interpolated: these are days, an interpolated
+    17.4 days is not an observation anybody made, and the projection is going
+    to floor it to a week anyway.
+    """
+    ordered = sorted(values)
+    if not ordered:
+        return 0
+    rank = max(1, min(len(ordered), math.ceil(fraction * len(ordered))))
+    return int(ordered[rank - 1])
+
+
+def lag(settled: list[Settlement]) -> Optional[Lag]:
+    """This customer's days-late distribution, or ``None`` when it is not known.
+
+    ``None`` in three cases, and every one of them means "leave their money on
+    its due date" rather than "assume they are prompt":
+
+    * fewer than ``MIN_SETTLEMENTS`` settled invoices — the same floor the rest
+      of this module applies, because three transactions is where "how they pay"
+      stops being one transaction wearing a suit;
+    * no settlement with a due date on record, so lateness is unanswerable;
+    * a customer id that is empty.
+
+    Returning ``None`` rather than a zero-lag default is the whole point. A
+    thin-evidence customer silently treated as punctual would tighten a cash
+    band that the evidence does not tighten, which is the one outcome worse
+    than a wide one.
+    """
+    datable = [s.days_late for s in settled if s.days_late is not None]
+    if len(datable) < MIN_SETTLEMENTS:
+        return None
+    customer_id = settled[0].customer_id if settled else ""
+    if not customer_id:
+        return None
+    return Lag(
+        customer_id=customer_id,
+        early_days=_percentile(datable, 0.10),
+        expected_days=_percentile(datable, 0.50),
+        late_days=_percentile(datable, 0.90),
+        settlements=len(datable),
+    )
+
+
+def lags(settlements: Iterable[Settlement]) -> dict[str, Lag]:
+    """Every customer's lag, keyed by customer id. Customers without enough
+    history are absent rather than present with zeros — see ``lag``."""
+    by_customer: dict[str, list[Settlement]] = {}
+    for s in settlements:
+        by_customer.setdefault(s.customer_id, []).append(s)
+    out: dict[str, Lag] = {}
+    for customer_id, rows in by_customer.items():
+        measured = lag(rows)
+        if measured is not None:
+            out[customer_id] = measured
+    return out
 
 
 def classify(settled: list[Settlement]) -> dict:

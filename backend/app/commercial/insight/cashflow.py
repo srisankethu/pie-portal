@@ -7,6 +7,18 @@ and nothing is derived from a rate or a trend. Read the ``CASH_SCHEDULE`` fold,
 put each amount in the week its own document says it falls due, subtract one
 side from the other.
 
+**Three timings, one book.** Due dates answer "when is this money promised",
+which is not the question somebody funding a week is asking — every customer
+paying exactly on terms is the best case, and drawing only that line understates
+what the week actually needs. The same obligations are therefore placed three
+times, shifted by each customer's *own* measured days-late (fastest, median,
+slowest, from ``insight/payments``). Nothing is invented for a customer without
+enough settled invoices to measure: their money stays on its due date, and the
+response reports what share of the inflow that is, so a narrow band can be read
+as "these customers are punctual" rather than "we know very little". This is
+still not probability — no obligation is weighted by whether it will be
+honoured. It is the same money, on the dates the payer has actually used.
+
 **This is net movement, and it is never a cash position.** PIE reads payments,
 not balances — ``state/opportunities/supply.py`` already refuses liquidity risk
 on exactly that ground, and one side of a ledger is not cash. Without an
@@ -40,7 +52,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
-from typing import Any
+from typing import Any, Optional
 
 # The key format belongs to the fold that writes it, both directions. Three
 # string literals here instead would be three literals nobody thinks to check
@@ -108,27 +120,78 @@ class Flow:
         }
 
 
+#: The three timings the projection is run at. `on_terms` is the committed book
+#: read literally — every document on its own due date — and it is kept as the
+#: baseline because it is the only one that asserts nothing beyond what the
+#: source says.
+SCENARIOS = ("early", "expected", "late")
+
+
+def _shift(lag: Any, scenario: str) -> int:
+    """Days to move one party's money by, under one scenario.
+
+    Zero when nothing is known about them: an unmeasured customer stays on the
+    date their terms give, which is the assumption the whole chart used to make
+    about everybody.
+    """
+    if lag is None:
+        return 0
+    if scenario == "early":
+        return int(getattr(lag, "early_days", 0) or 0)
+    if scenario == "late":
+        return int(getattr(lag, "late_days", 0) or 0)
+    return int(getattr(lag, "expected_days", 0) or 0)
+
+
 def project(schedule: dict[str, dict[str, Any]],
             commitments: dict[str, dict[str, Any]],
             receivables: dict[str, dict[str, Any]],
-            *, as_of: date, weeks: int = WEEKS) -> dict:
+            *, as_of: date, weeks: int = WEEKS,
+            lags: Optional[dict[str, Any]] = None) -> dict:
     """The committed book's effect on cash, week by week.
 
     ``schedule`` is the ``CASH_SCHEDULE`` fold; ``commitments`` and
     ``receivables`` are their own states, read for the unscheduled totals and
     for the one reconciliation that matters — how much of what is scheduled
     could not be attributed to a party anyone can name.
+
+    ``lags`` maps a customer id to their measured days-late distribution
+    (``insight/payments.lags``). Given it, the same committed book is placed on
+    the timeline three times — at each customer's fastest, median and slowest
+    observed behaviour — so the answer to "how much do I need that week" is a
+    range rather than a single line drawn on the assumption that everybody pays
+    to terms. Omitted, or empty, and every scenario collapses onto the due
+    dates, which is exactly what this function did before it took the argument.
+
+    **Only the inflow side moves.** Days-late is measured from *settled
+    invoices*; the platform ingests vendor payments but nothing folds them yet,
+    so what we do to our own suppliers is not measured. Shifting bills by the
+    customer-side distribution would be borrowing one party's behaviour to
+    describe another's. Bills therefore sit on their due dates in all three
+    scenarios, which makes the early case conservative — we are not claiming
+    the benefit of paying late — and the response says so in ``basis`` rather
+    than leaving the asymmetry to be discovered.
     """
+    lags = lags or {}
     first_monday = _monday_of(as_of)
     mondays = [first_monday + timedelta(weeks=i) for i in range(weeks)]
     horizon_end = mondays[-1] + timedelta(days=6)
+    index = {m: i for i, m in enumerate(mondays)}
 
     by_week: dict[date, Flow] = {m: Flow() for m in mondays}
+    # One set of buckets per scenario, filled from the same rows. The `on_terms`
+    # pass writes `by_week` above, which is what the headline flow columns and
+    # every side-bucket total are still computed from — the scenarios move
+    # *when* money lands, never how much of it there is.
+    shifted: dict[str, dict[date, Flow]] = {
+        s: {m: Flow() for m in mondays} for s in SCENARIOS}
+    shifted_beyond = {s: Flow() for s in SCENARIOS}
     overdue, beyond, undated = Flow(), Flow(), Flow()
     scheduled_rows = 0
+    measured_inflow, unmeasured_inflow = _ZERO, _ZERO
 
     for key, row in schedule.items():
-        direction, _, bucket = key.partition(":")
+        direction, bucket, party = _parse(key)
         if direction not in (IN, OUT):
             continue
         amount = _money(row.get("amount"))
@@ -139,12 +202,38 @@ def project(schedule: dict[str, dict[str, Any]],
         starts_on = week_start(bucket)
         if starts_on is None:
             undated.add(direction, amount, documents)
-        elif starts_on < first_monday:
+            continue
+        if starts_on < first_monday:
             overdue.add(direction, amount, documents)
-        elif starts_on in by_week:
+            continue
+        if starts_on in by_week:
             by_week[starts_on].add(direction, amount, documents)
         else:
             beyond.add(direction, amount, documents)
+
+        # How much of the inflow the band is actually able to move. Reported so
+        # a narrow band is readable as "these customers are punctual" rather
+        # than mistaken for "we know less than we do".
+        lag = lags.get(party) if direction == IN else None
+        if direction == IN:
+            if lag is None:
+                unmeasured_inflow += amount
+            else:
+                measured_inflow += amount
+
+        for scenario in SCENARIOS:
+            landed = starts_on + timedelta(days=_shift(lag, scenario))
+            monday = _monday_of(landed)
+            if monday in shifted[scenario]:
+                shifted[scenario][monday].add(direction, amount, documents)
+            elif monday < first_monday:
+                # A lag can only push money later, never earlier than the week
+                # its own document names, so this is unreachable today. Kept
+                # explicit rather than silently folded into week one, which is
+                # the failure the module docstring is about.
+                shifted[scenario][first_monday].add(direction, amount, documents)
+            else:
+                shifted_beyond[scenario].add(direction, amount, documents)
 
     # The cumulative runs from zero across the horizon only. Overdue is
     # deliberately not its opening value: see the module docstring.
@@ -163,7 +252,19 @@ def project(schedule: dict[str, dict[str, Any]],
             **flow.to_dict(),
         })
 
+    scenarios = {s: _series(shifted[s], mondays, shifted_beyond[s])
+                 for s in SCENARIOS}
+    # The requirement, which is the number the screen exists to produce: the
+    # deepest the cumulative goes, under the timing that makes it deepest.
+    # `late` is that timing whenever anything is measured — money arriving
+    # later cannot raise a trough — but it is taken as a max rather than
+    # assumed, because an empty `lags` makes all three identical.
+    requirement = min(scenarios[s]["lowest_cumulative"] for s in SCENARIOS)
+
     result = {
+        "scenarios": scenarios,
+        "requirement": requirement,
+        "basis": _basis(measured_inflow, unmeasured_inflow, lags, index),
         "as_of": as_of.isoformat(),
         "weeks": weeks,
         "horizon_ends_on": horizon_end.isoformat(),
@@ -192,6 +293,78 @@ def project(schedule: dict[str, dict[str, Any]],
             "What is outstanding is either already overdue, dated past this "
             "horizon, or carries no terms — each is counted beside the chart.")
     return result
+
+
+def _parse(key: str) -> tuple[str, str, str]:
+    """``in:2026-W32:cus_41`` → direction, week bucket, party.
+
+    Split from the left with the week second, so an id containing a colon is
+    still one id. A two-part key is a row folded before the party was added:
+    read as unattributed rather than skipped, so a state built by older code
+    still draws the chart it always drew — flat scenarios, because nothing can
+    be looked up for a party that is not there.
+    """
+    parts = key.split(":", 2)
+    if len(parts) == 3:
+        return parts[0], parts[1], parts[2]
+    if len(parts) == 2:
+        return parts[0], parts[1], ""
+    return "", "", ""
+
+
+def _series(by_week: dict[date, Flow], mondays: list[date],
+            beyond: Flow) -> dict:
+    """One scenario's weekly flows and its running total.
+
+    Same arithmetic as the baseline column, over rows placed at a different
+    week. `beyond_horizon` is what this timing pushed off the end — money that
+    was inside the horizon on its due date and is not once a customer's own
+    lateness is applied. Reported per scenario rather than merged into the
+    single side-bucket, which describes the due dates only.
+    """
+    rows: list[dict] = []
+    running = _ZERO
+    lowest, lowest_week = None, None
+    for monday in mondays:
+        flow = by_week[monday]
+        running += flow.net
+        if lowest is None or running < lowest:
+            lowest, lowest_week = running, monday
+        rows.append({
+            "starts_on": monday.isoformat(),
+            "cumulative": _out(running),
+            **flow.to_dict(),
+        })
+    return {
+        "buckets": rows,
+        "net_over_horizon": _out(running),
+        "lowest_cumulative": _out(lowest if lowest is not None else _ZERO),
+        "lowest_week_starts_on": lowest_week.isoformat() if lowest_week else None,
+        "beyond_horizon": beyond.to_dict(),
+    }
+
+
+def _basis(measured: Decimal, unmeasured: Decimal,
+           lags: dict[str, Any], index: dict[date, int]) -> dict:
+    """What the band is standing on, in the reader's terms.
+
+    A range is only worth as much as the evidence under it, and the two ways it
+    can mislead are opposite: a *narrow* band because these customers really are
+    punctual, and a narrow band because almost nothing about them is measured.
+    The share of scheduled inflow that could be shifted is what separates the
+    two, so it is returned rather than left to be inferred from the shape.
+    """
+    total = measured + unmeasured
+    return {
+        "customers_measured": len(lags),
+        "inflow_measured": _out(measured),
+        "inflow_unmeasured": _out(unmeasured),
+        "share_measured": (float(round(measured / total, 4))
+                           if total > _ZERO else 0.0),
+        # Stated rather than implied: the outflow side has no measured
+        # behaviour behind it at all yet.
+        "outflow_shifted": False,
+    }
 
 
 def _unscheduled(commitments: dict[str, dict[str, Any]]) -> dict:

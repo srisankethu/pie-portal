@@ -1221,3 +1221,19 @@ textarea.input { min-height: 160px; resize: vertical; font-family: ui-monospace,
   display: block; font-size: 11px; color: var(--color-neutral-600);
   letter-spacing: .02em;
 }
+
+/* The cash band: the running total between the fastest and the slowest each
+   customer has actually paid. Filled rather than outlined because its *width*
+   is the message — a narrow band is a book that can be planned around, a wide
+   one is not. Under the lines, so neither is obscured by it. */
+.cash-band {
+  fill: color-mix(in srgb, var(--color-accent) 16%, transparent);
+  stroke: none;
+}
+/* The median timing. Dashed against the solid on-terms line, so the two are
+   distinguishable without colour — this chart is read in greyscale often
+   enough (printed, pasted into a message) that hue alone would lose it. */
+.cash-running-expected {
+  stroke-dasharray: 5 3;
+  opacity: 0.85;
+}

@@ -1,11 +1,30 @@
 """CASH_SCHEDULE — when money already promised is due to move.
 
-Keyed by direction and the ISO week the obligation falls due::
+Keyed by direction, the ISO week the obligation falls due, and the party that
+owes it or is owed::
 
-    in:2026-W32     invoices due that week
-    out:2026-W32    bills due that week
-    in:undated      invoiced, owed, no terms on record
-    out:undated     billed, owed, no terms on record
+    in:2026-W32:cus_41    that customer's invoices due that week
+    out:2026-W32:sup_7    that supplier's bills due that week
+    in:undated:cus_41     invoiced, owed, no terms on record
+    out:2026-W32:-        billed, owed, vendor never resolved
+
+**Why the party is on the key.** This state used to be keyed by week alone, and
+this docstring used to say that shifting a due date by how late a customer
+actually pays "needs the customer on the key… joining the two is the next
+version". This is that version. ``insight/payments.py`` measures days-late per
+customer from settled invoices; the projection reads it per party and moves that
+party's money, so the cash line can be drawn at each customer's own observed
+speed rather than at the speed their terms claim.
+
+The week stays *second* so the key is parseable without knowing what an id can
+contain: a week bucket is never anything but ``YYYY-Www`` or ``undated``, so
+``split(":", 2)`` puts the whole id — colons and all — in the remainder.
+
+A dash is the party for an obligation whose customer or vendor never resolved.
+Those rows are still on the timeline, unlike in the party-keyed states, because
+money owed by somebody the contact pull never returned is still money that will
+arrive. They simply cannot be shifted, and the projection reports how much of
+the schedule that is.
 
 **Why this is a state and not a query over ``RECEIVABLES``.** That state
 answers *who owes what*, so it aggregates a customer's invoices into one row
@@ -35,12 +54,11 @@ agreeing.
 
 Deliberately absent:
 
-**No expected-payment date.** The due date is what the source states. Shifting
-it by how late a customer actually pays is a real and better model, and it
-needs the customer on the key — this state is keyed by week precisely so it
-stays one row per week rather than one per customer per week.
-``insight/payments.py`` already measures days-to-pay per customer; joining the
-two is the next version, not a number to invent in this one.
+**No expected-payment date *here*.** The fold still records what the document
+says: the due date, unshifted. Which week the money is *expected* in is a
+reading of that plus the party's measured behaviour, and it belongs to the
+projection — a fold that baked in a lag would have to be re-run every time
+another invoice settled and changed the median.
 
 **No open sales or purchase orders.** An order carries no due date — only a
 bill or an invoice does. Scheduling one needs an assumed delivery date, and
@@ -74,6 +92,11 @@ OUT = "out"
 #: a customer on a collections list for terms nobody gave them, and there is no
 #: better reason to invent one for a supplier.
 UNDATED = "undated"
+
+#: The party for an obligation whose customer or vendor never resolved. A single
+#: character rather than an empty segment so the key always has three parts and
+#: cannot be mistaken for the old two-part shape.
+NO_PARTY = "-"
 
 
 def week_key(on: date) -> str:
@@ -133,18 +156,42 @@ class CashScheduleReducer:
             return ()
 
         direction = IN if inbound else OUT
+        party = self._party(event, payload, ctx, inbound)
         return (Delta(
             CASH_SCHEDULE,
-            f"{direction}:{self._bucket(payload)}",
+            f"{direction}:{self._bucket(payload)}:{party}",
             (
                 # Stored as well as encoded in the key, so a row read on its own
                 # says what it is. The projection parses the key for the week
-                # and reads this for the side.
+                # and reads these for the side and the party.
                 (SET, "direction", direction),
+                (SET, "party_id", party),
                 (ADD, "amount", balance),
                 (ADD, "documents", 1),
             ),
         ),)
+
+    @staticmethod
+    def _party(event: models.BusinessEvent, payload: dict[str, Any],
+               ctx: Masters, inbound: bool) -> str:
+        """Whose obligation this is, resolved the same way the party-keyed
+        states resolve it — through ``Masters``, never from the raw external id.
+
+        The difference from those states is what happens when it fails: they
+        drop the row, because a state keyed by party has nowhere to put money
+        owed by nobody. This one keeps it under ``NO_PARTY``, because the
+        timeline's job is to be complete. Such a row can never be shifted by a
+        payment history it has no name to look up, and the projection says how
+        much of the schedule is in that position rather than leaving the band
+        looking tighter than the evidence supports.
+        """
+        if inbound:
+            external_id = str(payload.get("customer_external_id") or "")
+            resolved = ctx.customer(event, external_id) if external_id else None
+        else:
+            external_id = str(payload.get("vendor_external_id") or "")
+            resolved = ctx.vendor(event, external_id) if external_id else None
+        return resolved or NO_PARTY
 
     @staticmethod
     def _bucket(payload: dict[str, Any]) -> str:

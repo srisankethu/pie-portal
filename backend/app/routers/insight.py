@@ -17,7 +17,7 @@ honest 403.
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Optional
 
@@ -31,12 +31,13 @@ from .. import clock
 from ..commercial import floor, incentive, policy, principals
 from ..commercial import categories as cat
 from ..commercial.insight import (bonds, cadence, cashflow, cohorts, composition,
+                                  daily as daily_view,
                                   dependency, flow, landscape, mix, payments,
                                   periods, radar, simulate, stock, story, supply,
                                   weather)
 from ..db import get_session
 from ..domain import models
-from ..domain.enums import Role
+from ..domain.enums import ApprovalStatus, DecisionStatus, Role
 from ..domain.origin import Companies, index_of
 from ..signals.aggregates import label_for, load_snapshot
 from ..commercial.insight import series
@@ -1792,3 +1793,181 @@ def run_simulation(body: SimulationRequest,
 
     return _envelope(result, currency=th.currency,
                      thresholds_version=th.version)
+
+
+# ── the morning read ────────────────────────────────────────────────────────
+#
+# An assembly, not a computation. Every figure below is produced by the builder
+# that the screen owning it already uses, and this endpoint's whole job is to
+# load those inputs once and hand the results to `daily.assemble`. The moment
+# it starts working a number out for itself is the moment this page and the
+# Cash screen can disagree about what "overdue" means.
+
+def _last_two_syncs(session: Session, org: str) -> tuple[Optional[dict], Optional[dict]]:
+    """The most recent completed sync and the one before it.
+
+    Two, because the "what moved" band reports the window *between* them: the
+    rows the latest run brought in that the run before it had not.
+    """
+    rows = session.scalars(
+        select(models.SyncRun)
+        .where(models.SyncRun.organization_id == org)
+        .order_by(models.SyncRun.started_at.desc())
+        .limit(2)).all()
+
+    def _d(run: Optional[models.SyncRun]) -> Optional[dict]:
+        if run is None:
+            return None
+        return {
+            "status": run.status,
+            "started_at": run.started_at.isoformat() if run.started_at else None,
+            "finished_at": run.finished_at.isoformat() if run.finished_at else None,
+        }
+
+    return (_d(rows[0] if rows else None), _d(rows[1] if len(rows) > 1 else None))
+
+
+def _moved_since(session: Session, org: str, since: datetime,
+                 companies: Companies) -> dict[str, Any]:
+    """What the platform first saw after ``since``, by kind and by company.
+
+    Keyed on ``created_at`` — when PIE first wrote the row — not on the
+    document's own date. A purchase order dated last week that arrived in this
+    morning's sync belongs in this morning's briefing, because it is new to the
+    reader. That makes the band "what the platform learned", which is a
+    different claim from "what the business did", and the screen says so.
+
+    Counted per company here rather than split out of a builder's list: those
+    lists are capped, so a breakdown taken from one would not add up to its own
+    headline.
+    """
+    spec: list[tuple[str, Any, Optional[str]]] = [
+        ("invoices", models.InvoiceDoc, "total"),
+        ("payments", models.PaymentApplication, "amount"),
+        ("purchase_orders", models.PurchaseOrderDoc, "total"),
+        ("customers", models.Customer, None),
+        ("products", models.Product, None),
+    ]
+    out: dict[str, Any] = {}
+    for key, model, amount_col in spec:
+        if not hasattr(model, "created_at"):
+            continue
+        has_conn = hasattr(model, "connection_id")
+        cols: list[Any] = [func.count()]
+        if amount_col is not None and hasattr(model, amount_col):
+            cols.append(func.sum(getattr(model, amount_col)))
+        group = [model.connection_id] if has_conn else []
+        rows = session.execute(
+            select(*group, *cols)
+            .where(model.organization_id == org, model.created_at >= since)
+            .group_by(*group)).all()
+
+        total = 0
+        amount = 0.0
+        by_company: list[dict[str, Any]] = []
+        for row in rows:
+            values = list(row)
+            conn = values.pop(0) if has_conn else None
+            count = int(values[0] or 0)
+            total += count
+            if len(values) > 1:
+                amount += float(values[1] or 0)
+            by_company.append({
+                "company": companies.label_for(conn), "count": count})
+        out[key] = {
+            "count": total,
+            "amount": round(amount, 2) if amount else None,
+            "by_company": sorted(by_company, key=lambda r: r["count"], reverse=True),
+        }
+    return out
+
+
+@router.get("/daily")
+def daily(principal: Principal = Depends(require_manager_or_owner),
+          session: Session = Depends(get_session)) -> dict:
+    """The morning read.
+
+    Manager and above, for the same reason `/supply` and `/cashflow` are: two
+    of its five bands are cash and supplier exposure, which is purchase cost by
+    another name. A salesperson's version is the same assembly with those bands
+    not built — worth doing, and not done here, because it wants its own pass
+    over what a salesperson's morning actually asks.
+    """
+    org, snapshot, th = _labels_only(session, principal)
+    as_of = _as_of(snapshot) or clock.today(th.timezone)
+    companies = Companies(session, org)
+    last_sync, previous_sync = _last_two_syncs(session, org)
+
+    # ── each band's source, loaded the way its own screen loads it ──────────
+    cash: dict[str, Any] = {}
+    cash_on = latest_as_of(session, org, CASH_SCHEDULE)
+    if cash_on is not None:
+        cash = cashflow.project(
+            state_engine.load(session, org, CASH_SCHEDULE, cash_on),
+            state_engine.load(session, org, COMMITMENTS, cash_on),
+            state_engine.load(session, org, RECEIVABLES, cash_on),
+            as_of=cash_on, weeks=1)
+
+    stock_result: dict[str, Any] = {}
+    stock_on = state_engine.latest_as_of(session, org, INVENTORY)
+    if stock_on is not None:
+        stock_result = stock.build(
+            stock.lines_from_state(
+                state_engine.load(session, org, INVENTORY, stock_on),
+                labels=snapshot.product_names, buyers={}, with_cost=True),
+            _as_of(snapshot) or clock.today(th.timezone),
+            stock.Carrying(annual_pct=th.carrying_cost_annual_pct,
+                           dead_days=th.dead_stock_days,
+                           slow_days=th.slow_stock_days,
+                           rate_is_published=th.carrying_rate_is_published),
+            with_cost=True)
+
+    vendors = {v.vendor_id: v for v in session.scalars(
+        select(models.Vendor).where(models.Vendor.organization_id == org)).all()}
+    po_rows = session.scalars(
+        select(models.PurchaseOrderDoc)
+        .where(models.PurchaseOrderDoc.organization_id == org)).all()
+    supply_result = supply.build(
+        [supply.SupplierOrder(
+            vendor_id=po.vendor_id,
+            vendor_label=(vendors[po.vendor_id].name if po.vendor_id in vendors
+                          else "Supplier not in the contact list"),
+            number=po.number, ordered_on=po.date, expected_on=po.expected_date,
+            received_on=po.received_on,
+            pending_qty=float(po.pending_qty or 0),
+            ordered_qty=float(po.ordered_qty or 0),
+            total=(float(po.total) if po.total is not None else None),
+            status=po.status or "") for po in po_rows],
+        as_of) if po_rows else {}
+
+    # Cadence needs the lines, and is the one genuinely expensive read here.
+    _org, full, _th = _context(session, principal)
+    cadence_result = (
+        cadence.build(full.sales, full.customer_names, _as_of(full),
+                      thresholds=load_signal_thresholds())
+        if _as_of(full) else {})
+
+    approvals_pending = session.scalar(
+        select(func.count()).select_from(models.ApprovalRequest)
+        .where(models.ApprovalRequest.organization_id == org,
+               models.ApprovalRequest.status == ApprovalStatus.PENDING.value)) or 0
+
+    band_rows = session.execute(
+        select(models.Decision.priority_band, func.count())
+        .where(models.Decision.organization_id == org,
+               models.Decision.status == DecisionStatus.OPEN.value)
+        .group_by(models.Decision.priority_band)).all()
+    decisions_by_band = {str(b): int(n) for b, n in band_rows}
+
+    since, _until = daily_view.window_since(last_sync, previous_sync,
+                                            now=clock.now())
+    moved = _moved_since(session, org, since, companies) if since else {}
+
+    return _envelope(
+        daily_view.assemble(
+            now=clock.now(), as_of=as_of, state_on=cash_on or stock_on,
+            last_sync=last_sync, approvals_pending=int(approvals_pending),
+            decisions_by_band=decisions_by_band, stock=stock_result,
+            supply=supply_result, cadence=cadence_result, cash=cash,
+            moved=moved, currency=th.currency),
+        currency=th.currency, thresholds_version=th.version)

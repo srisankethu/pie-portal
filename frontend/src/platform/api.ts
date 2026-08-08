@@ -128,6 +128,10 @@ export const papi = {
   // Every one of these returns the same envelope: data, currency, and an
   // `empty_reason` written where the query happened. The client never decides
   // why something is empty — it could only guess, and the server knows.
+  /** The morning read. One request for the whole landing page's top. */
+  daily: (t: string) =>
+    req<Record<string, unknown>>("/api/v1/insight/daily", {}, t),
+
   storyboard: (t: string, months = 3) =>
     req<Record<string, unknown>>(`/api/v1/insight/storyboard?months=${months}`, {}, t),
 

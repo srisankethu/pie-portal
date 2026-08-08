@@ -199,9 +199,14 @@ export const papi = {
   // Every role: the grid is revenue and dates, and the conversation it exists
   // for is a salesperson's.
   // Two pivots, one endpoint: lines of the business, or principals.
-  mix: (t: string, months: number, by = "category") =>
+  // `connectionId` scopes the whole grid to one connected company on the
+  // server, rather than filtering rows in the browser: the headline counts are
+  // what this screen is for, so narrowing has to recompute them.
+  mix: (t: string, months: number, by = "category", connectionId?: string) =>
     req<Record<string, unknown>>(
-      `/api/v1/insight/mix?months=${months}&by=${by}`, {}, t),
+      `/api/v1/insight/mix?months=${months}&by=${by}`
+      + (connectionId ? `&connection_id=${encodeURIComponent(connectionId)}` : ""),
+      {}, t),
 
   // What this book leans on, at both ends. The supplier half is manager+ and
   // is omitted from a salesperson's response rather than 403-ing the screen.

@@ -560,3 +560,99 @@ def test_the_headings_the_live_masters_actually_use_are_all_mapped():
     }
     for heading, expected in live.items():
         assert cat.from_hsn(heading, TH) == expected, heading
+
+
+# ── scoping the grid to one connected company ───────────────────────────────
+#
+# Every other list uses `CompanyFilter`, which hides rows and deliberately never
+# restates a total. On this screen the totals *are* the screen — "112 customers
+# do not take cutting tools" is the output — so a filter that only hid rows
+# would leave the headline describing a book the reader is no longer looking at.
+# The bound therefore goes into the snapshot, on the server.
+
+
+def _two_company_book(Maker):
+    """One customer per company, buying a different line each."""
+    from decimal import Decimal
+
+    s = Maker()
+    for cid, conn, name in (("c-sls", "conn_sls", "Amtek"),
+                            ("c-4u", "conn_4u", "Pitti")):
+        s.add(models.Customer(customer_id=cid, organization_id="org_sanketh",
+                              external_id=cid, name=name, connection_id=conn))
+    s.add_all([
+        models.ZohoConnection(connection_id="conn_sls",
+                              organization_id="org_sanketh",
+                              label="SLS Engineers", zoho_organization_id="111"),
+        models.ZohoConnection(connection_id="conn_4u",
+                              organization_id="org_sanketh",
+                              label="4U Precision", zoho_organization_id="222"),
+    ])
+    # Two items in different lines, so the grids genuinely differ per company.
+    s.add(models.Product(product_id="p-cool", organization_id="org_sanketh",
+                         external_id="e-cool", name="Cutting oil",
+                         hsn="34031900", active=True, source_ref={}))
+    for cid, pid in (("c-sls", "p-tool"), ("c-4u", "p-cool")):
+        s.add(models.SalesTxn(
+            organization_id="org_sanketh", external_ref=f"inv-{cid}",
+            customer_id=cid, product_id=pid, date=date(2026, 6, 1),
+            qty=Decimal("1"), unit_price=Decimal("100"),
+            line_revenue=Decimal("100"), source_ref={"record_id": f"inv-{cid}"}))
+    s.commit()
+    s.close()
+
+
+def test_the_grid_offers_every_connected_company_even_with_unstamped_rows(client):
+    """Built from the connections, not from row provenance.
+
+    A filter derived from the rows on screen vanishes exactly when it is most
+    needed — a book synced before connections were stamped leaves every origin
+    null and the control silently never renders, which is what happened on the
+    live book.
+    """
+    c, Maker = client
+    _two_company_book(Maker)
+    head = _auth(c, "m.rao@sanketh.in")
+
+    body = c.get("/api/v1/insight/mix", headers=head).json()
+    assert [x["label"] for x in body["companies"]] == ["4U Precision",
+                                                       "SLS Engineers"]
+    assert body["scoped_to"] is None
+
+
+def test_scoping_to_a_company_restates_the_numbers_rather_than_hiding_rows(client):
+    c, Maker = client
+    _two_company_book(Maker)
+    head = _auth(c, "m.rao@sanketh.in")
+
+    both = c.get("/api/v1/insight/mix", headers=head).json()
+    assert both["counts"]["customers"] == 2
+
+    one = c.get("/api/v1/insight/mix?connection_id=conn_sls", headers=head).json()
+    assert one["scoped_to"] == "conn_sls"
+    assert [x["label"] for x in one["customers"]] == ["Amtek"]
+    # The headline is recomputed, not merely filtered — this is the whole point.
+    assert one["counts"]["customers"] == 1
+
+
+def test_an_unknown_company_scopes_to_nothing_rather_than_to_everything(client):
+    """A bound that silently widened would show the whole book under one
+    company's name, which is worse than an empty screen."""
+    c, Maker = client
+    _two_company_book(Maker)
+    head = _auth(c, "m.rao@sanketh.in")
+
+    body = c.get("/api/v1/insight/mix?connection_id=nope", headers=head).json()
+    assert body.get("empty_reason")
+
+
+def test_the_window_accepts_a_quarter(client):
+    """3m/6m/1y are the ranges this trade actually plans in."""
+    c, Maker = client
+    _two_company_book(Maker)
+    head = _auth(c, "m.rao@sanketh.in")
+
+    for months in (3, 6, 12):
+        r = c.get(f"/api/v1/insight/mix?months={months}", headers=head)
+        assert r.status_code == 200, months
+        assert r.json()["months"] == months

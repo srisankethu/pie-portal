@@ -846,6 +846,57 @@ def _principal_ids(resolved: dict[str, principals.Principal]) -> dict[str, str]:
             for product_id, p in resolved.items() if p.known}
 
 
+def _customers_of_connection(session: Session, org: str,
+                             connection_id: Optional[str]) -> Optional[list[str]]:
+    """The customers belonging to one connected company, or None for all.
+
+    ``SalesTxn`` carries no connection — a sale is keyed on the organization,
+    the customer and the item — so the company a line belongs to is the
+    company its *customer* was synced from. Scoping the snapshot therefore
+    means scoping the customer set, which is exactly the bound
+    ``load_snapshot`` already takes.
+
+    None rather than a list when no company is chosen, because an empty list is
+    a real bound meaning "no customers at all" and would silently empty the
+    screen instead of showing everything.
+    """
+    if not connection_id:
+        return None
+    return [
+        row for (row,) in session.execute(
+            select(models.Customer.customer_id).where(
+                models.Customer.organization_id == org,
+                models.Customer.connection_id == connection_id)).all()
+    ]
+
+
+def _companies(session: Session, org: str) -> list[dict]:
+    """The companies a screen can scope itself to, with how many customers each
+    has actually traded with.
+
+    Read from the connections rather than from the rows on screen. A filter
+    built from row provenance disappears exactly when it is most needed: a book
+    synced before connections were stamped, or by a run that did not pass one,
+    leaves every row's origin null and the control silently never renders —
+    which is what happened here. The connection list is the truth about which
+    companies exist; the counts then say which of them have anything to show.
+    """
+    counts = dict(session.execute(
+        select(models.Customer.connection_id, func.count())
+        .where(models.Customer.organization_id == org,
+               models.Customer.connection_id.is_not(None))
+        .group_by(models.Customer.connection_id)).all())
+    return [
+        {"connection_id": c.connection_id,
+         "label": c.label or f"Zoho org {c.zoho_organization_id}",
+         "customers": counts.get(c.connection_id, 0)}
+        for c in session.scalars(
+            select(models.ZohoConnection).where(
+                models.ZohoConnection.organization_id == org)
+            .order_by(models.ZohoConnection.label)).all()
+    ]
+
+
 def _revenue_by_product(snapshot) -> dict[str, float]:
     """What each item has sold, for weighting a coverage figure by money.
 
@@ -1077,6 +1128,7 @@ def relationship_bonds(
 def product_mix(months: int = Query(12, ge=3, le=36),
                 by: str = Query(mix.BY_CATEGORY,
                                 pattern=f"^({mix.BY_CATEGORY}|{mix.BY_VENDOR})$"),
+                connection_id: Optional[str] = Query(None),
                 principal: Principal = Depends(current_principal),
                 session: Session = Depends(get_session)) -> dict:
     """Who takes which lines — or which principals — and where the gaps are.
@@ -1084,8 +1136,27 @@ def product_mix(months: int = Query(12, ge=3, le=36),
     Two pivots, one grid. "Who has never bought coolant" and "who has never
     bought a single Sandvik item" are the same conversation with different
     people, and an authorised distributor needs both.
+
+    ``connection_id`` scopes the whole grid to one connected company, **on the
+    server**, and that is the difference between this and the row filter every
+    other list uses. `CompanyFilter` hides rows and says so — it deliberately
+    never restates a total, because the platform pools companies on purpose and
+    a control that silently re-scoped an aggregate would be claiming something
+    the server did not compute.
+
+    On this screen the aggregates *are* the screen. "112 customers do not take
+    cutting tools" and "75 of 171 buy from only one line" are the output; a
+    filter that hid rows underneath them would leave both headline numbers
+    describing a book the reader is no longer looking at. So the bound goes
+    into the snapshot and every figure is recomputed for that company — which
+    is also the only reading that is true, since one firm buying from two of
+    the books is two relationships and a line SLS has never sold them is not a
+    gap in 4U.
     """
-    org, snapshot, th = _context(session, principal)
+    org, snapshot, th = _context(
+        session, principal,
+        sales_for_customers=_customers_of_connection(
+            session, principal.organization_id, connection_id))
     as_of = _as_of(snapshot)
     if as_of is None:
         return _no_data(th.currency, "product mix")
@@ -1137,6 +1208,11 @@ def product_mix(months: int = Query(12, ge=3, le=36),
         principals=principals.coverage_report(principal_of,
                                               _revenue_by_product(snapshot)),
         lines=cat.lines(),
+        # The companies this grid can be scoped to, and which one it currently
+        # is. Returned with the data rather than fetched separately so the
+        # picker and the numbers under it can never describe different books.
+        companies=_companies(session, org),
+        scoped_to=connection_id,
         unavailable=mix.unavailable())
 
 

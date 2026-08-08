@@ -735,8 +735,8 @@ def test_orders_in_the_timeline_count_invoices_not_lines():
 def _settled(customer: str, invoiced: date, paid: date, amount=1000.0,
              due: date | None = None):
     from app.commercial.insight.payments import Settlement
-    return Settlement(customer_id=customer, invoice_ref=f"{customer}-{invoiced}",
-                      invoice_number=None, invoice_date=invoiced, due_date=due,
+    return Settlement(party_id=customer, document_ref=f"{customer}-{invoiced}",
+                      document_number=None, document_date=invoiced, due_date=due,
                       paid_on=paid, amount=amount)
 
 
@@ -1229,7 +1229,94 @@ def test_batching_and_part_payment_are_counted_because_they_change_the_call():
                                     date(2026, 5, 1), 500.0))
     got = payments.classify(rows)
     assert got["largest_batch"] == 3
-    assert got["part_paid_invoices"] == 1
+    assert got["part_paid_documents"] == 1
+
+
+# ── the payable side, on the same arithmetic ────────────────────────────────
+#
+# There is no `payables.py` to test. The measurement is identical whichever
+# direction the money runs, so these check the two things that genuinely differ:
+# the vocabulary the response comes back in, and the prose attached to a
+# pattern. Everything numeric is covered by the tests above and is the same
+# code path.
+
+def test_the_payable_side_answers_in_vendors_and_bills():
+    """Same figures, the other ledger. A screen reading this must not have to
+    know that `customers` sometimes means suppliers."""
+    from app.commercial.insight import payments
+
+    rows = [_pay("v1", date(2026, 1, i + 1), date(2026, 2, i + 1),
+                 due=date(2026, 1, i + 25), ref=f"bill-{i}") for i in range(4)]
+    got = payments.build(rows, {"v1": "Kalyani Steels"}, date(2026, 3, 1),
+                         side=payments.PAYABLE)
+
+    assert "customers" not in got
+    assert [v["vendor_id"] for v in got["vendors"]] == ["v1"]
+    assert got["vendors"][0]["label"] == "Kalyani Steels"
+    assert (got["side"], got["party"], got["document"]) == ("payable", "vendor", "bill")
+    assert "bill" in got["note"]
+
+
+def test_a_pattern_means_something_different_when_we_are_the_late_one():
+    """The one thing that is not shared arithmetic. A customer who is
+    predictably late is a conversation to have with them; we who are
+    predictably late are a position our own suppliers already price in."""
+    from app.commercial.insight import payments
+
+    assert "terms problem" in payments.PATTERNS["PREDICTABLY_LATE"]["meaning"]
+    payable = payments.PAYABLE_PATTERNS["PREDICTABLY_LATE"]
+    assert payable["label"].startswith("We are")
+    assert "planning around" in payable["meaning"]
+    # The keys have to match, or a response built for one side would carry a
+    # legend with a hole in it.
+    assert set(payments.PAYABLE_PATTERNS) == set(payments.PATTERNS)
+    assert set(payments.PAYABLE_TRENDS) == set(payments.TRENDS)
+
+
+def test_agreed_terms_sit_beside_the_measured_median_rather_than_replacing_it():
+    """Promised against actual, at the party grain. The gap is the number worth
+    acting on, and it needs both halves — a measured median alone cannot be
+    late, and terms alone are not evidence of anything."""
+    from app.commercial.insight import payments
+
+    # Agreed 30 days; settled at 45 every time.
+    rows = [_pay("v1", date(2026, 1, i + 1), date(2026, 2, 15 + i),
+                 due=date(2026, 1, 31 + i) if i == 0 else date(2026, 2, i),
+                 ref=f"bill-{i}") for i in range(4)]
+    got = payments.build(rows, {"v1": "Kalyani"}, date(2026, 3, 1),
+                         side=payments.PAYABLE, terms={"v1": 30})
+
+    row = got["vendors"][0]
+    assert row["agreed_terms_days"] == 30
+    assert row["terms_gap_days"] == round(row["median_days_to_pay"] - 30, 1)
+
+
+def test_no_terms_on_record_is_not_a_zero_gap():
+    """A supplier with no terms recorded is not a supplier being paid exactly
+    to terms, and a zero there would read as exactly that."""
+    from app.commercial.insight import payments
+
+    rows = [_pay("v2", date(2026, 1, i + 1), date(2026, 2, i + 1),
+                 ref=f"bill-{i}") for i in range(3)]
+    got = payments.build(rows, {}, date(2026, 3, 1), side=payments.PAYABLE)
+
+    assert got["vendors"][0]["agreed_terms_days"] is None
+    assert got["vendors"][0]["terms_gap_days"] is None
+
+
+def test_a_lag_is_the_same_three_numbers_whichever_side_it_came_from():
+    """`insight/cashflow` reads one `Lag` shape for both directions. What
+    differs is which end is good news, and that lives in the projection."""
+    from app.commercial.insight import payments
+
+    rows = [_pay("v1", date(2026, 1, 1), date(2026, 2, d),
+                 due=date(2026, 1, 31), ref=f"bill-{d}") for d in (1, 5, 20)]
+    measured = payments.lags(rows)
+
+    assert set(measured) == {"v1"}
+    assert measured["v1"].party_id == "v1"
+    assert (measured["v1"].early_days <= measured["v1"].expected_days
+            <= measured["v1"].late_days)
 
 
 # ── the business day ────────────────────────────────────────────────────────

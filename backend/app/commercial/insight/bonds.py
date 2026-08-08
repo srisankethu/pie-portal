@@ -665,7 +665,7 @@ def reliability_from_payments(
     """
     grouped: dict[str, list] = {}
     for row in settlements:
-        grouped.setdefault(row.customer_id, []).append(row)
+        grouped.setdefault(row.party_id, []).append(row)
 
     out: dict[str, Reliability] = {}
     for customer_id, rows in grouped.items():

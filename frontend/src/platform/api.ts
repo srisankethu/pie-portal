@@ -191,6 +191,13 @@ export const papi = {
   payments: (t: string) =>
     req<Record<string, unknown>>("/api/v1/insight/payments", {}, t),
 
+  // The same measurement from the other end of the ledger. Manager and above,
+  // scoped like `supply` rather than like `payments`: which customers pay us
+  // slowly is a call list, which suppliers we are stringing along is a
+  // commercial position.
+  payables: (t: string) =>
+    req<Record<string, unknown>>("/api/v1/insight/payables", {}, t),
+
   // Manager and above. The inflow half is receivables, but the outflow half is
   // what we owe suppliers — purchase cost by another name — so the endpoint is
   // scoped like `supply` and the panel is hidden rather than 403'd.

@@ -52,7 +52,7 @@ import { DependencyScreen } from "./viz/Dependency";
 import { TargetWallScreen } from "./viz/TargetWall";
 import { CatalogueScreen } from "./viz/Catalogue";
 import { CustomerHealthTimeline, MigrationMatrix } from "./viz/History";
-import { PaymentsScreen, StockScreen, SupplyScreen } from "./viz/TheBook";
+import { PayablesScreen, PaymentsScreen, StockScreen, SupplyScreen } from "./viz/TheBook";
 import { NegotiateScreen } from "./viz/Negotiate";
 import { Seg } from "./viz/Seg";
 import { money } from "../money";
@@ -430,6 +430,11 @@ export default function PlatformApp() {
       ? ([{ key: "supply", label: "Suppliers", group: "book" }] as NavItem[])
       : []),
     { key: "payments", label: "Cash", group: "book" },
+    ...(ability.can("read", "supply")
+      // How long we string a supplier along is a commercial position, not a
+      // call list, so it is scoped like Suppliers rather than like Cash.
+      ? ([{ key: "payables", label: "How we pay", group: "book" }] as NavItem[])
+      : []),
 
     // ── Setup ──
     // Setup, not Understand: placing an item is catalogue maintenance, and it
@@ -569,6 +574,7 @@ export default function PlatformApp() {
             <Route path={PATH.composition} element={<CompositionScreen session={session} onNavigate={goViz} />} />
             <Route path={PATH.cadence} element={<CadenceScreen session={session} onNavigate={goViz} />} />
             <Route path={PATH.payments} element={<PaymentsScreen session={session} onNavigate={goViz} />} />
+            <Route path={PATH.payables} element={<PayablesScreen session={session} onNavigate={goViz} />} />
             <Route path={PATH.stock} element={<StockScreen session={session} />} />
             <Route path={PATH.supply} element={<SupplyScreen session={session} />} />
             <Route path={PATH.bonds} element={<BondsScreen session={session} onNavigate={goViz} />} />

@@ -799,10 +799,21 @@ class _Commitments(_Source):
                  "invoiced_status": "not_invoiced", "shipped_status": "pending",
                  "total": "125000.50", "salesperson_id": "u9"}]
 
-    def list_vendor_payments(self):
+    def list_vendor_payments(self, skip=None):
         return [{"payment_id": "vp1", "vendor_id": "v1", "date": "2026-06-12",
                  "amount": "80000.25", "payment_mode": "banktransfer",
-                 "reference_number": "NEFT-8891"}]
+                 "reference_number": "NEFT-8891",
+                 # Which bills went out with it. One transfer, two bills, and
+                 # therefore two observations of how long this book takes to
+                 # pay — the grain the payable behaviour is measured at.
+                 "bills": [
+                     {"bill_payment_id": "bp1", "bill_id": "b1",
+                      "bill_number": "BILL-1", "date": "2026-05-01",
+                      "due_date": "2026-05-31", "amount_applied": "50000.00"},
+                     {"bill_payment_id": "bp2", "bill_id": "b2",
+                      "bill_number": "BILL-2", "date": "2026-05-10",
+                      "due_date": "2026-06-09", "amount_applied": "30000.25"},
+                 ]}]
 
 
 def _committed(cls=_Commitments) -> "_Commitments":
@@ -840,6 +851,69 @@ def test_money_out_is_stored_against_the_supplier_it_was_paid_to(session):
     # add up.
     assert vp.amount == Decimal("80000.25")
     assert vp.mode == "banktransfer"
+
+
+def test_one_payment_out_clearing_two_bills_is_two_observations(session):
+    """The grain the payable behaviour is measured at. Storing the transfer
+    alone would give a book that batches its remittances one flattering data
+    point instead of one observation per bill it actually settled."""
+    SyncService(session, _committed(), "org_a").run()
+    session.commit()
+
+    apps = session.query(models.BillPaymentApplication).order_by(
+        models.BillPaymentApplication.bill_external_ref).all()
+    vendor = session.query(models.Vendor).one()
+    assert [a.bill_external_ref for a in apps] == ["b1", "b2"]
+    assert {a.vendor_id for a in apps} == {vendor.vendor_id}
+    # The bill's own dates travel on the row rather than being joined to the
+    # bills table: a bill older than the sync window still has to produce a
+    # days-to-pay, and those are the slow ones.
+    assert apps[0].bill_date == date(2026, 5, 1)
+    assert apps[0].bill_due_date == date(2026, 5, 31)
+    assert apps[0].paid_on == date(2026, 6, 12)
+    assert apps[0].amount_applied == Decimal("50000.00")
+    # 12 days after the due date on the first, 3 on the second — measured, not
+    # assumed, which is the entire point of reading the breakdown.
+    assert [(a.paid_on - a.bill_due_date).days for a in apps] == [12, 3]
+
+
+def test_a_payment_out_reapplied_in_zoho_drops_the_bill_it_no_longer_settles(session):
+    """Replaced wholesale, not merged. A merge would leave the old application
+    behind as a settlement that no longer exists — a phantom observation in
+    exactly the series that decides how fast we are thought to pay."""
+    SyncService(session, _committed(), "org_a").run()
+    session.commit()
+
+    class Reapplied(_Commitments):
+        def list_vendor_payments(self, skip=None):
+            row = dict(super().list_vendor_payments()[0])
+            row["bills"] = [row["bills"][0]]
+            return [row]
+
+    SyncService(session, _committed(Reapplied), "org_a").run()
+    session.commit()
+
+    assert session.query(models.VendorPaymentDoc).count() == 1
+    assert [a.bill_external_ref
+            for a in session.query(models.BillPaymentApplication).all()] == ["b1"]
+
+
+def test_a_payment_out_with_no_bill_breakdown_still_records_the_money(session):
+    """A source that does not report which bills a transfer cleared — an older
+    fixture, a plan without the detail call — is not a failure. The money left
+    the bank; it simply produces no observation about how long we took."""
+    class NoBreakdown(_Commitments):
+        def list_vendor_payments(self, skip=None):
+            row = dict(super().list_vendor_payments()[0])
+            row.pop("bills")
+            return [row]
+
+    report = SyncService(session, _committed(NoBreakdown), "org_a").run()
+    session.commit()
+
+    assert report.vendor_payments == 1
+    assert session.query(models.VendorPaymentDoc).count() == 1
+    assert session.query(models.BillPaymentApplication).count() == 0
 
 
 def test_re_reading_the_same_order_updates_it_rather_than_duplicating(session):
@@ -883,7 +957,7 @@ def test_a_payment_out_with_no_amount_is_reported_never_treated_as_zero(session)
     """Defaulting it would understate cash out by exactly what the row was
     worth, silently, and in the direction that flatters liquidity."""
     class Malformed(_Commitments):
-        def list_vendor_payments(self):
+        def list_vendor_payments(self, skip=None):
             return [{"payment_id": "vp1", "vendor_id": "v1", "date": "2026-06-12"}]
 
     report = SyncService(session, _committed(Malformed), "org_a").run()

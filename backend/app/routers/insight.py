@@ -548,16 +548,46 @@ def _settlements(session: Session, org: str,
         stmt = stmt.where(models.PaymentApplication.customer_id == customer_id)
     return [
         payments.Settlement(
-            customer_id=row.customer_id,
-            invoice_ref=row.invoice_external_ref,
-            invoice_number=row.invoice_number,
-            invoice_date=row.invoice_date,
+            party_id=row.customer_id,
+            document_ref=row.invoice_external_ref,
+            document_number=row.invoice_number,
+            document_date=row.invoice_date,
             due_date=row.invoice_due_date,
             paid_on=row.paid_on,
             amount=float(row.amount_applied or 0),
         )
         for row in session.scalars(stmt).all()
     ]
+
+
+def _bill_settlements(session: Session, org: str,
+                      vendor_id: Optional[str] = None,
+                      ) -> tuple[list[payments.Settlement], int]:
+    """Bill payment applications, and how many of them belong to nobody.
+
+    The mirror of ``_settlements`` and deliberately the same grain, so both
+    sides reach ``payments.build`` as the same kind of row. The count comes back
+    beside the list because a bill payment can carry no vendor — money we
+    genuinely sent, to a supplier the contact pull never returned — and dropping
+    it silently would make the vendor list look shorter than the book is.
+    """
+    stmt = select(models.BillPaymentApplication).where(
+        models.BillPaymentApplication.organization_id == org)
+    if vendor_id:
+        stmt = stmt.where(models.BillPaymentApplication.vendor_id == vendor_id)
+    rows = session.scalars(stmt).all()
+    return [
+        payments.Settlement(
+            party_id=row.vendor_id or "",
+            document_ref=row.bill_external_ref,
+            document_number=row.bill_number,
+            document_date=row.bill_date,
+            due_date=row.bill_due_date,
+            paid_on=row.paid_on,
+            amount=float(row.amount_applied or 0),
+        )
+        for row in rows if row.vendor_id
+    ], sum(1 for row in rows if not row.vendor_id)
 
 
 @router.get("/payments")
@@ -593,6 +623,54 @@ def payment_behaviour(principal: Principal = Depends(current_principal),
                       "from. Advances are counted separately above."))
 
 
+@router.get("/payables")
+def payable_behaviour(principal: Principal = Depends(require_manager_or_owner),
+                      session: Session = Depends(get_session)) -> dict:
+    """How long *we* take to pay, per supplier. Manager and above.
+
+    Scoped like ``/supply`` rather than like ``/payments``, and the asymmetry is
+    the rule this router already applies rather than a new one: what we owe a
+    supplier is purchase cost by another name, and the platform does not put
+    cost in front of a salesperson. Which customers pay us slowly is a call
+    list; which suppliers we are stringing along is a commercial position.
+
+    Computed by the same code as the receivable side — see ``insight/payments``
+    for why there is one module and not two — with the vocabulary and the prose
+    switched by ``payments.PAYABLE``.
+    """
+    org, _snapshot, th = _labels_only(session, principal)
+    as_of = clock.today(th.timezone)
+
+    vendors = {v.vendor_id: v for v in session.scalars(
+        select(models.Vendor).where(models.Vendor.organization_id == org)).all()}
+    settled, unattributed = _bill_settlements(session, org)
+    made = session.scalars(
+        select(models.VendorPaymentDoc).where(
+            models.VendorPaymentDoc.organization_id == org)).all()
+    if not made and not settled:
+        return _no_data(th.currency, "payment behaviour towards suppliers")
+
+    result = payments.build(
+        settled, {vid: v.name for vid, v in vendors.items()}, as_of,
+        side=payments.PAYABLE,
+        # The terms on record, so a row can state what was agreed beside what
+        # actually happened. This is the comparison the screen exists for, and
+        # it needs both numbers — a measured median alone cannot be late.
+        terms={vid: v.payment_terms_days for vid, v in vendors.items()},
+        unattributed=unattributed)
+    companies = Companies(session, org)
+    companies.stamp(result.get("vendors") or [],
+                    index_of(session, org, models.Vendor), by="vendor_id")
+    result["sources_differ"] = companies.count > 1
+    return _envelope(
+        result, currency=th.currency,
+        empty_reason=(None if result["vendors"] else
+                      "Payments out have synced, but none of them is applied to "
+                      "a bill yet — so there is no bill date to measure from. "
+                      "A sync run before bill breakdowns were read will fill "
+                      "this in on its next pass."))
+
+
 @router.get("/cashflow")
 def cash_projection(weeks: int = Query(cashflow.WEEKS, ge=1, le=26),
                     principal: Principal = Depends(require_manager_or_owner),
@@ -609,17 +687,19 @@ def cash_projection(weeks: int = Query(cashflow.WEEKS, ge=1, le=26),
     states and does no arithmetic here — the money lives in ``insight/cashflow``
     and the routing lives here.
 
-    The fourth read is the payment history, which is what turns one line into a
-    range: each customer's own days-late distribution, measured from settled
-    invoices, so the same committed book can be placed on the timeline at the
-    speed they actually pay rather than the speed their terms claim. Measured
-    per customer, and absent for a customer with too little history — see
+    The last two reads are the payment histories, which are what turn one line
+    into a range: each party's own days-late distribution, measured from settled
+    documents, so the same committed book can be placed on the timeline at the
+    speed money has actually moved rather than the speed the terms claim. Both
+    directions now — how customers pay us, and how we pay suppliers. Measured
+    per party, and absent for a party with too little history; see
     ``payments.lag`` for why that is left absent rather than defaulted.
     """
     org, _snapshot, th = _labels_only(session, principal)
     on = latest_as_of(session, org, CASH_SCHEDULE)
     if on is None:
         return _no_data(th.currency, "a cash projection")
+    settled_bills, _unattributed = _bill_settlements(session, org)
     return _envelope(
         cashflow.project(
             state_engine.load(session, org, CASH_SCHEDULE, on),
@@ -629,7 +709,8 @@ def cash_projection(weeks: int = Query(cashflow.WEEKS, ge=1, le=26),
             # from a fold that last ran on Friday would silently age its own
             # first bucket into the overdue column over the weekend.
             as_of=on, weeks=weeks,
-            lags=payments.lags(_settlements(session, org))),
+            lags=payments.lags(_settlements(session, org)),
+            payable_lags=payments.lags(settled_bills)),
         currency=th.currency, thresholds_version=th.version)
 
 

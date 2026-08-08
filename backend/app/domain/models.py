@@ -1746,10 +1746,10 @@ class VendorPaymentDoc(Base):
     working capital could not be computed from one side of the ledger. This is
     the other side.
 
-    No application table beside it, deliberately: Zoho's vendor payment carries
-    which bills it settled, but nothing in the platform computes supplier
-    ageing yet, and a table nobody reads is a table that silently rots. It is
-    added when the first reader exists.
+    ``BillPaymentApplication`` is the application table this docstring used to
+    say would be "added when the first reader exists". The reader exists: the
+    cash projection places money out on the dates our bills claim, and had no
+    way to know that this book settles them a fortnight after those dates.
     """
 
     __tablename__ = "vendor_payments"
@@ -1769,6 +1769,57 @@ class VendorPaymentDoc(Base):
     amount: Mapped[Any] = mapped_column(Numeric(18, 4))
     mode: Mapped[Optional[str]] = mapped_column(String(48))
     reference: Mapped[Optional[str]] = mapped_column(String(128))
+    source_ref: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class BillPaymentApplication(Base):
+    """One payment out against one bill — the row days-to-pay is computed from.
+
+    The mirror of ``PaymentApplication``, at the same grain and for the same
+    reason: one bank transfer settling ten bills is ten observations, each with
+    its own bill date, and measuring the payment instead would give a book that
+    batches its remittances a single flattering data point.
+
+    The bill's own date and due date are stored here rather than joined to
+    ``bills``, exactly as on the receivable side. A bill can predate the sync
+    window — a payment made today may settle one from before the platform's
+    history starts — and a join would silently drop precisely the slowest
+    settlements, which are the ones a supplier is already unhappy about.
+
+    ``vendor_id`` is nullable where ``PaymentApplication.customer_id`` is not,
+    and the asymmetry is real rather than an oversight: an inbound payment from
+    a customer the contact pull never returned is skipped at ingest, while a
+    payment *we* made is a fact about our own bank account whether or not the
+    supplier resolved. It is kept, and left out of the per-vendor behaviour with
+    the count reported, rather than dropped or filed under a placeholder.
+    """
+
+    __tablename__ = "bill_payment_applications"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "external_ref",
+                         name="uq_bill_payment_application_org_external"),
+        Index("ix_bill_payment_app_org_bill", "organization_id", "bill_external_ref"),
+    )
+
+    bill_payment_application_id: Mapped[str] = mapped_column(String(64),
+                                                             primary_key=True,
+                                                             default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    external_ref: Mapped[str] = mapped_column(String(128), index=True)
+    vendor_payment_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("vendor_payments.vendor_payment_id"), index=True)
+    vendor_id: Mapped[Optional[str]] = mapped_column(String(64),
+                                                     ForeignKey("vendors.vendor_id"),
+                                                     index=True)
+    bill_external_ref: Mapped[str] = mapped_column(String(128), index=True)
+    bill_number: Mapped[Optional[str]] = mapped_column(String(128))
+    bill_date: Mapped[date] = mapped_column(Date)
+    #: When it was contractually due. Absent on some bills; a missing due date
+    #: makes "days late" unanswerable, never zero.
+    bill_due_date: Mapped[Optional[date]] = mapped_column(Date)
+    paid_on: Mapped[date] = mapped_column(Date, index=True)
+    amount_applied: Mapped[Any] = mapped_column(Numeric(18, 4))
     source_ref: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 

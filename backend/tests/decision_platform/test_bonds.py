@@ -309,8 +309,8 @@ def test_an_empty_book_returns_the_shape_rather_than_nothing():
 def _settlement(customer: str, invoice_day: date, paid_day: date,
                 due_day: date | None) -> payments.Settlement:
     return payments.Settlement(
-        customer_id=customer, invoice_ref=f"{customer}{invoice_day}",
-        invoice_number=None, invoice_date=invoice_day, due_date=due_day,
+        party_id=customer, document_ref=f"{customer}{invoice_day}",
+        document_number=None, document_date=invoice_day, due_date=due_day,
         paid_on=paid_day, amount=1000.0)
 
 

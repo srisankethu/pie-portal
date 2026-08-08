@@ -13,10 +13,10 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Optional
 
 from ..domain.enums import CustomerStatus
-from ..domain.schemas import (BillIn, CostRecordIn, CustomerIn, InvoiceIn,
-                             PaymentApplicationIn, PaymentReceiptIn, ProductIn,
-                             PurchaseOrderIn, SalesOrderIn, SalesTxnIn, SourceRef,
-                             StockSnapshotIn, VendorIn, VendorPaymentIn)
+from ..domain.schemas import (BillIn, CostRecordIn, CustomerIn,
+                             DocumentApplicationIn, InvoiceIn, PaymentReceiptIn,
+                             ProductIn, PurchaseOrderIn, SalesOrderIn, SalesTxnIn,
+                             SourceRef, StockSnapshotIn, VendorIn, VendorPaymentIn)
 
 #: The system every record in this module came from. Stated once, and stated
 #: *here* rather than defaulted in ``SourceRef``, because this file is the Zoho
@@ -266,29 +266,47 @@ def normalize_stock(raw: dict[str, Any], as_of: date) -> StockSnapshotIn:
     )
 
 
-def normalize_payment(raw: dict[str, Any]) -> PaymentReceiptIn:
-    pid = _require(raw, "payment_id", "payment")
-    ctx = f"payment {pid}"
-    applications: list[PaymentApplicationIn] = []
-    for a in raw.get("invoices") or []:
-        invoice_id = str(a.get("invoice_id") or "")
-        if not invoice_id:
+def _applications(raw: dict[str, Any], payment_id: str, ctx: str, *,
+                  listed_under: str, document_key: str,
+                  number_key: str, application_key: str,
+                  ) -> list[DocumentApplicationIn]:
+    """Which documents one payment settled, from either side of the ledger.
+
+    One function rather than two because the shape Zoho returns is the same on
+    both — a list of documents, each carrying its own date, due date and the
+    amount applied — and the only differences are the four key names. Two
+    copies would be two places for the "no document date means no observation"
+    rule to be relaxed, and it is the rule that keeps the median honest.
+    """
+    out: list[DocumentApplicationIn] = []
+    for a in raw.get(listed_under) or []:
+        document_id = str(a.get(document_key) or "")
+        if not document_id:
             continue
         raw_date = a.get("date")
         if not raw_date:
-            # Without the invoice's own date there is no days-to-pay to
+            # Without the document's own date there is no days-to-pay to
             # compute. Dropping the application is right; defaulting it to the
             # payment date would manufacture a book that always pays same-day.
             continue
         due = a.get("due_date")
-        applications.append(PaymentApplicationIn(
-            external_ref=str(a.get("invoice_payment_id") or f"{pid}:{invoice_id}"),
-            invoice_external_ref=invoice_id,
-            invoice_number=(str(a["invoice_number"]) if a.get("invoice_number") else None),
-            invoice_date=_parse_date(raw_date, ctx),
-            invoice_due_date=(_parse_date(due, ctx) if due else None),
+        out.append(DocumentApplicationIn(
+            external_ref=str(a.get(application_key) or f"{payment_id}:{document_id}"),
+            document_external_ref=document_id,
+            document_number=(str(a[number_key]) if a.get(number_key) else None),
+            document_date=_parse_date(raw_date, ctx),
+            document_due_date=(_parse_date(due, ctx) if due else None),
             amount_applied=a.get("amount_applied"),
         ))
+    return out
+
+
+def normalize_payment(raw: dict[str, Any]) -> PaymentReceiptIn:
+    pid = _require(raw, "payment_id", "payment")
+    ctx = f"payment {pid}"
+    applications = _applications(
+        raw, str(pid), ctx, listed_under="invoices", document_key="invoice_id",
+        number_key="invoice_number", application_key="invoice_payment_id")
     return PaymentReceiptIn(
         external_ref=str(pid),
         customer_external_id=str(_require(raw, "customer_id", ctx)),
@@ -399,11 +417,17 @@ def normalize_invoice_terms(raw: dict[str, Any]) -> InvoiceIn:
 
 
 def normalize_vendor_payment(raw: dict[str, Any]) -> VendorPaymentIn:
-    """One payment out. The amount is required, never defaulted.
+    """One payment out, with the bills it settled. The amount is required.
 
     A payment row with no amount is malformed, not a zero-rupee payment, and
     defaulting it would understate cash out by exactly as much as the row was
     worth — silently, and in the direction that flatters liquidity.
+
+    A payload carrying no ``bills`` list normalises to a payment with no
+    applications, not to a failure: an older fixture, or a source that does not
+    report the breakdown, still records money leaving the bank. It simply
+    produces no observation about how long we take to pay, which is the honest
+    outcome rather than a same-day one.
     """
     pid = _require(raw, "payment_id", "vendor payment")
     ctx = f"vendor payment {pid}"
@@ -414,6 +438,9 @@ def normalize_vendor_payment(raw: dict[str, Any]) -> VendorPaymentIn:
         amount=_parse_decimal(_require(raw, "amount", ctx), ctx, "amount"),
         mode=(str(raw["payment_mode"]) if raw.get("payment_mode") else None),
         reference=(str(raw["reference_number"]) if raw.get("reference_number") else None),
+        applications=_applications(
+            raw, str(pid), ctx, listed_under="bills", document_key="bill_id",
+            number_key="bill_number", application_key="bill_payment_id"),
         source_ref=SourceRef(system=ZOHO, record_type="vendorpayment", record_id=str(pid)),
     )
 

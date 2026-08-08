@@ -157,10 +157,33 @@ class ZohoApiSource:
         # instead of every source walking the whole ledger.
         self._until = until
         self._last_call_at: float = 0.0
+        # ── incremental listing ─────────────────────────────────────────────
+        #
+        # ``{document kind: newest modification stamp already held}``. Set by
+        # ``SyncService`` on a nightly pull, so the listing sorts by
+        # modification time and stops as soon as it reaches something known,
+        # instead of paging through every document in the history window to
+        # discover that almost none of them moved.
+        #
+        # Per kind, not one stamp for the pull: invoices and bills move at
+        # different rates, and a single mark would either re-list one of them
+        # needlessly or — far worse — skip the other's changes.
+        #
+        # Empty for a full pass. A full pass costs those list calls on purpose:
+        # it is the only thing that sees the *whole* book, and so the only thing
+        # that can notice a document Zoho no longer has.
+        self.modified_since: dict[str, str] = {}
+        # Forces the complete, date-ordered listing even when a high-water mark
+        # is available — the weekly reconciliation.
+        self._full_listing = False
         # Observable so a sync run can report what the pull actually cost.
         self.calls = 0
         self.documents_fetched = 0
         self.documents_resumed = 0
+        # How many listings stopped early, for the run summary: a nightly pull
+        # that reports zero of these did not go incremental and nobody would
+        # otherwise know why it took an hour.
+        self.listings_short_circuited = 0
         # ── what the listing saw, for mirroring ──────────────────────────────
         #
         # Every document id Zoho currently reports as real trade inside this
@@ -475,8 +498,33 @@ class ZohoApiSource:
         until = self._until
         kind = detail_key
         seen: set[str] = self.listed.setdefault(kind, set())
-        for row in self._paginate(path, list_key, sort_column="date", sort_order="D",
-                                  **self._window()):
+
+        # Incremental listing: ask Zoho for the most recently *modified* first
+        # and stop at the newest stamp already held. The resume predicate below
+        # already saves the detail call for a document that has not changed —
+        # this saves the *list* call as well, which is the rest of the bill. A
+        # nightly pull over two years of history was paying one list call per
+        # 200 documents to discover that almost none of them had moved.
+        #
+        # The cost is completeness, and it is charged honestly: a listing that
+        # stopped early has not seen the whole book, so `listing_complete` is
+        # not set for it and the deletion sweep in SyncService correctly refuses
+        # to run. A document deleted or voided in Zoho is therefore caught by
+        # the periodic full pass, not by this one. See `modified_since`.
+        high_water = None if self._full_listing else self.modified_since.get(kind)
+        sort_column = "last_modified_time" if high_water else "date"
+        stopped_early = False
+
+        for row in self._paginate(path, list_key, sort_column=sort_column,
+                                  sort_order="D", **self._window()):
+            if high_water:
+                stamp = str(row.get("last_modified_time") or "")
+                # Sorted newest-modified first, so the first row at or below the
+                # high-water mark means every row after it is too.
+                if stamp and stamp <= high_water:
+                    stopped_early = True
+                    self.listings_short_circuited += 1
+                    break
             status = str(row.get("status") or "").lower()
             if status in excluded_status:
                 # Deliberately *not* recorded as seen. A voided or drafted
@@ -525,8 +573,13 @@ class ZohoApiSource:
                 detail = {**detail, "last_modified_time": listed_stamp}
                 yield detail
         # Reached only when the loop above was not abandoned by an exception or
-        # by the consumer breaking out early.
-        self.listing_complete.add(kind)
+        # by the consumer breaking out early. An incremental listing that
+        # stopped at the high-water mark is *deliberately* not complete: it saw
+        # only what changed, so the set of ids it produced says nothing about
+        # what Zoho no longer holds, and letting the deletion sweep read it as
+        # authoritative would delete the entire unchanged book.
+        if not stopped_early:
+            self.listing_complete.add(kind)
 
     def list_invoices(self, skip: Optional[SkipPredicate] = None) -> Iterable[dict[str, Any]]:
         for inv in self._documents("invoices", "invoices", "invoice", "invoice_id",

@@ -15,6 +15,12 @@
   --viz-neutral: #9a9a9d;
   --viz-accent: #9a5f14;
   --viz-rule: color-mix(in srgb, var(--color-text) 14%, transparent);
+  /* The panel's own background, named so a mark can paint a separator against
+     it. It is `--color-neutral-100` and not white: white is what `tokens.ts`
+     records, and `tokens.ts`'s `paletteVars()` has no callers, so that copy has
+     been drifting unread. The two halo classes below already hard-code this
+     value as "the surface", which is the third owner of one fact. */
+  --viz-surface: var(--color-neutral-100);
 
   background: var(--color-neutral-100);
   border: 1px solid var(--color-divider);
@@ -38,6 +44,7 @@
   --viz-gain: #5e94d2;
   --viz-neutral: #7c7c80;
   --viz-accent: #ad8636;
+  --viz-surface: #1b2025;
 }
 
 .viz-panel-head {
@@ -462,14 +469,25 @@
 .quad-wash-warn { fill: color-mix(in srgb, var(--viz-accent) var(--viz-wash), transparent); }
 .quad-wash-good { fill: color-mix(in srgb, var(--viz-gain) var(--viz-wash), transparent); }
 .quad-wash-flat { fill: transparent; }
+/* A label that sits where the data is. Stroke-first paints a halo of the panel
+   surface behind the glyphs, so the text survives a collision with a mark
+   instead of the two becoming one unreadable smudge.
+
+   One rule, three consumers. It was written twice — the quadrant labels and the
+   axis note, whose own comment admitted "same halo as the quadrant labels" —
+   and the bond strip's names would have been the third copy. Grouped rather
+   than added to each element's class list, so the two screens that already had
+   it keep their markup. Painting `--viz-surface` rather than the light neutral
+   also fixes the halo for the dark theme, where it used to paint the light
+   panel colour onto a dark one. */
+.viz-mark-halo, .quad-wash-label, .viz-axis-note {
+  paint-order: stroke fill;
+  stroke: var(--viz-surface); stroke-width: 3px; stroke-linejoin: round;
+}
+
 .quad-wash-label {
   font-family: var(--font-heading); font-size: 11px; letter-spacing: .04em;
   fill: var(--color-neutral-700); pointer-events: none;
-  /* A dot can land in the same corner. Stroke-first paints a halo of the panel
-     surface behind the glyphs, so the label survives the collision instead of
-     the two becoming one unreadable smudge. */
-  paint-order: stroke fill;
-  stroke: var(--color-neutral-100); stroke-width: 3px; stroke-linejoin: round;
 }
 
 .viz-axis { font-size: 11px; fill: var(--color-neutral-600); font-variant-numeric: tabular-nums; }
@@ -511,9 +529,6 @@
 }
 .viz-axis-note {
   font-size: 10.5px; fill: var(--color-neutral-600); font-style: italic;
-  /* Same halo as the quadrant labels — a reference line sits where the data is. */
-  paint-order: stroke fill;
-  stroke: var(--color-neutral-100); stroke-width: 3px; stroke-linejoin: round;
 }
 
 .dot-mark { fill: var(--viz-ink); fill-opacity: .38; stroke: var(--viz-ink); stroke-width: 1.25; }
@@ -1001,14 +1016,28 @@
   fill: var(--color-text); font-size: 11px; font-weight: 600;
   text-transform: uppercase; letter-spacing: .06em;
 }
+/* This frame's weather for the lane. Recessive against the lane's own name,
+   which is the fixed thing; these figures change every frame. */
+.bond-lane-weather {
+  fill: var(--color-neutral-600); font-weight: 400; letter-spacing: .03em;
+  /* Not shouted. The lane's own name is a heading and wears the uppercase; a
+     running count of what is happening inside it is a sentence. */
+  text-transform: none;
+}
 
 .bond-node {
   cursor: pointer;
   stroke: var(--viz-surface);
   stroke-width: 1.25px;
   /* Only cx animates. `cy` is the counterparty's fixed seat and never moves,
-     which is what keeps the play readable at two hundred dots. */
-  transition: cx .38s ease, r .2s ease;
+     which is what keeps the play readable at two hundred dots.
+
+     `r` used to animate too, and no longer does — not because the motion was
+     wrong but because the number behind it was. A frame's `money` is revenue
+     accumulated since the window opened, so it only ever rises: every dot on
+     the book inflated every month, including the ones being lost. Size is
+     identity here now, like the seat. */
+  transition: cx .38s ease;
 }
 .bond-node:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
 .bond-node.bond-on { stroke: var(--color-text); stroke-width: 2px; }
@@ -1018,9 +1047,65 @@
 .bond-down { fill: var(--viz-loss); }
 .bond-flat { fill: var(--viz-neutral); }
 
-.bond-still .bond-node { transition: none; }
+/* No score six months back to compare against — so this dot's grey means "not
+   measurable", not "not moving". Those were the same grey until this ring
+   existed, which left a reader unable to tell a stable relationship from one
+   nobody can judge yet.
+
+   A ring rather than a fill: `fill` is spent on the signed dimension and must
+   stay a three-way pair a colour-blind reader can separate. `--viz-accent` is
+   the palette's declared non-signed accent, it lands in the stroke channel, and
+   the dash carries the same meaning again in shape — following `.dot-unknown`,
+   which draws the same "placed, but not asserted" idea. `:not(.bond-on)` keeps
+   selection winning. */
+.bond-node.bond-fresh:not(.bond-on) {
+  stroke: var(--viz-accent);
+  stroke-width: 1.5px;
+  stroke-dasharray: 3 2;
+}
+
+/* Where the dot stood last month, drawn only where the move was material.
+   Deliberately one ink and never coloured by its own sign: it carries one
+   month of change while the fill beside it carries six, and two hues on two
+   time-bases in one mark is exactly the ambiguity the palette rules exist to
+   prevent. Horizontal by construction — it has nowhere else to go. */
+.bond-trail {
+  stroke: var(--viz-ink); stroke-opacity: .35; stroke-linecap: round;
+  pointer-events: none;
+}
+/* Where it stood six months ago — the tooltip's signed number, drawn. Shown
+   for the selected dot only, so it never crowds the strip. */
+.bond-since { stroke: var(--viz-rule); stroke-width: 1px; pointer-events: none; }
+
+.bond-name {
+  font-size: 10.5px; fill: var(--color-neutral-700); pointer-events: none;
+}
+
+/* Reader-driven emphasis, not an encoding: nothing is hidden, no threshold
+   moves, and the ledger below still lists everyone. Keyed to a click, which is
+   why it may dim — dimming keyed to *data* would read as a verdict. */
+.bond-focus .bond-node:not(.bond-on) {
+  /* Enough to recede, not so much that the mound stops being visible — the
+     shape of the book is the context that makes one dot's position mean
+     anything, so a spotlight that erases it defeats itself. */
+  fill-opacity: .3;
+  transition: fill-opacity .15s ease;
+}
+.bond-focus .bond-trail { stroke-opacity: .12; }
+
+.bond-frame-line {
+  margin: 8px 0 0; font-size: 13px; color: var(--color-neutral-600);
+  font-variant-numeric: tabular-nums;
+  /* Held, so a shorter sentence does not shift the scrubber under the reader's
+     cursor two and a half times a second. */
+  min-height: 2.4em;
+}
+
+.bond-still .bond-node,
+.bond-still .bond-focus .bond-node:not(.bond-on) { transition: none; }
 @media (prefers-reduced-motion: reduce) {
-  .bond-node { transition: none; }
+  .bond-node,
+  .bond-focus .bond-node:not(.bond-on) { transition: none; }
 }
 
 .bond-timeline {

@@ -1,0 +1,73 @@
+# The public edge for pie-portal.
+#
+# Caddy rather than nginx for one reason: certificates. It obtains and renews
+# them from Let's Encrypt on its own, so the failure this deployment will not
+# have is the classic one — a cron that stopped firing months ago and a site
+# that goes dark on a Sunday. There is no certbot, no renewal timer, and no
+# reload hook to forget.
+#
+# Deployment-specific values come from the environment, so this file is the same
+# in every deployment and the .env is the only thing that differs:
+#
+#   SITE_ADDRESS   pie.example.com  → automatic HTTPS for that name
+#                  :80              → plain HTTP (local verification only)
+#   ACME_EMAIL     contact for the Let's Encrypt account
+
+{
+	# Let's Encrypt mails this address when a renewal has failed and expiry is
+	# close. It is the one piece of ops mail worth receiving; set it.
+	email {$ACME_EMAIL}
+}
+
+{$SITE_ADDRESS} {
+	encode zstd gzip
+
+	# The API and the app share one origin. That is not a convenience — it is
+	# why frontend/src/platform/api.ts can address the backend as "/api/v1/..."
+	# with no base URL, and why no CORS grant is needed (CORS_ORIGINS is empty
+	# in production; a cross-origin caller gets nothing).
+	handle /api/* {
+		reverse_proxy api:8000 {
+			# A Zoho pull and a decision-generation run are both long. The
+			# default 0 means "no timeout", which is what these need; it is
+			# written out so nobody adds a 30s one later and wonders why
+			# POST /api/v1/data/sync started returning 502.
+			transport http {
+				response_header_timeout 0
+			}
+		}
+	}
+
+	handle {
+		root * /srv
+
+		# Vite content-hashes every filename under /assets, so a given URL's
+		# bytes never change and it can be cached for a year.
+		@assets path /assets/*
+		header @assets Cache-Control "public, max-age=31536000, immutable"
+
+		# index.html is the opposite: it is the file that names the current
+		# hashes, so caching it is how a browser ends up loading last week's
+		# app against this week's API.
+		header /index.html Cache-Control "no-cache"
+
+		# React Router owns the paths. A reload on /decisions or a pasted deep
+		# link has to be served the shell, not a 404 from the file server.
+		try_files {path} /index.html
+		file_server
+	}
+
+	# Sent on every response. HSTS is ignored by browsers over plain HTTP, so
+	# this is inert in the :80 local case and correct once a real name is set.
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy strict-origin-when-cross-origin
+		# The app builds no URLs from user input and loads no third-party
+		# script; the font files are bundled rather than fetched from Google
+		# (see frontend/index.html), so the policy can stay this tight.
+		Content-Security-Policy "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'"
+		-Server
+	}
+}

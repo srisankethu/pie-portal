@@ -21,12 +21,12 @@ cd "${CLAUDE_PROJECT_DIR:-$(dirname "$0")/../..}" || exit 0
 [ -x scripts/source_signature.sh ] || exit 0
 
 SIG="$(./scripts/source_signature.sh 2>/dev/null)" || exit 0
-# Truncated to 32 characters, exactly as `source_signature.sh` truncates its
-# own output. It was the full 64 here, so this constant could never equal a
-# real signature and the clean-tree branch below was dead code: a turn that
-# committed everything it wrote — leaving nothing for the gate to read — was
-# still asked to run the gate. That is the "nagging about nothing" the
-# signature script's own comment names as how a check gets muted.
+# Truncated the same way source_signature.sh truncates, which is the whole
+# point: it cuts to 32 hex characters so the stamp is not credential-shaped
+# (test_no_live_secret_is_committed scans for long hex runs). Comparing against
+# the untruncated 64-character hash meant this branch could never be true, so a
+# committed, fully-verified tree still asked for a run that could not change
+# anything — the check nagged hardest exactly when there was nothing to check.
 CLEAN="$(printf '' | sha256sum | cut -d' ' -f1 | cut -c1-32)"
 
 # Nothing uncommitted: there is nothing this hook could usefully ask for.

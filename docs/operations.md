@@ -120,6 +120,11 @@ deployment needs no migration step.
 
 ### Deploy sequence
 
+Packaged, with Postgres and TLS already wired together:
+**[hosting.md](hosting.md)** — `make deploy-build`, `make deploy-release`,
+`make deploy-up`. Prefer it. What follows is the same sequence by hand, for a
+deployment that supplies its own process manager and reverse proxy.
+
 ```bash
 export APP_ENV=production
 export AUTH_SECRET="$(openssl rand -base64 32)"
@@ -148,9 +153,13 @@ cd frontend && npm ci && npm run build     # → frontend/dist/
 These are deployment decisions, not code defects, and the platform is **not
 ready for real customer data** until they are closed:
 
-1. **Replace the demo login.** `routers/platform_auth.py` accepts any password
-   for a known email. It is explicitly demo-grade auth and must be swapped for
-   the organization's identity provider.
+1. **Move sign-in onto the organization's identity provider.** This gate has
+   partly closed and the rest of it is unchanged. `routers/platform_auth.py` no
+   longer accepts any password for a known email — it verifies a PBKDF2 hash, a
+   user row without one cannot sign in at all, and every failure returns one
+   indistinguishable 401. What is still missing is SSO, MFA, per-person
+   provisioning, and a password reset that does not go through an operator
+   running `python -m app.seed --set-password`.
 2. **Give every salesperson a Zoho account with a matching email.** The sync now
    maps the salesperson on a customer's most recent invoice to a platform user,
    but only on an exact email match. Salesperson scope is
@@ -164,6 +173,167 @@ ready for real customer data** until they are closed:
 Also worth knowing: the **Outcome Tracker is not built**. You can measure
 adoption and decision quality today, but not the realised monetary impact of
 accepted recommendations.
+
+---
+
+## Scheduling the sync
+
+**Nothing in the application schedules a pull.** `POST /api/v1/data/sync` is
+started by a person pressing the button on Data & connection, or by something
+outside this repo calling it. Until a timer exists, every screen shows whatever
+the last manual sync left behind — and the morning read says so, in as many
+words, at the top of the landing page.
+
+`scripts/scheduled_sync.py` is that something. It signs in, calls the same
+endpoint the screen calls, waits for the run it started, and exits non-zero if
+it failed — which is the whole interface, because a non-zero exit is what makes
+cron mail you.
+
+```bash
+cd backend && python3 ../scripts/scheduled_sync.py
+```
+
+| Variable | |
+|---|---|
+| `PIE_BASE_URL` | where the API is (default `http://localhost:8000`) |
+| `PIE_SYNC_EMAIL` | an owner or manager account — a salesperson is refused |
+| `PIE_SYNC_PASSWORD` | that account's password |
+| `PIE_SYNC_TIMEOUT` | seconds to wait for the pull (default 3600; `0` starts it and returns) |
+| `PIE_SYNC_FULL` | `1` to discard the resume cursor and re-read every document in the window |
+| `PIE_SYNC_SINCE` | `YYYY-MM-DD` to override how far back to read; the server's `ZOHO_SYNC_FROM` applies when unset |
+
+`--full` and `--since YYYY-MM-DD` do the same two things from a terminal,
+without editing the timer's environment and putting it back.
+
+### Incremental nightly, full weekly
+
+**A full pull is not the nightly one.** Incremental stops listing at the
+high-water mark, so a nightly run over two years of history costs a handful of
+calls instead of thousands. A full pull re-reads everything in the window —
+minutes to hours against a real book — and Zoho's rate limit is a shared daily
+budget, so running one every night spends the allowance the day's real work
+needs.
+
+What it is for is *repair*: a document that changed in a way its
+`last_modified_time` did not record, or history skipped by a bug since fixed
+that has to be read again to come back.
+
+Two lines, so the schedule stays in cron where you can see it rather than in
+the script:
+
+```cron
+# nightly, incremental — replace HH:MM
+MM HH * * 1-6  pie  set -a; . /etc/pie/sync.env; set +a; cd /srv/pie/backend && /usr/bin/python3 ../scripts/scheduled_sync.py
+
+# weekly, full. Give it a longer ceiling: the default hour is generous for an
+# incremental pull and can be short for a full one on a large book.
+MM HH * * 0    pie  set -a; . /etc/pie/sync.env; set +a; PIE_SYNC_FULL=1 PIE_SYNC_TIMEOUT=21600 cd /srv/pie/backend && /usr/bin/python3 ../scripts/scheduled_sync.py
+```
+
+### Recovering history after a fix
+
+When a bug caused documents to be read wrongly, an incremental pull will not
+bring them back: nothing about them changed in Zoho, so the high-water mark
+skips them. Re-read the affected period once, by hand:
+
+```bash
+cd backend && python3 ../scripts/scheduled_sync.py --full --since 2024-04-01
+```
+
+It prints which mode it is running before it starts, because the first question
+about a job that has been going for an hour is always which one it is:
+
+```
+requesting a full sync from 2024-04-01
+started sync 3d9552e8-…
+sync 3d9552e8-… finished OK — customers 3, products 2, sales_txns 87, …
+```
+
+Pick `--since` to cover the period in question, not the whole history —
+re-reading four years to repair four months is the same answer for more money.
+
+| Exit | Meaning |
+|---|---|
+| 0 | finished, or a pull was already running |
+| 1 | configuration or network problem — nothing was started |
+| 2 | the sync ran and failed, or did not finish in time |
+
+**Give it its own account** rather than a person's. A password change should not
+silently stop the nightly pull, and the sync's activity should be attributable
+to the sync. Any owner or manager works; a salesperson is refused with a 403 the
+script names.
+
+**It signs in on every run rather than carrying a token.** Tokens here have no
+expiry — `verify_token` checks the signature and never reads `iat` — so a token
+in a crontab is an unexpiring credential with an owner's authority, and
+withdrawing it means rotating `AUTH_SECRET` and signing every user out. A
+password can be changed for one account without touching anyone else.
+
+### crontab
+
+Pick the hour to suit the business: the pull should land before the first person
+looks, and after the day's invoicing is done in Zoho. The environment belongs in
+a file only root can read, not in the crontab line.
+
+```cron
+# /etc/cron.d/pie-sync   — replace HH:MM with your time
+MM HH * * *  pie  set -a; . /etc/pie/sync.env; set +a; cd /srv/pie/backend && /usr/bin/python3 ../scripts/scheduled_sync.py
+```
+
+```bash
+# /etc/pie/sync.env   — chmod 600, owned by the user cron runs as
+PIE_BASE_URL=http://localhost:8000
+PIE_SYNC_EMAIL=sync@yourdomain
+PIE_SYNC_PASSWORD=...
+```
+
+Cron mails the job's output to the crontab's owner, so set `MAILTO` — a job
+nobody hears from is a job nobody notices has stopped.
+
+### systemd timer
+
+Preferable where it is available: `systemctl list-timers` answers "did it run"
+without reading a log, and a missed run while the machine was off is caught by
+`Persistent=true`.
+
+```ini
+# /etc/systemd/system/pie-sync.service
+[Service]
+Type=oneshot
+User=pie
+EnvironmentFile=/etc/pie/sync.env
+WorkingDirectory=/srv/pie/backend
+ExecStart=/usr/bin/python3 ../scripts/scheduled_sync.py
+```
+
+```ini
+# /etc/systemd/system/pie-sync.timer     — replace HH:MM with your time
+[Timer]
+OnCalendar=*-*-* HH:MM:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+```bash
+systemctl enable --now pie-sync.timer
+systemctl list-timers pie-sync.timer     # when it next fires, when it last did
+journalctl -u pie-sync.service -n 50     # what it said
+```
+
+### Checking it is working
+
+The morning read is the check that matters, because it is the one somebody
+already looks at: a green "Synced N hours ago" strip means the timer is running,
+and an amber "this is not today's picture" means it is not. `GET /api/v1/data/sync`
+answers the same question for a monitor, in `last.status` and `last.finished_at`.
+
+A run firing while the previous one is still going does **not** start a second
+pull and does **not** fail — the endpoint returns the job already in flight and
+the script reports it and exits 0. That is ordinary during a first sync reading
+years of documents, and mailing about it nightly would teach people to filter
+the mail that also carries the real failures.
 
 ---
 
@@ -258,3 +428,62 @@ Three mechanisms are already in place, in order of impact:
 
 If cost is still too high, lower the run cadence before reaching for a smaller
 model — most spend is call volume, not tokens per call.
+
+---
+
+## Continuous integration
+
+Two workflows, and they answer different questions.
+
+### `gate.yml` — does this change hold up?
+
+Runs on every pull request and every push to `main`, and blocks: everything it
+checks is under this repository's control. It calls `./scripts/verify.sh`
+rather than restating the steps, so `make verify` on a laptop and the gate in CI
+are the same list — see the header of that script for why that matters.
+
+The frontend step inside `verify.sh` runs `npm test` before `tsc -b` and
+`vite build`. Until those tests existed the build *was* the entire frontend
+gate, which meant a screen could render the wrong number and pass as long as the
+types lined up. `LineGrid.test.tsx` is the one to keep: it renders the quote grid
+for a sales role from a fixture deliberately carrying cost and margin and asserts
+neither appears. The server omitting them is the real guarantee and is tested in
+the backend suite; this covers the other way it could break.
+
+The `pie-contract` job is the only one needing a credential, and it is separate
+so that an expired token fails it alone instead of taking the gate with it. See
+`backend/tests/conftest.py` for the `requires_pie` marker that lets the other
+~1,150 tests run with no engine checked out.
+
+### `live.yml` — has the world moved?
+
+Runs weekly (Mondays, 04:00 UTC / 09:30 IST) and on demand via
+**Actions → live contracts → Run workflow**, where the `suite` input selects
+`ai`, `zoho` or both.
+
+It exercises `backend/tests/live/`, which the default suite deliberately
+excludes (`pytest.ini` carries `addopts = -m "not live"`) because these tests
+call a real model and a real Zoho book. That exclusion was right and the suites
+still ended up never running anywhere, which is why this workflow exists.
+
+It fails loudly when a contract breaks — a red scheduled workflow emails the
+repository owner, and that notification is the only channel a weekly check has.
+It still cannot block anyone: there is no `pull_request` trigger, so it never
+appears as a check on a PR. A failure here means the world moved, not that a
+commit is broken.
+
+Note that a `schedule:` trigger only fires from the **default branch**, so the
+weekly run begins only once this is on `main`.
+
+| Secret | Enables |
+|---|---|
+| `ANTHROPIC_API_KEY` | The AI provider contract suite — that the grounding gate still refuses ungrounded figures and injected instructions when pointed at a real model rather than the offline mock. |
+| `ZOHO_ORGANIZATION_ID`, `ZOHO_CLIENT_ID`, `ZOHO_CLIENT_SECRET`, `ZOHO_REFRESH_TOKEN` | The Zoho contract suite — that the live API still returns the fields the client maps. Read-only scope is sufficient; the suite asserts that no non-GET ever reaches the API host. |
+
+Set `ZOHO_ACCOUNTS_BASE` and `ZOHO_API_BASE` as repository **variables** (not
+secrets) if the account is outside the `.in` data centre.
+
+Each suite skips itself, with its reason printed by `-ra`, when its credentials
+are absent — so configuring one and not the other still runs the one.
+
+Locally: `make test-live`.

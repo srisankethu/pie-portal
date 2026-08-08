@@ -45,6 +45,12 @@ import { CustomerCommercial, CustomerItemScreen } from "./CommercialScreens";
 import { Storyboard } from "./viz/Storyboard";
 import { JourneyScreen, LostRevenueScreen, OpportunityScreen, SimulatorScreen, WeatherScreen } from "./viz/Screens";
 import { CadenceScreen, CompositionScreen, LandscapeScreen } from "./viz/Patterns";
+import { DailyScreen } from "./viz/Daily";
+import { BondsScreen } from "./viz/Bonds";
+import { MixScreen } from "./viz/Mix";
+import { DependencyScreen } from "./viz/Dependency";
+import { TargetWallScreen } from "./viz/TargetWall";
+import { CatalogueScreen } from "./viz/Catalogue";
 import { CustomerHealthTimeline, MigrationMatrix } from "./viz/History";
 import { PaymentsScreen, StockScreen, SupplyScreen } from "./viz/TheBook";
 import { NegotiateScreen } from "./viz/Negotiate";
@@ -386,6 +392,26 @@ export default function PlatformApp() {
     // both are visible to a salesperson.
     { key: "composition", label: "Mix", group: "understand" },
     { key: "cadence", label: "Rhythm", group: "understand" },
+    // Visible to everybody, unlike Suppliers: the customer half carries no cost
+    // and no margin, and the server omits the supplier half from a
+    // salesperson's response rather than the nav hiding the whole screen. A
+    // salesperson has a real question here — which of my accounts is drifting —
+    // and 403-ing them out of it to protect the other half would answer it by
+    // removing it.
+    { key: "bonds", label: "Bonds", group: "understand" },
+    // Revenue and dates, no cost — and the conversation it exists for is a
+    // salesperson's, so hiding it from them would be removing the feature to
+    // protect a field it does not contain.
+    { key: "mix", label: "Product mix", group: "understand" },
+    // Both halves on one screen. The customer half is revenue and counts, so a
+    // salesperson sees it; the server omits the supplier half from their
+    // response rather than the nav hiding the whole screen.
+    { key: "dependency", label: "Dependency", group: "understand" },
+    // Manager and above: a principal's target is measured against purchase
+    // spend, which is cost by another name.
+    ...(ability.can("read", "supply")
+      ? ([{ key: "targets", label: "Supplier targets", group: "understand" }] as NavItem[])
+      : []),
 
     // ── The book ──
     // One "Customers" door, not two. The account picker, the month-by-month
@@ -406,6 +432,12 @@ export default function PlatformApp() {
     { key: "payments", label: "Cash", group: "book" },
 
     // ── Setup ──
+    // Setup, not Understand: placing an item is catalogue maintenance, and it
+    // is where somebody goes when a mix screen says its coverage is thin.
+    // Manager and above, like the policy it is.
+    ...(ability.can("read", "supply")
+      ? ([{ key: "catalogue", label: "Item lines", group: "setup" }] as NavItem[])
+      : []),
     { key: "data", label: "Data & connection", group: "setup" },
     { key: "identity", label: "Identities", group: "setup" },
     { key: "states", label: "AI states", group: "setup" },
@@ -539,6 +571,11 @@ export default function PlatformApp() {
             <Route path={PATH.payments} element={<PaymentsScreen session={session} onNavigate={goViz} />} />
             <Route path={PATH.stock} element={<StockScreen session={session} />} />
             <Route path={PATH.supply} element={<SupplyScreen session={session} />} />
+            <Route path={PATH.bonds} element={<BondsScreen session={session} onNavigate={goViz} />} />
+            <Route path={PATH.mix} element={<MixScreen session={session} onNavigate={goViz} />} />
+            <Route path={PATH.dependency} element={<DependencyScreen session={session} onNavigate={goViz} />} />
+            <Route path={PATH.targets} element={<TargetWallScreen session={session} />} />
+            <Route path={PATH.catalogue} element={<CatalogueScreen session={session} />} />
             <Route path={PATH.negotiate} element={<NegotiateScreen session={session} />} />
 
             {/* ── QUOTES ──
@@ -717,6 +754,10 @@ function HomeScreen({
 }) {
   // Already sorted by the server on priority then recency; take the head.
   const top = open.slice(0, HOME_CARDS);
+  // The morning read sits above the queue rather than replacing it. The queue
+  // answers "what needs deciding"; the bands answer "what is going on" — and
+  // the queue is one tile inside them, so the tile links down to the list
+  // rather than the two competing for the same space.
   const bands = BAND_ORDER
     .map((b) => [b, open.filter((s) => s.priority_band === b).length] as const)
     .filter(([, n]) => n > 0);
@@ -727,6 +768,13 @@ function HomeScreen({
         <h1>{title}</h1>
         <p>{sub}</p>
       </div>
+
+      {/* The morning read. Above the queue because the first question is "can I
+          trust this and what is going on", and the queue is one tile inside the
+          answer. It loads independently and degrades in place — a landing page
+          that blanks because one endpoint failed is worse than one that says
+          which part is missing. */}
+      <DailyScreen session={session} onNavigate={onNavigate} />
 
       {loading && open.length === 0 ? (
         <Stack spacing={1.5} sx={{ mb: 4 }}>

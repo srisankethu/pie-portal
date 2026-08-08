@@ -34,6 +34,16 @@ export type Screen =
   /** The book itself: the shelf, the suppliers and the cash — the three things the book
    *  always knew and the platform did not read until it ingested them. */
   | "payments" | "stock" | "supply"
+  /** Who is actually close to this book, on both sides of it, over time. */
+  | "bonds"
+  /** Which lines of the business each customer takes, and which they do not. */
+  | "mix"
+  /** What the book leans on, at both ends: principals and customers. */
+  | "dependency"
+  /** Where each principal's number stands. */
+  | "targets"
+  /** Which line of the business each item belongs to. */
+  | "catalogue"
   /** The negotiation desk: the one screen a salesperson uses to decide rather
    *  than to read. */
   | "negotiate"
@@ -75,6 +85,11 @@ export const PATH: Record<Screen, string> = {
   payments: "/payments",
   stock: "/stock",
   supply: "/supply",
+  bonds: "/bonds",
+  mix: "/mix",
+  dependency: "/dependency",
+  targets: "/targets",
+  catalogue: "/item-lines",
   negotiate: "/negotiate",
 };
 

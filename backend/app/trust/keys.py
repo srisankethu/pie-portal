@@ -30,6 +30,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from cryptography.fernet import Fernet, InvalidToken
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..config import settings
@@ -65,6 +66,19 @@ def ensure_key(session: Session, organization_id: str) -> models.TenantKey:
     Created lazily rather than at provisioning so an organization that predates
     this feature picks one up the first time it needs one, with no backfill step
     and no window where a write has nowhere to go.
+
+    **Safe against a concurrent first use**, which lazily-created-on-first-write
+    has to be: read-then-insert is a race, and this organization's very first
+    write is exactly when two writers are most likely to arrive together — a
+    sync-all pulls every connected company at once, and each pull is the first
+    thing its own thread does. Both saw no key, both inserted, one got
+    ``UNIQUE constraint failed: tenant_keys.organization_id`` and took its whole
+    pull down with it.
+
+    The insert is attempted inside a SAVEPOINT so losing the race costs only
+    that statement. Rolling the outer transaction back instead would discard the
+    caller's work for a row that now exists — which is the opposite of what the
+    loser of this race wants.
     """
     row = _row(session, organization_id)
     if row is not None:
@@ -73,8 +87,23 @@ def ensure_key(session: Session, organization_id: str) -> models.TenantKey:
         organization_id=organization_id,
         wrapped_dek=_kek().encrypt(_new_dek()).decode(),
     )
-    session.add(row)
-    session.flush()
+    try:
+        with session.begin_nested():
+            session.add(row)
+            session.flush()
+    except IntegrityError:
+        # Rolling the SAVEPOINT back already detaches the pending row on current
+        # SQLAlchemy, and expunging something already gone raises in its own
+        # right — which is how this landed in the test suite the first time.
+        if row in session:
+            session.expunge(row)
+        winner = _row(session, organization_id)
+        if winner is None:
+            # The constraint fired for some other reason, or the winner's
+            # transaction is not visible yet. Either way this is not the race
+            # described above and must not be swallowed.
+            raise
+        return winner
     return row
 
 

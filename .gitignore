@@ -25,6 +25,10 @@ frontend/.vite/
 # Env / editor
 .env
 .env.local
+# The self-hosted deployment's real secrets (deploy/production.env.example is
+# the committed template). Named, not globbed, so a new .env.something is a
+# deliberate decision rather than something .gitignore quietly swallows.
+.env.production
 .DS_Store
 
 # TS build info

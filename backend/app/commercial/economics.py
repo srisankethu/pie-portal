@@ -46,6 +46,11 @@ class LineEconomics:
     gross_profit: Optional[Decimal]
     gross_margin: Optional[float]        # a ratio (0.261), not a percentage (26.1)
     cost_source_ref: Optional[dict[str, Any]]
+    # The sale line's own provenance, carried alongside the cost's. Both are
+    # needed because a costed line cites two records from two documents, and
+    # after a second connector they need not have come from the same system.
+    # Defaulted so existing constructions stay valid; every real one sets it.
+    source_ref: Optional[dict[str, Any]] = None
 
     @property
     def has_cost(self) -> bool:
@@ -107,6 +112,7 @@ def line_economics(sale: SaleRow, costs: list[CostRow]) -> LineEconomics:
         gross_profit=gross_profit,
         gross_margin=margin,
         cost_source_ref=(basis.source_ref if basis is not None else None),
+        source_ref=ref,
     )
 
 

@@ -8,6 +8,11 @@ from pydantic import BaseModel, Field
 
 class CreateQuoteRequest(BaseModel):
     customer: str = "New customer"
+    #: The platform's id for the picked customer. Optional because a quote can
+    #: still be started from a typed name — but when it is present, every
+    #: downstream resolution is an exact lookup instead of a tolerant name
+    #: match, which is what keeps two books' identically-named customers apart.
+    customer_id: Optional[str] = None
 
 
 class IntakeRequest(BaseModel):

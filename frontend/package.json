@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "tsc -b && node scripts/check-forms.mjs && vite build",
     "preview": "vite preview",
-    "check:forms": "node scripts/check-forms.mjs"
+    "check:forms": "node scripts/check-forms.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@casl/ability": "^7.0.1",
@@ -29,11 +31,15 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
     "@types/d3-scale": "^4.0.9",
     "@types/react": "^18.3.5",
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.1",
+    "jsdom": "^25.0.1",
     "typescript": "^5.5.4",
-    "vite": "^5.4.2"
+    "vite": "^5.4.2",
+    "vitest": "^3.2.7"
   }
 }

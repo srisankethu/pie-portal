@@ -74,6 +74,11 @@ class SyncReport:
     vendor_payments: int = 0
     documents_fetched: int = 0
     documents_resumed: int = 0
+    #: Calendar windows this run listed in full because they had never been
+    #: covered before. Counted so a backfill can *say* it was a backfill: a run
+    #: that widens the window costs list calls over the new months, and a run
+    #: that reports zero here read nothing it had not already read.
+    windows_listed_in_full: int = 0
     skipped: list[dict[str, str]] = field(default_factory=list)
     # Relationships this pull actually moved. Lets the Customer × Item
     # recompute afterwards target what changed instead of rebuilding the whole
@@ -246,11 +251,16 @@ class SyncService:
                  resume: bool = True,
                  on_phase: Optional[Callable[[str], None]] = None,
                  connector: str = "zoho",
-                 connection_id: Optional[str] = None) -> None:
+                 connection_id: Optional[str] = None,
+                 incremental: bool = True) -> None:
         self.s = session
         self.source = source
         self.org = organization_id
         self.resume = resume
+        # Whether the listing itself may stop early. Off makes this the periodic
+        # reconciliation: still cheap (unchanged documents cost no detail call)
+        # but complete, which is the only state in which deletions are visible.
+        self.incremental = incremental
         # Reports what the pull is doing, so a job that takes minutes can say
         # so in words. Optional: a scripted caller that does not care passes
         # nothing and the stages run exactly as before.
@@ -355,6 +365,11 @@ class SyncService:
         """Bills and invoices for one window. ``label`` names it on screen."""
         previous, self.source = self.source, (source or self.source)
         try:
+            # Per window, because each window gets its own source object. The
+            # mark is global to the connection, so every window short-circuits
+            # against the same floor — an old window whose documents have not
+            # been touched since the last pull stops on its first page.
+            self.arm_incremental_listing(self.source)
             suffix = f" · {label}" if label else ""
             self._phase(f"Reading bills{suffix}")
             self._sync_bills()
@@ -641,6 +656,81 @@ class SyncService:
         until = getattr(self.source, "_until", None) or date.max
         return cutoff, until
 
+    #: Every document kind that costs a detail call, and so is worth listing
+    #: incrementally. Named here rather than discovered, because a kind missing
+    #: from this list is merely listed the slow way — while a kind wrongly *in*
+    #: it would be listed against another kind's high-water mark.
+    INCREMENTAL_KINDS = ("invoice", "bill", "customerpayment")
+
+    def arm_incremental_listing(self, source: Optional[ZohoSource] = None) -> dict[str, str]:
+        """Tell one window's source where each kind's listing may stop.
+
+        The other half of the resume cursor. ``_skipper`` already saves the
+        *detail* call for a document that has not changed; this saves the *list*
+        call too, which is the rest of a nightly pull's bill — two years of
+        history is one list call per 200 documents, every night, almost all of
+        it spent discovering that nothing moved.
+
+        Three modes, and the difference between the last two is the whole reason
+        ``incremental`` is not just ``resume``:
+
+        ``resume``  ``incremental``  what it does
+        ----------  ---------------  ------------------------------------------
+        True        True             Nightly. Skips unchanged details *and*
+                                     stops listing at the high-water mark. Does
+                                     not see deletions.
+        True        False            The reconciliation. Still skips unchanged
+                                     details, so it costs list calls only — but
+                                     it lists the whole book, which is what lets
+                                     the deletion sweep run.
+        False       —                Rebuild. Re-fetches every detail.
+        """
+        source = source if source is not None else self.source
+        if not (self.resume and self.incremental):
+            return {}
+        if not self._window_already_covered(source):
+            self.report.windows_listed_in_full += 1
+            return {}
+        marks = {kind: mark for kind in self.INCREMENTAL_KINDS
+                 if (mark := self.repo.ingested_high_water(kind))}
+        # A source that has never heard of this is left alone — the fixture
+        # source has no listing to short-circuit and no window to speak of.
+        if hasattr(source, "modified_since"):
+            source.modified_since = dict(marks)
+        return marks
+
+    def _window_already_covered(self, source: ZohoSource) -> bool:
+        """Whether the high-water mark says anything about *this* window.
+
+        It does not, for a window that has never been listed — and that was a
+        silent, total data-loss bug rather than a missed optimisation.
+
+        The mark is ``max(modified_at)`` over everything held, with no notion of
+        which window earned it. An incremental listing sorts newest-modified
+        first and stops at the mark. So the first time an operator widens the
+        window backwards — synced 2025 in January, wants 2024 in August — every
+        document in the new months is *older-modified than the mark precisely
+        because it is older*, the listing stops on its first row, and the run
+        reports success having fetched nothing. Asking again never helps: the
+        mark only moves forward.
+
+        The check is per window rather than per run because ``run_documents``
+        already gets one source per calendar slice. A pull that widens from 2025
+        back to 2024 lists 2024 in full and keeps the short-circuit for every
+        month it has covered before — the backfill costs list calls over the new
+        months only, and the detail cursor still skips anything already held.
+
+        A window with no lower bound cannot be compared, and is treated as
+        uncovered: listing too much is a cost, listing too little is a hole.
+        """
+        floor = self.repo.covered_since()
+        if floor is None:
+            return False
+        start = getattr(source, "_since", None)
+        if start is None:
+            start = getattr(source, "_cutoff", lambda: None)()
+        return start is not None and start >= floor
+
     def _skipper(self, doc_type: str):
         """A predicate the source can use to avoid re-fetching known documents."""
         if not self.resume:
@@ -758,6 +848,26 @@ class SyncService:
                         })
                     continue
                 if prod is None:
+                    # The line is kept, against a placeholder. Dropping it is
+                    # how real revenue went missing: an item deleted in Zoho
+                    # still has invoices pointing at it, and skipping those
+                    # lines removed the sale from revenue, from the customer's
+                    # history and from margin — visible only in a diagnostics
+                    # panel nobody reads daily. The sale happened; the item's
+                    # name is what we do not know, and that is a much smaller
+                    # thing to be missing.
+                    line_raw = by_line.get(t.source_ref.line_id or "") or {}
+                    prod = self.repo.placeholder_product(
+                        t.product_external_id,
+                        hint=str(line_raw.get("name") or line_raw.get("description") or ""))
+                # Reported on *every* affected line, not only the one that
+                # created the placeholder. Keying this off `prod is None` meant
+                # the second line naming the same missing item resolved happily
+                # against the row the first had just made, so a worklist that
+                # exists to say "this is blocking 39 lines worth ₹41.9L" said
+                # "1 line, ₹1,07,000" — technically about the same problem and
+                # useless for ranking it.
+                if (prod.source_ref or {}).get("provisional"):
                     self.report.skip(
                         "sales_txn", t.external_ref, "UNKNOWN_PRODUCT",
                         f"no product {t.product_external_id}",
@@ -768,7 +878,6 @@ class SyncService:
                             document_date=t.date.isoformat(),
                             party=str(raw.get("customer_name") or ""),
                             what="invoice"))
-                    continue
                 self.repo.upsert_sales_txn(t, cust.customer_id, prod.product_id)
                 self.report.sales_txns += 1
                 # Which relationships this pull actually moved, so the
@@ -837,14 +946,15 @@ class SyncService:
             "qty": ln.get("quantity"),
             "line_value": value,
             "fix": (
-                "This item is on the "
-                f"{what} but not in the item master this pull read. The usual "
-                "cause is an item marked inactive in Zoho: until now the pull "
-                "asked only for active items, so every historical line for a "
-                "discontinued tool was skipped. Re-run a full sync — the item "
-                "list now includes inactive items. If it still does not "
-                "resolve, the item was deleted in Zoho and the document needs "
-                "repointing there."),
+                f"This item is on the {what} but not in the item master this "
+                "pull read. **The line is still counted** — it is attached to "
+                "a placeholder item, so the money is in revenue, in this "
+                "customer's history and in margin, and only the item's name is "
+                "missing. It shows as \"Unnamed product\" until the master "
+                "has it. To give it a name: if the item exists in Zoho, the "
+                "next sync picks it up and fills this in by itself. If it was "
+                "deleted there, either restore it or repoint the document at "
+                "the item that replaced it."),
         }
 
     def _sync_bills(self) -> None:
@@ -868,9 +978,26 @@ class SyncService:
             self._read_lines(ev.COST_LINE_RECORDED, "bill", ref, raw, lines)
             by_line = {str(ln.get("line_item_id") or i): ln
                        for i, ln in enumerate(raw.get("line_items") or [])}
+            # Once per bill, not once per line: every line of a bill carries the
+            # same header vendor, and resolving inside the loop would repeat the
+            # lookup for each of forty lines.
+            vendor = (self.repo.get_vendor_by_external(lines[0].vendor_external_id)
+                      if lines[0].vendor_external_id else None)
             for r in lines:
                 prod = self.repo.get_product_by_external(r.product_external_id)
                 if prod is None:
+                    # Kept, for the same reason as the sales line — and this
+                    # side matters more, not less: bills are where cost comes
+                    # from, so a dropped cost line does not leave a hole, it
+                    # leaves a *wrong margin* on trade that otherwise looks
+                    # complete. A missing number announces itself; a plausible
+                    # one computed from half the costs does not.
+                    line_raw = by_line.get(r.source_ref.line_id or "") or {}
+                    prod = self.repo.placeholder_product(
+                        r.product_external_id,
+                        hint=str(line_raw.get("name") or line_raw.get("description") or ""))
+                # Every affected line, not only the first — see the invoice side.
+                if (prod.source_ref or {}).get("provisional"):
                     self.report.skip(
                         "cost_record", r.external_ref, "UNKNOWN_PRODUCT",
                         f"no product {r.product_external_id}",
@@ -881,8 +1008,9 @@ class SyncService:
                             document_date=r.date.isoformat(),
                             party=str(raw.get("vendor_name") or ""),
                             what="bill"))
-                    continue
-                self.repo.upsert_cost_record(r, prod.product_id)
+                self.repo.upsert_cost_record(
+                    r, prod.product_id,
+                    vendor.vendor_id if vendor is not None else None)
                 self.report.cost_records += 1
                 # A new cost changes the margin of every customer buying this
                 # item, not just the buyer of this bill.

@@ -202,6 +202,17 @@ class Companies:
             out.append(row)
         return out
 
+    def label_for(self, connection_id: Optional[str]) -> str:
+        """A connected company's name, from its id alone.
+
+        ``of`` answers the same question for a *record*; this answers it for a
+        grouped query, which has the id and no row to hand. One dictionary
+        either way, so the two cannot name the same company differently.
+        """
+        if not connection_id:
+            return "Source not recorded"
+        return self._labels.get(connection_id) or "Source not recorded"
+
     @property
     def count(self) -> int:
         """How many connected companies this organization has.

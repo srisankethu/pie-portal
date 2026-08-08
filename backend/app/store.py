@@ -221,8 +221,23 @@ class Quote:
     id: str
     customer: str
     number: str
+    #: The platform's own id for the customer, when one was picked rather than
+    #: typed.
+    #:
+    #: The name alone is not identity: "ABC Industries" can exist in all three
+    #: connected books and be three different customers, which is the whole
+    #: reason ``domain/origin.py`` exists. Every downstream reader resolves
+    #: through ``_resolve_customer``, which tries the id *before* any name
+    #: match — so carrying the id turns a tolerant guess into an exact lookup,
+    #: and the name stays for the header to print.
+    customerId: Optional[str] = None
     lines: List[Line] = field(default_factory=list)
     savedAt: Optional[str] = None
+
+    @property
+    def customer_ref(self) -> str:
+        """What to resolve this quote's customer by. Id if we have it."""
+        return self.customerId or self.customer
 
     def to_dict(self, mgmt: bool) -> Dict[str, Any]:
         line_dicts = [ln.to_dict(mgmt) for ln in self.lines]
@@ -234,7 +249,8 @@ class Quote:
         counts = self._filter_counts()
         floor = self._margin_floor() if mgmt else None
         return {
-            "id": self.id, "customer": self.customer, "number": self.number,
+            "id": self.id, "customer": self.customer,
+            "customerId": self.customerId, "number": self.number,
             "savedAt": self.savedAt,
             "lines": line_dicts,
             "summary": {
@@ -289,11 +305,12 @@ class QuoteStore:
     def get(self, quote_id: str) -> Optional[Quote]:
         return self._quotes.get(quote_id)
 
-    def create(self, customer: str) -> Quote:
+    def create(self, customer: str, customer_id: Optional[str] = None) -> Quote:
         with self._lock:
             qid = f"q{next(_ids)}"
             num = f"QB-{int(time.time()) % 100000:05d}"
-            q = Quote(id=qid, customer=customer or "New customer", number=num)
+            q = Quote(id=qid, customer=customer or "New customer", number=num,
+                      customerId=customer_id or None)
             self._quotes[qid] = q
             return q
 

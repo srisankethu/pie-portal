@@ -585,11 +585,21 @@ def _unavailable(no_policy: int = 0, total: int = 0, *,
         },
         {
             "series": "supplier_and_brand",
-            "reason": ("The item master carries no brand or vendor field on "
-                       "this book, and a bill's supplier belongs to the bill "
-                       "rather than to the item — an item bought from two "
-                       "suppliers has no single one. Attributing the most "
-                       "recent would be a guess that reads as a fact."),
+            # Narrowed, not deleted. This used to say the item master carries no
+            # maker field at all, which stopped being true when the item pull
+            # started reading ``manufacturer`` — and a screen that refuses on a
+            # reason the platform has since fixed teaches people to ignore its
+            # refusals. What survives is the part that is still true: stock is a
+            # level, and the two facts that could attribute it disagree about
+            # *when*.
+            "reason": ("Stock is what is on the shelf now, and neither fact "
+                       "that names a principal is a fact about now: the item "
+                       "master's manufacturer describes the item rather than "
+                       "the batch, and a bill's supplier belongs to the bill — "
+                       "an item bought from two suppliers has no single one. "
+                       "Splitting a level between them would read as a "
+                       "measurement. The mix and dependency screens attribute "
+                       "*trade*, where a date makes the question answerable."),
         },
     ])
     if no_policy:

@@ -90,6 +90,22 @@ def _default_since() -> date:
     return date(year, month + 1, 1)
 
 
+def _covered_from(session: Session, row: models.ZohoConnection) -> Optional[str]:
+    """The earliest date this company has been listed from, as an ISO string.
+
+    Delegates rather than re-deriving. ``ReadModelRepository.covered_since`` is
+    what the sync itself consults to decide whether the incremental short-circuit
+    is valid for a window, and a screen that computed the same floor a second way
+    could disagree with the pull it is describing — telling somebody a date is
+    cheap while the sync lists those months in full, or the reverse.
+    """
+    from ..repositories import ReadModelRepository
+
+    floor = ReadModelRepository(session, row.organization_id,
+                                connection_id=row.connection_id).covered_since()
+    return floor.isoformat() if floor else None
+
+
 def _last_run(session: Session, row: models.ZohoConnection) -> Optional[models.SyncRun]:
     """The most recent pull aimed at this company specifically.
 
@@ -148,6 +164,15 @@ def _dict(session: Session, row: models.ZohoConnection) -> dict:
         },
         "suggested_since": (last.since.isoformat() if last is not None and last.since
                             else _default_since().isoformat()),
+        # How far back this company has actually been *listed*, which is not
+        # what the last run asked for. A nightly pull can run for a year and
+        # still cover only the window the first run wanted, so "last pulled
+        # from 2025-01-01" says nothing about whether 2024 was ever read.
+        #
+        # It is also what decides the cost of the next pull: a date at or after
+        # this one is a cheap incremental, an earlier one lists those months in
+        # full. The screen says which before the button is pressed.
+        "covered_from": _covered_from(session, row),
         "connection_id": row.connection_id,
         "label": row.label or f"Zoho org {row.zoho_organization_id}",
         "zoho_organization_id": row.zoho_organization_id,

@@ -24,6 +24,7 @@ nothing, macOS/Linux and Windows, in about 15 minutes.
 | [Getting started](docs/getting-started.md) | Prerequisites, install, first run, troubleshooting |
 | [Architecture](docs/architecture.md) | How the system works and why it is built this way |
 | [Development](docs/development.md) | Codebase map, tests, migrations, conventions |
+| [Hosting](docs/hosting.md) | Running it on your own machine: Docker Compose, TLS, backups |
 | [Operations](docs/operations.md) | Configuration reference, production deploy, runbook |
 | [Zoho setup](docs/zoho-setup.md) | Connecting a live Zoho Books account (read-only) |
 
@@ -51,7 +52,9 @@ cd frontend && npm run dev
 Open **http://localhost:5173**. The backend creates and seeds its own database
 on first start — there is no separate migrate/seed step.
 
-Sign in with any password:
+Sign in with the seed password — `change-me-now` unless `SEED_PASSWORD` was set.
+Each account is flagged to change it at first sign-in; a wrong password is
+rejected, so there is no "any password" shortcut:
 
 | Email | Role | Sees |
 |---|---|---|

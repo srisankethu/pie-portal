@@ -13,7 +13,7 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 from typing import Any, Optional, Sequence
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from .domain import models
@@ -179,8 +179,64 @@ class ReadModelRepository:
         row.name = p.name
         row.uom = p.uom
         row.hsn = p.hsn
+        row.category = p.category
+        row.manufacturer = p.manufacturer
         row.active = p.active
         row.source_ref = p.source_ref.model_dump()
+        return row
+
+    def placeholder_product(self, external_id: str, *,
+                            hint: str = "") -> models.Product:
+        """A product row for an item a document references and the master lacks.
+
+        The alternative was dropping the line, and that is how real revenue went
+        missing: an item deleted in Zoho still has invoices pointing at it, and
+        skipping those lines removed the sale from revenue, from the customer's
+        history and from margin — silently, because the only trace was a row in
+        a diagnostics panel. On one live book that was 1,256 lines, ₹41.9L on a
+        single item.
+
+        A placeholder is not an invention. The item demonstrably exists — a real
+        invoice names it — and every field here comes from that document or is
+        left empty. What the platform does not know is the item's *name*, and
+        ``label_for`` already has a way of saying that: "Unnamed product (id …)".
+
+        ``active=False`` because the master does not list it, which is exactly
+        what an item retired in Zoho looks like. ``source_ref.provisional``
+        marks the row as standing in for a master entry rather than reflecting
+        one, so a screen can say so and the next pull that *does* see the item
+        overwrites it in place — same upsert key, no duplicate, and no manual
+        repair.
+        """
+        row = self._for_upsert(models.Product, external_id)
+        if row is not None and not (row.source_ref or {}).get("provisional"):
+            # Already a real master row. Never downgrade one: a pull that raced
+            # the item listing would otherwise blank a name the platform had.
+            return row
+
+        provenance = {"provisional": True, "document_description": hint,
+                      "reason": ("referenced by a document but absent from the "
+                                 "item master this pull read")}
+        if row is not None:
+            row.source_ref = provenance
+            return row
+
+        # Name left empty rather than filled from the document line: the line
+        # says what the customer was billed for, which is not reliably the
+        # master's name for the item, and `label_for` already renders an empty
+        # name as "Unnamed product (id …)". The description travels in
+        # `source_ref` where it is labelled as coming from the document.
+        row = models.Product(organization_id=self.org, external_id=external_id,
+                             connector=self.connector,
+                             connection_id=self.connection_id,
+                             name="", active=False, source_ref=provenance)
+        self.s.add(row)
+        # Flushed because the caller needs `product_id` *now* for the line's
+        # foreign key, and the primary key is a column default that does not
+        # fire until the row reaches the database. One flush per distinct
+        # missing item, not per line — the next line naming the same item finds
+        # this row.
+        self.s.flush()
         return row
 
     def get_product_by_external(self, external_id: str) -> Optional[models.Product]:
@@ -235,7 +291,8 @@ class ReadModelRepository:
         row.source_ref = t.source_ref.model_dump()
         return row
 
-    def upsert_cost_record(self, r: CostRecordIn, product_id: str) -> models.CostRecord:
+    def upsert_cost_record(self, r: CostRecordIn, product_id: str,
+                           vendor_id: Optional[str] = None) -> models.CostRecord:
         row = self.s.scalar(
             select(models.CostRecord).where(
                 models.CostRecord.organization_id == self.org,
@@ -246,6 +303,12 @@ class ReadModelRepository:
             row = models.CostRecord(organization_id=self.org, external_ref=r.external_ref)
             self.s.add(row)
         row.product_id = product_id
+        # Resolved by the caller against this repository's own source, the same
+        # way every other vendor reference in the sync is. Left as it was when
+        # the caller could not resolve one, so a re-sync that *can* fills it in
+        # and a pull from a connection with no vendor scope does not blank it.
+        if vendor_id is not None:
+            row.vendor_id = vendor_id
         row.date = r.date
         row.qty = r.qty
         row.unit_cost = r.unit_cost
@@ -296,6 +359,61 @@ class ReadModelRepository:
             models.IngestedDocument.connection_id == self.connection_id,
         )
         return {r.doc_id: (r.modified_at or "") for r in self.s.scalars(stmt)}
+
+    def covered_since(self) -> Optional[date]:
+        """The earliest document date this connection has ever *listed*.
+
+        The floor of what has been looked at, which is a different question from
+        what is held — and the difference is the whole point. ``ingested_*``
+        answers "what did we find"; nothing in the rows can answer "where did we
+        look and find nothing", because an absent document and an unsearched
+        month look identical from the read model. Only the searcher knows, so
+        this reads the runs rather than the data.
+
+        **Only runs that finished OK count.** A run that died in its third
+        window of twenty covered three months, and reconstructing which three
+        from ``windows_done`` would make this a second thing to keep in step
+        with the loop that increments it. Forgetting a partial run's coverage
+        costs a re-listing — list calls, with the detail cursor still skipping
+        everything already held — and never loses a document. The conservative
+        direction is the cheap one, so it is the one taken.
+
+        Returns None when this connection has never completed a run, which
+        correctly means "nothing has been covered; list everything".
+        """
+        stmt = select(func.min(models.SyncRun.since)).where(
+            models.SyncRun.organization_id == self.org,
+            models.SyncRun.connection_id == self.connection_id,
+            models.SyncRun.status == "OK",
+            models.SyncRun.since.is_not(None),
+        )
+        return self.s.scalar(stmt)
+
+    def ingested_high_water(self, doc_type: str) -> Optional[str]:
+        """The newest modification stamp this connection has already pulled.
+
+        Valid **only inside a window already covered** — see ``covered_since``.
+        The mark is the newest modification stamp held, and documents older than
+        the window that earned it are older-modified almost by definition, so a
+        listing sorted by modification time stops before reaching any of them.
+        ``SyncService.arm_incremental_listing`` is what enforces that.
+
+        What an incremental listing stops at. Derived from the rows actually
+        held rather than kept as a separate "last synced at" column, and that is
+        deliberate: a stored cursor is a second source of truth that can outrun
+        the data it claims to describe — a pull that recorded the cursor and then
+        died would skip forever the documents it never wrote. This cannot get
+        ahead of the rows, because it *is* the rows.
+
+        Returns None when nothing has been pulled yet, which correctly means
+        "there is no floor; list everything".
+        """
+        stmt = select(func.max(models.IngestedDocument.modified_at)).where(
+            models.IngestedDocument.organization_id == self.org,
+            models.IngestedDocument.doc_type == doc_type,
+            models.IngestedDocument.connection_id == self.connection_id,
+        )
+        return self.s.scalar(stmt) or None
 
     def mark_ingested(self, doc_type: str, doc_id: str, modified_at: str) -> None:
         """Record this document as held, at the stamp we will compare next time.

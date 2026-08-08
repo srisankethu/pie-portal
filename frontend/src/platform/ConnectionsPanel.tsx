@@ -326,8 +326,10 @@ function ConnectionCard({
                   earlier date means a longer pull. The detectors compare the last 90 days
                   against the 90 before that and need six months of history before they
                   will call a decline.
-                  {conn.last_sync?.since && (
-                    <> This company was last read from {conn.last_sync.since}.</>
+                  {conn.covered_from && (
+                    <> This company has been read from {conn.covered_from}{" "}
+                      onwards. An earlier date reads the months in between for
+                      the first time.</>
                   )}
                 </>
               }
@@ -343,6 +345,30 @@ function ConnectionCard({
             max={todayISO()}
             onChange={(e) => setSince(e.target.value)}
           />
+          {/* What this company actually holds, and what the chosen date will
+              cost. "Last pulled from 2025-01-01" answers neither: a nightly
+              pull can run for a year and still cover only the window the first
+              run asked for.
+
+              The second line is the one that matters. Widening the window used
+              to be a silent no-op — the run went green and fetched nothing —
+              so the screen now says, before the button is pressed, which of the
+              two pulls is about to happen. */}
+          <p className="cx-detail">
+            {conn.covered_from ? (
+              <>Read from <strong>{formatDate(conn.covered_from)}</strong> onwards
+                so far.{" "}
+                {since < conn.covered_from
+                  ? <>This date reaches further back, so those extra months are
+                      listed in full — slower than a repeat pull.</>
+                  : <>This date is inside that, so the pull only picks up what
+                      has changed.</>}
+              </>
+            ) : (
+              <>Nothing has been read from this company yet, so this first pull
+                lists everything from the date above.</>
+            )}
+          </p>
           <label className="sync-check">
             <input type="checkbox" checked={full} onChange={(e) => setFull(e.target.checked)} />
             Re-read documents already held

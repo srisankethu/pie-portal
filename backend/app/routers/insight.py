@@ -27,7 +27,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..authz import Principal, current_principal, require_manager_or_owner
-from .. import clock
+from .. import approvals, clock
 from ..commercial import floor, incentive, policy, portfolio, principals
 from ..commercial import categories as cat
 from ..commercial.insight import (bonds, cadence, cashflow, cohorts, composition,
@@ -37,7 +37,7 @@ from ..commercial.insight import (bonds, cadence, cashflow, cohorts, composition
                                   supply, terms as vendor_terms, weather)
 from ..db import get_session
 from ..domain import models
-from ..domain.enums import ApprovalStatus, DecisionStatus, Role
+from ..domain.enums import DecisionStatus, Role
 from ..domain.origin import Companies, index_of
 from ..signals.aggregates import label_for, load_snapshot
 from ..commercial.insight import series
@@ -2636,10 +2636,14 @@ def daily(moved_from: Optional[date] = Query(None),
                       thresholds=load_signal_thresholds())
         if _as_of(full) else {})
 
-    approvals_pending = session.scalar(
-        select(func.count()).select_from(models.ApprovalRequest)
-        .where(models.ApprovalRequest.organization_id == org,
-               models.ApprovalRequest.status == ApprovalStatus.PENDING.value)) or 0
+    # Role-scoped, and the same function the queue and the nav badge use. This
+    # was an unscoped `count(*)` over every PENDING request in the organization,
+    # so one role's landing page said 3 while the badge said 2 and exactly 1 was
+    # decidable: the tile counted an OWNER-authority below-cost request that
+    # `approvals.inbox` deliberately keeps out of a manager's queue, and its
+    # "Work through these →" therefore landed on a screen where the third item
+    # did not exist and could not be made to appear. One number, from one place.
+    approvals_pending = approvals.pending_count(session, principal)
 
     band_rows = session.execute(
         select(models.Decision.priority_band, func.count())

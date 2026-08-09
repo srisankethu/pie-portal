@@ -28,7 +28,7 @@ from sqlalchemy.orm import Session
 
 from ..authz import Principal, current_principal, require_manager_or_owner
 from .. import clock
-from ..commercial import floor, incentive, policy, principals
+from ..commercial import floor, incentive, policy, portfolio, principals
 from ..commercial import categories as cat
 from ..commercial.insight import (bonds, cadence, cashflow, cohorts, composition,
                                   daily as daily_view,
@@ -232,10 +232,18 @@ def commercial_weather(months: int = Query(3, ge=MIN_MONTHS, le=MAX_MONTHS),
     rows = session.scalars(
         select(models.CustomerItemMetric)
         .where(models.CustomerItemMetric.organization_id == org)).all()
-    revenue = sum(float(r.revenue_12m or 0) for r in rows)
-    profit = sum(float(r.gross_profit_12m or 0) for r in rows)
-    # Aggregated as Σ profit ÷ Σ revenue — never the mean of per-line margins.
-    margin_now = (profit / revenue) if revenue else None
+    # Σ profit ÷ Σ *costed* revenue — never the mean of per-line margins, and
+    # never over revenue that has no cost behind it. This route used to sum
+    # `gross_profit_12m or 0` across every row while keeping all of their revenue
+    # in the denominator, so relationships with no cost data contributed nothing
+    # to the numerator and their full revenue to the divisor. On this book that
+    # reported 7.8% and banded it POOR, below the 15% review floor, when the
+    # figure over the relationships that actually have cost is 19.7% — above it.
+    # A manager read "we are pricing below our own floor" off a coverage gap.
+    #
+    # The arithmetic lives in `commercial/` now, where §3 says it belongs, and
+    # is the same function the customer portfolio and the landscape use.
+    margin_now = portfolio.aggregate_margin(rows).margin
     covered = sum(1 for r in rows if r.data_sufficiency in ("SUFFICIENT", "PARTIAL"))
     coverage = (covered / len(rows)) if rows else None
 

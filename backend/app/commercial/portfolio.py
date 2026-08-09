@@ -9,6 +9,7 @@ must not scan the organization's entire sales history on every page load.
 """
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Optional
@@ -61,6 +62,78 @@ class CustomerPortfolio:
         }
 
 
+@dataclass
+class MarginAggregate:
+    """Σ gross profit ÷ Σ *costed* revenue across a set of metric rows.
+
+    The denominator is the revenue whose margin is actually known. Revenue with
+    no cost behind it contributes nothing to the numerator, so leaving it in the
+    denominator drags the margin toward zero — and that reads on screen as a
+    pricing problem when it is a cost-coverage one. This is the difference
+    between 7.8% and 19.7% on the same book.
+
+    Extracted because three modules had already got this right independently
+    (``load_portfolio`` below, ``insight/landscape.py`` per product, and
+    ``insight/simulate.py``'s baseline) and the fourth place that needed it —
+    the commercial-weather route — reimplemented it without the distinction and
+    banded a healthy book POOR. Four owners of one rule is §2's responsibility
+    duplication, and the arithmetic did not belong in a router at all (§3).
+
+    **Not** ``economics.aggregate``, which states the same rule in its own
+    docstring and is the closest existing match. That one rolls up
+    ``LineEconomics`` — individual sale lines carrying COGS, quantity and a date
+    — and derives profit as costed revenue minus COGS. These rows are the
+    persisted 12-month rollups, which already hold ``gross_profit_12m`` and have
+    no COGS, quantity or date to give it. Reusing it would mean manufacturing
+    those three fields per row to satisfy the signature, which is a worse lie
+    than a second small function. Same rule, two input shapes, stated twice on
+    purpose — if the rule ever changes, both docstrings name each other.
+    """
+
+    revenue: Decimal = _ZERO
+    #: Revenue whose margin is known, i.e. from rows that carry a gross profit.
+    costed_revenue: Decimal = _ZERO
+    #: None — not zero — when no row in the set has a cost behind it. "We cannot
+    #: say" and "we made nothing" are different answers.
+    gross_profit: Optional[Decimal] = None
+
+    @property
+    def margin(self) -> Optional[float]:
+        if self.gross_profit is None or self.costed_revenue <= _ZERO:
+            return None
+        return float(self.gross_profit / self.costed_revenue)
+
+    @property
+    def revenue_coverage(self) -> Optional[float]:
+        """Share of revenue the margin above is actually derived from.
+
+        A margin over 12% of the book is not the same claim as a margin over all
+        of it, and a caller that shows one should be able to say which.
+        """
+        if self.revenue <= _ZERO:
+            return None
+        return float(self.costed_revenue / self.revenue)
+
+
+def aggregate_margin(
+        rows: Iterable[models.CustomerItemMetric]) -> MarginAggregate:
+    """Total revenue, costed revenue and gross profit over metric rows.
+
+    One implementation, because "what is this book's margin" must have exactly
+    one answer — two screens disagreeing about it is worse than either being
+    slightly wrong.
+    """
+    agg = MarginAggregate()
+    for r in rows:
+        revenue = Decimal(r.revenue_12m or 0)
+        agg.revenue += revenue
+        if r.gross_profit_12m is not None:
+            agg.gross_profit = ((agg.gross_profit or _ZERO)
+                                + Decimal(r.gross_profit_12m))
+            agg.costed_revenue += revenue
+    return agg
+
+
 def _money(v) -> Optional[float]:
     return float(round(Decimal(str(v)), 2)) if v is not None else None
 
@@ -86,16 +159,14 @@ def load_portfolio(session: Session, org: str, customer_id: str,
         )))
 
     p = CustomerPortfolio(customer_id=customer_id, rows=rows)
-    costed_revenue = _ZERO
+
+    agg = aggregate_margin(rows)
+    p.revenue_12m = agg.revenue
+    p.gross_profit_12m = agg.gross_profit
+    p.gross_margin_12m = agg.margin
 
     for r in rows:
         p.active_items += 1
-        revenue = Decimal(r.revenue_12m or 0)
-        p.revenue_12m += revenue
-
-        if r.gross_profit_12m is not None:
-            p.gross_profit_12m = (p.gross_profit_12m or _ZERO) + Decimal(r.gross_profit_12m)
-            costed_revenue += revenue
         if not r.cost_covered_txns:
             p.items_without_cost += 1
 
@@ -116,8 +187,6 @@ def load_portfolio(session: Session, org: str, customer_id: str,
         if r.peer_margin_gap:
             p.peer_benchmark_gap += Decimal(r.peer_margin_gap)
 
-    if p.gross_profit_12m is not None and costed_revenue > _ZERO:
-        p.gross_margin_12m = float(p.gross_profit_12m / costed_revenue)
     return p
 
 

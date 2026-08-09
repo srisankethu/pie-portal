@@ -146,6 +146,69 @@ def test_human_action_lifecycle(client_and_maker):
                        json={"action": "NOPE"}, headers=sales).status_code == 400
 
 
+def test_undo_does_not_destroy_the_reason_that_was_recorded(client_and_maker):
+    """The reversal joins the trail; it does not overwrite what it reversed.
+
+    `record_human_action` used to assign, so pressing Undo replaced an owner's
+    reasoning with "Undone by the user" and the reason they had recorded was gone
+    for good — while `api.ts` promised the trail kept both. Reproduced from the
+    owner's own note.
+    """
+    client, maker = client_and_maker
+    did = _seed_decision(maker, dtype="CUSTOMER_DORMANCY", subject_id="cust1",
+                         assigned_user_id="usr_sales")
+    sales = _hdr(_login(client, "r.nair@sanketh.in"))
+    reason = ("Owner: holding price for this account; renegotiating the supply "
+              "cost with the principal instead.")
+
+    client.post(f"/api/v1/decisions/{did}/action",
+                json={"action": "ACT", "note": reason}, headers=sales)
+    body = client.post(f"/api/v1/decisions/{did}/action",
+                       json={"action": "REOPEN", "note": "Undone by the user"},
+                       headers=sales).json()
+
+    # The latest action is still denormalised at the top level: that is what a
+    # queue row reads, and it is why this field's shape did not change.
+    assert body["status"] == "OPEN"
+    assert body["human_action"]["action"] == "REOPEN"
+
+    trail = body["human_action"]["trail"]
+    assert [e["action"] for e in trail] == ["ACT", "REOPEN"], "oldest first"
+    assert trail[0]["note"] == reason, "the reason survives its own reversal"
+    assert all(e["actor_user_id"] == "usr_sales" for e in trail)
+    assert all(e["acted_at"] for e in trail)
+
+
+def test_a_decision_written_before_the_trail_existed_keeps_its_action(client_and_maker):
+    """Legacy rows are backfilled on touch rather than by a data migration.
+
+    `human_action` is schemaless JSON, so rows already in the wild hold a bare
+    action with no trail. The first append must carry it forward instead of
+    starting the history at the second thing that ever happened.
+    """
+    from app.domain.enums import HumanAction
+    from app.repositories import DecisionRepository
+
+    client, maker = client_and_maker
+    did = _seed_decision(maker, dtype="CUSTOMER_DORMANCY", subject_id="cust1",
+                         assigned_user_id="usr_sales")
+    session = maker()
+    repo = DecisionRepository(session, "org_sanketh")
+    d = repo.get(did)
+    # Exactly the shape the old code wrote: no trail key at all.
+    d.human_action = {"action": "ACT", "actor_user_id": "usr_owner",
+                      "acted_at": "2026-08-01T10:00:00+00:00", "note": "first call"}
+    session.commit()
+
+    repo.record_human_action(d, HumanAction.REOPEN, actor_user_id="usr_owner",
+                             note="Undone by the user")
+    session.commit()
+    trail = d.human_action["trail"]
+    assert [e["action"] for e in trail] == ["ACT", "REOPEN"]
+    assert trail[0]["note"] == "first call"
+    session.close()
+
+
 def test_sync_requires_manager_or_owner(client_and_maker):
     client, _ = client_and_maker
     sales = _hdr(_login(client, "r.nair@sanketh.in"))

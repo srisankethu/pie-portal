@@ -877,6 +877,13 @@ class DecisionRepository:
                              models.Decision.detected_at.desc())
         return self.s.scalars(stmt).all()
 
+    def _actor_name(self, user_id: Optional[str]) -> Optional[str]:
+        """This user's name, or None if there is nobody to name."""
+        if not user_id:
+            return None
+        row = self.s.get(models.User, user_id)
+        return row.name if row is not None else None
+
     def record_human_action(
         self, decision: models.Decision, action: HumanAction, actor_user_id: str,
         note: Optional[str] = None, reason: Optional[str] = None,
@@ -887,10 +894,41 @@ class DecisionRepository:
         Phase 1 scope and are not performed here.
         """
         now = datetime.now(timezone.utc)
-        decision.human_action = {
+        entry = {
             "action": action.value, "actor_user_id": actor_user_id,
+            # The name as it was, recorded rather than resolved on read. An
+            # audit entry should say who this was at the time: resolving the id
+            # later would rename a past action if somebody's name changed, and
+            # would show nothing at all once an account is removed. One query per
+            # human click is a fair price for that.
+            "actor_name": self._actor_name(actor_user_id),
             "acted_at": now.isoformat(), "note": note,
         }
+        # Append, never replace. This used to assign, so only the last action
+        # survived: an owner who accepted a decision with their reasoning on it
+        # and then pressed Undo had that reasoning destroyed and replaced with
+        # "Undone by the user". `api.ts` documents the opposite in as many words
+        # — "the reopen is itself recorded, so the audit trail keeps both the
+        # action and its reversal" — and `approval_requests.thread` is the
+        # pattern that already does it correctly.
+        #
+        # The trail is nested inside the same JSON column rather than given a
+        # column of its own, and the latest action stays denormalised at the top
+        # level. That keeps every existing reader — the API, both renderers, the
+        # schema — working on the field they already read, which is "what
+        # happened last" and is what a queue row wants. The cost is that the
+        # trail is not queryable in SQL; it is only ever read one decision at a
+        # time, so that buys nothing we need.
+        previous = decision.human_action or {}
+        trail = list(previous.get("trail") or [])
+        if previous and not trail:
+            # A row written before the trail existed. Seed it from what it holds
+            # so the first append does not silently lose the action already
+            # there — a backfill on touch, rather than a data migration for a
+            # column that is schemaless anyway.
+            trail.append({k: v for k, v in previous.items() if k != "trail"})
+        trail.append(entry)
+        decision.human_action = {**entry, "trail": trail}
         if action is HumanAction.VIEW:
             if decision.status == DecisionStatus.OPEN.value:
                 decision.status = DecisionStatus.VIEWED.value
@@ -911,8 +949,9 @@ class DecisionRepository:
             pass  # snooze keeps status; scheduling deferred to the outcome phase
         elif action is HumanAction.REOPEN:
             # Undo: return the decision to the queue and clear the reason that
-            # closed it. The REOPEN itself stays in human_action, so the audit
-            # trail records that a human reversed the earlier call.
+            # closed it. The REOPEN joins the trail above, so what is recorded is
+            # both the earlier call *and* its reversal — which is what this
+            # comment claimed before the trail existed to make it true.
             decision.status = DecisionStatus.OPEN.value
             decision.override_reason = None
         return decision

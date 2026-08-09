@@ -15,6 +15,29 @@ export interface PlatformSession {
   timezone: string;
 }
 
+/** One entry in a decision's human trail.
+ *
+ *  `actor_name` is recorded at the moment of the action rather than resolved on
+ *  read, so a past entry keeps saying who it actually was. Optional because rows
+ *  written before the trail existed carry only the id. */
+export interface HumanActionEntry {
+  action: string;
+  actor_user_id: string;
+  actor_name?: string | null;
+  acted_at: string;
+  note?: string | null;
+}
+
+/** The latest action, with the full trail beside it.
+ *
+ *  The top level mirrors the most recent entry — a queue row wants "what
+ *  happened last" and reads it without walking a list. `trail` is append-only
+ *  and oldest-first: a reversal is recorded next to what it reversed rather than
+ *  replacing it. Absent on rows last touched before the trail existed. */
+export interface HumanAction extends HumanActionEntry {
+  trail?: HumanActionEntry[];
+}
+
 export interface DecisionSummary {
   decision_id: string;
   decision_type: string;
@@ -27,7 +50,7 @@ export interface DecisionSummary {
   priority_score: number;
   status: string;
   ai_status: string;
-  human_action: { action: string; actor_user_id: string; acted_at: string; note?: string } | null;
+  human_action: HumanAction | null;
   created_at: string;
   updated_at: string;
   /** Which connected company this decision's *subject* belongs to. Not

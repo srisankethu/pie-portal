@@ -86,6 +86,9 @@ interface LoginResp {
   token: string;
   role: PlatformSession["role"];
   name: string;
+  /** The address signed in with. `LoginResponse` defaults it to "" server-side,
+   *  so an older backend simply sends nothing and the field stays unset. */
+  email?: string;
   user_id: string;
   organization_id: string;
   currency: string;

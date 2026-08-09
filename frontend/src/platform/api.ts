@@ -1,4 +1,4 @@
-import type { AccessReport, AiMetricsReport, AiReadiness, Account, AccountItem, StatusFilter, ApprovalRequest, DisclosureStatement, EntityKind, ErasureState, Identity, IdentityPolicy, IdentitySuggestion, ConnectionCheck, ConnectionsView, FixedThresholds, MarginPolicy, MarginPolicyPatch, NewConnectionInput, PayloadsReport, ZohoConnection, ZohoCredential, ZohoVisibleOrg, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, DecisionTrace, OrgPolicy, PlatformSession, PlatformUser, QuoteGate, Role, SyncOptions, SyncStartResponse, SyncState, ThresholdView, ZohoConnectionInput } from "./types";
+import type { AccessReport, AiMetricsReport, AiReadiness, Account, AccountItem, StatusFilter, ApprovalRequest, DisclosureStatement, EntityKind, ErasureState, Identity, IdentityCoverage, IdentityPolicy, IdentitySuggestion, ConnectionCheck, ConnectionsView, FixedThresholds, MarginPolicy, MarginPolicyPatch, NewConnectionInput, PayloadsReport, ZohoConnection, ZohoCredential, ZohoVisibleOrg, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, DecisionTrace, OrgPolicy, PlatformSession, PlatformUser, QuoteGate, Role, SyncOptions, SyncStartResponse, SyncState, ThresholdView, ZohoConnectionInput } from "./types";
 
 import { setMoneyCurrency } from "../money";
 import { setBusinessTimezone } from "../when";
@@ -456,7 +456,8 @@ export const papi = {
     req<Identity>(`/api/v1/identity/${kind}/${id}`, {}, t),
 
   listSuggestions: (t: string, kind: EntityKind) =>
-    req<{ suggestions: IdentitySuggestion[]; can_manage: boolean }>(
+    req<{ suggestions: IdentitySuggestion[]; can_manage: boolean;
+          coverage: IdentityCoverage }>(
       `/api/v1/identity/${kind}/suggestions/pending`, {}, t),
 
   decideSuggestion: (t: string, kind: EntityKind, id: string, accept: boolean) =>

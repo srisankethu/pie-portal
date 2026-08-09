@@ -22,7 +22,7 @@ from sqlalchemy.pool import StaticPool
 from app.db import Base, get_session
 from app.domain import models
 from app.identity import service as identity
-from app.identity.matchers import normalize_gstin, normalize_sku
+from app.identity.matchers import normalize_gstin, normalize_name, normalize_sku
 from app.routers import identity as identity_router, platform_auth
 from app.seed import SEED_PASSWORD, ensure_org_and_users
 
@@ -95,15 +95,23 @@ def test_a_sku_matches_across_punctuation():
         assert normalize_sku(written) == "KCMT090304LF"
 
 
-def test_a_malformed_gstin_proposes_nothing(client):
+def test_a_malformed_gstin_never_matches_on_the_gstin(client):
     """Shape is checked before it is trusted. Matching two records on a shared
-    placeholder like 'NA' would link every customer that has one."""
+    placeholder like 'NA' would link every customer that has one.
+
+    Renamed from `..._proposes_nothing`, because it no longer proposes nothing and
+    that is deliberate: 'NA' is not an eligible key, so these two fall through to
+    the NAME strategy, which is the whole point of it. The property this test
+    exists for is untouched and asserted more precisely — the placeholder itself
+    must never be the evidence, and nothing is linked either way.
+    """
     s = client.Maker()
     a = _zoho(s, gstin="NA")
     b = _erpnext(s, gstin="NA")
     s.commit()
-    assert b.suggestions == [], "'NA' is not a registration"
-    assert a.identity_id != b.identity_id
+    assert [c.strategy for c in b.suggestions] == ["NAME"], "'NA' is not a registration"
+    assert not any("NA" in c.evidence for c in b.suggestions)
+    assert a.identity_id != b.identity_id, "a suggestion is not a link"
     s.close()
 
 
@@ -226,6 +234,140 @@ def test_a_resync_does_not_stack_duplicate_suggestions(client):
     s.commit()
     assert s.query(models.IdentitySuggestion).count() <= 2
     s.close()
+
+
+# ── matching where there is no identifier at all ────────────────────────────
+#
+# The gap these cover: matching ran on GSTIN only, so a customer with no GSTIN
+# could never be proposed for a link however many times a sync ran — and the
+# review screen reported that as "no exact matches were found", which reads as
+# "the book is fine". Two `Pitti Engineering Ltd` rows billed separately under it.
+def test_two_records_with_no_gstin_and_one_name_are_proposed(client):
+    s = client.Maker()
+    a = identity.ingest_customer(s, ORG, connector="zoho", external_id="p1",
+                                 name="Pitti Engineering Ltd", gstin=None)
+    b = identity.ingest_customer(s, ORG, connector="zoho", connection_id="conn-b",
+                                 external_id="p2", name="Pitti Engineering Ltd.",
+                                 gstin=None)
+    s.commit()
+    assert [c.strategy for c in b.suggestions] == ["NAME"]
+    assert b.suggestions[0].evidence == "name PITTI ENGINEERING", (
+        "the evidence has to be the value compared, not a score")
+    assert b.suggestions[0].identity_id == a.identity_id
+    s.close()
+
+
+def test_a_name_match_is_never_linked_automatically(client):
+    """The one place a strategy's strength changes what happens.
+
+    The auto-link switch says "link on an exact match" and its own help calls that
+    unrecoverable when a group trades under one registration. Two businesses that
+    merely share a name is a far weaker bet than that, so this stays a question
+    for a person however the setting is set.
+    """
+    s = client.Maker()
+    identity.get_policy(s, ORG).auto_link_customers = True
+    s.commit()
+
+    a = identity.ingest_customer(s, ORG, connector="zoho", external_id="p1",
+                                 name="Pitti Engineering Ltd", gstin=None)
+    b = identity.ingest_customer(s, ORG, connector="zoho", connection_id="conn-b",
+                                 external_id="p2", name="Pitti Engineering",
+                                 gstin=None)
+    s.commit()
+    assert b.linked is False, "a name is not grounds to link without a person"
+    assert b.identity_id != a.identity_id
+    assert [c.strategy for c in b.suggestions] == ["NAME"], (
+        "and it must still be offered for review, not dropped")
+    s.close()
+
+
+def test_a_gstin_match_still_links_automatically_alongside(client):
+    """The weak strategy must not have disabled the strong one's auto-link."""
+    s = client.Maker()
+    identity.get_policy(s, ORG).auto_link_customers = True
+    s.commit()
+    a = _zoho(s)
+    b = _erpnext(s)
+    s.commit()
+    assert b.linked is True and b.identity_id == a.identity_id
+    s.close()
+
+
+def test_a_record_with_a_gstin_gets_no_name_proposal_beside_it(client):
+    """Asking a reviewer to weigh a name against a registration is asking a
+    question with an obvious answer, repeatedly."""
+    s = client.Maker()
+    _zoho(s, name="ABC Industries Pvt Ltd", gstin=GSTIN)
+    b = identity.ingest_customer(s, ORG, connector="erpnext", external_id="x9",
+                                 name="ABC Industries", gstin=GSTIN)
+    s.commit()
+    assert [c.strategy for c in b.suggestions] == ["GSTIN"]
+    s.close()
+
+
+def test_a_name_that_normalises_to_nothing_proposes_nothing(client):
+    """Otherwise every record named "Ltd." would match every other one."""
+    s = client.Maker()
+    identity.ingest_customer(s, ORG, connector="zoho", external_id="n1",
+                             name="Ltd.", gstin=None)
+    b = identity.ingest_customer(s, ORG, connector="zoho", connection_id="conn-b",
+                                 external_id="n2", name="Pvt Ltd", gstin=None)
+    s.commit()
+    assert b.suggestions == []
+    s.close()
+
+
+def test_an_item_description_is_not_an_identifier(client):
+    """Deliberately narrower than customers. "Milling insert" describes hundreds
+    of parts, and a review queue that is wrong more often than right costs the
+    GSTIN and SKU proposals their audience too."""
+    s = client.Maker()
+    identity.ingest_item(s, ORG, connector="zoho", external_id="a", sku=None,
+                         description="Milling insert")
+    b = identity.ingest_item(s, ORG, connector="sap", external_id="b", sku=None,
+                             description="Milling insert")
+    s.commit()
+    assert b.suggestions == []
+    s.close()
+
+
+def test_the_empty_queue_says_which_kind_of_empty_it_is(client):
+    """`coverage` is what lets the screen tell "nothing matched" from "nothing
+    could be looked at". Counted from the records, so it still describes the book
+    when the queue is empty."""
+    s = client.Maker()
+    _zoho(s, external_id="k1", gstin=GSTIN)                       # has a key
+    identity.ingest_customer(s, ORG, connector="zoho", connection_id="conn-b",
+                             external_id="k2", name="Alone Ltd", gstin=None)
+    s.commit()
+    s.close()
+
+    c = client
+    body = c.get("/api/v1/identity/customers/suggestions/pending",
+                 headers=_hdr(c)).json()
+    cov = body["coverage"]
+    assert cov["records"] == 2
+    assert cov["with_key"] == 1 and cov["without_key"] == 1
+    assert cov["key_name"] == "GSTIN"
+    assert cov["unlinked"] == 2, "neither has been linked to anything"
+
+
+def test_coverage_names_the_right_key_for_items(client):
+    body = client.get("/api/v1/identity/items/suggestions/pending",
+                      headers=_hdr(client)).json()
+    assert body["coverage"]["key_name"] == "SKU"
+
+
+def test_a_normalised_name_sets_aside_form_not_identity():
+    assert normalize_name("Pitti Engineering Ltd") == "PITTI ENGINEERING"
+    assert normalize_name("PITTI  ENGINEERING PVT. LTD.") == "PITTI ENGINEERING"
+    assert normalize_name("pitti-engineering") == "PITTI ENGINEERING"
+    # Not the same buyer, and normalisation must not make them one.
+    assert normalize_name("Pitti Engineering") != normalize_name("Pitti Castings")
+    assert normalize_name("Ltd.") is None and normalize_name("") is None
+    # A digit is part of a name, not punctuation to be discarded.
+    assert normalize_name("Forge 9 Industries") == "FORGE 9 INDUSTRIES"
 
 
 # ── the auto-link setting ───────────────────────────────────────────────────

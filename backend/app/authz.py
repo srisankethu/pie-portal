@@ -184,6 +184,37 @@ def decision_list_scope(principal: Principal) -> dict:
     return {}
 
 
+def can_view_customer(principal: Principal,
+                      customer: Optional[models.Customer]) -> bool:
+    """Whether this principal may see this account at all.
+
+    The same rule `/api/v1/accounts` applies to a list, applied to one row: a
+    per-customer route that skips it is a way around all of it, since the id is
+    the only thing standing between a salesperson and every relationship in the
+    book, and ids travel.
+
+    Here rather than in a router because it was written out twice — inline in
+    `accounts.list_account_items` and again inside `insight._require_visible_customer`
+    — and a scope rule with two copies is one that eventually disagrees with
+    itself about a reassigned account. `can_view_decision` above is the same rule
+    for the other subject, which is why this belongs beside it.
+
+    Takes ``None`` so a caller can pass a failed `session.get` straight in: a
+    customer that does not exist and one this principal cannot see must give the
+    same answer, or the difference between them is an enumeration oracle.
+    **What each caller does with a False is deliberately theirs** — the item
+    picker answers with an empty list because a dropdown that errors is a field
+    that breaks, and the timeline answers 404 because a screen that draws itself
+    empty claims the account exists. Both are indistinguishable from the
+    not-found case, which is the property this rule is for.
+    """
+    if customer is None or customer.organization_id != principal.organization_id:
+        return False
+    if principal.is_salesperson:
+        return customer.assigned_user_id == principal.user_id
+    return True
+
+
 def can_view_decision(principal: Principal, decision: models.Decision) -> bool:
     """Server-side authorization for a single decision (defense in depth)."""
     if decision.organization_id != principal.organization_id:

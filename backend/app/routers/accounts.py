@@ -20,7 +20,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .. import approvals, clock
-from ..authz import Principal, current_principal
+from ..authz import Principal, can_view_customer, current_principal
 from ..db import get_session
 from ..domain import models
 from ..domain.origin import Companies
@@ -171,10 +171,12 @@ def list_account_items(
     Identity only — no price, no cost, no margin. The quantity and the last
     date are what make two similarly-named inserts distinguishable in a list.
     """
-    customer = session.get(models.Customer, customer_id)
-    if customer is None or customer.organization_id != principal.organization_id:
-        return []
-    if principal.is_salesperson and customer.assigned_user_id != principal.user_id:
+    # An empty list for an account this principal cannot see, and the same empty
+    # list for one that does not exist — the two must not be distinguishable. The
+    # rule itself is `authz.can_view_customer`, shared with the timeline endpoint,
+    # which answers 404 instead: a dropdown that errors is a field that breaks,
+    # while a screen that draws itself empty claims the account exists.
+    if not can_view_customer(principal, session.get(models.Customer, customer_id)):
         return []
 
     rows = session.execute(

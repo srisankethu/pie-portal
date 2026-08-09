@@ -279,9 +279,6 @@ textarea.input { min-height: 160px; resize: vertical; font-family: ui-monospace,
 /* generic states */
 .dp-loading, .dp-empty, .dp-error { padding: 40px; text-align: center; color: var(--color-neutral-600); }
 .dp-error { color: var(--danger-fg); }
-/* `.skeleton` was a second hand-rolled shimmer, and unlike the viz one it had
-   no reduced-motion rule at all. Both are now `LoadingState`. */
-@media (prefers-reduced-motion: reduce) { .skeleton { animation: none; } }
 
 /* outcome */
 .outcome { border: 1px solid var(--color-divider); border-left: 2px solid #2f6b3f; padding: 12px 14px; background: color-mix(in srgb, #2f6b3f 6%, transparent); }

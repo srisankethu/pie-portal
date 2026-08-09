@@ -48,6 +48,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { money } from "../../money";
 import { formatDate } from "../../when";
 import { papi } from "../api";
+import { isAre } from "../format";
 import { EntityName } from "../EntityName";
 import { ChartTip, InlineLink, StatusChip } from "../kit";
 import Autocomplete from "@mui/material/Autocomplete";
@@ -285,6 +286,10 @@ export function BondsScreen({
   const ledger = [...(showCustomers ? shownCustomers : []),
                   ...(showSuppliers ? shownVendors : [])];
   const unscored = ledger.filter((b) => b.score == null);
+  // Named because the sentence below needs it twice — once as the number and
+  // once to agree with it. Counting inline in both places is how the two got
+  // out of step in the first place.
+  const overdueCount = ledger.filter((b) => b.overdue).length;
   const frameLabel = String(
     (frames[at] ?? vendorFrames[at])?.label ?? data?.as_of ?? "");
 
@@ -332,9 +337,9 @@ export function BondsScreen({
         {" "}scored on five measured facets.{" "}
         {anchored(ledger) > 0 && (
           <><strong>{anchored(ledger)}</strong>{" "}
-            {anchored(ledger) === 1 ? "is" : "are"} anchored; </>
+            {isAre(anchored(ledger))} anchored; </>
         )}
-        <strong>{ledger.filter((b) => b.overdue).length}</strong> are past their
+        <strong>{overdueCount}</strong> {isAre(overdueCount)} past their
         own buying rhythm.
       </p>
 
@@ -840,7 +845,7 @@ function FacetBreakdown({
             <p className="viz-muted">
               Scored on the {5 - missing.length} facet
               {5 - missing.length === 1 ? "" : "s"} that could be measured.{" "}
-              {missing.join(", ")} {missing.length === 1 ? "is" : "are"} unknown
+              {missing.join(", ")} {isAre(missing.length)} unknown
               for this relationship — which is not the same as being poor, so
               the score does not count it as one.
             </p>

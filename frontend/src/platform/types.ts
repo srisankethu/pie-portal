@@ -4,6 +4,11 @@ export interface PlatformSession {
   token: string;
   role: Role;
   name: string;
+  /** The address this account signs in with. Present so a change-password form
+   *  can carry a `username` field — without one a password manager saves the new
+   *  secret against nothing. Optional: a session stored before it was sent is
+   *  still valid, and the field is simply omitted. */
+  email?: string;
   user_id: string;
   organization_id: string;
   /** ISO code this organization trades in, from the sign-in response. Drives

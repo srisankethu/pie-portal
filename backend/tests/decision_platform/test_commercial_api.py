@@ -340,6 +340,57 @@ def test_a_salesperson_cannot_read_the_timeline_of_an_account_that_is_not_theirs
                       headers=_hdr(client, "r.nair@sanketh.in")).status_code == 200
 
 
+def test_every_manager_read_payload_says_which_policy_judged_it(client):
+    """The adjacent gap to `CLAUDE.md`'s versioning rule.
+
+    A computed *row* was never written without a `thresholds_version`; a computed
+    *response* usually was. Of 26 manager-facing payloads a reviewer counted, 8
+    carried a version and 18 did not — including `weather`, which bands margin
+    against `th.margin_floor` and could not say which version of that floor it
+    used, so a number on screen could not be traced to the policy behind it.
+
+    `_envelope` takes the thresholds object now rather than a currency string,
+    which is what makes the omission unavailable: there is no way to build an
+    insight response without also stamping it.
+    """
+    hdr = _hdr(client, "m.rao@sanketh.in")
+    paths = [
+        "/api/v1/insight/weather",
+        "/api/v1/insight/storyboard",
+        "/api/v1/insight/lost-revenue",
+        "/api/v1/insight/composition",
+        "/api/v1/insight/cadence",
+        "/api/v1/insight/journey",
+        "/api/v1/insight/opportunities",
+        "/api/v1/insight/landscape",
+    ]
+    for path in paths:
+        r = client.get(path, headers=hdr)
+        assert r.status_code == 200, (path, r.text)
+        body = r.json()
+        assert body.get("thresholds_version"), f"{path} does not say which policy judged it"
+        assert body["thresholds_version"].startswith("ci_"), path
+
+
+def test_the_two_commercial_payloads_stamp_the_version_that_judged_them(client):
+    """Two shapes, and the difference is deliberate.
+
+    The drill-down recomputes the pair live under the current policy, so the
+    current version is the truthful stamp. The portfolio reads stored rows, so it
+    reports the stamp those rows carry — claiming the current version for a row
+    computed under an older one would be worse than saying nothing.
+    """
+    hdr = _hdr(client, "m.rao@sanketh.in")
+
+    drill = client.get("/api/v1/commercial/customers/c1/items/p1", headers=hdr).json()
+    assert drill["thresholds_version"].startswith("ci_")
+
+    port = client.get("/api/v1/commercial/customers/c1/portfolio", headers=hdr).json()
+    assert port["thresholds_version"].startswith("ci_")
+    # One value, because a single recompute stamped every row the same.
+    assert port["thresholds_versions"] is None
+
+
 def test_the_item_picker_applies_the_same_scope_rule_as_the_timeline(client):
     """One rule, two answer shapes, and both unprobeable.
 

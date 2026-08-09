@@ -60,9 +60,25 @@ MIN_MONTHS = 1
 MAX_MONTHS = 12
 
 
-def _envelope(data: dict, *, currency: str, empty_reason: Optional[str] = None,
+def _envelope(data: dict, *, th: Any, empty_reason: Optional[str] = None,
               **extra: Any) -> dict:
-    return {"currency": currency, "empty_reason": empty_reason, **extra, **data}
+    """Every insight response, with the two facts about it that are not data.
+
+    Takes the thresholds object rather than a currency string, and that is the
+    whole point: of 26 manager-facing computed payloads, 8 carried a
+    `thresholds_version` and 18 did not — including `weather`, which bands margin
+    against `th.margin_floor` and could not say which version of that floor it
+    used. `CLAUDE.md`'s rule that a computed *row* is never written without a
+    version was satisfied; this was the adjacent gap, where a number on screen
+    could not be traced to the policy that produced it without going back to the
+    database.
+
+    Passing the currency and remembering the version separately is what made 18
+    omissions possible. One argument carries both, so the version cannot
+    be left off a new endpoint without deliberately taking it off.
+    """
+    return {"currency": th.currency, "thresholds_version": th.version,
+            "empty_reason": empty_reason, **extra, **data}
 
 
 def _context(session: Session, principal: Principal, **bound: Any):
@@ -173,7 +189,7 @@ def _as_of(snapshot) -> Optional[date]:
     return snapshot.as_of()
 
 
-def _no_data(currency: str, what: str, *, missing: str = "sales history",
+def _no_data(th: Any, what: str, *, missing: str = "sales history",
              synced: bool = False) -> dict:
     """An empty screen, and the *actual* reason it is empty.
 
@@ -190,11 +206,11 @@ def _no_data(currency: str, what: str, *, missing: str = "sales history",
     """
     if synced:
         return _envelope(
-            {}, currency=currency,
+            {}, th=th,
             empty_reason=(f"The books are synced, but no {missing} has come with "
                           f"them, so {what} cannot be computed yet."))
     return _envelope(
-        {}, currency=currency,
+        {}, th=th,
         empty_reason=(f"No {missing} has been synced yet, so {what} cannot be "
                       f"computed. Connect a Zoho company and run a sync."))
 
@@ -208,7 +224,7 @@ def storyboard(months: int = Query(3, ge=MIN_MONTHS, le=MAX_MONTHS),
     org, snapshot, th = _context(session, principal)
     as_of = _as_of(snapshot)
     if as_of is None:
-        return _no_data(th.currency, "a briefing")
+        return _no_data(th, "a briefing")
 
     comparison = periods.comparison(as_of, months=months)
     movement = flow.compute(snapshot.sales, snapshot.customer_names, comparison)
@@ -239,10 +255,11 @@ def storyboard(months: int = Query(3, ge=MIN_MONTHS, le=MAX_MONTHS),
         flow=flow_dict, lost=lost,
         radar=[o.to_dict() for o in opportunities] if restricted_ok else [],
         radar_totals=totals if restricted_ok else {},
-        dormant=dormant, concentration=concentration, currency=th.currency)
+        dormant=dormant, concentration=concentration, currency=th.currency,
+        restricted_ok=restricted_ok)
     built["as_of"] = as_of.isoformat()
     built["restricted_withheld"] = not restricted_ok
-    return _envelope(built, currency=th.currency,
+    return _envelope(built, th=th,
                      empty_reason=built.pop("empty_reason", None))
 
 
@@ -255,7 +272,7 @@ def commercial_weather(months: int = Query(3, ge=MIN_MONTHS, le=MAX_MONTHS),
     org, snapshot, th = _context(session, principal)
     as_of = _as_of(snapshot)
     if as_of is None:
-        return _no_data(th.currency, "commercial health")
+        return _no_data(th, "commercial health")
 
     comparison = periods.comparison(as_of, months=months)
     movement = flow.compute(snapshot.sales, snapshot.customer_names, comparison).to_dict()
@@ -292,7 +309,7 @@ def commercial_weather(months: int = Query(3, ge=MIN_MONTHS, le=MAX_MONTHS),
                       margin_now=margin_now, margin_prev=None,
                       margin_floor=th.margin_floor, dormant_count=dormant["count"],
                       active_customers=active, coverage=coverage),
-        currency=th.currency, as_of=as_of.isoformat(), period=movement["comparison"])
+        th=th, as_of=as_of.isoformat(), period=movement["comparison"])
 
 
 # ── revenue flow ────────────────────────────────────────────────────────────
@@ -311,7 +328,7 @@ def revenue_flow(months: int = Query(3, ge=MIN_MONTHS, le=MAX_MONTHS),
     th = policy.load_for_org(session, principal.organization_id)
     rows, names, as_of, folded = _flow_rows(session, principal)
     if as_of is None:
-        return _no_data(th.currency, "the revenue waterfall")
+        return _no_data(th, "the revenue waterfall")
 
     comparison = periods.comparison(as_of, months=months)
     movement = flow.compute(rows, names, comparison)
@@ -325,7 +342,7 @@ def revenue_flow(months: int = Query(3, ge=MIN_MONTHS, le=MAX_MONTHS),
         # movement is wrong, and rendering it anyway teaches people to distrust
         # every chart on the page.
         log.error("revenue flow does not reconcile for %s", principal.organization_id)
-    return _envelope(result, currency=th.currency, as_of=as_of.isoformat(),
+    return _envelope(result, th=th, as_of=as_of.isoformat(),
                      empty_reason=(None if movement.moves else
                                    "No customer traded in either period."))
 
@@ -339,14 +356,14 @@ def customer_journey(months: int = Query(12, ge=3, le=24),
     _org, snapshot, th = _context(session, principal)
     as_of = _as_of(snapshot)
     if as_of is None:
-        return _no_data(th.currency, "the customer journey")
+        return _no_data(th, "the customer journey")
 
     points = cohorts.journey(snapshot.sales, as_of, months=months,
                              names=snapshot.customer_names)
     return _envelope(
         {"series": [p.to_dict() for p in points],
          "dormant": cohorts.dormancy(snapshot.sales, snapshot.customer_names, as_of)},
-        currency=th.currency, as_of=as_of.isoformat(),
+        th=th, as_of=as_of.isoformat(),
         empty_reason=(None if points else
                       "Less than two months of history — there is nothing to "
                       "compare a month against yet."))
@@ -360,11 +377,11 @@ def migration_matrix(months: int = Query(3, ge=MIN_MONTHS, le=MAX_MONTHS),
     _org, snapshot, th = _context(session, principal)
     as_of = _as_of(snapshot)
     if as_of is None:
-        return _no_data(th.currency, "band migration")
+        return _no_data(th, "band migration")
 
     comparison = periods.comparison(as_of, months=months)
     result = cohorts.migration(snapshot.sales, snapshot.customer_names, comparison)
-    return _envelope(result, currency=th.currency, as_of=as_of.isoformat(),
+    return _envelope(result, th=th, as_of=as_of.isoformat(),
                      empty_reason=(None if result["cells"] else
                                    "No customer traded in either period."))
 
@@ -416,7 +433,7 @@ def customer_timeline(customer_id: str,
     as_of = _as_of(snapshot)
     rows = snapshot.sales_for_customer(customer_id)
     if as_of is None or not rows:
-        return _no_data(th.currency, "this customer's history")
+        return _no_data(th, "this customer's history")
 
     restricted_ok = principal.role in (Role.SALES_MANAGER, Role.OWNER)
     costs: dict[str, Any] = {}
@@ -443,7 +460,7 @@ def customer_timeline(customer_id: str,
             point.pop("cost_coverage", None)
         result["unavailable"].append(
             {"series": "margin", "reason": "Margin is management information."})
-    return _envelope(result, currency=th.currency,
+    return _envelope(result, th=th,
                      customer_id=customer_id,
                      customer_label=label_for(snapshot.customer_names, customer_id,
                                               kind="customer"),
@@ -491,7 +508,7 @@ def opportunities(limit: int = Query(100, ge=1, le=300),
     return _envelope(
         {"opportunities": [o.to_dict() for o in rows],
          "totals": radar.totals(rows), "excluded": excluded},
-        currency=th.currency, thresholds_version=th.version, empty_reason=reason)
+        th=th, empty_reason=reason)
 
 
 @router.get("/lost-revenue")
@@ -502,7 +519,7 @@ def lost_revenue(months: int = Query(3, ge=MIN_MONTHS, le=MAX_MONTHS),
     org, snapshot, th = _context(session, principal)
     as_of = _as_of(snapshot)
     if as_of is None:
-        return _no_data(th.currency, "lost revenue")
+        return _no_data(th, "lost revenue")
 
     by_customer: dict[str, list] = {}
     for row in session.scalars(
@@ -513,7 +530,7 @@ def lost_revenue(months: int = Query(3, ge=MIN_MONTHS, le=MAX_MONTHS),
     comparison = periods.comparison(as_of, months=months)
     result = cohorts.lost_revenue(snapshot.sales, snapshot.customer_names,
                                   comparison, by_customer)
-    return _envelope(result, currency=th.currency, as_of=as_of.isoformat(),
+    return _envelope(result, th=th, as_of=as_of.isoformat(),
                      empty_reason=(None if result["causes"] else
                                    "No customer spent less this period than last."))
 
@@ -537,7 +554,7 @@ def commercial_landscape(
                              customer_names=snapshot.customer_names,
                              product_names=snapshot.product_names)
     return _envelope(
-        result, currency=th.currency,
+        result, th=th,
         empty_reason=(None if result["points"] else
                       "No relationship has trailing revenue yet. Run a sync, "
                       "then recompute metrics."))
@@ -558,13 +575,13 @@ def revenue_composition(
     _org, snapshot, th = _context(session, principal)
     as_of = _as_of(snapshot)
     if as_of is None:
-        return _no_data(th.currency, "the revenue mix")
+        return _no_data(th, "the revenue mix")
 
     names = (snapshot.customer_names if dimension == composition.BY_CUSTOMER
              else snapshot.product_names)
     result = composition.build(snapshot.sales, names, as_of,
                                dimension=dimension, measure=measure, months=months)
-    return _envelope(result, currency=th.currency, as_of=as_of.isoformat(),
+    return _envelope(result, th=th, as_of=as_of.isoformat(),
                      empty_reason=(None if result["series"] else
                                    "Nothing traded in this window."))
 
@@ -577,13 +594,13 @@ def buying_cadence(principal: Principal = Depends(current_principal),
     _org, snapshot, th = _context(session, principal)
     as_of = _as_of(snapshot)
     if as_of is None:
-        return _no_data(th.currency, "buying rhythm")
+        return _no_data(th, "buying rhythm")
 
     # Same thresholds the dormancy detector runs on, so this screen and the
     # decision queue never disagree about who is overdue.
     result = cadence.build(snapshot.sales, snapshot.customer_names, as_of,
                            thresholds=load_signal_thresholds())
-    return _envelope(result, currency=th.currency,
+    return _envelope(result, th=th,
                      empty_reason=(None if result["customers"] else
                                    "No customer has ordered yet."))
 
@@ -708,7 +725,7 @@ def payment_behaviour(principal: Principal = Depends(current_principal),
     if not receipts and not settled:
         # Not "no sales history": the sales may be entirely there, and what is
         # missing is a payment against them.
-        return _no_data(th.currency, "payment behaviour",
+        return _no_data(th, "payment behaviour",
                         missing="customer payment",
                         synced=_books_have_sales(session, org))
 
@@ -724,7 +741,7 @@ def payment_behaviour(principal: Principal = Depends(current_principal),
                     index_of(session, org, models.Customer), by="customer_id")
     result["sources_differ"] = companies.count > 1
     return _envelope(
-        result, currency=th.currency,
+        result, th=th,
         empty_reason=(None if result["customers"] else
                       "Payments have synced, but none of them is applied to an "
                       "invoice yet — so there is no invoice date to measure "
@@ -757,7 +774,7 @@ def payable_behaviour(principal: Principal = Depends(require_manager_or_owner),
         select(models.VendorPaymentDoc).where(
             models.VendorPaymentDoc.organization_id == org)).all()
     if not made and not settled:
-        return _no_data(th.currency, "payment behaviour towards suppliers",
+        return _no_data(th, "payment behaviour towards suppliers",
                         missing="supplier payment",
                         synced=_books_have_sales(session, org))
 
@@ -787,7 +804,7 @@ def payable_behaviour(principal: Principal = Depends(require_manager_or_owner),
     result["sources_differ"] = companies.count > 1
     result["bases"] = vendor_terms.BASIS_LABELS
     return _envelope(
-        result, currency=th.currency,
+        result, th=th,
         empty_reason=(None if result["vendors"] else
                       "Payments out have synced, but none of them is applied to "
                       "a bill yet — so there is no bill date to measure from. "
@@ -824,7 +841,7 @@ def cash_projection(weeks: int = Query(cashflow.WEEKS, ge=1, le=26),
     if on is None:
         # The projection is folded from receivables and payables state, not read
         # from sales lines, so a synced book with no open invoices lands here.
-        return _no_data(th.currency, "a cash projection",
+        return _no_data(th, "a cash projection",
                         missing="receivable or payable")
     agreed = _agreed_terms(session, org)
     settled_bills, _unattributed = _bill_settlements(session, org, terms=agreed)
@@ -844,7 +861,7 @@ def cash_projection(weeks: int = Query(cashflow.WEEKS, ge=1, le=26),
             # to measure itself against. The money still comes from the fold —
             # this only says how far each supplier's week moves.
             term_shifts=vendor_terms.shifts(_open_bills(session, org), agreed)),
-        currency=th.currency, thresholds_version=th.version)
+        th=th)
 
 
 #: How many names a dead-stock row can usefully carry. Beyond this the column
@@ -901,7 +918,7 @@ def stock_position(principal: Principal = Depends(current_principal),
     state_on = state_engine.latest_as_of(session, org, INVENTORY)
     if state_on is None:
         return _envelope(
-            {}, currency=th.currency,
+            {}, th=th,
             empty_reason=("Stock has not been folded into business state yet. "
                           "It is built at the end of every sync — run one, and "
                           "this screen fills in."))
@@ -943,7 +960,7 @@ def stock_position(principal: Principal = Depends(current_principal),
         companies.stamp(group.get("items") or [], items, by="product_id")
     result["sources_differ"] = companies.count > 1
     return _envelope(
-        result, currency=th.currency,
+        result, th=th,
         empty_reason=(None if lines else
                       "Nothing in the item master is stock-tracked, so there is "
                       "no shelf to report on."))
@@ -966,7 +983,7 @@ def supplier_position(principal: Principal = Depends(require_manager_or_owner),
         select(models.PurchaseOrderDoc)
         .where(models.PurchaseOrderDoc.organization_id == org)).all()
     if not rows:
-        return _no_data(th.currency, "supplier orders",
+        return _no_data(th, "supplier orders",
                         missing="purchase order")
 
     orders = [
@@ -1007,7 +1024,7 @@ def supplier_position(principal: Principal = Depends(require_manager_or_owner),
     companies.stamp(result.get("suppliers") or [], vendors, by="vendor_id")
     companies.stamp(result.get("open_orders") or [], vendors, by="vendor_id")
     result["sources_differ"] = companies.count > 1
-    return _envelope(result, currency=th.currency, empty_reason=None)
+    return _envelope(result, th=th, empty_reason=None)
 
 
 # ── relationship bonds ──────────────────────────────────────────────────────
@@ -1351,7 +1368,7 @@ def relationship_bonds(
         empty = ("Nothing has been traded yet, so there is no relationship to "
                  "measure. Connect a Zoho company and run a sync.")
     return _envelope(
-        {"customers": customers, "vendors": vendors}, currency=th.currency,
+        {"customers": customers, "vendors": vendors}, th=th,
         empty_reason=empty, as_of=as_of.isoformat(),
         sources_differ=companies.count > 1,
         supplier_side_visible=with_suppliers,
@@ -1411,7 +1428,7 @@ def product_mix(months: int = Query(12, ge=3, le=36),
             session, principal.organization_id, connection_id))
     as_of = _as_of(snapshot)
     if as_of is None:
-        return _no_data(th.currency, "product mix")
+        return _no_data(th, "product mix")
 
     principal_of = _principal_of_product(session, org)
     vendor_of = _principal_ids(principal_of)
@@ -1453,7 +1470,7 @@ def product_mix(months: int = Query(12, ge=3, le=36),
     companies.stamp(result["customers"], index_of(session, org, models.Customer),
                     by="customer_id")
     return _envelope(
-        result, currency=th.currency,
+        result, th=th,
         empty_reason=result.pop("empty_reason", None),
         sources_differ=companies.count > 1,
         catalogue=cat.coverage_report(lines_of),
@@ -1535,7 +1552,7 @@ def book_dependency(connection_id: Optional[str] = Query(None),
     org, snapshot, th = _context(session, principal, sales_for_customers=scope)
     as_of = _as_of(snapshot)
     if as_of is None:
-        return _no_data(th.currency, "dependency")
+        return _no_data(th, "dependency")
 
     with_suppliers = principal.role in (Role.SALES_MANAGER, Role.OWNER)
     principal_of = _principal_of_product(session, org)
@@ -1597,7 +1614,7 @@ def book_dependency(connection_id: Optional[str] = Query(None),
         companies.stamp(result["vendors"]["rows"],
                         index_of(session, org, models.Vendor), by="entity_id")
     return _envelope(
-        result, currency=th.currency,
+        result, th=th,
         empty_reason=(None if result["customers"]["rows"] else
                       "Nothing has been traded yet, so there is no exposure to "
                       "measure."),
@@ -1740,7 +1757,7 @@ def list_vendor_terms(principal: Principal = Depends(require_manager_or_owner),
     return _envelope(
         {"terms": rows, "bases": vendor_terms.BASIS_LABELS,
          "max_days": vendor_terms.MAX_TERM_DAYS},
-        currency=th.currency,
+        th=th,
         empty_reason=(None if rows else
                       "No suppliers have synced yet, so there is nothing to "
                       "record a term against."),
@@ -1984,7 +2001,7 @@ def principal_schemes(principal: Principal = Depends(require_manager_or_owner),
     org, snapshot, th = _context(session, principal)
     as_of = _as_of(snapshot)
     if as_of is None:
-        return _no_data(th.currency, "target progress")
+        return _no_data(th, "target progress")
 
     targets = _targets(session, org)
     live = {t.vendor_id: t for t in
@@ -1994,7 +2011,7 @@ def principal_schemes(principal: Principal = Depends(require_manager_or_owner),
     if not live:
         return _envelope(
             {"rows": [], "at_stake_total": 0.0, "as_of": as_of.isoformat()},
-            currency=th.currency,
+            th=th,
             empty_reason=("No principal has a target covering today. Nothing in "
                           "Zoho holds one, so they are typed in — add this "
                           "quarter's numbers and their schemes and this fills "
@@ -2057,7 +2074,7 @@ def principal_schemes(principal: Principal = Depends(require_manager_or_owner),
          "at_stake_total": round(sum(r["rebate"]["at_stake"] or 0.0
                                      for r in rows), 2),
          "as_of": as_of.isoformat()},
-        currency=th.currency,
+        th=th,
         empty_reason=None,
         sources_differ=companies.count > 1,
         floors={"min_elapsed_days": schemes.MIN_ELAPSED_DAYS,
@@ -2151,7 +2168,7 @@ def catalogue_lines(unplaced_only: bool = Query(True),
          "unplaced_revenue": round(unplaced_revenue, 2),
          "unplaced_revenue_share": (round(unplaced_revenue / total_revenue, 4)
                                     if total_revenue else None)},
-        currency=th.currency,
+        th=th,
         empty_reason=(None if rows else
                       ("Every item that has traded is placed in a line."
                        if unplaced_only else
@@ -2277,7 +2294,7 @@ def negotiate(body: NegotiationRequest,
         resolved = floor.resolve(session, org, body.product_id,
                                  family=body.family, as_of=as_of)
     except floor.FloorUnavailable as e:
-        return _envelope({"negotiable": False}, currency=th.currency,
+        return _envelope({"negotiable": False}, th=th,
                          empty_reason=e.reason)
 
     deal = incentive.Deal(
@@ -2350,8 +2367,7 @@ def negotiate(body: NegotiationRequest,
                        "— price, less floor, times quantity."),
         }]
 
-    return _envelope(payload, currency=th.currency,
-                     thresholds_version=th.version,
+    return _envelope(payload, th=th,
                      incentive_config_version=resolved.config_version,
                      empty_reason=None)
 
@@ -2404,7 +2420,7 @@ def scenarios(principal: Principal = Depends(require_manager_or_owner),
              "inputs": ["customer_ids", "recovery_share"]},
          ],
          "unavailable": [dict(u) for u in simulate.UNAVAILABLE]},
-        currency=th.currency)
+        th=th)
 
 
 def _state_scenario(session: Session, org: str, th, body: "SimulationRequest",
@@ -2481,14 +2497,14 @@ def run_simulation(body: SimulationRequest,
     # scan for nothing.
     if body.scenario in (simulate.INVENTORY_CHANGE, simulate.SUPPLIER_DELAY):
         return _envelope(_state_scenario(session, org, th, body, snapshot),
-                         currency=th.currency, thresholds_version=th.version)
+                         th=th)
 
     lines = simulate.load_lines(session, org, customer_id=body.customer_id,
                                 product_id=body.product_id,
                                 customer_names=snapshot.customer_names,
                                 product_names=snapshot.product_names)
     if not lines:
-        return _no_data(th.currency, "this scenario")
+        return _no_data(th, "this scenario")
 
     if body.scenario == simulate.PRICE_CHANGE:
         if body.price_change_pct is None:
@@ -2514,8 +2530,7 @@ def run_simulation(body: SimulationRequest,
             "Supported: PRICE_CHANGE, MARGIN_FLOOR, CUSTOMER_RECOVERY, "
             "INVENTORY_CHANGE, SUPPLIER_DELAY.")
 
-    return _envelope(result, currency=th.currency,
-                     thresholds_version=th.version)
+    return _envelope(result, th=th,)
 
 
 # ── the morning read ────────────────────────────────────────────────────────
@@ -2726,5 +2741,5 @@ def daily(moved_from: Optional[date] = Query(None),
             supply=supply_result, cadence=cadence_result, cash=cash,
             moved=moved, moved_window=(moved_from, moved_to),
             committed_weeks=committed_weeks,
-            currency=th.currency),
-        currency=th.currency, thresholds_version=th.version)
+            th=th),
+        th=th)

@@ -30,9 +30,9 @@ network-level sweep of the API. Screenshots under `/tmp/shots/` (not committed).
 > | F1 · cost reconstructible | **By decision** — the `MFLOOR` leak is closed; the derivation from `floor_price`/`recommended` is accepted rather than engineered around, and `CLAUDE.md` §1 now says so in those terms |
 > | F2 · below-cost line sendable | **Fixed** — a second cost basis for the assessment, plus the send path recording snapshots (the latter arrived independently on `main` in #47) |
 > | F3 · forced password change not enforced | **Fixed** — the server refuses every request but the change itself |
-> | F4 · home CTA sends this role to a 403 | **Open** — the storyboard beat still routes to `/lost-revenue` via `vizPath()` |
+> | F4 · home CTA sends this role to a 403 | **Fixed** — the lost-revenue beat keeps its headline and causes but points a salesperson at `journey`; `story.build` now requires the caller to say whether the restricted screens are reachable |
 > | F5 · timestamps 5½ hours wrong | **Fixed** — 30 call sites through `clock.iso` |
-> | F6 · prose RFQ loses every quantity | **Open** |
+> | F6 · prose RFQ loses every quantity | **Fixed** — `_split_rfq` reads `- 100 nos`, `100 nos <code>` and `qty 100`, strips list markers, and flags a line carrying a unit word it could not turn into a quantity rather than defaulting to 1 |
 > | F7 · "Identities" always 403s | **Fixed** — nav gated, and the 403 fetch stopped |
 > | F8 · denial as bare coloured text | **Fixed** — `Alert`/`ErrorState` |
 > | F9 · two empty states state something false | **Fixed** — each names its actual cause |

@@ -49,7 +49,7 @@ review; the value is not recorded here and has since been rotated again.
 > | F14 · the raw-`<table>` enumeration is already incomplete | **Fixed** — replaced by a rule |
 > | F15 · `CLAUDE.md` calls the Quote Builder table hand-written | **Fixed** |
 > | F16 · a customer with no GSTIN can never be linked | **Fixed** — a name-based suggestion where no identifier exists, never auto-linked |
-> | F17 · exact product names resolve as AMBIGUOUS | **Open** |
+> | F17 · exact product names resolve as AMBIGUOUS | **Not a defect** — measured, and the review's own qualification holds. `CNMG 120408-MP insert` is a description, and the catalogue holds `CNMG 120408-49 - TN2000` and two siblings at score 1.0, so the engine abstains and offers six ranked options — the documented answer. A real code (`2001174`) resolves `AUTO_MATCH`/`EXACT`. Making a description pick one would be guessing, which pie-parser §1 forbids |
 > | F18 · the Settings password form is not MUI | **Fixed** — `TextField`, plus the `username` field a password manager needs |
 > | F19 · the HUMAN LOG does not say who acted | **Fixed** — `actor_name`, resolved server-side |
 > | F20 · dead CSS | **Fixed** |

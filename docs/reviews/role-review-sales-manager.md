@@ -34,14 +34,14 @@ Screenshots under `/tmp/shots/` (not committed) are cited per finding.
 > | 1 · weather divides costed profit by uncosted revenue | **Fixed** — one `aggregate_margin`, Σ profit ÷ Σ costed revenue |
 > | 2 · "Approvals waiting" counted three ways | **Fixed** — one role-scoped `pending_count` |
 > | 3 · forced first-sign-in change does not exist | **Fixed** |
-> | 4 · unparsed RFQ quantity silently becomes 1 | **Open** (same defect as salesperson F6) |
+> | 4 · unparsed RFQ quantity silently becomes 1 | **Fixed** — all five shapes in the table above now parse; a stated-but-unread quantity is flagged, not defaulted. Fixing it also closed an unreported hazard in the same rule: `DNMG 150608` was read as code `DNMG` at quantity 150,608 |
 > | 5 · no team surface, attribution never rendered | **Partly, by decision** — attribution now renders on the grid and the card and the page is retitled; the per-rep roll-up is deliberately deferred while there is one salesperson to roll up |
 > | 6 · `can_decide` ignores the self-approval rule | **Fixed** — one `refusal_for`, used by the check and the button |
 > | 7 · product mix's empty reasons on the wrong conditions | **Fixed** |
 > | 8 · Supply/Cash/How-we-pay blame a sync that is not missing | **Fixed** — `_no_data` names what is actually absent |
 > | 9 · one margin printed 17.3% and 17.4% | **Fixed** — rounded once, before formatting |
-> | 10 · Opportunities names a control the manager lacks | **Open** |
-> | 11 · `thresholds_version` absent from most manager payloads | **Partly** — added to the approval payload; the other read payloads are unchanged |
+> | 10 · Opportunities names a control the manager lacks | **Fixed** — "Ask an owner to lower the floor" for a manager, matching the Data screen's phrasing. (This table said Open in its first version; that was a bad search on my part, not a missing fix.) |
+> | 11 · `thresholds_version` absent from most manager payloads | **Fixed** — `_envelope` takes the thresholds object rather than a currency string, so every insight response is stamped and a new endpoint cannot omit it. The two `commercial/` payloads the finding singles out are stamped too, each with the version that actually judged its numbers |
 > | 12 · decision-support sends a UI placeholder as a product id | **Already fixed** on `main` in #47 — `rel.productRef` |
 > | 13 · `ui-standards.md` raw-`<table>` enumeration stale | **Fixed** — the census became a rule |
 

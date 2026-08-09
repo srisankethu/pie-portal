@@ -36,7 +36,20 @@ export const TYPE_LABEL: Record<string, string> = {
   CASH_RECEIVABLE_OVERDUE: "Receivables past due",
   CASH_CREDIT_EXPOSURE: "Credit exposure",
   SUP_SPEND_CONCENTRATION: "Supplier concentration",
-  SUP_SOLE_SOURCE: "Only source for these items" };
+  SUP_SOLE_SOURCE: "Only source for these items",
+
+  // Commercial-intelligence signals, folded in from a second map that lived in
+  // `CommercialScreens.tsx`. One concept had two owners: these six were complete
+  // there and absent here, so the decision queue — which reads this one through
+  // `ui.typeLabel` — rendered them as raw enums like `CI_MARGIN_DECLINE_NO_VOLUME`
+  // while the commercial screen three clicks away said "No volume gained". Adding
+  // the missing rows to the incomplete map would have made a third copy.
+  CI_MARGIN_EROSION: "Margin eroding",
+  CI_COST_NOT_PASSED: "Cost not passed on",
+  CI_LOW_PEER_PRICING: "Below peers",
+  CI_MARGIN_DECLINE_NO_VOLUME: "No volume gained",
+  CI_MARGIN_DECLINE_WITH_VOLUME: "Volume traded for margin",
+  CI_MATERIAL_MARGIN_GAP: "Material gap" };
 
 /** The state fields a card shows, in the words a person reads.
  *

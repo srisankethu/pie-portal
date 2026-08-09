@@ -119,6 +119,31 @@ over rows that may hold `None`, `if not rows: return None` in something whose jo
 is to refuse, and a `is not None` guard wrapped around the objection rather than
 around the arithmetic.
 
+**An equivalence score is policy, never an identity.** `pie_service._rel_from_score`
+turns a score into TECH / COMPAT / POSSIBLE using this organization's
+`equivalence_tech_band` and `equivalence_compat_band` — commercial policy, read
+per request, versioned, and two orgs may legitimately disagree about the same
+pair. So a `rel` is true of *this quote under this policy*, not of the products.
+Never persist one as a relationship between products, and never feed a derived
+`rel` or `supplyCode` back in as the input to another resolution.
+
+The reason is that technical equivalence does not compose. `A ≈ B` within
+tolerance and `B ≈ C` within tolerance is not `A ≈ C`, and pie-parser's engine is
+built so it cannot compose them — every comparison's left operand is the request.
+The one path that would smuggle a second hop past that is storage: a confirmed
+mapping is *asserted* identity, and the engine will derive a requirement from an
+asserted record and rank equivalents off it. So a scored suggestion promoted to a
+confirmed mapping becomes an exact reference it never was, and the next "same as
+their 7781 but 12 mm" composes two bands into a wrong part with a defensible
+explanation attached.
+
+Two narrow conditions hold that line: `store._identity_candidate` offers a
+confirmable code only for the engine's own single-candidate `NEEDS_REVIEW`
+proposal — an exact catalogue hit downgraded for namespace safety, never a scored
+suggestion — and `routers.quote._confirm_identity` refuses anything else.
+Picking a different product is a substitution on one quote and must stay one.
+`tests/test_identity_confirmation_gate.py` pins both.
+
 ---
 
 ## 2. Before writing new code — the capability search

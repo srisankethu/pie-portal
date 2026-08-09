@@ -226,11 +226,16 @@ def test_a_resolved_line_opens_at_list_and_says_so(client, mgmt_hdr):
     assert q["summary"]["atListPrice"] == 0
 
 
+@pytest.mark.requires_pie
 def test_price_source_reaches_a_salesperson_too(client, sales_hdr):
     """It says where a rate came from, not what it cost — so it is not gated.
 
     A salesperson is the person most likely to send an untouched quote, which
     makes them the reader this mark exists for.
+
+    Marked, unlike its neighbour `test_economics_are_role_gated`, because it
+    asserts on a line that *resolved*: without the engine there is no supply
+    product, so nothing auto-prices and `priceSource` is correctly null.
     """
     q = client.post("/api/quotes", json={"customer": "Pitti"}, headers=sales_hdr).json()
     qid = q["id"]

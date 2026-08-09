@@ -186,7 +186,21 @@ def test_a_confirmed_line_that_resolves_is_released():
     st.confirm_reading(ln)
     # What a resolved, in-books, priced line looks like — the state the rest of
     # the quote path produces once Zoho has answered.
+    #
+    # `service` is part of that state and was the one field this did not set.
+    # With the engine present it is already None and the assertion held; without
+    # it, `add_rfq` above had recorded `service="PIE"` — "the resolution engine
+    # is unavailable for this line" — which `status()` reports as a technical
+    # blocker for its own good reason. So the line being described was one that
+    # had simultaneously resolved and failed to resolve, and the test failed on
+    # every checkout that cannot fetch the private submodule, which includes CI.
+    # It has been red on `main` since this file landed.
+    #
+    # Setting it here rather than marking the test `requires_pie`: the subject
+    # is the reading-confirmation hold, not the engine, and a test that runs
+    # everywhere is worth more than one that skips where it would have failed.
     ln.rel, ln.supplyCode, ln.inBooks, ln.quoted = "EXACT", "CNMG120408MP", True, 400.0
+    ln.service = None
     assert st.blockers(q) == []
 
 

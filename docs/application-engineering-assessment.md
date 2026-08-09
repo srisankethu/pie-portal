@@ -126,18 +126,35 @@ fill (shape + edge + radius, 2,057 rows), definite misroutes fall to **1
 ## 5. What is worth building anyway
 
 Ordered. The first three are cheap and were blocked only by an assumption nobody
-had measured.
+had measured. **Items 1 and 2 are built** — they shipped with this document.
 
-1. **`pie_record_id` on `Product`** (`domain/models.py`). Nullable
-   `pie_record_id` + `pie_link_method` + `pie_catalog_version`, written in
-   `ingestion/` from exact SKU match only. Link, never merge, per `identity/`.
-   NULL means unlinked and must never be read as an assumption. 1,420 rows today.
+1. **`pie_record_id` on `Product`** (`domain/models.py`) — *done*. Nullable
+   `pie_record_id` + `pie_link_method` + `pie_catalog_version`, written by
+   `ingestion/sync._link_catalog` from an exact SKU match only. Link, never
+   merge, per `identity/`. NULL means unlinked and must never be read as an
+   assumption. 1,420 rows on the live master.
+
+   The link is *derived*, so it is recomputed every sync and a lost match clears
+   it — a write-only link would keep asserting a superseded `record_id` under a
+   stamp claiming otherwise. The one exception is a catalogue that is absent
+   entirely: that leaves existing links untouched, because "the pack does not
+   cover this item" and "nobody asked the pack" are different facts and only the
+   first is evidence.
 
 2. **Pass the decode through the EXACT path in `pie_service._map`.** `Candidate`
    already carries `attributes`, but only via `_candidates_from_suggestions`.
-   Branch (1) — AUTHORITATIVE identity, the path with 0.97 median confidence — is
-   the one that drops it, while lower-confidence suggestion paths keep it. The
-   matched record is already in hand. This is inverted.
+   Branch (1) — AUTHORITATIVE identity, the path with 0.97 median confidence —
+   dropped it while the lower-confidence suggestion paths kept it, so a
+   salesperson got more about a guess than about a certainty.
+
+   The loss is not in `_map` alone. pie-parser's `identity/model.py`
+   `IdentityMatch` holds the whole catalogue row in `.record`, but its
+   `to_dict()` projects it to four fields, so geometry never crossed the
+   boundary at all. Rather than change the pinned submodule, the portal now
+   re-reads the row from the same `AuthoritativeIndex` item 1 loads anyway, and
+   projects it through `pie_service.ATTRIBUTE_FIELDS` — deliberately identical
+   to the tuple `equivalence/query.py` uses, so a product is described the same
+   way however it was found.
 
 3. **Master rationalisation.** The measurement is the product: 6,146 items with
    no manufacturer, 73% of Kennametal MM#s absent from the corpus, an HSN code
@@ -169,8 +186,8 @@ had measured.
 `equivalence/catalog.py:ZohoCatalogSource` already reads `grade`, `iso_shape`,
 `product_family`, `corner_radius_mm` and `cutting_dia_mm` from a Zoho row. **None
 of those fields exist on a real one** — only the identity and label fields do, so
-it currently contributes candidates with null geometry that score nothing. The
-seam was built for a decorated master. Item 1 is the missing half.
+it contributes candidates with null geometry that score nothing. The seam was
+built for a decorated master; item 1 supplies the pointer that can decorate it.
 
 ---
 

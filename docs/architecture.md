@@ -29,9 +29,32 @@ Zoho Books
   → Context Assembly               compact, permission-scoped fact bundle
   → AI Decision Layer              validated interpretation; degradable
   → Decision Store                 routed · prioritised · auditable
-  → Human action                   accept / modify / dismiss
+  → Human action                   accept / modify / dismiss / escalate
   → Outcome capture                (not built — see "Deliberately not built")
 ```
+
+### A cut-over in the human-action data
+
+Until the fix that accompanies this note, the clients collapsed two pairs of
+intents onto one action each, so rows written before it mean something different
+from rows written after:
+
+| Recorded | Before the fix | After |
+|---|---|---|
+| `ACTIONED` | accept **or** modify | accept |
+| `OVERRIDDEN` | escalate | modify |
+| `ESCALATED` | never occurred | escalate |
+| `VIEWED` | never occurred | a person opened the card |
+
+Both collapses were client-side; the server has always distinguished all seven
+actions, and `HumanAction.ESCALATE` — with its approval request and its
+deliberately non-closing status — was built, tested and then never called.
+
+**Any adoption figure that spans the cut-over is comparing two definitions**, and
+will show a fictitious drop in acceptance on the day of the fix as modifies stop
+counting as accepts. Report from the cut-over forward, or label the earlier
+period. Do not restate the old rows: nobody recorded which of them were modifies,
+and inferring it from the presence of a note would be a guess presented as data.
 
 ---
 
@@ -298,6 +321,31 @@ Stating these explicitly matters as much as the design itself.
 - **Outcome Tracker.** The `Outcome` model exists but nothing writes it. Until
   it does, adoption and decision quality are measurable; realised monetary
   impact is not. This is the most valuable next increment.
+
+  Note that `quote_outcomes` is a different table with live writers and a real
+  `DRAFT → SENT → WON/LOST` machine. Outcome capture is half-built, on the half
+  that produces revenue — scope the Tracker against what exists rather than from
+  zero. For state-derived decisions, `impact.financial` already quantifies what
+  each situation is worth at the moment it is raised, so value-*at-risk*-weighted
+  acceptance needs no new table; only realised impact does.
+
+- **Reporting on the queue's own lifecycle.** Nothing aggregates what the
+  Decision Store captures. The three numbers that would say whether this
+  platform works — acceptance by category and by user, modify rate and modify
+  distance, and acceptance as a function of queue volume — are not computed
+  anywhere. The data for the first and third is present today; the second needs
+  `quote_decisions`, where the distance from the recommended price is already a
+  number on every priced line.
+
+  When it is built it belongs in `commercial/` — deterministic aggregation over
+  persisted rows, and it must never be able to import `ai/`. Copy the shape of
+  `ai/metrics.py`: a pure `summarize` over a row sequence, a `report` for the
+  rolling windows, an owner-only route, and a **two-sided** band. A category
+  accepted almost every time is as suspect as one nobody accepts — it is being
+  rubber-stamped, or the detector only fires on the already-obvious — exactly as
+  a gate that never rejects is as suspect as one that rejects constantly. Below
+  `AI_HEALTH_MIN_SAMPLE` the answer is `INSUFFICIENT_DATA` and no inference is
+  drawn in either direction.
 - **Prompt/response content logging.** The easiest way to debug a bad
   recommendation, and rejected on purpose: it would create an unscoped second
   copy of the cost/margin facts the permission model works to contain. The

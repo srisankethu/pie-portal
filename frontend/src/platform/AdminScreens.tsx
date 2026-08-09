@@ -190,9 +190,13 @@ function ApprovalCard({
 
       {req.is_open && !req.can_decide && (
         <div className="ap-waiting">
-          {isMine
-            ? `Waiting on ${req.required_authority === "OWNER" ? "an owner" : "a manager"}.`
-            : "You are not authorized to decide this one."}
+          {/* The server's own reason, when it gave one. Deriving the sentence
+              from `required_authority` told a manager that their own
+              manager-authority request was "waiting on a manager". */}
+          {req.cannot_decide_reason
+            ?? (isMine
+              ? `Waiting on ${req.required_authority === "OWNER" ? "an owner" : "a manager"}.`
+              : "You are not authorized to decide this one.")}
           {isMine && (
             <Button variant="text" size="small" disabled={busy} onClick={() => act("WITHDRAWN")}>
               Withdraw

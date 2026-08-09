@@ -561,6 +561,9 @@ export interface ApprovalRequest {
   decision_note: string | null;
   thread: ApprovalThreadEntry[];
   can_decide: boolean;
+  /** Why not, when `can_decide` is false — rendered in place of the button
+   *  rather than inferred from `required_authority`. */
+  cannot_decide_reason?: string | null;
   is_open: boolean;
   /** Carries cost and margin — absent for a salesperson, even on their own request. */
   subject?: Record<string, unknown>;

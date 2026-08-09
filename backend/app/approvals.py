@@ -79,18 +79,40 @@ def can_decide(role: Role, required: ApprovalAuthority) -> bool:
     return role in (Role.SALES_MANAGER, Role.OWNER)
 
 
-def _assert_can_decide(principal, request: models.ApprovalRequest,
-                       policy: models.OrgPolicy) -> None:
+def refusal_for(principal, request: models.ApprovalRequest,
+                policy: models.OrgPolicy) -> Optional[str]:
+    """Why this principal may not decide this request, or None if they may.
+
+    One predicate, because there used to be two and they disagreed. `can_decide`
+    above answers from role and authority alone, and `to_dict` served that as
+    `can_decide: true` on a manager's *own* request — so the card rendered an
+    enabled Approve, and pressing it 403'd from the rule this function now holds.
+    The same mismatch inflated `pending_count`, which is what the nav badge and
+    "2 waiting on you" read, so a manager was told they had work they could not
+    do and then shown a queue where one item refused them.
+
+    Returns the reason rather than a bool so the screen can say why the action is
+    unavailable instead of guessing from the authority field. Guessing is how the
+    not-decidable branch ended up telling a manager their own manager-authority
+    request was "waiting on a manager".
+    """
     required = ApprovalAuthority(request.required_authority)
     if not can_decide(principal.role, required):
-        raise NotAuthorized(
-            "Selling below what the item cost us is the owner's decision"
-            if required is ApprovalAuthority.OWNER
-            else "A sales manager or owner must decide this")
+        return ("Selling below what the item cost us is the owner's decision"
+                if required is ApprovalAuthority.OWNER
+                else "A sales manager or owner must decide this")
     if (request.requested_by_user_id == principal.user_id
             and not policy.allow_self_approval
             and principal.role is not Role.OWNER):
-        raise NotAuthorized("You cannot approve your own request")
+        return "You cannot approve your own request"
+    return None
+
+
+def _assert_can_decide(principal, request: models.ApprovalRequest,
+                       policy: models.OrgPolicy) -> None:
+    reason = refusal_for(principal, request, policy)
+    if reason is not None:
+        raise NotAuthorized(reason)
 
 
 # ── raising ─────────────────────────────────────────────────────────────────
@@ -399,16 +421,29 @@ def inbox(session: Session, principal, *, status: Optional[ApprovalStatus] = Non
 
 
 def pending_count(session: Session, principal) -> int:
+    """How many open requests this principal can actually decide.
+
+    "Can actually" includes the self-approval rule, which this used to ignore —
+    so the badge counted a manager's own request as work waiting on them.
+    """
+    policy = get_policy(session, principal.organization_id)
     return sum(1 for r in inbox(session, principal, status=ApprovalStatus.PENDING)
-               if can_decide(principal.role, ApprovalAuthority(r.required_authority)))
+               if refusal_for(principal, r, policy) is None)
 
 
-def to_dict(request: models.ApprovalRequest, role: Role,
+def to_dict(request: models.ApprovalRequest, principal,
+            policy: models.OrgPolicy,
             names: Optional[dict[str, str]] = None) -> dict:
     """Serialize a request. ``subject`` carries cost and margin, so a
-    salesperson — including the one who raised it — does not receive it."""
+    salesperson — including the one who raised it — does not receive it.
+
+    Takes the principal and the policy rather than a bare role, because whether
+    this request is decidable depends on who is asking and on
+    ``allow_self_approval`` — see ``refusal_for``.
+    """
     names = names or {}
-    is_sales = role is Role.SALESPERSON
+    is_sales = principal.role is Role.SALESPERSON
+    refusal = refusal_for(principal, request, policy)
     out: dict[str, Any] = {
         "approval_request_id": request.approval_request_id,
         "kind": request.kind,
@@ -440,7 +475,10 @@ def to_dict(request: models.ApprovalRequest, role: Role,
         # and never served, so the one screen where "was this signed off under
         # the rules we had then?" is the whole question could not answer it.
         "thresholds_version": request.thresholds_version or None,
-        "can_decide": can_decide(role, ApprovalAuthority(request.required_authority)),
+        "can_decide": refusal is None,
+        # Why not, for the screen to render in place of the button it is not
+        # offering. Absent when the action is available.
+        "cannot_decide_reason": refusal,
         "is_open": ApprovalStatus(request.status) in OPEN_APPROVAL_STATUSES,
     }
     if not is_sales:

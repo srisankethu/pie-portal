@@ -2,7 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react
 import { DataGrid, numeric } from "./DataGrid";
 import { EntityName, EntitySource } from "./EntityName";
 import { CompanyFilter, useCompanyFilter } from "./CompanyFilter";
-import { EmptyState, ErrorState, FilterChip, LoadingState, StatusChip } from "./kit";
+import { EmptyState, ErrorState, FilterChip, HumanLog, LoadingState, StatusChip } from "./kit";
 import { formatDate } from "../when";
 import {
   clearPlatformSession,
@@ -1312,13 +1312,7 @@ function DetailScreen({
               <WhyPanel rationale={d.rationale} evidence={d.state_evidence} />
               <TracePanel decisionId={d.decision_id} token={token} />
               {d.human_action && (
-                <>
-                  <div className="section-h">Human log</div>
-                  <div className="evi">
-                    <span>{d.human_action.action} · {d.human_action.note || "no note"}</span>
-                    <span className="text-muted">{formatDate(d.human_action.acted_at)}</span>
-                  </div>
-                </>
+                <HumanLog action={d.human_action} />
               )}
             </>
           ) : (
@@ -1365,15 +1359,7 @@ function DetailScreen({
           )}
 
           {d.human_action && (
-            <>
-              <div className="section-h">Human log</div>
-              <div className="evi">
-                <span>
-                  {d.human_action.action} · {d.human_action.note || "no note"}
-                </span>
-                <span className="text-muted">{formatDate(d.human_action.acted_at)}</span>
-              </div>
-            </>
+            <HumanLog action={d.human_action} />
           )}
           </>
           )}

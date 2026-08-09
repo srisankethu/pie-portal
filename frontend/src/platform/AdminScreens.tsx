@@ -161,13 +161,24 @@ function ApprovalCard({
         <div className="ap-actions">
           <input
             className="input"
-            placeholder="Add a note (required to reject or return)"
+            placeholder={
+              req.requires_rationale
+                ? "Why is this worth it? (required — this price is below cost)"
+                : "Add a note (required to reject or return)"
+            }
             value={note}
             onChange={(e) => setNote(e.target.value)}
             aria-label="Decision note"
           />
           <div className="ap-buttons">
-            <Button variant="contained" size="small" disabled={busy} onClick={() => act("APPROVED")}>
+            {/* Signing a below-cost line is the one irreversible concession here,
+                and it was the only decision in the app that took no reason at
+                all. The server refuses it too — this only stops the round trip. */}
+            <Button
+              variant="contained" size="small"
+              disabled={busy || (req.requires_rationale && !note.trim())}
+              onClick={() => act("APPROVED")}
+            >
               Approve
             </Button>
             <Button

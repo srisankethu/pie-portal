@@ -322,8 +322,13 @@ def test_selling_below_cost_is_escalated_to_the_owner_not_the_manager(client):
     assert denied.status_code == 403
     assert "owner" in denied.json()["detail"].lower()
 
+    # The note is required for a below-cost signature — see
+    # `test_signing_a_below_cost_price_needs_a_reason_on_the_record`. What this
+    # test is about is *who* may sign, so it complies rather than asserting the
+    # older, quieter behaviour.
     allowed = client.post(f"/api/v1/approvals/{rid}/decide",
-                          json={"status": "APPROVED"}, headers=_hdr(client, OWNER))
+                          json={"status": "APPROVED", "note": "Strategic account."},
+                          headers=_hdr(client, OWNER))
     assert allowed.status_code == 200 and allowed.json()["status"] == "APPROVED"
 
 
@@ -356,6 +361,52 @@ def test_a_manager_is_not_offered_an_approval_they_cannot_grant(client):
     theirs = client.get(f"/api/v1/approvals/{rid}", headers=_hdr(client, OWNER)).json()
     assert theirs["can_decide"] is True
     assert theirs["cannot_decide_reason"] is None
+
+
+def test_signing_a_below_cost_price_needs_a_reason_on_the_record(client):
+    """The one irreversible concession here took no reason at all.
+
+    "Ask for a different price" and the decision screen's "Do something
+    different" both refuse to proceed without text. Approving a line priced below
+    what the item cost us — where the money is gone the moment the quote goes out
+    — decided immediately and stored `decision_note = None`.
+    """
+    _snapshot(client, SALES, 100.0)                 # under the 124.0 unit cost
+    raised = _raise(client, SALES, 100.0).json()
+    assert raised["required_authority"] == "OWNER"
+    assert raised["requires_rationale"] is True, "the server says so, not the browser"
+
+    bare = client.post(f"/api/v1/approvals/{raised['approval_request_id']}/decide",
+                       json={"status": "APPROVED"}, headers=_hdr(client, OWNER))
+    assert bare.status_code == 400, bare.text
+    assert "needs a reason" in bare.json()["detail"]
+
+    blank = client.post(f"/api/v1/approvals/{raised['approval_request_id']}/decide",
+                        json={"status": "APPROVED", "note": "   "},
+                        headers=_hdr(client, OWNER))
+    assert blank.status_code == 400, "whitespace is not a reason"
+
+    signed = client.post(f"/api/v1/approvals/{raised['approval_request_id']}/decide",
+                         json={"status": "APPROVED",
+                               "note": "Strategic account; recovering it on the holder."},
+                         headers=_hdr(client, OWNER))
+    assert signed.status_code == 200
+    body = signed.json()
+    assert body["status"] == "APPROVED"
+    assert body["decision_note"] == "Strategic account; recovering it on the holder."
+    assert body["thread"][-1]["note"] == body["decision_note"], "and it is in the thread"
+
+
+def test_a_thin_price_can_still_be_approved_without_a_note(client):
+    """Only the irreversible one is gated. A manager signing an ordinary thin
+    margin should not be made to write a sentence to clear their queue."""
+    raised = _raise(client, SALES, 135.0).json()
+    assert raised["required_authority"] == "MANAGER"
+    assert raised["requires_rationale"] is False
+
+    r = client.post(f"/api/v1/approvals/{raised['approval_request_id']}/decide",
+                    json={"status": "APPROVED"}, headers=_hdr(client, MANAGER))
+    assert r.status_code == 200 and r.json()["status"] == "APPROVED"
 
 
 def test_a_managers_count_excludes_what_only_an_owner_may_sign(client):

@@ -892,3 +892,81 @@ export interface AiMetricsReport {
   generated_at: string;
   windows: Record<string, AiWindowSummary>;
 }
+
+/* ── the trust surface (owner only) ──────────────────────────────────────────
+ * What leaves for a model, who has opened this tenant, and the two irreversible
+ * things an owner can do with their own data. Shapes mirror `routers/trust.py`;
+ * every one of them is the server's own words, because the point of the screen
+ * is that the promise is checkable rather than restated by the client.
+ */
+
+/** One category of fact the model is allowed to receive, and why. */
+export interface DisclosureAllowed {
+  category: string;
+  example: string;
+  why: string;
+}
+
+export interface DisclosureStatement {
+  provider: string;
+  /** The configured model. Note that the server reports this whatever the
+   *  provider is, so with `provider: "mock"` it names a model nothing calls —
+   *  the screen says which provider is running rather than asserting this. */
+  model: string;
+  training_on_customer_data: boolean;
+  zero_retention_requested: boolean;
+  allowed: DisclosureAllowed[];
+  never_sent: string[];
+  notes: string;
+}
+
+export interface ModelPayloadRow {
+  payload_id: string;
+  decision_type: string | null;
+  provider: string;
+  model: string;
+  created_at: string | null;
+  /** Anything the outbound checker found that the disclosure says never leaves.
+   *  Non-empty is a defect report, not a statistic. */
+  findings: string[];
+  payload: string | null;
+}
+
+export interface PayloadsReport {
+  summary: { payloads: number; flagged: number };
+  payloads: ModelPayloadRow[];
+}
+
+/** One entry in the break-glass log. `GRANTED` and `REVOKED` bracket a window;
+ *  `ACCESSED` is one use inside it, and there is one row per use. */
+export interface AccessEventRow {
+  event_id: string;
+  staff_user_id: string;
+  action: string;
+  detail: string | null;
+  at: string | null;
+}
+
+export interface AccessReport {
+  events: AccessEventRow[];
+  note: string;
+}
+
+export interface ErasureReceipt {
+  organization_id: string;
+  erased_at: string | null;
+  reason: string;
+  actor_user_id: string | null;
+  manifest: Record<string, unknown>;
+  method: string;
+  signature: string;
+  /** Re-checked server-side on every read, so a receipt cannot be believed on
+   *  the strength of its own presence. */
+  verified: boolean;
+}
+
+export interface ErasureState {
+  erased: boolean;
+  receipt: ErasureReceipt | null;
+  key_destroyed?: boolean;
+}

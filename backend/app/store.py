@@ -31,6 +31,17 @@ _REL_LABELS = {
 
 _ids = itertools.count(1)
 
+#: Distinguishes this process's ids from the last one's.
+#:
+#: Quotes live in memory and their ids restarted at ``q1`` on every boot, which
+#: was harmless while nothing outside this module remembered them. It is not
+#: harmless now: sending a quote writes ``QuoteDecision`` and ``QuoteOutcome``
+#: rows keyed on the quote id, and the approval gate judges a quote by the
+#: snapshots filed under its id. After a restart, a brand-new ``q1`` would
+#: inherit the previous ``q1``'s snapshots and be refused — or worse, be
+#: approved — on the strength of a quote nobody in the room had ever seen.
+_RUN = f"{int(time.time()):x}"
+
 
 def sales_tax_rate() -> float:
     """The headline sales-tax rate applied to a quote subtotal.
@@ -140,6 +151,16 @@ class Line:
     family: Optional[str] = None
     # commercial
     quoted: Optional[float] = None
+    #: Where ``quoted`` came from. ``LIST`` is the catalogue rate this line
+    #: opened at; ``USER`` is a number a person put there.
+    #:
+    #: A resolved line is auto-quoted at list so a forty-line tender is not
+    #: forty numbers to type, and that default is genuinely useful — but it is
+    #: indistinguishable from a considered price unless something says which is
+    #: which. It was not distinguished: the screen said "nothing is priced for
+    #: you" in three places while every line arrived priced, and a quote nobody
+    #: had looked at showed a Quotation total ready to send.
+    priceSource: str = "LIST"          # LIST | USER
     createPhase: Optional[str] = None  # None | progress | failed
     service: Optional[str] = None      # None | BOOKS | AVAIL | PIE
     incompatReason: Optional[str] = None
@@ -216,6 +237,9 @@ class Line:
             "inBooks": self.inBooks,
             "shortage": sh,
             "quoted": self.quoted,
+            # Whose number this is. Safe for both roles — it says where a rate
+            # came from, not what it cost.
+            "priceSource": self.priceSource if self.quoted is not None else None,
             "recommended": econ.recommended,   # decision support, safe for both roles
             "lineTotal": (self.quoted * self.reqQty) if self.quoted is not None else None,
             "createPhase": self.createPhase,
@@ -249,6 +273,13 @@ class Quote:
     customerId: Optional[str] = None
     lines: List[Line] = field(default_factory=list)
     savedAt: Optional[str] = None
+    #: The Zoho estimate this quote has already produced, and the priced content
+    #: it was produced from. Nothing remembered either, so pressing the send
+    #: button three times created three estimates and the screen looked
+    #: identical after the first as before it.
+    estimateNumber: Optional[str] = None
+    estimateLineCount: Optional[int] = None
+    estimateFingerprint: Optional[str] = None
 
     @property
     def customer_ref(self) -> str:
@@ -280,9 +311,25 @@ class Quote:
                 "taxRate": rate,
                 "grand": round(subtotal + tax, 2),
                 "total": len(self.lines),
+                # What the total does and does not yet contain. A quote of four
+                # lines where two are unresolved still printed a Quotation
+                # total, in the same weight as a finished one, with nothing
+                # saying it was the total of half a quote.
+                "unpriced": sum(1 for ln in self.lines if ln.quoted is None),
+                # Priced, but at the rate the catalogue opened the line with —
+                # nobody has agreed to it. See Line.priceSource.
+                "atListPrice": sum(1 for ln in self.lines
+                                   if ln.quoted is not None and ln.priceSource == "LIST"),
             },
             "filterCounts": counts,
             "marginFloor": floor,
+            # What has already gone to Zoho from this quote, so the screen can
+            # say so rather than leaving an unchanged primary button as the only
+            # evidence that anything happened.
+            "estimate": ({"number": self.estimateNumber,
+                          "lineCount": self.estimateLineCount,
+                          "current": self.estimateFingerprint == _priced_fingerprint(self)}
+                         if self.estimateNumber else None),
         }
 
     def _filter_counts(self) -> Dict[str, int]:
@@ -311,6 +358,19 @@ class Quote:
         }
 
 
+def _priced_fingerprint(quote: "Quote") -> str:
+    """What a Zoho estimate is built from, as one comparable string.
+
+    Exactly the fields that reach ``zoho.create_estimate`` — product, quantity
+    and rate, per line, in order. Everything else about a quote can move without
+    changing what was sent, and a fingerprint that also covered, say, the filter
+    counts would call an unchanged quote changed.
+    """
+    return "|".join(
+        f"{ln.supplyCode}:{ln.reqQty}:{ln.quoted}"
+        for ln in quote.lines if ln.supplyCode)
+
+
 class QuoteStore:
     """Process-wide quote registry."""
 
@@ -323,7 +383,7 @@ class QuoteStore:
 
     def create(self, customer: str, customer_id: Optional[str] = None) -> Quote:
         with self._lock:
-            qid = f"q{next(_ids)}"
+            qid = f"q{_RUN}-{next(_ids)}"
             num = f"QB-{int(time.time()) % 100000:05d}"
             q = Quote(id=qid, customer=customer or "New customer", number=num,
                       customerId=customer_id or None)
@@ -383,8 +443,14 @@ class QuoteStore:
             quote.lines.extend(new)
         return new
 
-    def _enrich_from_zoho(self, ln: Line, zoho: ZohoService) -> None:
-        """Attach commercial facts + auto-price a resolved, in-books line."""
+    def _enrich_from_zoho(self, ln: Line, zoho: ZohoService,
+                          code_changed: bool = True) -> None:
+        """Attach commercial facts + auto-price a resolved, in-books line.
+
+        ``code_changed`` says whether this call follows a move to a *different*
+        supply product. It does on a fresh line and when somebody picks another
+        candidate; it does not when the same product is re-read.
+        """
         if not ln.supplyCode:
             return
         if not zoho.available:
@@ -401,7 +467,15 @@ class QuoteStore:
         ln.cost = item.cost
         ln.family = self._family_of(ln)
         if item.in_books and item.list_price is not None:
-            ln.quoted = item.list_price      # auto-quote at list; user may edit
+            # Auto-quote at list so a long tender is not a column of typing —
+            # but marked as the catalogue's number rather than a person's, so
+            # the screen can show which rates nobody has looked at yet. A price
+            # somebody set survives a re-resolution of the same product; moving
+            # the line to a *different* product is a different catalogue rate
+            # and the default comes back.
+            if ln.quoted is None or ln.priceSource != "USER" or code_changed:
+                ln.quoted = item.list_price
+                ln.priceSource = "LIST"
 
     @staticmethod
     def _family_of(ln: Line) -> Optional[str]:
@@ -415,6 +489,7 @@ class QuoteStore:
     def select_supply(self, ln: Line, code: str, zoho: ZohoService, manual: bool = False) -> None:
         cand = next((c for c in ln.candidates if c.code == code), None)
         was_exact = code == ln.reqCode
+        code_changed = ln.supplyCode != code
         ln.supplyCode = code
         if was_exact:
             ln.rel, ln.sel = "EXACT", "AUTO"
@@ -428,12 +503,16 @@ class QuoteStore:
             ln.reqDesc = ln.reqDesc  # requested stays; supplyDesc updated below
         ln.service = None
         ln.incompatReason = None
-        self._enrich_from_zoho(ln, zoho)
+        self._enrich_from_zoho(ln, zoho, code_changed=code_changed)
         if cand:
             ln.supplyDesc = cand.desc
 
     def set_price(self, ln: Line, price: Optional[float]) -> None:
         ln.quoted = price
+        # A number a person typed, including one that happens to equal list.
+        # Clearing the field puts the line back to having no price at all, so
+        # there is nothing left to attribute.
+        ln.priceSource = "USER" if price is not None else "LIST"
 
     def delete_line(self, quote: Quote, line_id: str) -> Line:
         with self._lock:
@@ -444,11 +523,28 @@ class QuoteStore:
             return line
 
     def apply_discount(self, lines: List[Line], pct: float) -> int:
+        """Take ``pct`` off the rate each line is currently quoting.
+
+        Off the *quoted* rate, not off the catalogue rate. It used to recompute
+        from ``listPrice``, which made a control labelled "apply 10% discount"
+        raise prices: a line negotiated down from ₹530 to ₹300 and then included
+        in a 10% discount came back at ₹477 — up 59% — and pressing the button
+        again changed nothing, because the answer never depended on where the
+        line actually was. Discounting what is on the line compounds the way the
+        label says and can only ever move a price down.
+
+        A line with no rate yet has nothing to take a percentage of, so it falls
+        back to list; a line with neither is skipped and not counted, which is
+        what the caller reports back as "N line(s) discounted".
+        """
         n = 0
         for ln in lines:
-            if ln.listPrice is not None:
-                ln.quoted = round(ln.listPrice * (1 - pct / 100.0))
-                n += 1
+            base = ln.quoted if ln.quoted is not None else ln.listPrice
+            if base is None:
+                continue
+            ln.quoted = round(base * (1 - pct / 100.0))
+            ln.priceSource = "USER"
+            n += 1
         return n
 
     def create_item(self, ln: Line, zoho: ZohoService) -> None:
@@ -461,6 +557,7 @@ class QuoteStore:
         ln.cost = item.cost
         if ln.quoted is None and item.list_price is not None:
             ln.quoted = item.list_price
+            ln.priceSource = "LIST"
 
     def confirm_reading(self, ln: Line) -> None:
         """A person has checked this line against what the customer wrote.
@@ -475,6 +572,18 @@ class QuoteStore:
     def blockers(self, quote: Quote) -> List[Line]:
         """Technical-status lines that must be resolved before an estimate."""
         return [ln for ln in quote.lines if ln.status()["kind"] == "technical"]
+
+    @staticmethod
+    def priced_fingerprint(quote: Quote) -> str:
+        """The quote's sendable content, for deciding whether a re-send is one."""
+        return _priced_fingerprint(quote)
+
+    @staticmethod
+    def record_estimate(quote: Quote, *, number: str, line_count: int,
+                        fingerprint: str) -> None:
+        quote.estimateNumber = number
+        quote.estimateLineCount = line_count
+        quote.estimateFingerprint = fingerprint
 
 
 store = QuoteStore()

@@ -9,6 +9,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { LineIntelligence, Quote, QuoteIntelligence } from "./types";
 import { AssessLine, QuoteGate, byLine, intelligence } from "./intelligence";
+import { productRef } from "./rel";
 
 function assessLines(quote: Quote | null): AssessLine[] {
   if (!quote) return [];
@@ -16,7 +17,8 @@ function assessLines(quote: Quote | null): AssessLine[] {
     .filter((l) => l.supplyCode || l.reqCode)
     .map((l) => ({
       line_id: l.id,
-      product: l.supplyCode || l.reqCode,
+      // The one rule for naming a line's product — see rel.productRef.
+      product: productRef(l),
       qty: l.reqQty,
       proposed_price: l.quoted,
     }));

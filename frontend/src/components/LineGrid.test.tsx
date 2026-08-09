@@ -47,6 +47,8 @@ function lineWithEconomics(): Line {
     inBooks: true,
     shortage: null,
     quoted: 1000,
+    // A price a person set, so the rate cell carries no "list" mark.
+    priceSource: "USER",
     recommended: 1000,
     lineTotal: 10000,
     createPhase: null,
@@ -292,6 +294,40 @@ describe("on a phone", () => {
     pretendViewportIs(NARROW_BREAKPOINT);
     const { container } = render(<LineGrid {...props(false)} />);
     expect(container.querySelector("[data-line-card]")).toBeNull();
+  });
+});
+
+// ── whose number is in the rate cell ─────────────────────────────────────────
+//
+// A resolved line opens at the catalogue rate, which is a useful default and was
+// an invisible one: it read exactly like a price somebody had chosen, so a fresh
+// RFQ showed a Quotation total nobody had looked at. The mark is what makes the
+// default honest, so it is worth a test in both renderings.
+
+/** The same line, still at the rate the catalogue opened it with. */
+function atListPrice(): Line {
+  return { ...lineWithEconomics(), priceSource: "LIST" };
+}
+
+describe("a rate nobody has agreed to", () => {
+  it("is marked in the grid, and an agreed one is not", async () => {
+    const { container } = await renderGrid(false);
+    expect(container.textContent).toContain("1,000");
+    expect(container.textContent).not.toContain("list");
+
+    const marked = render(<LineGrid {...props(false, {}, [atListPrice()])} />);
+    await screen.findAllByText("Line total");
+    expect(marked.container.textContent).toContain("list");
+  });
+
+  it("is marked on a phone, where the tooltip cannot be reached", () => {
+    pretendViewportIs(412);
+    render(<LineGrid {...props(false, {}, [atListPrice()])} />);
+    // In the field's own label: the card has no header row to carry it.
+    // `getAllBy`, because MUI draws an outlined field's label twice — once as
+    // the `<label>` and once in the fieldset's notch.
+    expect(screen.getByLabelText("Quoted rate for CNMG120408")).toBeInTheDocument();
+    expect(screen.getAllByText("Quoted ₹ (list)").length).toBeGreaterThan(0);
   });
 });
 

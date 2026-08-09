@@ -414,6 +414,46 @@ def record_snapshot(
     return row
 
 
+def assess_and_record(
+    session: Session, org: str, *,
+    quote_id: str,
+    customer_ref: str,
+    lines: list[QuoteLineInput],
+    user_id: Optional[str],
+    overrides: Optional[dict[str, tuple[Optional[str], Optional[str]]]] = None,
+    as_of: Optional[date] = None,
+) -> tuple[QuoteAssessment, list[models.QuoteDecision]]:
+    """Assess these lines and freeze each one into the audit trail.
+
+    The two steps belong together and are never useful apart: a snapshot is only
+    meaningful if its numbers were derived here rather than supplied by the
+    caller, and an assessment nobody recorded is invisible to every control that
+    reads the trail — which is exactly how the approval gate came to be inert.
+    ``quote_submission_block`` judges the *latest snapshot per line*, and the
+    only thing writing snapshots was a salesperson voluntarily opening a drawer
+    and recording an override. Nobody doing that meant no snapshots, no snapshots
+    meant nothing to judge, and a line at 0% margin against a 15% floor was
+    reported ``can_submit: true`` and sent.
+
+    So the send path records too, and it goes through here rather than through a
+    second copy of the loop — one implementation, so the row the gate reads is
+    the same row the audit screen shows.
+    """
+    overrides = overrides or {}
+    result = assess_quote(session, org, customer_ref=customer_ref,
+                          lines=lines, as_of=as_of)
+    refs = {ln.line_id: ln.product_ref for ln in lines}
+    rows = []
+    for intel in result.lines:
+        reason, reason_code = overrides.get(intel.line_id, (None, None))
+        rows.append(record_snapshot(
+            session, org, quote_id=quote_id, intel=intel,
+            customer_ref=customer_ref, product_ref=refs.get(intel.line_id, ""),
+            user_id=user_id,
+            override_reason=reason, override_reason_code=reason_code))
+    return result, rows
+
+
 def _metrics_snapshot(intel: QuoteLineIntelligence) -> dict:
     m = intel.metrics
     if m is None:

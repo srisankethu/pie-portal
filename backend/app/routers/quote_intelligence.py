@@ -32,11 +32,11 @@ from ..commercial.policy import load_for_org
 from ..commercial.quote_service import (
     InvalidTransition,
     QuoteLineInput,
+    assess_and_record,
     assess_quote,
     get_outcome,
     outcome_to_dict,
     project,
-    record_snapshot,
     resolve_customer,
     snapshot_to_dict,
     snapshots_for_quote,
@@ -147,25 +147,17 @@ def snapshot(
 
     org = principal.organization_id
     customer_ref = body.customer.strip()
-    result = assess_quote(
-        session, org, customer_ref=customer_ref,
+    result, rows = assess_and_record(
+        session, org, quote_id=body.quote_id.strip(), customer_ref=customer_ref,
         lines=[QuoteLineInput(line_id=ln.line_id, product_ref=ln.product, qty=ln.qty,
                               proposed_price=ln.proposed_price, family=ln.family)
                for ln in body.lines],
+        user_id=principal.user_id,
+        overrides={ln.line_id: (ln.override_reason, ln.override_reason_code)
+                   for ln in body.lines},
         as_of=body.as_of)
 
-    overrides = {ln.line_id: (ln.override_reason, ln.override_reason_code)
-                 for ln in body.lines}
-    refs = {ln.line_id: ln.product for ln in body.lines}
-
-    rows = []
     for intel in result.lines:
-        reason, reason_code = overrides.get(intel.line_id, (None, None))
-        rows.append(record_snapshot(
-            session, org, quote_id=body.quote_id.strip(), intel=intel,
-            customer_ref=customer_ref, product_ref=refs.get(intel.line_id, ""),
-            user_id=principal.user_id,
-            override_reason=reason, override_reason_code=reason_code))
         # A line re-priced back within policy should not leave an unanswerable
         # request sitting in an approver's queue.
         approvals.release_if_no_longer_needed(

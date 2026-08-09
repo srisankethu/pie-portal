@@ -61,6 +61,14 @@ export interface Line {
   inBooks: boolean | null;
   shortage: number | null;
   quoted: number | null;
+  /** Whose number `quoted` is: `LIST` is the catalogue rate the line opened at,
+   *  `USER` is one a person put there. Null when there is no price.
+   *
+   *  A resolved line arrives priced at list so a long tender is not a column of
+   *  typing. Without this the default was indistinguishable from a considered
+   *  price, so a quote nobody had looked at showed a Quotation total in the same
+   *  weight as a finished one. */
+  priceSource: "LIST" | "USER" | null;
   recommended: number | null;
   lineTotal: number | null;
   createPhase: string | null;
@@ -85,6 +93,20 @@ export interface QuoteSummary {
   taxRate: number;
   grand: number;
   total: number;
+  /** Lines with no rate at all — they contribute nothing to the total above. */
+  unpriced: number;
+  /** Lines priced, but still at the catalogue rate nobody has agreed to. */
+  atListPrice: number;
+}
+
+/** What this quote has already sent to Zoho.
+ *
+ *  `current` is false once the quote's products, quantities or rates have moved
+ *  since — the estimate exists but no longer describes what is on screen. */
+export interface QuoteEstimate {
+  number: string;
+  lineCount: number | null;
+  current: boolean;
 }
 
 export interface MarginFloor {
@@ -105,6 +127,8 @@ export interface Quote {
   summary: QuoteSummary;
   filterCounts: Record<string, number>;
   marginFloor: MarginFloor | null;
+  /** The Zoho estimate already created from this quote, if any. */
+  estimate: QuoteEstimate | null;
   /** Present when the last action taught the system something durable — today
    *  that is a confirmed "this customer's code means that product". Server-
    *  written prose, shown as-is; the client does not compose it. */

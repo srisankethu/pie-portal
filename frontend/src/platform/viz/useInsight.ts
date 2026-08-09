@@ -78,3 +78,19 @@ export function useInsight(
 export function pct(v: number | null | undefined, d = 1): string {
   return v == null ? "—" : `${(v * 100).toFixed(d)}%`;
 }
+
+/** A percentage-POINT movement, signed. Never a percent change of a percent.
+ *
+ *  §1: movement is percentage points. `Patterns` rendered a share change with
+ *  `pct()` and the word "%" — "down 76% of share" for a move from 100% to 24%,
+ *  which is −75.6 pp. The two coincide only when the starting share is 100%, and
+ *  the same payload's next contributor moved from 0% to 28%, where a percent
+ *  change of a percent is not defined at all.
+ *
+ *  A third private copy of this existed in `CommercialScreens`; both now call
+ *  this, for the reason the docstring above gives about `pct`. */
+export function pp(v: number | null | undefined): string {
+  if (v == null) return "—";
+  const sign = v > 0 ? "+" : "";
+  return `${sign}${(v * 100).toFixed(1)} pp`;
+}

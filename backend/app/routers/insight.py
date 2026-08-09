@@ -455,9 +455,17 @@ def opportunities(limit: int = Query(100, ge=1, le=300),
             f"{excluded['excluded_count']} of {excluded['relationships_examined']} "
             f"relationships have a real gap, but every one is below your "
             f"{excluded['floor']:,.0f} materiality floor — the largest is "
-            f"{excluded['largest_excluded']:,.0f}. Lower the floor in Settings to "
-            f"see them, or leave it: below this, a gap is real and not worth an "
-            f"afternoon.")
+            f"{excluded['largest_excluded']:,.0f}. "
+            # The materiality floor is part of the margin policy, which is
+            # `require_owner` — the Settings field is rendered disabled for a
+            # manager. Telling them to lower it addressed the action to the wrong
+            # role; the Data screen already says "Ask an owner to add one" for the
+            # same reason.
+            + ("Lower the floor in Settings to see them, or leave it: "
+               if principal.role is Role.OWNER else
+               "Ask an owner to lower the floor if you want to see them, or "
+               "leave it: ")
+            + "below this, a gap is real and not worth an afternoon.")
     else:
         reason = ("No relationship shows a named gap. Either margins are holding, "
                   "or there is not enough cost coverage yet to tell — check "

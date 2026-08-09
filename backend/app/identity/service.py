@@ -35,7 +35,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..domain import models
-from .matchers import Candidate, RecordFacts, find_candidates, normalize_gstin, normalize_sku
+from .matchers import (NAME_STRATEGY, Candidate, RecordFacts, find_candidates,
+                       has_eligible_key, normalize_gstin, normalize_name,
+                       normalize_sku)
 
 log = logging.getLogger("pie_portal.identity")
 
@@ -49,12 +51,26 @@ _SHAPES: dict[str, dict[str, Any]] = {
         "identity": models.CustomerIdentity,
         "record": models.CustomerConnectorRecord,
         "key": "gstin",
+        # The column a name-based proposal reads, and whether it may.
+        "text": "name",
+        # A business name identifies the business. Two records reading
+        # "Pitti Engineering Ltd" are one buyer typed twice, which is the gap the
+        # NAME strategy exists to close.
+        "name_match": True,
         "auto_flag": "auto_link_customers",
     },
     ITEM: {
         "identity": models.ItemIdentity,
         "record": models.ItemConnectorRecord,
         "key": "sku",
+        "text": "description",
+        # An item description does *not* identify the item. "Milling insert"
+        # describes hundreds of distinct parts, so matching on it would fill the
+        # review queue with proposals that are wrong more often than right — and
+        # a queue that is usually wrong is one people learn to scroll past, which
+        # costs the GSTIN and SKU proposals their audience too. A SKU is the
+        # item's identifier; where there is none, there is nothing to propose.
+        "name_match": False,
         "auto_flag": "auto_link_items",
     },
 }
@@ -127,6 +143,39 @@ class _Lookup:
                    identity.active.is_(True))
             .distinct()).scalars().all()
         return list(rows)
+
+    def identities_by_name(self, organization_id: str, name: str,
+                           exclude_record_id: str) -> list[str]:
+        """Same question, on a value that is not stored in canonical form.
+
+        A GSTIN is normalised on the way in and compared in SQL. A name is not:
+        the record keeps exactly what its connector called it, because a record
+        rewritten to match another system's spelling is the one thing this module
+        must never do. So the comparison happens here, over the org's records for
+        this entity type.
+
+        That is a scan, and it is bounded by being asked only for a record with no
+        eligible key — `by_name` returns nothing otherwise, so a book whose
+        customers all carry a GSTIN never reaches this. A book with tens of
+        thousands of keyless records on a first full sync would want a stored
+        normalised column and an index on it; that is a migration, and it is not
+        worth one before a book needs it.
+        """
+        if not name:
+            return []
+        record = self.shape["record"]
+        identity = self.shape["identity"]
+        text_col = getattr(record, self.shape["text"])
+        rows = self.s.execute(
+            select(record.identity_id, text_col)
+            .join(identity, identity.identity_id == record.identity_id)
+            .where(record.organization_id == organization_id,
+                   record.record_id != exclude_record_id,
+                   identity.active.is_(True))).all()
+        # A set, then sorted: two records of one identity both matching must not
+        # propose it twice, and the order has to be stable or the same sync would
+        # produce suggestions in a different order each run.
+        return sorted({iid for iid, text in rows if normalize_name(text) == name})
 
 
 # ── ingestion: the one entry point a connector uses ─────────────────────────
@@ -219,7 +268,11 @@ def ingest(session: Session, organization_id: str, *, entity_type: str,
     facts = RecordFacts(
         organization_id=organization_id, record_id=record.record_id,
         keys={"gstin": gstin_n, "sku": sku_n},
-        text=name or description)
+        # Empty unless this shape's free text is identity-bearing. Decided here
+        # rather than inside the strategy: `matchers.py` must not branch on which
+        # entity type it is looking at, and "is this text an identifier" is a
+        # property of the shape, not of the matching rule.
+        text=(name or description) if shape["name_match"] else "")
     candidates = [c for c in find_candidates(facts, _Lookup(session, entity_type))
                   if c.identity_id != identity.identity_id]
 
@@ -228,8 +281,16 @@ def ingest(session: Session, organization_id: str, *, entity_type: str,
                         created_identity=True, linked=False, suggestions=[])
 
     policy = get_policy(session, organization_id)
-    if getattr(policy, shape["auto_flag"], False):
-        best = candidates[0]
+    # Automatic linking applies to exact identifiers only. A name match is a
+    # question for a person however the policy is set: the switch an owner turned
+    # on says "link on an exact match", and its own help text calls that
+    # "unrecoverable when the match was a group trading under one registration" —
+    # which is a far better bet than two businesses that happen to share a name.
+    # Checked here rather than by omitting the candidate, so the suggestion is
+    # still recorded and the reviewer still sees it.
+    auto = [c for c in candidates if c.strategy != NAME_STRATEGY]
+    if auto and getattr(policy, shape["auto_flag"], False):
+        best = auto[0]
         link_record(session, organization_id, entity_type=entity_type,
                     record_id=record.record_id, identity_id=best.identity_id,
                     actor="AUTO", detail=f"{best.strategy}: {best.evidence}")
@@ -413,6 +474,56 @@ def _retire_if_empty(session: Session, organization_id: str, entity_type: str,
 
 
 # ── reading ─────────────────────────────────────────────────────────────────
+def review_coverage(session: Session, organization_id: str,
+                    entity_type: str) -> dict[str, Any]:
+    """Why there is nothing to review, when there is nothing to review.
+
+    An empty review queue had one sentence for two unrelated situations, and the
+    screen chose the reassuring reading of both: "no exact matches were found —
+    not that matching is switched off". For a book whose customers carry no GSTIN
+    that sentence is false in the way that matters. Nothing was found because
+    nothing could be looked at, and no number of syncs would change it.
+
+    So the queue reports its own reach: how many records exist, how many carry an
+    identifier a strong strategy can compare, and how many are still alone. A
+    screen can then say which of the two it is looking at instead of guessing.
+
+    Counted from the records rather than from the suggestions, deliberately: a
+    count derived from an empty queue can only ever describe the queue.
+    """
+    shape = _SHAPES[entity_type]
+    record = shape["record"]
+    identity = shape["identity"]
+
+    rows = session.execute(
+        select(record.record_id, record.identity_id, record.gstin
+               if entity_type == CUSTOMER else record.sku)
+        .join(identity, identity.identity_id == record.identity_id)
+        .where(record.organization_id == organization_id,
+               identity.active.is_(True))).all()
+
+    per_identity: dict[str, int] = {}
+    for _, iid, _key in rows:
+        per_identity[iid] = per_identity.get(iid, 0) + 1
+
+    keyed = sum(1 for _, _, key in rows if has_eligible_key(
+        {"gstin": key, "sku": None} if entity_type == CUSTOMER
+        else {"gstin": None, "sku": key}))
+    alone = sum(1 for _, iid, _ in rows if per_identity.get(iid, 0) == 1)
+
+    return {
+        "records": len(rows),
+        # Records an exact-identifier strategy is able to compare at all.
+        "with_key": keyed,
+        "without_key": len(rows) - keyed,
+        # Records that are the only one on their identity, so nothing has been
+        # linked to them. High with a low `with_key` is the gap; high with a high
+        # `with_key` means the identifiers genuinely disagree.
+        "unlinked": alone,
+        "key_name": "GSTIN" if entity_type == CUSTOMER else "SKU",
+    }
+
+
 def records_for(session: Session, organization_id: str, entity_type: str,
                 identity_id: str) -> list[Any]:
     shape = _SHAPES[entity_type]

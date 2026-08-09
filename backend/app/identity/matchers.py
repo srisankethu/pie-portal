@@ -60,6 +60,37 @@ def normalize_sku(raw: Optional[str]) -> Optional[str]:
     return cleaned or None
 
 
+#: Company-form words, which say how a business is incorporated rather than
+#: which business it is. "Pitti Engineering Ltd" and "Pitti Engineering Limited"
+#: are one buyer typed by two people. Dropped from both sides of a comparison,
+#: never from anything stored or shown — the record keeps its own name.
+_LEGAL_FORMS = frozenset({
+    "LTD", "LIMITED", "PVT", "PRIVATE", "LLP", "LLC", "INC", "INCORPORATED",
+    "CO", "COMPANY", "CORP", "CORPORATION", "PLC", "AND", "&",
+})
+
+
+def normalize_name(raw: Optional[str]) -> Optional[str]:
+    """A business name reduced to the part that identifies it.
+
+    Case, punctuation, runs of whitespace and company-form words all vary
+    between two systems describing one buyer, and none of them is identity. What
+    is left is compared exactly: this deliberately does not do fuzzy or
+    edit-distance matching, because a strategy has to be able to state the
+    evidence it matched on — ``"name Pitti Engineering"`` settles an argument and
+    ``"similarity 0.87"`` starts one.
+
+    Returns ``None`` for anything that normalises away to nothing, so a record
+    named ``"Ltd."`` or ``"-"`` proposes nothing rather than matching every other
+    unnamed record in the book.
+    """
+    if not raw:
+        return None
+    words = re.sub(r"[^0-9A-Za-z&]+", " ", str(raw)).upper().split()
+    kept = [w for w in words if w not in _LEGAL_FORMS]
+    return " ".join(kept) or None
+
+
 @dataclass(frozen=True)
 class Candidate:
     """A proposed link, with the reason attached."""
@@ -93,6 +124,18 @@ class Lookup(Protocol):
 
     def identities_by_key(self, organization_id: str, key: str,
                           value: str, exclude_record_id: str) -> list[str]:
+        ...
+
+    def identities_by_name(self, organization_id: str, name: str,
+                           exclude_record_id: str) -> list[str]:
+        """Identities holding a record whose name normalises to ``name``.
+
+        Separate from ``identities_by_key`` rather than another key value,
+        because it is not a column: the key lookup compares a stored canonical
+        value in SQL, and a name has to be normalised on both sides before it can
+        be compared at all. Folding it into the same method would mean a `key`
+        argument that sometimes names a column and sometimes does not.
+        """
         ...
 
 
@@ -152,6 +195,23 @@ def by_gstin(facts: RecordFacts, lookup: Lookup) -> list[Candidate]:
                 facts.organization_id, "gstin", value or "", facts.record_id)]
 
 
+def has_eligible_key(keys: dict[str, Optional[str]]) -> bool:
+    """Whether any exact-identifier strategy could ever propose this record.
+
+    The distinction the identity screen could not draw. "Nothing to review" hid
+    two completely different situations: every record has a GSTIN and none of
+    them matched, versus records with no GSTIN at all, which the GSTIN strategy
+    can never look at however many times a sync runs. The first is an answer; the
+    second is a gap, and it is the one that let two `Pitti Engineering Ltd` rows
+    bill separately while the screen reported nothing worth a person's time.
+
+    Stated over ``keys`` rather than per entity type so it stays shape-agnostic:
+    a customer carries a GSTIN, an item a SKU, and neither this function nor a
+    strategy needs to know which it is looking at.
+    """
+    return bool(is_valid_gstin(keys.get("gstin")) or keys.get("sku"))
+
+
 @register("SKU", order=10)
 def by_sku(facts: RecordFacts, lookup: Lookup) -> list[Candidate]:
     """Exact SKU, after normalisation.
@@ -167,3 +227,38 @@ def by_sku(facts: RecordFacts, lookup: Lookup) -> list[Candidate]:
     return [Candidate(identity_id=i, strategy="SKU", evidence=f"SKU {value}")
             for i in lookup.identities_by_key(
                 facts.organization_id, "sku", value, facts.record_id)]
+
+
+#: Named so nothing has to compare against the string. `ingest` refuses to
+#: auto-link a candidate produced by this strategy, and a reader of that code
+#: should not have to know that "NAME" is the weak one.
+NAME_STRATEGY = "NAME"
+
+
+@register(NAME_STRATEGY, order=90)
+def by_name(facts: RecordFacts, lookup: Lookup) -> list[Candidate]:
+    """Identical normalised name, and **only** where no exact identifier exists.
+
+    The last resort, and it stays last for a reason: a name is chosen by whoever
+    typed it, two unrelated businesses can share one, and a group can trade under
+    several. So this proposes and never decides — `ingest` will not auto-link a
+    candidate from here even with automatic linking switched on, which is the one
+    place in the cascade where a strategy's strength changes what happens rather
+    than only what is suggested.
+
+    Withheld entirely from a record that *does* carry an eligible key. Such a
+    record is already reachable by the strong strategy, and adding a weaker
+    proposal beside it would ask a reviewer to weigh a name against a government
+    registration — a question with an obvious answer, asked repeatedly. The gap
+    this fills is the record that has no key at all, where before there was
+    nothing to review and no way to tell that from nothing to find.
+    """
+    if has_eligible_key(facts.keys):
+        return []
+    name = normalize_name(facts.text)
+    if not name:
+        return []
+    return [Candidate(identity_id=i, strategy=NAME_STRATEGY,
+                      evidence=f"name {name}")
+            for i in lookup.identities_by_name(
+                facts.organization_id, name, facts.record_id)]

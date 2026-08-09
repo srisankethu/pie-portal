@@ -862,15 +862,30 @@ export interface IdentityEvent {
 }
 
 export interface IdentitySuggestion {
-  suggestion_id: string;
-  /** Which rule proposed it — GSTIN, SKU, … */
+  /** Which rule proposed it — GSTIN, SKU, NAME. `NAME` is the weak one: it only
+   *  runs where no exact identifier exists, and it is never auto-linked. */
   strategy: string;
+  suggestion_id: string;
   /** The value it matched on, so a reviewer judges the match not a score. */
   evidence: string;
   created_at: string | null;
   incoming: ConnectorRecord;
   incoming_identity_id: string;
   target: Identity;
+}
+
+/** How far the matcher can even see, so an empty review queue can say which
+ *  kind of empty it is. Nothing found and nothing *lookable-at* were one
+ *  sentence, and the screen chose the reassuring reading of both. */
+export interface IdentityCoverage {
+  records: number;
+  /** Records carrying an identifier a strong strategy can compare. */
+  with_key: number;
+  without_key: number;
+  /** Records still alone on their identity — nothing has been linked to them. */
+  unlinked: number;
+  /** "GSTIN" or "SKU", so the screen names the right one. */
+  key_name: string;
 }
 
 export interface IdentityPolicy {

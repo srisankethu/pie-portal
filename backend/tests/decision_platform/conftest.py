@@ -53,7 +53,7 @@ def api_client():
     from fastapi.testclient import TestClient
 
     from app.db import get_session
-    from app.routers import internal, platform_auth
+    from app.routers import insight, internal, platform_auth
     from app.seed import ensure_org_and_users
 
     eng = create_engine("sqlite://", connect_args={"check_same_thread": False},
@@ -68,6 +68,10 @@ def api_client():
     app = FastAPI()
     app.include_router(platform_auth.router)
     app.include_router(internal.router)
+    # `insight` too, so a suite can exercise a manager-facing screen end to end
+    # rather than only the builder behind it. That gap is not hypothetical — see
+    # `test_daily.test_the_morning_read_is_reachable_over_http`.
+    app.include_router(insight.router)
 
     def _override():
         sess = maker()

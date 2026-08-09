@@ -29,16 +29,19 @@ from sqlalchemy.orm import Session
 from ..authz import (Principal, can_view_customer, current_principal,
                      require_manager_or_owner)
 from .. import approvals, clock
-from ..commercial import floor, incentive, policy, portfolio, principals
+from ..commercial import (floor, incentive, policy, portfolio, principals,
+                          quote_service)
 from ..commercial import categories as cat
 from ..commercial.insight import (bonds, cadence, cashflow, cohorts, composition,
                                   daily as daily_view,
                                   dependency, flow, landscape, mix, payments,
                                   periods, radar, schemes, simulate, stock, story,
-                                  supply, terms as vendor_terms, weather)
+                                  supply, terms as vendor_terms, wallet,
+                                  weather)
 from ..db import get_session
 from ..domain import models
-from ..domain.enums import DecisionStatus, Role
+from ..domain.enums import (DecisionStatus, QuoteLossReason,
+                            QuoteOutcomeStatus, Role)
 from ..domain.origin import Companies, index_of
 from ..signals.aggregates import label_for, load_snapshot
 from ..commercial.insight import series
@@ -1483,6 +1486,244 @@ def product_mix(months: int = Query(12, ge=3, le=36),
         companies=_companies(session, org),
         scoped_to=connection_id,
         unavailable=mix.unavailable())
+
+
+# ── share of wallet: how much of their spend comes here ─────────────────────
+#
+# The counterpart to `/dependency`, and deliberately shaped nothing like it.
+# Dependency measures *our* exposure to a customer and is a fact. This measures
+# *their* reliance on us, which the platform cannot see directly — so the answer
+# is a band with its basis named, or a refusal saying what would produce one.
+#
+# Revenue, quoted values and published tender figures only. No cost and no
+# margin are read, so this is visible to every role.
+
+
+def _lost_asks(session: Session, org: str,
+               customer_id: str) -> list[wallet.LostAsk]:
+    """Quotes this customer did not give us, valued from their own snapshots.
+
+    The value comes from the `QuoteDecision` rows the quote carried, summed per
+    quote — that is what was actually put in front of the customer, and it is
+    already frozen against the day it was priced. Re-pricing today's catalogue
+    to value a quote lost in March would be valuing a thing that never happened.
+
+    ``line_revenue`` only. The snapshot also holds cost, COGS and margin, and
+    none of the three is touched here — which is what keeps this endpoint
+    readable by a salesperson.
+    """
+    values = dict(session.execute(
+        select(models.QuoteDecision.quote_id,
+               func.sum(models.QuoteDecision.line_revenue))
+        .where(models.QuoteDecision.organization_id == org,
+               models.QuoteDecision.customer_id == customer_id)
+        .group_by(models.QuoteDecision.quote_id)).all())
+
+    rows = session.scalars(
+        select(models.QuoteOutcome).where(
+            models.QuoteOutcome.organization_id == org,
+            models.QuoteOutcome.customer_id == customer_id,
+            models.QuoteOutcome.status == QuoteOutcomeStatus.LOST.value)).all()
+
+    out: list[wallet.LostAsk] = []
+    for row in rows:
+        value = values.get(row.quote_id)
+        if value is None:
+            # A lost quote with no priced snapshot behind it has no value to
+            # put in a denominator. Skipped rather than counted at zero: zero
+            # would say the competitor won nothing, which shrinks their side
+            # and overstates ours.
+            continue
+        # Classification stays in the enum. A NULL reason predates the field
+        # and is genuinely unknown, which is not the same as NOT_BOUGHT — the
+        # three-valued answer keeps them apart all the way to the arithmetic.
+        reason = (QuoteLossReason(row.loss_reason) if row.loss_reason
+                  else QuoteLossReason.UNKNOWN)
+        out.append(wallet.LostAsk(
+            quote_id=row.quote_id, value=Decimal(str(value)),
+            decided_on=row.decided_at.date() if row.decided_at else None,
+            went_elsewhere=reason.went_elsewhere))
+    return out
+
+
+def _quoted_revenue(session: Session, org: str, customer_id: str) -> Decimal:
+    """Value of this customer's quotes that were recorded as won.
+
+    The numerator of quote coverage. Won quotes rather than all quotes: what is
+    being measured is how much of the revenue on the book passed through the
+    quote screen, and a lost quote produced no revenue to have covered.
+    """
+    won = session.scalars(
+        select(models.QuoteOutcome.quote_id).where(
+            models.QuoteOutcome.organization_id == org,
+            models.QuoteOutcome.customer_id == customer_id,
+            models.QuoteOutcome.status == QuoteOutcomeStatus.WON.value)).all()
+    if not won:
+        return Decimal("0")
+    total = session.scalar(
+        select(func.sum(models.QuoteDecision.line_revenue))
+        .where(models.QuoteDecision.organization_id == org,
+               models.QuoteDecision.quote_id.in_(won)))
+    return Decimal(str(total)) if total is not None else Decimal("0")
+
+
+def _tender_observations(session: Session, org: str,
+                         customer_id: str) -> list[wallet.TenderObservation]:
+    rows = session.scalars(
+        select(models.TenderResult).where(
+            models.TenderResult.organization_id == org,
+            models.TenderResult.customer_id == customer_id)).all()
+    return [wallet.TenderObservation(
+        tender_ref=r.tender_ref, tendered=Decimal(str(r.tendered_value)),
+        won=Decimal(str(r.won_value)) if r.won_value is not None else None,
+        closed_on=r.closed_on, source=r.source) for r in rows]
+
+
+@router.get("/wallet/{customer_id}")
+def share_of_wallet(customer_id: str,
+                    principal: Principal = Depends(current_principal),
+                    session: Session = Depends(get_session)) -> dict:
+    """What share of this customer's tooling spend comes here, and on what basis.
+
+    Most customers will come back UNKNOWN, and that is the correct answer rather
+    than a gap to be filled. `insight/dependency.py` says why: the platform sees
+    what a customer buys here and nothing of what they buy elsewhere. What this
+    endpoint adds is the cases where evidence *does* exist — published tender
+    quantities, or enquiries recorded as lost to a named competitor — and a
+    refusal that names the specific missing thing for the rest.
+    """
+    org, snapshot, th = _labels_only(session, principal)
+    customer = _require_visible_customer(session, customer_id, principal)
+    as_of = clock.today(th.timezone)
+
+    revenue = session.scalar(
+        select(func.sum(models.SalesTxn.line_revenue))
+        .where(models.SalesTxn.organization_id == org,
+               models.SalesTxn.customer_id == customer_id)) or 0
+
+    estimate = wallet.estimate(
+        customer_id, as_of, thresholds=th,
+        revenue=Decimal(str(revenue)),
+        quoted_revenue=_quoted_revenue(session, org, customer_id),
+        lost_asks=_lost_asks(session, org, customer_id),
+        tenders=_tender_observations(session, org, customer_id),
+        # No declaration source is wired yet. The field that held one fed the
+        # incentive engine's RSI, was supplied by the salesperson it paid, and
+        # was weighted to zero for that reason — so `DECLARED` stays reachable
+        # in the ladder and unreachable from here until there is a place to
+        # record a declaration that is not inside a pay formula.
+        declaration=None)
+
+    return _envelope(
+        estimate.to_dict(), th=th,
+        customer={"customer_id": customer_id, "label": customer.name},
+        ladder=[{"basis": b, "meaning": wallet.BASIS_MEANING[b]}
+                for b in wallet.LADDER],
+        unavailable=wallet.unavailable())
+
+
+class TenderResultRequest(BaseModel):
+    """One published tender, as somebody read it off the portal."""
+
+    tender_ref: str
+    customer: str = ""
+    tendered_value: Decimal
+    won_value: Optional[Decimal] = None
+    closed_on: date
+    awarded_on: Optional[date] = None
+    categories: list[str] = Field(default_factory=list)
+    source: str = ""
+    note: Optional[str] = None
+
+
+@router.post("/tenders", status_code=status.HTTP_201_CREATED)
+def record_tender(body: TenderResultRequest,
+                  principal: Principal = Depends(require_manager_or_owner),
+                  session: Session = Depends(get_session)) -> dict:
+    """Record what a tender asked for and what we took of it.
+
+    Manager-and-above: this is the denominator of a measured share, and a
+    denominator anybody can type is a share anybody can move.
+
+    ``source`` is required. The whole claim of this rung is that both figures
+    come from a document that can be looked up, and a row nobody can trace back
+    is a guess with a bid number on it — which is worse than an honest UNKNOWN,
+    because it looks measured.
+    """
+    org, _, th = _labels_only(session, principal)
+    ref = body.tender_ref.strip()
+    if not ref:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            "A tender needs its published reference")
+    if not body.source.strip():
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "A tender needs a source — the portal URL or the document it was "
+            "read from. A measured share whose measurement cannot be looked up "
+            "is not measured.")
+    if body.tendered_value <= 0:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            "The tendered value must be what the document "
+                            "published, and it cannot be zero or negative")
+    if body.won_value is not None and body.won_value > body.tendered_value:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "More was won than was tendered, which cannot be right and would "
+            "put this customer above 100% share")
+    unknown = [c for c in body.categories if c not in cat.LABELS]
+    if unknown:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            f"Not a line of the business: {', '.join(unknown)}")
+
+    # The Quote Builder's own tolerant matcher, reached through the one
+    # delegating entry point (CLAUDE.md §2). A second matcher here would make a
+    # customer resolvable on the quote screen and not in this one, which is a
+    # bug nobody can reproduce.
+    customer = (quote_service.resolve_customer(session, org, body.customer.strip())
+                if body.customer.strip() else None)
+
+    row = session.scalar(
+        select(models.TenderResult).where(
+            models.TenderResult.organization_id == org,
+            models.TenderResult.tender_ref == ref))
+    if row is None:
+        row = models.TenderResult(organization_id=org, tender_ref=ref,
+                                  tendered_value=body.tendered_value,
+                                  closed_on=body.closed_on)
+        session.add(row)
+    else:
+        # The published value is evidence and is not edited to reconcile a
+        # share. Everything an award teaches later is; the document is not.
+        if body.tendered_value != row.tendered_value:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                f"{ref} is already recorded with a tendered value of "
+                f"{row.tendered_value}. That figure is what the published "
+                "document said, so it is not editable — correct it by "
+                "deleting the row if it was mistyped.")
+
+    row.customer_id = customer.customer_id if customer else None
+    row.customer_ref = body.customer.strip()[:255]
+    row.won_value = body.won_value
+    row.awarded_on = body.awarded_on
+    row.categories = list(body.categories)
+    row.source = body.source.strip()[:512]
+    row.note = body.note
+    row.recorded_by_user_id = principal.user_id
+    session.commit()
+
+    return _envelope({
+        "tender_ref": row.tender_ref,
+        "customer_id": row.customer_id,
+        "customer_ref": row.customer_ref,
+        "tendered_value": float(row.tendered_value),
+        "won_value": float(row.won_value) if row.won_value is not None else None,
+        "closed_on": row.closed_on.isoformat(),
+        "awarded_on": row.awarded_on.isoformat() if row.awarded_on else None,
+        "categories": row.categories,
+        "source": row.source,
+        "resolved": customer is not None,
+    }, th=th)
 
 
 # ── dependency: what this book leans on, at both ends ───────────────────────

@@ -30,6 +30,7 @@ from typing import Any, Iterable, Mapping, Optional
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from . import clock
 from .domain import models
 from .domain.enums import (
     APPROVER_DECISIONS,
@@ -422,12 +423,23 @@ def to_dict(request: models.ApprovalRequest, role: Role,
         "requested_by": names.get(request.requested_by_user_id,
                                   request.requested_by_user_id),
         "requested_by_user_id": request.requested_by_user_id,
-        "requested_at": request.requested_at.isoformat() if request.requested_at else None,
+        # `clock.iso`, not a bare `isoformat()`: these columns are
+        # `DateTime(timezone=True)` and SQLite drops the tzinfo, so the same field
+        # went out as "…T16:46:31+00:00" from the POST and "…T16:46:31" from the
+        # GET. The browser reads the offsetless one as local time, so an approval
+        # raised at 10:16 pm IST rendered on `/approvals` as "4:46 pm" — five and
+        # a half hours wrong, on an audit record, while the Quote Builder's own
+        # "Saved 10:13 pm" on the adjacent screen was right.
+        "requested_at": clock.iso(request.requested_at),
         "decided_by": (names.get(request.decided_by_user_id, request.decided_by_user_id)
                        if request.decided_by_user_id else None),
-        "decided_at": request.decided_at.isoformat() if request.decided_at else None,
+        "decided_at": clock.iso(request.decided_at),
         "decision_note": request.decision_note,
         "thread": request.thread or [],
+        # Which margin policy judged this price. The column was always populated
+        # and never served, so the one screen where "was this signed off under
+        # the rules we had then?" is the whole question could not answer it.
+        "thresholds_version": request.thresholds_version or None,
         "can_decide": can_decide(role, ApprovalAuthority(request.required_authority)),
         "is_open": ApprovalStatus(request.status) in OPEN_APPROVAL_STATUSES,
     }

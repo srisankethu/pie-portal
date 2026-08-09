@@ -330,6 +330,37 @@ def test_erasure_produces_a_verifiable_receipt(session, org):
     assert row.manifest["customers"] == 1, "the receipt must say what was destroyed"
 
 
+def test_a_receipt_still_verifies_after_it_has_been_stored(session, org):
+    """The receipt has to verify *later*, which is the only time anyone checks.
+
+    The test above verifies the row `erase` just returned, in the transaction
+    that made it — and that passed while the receipt was unverifiable from the
+    moment it hit the disk. `_sign` covers an aware `erased_at`; a
+    `DateTime(timezone=True)` column round-trips from SQLite as naive, so
+    `receipt_body` re-read a timestamp with no offset, built a different blob and
+    reported a valid receipt as tampered with. `GET /trust/erasure` — the only
+    way an owner ever looks at one — therefore answered `verified: false` for
+    every receipt ever issued, which on the trust screen reads as an accusation.
+
+    `clock.iso` is what makes it hold, and that is not obvious from the call
+    site: it was applied there as part of making timestamps unambiguous for the
+    *browser*, so nothing recorded that a signature depends on it. Anyone
+    "simplifying" it back to `.isoformat()` would break this silently. Hence a
+    test about the signature rather than about the display.
+    """
+    row = erasure.erase(session, ORG, reason="Customer requested erasure",
+                        actor_user_id="u1")
+    session.commit()
+    # Forces the reload the API path gets for free, and the naive datetime with
+    # it. Without this the object under test is still the one built on the way
+    # in, which is exactly the case that already passed.
+    session.expire(row)
+
+    assert erasure.verify_receipt(row), (
+        "A receipt that only verifies before it is stored verifies never.")
+    assert erasure.status(session, ORG)["receipt"]["verified"] is True
+
+
 def test_an_altered_receipt_fails_verification(session, org):
     row = erasure.erase(session, ORG, reason="Customer requested erasure",
                         actor_user_id="u1")

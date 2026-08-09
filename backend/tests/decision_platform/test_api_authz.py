@@ -84,6 +84,18 @@ def test_login_and_roles(client_and_maker):
     assert r.json()["role"] == "SALESPERSON"
 
 
+def test_sign_in_returns_the_address_it_signed_in_with(client_and_maker):
+    """The Settings change-password form needs a `username` field, and the only
+    correct value is the address the person just used. Without it a password
+    manager files the new secret against nothing and can lock somebody out of the
+    account they just secured."""
+    client, _ = client_and_maker
+    body = client.post("/api/v1/auth/login",
+                       json={"email": "r.nair@sanketh.in",
+                             "password": SEED_PASSWORD}).json()
+    assert body["email"] == "r.nair@sanketh.in"
+
+
 def test_auth_required(client_and_maker):
     client, _ = client_and_maker
     assert client.get("/api/v1/decisions").status_code == 401

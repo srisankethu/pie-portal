@@ -149,7 +149,13 @@ function SignIn({ onIn, notice }: { onIn: (s: PlatformSession) => void; notice?:
       notice={notice}
       onSubmit={async (email, password) => {
         const r = await papi.login(email, password);
-        onIn({ token: r.token, role: r.role, name: r.name, user_id: r.user_id,
+        // Field by field rather than spreading the response, so a field the
+        // server adds cannot arrive in the stored session unexamined. The cost
+        // is that a new one has to be added here too — `email` was sent, typed
+        // and schema-validated and still never reached the session, because
+        // this line did not mention it.
+        onIn({ token: r.token, role: r.role, name: r.name, email: r.email,
+               user_id: r.user_id,
                organization_id: r.organization_id, currency: r.currency,
                timezone: r.timezone,
                must_change_password: r.must_change_password });

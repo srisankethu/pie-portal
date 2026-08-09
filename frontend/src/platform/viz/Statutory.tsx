@@ -275,10 +275,14 @@ function CapturePanel({ session }: { session: PlatformSession }) {
       wide
     >
       <p className="viz-muted" style={{ marginBottom: 12 }}>
-        Ranked by spend weighted by how often that supplier is already paid past
-        the limit — so the list is the handful worth asking about, not the whole
-        vendor master. Most registered suppliers print their Udyam number on the
-        invoice, which is the cheapest place to read it from.
+        Showing the top {String(data?.shown ?? 0)} of{" "}
+        {String(data?.unestablished ?? 0)} suppliers with no status on record,
+        together worth {money(Number(data?.unestablished_spend ?? 0))} of
+        purchases. Ranked by spend weighted by how often that supplier is
+        already paid past the limit, so the list is the handful worth asking
+        about rather than the whole vendor master. Most registered suppliers
+        print their Udyam number on the invoice, which is the cheapest place to
+        read it from.
       </p>
       <DataGrid<BacklogRow>
         rows={rows}

@@ -284,16 +284,19 @@ def test_capture_backlog_ranks_by_spend_times_slowness():
                          settled_past_limit=9, settled_total=12),
     ]
 
-    ranked = msme.capture_backlog(spends, {}, {"prompt": "P", "slow": "S"})
+    built = msme.capture_backlog(spends, {}, {"prompt": "P", "slow": "S"})
 
-    assert [r["vendor_id"] for r in ranked] == ["slow", "prompt"]
+    assert [r["vendor_id"] for r in built["suppliers"]] == ["slow", "prompt"]
 
 
 def test_capture_backlog_skips_suppliers_whose_status_is_already_known():
     spends = [msme.VendorSpend("known", spend=5_000_000.0, bills=20,
                                settled_past_limit=15, settled_total=20)]
 
-    assert msme.capture_backlog(spends, {"known": MICRO_MFR}, {}) == []
+    built = msme.capture_backlog(spends, {"known": MICRO_MFR}, {})
+
+    assert built["suppliers"] == []
+    assert built["unestablished"] == 0
 
 
 def test_capture_backlog_order_is_total_rather_than_input_dependent():
@@ -306,5 +309,20 @@ def test_capture_backlog_order_is_total_rather_than_input_dependent():
                          settled_total=1),
     ]
 
-    assert ([r["vendor_id"] for r in msme.capture_backlog(spends, {}, {})]
-            == [r["vendor_id"] for r in msme.capture_backlog(spends[::-1], {}, {})])
+    assert ([r["vendor_id"] for r in msme.capture_backlog(spends, {}, {})["suppliers"]]
+            == [r["vendor_id"]
+                for r in msme.capture_backlog(spends[::-1], {}, {})["suppliers"]])
+
+
+def test_capture_backlog_reports_the_cap_rather_than_truncating_silently():
+    """A coverage list that shows 25 of 112 and says nothing reads as "these
+    are all of them" — which is the opposite of what a coverage list is for."""
+    spends = [msme.VendorSpend(f"v{i}", spend=1_000.0 * i, bills=1,
+                               settled_past_limit=1, settled_total=1)
+              for i in range(1, 31)]
+
+    built = msme.capture_backlog(spends, {}, {}, limit=5)
+
+    assert built["shown"] == 5
+    assert built["unestablished"] == 30
+    assert built["unestablished_spend"] == sum(1_000.0 * i for i in range(1, 31))

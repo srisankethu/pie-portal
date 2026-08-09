@@ -2,6 +2,7 @@ import Button from "@mui/material/Button";
 import MenuItem from "@mui/material/MenuItem";
 import TextField from "@mui/material/TextField";
 import { useCallback, useEffect, useRef, useState } from "react";
+import Alert from "@mui/material/Alert";
 import { formatDate, since, todayISO } from "../when";
 import { papi } from "./api";
 import { ErrorState, LoadingState } from "./kit";
@@ -901,7 +902,7 @@ export function ConnectionsPanel({
       </div>
 
       {view.connections.length > 1 && <div className="cx-pool">{view.pooling_note}</div>}
-      {error && <div className="dp-error">{error}</div>}
+      {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
       {note && (
         <div className="cx-pool" style={{ background: "var(--color-accent-100)", color: "var(--color-accent-800)", borderLeftColor: "var(--color-accent)" }}>
           {note}

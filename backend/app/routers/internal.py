@@ -49,6 +49,28 @@ def ai_metrics(
     return report(AiTelemetryRepository(session, principal.organization_id))
 
 
+@router.get("/detector-outcomes")
+def detector_outcomes(
+    principal: Principal = Depends(require_owner),
+    session: Session = Depends(get_session),
+) -> dict:
+    """What each detector raised, and what humans did with it (owner only).
+
+    The question the signal layer has never been able to answer about itself:
+    how much of what it raises does somebody then throw away. Per signal type,
+    over 7- and 30-day windows — signals emitted, decisions opened, the outcome
+    distribution, and the dismissal rate with a two-sided band.
+
+    Reads only rows that already exist. It computes nothing commercial, stores
+    nothing, and calls no provider.
+    """
+    from ..decisions.outcomes import report
+    from ..repositories import DecisionRepository, SignalRepository
+
+    org = principal.organization_id
+    return report(DecisionRepository(session, org), SignalRepository(session, org))
+
+
 @router.get("/ai-readiness")
 def ai_readiness(
     principal: Principal = Depends(require_owner),

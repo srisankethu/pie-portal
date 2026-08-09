@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { ROLE_LABEL } from "./format";
 import { formatDateTime } from "../when";
 import { papi } from "./api";
 import type {
@@ -37,11 +38,6 @@ import { money, moneySymbol } from "../money";
  * anything. The queue is where that now lands; settings is where an owner
  * decides how strict it should be and who is allowed to answer it.
  */
-
-const ROLE_LABEL: Record<Role, string> = {
-  SALESPERSON: "Salesperson",
-  SALES_MANAGER: "Sales manager",
-  OWNER: "Owner" };
 
 const ROLE_HELP: Record<Role, string> = {
   SALESPERSON: "Their own accounts. Never sees cost or margin.",

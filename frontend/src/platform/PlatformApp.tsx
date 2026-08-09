@@ -12,7 +12,7 @@ import {
   savePlatformSession,
 } from "./api";
 import type { Account, DecisionDetail, DecisionSummary, DecisionTrace, PlatformSession, Role, StatusFilter } from "./types";
-import { aiState, factLabel, factValue, isPrimaryFact, stateFieldLabel } from "./format";
+import { aiState, factLabel, factValue, isPrimaryFact, stateFieldLabel, ROLE_LABEL } from "./format";
 import { ActionsPanel, Bp, Conf, DecisionCard, ImpactPanel, Interpretation, Labelled,
          Pri, RankingPanel, Tip, WhyPanel, typeLabel } from "./ui";
 import Alert from "@mui/material/Alert";
@@ -122,9 +122,14 @@ const NegotiateScreen = lazy(() =>
 const ROLE_HOME: Record<Role, { title: string; sub: string; nav: string }> = {
   SALESPERSON: { title: "Today", sub: "Decisions that need you, most urgent first", nav: "Today" },
   SALES_MANAGER: {
-    title: "Team focus",
-    sub: "Where the team's attention is worth spending, and what is waiting on you",
-    nav: "Team focus",
+    // Not "Team focus". This page shows the organization's decisions and the
+    // approvals waiting on you; it has never shown a view of the team, and a
+    // title promising one sends a manager looking for a screen that does not
+    // exist. The per-person roll-up is a deliberate omission while there is one
+    // salesperson to roll up — but the title should describe the page as it is.
+    title: "Where to act",
+    sub: "The decisions worth your attention, and what is waiting on your sign-off",
+    nav: "Where to act",
   },
   OWNER: { title: "Where to intervene", sub: "The commercial situations that deserve a decision", nav: "Where to intervene" },
 };
@@ -1327,6 +1332,16 @@ function DetailScreen({
       <h1 style={{ margin: "2px 0 4px" }}>{d.subject_label}</h1>
       <div style={{ margin: "0 0 18px" }}>
         <EntitySource origin={d.subject_origin} show={Boolean(d.sources_differ)} />
+        {/* Whose this is. `assigned_user_id` and `assigned_role` were both on the
+            wire and neither reached a screen, so a card could not answer the
+            first question anybody asks about a decision. A null assignee with a
+            role set is not missing data — the decision belongs to the role — and
+            saying that beats rendering a blank. */}
+        <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>
+          {d.assigned_to
+            ? `Covered by ${d.assigned_to}`
+            : `Routed to ${ROLE_LABEL[d.assigned_role] ?? d.assigned_role} — no individual owner`}
+        </Typography>
       </div>
 
       <div className="dp-split">
@@ -1641,6 +1656,18 @@ function CustomerScreen({
                   valueFormatter: (p) =>
                     Number(p.value) > 0 ? `${p.value} open` : "nothing",
                 }),
+                {
+                  // Whose account this is. The server has always sent
+                  // `assigned_user_id` and nothing rendered it, so no screen
+                  // could answer the first question a manager asks — on a
+                  // landing page called "Team focus". Last column and the first
+                  // to drop on a narrow screen: it is context, not the number
+                  // somebody came for.
+                  field: "assigned_to", headerName: "Covered by", width: 150, flex: 0,
+                  context: { minGridWidth: 1040 },
+                  filter: "agTextColumnFilter",
+                  valueFormatter: (p) => (p.value ? String(p.value) : "unassigned"),
+                },
               ]}
             />
           </>

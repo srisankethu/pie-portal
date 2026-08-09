@@ -3,6 +3,19 @@
 import type { Fact } from "./types";
 import { money } from "../money";
 
+/** What a role is called on screen.
+ *
+ *  `Record<string, string>` rather than `Record<Role, string>` because callers
+ *  index it with a role that arrived over the wire — `decision.assigned_role` is
+ *  a string, and a build that trusted it to be a known `Role` would render
+ *  `undefined` for one the server added first. Callers fall back to the raw
+ *  value. Lived privately in `AdminScreens` until a second screen needed it. */
+export const ROLE_LABEL: Record<string, string> = {
+  SALESPERSON: "Salesperson",
+  SALES_MANAGER: "Sales manager",
+  OWNER: "Owner",
+};
+
 export const TYPE_LABEL: Record<string, string> = {
   CUSTOMER_DECLINE: "Customer decline",
   CUSTOMER_DORMANCY: "Customer dormancy",

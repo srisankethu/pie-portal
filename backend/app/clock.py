@@ -32,6 +32,29 @@ def aware(value: Optional[datetime]) -> Optional[datetime]:
     return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
 
 
+def iso(value: Optional[datetime]) -> Optional[str]:
+    """A stored *datetime* as an unambiguous ISO-8601 string. ``None`` passes through.
+
+    Use this to serialize a timestamp read back out of the database, never a bare
+    ``value.isoformat()``. For the reason above, a `DateTime(timezone=True)`
+    column round-trips from SQLite as naive, so the object built on the way in
+    carries an offset and the one read back does not. Both are valid ISO-8601,
+    which is what makes it silent — and JavaScript reads a date-time string with
+    no offset as *local* time, so the browser then shifts it by the viewer's own
+    zone. An approval raised at 10:16 pm IST rendered as "4:46 pm".
+
+    Invisible in a UTC-hosted test and wrong for every user of an IST book.
+
+    **Datetimes only.** A ``date`` is already unambiguous and has no ``tzinfo``
+    to read, so passing one here is a bug — `date.isoformat()` is correct for
+    those and must be left alone. That distinction is why this cannot be applied
+    by pattern-matching `.isoformat()`: the call sites look identical and only
+    the column type tells them apart.
+    """
+    value = aware(value)
+    return value.isoformat() if value is not None else None
+
+
 # ── the business day ─────────────────────────────────────────────────────────
 #
 # Storage is UTC and stays UTC. What follows is about the *other* question —

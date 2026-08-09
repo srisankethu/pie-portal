@@ -293,8 +293,7 @@ class Quote:
         )
         rate = sales_tax_rate()
         tax = subtotal * rate
-        counts = self._filter_counts()
-        floor = self._margin_floor() if mgmt else None
+        counts = self._filter_counts(mgmt)
         return {
             "id": self.id, "customer": self.customer,
             "customerId": self.customerId, "number": self.number,
@@ -322,7 +321,10 @@ class Quote:
                                    if ln.quoted is not None and ln.priceSource == "LIST"),
             },
             "filterCounts": counts,
-            "marginFloor": floor,
+            # Both margin keys are *absent* for a salesperson rather than null or
+            # zero. §1 asks for absent, and here the difference is not cosmetic:
+            # see `_filter_counts`.
+            **({"marginFloor": self._margin_floor()} if mgmt else {}),
             # What has already gone to Zoho from this quote, so the screen can
             # say so rather than leaving an unchanged primary button as the only
             # evidence that anything happened.
@@ -332,9 +334,9 @@ class Quote:
                          if self.estimateNumber else None),
         }
 
-    def _filter_counts(self) -> Dict[str, int]:
+    def _filter_counts(self, mgmt: bool) -> Dict[str, int]:
         fl = [ln.flags() for ln in self.lines]
-        return {
+        counts = {
             "ALL": len(self.lines),
             "NEEDS": sum(f["attention"] for f in fl),
             "PROC": sum(f["procurement"] for f in fl),
@@ -342,8 +344,22 @@ class Quote:
             "MANUAL": sum(f["manualReview"] for f in fl),
             "UNRES": sum(f["unresolved"] for f in fl),
             "SUBST": sum(f["substituted"] for f in fl),
-            "MFLOOR": sum(1 for ln in self.lines if ln.economics().below_floor),
         }
+        # MFLOOR is a margin fact and it used to be sent to everyone, two lines
+        # below the guard that correctly withheld `marginFloor`. On its own it
+        # looks harmless — a count. It is a yes/no oracle on the floor price:
+        # re-price one line and read the count back, and about twenty probes
+        # bisect the floor to the rupee. The floor is cost x (1 + margin floor),
+        # so that recovers the cost. The Quote Builder already hid the chip
+        # behind `{mgmt && ...}`, which is exactly the failure §1 names —
+        # "absent from the response, not hidden in the browser".
+        #
+        # Omitted, not zeroed. A zero still answers "is any line below the
+        # floor?" with "no", and that is the same oracle at lower resolution.
+        if mgmt:
+            counts["MFLOOR"] = sum(
+                1 for ln in self.lines if ln.economics().below_floor)
+        return counts
 
     def _margin_floor(self) -> Optional[Dict[str, Any]]:
         below = [ln for ln in self.lines if ln.economics().below_floor]

@@ -7,6 +7,13 @@ authority here: RESTRICTED cost/margin facts are dropped for a salesperson —
 absent, not masked — while OPERATIONAL *direction-only* flags (e.g. "cost moving
 up") are kept, which is exactly what the direction flag exists for.
 
+``unknowns`` is scoped too, and it is the easier one to miss. It is not a fact
+list, so nothing about it passes through the ``data_class`` gate — but a
+data-quality note is free text *this module writes*, and free text can state a
+comparison between a restricted value and one the reader is shown.
+``_suspicious_cost`` did exactly that, and its output reaches both the client
+and the model. Anything appended here has to be written for the recipient.
+
 This module states facts and reports what is unknown. It does not recommend and
 does not calculate — the deterministic layer already computed every number, and
 the AI layer interprets afterwards.
@@ -44,7 +51,19 @@ def _label(raw: str) -> str:
     return _LABELS.get(raw, raw.replace("_", " ").capitalize())
 
 
-def _suspicious_cost(item_facts: list[dict]) -> Optional[str]:
+#: What a salesperson is told when the cost on record fails the check below.
+#: The manager wording states the comparison; this one states the consequence.
+#: The difference is the whole point: the salesperson is shown
+#: ``last_price_paid``, so "cost is at or above the last selling price" hands
+#: them a hard lower bound on a figure their role is denied — a restricted
+#: comparison escaping as prose through a channel that looks like data quality.
+#: They still need to know the profitability read is untrustworthy, so the flag
+#: stays and only the reason changes.
+_COST_QUALITY_SAFE = ("the purchase cost recorded for this item looks wrong, so "
+                      "profitability on it cannot be read from these figures")
+
+
+def _suspicious_cost(item_facts: list[dict], *, is_sales: bool) -> Optional[str]:
     """Detect a cost that is not below the last selling price (a data-quality
     red flag a human must weigh before trusting the margin read)."""
     by = {f["label"]: f["value"] for f in item_facts}
@@ -52,7 +71,8 @@ def _suspicious_cost(item_facts: list[dict]) -> Optional[str]:
     price = by.get("last_price_paid")
     if isinstance(cost, (int, float)) and isinstance(price, (int, float)) and price > 0:
         if cost >= price:
-            return "recorded unit cost is at or above the last selling price"
+            return (_COST_QUALITY_SAFE if is_sales else
+                    "recorded unit cost is at or above the last selling price")
     return None
 
 
@@ -115,7 +135,7 @@ def build_quote_bundle(
         item_facts = item.get("facts", [])
         if any(f.get("label") == "last_price_paid" for f in item_facts):
             has_item_history = True
-        susp = _suspicious_cost(item_facts)
+        susp = _suspicious_cost(item_facts, is_sales=is_sales)
         if susp:
             unknowns.append({"field": f"cost_quality:{item.get('product_id')}", "reason": susp})
         prefix = f"{item_label} · " if len(items) > 1 else ""

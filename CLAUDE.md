@@ -66,6 +66,31 @@ correctly withheld `marginFloor`, and hidden in the component by `{mgmt && …}`
 Twenty bisection probes turned it into the exact floor price, and the floor is
 cost × (1 + margin floor).
 
+**And no rule whose boundary is cost.** MFLOOR was a count; the same defect
+returned as a *rule code*. `quote-intelligence/assess` takes `proposed_price`
+from the caller and answers which exceptions fired, so walking the price finds
+the value where the answer changes — and for `NEGATIVE_MARGIN` that value is the
+purchase price itself, with no policy multiplier in the comparison to obscure
+it. Two hundred lines fit in one request, so it was two round trips, not twenty
+probes. Withholding the *reasoning* from a rule is not enough: **the fact that a
+named rule fired is a predicate, and a predicate a caller can walk is the number
+it tests against.**
+
+So a rule carries `boundary_refs` — the values that place its boundary, not
+every value it reads — and `quote_service.project` withholds any rule naming
+something the recipient may not see, substituting one fixed
+`APPROVAL_REQUIRED`. The control survives; the boundary does not.
+`test_a_salesperson_cannot_walk_the_price_to_recover_cost` sweeps the price and
+asserts the response does not change at cost, which is the shape of test this
+class needs — every field-level assertion in that file passed while the endpoint
+gave up cost.
+
+Two residual boundaries remain by design, and that is the accepted line: a
+control that says "this needs approval" must move somewhere. What is left is
+`cost/(1 - min_margin)` and `cost/(1 - margin_floor)` — two equations in three
+unknowns, so cost does not come out. **One boundary per distinct action the
+recipient can take is the budget; anything past it is a leak.**
+
 The boundary of this rule, stated because it is real rather than because it is
 comfortable. A line's negotiation floor and its `recommended` price are both
 cost × a policy multiplier, and a salesperson needs both to do the job; anyone

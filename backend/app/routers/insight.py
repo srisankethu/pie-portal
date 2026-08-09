@@ -2293,6 +2293,13 @@ def negotiate(body: NegotiationRequest,
     try:
         resolved = floor.resolve(session, org, body.product_id,
                                  family=body.family, as_of=as_of)
+    except floor.UnknownFamily as e:
+        # 400, and deliberately not the empty envelope below. "This item has no
+        # floor" is a calm answer a screen renders; "there is no such family" is
+        # a malformed request. Answering both the same way is what let the
+        # family name be swept — every unknown name returned the default
+        # multiplier's floor, so the table could be read off the floors.
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from e
     except floor.FloorUnavailable as e:
         return _envelope({"negotiable": False}, th=th,
                          empty_reason=e.reason)

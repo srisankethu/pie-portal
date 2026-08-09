@@ -504,7 +504,15 @@ export default function PlatformApp() {
       ? ([{ key: "catalogue", label: "Item lines", group: "setup" }] as NavItem[])
       : []),
     { key: "data", label: "Data & connection", group: "setup" },
-    { key: "identity", label: "Identities", group: "setup" },
+    // Every call this screen makes is `require_manager_or_owner` — the list, the
+    // pending suggestions, the settings policy — so for a salesperson it was a
+    // nav item where nothing on the page worked. Unconditional here, three lines
+    // below the comment forbidding exactly that. `read policy` is the same
+    // manager-or-owner pair the identity reads carry; reusing it keeps the
+    // vocabulary in `ability.ts` from growing a noun per screen.
+    ...(ability.can("read", "policy")
+      ? ([{ key: "identity", label: "Identities", group: "setup" }] as NavItem[])
+      : []),
     { key: "states", label: "AI states", group: "setup" },
     { key: "settings", label: "Settings", group: "setup" },
   ];

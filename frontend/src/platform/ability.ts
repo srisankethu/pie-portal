@@ -28,7 +28,12 @@ export type Subject =
   | "economics"        // cost, margin, purchase rate — anywhere they surface
   | "team"             // other people's accounts and their decisions
   | "users"            // accounts and roles
-  | "policy"           // margin policy, approval policy, thresholds
+  | "policy"           // margin policy, approval policy, thresholds — and the
+                       // identity screen, whose reads carry the same
+                       // manager-or-owner authority. Reused rather than given a
+                       // noun of its own: this vocabulary is meant to stay small
+                       // enough to hold in your head, and a subject per screen
+                       // is how that stops being true.
   | "approvals"        // the approval queue
   | "supply"           // suppliers, purchasing, what we owe
   | "simulation"       // the what-if desk

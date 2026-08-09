@@ -862,15 +862,30 @@ export interface IdentityEvent {
 }
 
 export interface IdentitySuggestion {
-  suggestion_id: string;
-  /** Which rule proposed it — GSTIN, SKU, … */
+  /** Which rule proposed it — GSTIN, SKU, NAME. `NAME` is the weak one: it only
+   *  runs where no exact identifier exists, and it is never auto-linked. */
   strategy: string;
+  suggestion_id: string;
   /** The value it matched on, so a reviewer judges the match not a score. */
   evidence: string;
   created_at: string | null;
   incoming: ConnectorRecord;
   incoming_identity_id: string;
   target: Identity;
+}
+
+/** How far the matcher can even see, so an empty review queue can say which
+ *  kind of empty it is. Nothing found and nothing *lookable-at* were one
+ *  sentence, and the screen chose the reassuring reading of both. */
+export interface IdentityCoverage {
+  records: number;
+  /** Records carrying an identifier a strong strategy can compare. */
+  with_key: number;
+  without_key: number;
+  /** Records still alone on their identity — nothing has been linked to them. */
+  unlinked: number;
+  /** "GSTIN" or "SKU", so the screen names the right one. */
+  key_name: string;
 }
 
 export interface IdentityPolicy {
@@ -931,4 +946,82 @@ export interface AiWindowSummary {
 export interface AiMetricsReport {
   generated_at: string;
   windows: Record<string, AiWindowSummary>;
+}
+
+/* ── the trust surface (owner only) ──────────────────────────────────────────
+ * What leaves for a model, who has opened this tenant, and the two irreversible
+ * things an owner can do with their own data. Shapes mirror `routers/trust.py`;
+ * every one of them is the server's own words, because the point of the screen
+ * is that the promise is checkable rather than restated by the client.
+ */
+
+/** One category of fact the model is allowed to receive, and why. */
+export interface DisclosureAllowed {
+  category: string;
+  example: string;
+  why: string;
+}
+
+export interface DisclosureStatement {
+  provider: string;
+  /** The configured model. Note that the server reports this whatever the
+   *  provider is, so with `provider: "mock"` it names a model nothing calls —
+   *  the screen says which provider is running rather than asserting this. */
+  model: string;
+  training_on_customer_data: boolean;
+  zero_retention_requested: boolean;
+  allowed: DisclosureAllowed[];
+  never_sent: string[];
+  notes: string;
+}
+
+export interface ModelPayloadRow {
+  payload_id: string;
+  decision_type: string | null;
+  provider: string;
+  model: string;
+  created_at: string | null;
+  /** Anything the outbound checker found that the disclosure says never leaves.
+   *  Non-empty is a defect report, not a statistic. */
+  findings: string[];
+  payload: string | null;
+}
+
+export interface PayloadsReport {
+  summary: { payloads: number; flagged: number };
+  payloads: ModelPayloadRow[];
+}
+
+/** One entry in the break-glass log. `GRANTED` and `REVOKED` bracket a window;
+ *  `ACCESSED` is one use inside it, and there is one row per use. */
+export interface AccessEventRow {
+  event_id: string;
+  staff_user_id: string;
+  action: string;
+  detail: string | null;
+  at: string | null;
+}
+
+export interface AccessReport {
+  events: AccessEventRow[];
+  note: string;
+}
+
+export interface ErasureReceipt {
+  organization_id: string;
+  erased_at: string | null;
+  reason: string;
+  actor_user_id: string | null;
+  manifest: Record<string, unknown>;
+  method: string;
+  signature: string;
+  /** Re-checked server-side on every read, so a receipt cannot be believed on
+   *  the strength of its own presence. */
+  verified: boolean;
+}
+
+export interface ErasureState {
+  erased: boolean;
+  receipt: ErasureReceipt | null;
+  key_destroyed?: boolean;
 }

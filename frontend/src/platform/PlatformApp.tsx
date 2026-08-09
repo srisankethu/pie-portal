@@ -68,6 +68,8 @@ const SettingsScreen = lazy(() =>
   import("./AdminScreens").then((m) => ({ default: m.SettingsScreen })));
 const IdentityScreen = lazy(() =>
   import("./IdentityScreen").then((m) => ({ default: m.IdentityScreen })));
+const TrustScreen = lazy(() =>
+  import("./TrustScreen").then((m) => ({ default: m.TrustScreen })));
 const DataScreen = lazy(() =>
   import("./DataScreen").then((m) => ({ default: m.DataScreen })));
 const CustomerCommercial = lazy(() =>
@@ -539,6 +541,12 @@ export default function PlatformApp() {
       ? ([{ key: "identity", label: "Identities", group: "setup" }] as NavItem[])
       : []),
     { key: "states", label: "AI states", group: "setup" },
+    // Owner only, mirroring `require_owner` on every `/trust/*` route. Named for
+    // the question rather than for the mechanism: an owner looks for "my data",
+    // not for "disclosure and break-glass".
+    ...(ability.can("read", "trust")
+      ? ([{ key: "trust", label: "Your data", group: "setup" }] as NavItem[])
+      : []),
     { key: "settings", label: "Settings", group: "setup" },
   ];
 
@@ -696,6 +704,7 @@ export default function PlatformApp() {
             <Route path={PATH.data} element={<DataScreen session={session} onSynced={load} />} />
             <Route path={PATH.approvals} element={<ApprovalsScreen session={session} />} />
             <Route path={PATH.identity} element={<IdentityScreen token={session.token} />} />
+            <Route path={PATH.trust} element={<TrustScreen session={session} />} />
             <Route path={PATH.settings} element={<SettingsScreen session={session} />} />
 
             {/* ── AI STATES (reference) ── */}

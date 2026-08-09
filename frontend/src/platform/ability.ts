@@ -37,6 +37,7 @@ export type Subject =
   | "approvals"        // the approval queue
   | "supply"           // suppliers, purchasing, what we owe
   | "simulation"       // the what-if desk
+  | "trust"            // disclosure, the access log, export and erasure
   | "all";
 
 export type AppAbility = MongoAbility<[Action, Subject]>;
@@ -71,6 +72,12 @@ export function defineAbilityFor(role: Role | undefined): AppAbility {
     can("manage", "policy");
     // Selling below cost is an owner's signature, never a manager's.
     can("approve", "all");
+    // Mirrors `require_owner` on every `/trust/*` route. Who has looked at our
+    // data and what left for a model are questions about the relationship with
+    // the vendor, not about running the desk — and erasure destroys the tenant's
+    // data key, which is not a decision to offer a manager by accident.
+    can("read", "trust");
+    can("manage", "trust");
   }
 
   return build();

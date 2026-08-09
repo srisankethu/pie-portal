@@ -254,7 +254,12 @@ def list_suggestions(
             "incoming_identity_id": record.identity_id,
             "target": _identity_dict(session, target, entity_type),
         })
-    return {"suggestions": out, "can_manage": principal.role.value == "OWNER"}
+    return {"suggestions": out, "can_manage": principal.role.value == "OWNER",
+            # So an empty queue can say which kind of empty it is. See
+            # `identity.review_coverage` — the screen used to read every empty
+            # queue as "no matches found", including the case where nothing was
+            # eligible to be matched.
+            "coverage": identity.review_coverage(session, org, entity_type)}
 
 
 class Decide(BaseModel):

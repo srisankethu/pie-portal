@@ -1191,6 +1191,24 @@ class QuoteOutcome(Base):
 
     status: Mapped[str] = mapped_column(String(16), default="DRAFT", index=True)
     note: Mapped[Optional[str]] = mapped_column(String(1024))
+    # Why it was lost — a ``QuoteLossReason``, and specifically whether the
+    # money went to somebody else or the requirement died. Those two look
+    # identical in a bare LOST row and mean opposite things about what this
+    # customer spends elsewhere, so anything reasoning about that has to be
+    # able to separate them, and a free-text ``note`` cannot be aggregated.
+    #
+    # NULL only on rows written before this column existed. Backfilling them to
+    # UNKNOWN would be indistinguishable from somebody having answered
+    # "unknown", so they are left NULL and read as "not recorded" — which is
+    # the true statement. New losses cannot be NULL: ``set_outcome`` refuses a
+    # LOST transition without a reason rather than defaulting to a benign one.
+    loss_reason: Mapped[Optional[str]] = mapped_column(String(24), index=True)
+    #: Who won it, where that is known. Free text on purpose — a competitor is
+    #: not an entity this platform holds, and a lookup table of them would be a
+    #: second customer master maintained by nobody. Never required: a reason is
+    #: the part that has to be answerable, and a rep who does not know the
+    #: winner must still be able to record the loss.
+    lost_to: Mapped[Optional[str]] = mapped_column(String(255))
     sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     decided_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     updated_by_user_id: Mapped[Optional[str]] = mapped_column(String(64))

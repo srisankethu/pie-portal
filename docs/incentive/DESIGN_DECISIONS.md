@@ -338,7 +338,44 @@ Anything I put in the file would be a number people would anchor on.
 
 ## Q5 — Validating the RSI weights
 
-The weights are a prior. The backtest that would settle them:
+**Settled ahead of the backtest for share-of-wallet: the weight is now 0, and
+its 15 points went to regularity (20 → 35).**
+
+Point 2 below anticipated the right outcome for the wrong reason. It expected
+share-of-wallet to fail on weak correlation and proposed trimming it to 10. The
+actual objection needs no backtest and is not fixed by a smaller weight: it is a
+number the salesperson supplies about their own account, scored inside the index
+that sets `w_base` and `w_inc`. The person being paid was an input to their own
+multiplier. A weight of 10 is the same defect, smaller.
+
+It was also never populated — the only constructions of `CustomerAttributes`
+were in tests — so the weight was live while the value was not. That is the part
+worth remembering: the review that let this through was reading a field list,
+and nothing in a field list says whether anybody produces the field.
+
+What changed:
+
+- `parameters.yaml` — `regularity: 35`, `share_of_wallet: 0`. The weights still
+  sum to 100, so every band boundary is unchanged and no historical RSI moves on
+  account of this.
+- `share_of_wallet_est: Decimal` became
+  `share_of_wallet_declared: Optional[WalletDeclaration]`, carrying who said it
+  and when. `None` — nobody has declared one — is the true state for every
+  customer today, and is not a declared zero.
+- `RSIResult.unmeasured` names components with nothing behind them, the way
+  `insight/bonds.py` names its missing facets. The score is **not** renormalised
+  over the rest: an RSI that moved because somebody typed into a form would make
+  last quarter's payout unexplainable.
+
+**What would justify restoring a non-zero weight:** an *observed* basis, not a
+tidier input box — a share measured against published tender quantities, or an
+upper bound derived from quotes we are recorded as having lost. A declaration is
+the weakest available evidence and belongs beside the score as context, never
+inside it.
+
+Points 1, 3 and 4 still stand and still need the shadow run.
+
+The remaining weights are a prior. The backtest that would settle them:
 
 1. **Do the bands separate customers by realised multi-year contribution?**
    Compute RSI as at 2023-04-01 from history available then. Regress

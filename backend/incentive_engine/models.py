@@ -250,6 +250,39 @@ class Trial:
 
 
 @dataclass(frozen=True)
+class WalletDeclaration:
+    """Somebody's stated view of what share of a customer's spend we hold.
+
+    A declaration, never a measurement. The platform sees what a customer buys
+    here and has nothing that says what they buy elsewhere — ``insight/
+    dependency.py`` states the same limit for the same reason — so this is the
+    only shape share-of-wallet can honestly take today: a number with a name
+    and a date on it, so a reader can weigh who said it and how long ago.
+
+    ``share`` is a ratio in [0, 1], matching the convention everywhere else in
+    this codebase: margin is ``0.24``, never ``24``.
+
+    It is deliberately not a bare ``Decimal`` on ``CustomerAttributes``. It was
+    one, and a bare number is exactly what let it be scored in the RSI without
+    anyone being able to ask where it came from.
+    """
+
+    share: Decimal
+    declared_by: str
+    declared_on: date
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "share", _money(self.share, "share"))
+        if not self.declared_by:
+            raise ValidationError(
+                "share: a wallet declaration with no author cannot be weighed")
+        if not Decimal("0") <= self.share <= Decimal("1"):
+            raise ValidationError(
+                f"share: {self.share} is not a ratio in [0, 1] — margin and "
+                "share are ratios in this codebase, never percentages")
+
+
+@dataclass(frozen=True)
 class CustomerAttributes:
     customer_id: str
     customer_group_id: str
@@ -257,14 +290,20 @@ class CustomerAttributes:
     first_purchase_date: Optional[date]
     active_months_12: int
     families_bought: int
-    share_of_wallet_est: Decimal
     avg_days_beyond_terms_12: Decimal
     live_contacts: int
     is_restricted: bool = False
+    #: ``None`` means nobody has declared one — which is the true state for
+    #: every customer today, since nothing in the application produces it.
+    #: None is not zero: an undeclared customer is not a customer we hold no
+    #: share of, and defaulting it to ``Decimal("0")`` would be exactly the
+    #: benign default the working agreement forbids.
+    share_of_wallet_declared: Optional[WalletDeclaration] = None
 
     def __post_init__(self) -> None:
-        for name in ("share_of_wallet_est", "avg_days_beyond_terms_12"):
-            object.__setattr__(self, name, _money(getattr(self, name), name))
+        object.__setattr__(self, "avg_days_beyond_terms_12",
+                           _money(self.avg_days_beyond_terms_12,
+                                  "avg_days_beyond_terms_12"))
 
 
 # ── outputs ──────────────────────────────────────────────────────────────────

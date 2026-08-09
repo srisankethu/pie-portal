@@ -381,10 +381,17 @@ def test_a_decision_records_which_catalogue_resolved_it(client):
 
 
 # ── the outcome path ────────────────────────────────────────────────────────
-def _outcome(c, email, status, quote_id="q1", note=None):
-    return c.post("/api/v1/quote-intelligence/outcome",
-                  json={"quote_id": quote_id, "status": status,
-                        "customer": "Acme Engineering", "note": note},
+def _outcome(c, email, status, quote_id="q1", note=None,
+             loss_reason="LOST_ON_PRICE", lost_to=None):
+    """A LOST call carries a reason by default so the lifecycle tests below
+    stay about the lifecycle. The reason rule has its own tests."""
+    body = {"quote_id": quote_id, "status": status,
+            "customer": "Acme Engineering", "note": note}
+    if status == "LOST" and loss_reason is not None:
+        body["loss_reason"] = loss_reason
+    if lost_to is not None:
+        body["lost_to"] = lost_to
+    return c.post("/api/v1/quote-intelligence/outcome", json=body,
                   headers=_hdr(c, email))
 
 
@@ -430,3 +437,61 @@ def test_the_outcome_endpoint_requires_authentication(client):
     r = client.post("/api/v1/quote-intelligence/outcome",
                     json={"quote_id": "q1", "status": "SENT"})
     assert r.status_code in (401, 403)
+
+
+# ── why it was lost ─────────────────────────────────────────────────────────
+#
+# A bare LOST cannot say whether another supplier took the order or the
+# requirement went away. Those are opposite facts about what this customer
+# spends elsewhere, and the person recording the loss is the one person who
+# knows — so the answer is taken then, not defaulted and reconstructed later.
+
+def test_a_loss_cannot_be_recorded_without_saying_which_kind_it_was(client):
+    _snapshot(client, MANAGER, [_line("L1")], quote_id="q20")
+    _outcome(client, MANAGER, "SENT", "q20")
+    r = _outcome(client, MANAGER, "LOST", "q20", loss_reason=None)
+    # 422, not 409: the transition is legal and one required field is absent.
+    assert r.status_code == 422
+    # And the message names the choices, so the form can be filled from it.
+    assert "LOST_ON_PRICE" in r.json()["detail"]
+    # The quote is untouched — a refused loss must not half-decide it.
+    audit = client.get("/api/v1/quote-intelligence/quotes/q20",
+                       headers=_hdr(client, MANAGER)).json()
+    assert audit["outcome"]["status"] == "SENT"
+
+
+def test_unknown_is_not_a_reason_a_new_loss_may_be_recorded_with(client):
+    """It exists for quotes decided before the reason was asked for."""
+    _snapshot(client, MANAGER, [_line("L1")], quote_id="q21")
+    _outcome(client, MANAGER, "SENT", "q21")
+    r = _outcome(client, MANAGER, "LOST", "q21", loss_reason="UNKNOWN")
+    assert r.status_code == 422
+
+
+def test_a_recorded_loss_keeps_the_reason_and_the_winner(client):
+    _snapshot(client, MANAGER, [_line("L1")], quote_id="q22")
+    _outcome(client, MANAGER, "SENT", "q22")
+    lost = _outcome(client, MANAGER, "LOST", "q22",
+                    loss_reason="LOST_ON_DELIVERY", lost_to="Bright Tools").json()
+    assert lost["loss_reason"] == "LOST_ON_DELIVERY"
+    assert lost["lost_to"] == "Bright Tools"
+
+
+def test_a_won_quote_carries_no_loss_reason(client):
+    """Set only on the LOST edge, so a won quote cannot keep a stale one from
+    an earlier attempt at the form."""
+    _snapshot(client, MANAGER, [_line("L1")], quote_id="q23")
+    _outcome(client, MANAGER, "SENT", "q23")
+    won = _outcome(client, MANAGER, "WON", "q23",
+                   loss_reason="LOST_ON_PRICE").json()
+    assert won["status"] == "WON"
+    assert won["loss_reason"] is None
+
+
+def test_the_selectable_reasons_travel_with_the_outcome(client):
+    """The form should not hold its own copy of the list."""
+    _snapshot(client, MANAGER, [_line("L1")], quote_id="q24")
+    out = client.get("/api/v1/quote-intelligence/quotes/q24",
+                     headers=_hdr(client, MANAGER)).json()["outcome"]
+    assert "LOST_ON_PRICE" in out["loss_reasons"]
+    assert "UNKNOWN" not in out["loss_reasons"]

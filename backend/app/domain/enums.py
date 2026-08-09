@@ -7,6 +7,7 @@ portable across the DB (stored as strings) and JSON APIs.
 from __future__ import annotations
 
 from enum import Enum
+from typing import Optional
 
 
 class Role(str, Enum):
@@ -353,6 +354,70 @@ QUOTE_OUTCOME_TRANSITIONS: dict[QuoteOutcomeStatus, frozenset] = {
     QuoteOutcomeStatus.WON: frozenset(),
     QuoteOutcomeStatus.LOST: frozenset(),
 }
+
+
+class QuoteLossReason(str, Enum):
+    """Why a quote was lost — and specifically, whether the money went anywhere.
+
+    The distinction this exists to draw is not a CRM nicety. "They bought it
+    from somebody else" and "nobody bought it at all" look identical in a
+    `LOST` row and mean opposite things about the customer's spending: the
+    first is a directly observed piece of a competitor's share of that
+    customer, the second is not evidence of any purchase. Anything that
+    reasons about what a customer buys elsewhere has to be able to tell them
+    apart, and a free-text note cannot be aggregated.
+
+    ``went_elsewhere`` is the property that carries that, rather than callers
+    re-deciding which members count — one definition, extended here when a
+    member is added, instead of a set literal copied into every consumer.
+
+    ``UNKNOWN`` exists because a quote lost before this field did still has to
+    be representable. It is never a default a *new* row may take: recording a
+    loss requires naming which of these it was, and `set_outcome` refuses
+    otherwise. An unknown reason is excluded from every denominator rather
+    than assumed benign — a lost quote silently counted as "not bought" would
+    understate what a customer spends elsewhere, which is the direction that
+    makes a share estimate flattering.
+    """
+
+    #: Beaten on price by another supplier.
+    LOST_ON_PRICE = "LOST_ON_PRICE"
+    #: Another supplier could deliver and we could not, or not in time.
+    LOST_ON_DELIVERY = "LOST_ON_DELIVERY"
+    #: Our brand or grade was not approved for the application; theirs was.
+    LOST_ON_APPROVAL = "LOST_ON_APPROVAL"
+    #: The requirement went away — project shelved, part cancelled, budget
+    #: pulled. Nobody supplied it, so nobody gained the spend.
+    NOT_BOUGHT = "NOT_BOUGHT"
+    #: Still nobody's, and not obviously coming back. Distinct from
+    #: ``NOT_BOUGHT``: the requirement may be live and simply stalled, so it
+    #: cannot be counted as a competitor's and cannot be counted as dead.
+    NO_DECISION = "NO_DECISION"
+    #: Recorded before a reason was asked for, or genuinely not known.
+    UNKNOWN = "UNKNOWN"
+
+    @property
+    def went_elsewhere(self) -> Optional[bool]:
+        """Whether this loss is evidence somebody else supplied the line.
+
+        Three-valued on purpose. ``True`` means a competitor took it, ``False``
+        means the requirement died, and ``None`` means the record does not say
+        — which is not the same as "no", and must not be folded into it.
+        """
+        if self in (QuoteLossReason.LOST_ON_PRICE,
+                    QuoteLossReason.LOST_ON_DELIVERY,
+                    QuoteLossReason.LOST_ON_APPROVAL):
+            return True
+        if self is QuoteLossReason.NOT_BOUGHT:
+            return False
+        return None
+
+
+#: Reasons a person may choose when recording a loss. ``UNKNOWN`` is absent
+#: deliberately: it is a state history can be in, never a state a new record
+#: may be created in.
+SELECTABLE_LOSS_REASONS: tuple[QuoteLossReason, ...] = tuple(
+    r for r in QuoteLossReason if r is not QuoteLossReason.UNKNOWN)
 
 
 # Data classes for permission redaction (§14). RESTRICTED fields are visible to

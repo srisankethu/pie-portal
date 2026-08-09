@@ -76,9 +76,26 @@ floor:
 rsi:
   weights:
     tenure: 20
-    regularity: 20
+    # 35, not 20: it carries the 15 points share_of_wallet used to hold. Q5 of
+    # DESIGN_DECISIONS already named regularity as the destination if
+    # share-of-wallet failed to earn its place. It failed for a worse reason
+    # than weak correlation — see below.
+    regularity: 35
     breadth: 15
-    share_of_wallet: 15
+    # Zero, deliberately, and kept in the table rather than deleted.
+    #
+    # This was a number the salesperson supplies about their own account,
+    # scored 15 of 100 in the index that sets w_base and w_inc — so the person
+    # being paid was an input to their own multiplier. Nothing in the
+    # application ever produced it either: the only constructions of
+    # CustomerAttributes were in tests, so the weight was live and the value
+    # was not.
+    #
+    # It stays listed at 0 so `components` still reports it and a reader can
+    # see it was weighed and scored nothing, rather than wondering whether a
+    # sixth component was ever here. Restoring a non-zero weight needs an
+    # observed basis for the number, not a better-designed input box.
+    share_of_wallet: 0
     payment_behaviour: 15
     contact_depth: 15
   # Saturation points: the value at which a component scores 100.

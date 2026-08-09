@@ -27,7 +27,8 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..authz import (Principal, can_view_customer, current_principal,
-                     require_manager_or_owner)
+                     decision_queue_scope, require_manager_or_owner)
+from ..repositories import DecisionRepository
 from .. import approvals, clock
 from ..commercial import floor, incentive, policy, portfolio, principals
 from ..commercial import categories as cat
@@ -2729,12 +2730,21 @@ def daily(moved_from: Optional[date] = Query(None),
     # did not exist and could not be made to appear. One number, from one place.
     approvals_pending = approvals.pending_count(session, principal)
 
-    band_rows = session.execute(
-        select(models.Decision.priority_band, func.count())
-        .where(models.Decision.organization_id == org,
-               models.Decision.status == DecisionStatus.OPEN.value)
-        .group_by(models.Decision.priority_band)).all()
-    decisions_by_band = {str(b): int(n) for b, n in band_rows}
+    # The same scope the queue itself applies, for the same reason the approvals
+    # count above was fixed: this was an org-wide `count(*)` over every OPEN row,
+    # so a salesperson's landing page could say twenty while the screen its
+    # "Work through these →" opened held two. Nineteen of the twenty-two decision
+    # types are RESTRICTED and never reach that role, and QUOTE_CONTEXT is not a
+    # queue item at all.
+    #
+    # Counted from the repository's own list rather than by a parallel aggregate
+    # query, so the tile cannot drift from the queue: one scope, one reader. The
+    # queue is a worklist a person is expected to finish, so its length is
+    # bounded by what it is for.
+    decisions_by_band: dict[str, int] = {}
+    for row in DecisionRepository(session, org).list(
+            status=DecisionStatus.OPEN.value, **decision_queue_scope(principal)):
+        decisions_by_band[row.priority_band] = decisions_by_band.get(row.priority_band, 0) + 1
 
     since, until = daily_view.window_since(last_sync, previous_sync,
                                            now=clock.now(),

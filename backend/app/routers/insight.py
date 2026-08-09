@@ -2971,13 +2971,15 @@ def msme_capture_backlog(principal: Principal = Depends(require_manager_or_owner
                          settled_total=settled.get(vendor_id, [0, 0])[1])
         for vendor_id, totals in spend.items()
     ]
-    ranked = msme.capture_backlog(spends, _msme_statuses(session, org),
-                                  _vendor_names(session, org))
+    built = msme.capture_backlog(spends, _msme_statuses(session, org),
+                                 _vendor_names(session, org))
+    Companies(session, org).stamp(built["suppliers"],
+                                  index_of(session, org, models.Vendor),
+                                  by="vendor_id")
     return _envelope(
-        {"as_of": as_of.isoformat(), "limit_days": limit_days,
-         "suppliers": ranked},
+        {"as_of": as_of.isoformat(), "limit_days": limit_days, **built},
         th=th,
-        empty_reason=(None if ranked else
+        empty_reason=(None if built["suppliers"] else
                       "Every supplier with purchase history already has an MSME "
                       "status on record."))
 

@@ -476,7 +476,7 @@ class VendorSpend:
 
 
 def capture_backlog(spends: Iterable[VendorSpend], statuses: dict[str, Status],
-                    names: dict[str, str], *, limit: int = 25) -> list[dict]:
+                    names: dict[str, str], *, limit: int = 25) -> dict:
     """Which suppliers are worth chasing an MSME status for, in order.
 
     Status has to be collected by a person, one supplier at a time, and a book
@@ -510,4 +510,14 @@ def capture_backlog(spends: Iterable[VendorSpend], statuses: dict[str, Status],
     # order rows arrived in — a backlog that reshuffles between two runs over
     # the same data is one nobody works through.
     ranked.sort(key=lambda r: (-r["priority"], -r["spend"], r["vendor_id"]))
-    return ranked[:limit]
+
+    # The cap is reported, not applied silently. A truncated list that says
+    # nothing about the truncation reads as "these are all of them", and this
+    # one is a *coverage* list — the reader's next question is exactly how much
+    # of the book is still unestablished.
+    return {
+        "suppliers": ranked[:limit],
+        "shown": min(limit, len(ranked)),
+        "unestablished": len(ranked),
+        "unestablished_spend": round(sum(r["spend"] for r in ranked), 2),
+    }

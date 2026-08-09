@@ -341,6 +341,56 @@ class CommercialThresholds:
         (8456, 8465, "MACHINES"),
     )
 
+    # ── which floor family an item prices in ─────────────────────────────────
+    #
+    # `m_floor` is published per family in
+    # `incentive_engine/config/parameters.yaml` and nothing mapped a product
+    # onto those names, so every line priced at `default`. See
+    # `commercial/floor_families.py` for why that was two problems and not one:
+    # the floors were wrong family by family, and the disclosure defence — that
+    # `m_floor` varies by family, so two observed lines still do not invert to
+    # cost — was down to a single constant.
+    #
+    # Here rather than in `parameters.yaml` for the reason `hsn_category_ranges`
+    # is here: this is a classification, it changes every floor downstream of
+    # it, and it belongs inside the version hash so a floor computed last
+    # quarter stays explicable. The *rates* stay in the parameter block under
+    # I6. A classification is not a rate and the two are governed differently.
+    #
+    # This is where the tariff earns its keep, because it already draws the
+    # distinction the families need and no catalogue category does:
+    hsn_floor_family_ranges: tuple[tuple[int, int, str], ...] = (
+        # 8209 — plates, sticks, tips and the like for tools, UNMOUNTED, of
+        # cermets. That is an indexable insert and very little else, which
+        # makes it the sharpest single heading in this table.
+        (8209, 8209, "inserts"),
+        # 8207 — the interchangeable tool itself: drills, endmills, taps,
+        # reamers, boring and broaching tools. Mostly solid carbide or HSS in
+        # this book. It also carries indexable tool *bodies*, which belong with
+        # holders rather than here; the heading cannot separate them and a
+        # catalogue category usually can, which is why ZOHO is tried first.
+        (8207, 8207, "solid_carbide"),
+        # 8466 — parts and accessories for machine tools: tool holders,
+        # self-opening dieheads, work holders, arbors.
+        (8466, 8466, "holders_toolsystems"),
+        # Drawing and measuring instruments; measuring, checking and regulating
+        # instruments.
+        (9017, 9017, "metrology"),
+        (9031, 9032, "metrology"),
+        # Petroleum oils and lubricating preparations. Same caveat the line map
+        # makes about 2710: broader than coolant, but in this book's purchase
+        # pattern it is neat cutting oil far more often than anything else.
+        (2710, 2710, "chemicals"),
+        (3403, 3403, "chemicals"),
+        # Machine tools, as one block.
+        (8456, 8465, "machines"),
+        # Deliberately absent: 8202 saws, 8208 machine knives, 8203–8206 hand
+        # tools, 6804–6805 abrasives, 7318 hardware. Every one of them is a
+        # real line for this trade and none of them is one of the six families,
+        # so they price at the default multiplier and are counted as unplaced
+        # rather than being pushed into the nearest family to flatter coverage.
+    )
+
     # ── inferring a line from the principal who supplies it ──────────────────
     #
     # An authorised distributor's suppliers are mostly single-line: everything

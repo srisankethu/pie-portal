@@ -20,7 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import approvals
-from ..approvals import ApprovalError, NotAuthorized
+from ..approvals import ApprovalError, NotAuthorized, RationaleRequired
 from ..store import store
 from ..authz import Principal, current_principal
 from ..commercial.policy import load_for_org
@@ -182,6 +182,10 @@ def decide_approval(
             approvals.decide(session, principal, row, body.status, body.note)
     except NotAuthorized as e:
         raise HTTPException(http.HTTP_403_FORBIDDEN, str(e)) from e
+    except RationaleRequired as e:
+        # A missing reason is a malformed request, not a conflict with the
+        # request's state — the caller can fix it and retry as-is.
+        raise HTTPException(http.HTTP_400_BAD_REQUEST, str(e)) from e
     except ApprovalError as e:
         raise HTTPException(http.HTTP_409_CONFLICT, str(e)) from e
     names = _names(session, principal.organization_id, [row])

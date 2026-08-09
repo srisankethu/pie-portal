@@ -52,6 +52,10 @@ class NotAuthorized(ApprovalError):
     """The actor's role is below the authority this request requires."""
 
 
+class RationaleRequired(ApprovalError):
+    """An approval that must carry a reason was submitted without one."""
+
+
 # ── policy ──────────────────────────────────────────────────────────────────
 def get_policy(session: Session, org: str) -> models.OrgPolicy:
     """This org's policy, created with defaults on first read.
@@ -71,6 +75,23 @@ def authority_for(*, below_cost: bool, policy: models.OrgPolicy) -> ApprovalAuth
     if below_cost and policy.below_cost_requires_owner:
         return ApprovalAuthority.OWNER
     return ApprovalAuthority.MANAGER
+
+
+def rationale_required(request: models.ApprovalRequest) -> bool:
+    """Whether approving this request must come with a reason.
+
+    True for an owner-authority request, which today means exactly one thing:
+    `authority_for` escalates to the owner when a line is priced below what the
+    item cost us. That is the one irreversible commercial concession the product
+    offers — the money is gone the moment the quote goes out — and it was the
+    only decision in the app that took no reason at all. "Ask for a different
+    price" and the decision screen's "Do something different" both refuse to
+    proceed without text; approving a loss did not.
+
+    Asked here rather than derived in the browser from `required_authority`, so
+    the rule has one home and the screen renders what the server enforces.
+    """
+    return ApprovalAuthority(request.required_authority) is ApprovalAuthority.OWNER
 
 
 def can_decide(role: Role, required: ApprovalAuthority) -> bool:
@@ -206,6 +227,15 @@ def decide(session: Session, principal, request: models.ApprovalRequest,
 
     policy = get_policy(session, principal.organization_id)
     _assert_can_decide(principal, request, policy)
+    if (status is ApprovalStatus.APPROVED
+            and rationale_required(request)
+            and not (note or "").strip()):
+        # Enforced here and not only in the form. A rule that lives in the client
+        # is a rule anything not the client ignores, which is the shape of most
+        # of what this branch has been fixing.
+        raise RationaleRequired(
+            "Signing a price below what the item cost us needs a reason on the "
+            "record. Say why this one is worth it.")
 
     request.status = status.value
     request.decided_by_user_id = principal.user_id
@@ -476,6 +506,10 @@ def to_dict(request: models.ApprovalRequest, principal,
         # the rules we had then?" is the whole question could not answer it.
         "thresholds_version": request.thresholds_version or None,
         "can_decide": refusal is None,
+        # Whether the approve action must carry a note. The screen disables the
+        # button until there is one rather than deriving the rule from the
+        # authority field.
+        "requires_rationale": rationale_required(request),
         # Why not, for the screen to render in place of the button it is not
         # offering. Absent when the action is available.
         "cannot_decide_reason": refusal,

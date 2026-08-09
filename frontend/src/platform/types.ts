@@ -564,6 +564,9 @@ export interface ApprovalRequest {
   /** Why not, when `can_decide` is false — rendered in place of the button
    *  rather than inferred from `required_authority`. */
   cannot_decide_reason?: string | null;
+  /** Whether approving must carry a note. True for a below-cost line; the server
+   *  enforces it as well, so this only saves a round trip. */
+  requires_rationale?: boolean;
   is_open: boolean;
   /** Carries cost and margin — absent for a salesperson, even on their own request. */
   subject?: Record<string, unknown>;

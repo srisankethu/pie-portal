@@ -25,7 +25,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Mapping, Optional
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -259,7 +259,8 @@ def _settle_escalated_decision(session: Session, request: models.ApprovalRequest
 
 
 # ── the gate ────────────────────────────────────────────────────────────────
-def quote_submission_block(session: Session, org: str, quote_id: str) -> Optional[str]:
+def quote_submission_block(session: Session, org: str, quote_id: str,
+                           also_requiring: Optional[Mapping[str, str]] = None) -> Optional[str]:
     """Why this quote may not be sent, or None if it may.
 
     Called from the endpoint that actually sends. A gate evaluated in the
@@ -270,17 +271,40 @@ def quote_submission_block(session: Session, org: str, quote_id: str) -> Optiona
     re-priced above the floor should no longer be blocked by the request raised
     when it was below — and, symmetrically, an approval granted against an
     older, higher price must not carry over to a lower one.
+
+    ``also_requiring`` maps line id → the code to name in the sentence, for
+    lines the caller knows need sign-off for a reason this module cannot see.
+    Today that is the Quote Builder's own below-floor lines: its margin comes
+    from the item's Zoho cost, the assessment's comes from synced bill rows, and
+    an item the books price but the platform has no cost row for is below the
+    floor on screen — in a warning the person is looking at — and unremarkable
+    to the assessment. Sending it unapproved while that warning is on screen is
+    the gap this closes.
+
+    It is a parameter rather than a second gate beside this one: the coverage
+    rule, the price-changed rule and the sentence are the parts worth having
+    exactly once, and a caller that re-implemented them would be a caller whose
+    approvals stopped meaning the same thing.
     """
     policy = get_policy(session, org)
     if not policy.require_approval_for_quotes:
         return None
 
+    extra = dict(also_requiring or {})
     latest = _latest_snapshot_per_line(session, org, quote_id)
-    if not latest:
+    if not latest and not extra:
         return None
 
-    needing = [s for s in latest.values() if s.requires_approval]
-    if not needing:
+    needing = [s for s in latest.values()
+               if s.requires_approval or s.quote_line_id in extra]
+    # A caller-named line with no snapshot yet still needs approval — it is
+    # simply one this module cannot describe in its own terms. Without this the
+    # read-only window onto the gate answered "sendable" right up until the send
+    # recorded a snapshot and refused, which is the disagreement the window
+    # exists to prevent.
+    snapshotted = {s.quote_line_id for s in needing}
+    orphans = {lid: label for lid, label in extra.items() if lid not in snapshotted}
+    if not needing and not orphans:
         return None
 
     approvals = {
@@ -300,6 +324,13 @@ def quote_submission_block(session: Session, org: str, quote_id: str) -> Optiona
         elif not _covers(req, snap):
             unapproved.append(
                 f"{snap.product_ref or snap.quote_line_id} (price changed since approval)")
+    for lid, label in orphans.items():
+        req = approvals.get(lid)
+        # No snapshot means no recorded price for `_covers` to judge, so an
+        # approval cannot be shown to cover this line. Unapproved is the safe
+        # reading, and the send records a snapshot moments later anyway.
+        if req is None or req.status != ApprovalStatus.APPROVED.value:
+            unapproved.append(label or lid)
 
     if not unapproved:
         return None

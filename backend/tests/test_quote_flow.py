@@ -197,3 +197,192 @@ def test_estimate_created_when_clean_and_nothing_needs_approval(client, mgmt_hdr
     est = client.post(f"/api/quotes/{qid}/estimate", headers=mgmt_hdr).json()
     assert est["ok"] is True, est
     assert est["estimateNumber"]
+
+
+# ── the price on a line, and whose it is ─────────────────────────────────────
+@pytest.mark.requires_pie
+def test_a_resolved_line_opens_at_list_and_says_so(client, mgmt_hdr):
+    """The default is kept; what changes is that it is no longer disguised.
+
+    A resolved, in-books line is auto-quoted at the catalogue rate so a
+    forty-line tender is not forty numbers to type. Nothing said so: the screen
+    claimed in three places that it never pre-filled the field, and a quote
+    nobody had priced showed a Quotation total in the same weight as a finished
+    one.
+    """
+    q = client.post("/api/quotes", json={"customer": "Pitti"}, headers=mgmt_hdr).json()
+    qid = q["id"]
+    q = client.post(f"/api/quotes/{qid}/intake",
+                    json={"text": "2001174, 10"}, headers=mgmt_hdr).json()
+    ln = q["lines"][0]
+    assert ln["quoted"] is not None
+    assert ln["priceSource"] == "LIST"
+    assert q["summary"]["atListPrice"] == 1
+    assert q["summary"]["unpriced"] == 0
+
+    q = client.post(f"/api/quotes/{qid}/lines/{ln['id']}/price",
+                    json={"price": 777}, headers=mgmt_hdr).json()
+    assert q["lines"][0]["priceSource"] == "USER"
+    assert q["summary"]["atListPrice"] == 0
+
+
+@pytest.mark.requires_pie
+def test_price_source_reaches_a_salesperson_too(client, sales_hdr):
+    """It says where a rate came from, not what it cost — so it is not gated.
+
+    A salesperson is the person most likely to send an untouched quote, which
+    makes them the reader this mark exists for.
+
+    Marked, unlike its neighbour `test_economics_are_role_gated`, because it
+    asserts on a line that *resolved*: without the engine there is no supply
+    product, so nothing auto-prices and `priceSource` is correctly null.
+    """
+    q = client.post("/api/quotes", json={"customer": "Pitti"}, headers=sales_hdr).json()
+    qid = q["id"]
+    q = client.post(f"/api/quotes/{qid}/intake",
+                    json={"text": "2001174, 10"}, headers=sales_hdr).json()
+    assert "economics" not in q["lines"][0]
+    assert q["lines"][0]["priceSource"] in ("LIST", "USER")
+    assert "atListPrice" in q["summary"]
+
+
+@pytest.mark.requires_pie
+def test_a_discount_comes_off_the_rate_on_the_line_not_off_list(client, mgmt_hdr):
+    """The control said "apply 10% discount" and could raise a price by 59%.
+
+    It recomputed from ``listPrice``, so a line negotiated down to ₹300 came back
+    at 90% of *list* — up, not down — and a second press changed nothing, because
+    the answer never depended on where the line actually was.
+    """
+    q = client.post("/api/quotes", json={"customer": "Pitti"}, headers=mgmt_hdr).json()
+    qid = q["id"]
+    q = client.post(f"/api/quotes/{qid}/intake",
+                    json={"text": "2001174, 10"}, headers=mgmt_hdr).json()
+    lid = q["lines"][0]["id"]
+    list_price = q["lines"][0]["quoted"]
+    assert list_price > 400, "the fixture item needs headroom for this to mean anything"
+
+    client.post(f"/api/quotes/{qid}/lines/{lid}/price", json={"price": 300},
+                headers=mgmt_hdr)
+    q = client.post(f"/api/quotes/{qid}/discount",
+                    json={"lineIds": [lid], "percent": 10}, headers=mgmt_hdr).json()
+    assert q["applied"] == 1
+    assert q["lines"][0]["quoted"] == 270, "10% off the negotiated ₹300"
+
+    # And it compounds, which is what pressing it twice plainly means.
+    q = client.post(f"/api/quotes/{qid}/discount",
+                    json={"lineIds": [lid], "percent": 10}, headers=mgmt_hdr).json()
+    assert q["lines"][0]["quoted"] == 243
+
+
+# ── sending ─────────────────────────────────────────────────────────────────
+@pytest.mark.requires_pie
+def test_sending_the_same_quote_twice_returns_the_one_estimate(client, mgmt_hdr):
+    """Three presses used to put three estimates in Zoho.
+
+    Nothing on the quote remembered that it had been sent, and the button was
+    unchanged afterwards — the only acknowledgement was a three-second snackbar.
+    """
+    qid = _clean_quote(client, mgmt_hdr)
+    first = client.post(f"/api/quotes/{qid}/estimate", headers=mgmt_hdr).json()
+    assert first["ok"] is True, first
+    again = client.post(f"/api/quotes/{qid}/estimate", headers=mgmt_hdr).json()
+    assert again["ok"] is True
+    assert again["estimateNumber"] == first["estimateNumber"]
+    assert "already covers" in again["message"]
+
+    # The quote itself says what it has sent, so the screen does not have to
+    # have been watching when it happened.
+    q = client.get(f"/api/quotes/{qid}", headers=mgmt_hdr).json()
+    assert q["estimate"]["number"] == first["estimateNumber"]
+    assert q["estimate"]["current"] is True
+
+
+@pytest.mark.requires_pie
+def test_amending_a_sent_quote_produces_a_new_estimate(client, mgmt_hdr):
+    """Re-sending an amended quote is ordinary work, so this is not a lock."""
+    qid = _clean_quote(client, mgmt_hdr)
+    first = client.post(f"/api/quotes/{qid}/estimate", headers=mgmt_hdr).json()
+    lid = client.get(f"/api/quotes/{qid}", headers=mgmt_hdr).json()["lines"][0]["id"]
+
+    q = client.post(f"/api/quotes/{qid}/lines/{lid}/price", json={"price": 8000},
+                    headers=mgmt_hdr).json()
+    assert q["estimate"]["current"] is False, "the estimate no longer describes this quote"
+
+    second = client.post(f"/api/quotes/{qid}/estimate", headers=mgmt_hdr).json()
+    assert second["ok"] is True
+    assert second["estimateNumber"] != first["estimateNumber"]
+
+
+@pytest.mark.requires_pie
+def test_a_resolved_line_with_no_rate_is_refused_rather_than_sent_blank(client, mgmt_hdr):
+    q = client.post("/api/quotes", json={"customer": "Pitti"}, headers=mgmt_hdr).json()
+    qid = q["id"]
+    q = client.post(f"/api/quotes/{qid}/intake",
+                    json={"text": "2001174, 10"}, headers=mgmt_hdr).json()
+    lid = q["lines"][0]["id"]
+    client.post(f"/api/quotes/{qid}/lines/{lid}/price", json={"price": None},
+                headers=mgmt_hdr)
+    est = client.post(f"/api/quotes/{qid}/estimate", headers=mgmt_hdr).json()
+    assert est["ok"] is False
+    assert lid in est["blockers"]
+    assert "no rate" in est["message"]
+
+
+@pytest.mark.requires_pie
+def test_a_blocked_estimate_names_the_lines(client, mgmt_hdr):
+    """"3 critical line(s) must be resolved first" left the reader to find which."""
+    q = client.post("/api/quotes", json={"customer": "Pitti"}, headers=mgmt_hdr).json()
+    qid = q["id"]
+    client.post(f"/api/quotes/{qid}/intake",
+                json={"text": "XZ-CUSTOM-778-NOTREAL, 5"}, headers=mgmt_hdr)
+    est = client.post(f"/api/quotes/{qid}/estimate", headers=mgmt_hdr).json()
+    assert est["ok"] is False
+    assert "XZ-CUSTOM-778-NOTREAL" in est["message"]
+
+
+@pytest.mark.requires_pie
+def test_a_below_floor_line_cannot_be_sent_without_an_approval(client, mgmt_hdr):
+    """The gap this closes, end to end.
+
+    The approval gate judged the latest *snapshot* per line, and the only thing
+    writing snapshots was a salesperson choosing to open a drawer and record an
+    override. On the ordinary path nothing was written, so the gate found nothing
+    to judge and answered "sendable" — for a line the screen was, at that moment,
+    showing a below-the-floor warning about. The send path records first now, and
+    passes its own below-floor lines to the same gate.
+    """
+    qid = _clean_quote(client, mgmt_hdr)
+    lid = client.get(f"/api/quotes/{qid}", headers=mgmt_hdr).json()["lines"][0]["id"]
+    q = client.get(f"/api/quotes/{qid}", headers=mgmt_hdr).json()
+    cost = q["lines"][0]["economics"]["cost"]
+    # At cost the margin is 0%, well under the floor.
+    q = client.post(f"/api/quotes/{qid}/lines/{lid}/price", json={"price": cost},
+                    headers=mgmt_hdr).json()
+    assert q["lines"][0]["economics"]["below_floor"] is True
+    assert q["marginFloor"]["count"] == 1
+
+    refused = client.post(f"/api/quotes/{qid}/estimate", headers=mgmt_hdr)
+    assert refused.status_code == 403, refused.text
+    assert "need approval" in refused.json()["detail"]
+
+    # Pricing it back above the floor unblocks it, without anyone answering an
+    # approval — the gate is about the price now on the line, not about history.
+    client.post(f"/api/quotes/{qid}/lines/{lid}/price", json={"price": cost * 4},
+                headers=mgmt_hdr)
+    est = client.post(f"/api/quotes/{qid}/estimate", headers=mgmt_hdr).json()
+    assert est["ok"] is True, est
+
+
+@pytest.mark.requires_pie
+def test_a_quote_id_is_not_reused_by_the_next_process(client, mgmt_hdr):
+    """Sending writes rows keyed on the quote id, so the id has to be unique.
+
+    Quotes live in memory and their ids restarted at ``q1`` every boot. That was
+    harmless while nothing outside the store remembered them; it stopped being
+    harmless when the send path began filing snapshots and outcomes under the id,
+    because a fresh ``q1`` would be judged on the previous ``q1``'s snapshots.
+    """
+    a = client.post("/api/quotes", json={"customer": "Pitti"}, headers=mgmt_hdr).json()
+    assert a["id"] != "q1"
+    assert "-" in a["id"], "the id carries a per-process part"

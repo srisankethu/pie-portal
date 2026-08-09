@@ -1,6 +1,7 @@
 import Button from "@mui/material/Button";
 import { useEffect, useState } from "react";
 import type { Line } from "../types";
+import { productRef } from "../rel";
 
 /**
  * Commercial decision support for a quote line, sourced from the Decision
@@ -54,10 +55,6 @@ function fmt(value: QFact["value"], unit: string | null): string {
   if (unit === "ratio") return (value * 100).toFixed(1) + "%";
   if (unit === "days" || unit === "count") return String(Math.round(value));
   return String(value);
-}
-
-function productRef(line: Line): string {
-  return line.supplyDesc || line.reqDesc || line.supplyCode || line.reqCode;
 }
 
 const AI_STATE: Record<string, { mark: string; tone: "ok" | "degraded" | "failed" | "withheld" }> = {

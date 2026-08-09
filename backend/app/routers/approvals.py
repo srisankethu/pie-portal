@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 
 from .. import approvals
 from ..approvals import ApprovalError, NotAuthorized
+from ..store import store
 from ..authz import Principal, current_principal
 from ..commercial.policy import load_for_org
 from ..commercial.quote_service import QuoteLineInput, assess_quote
@@ -185,6 +186,20 @@ def decide_approval(
     return approvals.to_dict(row, principal.role, names)
 
 
+def _below_floor_lines(quote_id: str) -> dict[str, str]:
+    """The open quote's below-floor lines, or nothing if it is not this process's.
+
+    The same argument the send endpoint passes, so this window shows what that
+    gate will actually decide. Without it the two disagreed in the way that is
+    worst to be on the receiving end of: the button was enabled, said "Create
+    Zoho estimate", and returned a 403 when pressed.
+    """
+    quote = store.get(quote_id)
+    if quote is None:
+        return {}
+    return {ln.id: ln.reqCode for ln in quote.lines if ln.economics().below_floor}
+
+
 @router.get("/quotes/{quote_id}/gate")
 def quote_gate(
     quote_id: str,
@@ -198,7 +213,8 @@ def quote_gate(
     it is a window onto it.
     """
     org = principal.organization_id
-    blocked = approvals.quote_submission_block(session, org, quote_id)
+    blocked = approvals.quote_submission_block(
+        session, org, quote_id, also_requiring=_below_floor_lines(quote_id))
     rows = list(session.scalars(
         select(models.ApprovalRequest)
         .where(models.ApprovalRequest.organization_id == org,

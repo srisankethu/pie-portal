@@ -356,7 +356,9 @@ function LineCard({
       <Stack direction="row" spacing={1.5}
              sx={{ mt: 1.5, alignItems: "flex-end", flexWrap: "wrap", rowGap: 1 }}>
         <TextField
-          label="Quoted ₹"
+          // Says whose number is in the field, in the label, because the card
+          // has no header row to carry it and no tooltip a thumb can reach.
+          label={line.priceSource === "LIST" ? "Quoted ₹ (list)" : "Quoted ₹"}
           size="small"
           defaultValue={line.quoted ?? ""}
           // Remounts when the server sends a different price back, which it does
@@ -580,7 +582,7 @@ export function LineGrid({
       valueFormatter: (p) => (Number(p.value) > 0 ? String(p.value) : "—"),
     }),
     {
-      field: "quoted", headerName: "Quoted ₹", ...fixed(112),
+      field: "quoted", headerName: "Quoted ₹", ...fixed(124),
       type: "numericColumn",
       // The one editable cell on the screen, and the whole point of it: the
       // price is the human's to set. Enter commits, Tab moves down the quote,
@@ -589,14 +591,33 @@ export function LineGrid({
       editable: true,
       cellClass: "ag-num qb-editable",
       context: { noRowClick: true },
-      headerTooltip: "The rate you are quoting. Nothing pre-fills it — the "
-        + "engine resolves the product and computes the context; the number is "
-        + "yours.",
+      headerTooltip: "The rate you are quoting. A resolved line opens at the "
+        + "catalogue rate so a long tender is not a column of typing — that is "
+        + "a starting point, marked “list”, not a recommendation. Type over it "
+        + "and the mark goes.",
       valueParser: (p) => {
         const raw = String(p.newValue ?? "").replace(/[^0-9.]/g, "");
         return raw === "" ? null : Number.parseFloat(raw);
       },
-      valueFormatter: (p) => (p.value == null ? "—" : money(Number(p.value))),
+      // A rate nobody has agreed to, marked as such. It reads exactly like a
+      // considered price otherwise, and on a fresh RFQ every line is one: four
+      // lines arrived priced, the summary bar showed a Quotation total, and the
+      // screen's own subtitle said "nothing is priced for you".
+      cellRenderer: (p: { data?: Row; value?: number | null }) => {
+        if (p.value == null) return "—";
+        return (
+          <Stack direction="row" spacing={0.5}
+                 sx={{ alignItems: "center", justifyContent: "flex-end" }}>
+            <span>{money(Number(p.value))}</span>
+            {p.data?.priceSource === "LIST" && (
+              <StatusChip
+                label="list" tone="neutral" dense
+                tip="The catalogue rate this line opened at. Nobody has priced it yet."
+              />
+            )}
+          </Stack>
+        );
+      },
     },
     numeric<Row>("lineTotal", "Line total", money, {
       ...fixed(120), filter: false, context: { minGridWidth: 1180 },

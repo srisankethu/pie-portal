@@ -18,6 +18,7 @@ was missing, which looks exactly like the feature not working.
 from __future__ import annotations
 
 import logging
+from decimal import Decimal
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -26,6 +27,7 @@ from sqlalchemy.orm import Session
 from .. import approvals
 from ..authz import Principal, current_principal
 from ..commercial import policy as policy_service, quote_service
+from ..domain.enums import QuoteOutcomeStatus
 from ..ai import reading
 from ..ai.provider import select_provider
 from ..config import settings
@@ -285,27 +287,100 @@ def create_estimate(quote_id: str,
         return EstimateResponse(
             ok=False,
             blockers=[ln.id for ln in blockers],
-            message=f"{len(blockers)} critical line(s) must be resolved first.",
+            # Which lines, not merely how many. The client shows this sentence
+            # and switches the grid to them, and "3 critical line(s) must be
+            # resolved first" left the reader to work out which three.
+            message=(f"{len(blockers)} line(s) must be resolved before this quote "
+                     f"can be sent: {_name_lines(blockers)}."),
+        )
+    # A resolved line with no rate would go to Zoho as a line with no rate.
+    unpriced = [ln for ln in q.lines if ln.supplyCode and ln.quoted is None]
+    if unpriced:
+        return EstimateResponse(
+            ok=False,
+            blockers=[ln.id for ln in unpriced],
+            message=(f"{len(unpriced)} line(s) have no rate yet: "
+                     f"{_name_lines(unpriced)}."),
         )
 
+    org = principal.organization_id
+
     # ── the commercial gate ──────────────────────────────────────────────────
-    # A line priced below the floor was previously computed, flagged, recorded
-    # — and then sent anyway, because nothing refused it. This is where it is
-    # refused. The check runs server-side against the recorded snapshots; a
-    # client that simply does not call the approvals API cannot route around it.
+    # Record the quote's own assessment *first*, then judge it. The gate reads
+    # the latest snapshot per line, and until this call the only thing writing
+    # snapshots was a salesperson choosing to open a drawer and record an
+    # override — so the ordinary path wrote none, the gate found nothing to
+    # judge, and `can_submit` was true no matter what the margins were. A line
+    # priced at 0% against a 15% floor was reported sendable and sent. The
+    # control the paragraph below describes existed; nothing ever reached it.
+    #
+    # It also means the audit trail records every quote that was *sent*, not
+    # only the ones somebody happened to annotate.
     #
     # The gate needs an organization. It reads it from the signed-in principal
-    # now rather than from a second optional header — an identity the caller
-    # could omit was an approval gate the caller could skip.
-    org = principal.organization_id
+    # rather than from a second optional header — an identity the caller could
+    # omit was an approval gate the caller could skip.
+    quote_service.assess_and_record(
+        session, org, quote_id=quote_id, customer_ref=q.customer_ref,
+        lines=[quote_service.QuoteLineInput(
+            line_id=ln.id,
+            # The code, matching what the screen's own assessment sends. The
+            # description is prose and, on an unresolved line, a status message.
+            product_ref=ln.supplyCode or ln.reqCode,
+            qty=Decimal(str(ln.reqQty)),
+            proposed_price=Decimal(str(ln.quoted)) if ln.quoted is not None else None,
+            family=ln.family)
+            for ln in q.lines],
+        user_id=principal.user_id)
+    session.flush()
+
     approval_policy = approvals.get_policy(session, org)
     if approval_policy.require_approval_for_quotes:
-        blocked = approvals.quote_submission_block(session, org, quote_id)
+        blocked = approvals.quote_submission_block(
+            session, org, quote_id,
+            # The lines this screen is already showing a below-floor warning
+            # about. Its margin uses the item's cost from the books, which is
+            # present for items the assessment has no synced bill rows for — so
+            # a line the person can see flagged in an alert was sendable.
+            also_requiring={ln.id: ln.reqCode
+                            for ln in q.lines if ln.economics().below_floor})
         if blocked:
             raise HTTPException(status.HTTP_403_FORBIDDEN, blocked)
+
+    # ── sending twice ────────────────────────────────────────────────────────
+    # Three presses used to create three estimates in Zoho, because nothing on
+    # the quote remembered that it had been sent and the button never changed.
+    # Re-sending an *amended* quote is ordinary work, so this is not a lock: the
+    # same content returns the estimate it already produced, and changed content
+    # produces a new one.
+    fingerprint = store.priced_fingerprint(q)
+    if q.estimateNumber and q.estimateFingerprint == fingerprint:
+        return EstimateResponse(
+            ok=True, estimateNumber=q.estimateNumber, lineCount=q.estimateLineCount,
+            message=(f"Zoho estimate {q.estimateNumber} already covers this quote — "
+                     "nothing has changed since it was created."))
+
     lines = [{"code": ln.supplyCode, "qty": ln.reqQty, "rate": ln.quoted}
              for ln in q.lines if ln.supplyCode]
     est = zoho.create_estimate(q.customer, lines)
+    store.record_estimate(q, number=est.number, line_count=est.line_count,
+                          fingerprint=fingerprint)
+    # The quote lifecycle has a start and no way to reach its second state: the
+    # DRAFT → SENT → WON/LOST path is modelled, served and typed on the client,
+    # and nothing ever moved a quote off DRAFT. Sending it is what SENT means.
+    try:
+        quote_service.set_outcome(
+            session, org, quote_id=quote_id, status=QuoteOutcomeStatus.SENT,
+            customer_ref=q.customer_ref, user_id=principal.user_id)
+    except Exception:  # noqa: BLE001 — the estimate exists; bookkeeping must not undo it
+        log.exception("could not mark quote %s as sent", quote_id)
     return EstimateResponse(ok=True, estimateNumber=est.number,
                             lineCount=est.line_count,
                             message=f"Zoho estimate {est.number} created — {est.line_count} lines.")
+
+
+def _name_lines(lines: list[Line], limit: int = 4) -> str:
+    """The codes on these lines, for a sentence that has to fit in an alert."""
+    codes = [ln.reqCode for ln in lines[:limit]]
+    more = len(lines) - len(codes)
+    return ", ".join(codes) + (f" and {more} more" if more > 0 else "")

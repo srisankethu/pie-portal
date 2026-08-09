@@ -55,11 +55,20 @@ const FILTERS: [string, string][] = [
 
 
 /** What this screen answers — the sentence the Quotes door used to carry on a
- *  page of its own, in front of the thing it was describing. */
+ *  page of its own, in front of the thing it was describing.
+ *
+ *  It used to end "It never pre-fills the field", and the field was pre-filled:
+ *  a resolved line opens at the catalogue rate, so a four-line RFQ arrived
+ *  priced with a Quotation total ready to send. The claim appeared three times —
+ *  here, in the empty state, and in the rate column's own tooltip — while the
+ *  behaviour was the opposite in all three. The default is worth keeping; a
+ *  forty-line tender is not forty numbers to type. Saying so is the fix, and the
+ *  rate cell now marks which numbers are still the catalogue's. */
 const SUB =
   "Paste an RFQ and the engine resolves each line into a quote-ready product. "
   + "Quote context shows this customer's own price history and — for managers — the "
-  + "cost and margin, then leaves the price in your hands. It never pre-fills the field.";
+  + "cost and margin. A resolved line opens at the catalogue rate, marked “list” "
+  + "until you price it; the number that goes out is yours.";
 
 /** Said once per page load, not once per visit to this screen.
  *
@@ -113,6 +122,10 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
   // Open when there is no quote to work on, and on demand from the header.
   const [pickerOpen, setPickerOpen] = useState(false);
   const [draftStatus, setDraftStatus] = useState<string | null>(null);
+  // Why the last attempt to send was refused. Held on the screen rather than
+  // flashed, and cleared by the next change to the quote — which is exactly
+  // when the sentence might stop being true.
+  const [sendBlock, setSendBlock] = useState<string | null>(null);
 
   // One assessment for the whole quote — see useQuoteIntelligence.
   const ci = useQuoteIntelligence(quote, t);
@@ -157,6 +170,9 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
     setDraftStatus(
       `Saved ${new Date().toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit" })}`,
     );
+    // A refusal describes the quote as it was. Any change to the quote may have
+    // answered it, and a stale blocker is worse than none.
+    setSendBlock(null);
   }, [quote]);
 
   const flaggedLines = useMemo(
@@ -360,20 +376,35 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
       flash(`${q.applied} line(s) discounted ${pct}%`);
     });
 
+  /** Create the Zoho estimate, or say — durably — why not.
+   *
+   *  The refusal used to be a three-second grey snackbar and a filter change.
+   *  Press the button, watch the grid re-filter, and by the time you have
+   *  looked down at it the only statement of *what was wrong* has gone; if you
+   *  were already on that filter, nothing on screen changed at all. The reason
+   *  now stays until the quote changes, which is also when it stops being true.
+   *  Success is held the same way — see the sent chip in the summary bar. */
   const doEstimate = () =>
     guard(async () => {
+      setSendBlock(null);
       // The server re-checks the approval gate; this only avoids a round trip
       // that is certain to be refused, and says why in the same words.
       if (ci.gate && !ci.gate.can_submit) {
-        flash(ci.gate.blocked_reason ?? "This quote needs approval before it can be sent.");
+        setSendBlock(ci.gate.blocked_reason
+          ?? "This quote needs approval before it can be sent.");
         setFilter("EXC");
         return;
       }
       const r = await api.createEstimate(t, quote!.id);
-      flash(r.message);
-      if (!r.ok && r.blockers.length) {
-        setFilter("NEEDS");
+      if (!r.ok) {
+        setSendBlock(r.message);
+        if (r.blockers.length) setFilter("NEEDS");
+        return;
       }
+      // Re-read the quote so the summary bar learns the estimate number it now
+      // carries; the send endpoint answers with the estimate, not the quote.
+      setQuote(await api.getQuote(t, quote!.id));
+      flash(r.message, "success");
     });
 
   const selectedCount = selection.length;
@@ -527,6 +558,21 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
         </Alert>
       )}
 
+      {/* Why the last send was refused, in the words the server used. An
+          `Alert` for the same reason the one above is: the severity carries an
+          icon and a role as well as a hue. It names the lines, so "3 line(s)
+          must be resolved" is followed by which three. */}
+      {sendBlock && (
+        <Alert
+          severity="error"
+          sx={{ mb: 2 }}
+          onClose={() => setSendBlock(null)}
+        >
+          <AlertTitle>This quote was not sent</AlertTitle>
+          {sendBlock}
+        </Alert>
+      )}
+
       {/* No selection strip here. "3 selected · Apply 10% discount" was on this
           screen twice — once above the grid and once in the summary bar, which
           is sticky and therefore always on screen anyway — and "Clear selection"
@@ -539,8 +585,8 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
           title="Paste an RFQ to start building the quote"
           reason={
             "Each line becomes a reviewed item with supplier options, availability and the right "
-            + "next action. Nothing is priced for you — the engine resolves the product, you set "
-            + "the number."
+            + "next action. Resolved lines open at the catalogue rate as a starting point — the "
+            + "price that goes out is the one you set."
           }
           action={
             <Stack direction="row" spacing={1} useFlexGap sx={{ justifyContent: "center", flexWrap: "wrap" }}>

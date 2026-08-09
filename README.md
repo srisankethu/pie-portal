@@ -35,6 +35,7 @@ nothing, macOS/Linux and Windows, in about 15 minutes.
 | [Hosting](docs/hosting.md) | Running it on your own machine: Docker Compose, TLS, backups |
 | [Operations](docs/operations.md) | Configuration reference, production deploy, runbook |
 | [Zoho setup](docs/zoho-setup.md) | Connecting a live Zoho Books account (read-only) |
+| [Role reviews](docs/reviews/) | What each role actually experienced, end to end, and the disposition of every finding |
 
 ---
 
@@ -170,6 +171,7 @@ frontend/src/
   platform/      Decision Platform UI
   components/    Quote Builder UI + decision-support panel
 docs/            getting-started · architecture · development · operations
+  reviews/       per-role end-to-end reviews, with each finding's disposition
 ```
 
 ---

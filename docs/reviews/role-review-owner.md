@@ -11,7 +11,49 @@ and to prove that a policy the owner changed is visible to the roles it
 governs. Neither role is the subject of this review.
 
 Password changed through the UI during the review, as the brief asked:
-**`s.menon@sanketh.in` / `Owner-Review-2026!`** (was `change-me-now`).
+**`s.menon@sanketh.in`** — password changed from the seed default during this
+review; the value is not recorded here and has since been rotated again.
+
+
+> ## Status — read this before acting on anything below
+>
+> **This is a point-in-time record, not an open bug list.** It was taken against
+> build `9f9b7e8`-era `main` and every finding below is preserved exactly as
+> written, including the ones that are now fixed. Nothing here has been edited to
+> match what the code does today, because a review rewritten after the fact stops
+> being evidence of what a role actually experienced. The one exception is that
+> passwords the reviewer set have been redacted — they are credentials, and they
+> were rotated again during the fix work, so printing them was both unsafe and
+> wrong. The seed default `change-me-now` stays, because it is documented in the
+> README and is part of every reproduction below.
+>
+> The findings were triaged into five change slices, whose commits carry the
+> reasoning. The table below is the disposition of every finding in this
+> document, and the **Open** rows are the only ones still true.
+>
+> | Finding | Disposition |
+> |---|---|
+> | F1 · nothing forces the seeded password to change | **Fixed** |
+> | F2 · a human action overwrites the previous one | **Fixed** — the trail appends, and legacy rows are backfilled |
+> | F3 · owner-only trust and AI-ops surfaces unreachable | **Partly, by decision** — the trust half is built ("Your data"); `ai-metrics` is deliberately not, because with `AI_PROVIDER=mock` it is a screen of zeros |
+> | F4 · raw enums against raw composite keys | **Fixed** — one label map, and the pair subject resolves to two names |
+> | F5 · erosion threshold does not govern the queue | **Fixed** — the owner's value reaches the Signal Engine |
+> | F6 · signing a below-cost line captures no rationale | **Fixed** — refused without one |
+> | F7 · signals do not carry `CommercialThresholds.version` | **By decision** — left as is, and `CLAUDE.md` now states that a signal stamps `th_…` and why that is not `ci_…` |
+> | F8 · metric rows restamped, so no version history | **By decision** — the upsert is kept and the doc narrowed to what versioning actually buys |
+> | F9 · `/trust/disclosure` names a model never called | **Worked around, not fixed** — the trust screen states the provider and says "No model is called" on the default configuration; the payload still reports `AI_MODEL` |
+> | F10 · a salesperson clicking Settings gets a raw API error | **Fixed** |
+> | F11 · a sync with nothing connected reports success | **Fixed** — the result says which source it read |
+> | F12 · AG Grid theme hardcoded | **Fixed** — derived from the MUI theme, with a test that no literal returns |
+> | F13 · §10 documents components that do not exist | **Fixed** — two rows were stale, not four; corrected, and `kit.contract.test.ts` now asserts the table against `kit.tsx` |
+> | F14 · the raw-`<table>` enumeration is already incomplete | **Fixed** — replaced by a rule |
+> | F15 · `CLAUDE.md` calls the Quote Builder table hand-written | **Fixed** |
+> | F16 · a customer with no GSTIN can never be linked | **Fixed** — a name-based suggestion where no identifier exists, never auto-linked |
+> | F17 · exact product names resolve as AMBIGUOUS | **Open** |
+> | F18 · the Settings password form is not MUI | **Fixed** — `TextField`, plus the `username` field a password manager needs |
+> | F19 · the HUMAN LOG does not say who acted | **Fixed** — `actor_name`, resolved server-side |
+> | F20 · dead CSS | **Fixed** |
+> | F21 · `thresholds_version` omitted from the approval payload | **Fixed** |
 
 ---
 

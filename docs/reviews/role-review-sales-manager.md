@@ -7,9 +7,43 @@ API at `localhost:8000` used to probe boundaries and to recompute figures.
 Screenshots under `/tmp/shots/` (not committed) are cited per finding.
 
 > **Credential note.** `must_change_password` was true on first sign-in. I changed
-> the password through Settings → Your account. The account password is now
-> **`Manager-Review-2026!`**. The salesperson account `r.nair@sanketh.in` was left
-> on `change-me-now`; it was used only to raise approval requests for me to act on.
+> the password through Settings → Your account. The value it was set to is not
+> recorded here and has since been rotated again. The salesperson account
+> `r.nair@sanketh.in` was left on `change-me-now`; it was used only to raise
+> approval requests for me to act on.
+
+
+> ## Status — read this before acting on anything below
+>
+> **This is a point-in-time record, not an open bug list.** It was taken against
+> build `9f9b7e8`-era `main` and every finding below is preserved exactly as
+> written, including the ones that are now fixed. Nothing here has been edited to
+> match what the code does today, because a review rewritten after the fact stops
+> being evidence of what a role actually experienced. The one exception is that
+> passwords the reviewer set have been redacted — they are credentials, and they
+> were rotated again during the fix work, so printing them was both unsafe and
+> wrong. The seed default `change-me-now` stays, because it is documented in the
+> README and is part of every reproduction below.
+>
+> The findings were triaged into five change slices, whose commits carry the
+> reasoning. The table below is the disposition of every finding in this
+> document, and the **Open** rows are the only ones still true.
+>
+> | Finding | Disposition |
+> |---|---|
+> | 1 · weather divides costed profit by uncosted revenue | **Fixed** — one `aggregate_margin`, Σ profit ÷ Σ costed revenue |
+> | 2 · "Approvals waiting" counted three ways | **Fixed** — one role-scoped `pending_count` |
+> | 3 · forced first-sign-in change does not exist | **Fixed** |
+> | 4 · unparsed RFQ quantity silently becomes 1 | **Open** (same defect as salesperson F6) |
+> | 5 · no team surface, attribution never rendered | **Partly, by decision** — attribution now renders on the grid and the card and the page is retitled; the per-rep roll-up is deliberately deferred while there is one salesperson to roll up |
+> | 6 · `can_decide` ignores the self-approval rule | **Fixed** — one `refusal_for`, used by the check and the button |
+> | 7 · product mix's empty reasons on the wrong conditions | **Fixed** |
+> | 8 · Supply/Cash/How-we-pay blame a sync that is not missing | **Fixed** — `_no_data` names what is actually absent |
+> | 9 · one margin printed 17.3% and 17.4% | **Fixed** — rounded once, before formatting |
+> | 10 · Opportunities names a control the manager lacks | **Open** |
+> | 11 · `thresholds_version` absent from most manager payloads | **Partly** — added to the approval payload; the other read payloads are unchanged |
+> | 12 · decision-support sends a UI placeholder as a product id | **Already fixed** on `main` in #47 — `rel.productRef` |
+> | 13 · `ui-standards.md` raw-`<table>` enumeration stale | **Fixed** — the census became a rule |
 
 ---
 

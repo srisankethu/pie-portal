@@ -116,7 +116,6 @@ These live in `frontend/src/platform/kit.tsx`:
 |---|---|---|
 | `SectionHeader` | page and section headings, with an optional tip and actions | `.dp-head`, `.section-h`, hand-written `<h1>`/`<h3>` pairs |
 | `MetricCard` | one figure with its label and optional movement | `.dp-count`, the stock KPI row |
-| `ChartContainer` | a titled chart surface with its accessible fallback | `viz/Panel.tsx` `Panel` + `Figure` |
 | `FilterPanel` | the controls above a list | `.acct-controls`, `.stock-filters`, `.seg-controls` |
 | `EmptyState` | nothing to show, and **why** | `.dp-empty`, `Panel`'s empty branch |
 | `LoadingState` | shaped skeletons that reserve the height | `.skeleton`, `.viz-skeleton` divs |
@@ -126,7 +125,22 @@ These live in `frontend/src/platform/kit.tsx`:
 | `CurrencyValue` | money, tabular, with an optional sign | bare `money()` in JSX |
 | `PercentageValue` | a ratio as a percentage | bare `pct()` in JSX |
 | `VarianceIndicator` | a movement, as an arrow **and** a word | `.wf-row-value.pos/.neg`, `.story-hero-value.up/.down` |
-| `AuditTimeline` | an ordered trail of what happened | the trace list in `PlatformApp` |
+| `HumanLog` | the trail of what a person did to a decision, and who | the inline `human_action` block in `PlatformApp` |
+
+Two rows of this table used to name components that were never written —
+`ChartContainer` and `AuditTimeline`. A standard that lists a component nobody
+can import is worse than one that lists nothing: the next person looks for the
+pattern, is told it already exists, cannot import it, and writes it by hand
+anyway. A standard that cannot be trusted on its easy claims does not get read on
+the hard ones. `kit.contract.test.ts` now parses this table and asserts every row
+against `kit.tsx`, so adding a row before the export fails the gate.
+
+The chart surface stays `viz/Panel.tsx`'s `Panel` + `Figure`, which is where it
+belongs — a titled surface with an accessible fallback is a visualization
+concern, and moving it into `kit.tsx` for symmetry would put chart code in the
+file every screen imports. `ChartTip` is in `kit.tsx` because the tooltip *is*
+shared. `HumanLog` is the trail component, written when the decision card needed
+it.
 
 Where a surface wraps a business entity with an identity of its own, it is a
 `Card`, per §2. This used to name `RiskCard`, `InsightCard`, `ActionCard` and

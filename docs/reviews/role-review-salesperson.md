@@ -1,11 +1,48 @@
 # Role review — SALESPERSON
 
 **Account:** `r.nair@sanketh.in` · `usr_sales` · org `org_sanketh`
-**Password set during this review:** `Sales-Review-2026!` (was `change-me-now`)
+**Password:** changed from the seed default during this review; the value is
+not recorded here and has since been rotated again.
 **Date of review:** 2026-08-08 · demo history anchored at 2026-07-22
 **Build:** `9f9b7e8` · backend at Alembic head `b2d95e11c74a` (`/api/health` → `CURRENT`)
 **Method:** real browser (Playwright/Chromium) against `localhost:5173`, plus a
 network-level sweep of the API. Screenshots under `/tmp/shots/` (not committed).
+
+
+> ## Status — read this before acting on anything below
+>
+> **This is a point-in-time record, not an open bug list.** It was taken against
+> build `9f9b7e8`-era `main` and every finding below is preserved exactly as
+> written, including the ones that are now fixed. Nothing here has been edited to
+> match what the code does today, because a review rewritten after the fact stops
+> being evidence of what a role actually experienced. The one exception is that
+> passwords the reviewer set have been redacted — they are credentials, and they
+> were rotated again during the fix work, so printing them was both unsafe and
+> wrong. The seed default `change-me-now` stays, because it is documented in the
+> README and is part of every reproduction below.
+>
+> The findings were triaged into five change slices, whose commits carry the
+> reasoning. The table below is the disposition of every finding in this
+> document, and the **Open** rows are the only ones still true.
+>
+> | Finding | Disposition |
+> |---|---|
+> | F1 · cost reconstructible | **By decision** — the `MFLOOR` leak is closed; the derivation from `floor_price`/`recommended` is accepted rather than engineered around, and `CLAUDE.md` §1 now says so in those terms |
+> | F2 · below-cost line sendable | **Fixed** — a second cost basis for the assessment, plus the send path recording snapshots (the latter arrived independently on `main` in #47) |
+> | F3 · forced password change not enforced | **Fixed** — the server refuses every request but the change itself |
+> | F4 · home CTA sends this role to a 403 | **Open** — the storyboard beat still routes to `/lost-revenue` via `vizPath()` |
+> | F5 · timestamps 5½ hours wrong | **Fixed** — 30 call sites through `clock.iso` |
+> | F6 · prose RFQ loses every quantity | **Open** |
+> | F7 · "Identities" always 403s | **Fixed** — nav gated, and the 403 fetch stopped |
+> | F8 · denial as bare coloured text | **Fixed** — `Alert`/`ErrorState` |
+> | F9 · two empty states state something false | **Fixed** — each names its actual cause |
+> | F10 · percentage points shown as a percentage | **Fixed** |
+> | F11 · password change leaves sessions valid | **Fixed** — tokens older than `password_changed_at` are retired |
+> | F12 · `/accounts/{id}/items` scope answer | **Fixed, differently than planned** — the rule moved to `authz.can_view_customer`; the two sibling endpoints keep different response shapes on purpose, both indistinguishable from not-found |
+> | F13 · `marginFloor` nulled rather than omitted | **Fixed** — absent, per §1 |
+> | F14 · subject-verb agreement on `/bonds` | **Fixed** — `format.isAre` |
+> | F15 · `CLAUDE.md` digest stale on its headline example | **Fixed** |
+> | F16 · login form styling inconsistent | **Already fixed** before this batch — both fields carry a label |
 
 ---
 

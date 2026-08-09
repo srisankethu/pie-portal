@@ -16,6 +16,7 @@ import itertools
 import threading
 import time
 from dataclasses import dataclass, field
+from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
 from . import pricing
@@ -396,6 +397,29 @@ class QuoteStore:
 
     def get(self, quote_id: str) -> Optional[Quote]:
         return self._quotes.get(quote_id)
+
+    def line_cost(self, quote_id: str, line_id: str) -> Optional[Decimal]:
+        """The landed cost this server already holds against one quote line.
+
+        Read by the assessment path so the gate is judging the same cost the
+        grid is showing. One accessor rather than the same three-line lookup in
+        the approvals router and the quote-intelligence router, because "where
+        does a quote line's cost come from" is exactly the question that had two
+        answers in the first place.
+
+        Server-held, never requester-supplied: the cost arrived from the books at
+        intake and lives here, so passing it into an assessment is not the same
+        thing as trusting a number in a request body.
+        """
+        quote = self._quotes.get(quote_id)
+        if quote is None:
+            return None
+        line = next((row for row in quote.lines if row.id == line_id), None)
+        if line is None or line.cost is None:
+            return None
+        # `Decimal(str(...))` rather than `Decimal(float)`: money is Decimal (§1),
+        # and the binary-float detour is how 420.0 becomes 419.99999999999994.
+        return Decimal(str(line.cost))
 
     def create(self, customer: str, customer_id: Optional[str] = None) -> Quote:
         with self._lock:

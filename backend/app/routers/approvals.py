@@ -103,7 +103,9 @@ def request_quote_line_approval(
         session, principal.organization_id, customer_ref=body.customer.strip(),
         lines=[QuoteLineInput(line_id=body.line_id, product_ref=body.product,
                               qty=body.qty, proposed_price=body.proposed_price,
-                              family=body.family)],
+                              family=body.family,
+                              item_master_cost=store.line_cost(body.quote_id,
+                                                               body.line_id))],
         th=th)
     intel = result.lines[0]
 

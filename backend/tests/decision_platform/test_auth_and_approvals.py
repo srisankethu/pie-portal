@@ -358,6 +358,36 @@ def test_a_manager_is_not_offered_an_approval_they_cannot_grant(client):
     assert theirs["cannot_decide_reason"] is None
 
 
+def test_a_managers_count_excludes_what_only_an_owner_may_sign(client):
+    """One number, and it is the number the queue will show.
+
+    The storyboard tile used an unscoped `count(*)` over every PENDING request in
+    the organization, so a manager's landing page said 3 while the badge said 2
+    and exactly 1 was decidable. The extra one was a below-cost request that
+    `inbox` deliberately keeps out of a manager's queue, and the tile's "Work
+    through these →" therefore landed on a screen where it did not appear. The
+    tile reads `pending_count` now; this is that function's half of the contract.
+    """
+    _snapshot(client, SALES, 135.0, line_id="L1")
+    thin = _raise(client, SALES, 135.0, line_id="L1")
+    assert thin.status_code == 201, thin.text
+    assert thin.json()["required_authority"] == "MANAGER"
+
+    _snapshot(client, SALES, 100.0, line_id="L2")     # under the 124.0 unit cost
+    below = _raise(client, SALES, 100.0, line_id="L2")
+    assert below.status_code == 201, below.text
+    assert below.json()["required_authority"] == "OWNER", "below cost is the owner's"
+
+    mgr = client.get("/api/v1/approvals", headers=_hdr(client, MANAGER)).json()
+    decidable = [r for r in mgr["requests"] if r["can_decide"]]
+    assert mgr["pending_for_me"] == 1, "not 2 — one of these is the owner's to sign"
+    assert len(decidable) == 1
+    assert decidable[0]["approval_request_id"] == thin.json()["approval_request_id"]
+
+    own = client.get("/api/v1/approvals", headers=_hdr(client, OWNER)).json()
+    assert own["pending_for_me"] == 2, "the owner can sign both"
+
+
 def test_a_manager_is_still_offered_someone_elses_thin_price(client):
     """The fix must not withdraw the authority a manager does have."""
     rid = _raise(client, SALES, 135.0).json()["approval_request_id"]

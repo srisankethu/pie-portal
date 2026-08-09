@@ -241,6 +241,21 @@ def resolve(session: Session, org: str, product_id: str, *,
     every caller passes — means "work it out from the item", and an explicit
     value means the caller knows something this module does not.
 
+    **One step short of closing the family sweep, deliberately.**
+    ``_m_floor`` refuses a family the table does not hold, which stops a caller
+    enumerating names. It does not stop a caller pricing one item under two
+    *valid* names — ``inserts`` then ``metrology`` — and reading the ratio of
+    the two multipliers off the two floors. Resolving the family from the item
+    is what removes that, and it now happens whenever the caller supplies
+    nothing; but the parameter is still honoured when they do, so the sweep
+    survives for anyone who sends one.
+
+    Left that way on purpose rather than fixed here: the strictness above
+    arrived with the disclosure-control work and the contract is not this
+    change's to alter. The item-side resolution makes the request parameter
+    removable, and removing it is the fix — see ``docs/concepts/06-disclosure-
+    control.md`` and ``docs/concepts/04-mechanism-design.md``.
+
     **The family it resolved is deliberately not returned.** ``ResolvedFloor``
     is the operations type and has no field for it: telling a salesperson that
     two items share a family tells them the two share a multiplier, and one

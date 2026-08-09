@@ -2255,7 +2255,13 @@ class NegotiationRequest(BaseModel):
     #: How late the money is expected. CAF is banked on invoice and earned on
     #: receipt, so this is a lever the salesperson holds, not a KPI.
     expected_days_late: int = Field(0, ge=-365, le=730)
-    #: Which floor table applies. Absent means the default multiplier.
+    #: Agreed credit days on this deal — the term conceded, not the days this
+    #: customer usually takes. The two are priced separately and deliberately:
+    #: lateness by ``expected_days_late`` above, the term itself through the
+    #: floor. Absent means none was stated and the published standard term
+    #: applies, which is not the same as zero.
+    credit_days: Optional[int] = Field(None, ge=0, le=365)
+    #: Which floor table applies. Absent means it is resolved from the item.
     family: Optional[str] = None
     #: "What price leaves this line contributing X?" — solved, not searched.
     target_caf: Optional[float] = None
@@ -2312,7 +2318,8 @@ def negotiate(body: NegotiationRequest,
         third_party_incentive=Decimal(str(body.third_party_incentive)),
         toolkit_spend=Decimal(str(body.toolkit_spend)),
         # The vendor ask is quoted per unit in the room and charged as a total.
-        vendor_yield=Decimal(str(body.vendor_concession)) * Decimal(str(body.qty)))
+        vendor_yield=Decimal(str(body.vendor_concession)) * Decimal(str(body.qty)),
+        credit_days=body.credit_days)
 
     # I2. Checked before anything is computed, because the answer to "what
     # would it be worth?" on a government account is not a number.

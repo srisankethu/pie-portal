@@ -34,6 +34,7 @@ from typing import Any, Optional
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from .. import clock
 from ..config import settings
 from ..domain import models
 from . import keys, vault
@@ -166,7 +167,7 @@ def receipt_body(row: models.ErasureReceipt) -> dict[str, Any]:
     """The exact structure the signature covers — used to re-verify."""
     return {
         "organization_id": row.organization_id,
-        "erased_at": row.erased_at.isoformat() if row.erased_at else None,
+        "erased_at": clock.iso(row.erased_at),
         "reason": row.reason,
         "actor_user_id": row.actor_user_id,
         "manifest": row.manifest,

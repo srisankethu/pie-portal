@@ -22,7 +22,7 @@ from ..domain import models
 from ..domain.origin import Companies, index_of
 from ..domain.enums import (ApprovalKind, DecisionType, HumanAction, Role,
                             SubjectEntityType)
-from .. import approvals
+from .. import clock, approvals
 from ..domain.schemas import ActionRequest, DecisionRead
 from ..repositories import DecisionRepository
 from ..state.engine import why as state_why
@@ -134,7 +134,7 @@ def _detail(session: Session, d: models.Decision, principal: Principal) -> dict:
         **_subject_origin(session, d),
         "assigned_user_id": d.assigned_user_id,
         "assigned_role": d.assigned_role,
-        "detected_at": d.detected_at.isoformat() if d.detected_at else None,
+        "detected_at": clock.iso(d.detected_at),
         "priority": {"band": d.priority_band, "score": d.priority_score,
                      "deterministic_base": d.priority_deterministic_base,
                      "ai_adjustment": d.priority_ai_adjustment},

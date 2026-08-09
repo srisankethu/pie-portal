@@ -27,7 +27,7 @@ from pydantic import BaseModel, Field, create_model, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import approvals
+from .. import clock, approvals
 from ..authz import Principal, current_principal, require_manager_or_owner, require_owner
 from ..commercial import policy as commercial_policy
 from ..db import get_session
@@ -54,12 +54,11 @@ def _user_dict(u: models.User, names: dict[str, str]) -> dict:
         "active": u.active,
         "has_password": bool(u.password_hash),
         "must_change_password": u.must_change_password,
-        "last_login_at": u.last_login_at.isoformat() if u.last_login_at else None,
-        "created_at": u.created_at.isoformat() if u.created_at else None,
+        "last_login_at": clock.iso(u.last_login_at),
+        "created_at": clock.iso(u.created_at),
         "created_by": names.get(u.created_by_user_id or "", None),
         "role_changed_by": names.get(u.role_changed_by_user_id or "", None),
-        "role_changed_at": (u.role_changed_at.isoformat()
-                            if u.role_changed_at else None),
+        "role_changed_at": (clock.iso(u.role_changed_at)),
     }
 
 
@@ -255,7 +254,7 @@ def _policy_dict(p: models.OrgPolicy) -> dict:
         "below_cost_requires_owner": p.below_cost_requires_owner,
         "allow_self_approval": p.allow_self_approval,
         "escalation_creates_approval": p.escalation_creates_approval,
-        "updated_at": p.updated_at.isoformat() if p.updated_at else None,
+        "updated_at": clock.iso(p.updated_at),
     }
 
 

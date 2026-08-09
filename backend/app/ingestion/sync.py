@@ -94,7 +94,7 @@ class SyncReport:
     # the reason the coverage assessment exists: this number is expected to be a
     # minority of `products` — roughly a tenth on the live master — so a reader
     # who meets it without that context will read a working sync as a broken
-    # one. See docs/application-engineering-assessment.md.
+    # one. See docs/concepts/01-application-engineering.md.
     catalog_links: int = 0
     # Documents this pull retired because Zoho no longer reports them — deleted
     # there, or voided, which for a platform that only counts real trade is the

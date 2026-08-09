@@ -8,7 +8,7 @@ them, so this is derived state arriving the way the rest of it does.
 Null stays the common case afterwards too. Measured against the live master only
 about a tenth of items resolve to a catalogue record, so a reader who meets a
 mostly-empty column and assumes a failed migration will be wrong — see
-docs/application-engineering-assessment.md.
+docs/concepts/01-application-engineering.md.
 
 The index is on pie_record_id alone rather than (organization_id, pie_record_id)
 because the question it answers — "which items are this catalogue record?" — is

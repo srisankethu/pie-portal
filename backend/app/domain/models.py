@@ -359,7 +359,7 @@ class Product(Base):
     #: against the live master, ~9% of items link — so NULL is the common case,
     #: and a caller that reads it as "no such product" rather than "not known
     #: here" will be wrong about the other 91%.
-    #: See ``docs/application-engineering-assessment.md``.
+    #: See ``docs/concepts/01-application-engineering.md``.
     pie_record_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
 
     #: How the link was established. Only ``SKU_EXACT`` today, and the column

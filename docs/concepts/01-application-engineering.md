@@ -1,9 +1,16 @@
-# Application engineering — what the PIE catalogue can and cannot reach
+# 01 — Application engineering: what the PIE catalogue can and cannot reach
 
 An assessment of whether the decoded metalcutting catalogue (pie-parser) can be
 joined to the transactional item master (Zoho) usefully enough to change what
 this business sells — from discounting a part number to advising on an
 application.
+
+Against the owner's bar — what improves the whole business process of a B2B
+cutting-tool distributor — this category ranked **11th of 15**: the highest
+ceiling of anything on that list, because it changes *what the company sells*,
+but a strategic bet with a long payoff, behind the cash and margin work. The
+measurement below argues for keeping it there, lowering the ambition, and raising
+exactly one narrow piece of it.
 
 The short answer is **not at present, and the reason is coverage**. This document
 records the measurement so nobody has to re-derive it, and separates the pieces
@@ -224,6 +231,24 @@ two points.
 Items 1–3 are worth doing on their own merits and are days of work. Item 4 is the
 reachable piece of the value-selling thesis, on roughly a sixth of the master.
 The transformation itself is not fundable ahead of the cash and margin work.
+
+### What the number stopped
+
+A low measurement is only useful if it actually governs what gets built, so:
+**items 1 and 2 shipped and items 3–6 deliberately did not.** What was left
+alone, and why:
+
+| Not built | Why not |
+|---|---|
+| Geometry-class peer benchmarking | Structurally ready — 319 classes, 95.2% of decodable items in a class of ≥2 — but a class median mixes grades and therefore mixes cost. It needs a same-grade constraint or per-edge normalisation and a class definition versioned in `CommercialThresholds`, because a class rule is policy. Shipping it unconstrained would manufacture a false peer, which is worse than the silence it replaces. |
+| Price-per-edge | The reachable part of the value thesis, and still only ~17% of the master. It is a new commercial number, so it needs a threshold version and a decision about which screens may show it. That is a policy conversation, not a merge. |
+| Master rationalisation | Real value and no schema risk, but it belongs to the hygiene watch, not here. |
+| Substitution via `equivalence/` | Needs grade, which lives entirely inside the 9.4%. Deferred on the evidence, not on effort. |
+| A second manufacturer pack | Would raise coverage more than anything on this list, and is a pie-parser programme rather than a portal change. |
+
+Item 2 is worth separating from the coverage question entirely: the EXACT path
+carrying *less* than the suggestion path is a defect at any coverage, and would
+be worth fixing if the link rate were 1%.
 
 ### Reproducing this
 

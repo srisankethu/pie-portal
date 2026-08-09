@@ -4,7 +4,10 @@ Keyed by product. Folds three event types and no more:
 
 - ``STOCK_OBSERVED`` is an *observation*, so its fields are SET: the latest
   count of what is physically there replaces the previous one. It never
-  accumulates — adding two stock counts together would be nonsense.
+  accumulates — adding two stock counts together would be nonsense. Its *date*
+  is both MAXed and MINed, because when the platform last looked and when it
+  first looked are two different facts and the second one is what says whether
+  "nothing has sold" has had time to mean anything.
 - ``SALE_LINE_RECORDED`` and ``COST_LINE_RECORDED`` are *movements*, so their
   quantities ADD and their dates MAX. Sales also MIN a first-seen date, because
   an offtake *rate* needs a period and the only honest one is between the first
@@ -63,7 +66,16 @@ class InventoryReducer:
     @staticmethod
     def _observed(product_id: str, payload: dict[str, Any],
                   on: date) -> Iterable[Delta]:
-        changes: list[tuple[str, str, Any]] = [(MAX, "observed_on", on)]
+        changes: list[tuple[str, str, Any]] = [
+            (MAX, "observed_on", on),
+            # The other end of the observation window. "Nothing has sold" is
+            # only a finding once there has been time for something to sell,
+            # and this is the earliest date the platform can show it was
+            # watching this item at all. Without it, an item read for the
+            # first time yesterday is indistinguishable from one that has sat
+            # unsold for two years.
+            (MIN, "first_observed_on", on),
+        ]
         for field_name, source in (("on_hand", "on_hand"),
                                    ("available", "available"),
                                    ("actual_available", "actual_available"),
@@ -104,6 +116,12 @@ class InventoryReducer:
         changes: list[tuple[str, str, Any]] = [
             (ADD, "units_purchased", qty),
             (MAX, "last_purchased_on", on),
+            # When we first bought it, which is when it first *could* have been
+            # sold. Paired with ``first_observed_on`` above: between them they
+            # answer "how long has this line had the chance to move", which is
+            # the denominator a "never sold" finding needs and does not
+            # otherwise have.
+            (MIN, "first_purchased_on", on),
             (ADD, "purchase_lines", 1),
         ]
         if unit_cost is not None:

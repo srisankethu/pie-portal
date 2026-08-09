@@ -91,9 +91,33 @@ def _revenue_per_unit(value: dict[str, Any]) -> Decimal | None:
 
 def _idle_days(value: dict[str, Any], as_of: date) -> tuple[int | None, date | None]:
     """Days since the last sale, and when that was. ``None`` days means it has
-    never sold at all — the strongest form of idle, not a missing value."""
+    never sold at all — which is a question, not yet a finding. See
+    ``_opportunity_days``."""
     last = day(value, "last_sold_on")
     return ((as_of - last).days if last else None), last
+
+
+def _opportunity_days(value: dict[str, Any], as_of: date) -> int | None:
+    """How long this line has had the chance to sell.
+
+    Days since the platform first saw it — its first stock reading or its first
+    purchase, whichever came first. ``None`` when neither is on record.
+
+    This is the denominator a "never sold" card needs. Without it the detector
+    below read a missing sale date as satisfying *any* idleness bound, so an
+    item bought last week raised a dead-stock decision with a write-off among
+    its actions. The same defect lived in ``commercial/insight/stock.py``; both
+    are fixed, and both read these same two fold fields, so the queue and the
+    screen cannot disagree about which lines are dead.
+    """
+    first = _earliest(day(value, "first_observed_on"),
+                      day(value, "first_purchased_on"))
+    return (as_of - first).days if first else None
+
+
+def _earliest(*days: date | None) -> date | None:
+    known = [d for d in days if d is not None]
+    return min(known) if known else None
 
 
 class _Idle:
@@ -117,10 +141,18 @@ class _Idle:
                 continue
             capital, rate = priced
             idle, last_sold = _idle_days(value, as_of)
-            # Never sold and on the shelf is the strongest version of idle, so
-            # it satisfies any lower bound rather than being excluded for
-            # having no date.
-            days = idle if idle is not None else at_least
+            if idle is not None:
+                days = idle
+            else:
+                # Never sold. That is only a finding once there has been time
+                # to sell it, so the opportunity window stands in for the idle
+                # window — and where even that is unknown, no card is raised.
+                # Previously this substituted ``at_least``, which made a
+                # missing sale date satisfy every bound automatically and put
+                # freshly bought stock in the queue with a write-off attached.
+                days = _opportunity_days(value, as_of)
+                if days is None:
+                    continue
             if days < at_least or (less_than is not None and days >= less_than):
                 continue
             monthly = money(capital * policy.carrying_monthly_pct)
@@ -149,8 +181,8 @@ class _Idle:
                 rationale=(
                     f"{on_hand} on the shelf, "
                     + (f"and nothing sold for {idle} days" if idle is not None
-                       else "and never sold since the platform has been reading "
-                            "this book")
+                       else f"and never sold in the {days} days since the "
+                            "platform first saw it")
                     + f". Bought at {rate} each and carried at "
                       # normalize(), because Decimal("0.18") * 100 is
                       # Decimal("18.00") and "18.00%" reads like a precision

@@ -29,6 +29,14 @@ sys.path.insert(0, str(BACKEND))
 os.environ.setdefault("PIE_PARSER_ROOT", str(REPO / "pie-parser"))
 os.environ.setdefault("PIE_CATALOG", str(BACKEND / "data" / "products.jsonl"))
 
+# The seeder does not hand these fixtures accounts that must change their password
+# first. Fifty-five test modules seed the demo org to exercise something that is
+# not the credential lifecycle, and `authz.current_principal` refuses a flagged
+# account everything but the change itself — correctly, which is why it cannot be
+# worked around per test. The gate is not configurable and is tested directly, by
+# setting the flag on a user; only the *seeder* reads this.
+os.environ.setdefault("ISSUED_ACCOUNTS_MUST_CHANGE_PASSWORD", "0")
+
 # pie-parser's own packages (`identity`, `engine`, `resolver`) must be importable
 # by name, because a few tests import them directly rather than through
 # `app.pie_service`.

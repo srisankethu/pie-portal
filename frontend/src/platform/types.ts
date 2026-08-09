@@ -13,6 +13,10 @@ export interface PlatformSession {
    *  timestamp the client renders — see `src/when.ts` for why the browser's
    *  own zone is the wrong answer here. */
   timezone: string;
+  /** True while this account holds a password somebody else issued. The server
+   *  refuses every request but the change itself, so the shell shows the change
+   *  screen instead of the app. */
+  must_change_password?: boolean;
 }
 
 /** One entry in a decision's human trail.

@@ -428,8 +428,11 @@ export const papi = {
     req<{ user_id: string; temporary_password: string }>(
       `/api/v1/admin/users/${id}/reset-password`, { method: "POST" }, t),
 
+  // Returns a fresh token: changing the password retires the one used to make
+  // the change, so a caller that keeps the old one is signed out by its own
+  // success. Callers must swap it in.
   changeOwnPassword: (t: string, current_password: string, new_password: string) =>
-    req<{ ok: boolean }>("/api/v1/admin/me/password",
+    req<{ ok: boolean; token: string }>("/api/v1/admin/me/password",
       { method: "POST", body: JSON.stringify({ current_password, new_password }) }, t),
 
   getPolicy: (t: string) =>

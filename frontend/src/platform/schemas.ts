@@ -32,6 +32,10 @@ export const platformSessionSchema = z.object({
   // session — the app falls back to its defaults for both.
   currency: z.string().optional(),
   timezone: z.string().optional(),
+  //: This account still holds a password it was issued rather than chose. The
+  //: server refuses everything but the change while it is set, so the shell must
+  //: show the change and nothing else. Optional for the same reason as above.
+  must_change_password: z.boolean().optional(),
 });
 
 export type CheckedSession = z.infer<typeof platformSessionSchema>;

@@ -22,6 +22,7 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .config import settings
 from .domain import models
 from .domain.enums import Role
 from .passwords import generate_password, hash_password, password_problem
@@ -70,7 +71,7 @@ def provision_organization(
         owner = models.User(organization_id=organization_id, email=owner_email,
                             name=owner_name, role=Role.OWNER.value, active=True,
                             password_hash=hash_password(password),
-                            must_change_password=True)
+                            must_change_password=settings.ISSUED_ACCOUNTS_MUST_CHANGE_PASSWORD)
         session.add(owner)
         provisioned_password[owner_email] = password
     session.flush()
@@ -99,7 +100,7 @@ def add_user(session: Session, *, organization_id: str, email: str, name: str,
     user = models.User(organization_id=organization_id, email=email, name=name,
                        role=role.value, active=True,
                        password_hash=hash_password(issued),
-                       must_change_password=True)
+                       must_change_password=settings.ISSUED_ACCOUNTS_MUST_CHANGE_PASSWORD)
     session.add(user)
     session.flush()
     provisioned_password[email] = issued

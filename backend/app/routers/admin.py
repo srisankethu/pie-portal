@@ -28,7 +28,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import clock, approvals
-from ..authz import Principal, current_principal, require_manager_or_owner, require_owner
+from ..authz import (Principal, current_principal, issue_token,
+                     require_manager_or_owner, require_owner)
 from ..commercial import policy as commercial_policy
 from ..db import get_session
 from ..domain import models
@@ -209,6 +210,10 @@ def reset_password(
     password = generate_password()
     user.password_hash = hash_password(password)
     user.must_change_password = True
+    # Retires whatever sessions this account had open. An owner resetting a
+    # password because it may be compromised should not leave the compromised
+    # session working.
+    user.password_changed_at = clock.now()
     session.flush()
     log.info("password reset org=%s user=%s by=%s", principal.organization_id,
              user.user_id, principal.user_id)
@@ -242,8 +247,13 @@ def change_own_password(
         raise HTTPException(http.HTTP_400_BAD_REQUEST, problem)
     user.password_hash = hash_password(body.new_password)
     user.must_change_password = False
+    user.password_changed_at = clock.now()
     session.flush()
-    return {"ok": True}
+    # A fresh token, because the line above just retired the one this request
+    # arrived with. Without handing one back, changing your own password would
+    # sign you out — and on the forced-change path that is a loop: the only thing
+    # the old token could still reach was the change it had already made.
+    return {"ok": True, "token": issue_token(user.user_id, user.organization_id)}
 
 
 # ── approval policy ─────────────────────────────────────────────────────────

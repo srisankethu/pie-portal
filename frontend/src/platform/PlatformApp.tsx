@@ -2,7 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react
 import { DataGrid, numeric } from "./DataGrid";
 import { EntityName, EntitySource } from "./EntityName";
 import { CompanyFilter, useCompanyFilter } from "./CompanyFilter";
-import { EmptyState, ErrorState, FilterChip, HumanLog, LoadingState, StatusChip } from "./kit";
+import { EmptyState, ErrorState, FilterChip, HumanLog, LoadingState, SectionHeader, StatusChip } from "./kit";
 import { formatDate } from "../when";
 import {
   clearPlatformSession,
@@ -15,6 +15,7 @@ import type { Account, DecisionDetail, DecisionSummary, DecisionTrace, PlatformS
 import { aiState, factLabel, factValue, isPrimaryFact, stateFieldLabel } from "./format";
 import { ActionsPanel, Bp, Conf, DecisionCard, ImpactPanel, Interpretation, Labelled,
          Pri, RankingPanel, Tip, WhyPanel, typeLabel } from "./ui";
+import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
 import Paper from "@mui/material/Paper";
 import Button from "@mui/material/Button";
@@ -143,7 +144,8 @@ function SignIn({ onIn, notice }: { onIn: (s: PlatformSession) => void; notice?:
         const r = await papi.login(email, password);
         onIn({ token: r.token, role: r.role, name: r.name, user_id: r.user_id,
                organization_id: r.organization_id, currency: r.currency,
-               timezone: r.timezone });
+               timezone: r.timezone,
+               must_change_password: r.must_change_password });
       }}
       footer={
         "Your account decides your role. An owner creates accounts and sets roles " +
@@ -398,6 +400,24 @@ export default function PlatformApp() {
   );
 
   if (!session) return <SignIn onIn={signIn} notice={notice} />;
+
+  // An account still holding the password it was issued reaches nothing else —
+  // the server refuses every request but the change, so showing the shell would
+  // be showing a screen where everything 403s. This is the way out, not a nag.
+  if (session.must_change_password) {
+    return (
+      <ForcedPasswordChange
+        session={session}
+        onChanged={(token) => {
+          const next = { ...session, token, must_change_password: false };
+          savePlatformSession(next);
+          setSession(next);
+          navigate(PATH.home);
+        }}
+        onSignOut={signOut}
+      />
+    );
+  }
 
   const rh = ROLE_HOME[session.role];
   const roleShort = session.role === "SALESPERSON" ? "Salesperson" : session.role === "SALES_MANAGER" ? "Manager" : "Owner";
@@ -1736,4 +1756,76 @@ function groupEvidence(evi: { source_system?: string; record_type?: string }[]) 
     m.set(k, (m.get(k) || 0) + 1);
   });
   return [...m.entries()].map(([system, n]) => ({ system, count: `${n} record${n === 1 ? "" : "s"}` }));
+}
+
+/** The way out for an account holding a password somebody else issued.
+ *
+ * Not a nag screen. `authz.current_principal` refuses a flagged account every
+ * path but the change itself, so the shell behind this would be a screen where
+ * every panel 403s. The seed sets the flag and the README publishes the password
+ * it sets, which is why this exists at all: for a while the flag was read only by
+ * the login response and a label on the admin grid, and `change-me-now` stayed
+ * live on every seeded account indefinitely.
+ *
+ * Sign out is offered because the alternative — a screen with one action and no
+ * exit — traps somebody who signed in as the wrong account.
+ */
+function ForcedPasswordChange({
+  session, onChanged, onSignOut,
+}: {
+  session: PlatformSession;
+  onChanged: (token: string) => void;
+  onSignOut: () => void;
+}) {
+  const [current, setCurrent] = useState("");
+  const [next, setNext] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await papi.changeOwnPassword(session.token, current, next);
+      onChanged(r.token);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Box sx={{ maxWidth: 460, mx: "auto", mt: 8, px: 2 }}>
+      <Paper sx={{ p: 3 }}>
+        <SectionHeader
+          title="Choose a password"
+          sub={`This account still uses the password it was issued, ${session.name}. Set your own before going on.`}
+          level="section"
+        />
+        {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
+        <form onSubmit={submit}>
+          <Stack spacing={2}>
+            <TextField
+              label="Current password" type="password" autoComplete="current-password"
+              value={current} onChange={(e) => setCurrent(e.target.value)} required fullWidth
+            />
+            <TextField
+              label="New password" type="password" autoComplete="new-password"
+              value={next} onChange={(e) => setNext(e.target.value)} required fullWidth
+            />
+            <Stack direction="row" spacing={1} sx={{ justifyContent: "space-between" }}>
+              <Button type="button" variant="text" onClick={onSignOut} disabled={busy}>
+                Sign out
+              </Button>
+              <Button type="submit" variant="contained" disabled={busy || !current || !next}>
+                {busy ? "Saving…" : "Set password"}
+              </Button>
+            </Stack>
+          </Stack>
+        </form>
+      </Paper>
+    </Box>
+  );
 }

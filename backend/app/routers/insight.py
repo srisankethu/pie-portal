@@ -79,6 +79,20 @@ def _context(session: Session, principal: Principal, **bound: Any):
     return org, snapshot, th
 
 
+def _books_have_sales(session: Session, org: str) -> bool:
+    """Whether any sale has ever been synced. One indexed count, no lines.
+
+    Deliberately not `bool(snapshot.sales)`: the screens that need this read a
+    labels-only snapshot, which carries no lines at all — so that test would be
+    permanently False — and `test_bounded_loads` asserts structurally that none
+    of those callers touches `snapshot.sales`. This answers the same question
+    without loading the history the snapshot was trimmed to avoid.
+    """
+    return bool(session.scalar(
+        select(func.count()).select_from(models.SalesTxn)
+        .where(models.SalesTxn.organization_id == org).limit(1)))
+
+
 def _labels_only(session: Session, principal: Principal):
     """Names and the reference date, with none of the lines.
 
@@ -158,10 +172,29 @@ def _as_of(snapshot) -> Optional[date]:
     return snapshot.as_of()
 
 
-def _no_data(currency: str, what: str) -> dict:
+def _no_data(currency: str, what: str, *, missing: str = "sales history",
+             synced: bool = False) -> dict:
+    """An empty screen, and the *actual* reason it is empty.
+
+    Two parameters because one message was being used for two different states.
+    Every screen with nothing to show said "No sales history has been synced yet
+    … connect a Zoho company and run a sync", which is right for a screen that
+    needs sales and has none, and wrong in both halves for `/payments`: 26 sale
+    lines were synced and it is `payment_receipts` that is empty. It named the
+    wrong missing thing and then gave advice that could not help — somebody sent
+    to re-run a sync that had already worked.
+
+    `missing` names what has to arrive. `synced` says the books are demonstrably
+    connected, so the closing sentence stops suggesting otherwise.
+    """
+    if synced:
+        return _envelope(
+            {}, currency=currency,
+            empty_reason=(f"The books are synced, but no {missing} has come with "
+                          f"them, so {what} cannot be computed yet."))
     return _envelope(
         {}, currency=currency,
-        empty_reason=(f"No sales history has been synced yet, so {what} cannot be "
+        empty_reason=(f"No {missing} has been synced yet, so {what} cannot be "
                       f"computed. Connect a Zoho company and run a sync."))
 
 
@@ -648,7 +681,11 @@ def payment_behaviour(principal: Principal = Depends(current_principal),
             models.PaymentReceipt.organization_id == org)).all()
     settled = _settlements(session, org)
     if not receipts and not settled:
-        return _no_data(th.currency, "payment behaviour")
+        # Not "no sales history": the sales may be entirely there, and what is
+        # missing is a payment against them.
+        return _no_data(th.currency, "payment behaviour",
+                        missing="customer payment",
+                        synced=_books_have_sales(session, org))
 
     result = payments.build(
         settled, snapshot.customer_names, as_of,
@@ -695,7 +732,9 @@ def payable_behaviour(principal: Principal = Depends(require_manager_or_owner),
         select(models.VendorPaymentDoc).where(
             models.VendorPaymentDoc.organization_id == org)).all()
     if not made and not settled:
-        return _no_data(th.currency, "payment behaviour towards suppliers")
+        return _no_data(th.currency, "payment behaviour towards suppliers",
+                        missing="supplier payment",
+                        synced=_books_have_sales(session, org))
 
     result = payments.build(
         settled, {vid: v.name for vid, v in vendors.items()}, as_of,
@@ -758,7 +797,10 @@ def cash_projection(weeks: int = Query(cashflow.WEEKS, ge=1, le=26),
     org, _snapshot, th = _labels_only(session, principal)
     on = latest_as_of(session, org, CASH_SCHEDULE)
     if on is None:
-        return _no_data(th.currency, "a cash projection")
+        # The projection is folded from receivables and payables state, not read
+        # from sales lines, so a synced book with no open invoices lands here.
+        return _no_data(th.currency, "a cash projection",
+                        missing="receivable or payable")
     agreed = _agreed_terms(session, org)
     settled_bills, _unattributed = _bill_settlements(session, org, terms=agreed)
     return _envelope(
@@ -899,7 +941,8 @@ def supplier_position(principal: Principal = Depends(require_manager_or_owner),
         select(models.PurchaseOrderDoc)
         .where(models.PurchaseOrderDoc.organization_id == org)).all()
     if not rows:
-        return _no_data(th.currency, "supplier orders")
+        return _no_data(th.currency, "supplier orders",
+                        missing="purchase order")
 
     orders = [
         supply.SupplierOrder(

@@ -131,6 +131,33 @@ class Cell:
         }
 
 
+def _empty_reason(all_lines: list[MixLine], order: list[str], dimension: str) -> str:
+    """Why this grid is empty, distinguishing the three ways it can be.
+
+    They were served as two, keyed on whether any column existed, and the
+    interesting case fell on the wrong side: with 26 sale lines on the book and
+    every item's category unset, the screen said "Nothing has been traded yet."
+    while the Customers screen in the same session showed the revenue. A wrong
+    reason is worse than none — it sends somebody to look at the sync when the
+    answer is one field on the item master.
+    """
+    noun = "line of the business" if dimension == BY_CATEGORY else "supplier"
+    if not all_lines:
+        return "Nothing has been traded yet, so there is no mix to show."
+    where_from = (
+        "Item categories come from Zoho, from the HSN ranges, or from an "
+        "override in Settings."
+        if dimension == BY_CATEGORY else
+        "A sale is attributed to a principal through the bills that bought the "
+        "item, so this fills in after a full sync.")
+    if not order:
+        return (f"No {noun} has been defined yet, so trade cannot be grouped "
+                f"into one. {where_from}")
+    # Trade exists, columns exist, and nothing landed in one.
+    return (f"There is trade on the book, but none of it could be placed against "
+            f"a {noun}. {where_from}")
+
+
 def build(lines: Iterable[MixLine], names: dict[str, str], as_of: date, *,
           thresholds: CommercialThresholds,
           columns: Iterable[Column],
@@ -141,7 +168,11 @@ def build(lines: Iterable[MixLine], names: dict[str, str], as_of: date, *,
     order = [c.key for c in cols]
     label_of = {c.key: c.label for c in cols}
     known = set(order)
-    rows = [r for r in lines if r.key and r.key in known]
+    # Materialised because the empty state has to be able to tell "nothing was
+    # traded" from "trade exists and none of it could be placed in a column",
+    # and those differ only in whether there were lines to filter.
+    all_lines = list(lines)
+    rows = [r for r in all_lines if r.key and r.key in known]
     window = periods.months_back(as_of, months)
     start = window[0].start if window else as_of
 
@@ -152,18 +183,7 @@ def build(lines: Iterable[MixLine], names: dict[str, str], as_of: date, *,
             "customers": [], "affinity": [], "counts": {},
             "cell_meanings": CELL_MEANING, "months": months,
             "min_peers": MIN_PEERS,
-            "empty_reason": (
-                "No trade could be placed against a "
-                + ("line of the business" if dimension == BY_CATEGORY
-                   else "supplier")
-                + " yet, so there is no mix to show. "
-                + ("Item categories come from Zoho, from the HSN ranges, or "
-                   "from an override in Settings."
-                   if dimension == BY_CATEGORY else
-                   "A sale is attributed to a principal through the bills that "
-                   "bought the item, so this fills in after a full sync.")
-                if not order else
-                "Nothing has been traded yet."),
+            "empty_reason": _empty_reason(all_lines, order, dimension),
             "thresholds_version": thresholds.version,
         }
 

@@ -337,6 +337,47 @@ class ShelfLine:
         return (self.on_hand * (self.purchase_rate or 0.0)) if self.priced else 0.0
 
 
+def break_even_idle_months(discount: float,
+                           monthly_carrying_pct: float) -> Optional[float]:
+    """How long stock would have to sit before taking a discount today pays.
+
+    The dead-stock analogue of ``break_even_volume_change`` above, and it earns
+    its place for the same reason: it is the one thing this module can say
+    about clearing a shelf that needs **no behavioural assumption at all**.
+
+    Taking ``d`` off costs ``V·d``, once. Keeping the line costs ``V·m`` every
+    month. They are equal at ``d / m`` months, and the ``V`` cancels — so the
+    answer is a property of the discount and the carrying rate, not of the
+    line, and one number serves the whole shelf.
+
+    What it hands the owner is a *frontier*, not a verdict: at 12% a year a 25%
+    discount is worth taking if the stock would otherwise have sat more than 25
+    months. The platform supplies the arithmetic; whether this line would have
+    sat that long is the owner's judgement, and it is the judgement the stock
+    module refuses to make on their behalf (see ``insight/stock.py``, which
+    declines recovery probability for exactly this reason).
+
+    Two honest limits, both stated in the response rather than buried here:
+
+    **It is first-order.** Discounting the cash flows properly lengthens the
+    boundary — at a 10% cost of capital with 2% storage, a 25% discount breaks
+    even nearer 28 months than 25. The linear rule is therefore *conservative*:
+    it understates how long you can afford to wait, so it errs toward
+    discounting too eagerly rather than too late.
+
+    **The rate cannot be split.** A true NPV needs the cost-of-capital half
+    (which comes *back* when stock is sold) separated from the storage and
+    obsolescence half (which merely *stops*). ``carrying_cost_annual_pct`` is a
+    single number and cannot express the difference.
+
+    ``None`` when the carrying rate is zero or negative, where the question has
+    no answer: stock that costs nothing to keep never has to be cleared.
+    """
+    if monthly_carrying_pct <= 0:
+        return None
+    return discount / monthly_carrying_pct
+
+
 def inventory_change(lines: Iterable[ShelfLine], *, monthly_carrying_pct: float,
                      share: float = 1.0, discount: float = 0.0) -> dict:
     """What clearing some of the shelf returns, and what it stops costing.
@@ -393,6 +434,20 @@ def inventory_change(lines: Iterable[ShelfLine], *, monthly_carrying_pct: float,
         # stock sits.
         "monthly_carrying_saved": round(moving * monthly_carrying_pct, 2),
         "annual_carrying_saved": round(moving * monthly_carrying_pct * 12, 2),
+        # The headline that needs no assumption about whether the stock moves —
+        # the same role ``break_even_volume_change`` plays for a price change.
+        "break_even_idle_months": (
+            round(be, 1)
+            if (be := break_even_idle_months(discount, monthly_carrying_pct))
+            is not None else None),
+        "break_even_note": (
+            "Taking this discount today is worth it if the stock would "
+            "otherwise have sat longer than this. That boundary needs no "
+            "forecast — it is the discount divided by the monthly carrying "
+            "rate. Whether this stock would have sat that long is your call, "
+            "not the platform's. The figure is deliberately first-order: "
+            "discounting the cash flows properly lengthens it, so it errs "
+            "toward clearing too eagerly rather than too late."),
         "lines": rows[:100],
         "line_count": len(priced),
         "unpriced_lines": len(unpriced),

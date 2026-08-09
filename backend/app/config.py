@@ -103,6 +103,22 @@ class Settings:
     AUTO_BOOTSTRAP: bool = os.environ.get("AUTO_BOOTSTRAP", "1") != "0"
     # Seed the realistic demo dataset on startup. Never in production.
     DEMO_SEED_ON_START: bool = os.environ.get("DEMO_SEED_ON_START", "1") != "0"
+    #: Whether an account the *system* issues a password to must change it before
+    #: the account can be used — the seeded demo users, and the owner created when
+    #: a tenant is provisioned. On by default and meant to stay on: the seed
+    #: password is published in the README, so an account still holding it is an
+    #: account anybody can sign into.
+    #:
+    #: This switches who gets *flagged*, never the gate. `authz.current_principal`
+    #: refuses a flagged account unconditionally and no setting turns that off.
+    #: The test suite sets this to 0 because 55 fixtures seed accounts in order to
+    #: exercise something that is not the credential lifecycle; the forced change
+    #: has its own tests, which set the flag explicitly.
+    #:
+    #: A password an owner issues by hand from Settings is *not* covered here and
+    #: is always flagged: that is a deliberate act in a live system, not setup.
+    ISSUED_ACCOUNTS_MUST_CHANGE_PASSWORD: bool = (
+        os.environ.get("ISSUED_ACCOUNTS_MUST_CHANGE_PASSWORD", "1") != "0")
 
     # The single supported organization for V1 (one org, one ERP). organization_id
     # is carried on every record for future multi-org, but no cross-org logic exists.

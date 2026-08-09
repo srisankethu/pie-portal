@@ -168,6 +168,9 @@ export interface DecisionDetail {
   subject_entity_id: string;
   subject_label: string;
   assigned_user_id: string | null;
+  /** The assignee's name. Null *with* `assigned_role` set is not missing data:
+   *  the decision belongs to a role rather than to a person. */
+  assigned_to?: string | null;
   assigned_role: string;
   detected_at: string | null;
   priority: { band: string; score: number; deterministic_base: number; ai_adjustment: number };
@@ -228,6 +231,10 @@ export interface Account extends Sourced {
   name: string;
   status: string;
   assigned_user_id: string | null;
+  /** The assignee's name, resolved server-side. Null means unassigned — the
+   *  client does not resolve this itself because it would need the user
+   *  directory, which a salesperson cannot read. */
+  assigned_to?: string | null;
   /** Operational trade, so the directory can be chosen from rather than only
    *  searched. No cost, no margin — those live behind the Customer × Item
    *  surface where the permission gating is. */

@@ -1259,14 +1259,29 @@ export function SettingsScreen({ session }: { session: PlatformSession }) {
           changed from this screen — an owner sets it.
         </p>
         <form className="st-pw" onSubmit={changePassword}>
-          <input className="input" type="password" placeholder="Current password"
-                 autoComplete="current-password" value={pw.current}
-                 onChange={(e) => setPw({ ...pw, current: e.target.value })}
-                 required aria-label="Current password" />
-          <input className="input" type="password" placeholder="New password (10+ characters)"
-                 autoComplete="new-password" value={pw.next}
-                 onChange={(e) => setPw({ ...pw, next: e.target.value })}
-                 required aria-label="New password" />
+          {/* The account this form is about. A change-password form with two
+              password fields and nothing else gives a password manager no
+              identity to file the new secret under, so it saves it against
+              nothing or overwrites the wrong entry — and the person is locked
+              out of the thing they just secured. Readonly rather than hidden:
+              `autocomplete="username"` on a `display: none` field is ignored by
+              some managers, and saying which account is about to change its
+              password is worth a line on screen anyway. */}
+          {session.email && (
+            <TextField
+              className="st-span" size="small" label="Account"
+              value={session.email} autoComplete="username"
+              slotProps={{ input: { readOnly: true } }} />
+          )}
+          <TextField size="small" type="password" label="Current password"
+                     autoComplete="current-password" value={pw.current}
+                     onChange={(e) => setPw({ ...pw, current: e.target.value })}
+                     required />
+          <TextField size="small" type="password" label="New password"
+                     helperText="At least 10 characters"
+                     autoComplete="new-password" value={pw.next}
+                     onChange={(e) => setPw({ ...pw, next: e.target.value })}
+                     required />
           <Button type="submit" variant="outlined">Change password</Button>
           {pwMsg && <div className="st-span st-help">{pwMsg}</div>}
         </form>

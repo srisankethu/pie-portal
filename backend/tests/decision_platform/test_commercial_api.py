@@ -340,6 +340,43 @@ def test_a_salesperson_cannot_read_the_timeline_of_an_account_that_is_not_theirs
                       headers=_hdr(client, "r.nair@sanketh.in")).status_code == 200
 
 
+def test_the_item_picker_applies_the_same_scope_rule_as_the_timeline(client):
+    """One rule, two answer shapes, and both unprobeable.
+
+    The rule is `authz.can_view_customer`, which used to be written out inline in
+    each of these two endpoints — and a scope rule with two copies is one that
+    eventually disagrees with itself about a reassigned account.
+
+    They answer differently on purpose and it is not an inconsistency to iron
+    out: a picker feeding a dropdown returns an empty list, because a field that
+    errors is a field that breaks, while a screen returns 404, because drawing
+    itself empty would claim the account exists. What both must do is give the
+    *same* answer for "not yours" as for "not real", which is what makes an id
+    useless for enumeration.
+    """
+    sales = _hdr(client, "r.nair@sanketh.in")
+
+    not_theirs = client.get("/api/v1/accounts/c2/items", headers=sales)
+    never_existed = client.get("/api/v1/accounts/c_nope/items", headers=sales)
+    assert not_theirs.status_code == 200 and not_theirs.json() == []
+    assert never_existed.status_code == 200 and never_existed.json() == []
+    assert not_theirs.json() == never_existed.json(), (
+        "an account they cannot see must be indistinguishable from one that "
+        "does not exist")
+
+    # And the same two ids on the sibling: 404 both times, for the same reason.
+    assert client.get("/api/v1/insight/customers/c2/timeline",
+                      headers=sales).status_code == 404
+    assert client.get("/api/v1/insight/customers/c_nope/timeline",
+                      headers=sales).status_code == 404
+
+    # Scope, not a missing customer: assigning c2 opens both.
+    _assign_to_salesperson(client, "c2")
+    assert client.get("/api/v1/accounts/c2/items", headers=sales).status_code == 200
+    assert client.get("/api/v1/insight/customers/c2/timeline",
+                      headers=sales).status_code == 200
+
+
 def test_a_salesperson_s_timeline_has_no_margin_field_anywhere(client):
     """Absent, not masked. The rule is that there is nothing in the network tab
     to read — so this asserts on the raw bytes, not on the parsed value being

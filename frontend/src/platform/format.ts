@@ -16,6 +16,17 @@ export const ROLE_LABEL: Record<string, string> = {
   OWNER: "Owner",
 };
 
+/** Subject-verb agreement for a counted noun.
+ *
+ *  A two-word function because the inline ternary was written out at four call
+ *  sites and forgotten at a fifth — "1 are past their own buying rhythm", in the
+ *  same sentence as a sibling clause that got it right. A count of one is the
+ *  common case on a small book, so this reads wrong exactly when somebody is
+ *  looking at their first real number. */
+export function isAre(count: number): string {
+  return count === 1 ? "is" : "are";
+}
+
 export const TYPE_LABEL: Record<string, string> = {
   CUSTOMER_DECLINE: "Customer decline",
   CUSTOMER_DORMANCY: "Customer dormancy",

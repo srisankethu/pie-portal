@@ -51,6 +51,13 @@ class LoginResponse(BaseModel):
     organization_id: str
     role: str
     name: str
+    # The address this account signs in with, echoed back for one reason: a
+    # change-password form with two password fields and no username makes a
+    # password manager save the new secret against nothing, or against the
+    # wrong entry. `autocomplete="username"` needs a value, and the only
+    # correct one is the address the person just signed in with. Not a
+    # disclosure: it is their own address, on a response they authenticated for.
+    email: str = ""
     # The currency this organization trades in. Sent at sign-in because every
     # screen renders money and none of them should be guessing: the client used
     # to hardcode a rupee sign in four places, which is correct for exactly one
@@ -88,7 +95,7 @@ def login(body: LoginRequest, session: Session = Depends(get_session)) -> LoginR
     return LoginResponse(
         token=issue_token(user.user_id, user.organization_id),
         user_id=user.user_id, organization_id=user.organization_id,
-        role=user.role, name=user.name,
+        role=user.role, name=user.name, email=user.email,
         currency=(getattr(org, "currency", None) or settings.DEFAULT_CURRENCY),
         timezone=(getattr(org, "timezone", None) or clock.DEFAULT_ZONE),
         must_change_password=user.must_change_password)

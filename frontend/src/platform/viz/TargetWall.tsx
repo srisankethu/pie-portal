@@ -36,6 +36,7 @@ import { useState } from "react";
 import { money } from "../../money";
 import { formatDate } from "../../when";
 import { papi } from "../api";
+import { isAre } from "../format";
 import { EntityName } from "../EntityName";
 import { StatusChip } from "../kit";
 import type { EntityOrigin, PlatformSession } from "../types";
@@ -95,7 +96,7 @@ export function TargetWallScreen({ session }: { session: PlatformSession }) {
                 "1 of 2 principal is" reads as a bug in the page. */}
             <strong>{behind.length}</strong> of {live.length}{" "}
             {live.length === 1 ? "principal" : "principals"}{" "}
-            {behind.length === 1 ? "is" : "are"} behind the pace of their
+            {isAre(behind.length)} behind the pace of their
             period.
             {atStake > 0 && (
               <>

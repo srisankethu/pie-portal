@@ -26,7 +26,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..authz import Principal, current_principal, require_manager_or_owner
+from ..authz import (Principal, can_view_customer, current_principal,
+                     require_manager_or_owner)
 from .. import approvals, clock
 from ..commercial import floor, incentive, policy, portfolio, principals
 from ..commercial import categories as cat
@@ -368,7 +369,7 @@ def migration_matrix(months: int = Query(3, ge=MIN_MONTHS, le=MAX_MONTHS),
                                    "No customer traded in either period."))
 
 
-def _require_visible_customer(session: Session, org: str, customer_id: str,
+def _require_visible_customer(session: Session, customer_id: str,
                               principal: Principal) -> models.Customer:
     """The account-list scope rule, applied to a per-customer endpoint.
 
@@ -378,12 +379,20 @@ def _require_visible_customer(session: Session, org: str, customer_id: str,
     a salesperson and every relationship in the book, and ids travel.
 
     404 rather than 403, matching the decisions endpoints — a 403 confirms the
-    customer exists, which is most of what an enumeration is after.
+    customer exists, which is most of what an enumeration is after. The item
+    picker in `routers/accounts.py` answers the same rule with an empty list
+    instead, because a dropdown that errors is a field that breaks; both are
+    indistinguishable from not-found, which is the property that matters.
+
+    The rule itself is `authz.can_view_customer`, shared with that endpoint. It
+    used to be written out here and again there, and a scope rule with two copies
+    is one that eventually disagrees with itself about a reassigned account.
     """
+    # `org` here is always `principal.organization_id` (see `_context`), and
+    # `can_view_customer` checks the tenant itself — a second comparison would
+    # only suggest the two can differ.
     customer = session.get(models.Customer, customer_id)
-    if customer is None or customer.organization_id != org:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Customer not found")
-    if principal.is_salesperson and customer.assigned_user_id != principal.user_id:
+    if not can_view_customer(principal, customer):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Customer not found")
     return customer
 
@@ -403,7 +412,7 @@ def customer_timeline(customer_id: str,
     org, snapshot, th = _context(session, principal,
                                  sales_for_customers=[customer_id],
                                  costs_for_products=[])
-    _require_visible_customer(session, org, customer_id, principal)
+    _require_visible_customer(session, customer_id, principal)
     as_of = _as_of(snapshot)
     rows = snapshot.sales_for_customer(customer_id)
     if as_of is None or not rows:
@@ -2260,7 +2269,7 @@ def negotiate(body: NegotiationRequest,
               session: Session = Depends(get_session)) -> dict:
     """Price the line in the currency it will be paid in, and say what blocks."""
     org, snapshot, th = _labels_only(session, principal)
-    customer = _require_visible_customer(session, org, body.customer_id, principal)
+    customer = _require_visible_customer(session, body.customer_id, principal)
     with_cost = principal.role in (Role.SALES_MANAGER, Role.OWNER)
     as_of = clock.today(th.timezone)
 

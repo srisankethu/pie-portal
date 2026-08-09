@@ -2741,5 +2741,5 @@ def daily(moved_from: Optional[date] = Query(None),
             supply=supply_result, cadence=cadence_result, cash=cash,
             moved=moved, moved_window=(moved_from, moved_to),
             committed_weeks=committed_weeks,
-            th=th),
+            currency=th.currency),
         th=th)

@@ -189,6 +189,71 @@ repository query is scoped to one organization. There is deliberately no
 cross-organization query surface. V1 runs a single organization; the seam is
 built in rather than bolted on.
 
+**Taking it all with you, and proving it is gone.** `trust/erasure.py` keeps two
+lists, and they answer different questions. `EXPORTED` is what travels in the
+JSON export; `MANIFESTED` is every tenant-scoped table, and it is what the
+signed erasure receipt attests to. They were one list for a while, which meant
+the receipt could only ever account for the subset somebody had remembered to
+make exportable — and a dozen tables added after the list was written were in
+neither. `test_trust_export_completeness.py` now fails when a model carrying an
+`organization_id` is in neither `EXPORTED` nor `EXCLUDED`: the *decision* stays
+a human one, the *coverage* does not.
+
+Three tables are excluded for size rather than secrecy — `business_events` and
+the two projections folded from it. They are derived, a complete re-sync
+rebuilds them, and two years of line-grain events would be a download in the
+hundreds of megabytes. Every exclusion carries its reason in `EXCLUDED_REASONS`,
+served to the customer with the export.
+
+---
+
+## Statutory timing
+
+Four dates the tax code sets, of which two are built. They are a different kind
+of output from the five decision categories: no interpretation, no priority, no
+model — a deadline, an amount, and the basis each was computed on.
+
+| Check | What it states | Status |
+|---|---|---|
+| **MSME 45-day rule** (43B(h) / MSMED s.15) | Bills to registered micro and small suppliers approaching or past their statutory deadline, and the deduction that moves if they pass. | Built — `commercial/insight/msme.py` |
+| **194Q** | Suppliers crossing the purchase threshold in a financial year. | Built — `commercial/insight/withholding.py` |
+| **GST input-credit blockage** | The financing cost of the gap between output tax paid and input credit claimable. | Not built — needs the tax split, which is on the payload and dropped in `zoho_client` |
+| **s.234 advance tax** | — | Deliberately not built. The platform computes gross margin on synced trade in a bounded window, not taxable profit; the distance between those is opex, depreciation, regime and constitution, none of which is here. |
+
+**The platform does not give tax advice, and this is a design constraint rather
+than a disclaimer.** A wrong margin costs a deal; a wrong tax position is the
+operator's liability. So these views surface a date, an amount and a stated
+basis, and stop. No model touches any of it — the AI layer never sees a
+statutory figure, which the `commercial/` ↔ `ai/` import boundary already
+enforces mechanically.
+
+Three things the arithmetic gets right that the obvious version does not:
+
+- **Fifteen days is the default, not forty-five.** MSMED s.15 allows fifteen
+  days absent a *written* agreement and caps a written one at forty-five. Zoho's
+  `payment_terms` is a fixed dropdown that real agreements get filed under — as
+  `insight/terms.py` establishes — so reading it as an agreement would
+  understate exposure on exactly the suppliers with no contract.
+- **A disallowance is a timing difference.** The deduction returns in the year
+  the money is paid, so the cost is a year's carry on tax brought forward
+  (`balance × tax_rate × carrying_cost_annual_pct`), not the tax. Sizing it as
+  the tax overstates it by roughly an order of magnitude.
+- **Unknown is not safe.** A supplier nobody has classified produces a gap row
+  carrying what *would* be at risk, reported beside the confirmed total and
+  never added to it. `MsmeClassification.UNKNOWN` is never inferred from
+  turnover, bill size or a name — the same rule `incentive_eligibility` follows.
+
+`effective_tax_rate` and `s194q_org_gate_met` are owner-set with no defaults,
+and both views degrade honestly without them: the watchlist shows the deadline
+and the amount and omits the cost estimate, and the 194Q list stays empty while
+*saying it is gated* rather than implying nobody crossed.
+
+**Known limit, stated on every row.** Section 15 runs from acceptance or deemed
+acceptance, which this platform does not hold. `BillDoc` carries no link to a
+purchase order, so the goods-receipt date that would be the better proxy cannot
+be joined; every row reports `deadline_start_basis` as `BILL_DATE`.
+`msme.deadline_for` takes receipts for when that link exists.
+
 ---
 
 ## Quote Builder integration

@@ -126,10 +126,41 @@ def test_economics_are_role_gated(client, sales_hdr, mgmt_hdr):
     mline = mgmt_view["lines"][0]
     # sales client never receives economics (cost/margin/below_floor)
     assert "economics" not in sline
-    assert sales_view["marginFloor"] is None
+    assert "marginFloor" not in sales_view
     # management sees full economics
     assert "economics" in mline
     assert "cost" in mline["economics"]
+    assert "marginFloor" in mgmt_view
+
+
+@pytest.mark.requires_pie
+def test_a_salesperson_cannot_ask_whether_a_line_is_below_the_floor(
+        client, sales_hdr, mgmt_hdr):
+    """The below-floor count is a margin fact, so it is absent for a salesperson.
+
+    Not zero — absent. A zero answers the same question in the negative, and the
+    question is worth money: re-price a line, read the count back, and twenty
+    probes bisect the floor price. The floor is cost x (1 + margin floor), so a
+    recovered floor is a recovered cost.
+    """
+    q = client.post("/api/quotes", json={"customer": "Pitti"}, headers=mgmt_hdr).json()
+    qid = q["id"]
+    q = client.post(f"/api/quotes/{qid}/intake",
+                    json={"text": "2001174, 10"}, headers=mgmt_hdr).json()
+    lid = q["lines"][0]["id"]
+    # A rupee a piece is below any floor this catalogue can produce.
+    mgmt_view = client.post(f"/api/quotes/{qid}/lines/{lid}/price",
+                            json={"price": 1}, headers=mgmt_hdr).json()
+    assert mgmt_view["lines"][0]["economics"]["below_floor"] is True
+    assert mgmt_view["filterCounts"]["MFLOOR"] == 1, "manager sees the count"
+    assert mgmt_view["marginFloor"]["count"] == 1
+
+    sales_view = client.get(f"/api/quotes/{qid}", headers=sales_hdr).json()
+    assert "MFLOOR" not in sales_view["filterCounts"], (
+        "the below-floor count is a margin oracle and must not be served")
+    assert "marginFloor" not in sales_view
+    # And nothing else in the payload answers the same question.
+    assert "economics" not in sales_view["lines"][0]
 
 
 @pytest.mark.requires_pie

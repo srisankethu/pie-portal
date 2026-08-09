@@ -56,6 +56,12 @@ class QuoteLineInput:
     qty: Decimal = Decimal("1")
     proposed_price: Optional[Decimal] = None
     family: Optional[str] = None
+    #: The landed cost the books hold against this item, read from the server's
+    #: own quote — never from a request body, for the reason
+    #: ``request_quote_line_approval`` gives: an approval whose numbers came from
+    #: the requester is a request to approve whatever they typed. Used only when
+    #: no bill-derived cost record exists; see ``assess_line``.
+    item_master_cost: Optional[Decimal] = None
 
 
 @dataclass
@@ -197,7 +203,8 @@ def assess_quote(
             benchmark=benchmark,
             family=ln.family,
             as_of=reference,
-            th=th))
+            th=th,
+            item_master_cost=ln.item_master_cost))
     return result
 
 

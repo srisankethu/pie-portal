@@ -95,6 +95,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from datetime import date
 from typing import Iterable, Optional
 
+from . import absence
 from .dependency import Target
 
 _ZERO = Decimal("0")
@@ -242,6 +243,10 @@ TOO_FEW_DOCUMENTS = "TOO_FEW_DOCUMENTS"
 #: reason attached is indistinguishable from a bug, and this one is a decision.
 REFUSALS: dict[str, dict[str, str]] = {
     TOO_EARLY: {
+        # Both refusals here clear themselves as the period runs. Nobody should
+        # be asked to act on them, which is the whole reason TRANSIENT is a
+        # separate kind from COLLECTABLE.
+        "kind": absence.TRANSIENT,
         "label": "Too early to project",
         "why": (f"Less than {MIN_ELAPSED_DAYS} days of the period have gone. A "
                 f"run rate over a few days projects whichever way the first "
@@ -249,6 +254,7 @@ REFUSALS: dict[str, dict[str, str]] = {
                 f"been bought so far is still exact."),
     },
     TOO_FEW_DOCUMENTS: {
+        "kind": absence.TRANSIENT,
         "label": "Not enough purchases yet",
         "why": (f"Fewer than {MIN_DOCUMENTS} bills in the period. One large "
                 f"order is not a rate, and projecting the quarter from it would "

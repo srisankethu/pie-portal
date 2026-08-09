@@ -27,7 +27,7 @@ import { money } from "../../money";
 import { formatDate } from "../../when";
 import { papi } from "../api";
 import { EntityName } from "../EntityName";
-import { InlineLink, StatusChip } from "../kit";
+import { InlineLink, StatusChip, Unavailable } from "../kit";
 import { CompanyScope } from "../CompanyFilter";
 import type { CompanyScopeOption } from "../CompanyFilter";
 import { DataGrid, numeric } from "../DataGrid";
@@ -125,7 +125,7 @@ export function DependencyScreen({
         />
       </div>
 
-      <Unavailable items={rows(data?.unavailable)} />
+      <Unavailable items={rows(data?.unavailable)} verb="not claimed" />
 
       {editing && (
         <TargetEditor session={session} onClose={() => setEditing(false)}
@@ -290,16 +290,3 @@ function TargetTrack({ target }: { target: Row }) {
   );
 }
 
-function Unavailable({ items }: { items: Row[] }) {
-  if (!items.length) return null;
-  return (
-    <ul className="tl-unavailable said-plain">
-      {items.map((u, i) => (
-        <li key={i}>
-          <strong>{String(u.what)}</strong> — not claimed.{" "}
-          <span className="viz-muted">{String(u.why)}</span>
-        </li>
-      ))}
-    </ul>
-  );
-}

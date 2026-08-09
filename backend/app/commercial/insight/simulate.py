@@ -44,6 +44,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ...domain import models
+from . import absence
 
 PRICE_CHANGE = "PRICE_CHANGE"
 CUSTOMER_RECOVERY = "CUSTOMER_RECOVERY"
@@ -57,6 +58,9 @@ SUPPLIER_DELAY = "SUPPLIER_DELAY"
 UNAVAILABLE: tuple[dict[str, str], ...] = (
     {"scenario": "SUPPLIER_DELAY_BY_ITEM",
      "needs": "purchase order lines",
+     # The reason names its own price, which is what makes it BUILDABLE rather
+     # than a limit: one API call per order buys the whole scenario.
+     "kind": absence.BUILDABLE,
      "why": "Purchase orders are read at header grain — what was ordered from "
             "whom, for how much, and how much is still to come, but not which "
             "items. So a delay can be costed in cash and in commitment age, "
@@ -64,6 +68,9 @@ UNAVAILABLE: tuple[dict[str, str], ...] = (
             "Reading PO lines would cost one API call per order."},
     {"scenario": "SUPPLIER_DELAY_AGAINST_PROMISE",
      "needs": "promised delivery dates",
+     # Same blank as ``supply.delivery_against_promise``. One field, typed at
+     # PO entry, unblocks a whole scenario and a supply-screen measure.
+     "kind": absence.COLLECTABLE,
      "why": "``expected_delivery_date`` is blank on effectively every order in "
             "this book, so a delay is measured from today rather than against "
             "a date somebody committed to. The scenario says how much later, "

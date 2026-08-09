@@ -8,6 +8,8 @@ is not run here.
 """
 from __future__ import annotations
 
+import logging
+from dataclasses import replace
 from datetime import date
 from typing import Optional
 
@@ -19,6 +21,8 @@ from . import cost_pass_through, decline, dormancy, margin
 from .aggregates import load_snapshot
 from .base import Snapshot, SignalDraft
 from .config import SignalThresholds, load_thresholds
+
+log = logging.getLogger("pie_portal.signals.engine")
 
 _DETECTORS = (
     ("CUSTOMER_DECLINE", decline.detect),
@@ -44,11 +48,42 @@ def compute_drafts(snapshot: Snapshot, th: SignalThresholds,
     return drafts
 
 
+def _thresholds_for_org(session: Session, organization_id: str) -> SignalThresholds:
+    """Environment detector thresholds, with the owner-editable margin drop applied.
+
+    Imported here rather than at module scope: ``commercial.quote_service`` imports
+    ``signals.base``, so a module-level import of ``commercial`` from this package
+    is a cycle waiting for the wrong import order.
+    """
+    from ..commercial.policy import load_for_org
+
+    th = load_thresholds()
+    try:
+        commercial = load_for_org(session, organization_id)
+    except Exception:  # noqa: BLE001 — policy is never a reason not to detect
+        log.exception("could not load commercial policy for %s; using the "
+                      "environment margin-drop threshold", organization_id)
+        return th
+    return replace(th, margin_drop_points=commercial.queue_margin_drop_pp)
+
+
 def run_detectors(session: Session, organization_id: str,
                   thresholds: Optional[SignalThresholds] = None,
                   as_of: Optional[date] = None) -> dict:
-    """Run detectors for an org and persist the resulting signals."""
-    th = thresholds or load_thresholds()
+    """Run detectors for an org and persist the resulting signals.
+
+    The margin-drop threshold comes from this organization's *commercial* policy,
+    which is the one an owner can edit. It used to be environment-only, so the
+    "Erosion threshold" in Settings quietened the commercial screens and left the
+    decision queue running on a number nobody could reach without a redeploy —
+    a control that silently did half of what it said.
+
+    An explicitly supplied ``thresholds`` is left exactly as the caller built it:
+    passing one is a deliberate act, and tests and one-off scripts rely on it
+    meaning what it says.
+    """
+    th = thresholds if thresholds is not None else _thresholds_for_org(
+        session, organization_id)
     snapshot = load_snapshot(session, organization_id)
     drafts = compute_drafts(snapshot, th, as_of)
 

@@ -57,6 +57,34 @@ class Bands:
         return cls(tech=t.equivalence_tech_band, compat=t.equivalence_compat_band)
 
 
+#: The decoded slots worth carrying out of the engine, and the reason this
+#: tuple is duplicated from pie-parser rather than imported: it is the *portal's*
+#: statement of what a line may show, and importing the engine's copy would let
+#: a pack change silently widen what reaches a screen. The two are deliberately
+#: identical today — pie-parser's ``equivalence/query.py`` builds a suggestion's
+#: ``attributes`` from this same list — because the EXACT path and the
+#: suggestion path must describe a product the same way. If they ever diverge,
+#: the same insert would read differently depending on how it was found.
+ATTRIBUTE_FIELDS = (
+    "product_family", "iso_shape", "iso_clearance_letter", "iso_tolerance",
+    "iso_fixing", "insert_polarity", "cutting_dia_mm", "edge_length_mm",
+    "corner_radius_mm", "thickness_mm", "flute_count", "coating",
+    "coating_process", "material_class",
+)
+
+
+def _attributes_of(record: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Project a decoded catalogue row onto the fields a line may show.
+
+    Absent slots are omitted rather than emitted as ``None``: a key whose value
+    is null reads, on a screen and in a diff, as "the engine decoded this and
+    found nothing", which is a different claim from "this was never decoded".
+    """
+    if not record:
+        return {}
+    return {k: record[k] for k in ATTRIBUTE_FIELDS if record.get(k) is not None}
+
+
 @dataclass
 class Candidate:
     """One ranked supply option for a requested line."""
@@ -133,6 +161,9 @@ class PieService:
         self._lock = threading.Lock()
         self._catalog_path: Optional[Path] = None
         self._catalog_version: str = ""
+        self._index = None
+        self._index_lock = threading.Lock()
+        self._index_tried = False
 
     # ── lifecycle ────────────────────────────────────────────────────────────
     def _ensure_loaded(self) -> None:
@@ -166,6 +197,71 @@ class PieService:
     def warm(self) -> None:
         """Eagerly load the engine + catalogue (called on app startup)."""
         self._ensure_loaded()
+
+    # ── exact catalogue identity ─────────────────────────────────────────────
+    def _ensure_index(self):
+        """The authoritative index alone, without the RFQ resolver behind it.
+
+        A sync needs to ask one question — "is this SKU a catalogue record?" —
+        and loading ``resolve_rfq`` and its equivalence sources to answer it
+        would make every item pull pay for machinery it never calls. This is
+        deliberately the *narrow* half of :meth:`_ensure_loaded`.
+
+        Failure is remembered, not retried per row: a missing submodule would
+        otherwise re-raise and re-log 15,000 times in one sync.
+        """
+        if self._index is not None or self._index_tried:
+            return self._index
+        with self._index_lock:
+            if self._index is not None or self._index_tried:
+                return self._index
+            self._index_tried = True
+            try:
+                root = str(settings.PIE_PARSER_ROOT)
+                if root not in sys.path:
+                    sys.path.insert(0, root)
+                from identity.store import AuthoritativeIndex  # noqa: PLC0415
+                path = ensure_catalog()
+                self._index = AuthoritativeIndex.from_jsonl(path)
+                if not self._catalog_version:
+                    self._catalog_version = _read_catalog_version(path)
+                log.info("PIE authoritative index loaded from %s", path)
+            except Exception:  # noqa: BLE001 — a sync must not fail on this
+                log.warning("PIE catalogue unavailable; item links will be left "
+                            "unresolved", exc_info=True)
+                self._index = None
+            return self._index
+
+    @property
+    def catalog_available(self) -> bool:
+        """Whether a catalogue was actually loaded to answer lookups against.
+
+        Callers need this to tell "the pack does not cover this item" from
+        "nobody asked the pack" — both return None from
+        :meth:`lookup_record`, and only the first is evidence about the item.
+        """
+        return self._ensure_index() is not None
+
+    def lookup_record(self, identifier: Optional[str]) -> Optional[Dict[str, Any]]:
+        """The decoded catalogue row this identifier *is*, or None.
+
+        Exact only, and exact in pie-parser's sense rather than ours — the
+        engine's ``normalize_identifier`` upper-cases and trims but deliberately
+        keeps internal separators, because those distinguish two real catalogue
+        numbers. Matching more loosely here would put a different manufacturer's
+        product on a quote, so anything short of an exact hit is None and the
+        caller records nothing.
+        """
+        if not identifier or not str(identifier).strip():
+            return None
+        index = self._ensure_index()
+        if index is None:
+            return None
+        try:
+            return index.lookup_material(str(identifier))
+        except Exception:  # noqa: BLE001 — provenance must not break a sync
+            log.exception("PIE index lookup failed for %r", identifier)
+            return None
 
     @property
     def catalog_version(self) -> str:
@@ -258,9 +354,16 @@ class PieService:
             m = auth[0]
             code = str(m.get("record_id"))
             desc = m.get("description") or code
+            # The decode, on the one path that was losing it. A match carries
+            # the whole catalogue row internally, but pie-parser's
+            # ``IdentityMatch.to_dict`` projects it down to four fields, so the
+            # geometry never crossed the boundary — while the *lower*-confidence
+            # suggestion path below has always carried it. That asymmetry was
+            # backwards: this branch is the 0.97-confidence one.
             cands = [Candidate(code=code, desc=desc, rel="EXACT",
                                grade=m.get("grade"), brand=m.get("brand"),
-                               reason="Exact manufacturer identity.")]
+                               reason="Exact manufacturer identity.",
+                               attributes=_attributes_of(self.lookup_record(code)))]
             cands += self._candidates_from_suggestions(suggestions, bands, exclude=code)
             return Resolution(text, code, desc, "EXACT", code, cands,
                               outcome, semantics, notes)
@@ -282,7 +385,9 @@ class PieService:
                 [Candidate(code=str(m.get("record_id")),
                            desc=m.get("description") or str(m.get("record_id")),
                            rel="POSSIBLE", grade=m.get("grade"), brand=m.get("brand"),
-                           reason=m.get("note") or "Candidate identity — needs review.")
+                           reason=m.get("note") or "Candidate identity — needs review.",
+                           attributes=_attributes_of(
+                               self.lookup_record(str(m.get("record_id")))))
                  for m in cands_m],
                 outcome, semantics, notes)
 

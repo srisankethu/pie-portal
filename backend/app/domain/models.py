@@ -511,6 +511,78 @@ class VendorPaymentTerm(Base):
                                                  onupdate=_now)
 
 
+class VendorMsmeStatus(Base):
+    """Whether a supplier is protected by the MSME 45-day rule, and on what evidence.
+
+    Section 43B(h) disallows a deduction for anything owed to a registered
+    micro or small enterprise beyond the section 15 limit. Every other input to
+    that test is already here — bill dates, payment dates, balances — so this
+    single field is the whole distance between the platform holding the answer
+    and being unable to ask the question.
+
+    A separate table rather than a column on ``Vendor``, for the reason
+    ``VendorPaymentTerm`` gives: ``upsert_vendor`` rewrites the vendor row from
+    the payload on every sync, so a status stored there would survive exactly
+    until the next pull. This is typed by a person, it is the only copy, and it
+    must outlive a complete re-sync.
+
+    **Nothing here is ever inferred.** Not from turnover in our own books, not
+    from how much we buy, not from the supplier's name. ``UNKNOWN`` is the
+    default and produces a data-gap row on the watchlist — never a silent pass.
+    That is the same rule ``Customer.incentive_eligibility`` follows and the
+    same rule the cost placeholders follow, and it is here for the same reason:
+    a benign default on a missing fact reads as good news.
+
+    ``written_agreement`` is nullable on purpose, and the three states are
+    genuinely different. Absent a written agreement section 15 allows **15**
+    days, not 45; a written one may extend that to a maximum of 45. ``None``
+    means nobody has established which, so the conservative 15 applies and the
+    row says the basis was a default. Zoho's ``payment_terms`` is emphatically
+    not evidence of a written agreement — it is a fixed dropdown, as
+    ``commercial/insight/terms.py`` explains at length — so reading a Zoho term
+    of 45 as an agreement would understate exposure on precisely the suppliers
+    with no contract, who are the ones this rule exists to protect.
+    """
+
+    __tablename__ = "vendor_msme_statuses"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "vendor_id",
+                         name="uq_vendor_msme_status_vendor"),
+    )
+
+    vendor_msme_status_id: Mapped[str] = mapped_column(String(64), primary_key=True,
+                                                       default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    vendor_id: Mapped[str] = mapped_column(String(64),
+                                           ForeignKey("vendors.vendor_id"),
+                                           index=True)
+    #: ``MsmeClassification``. MICRO and SMALL are in scope; MEDIUM is not.
+    classification: Mapped[str] = mapped_column(String(16), default="UNKNOWN")
+    #: ``EnterpriseActivity``. A registered TRADER is out of scope — see the
+    #: enum, where the reason is worth reading before anyone "simplifies" this
+    #: field away.
+    enterprise_activity: Mapped[str] = mapped_column(String(16), default="UNKNOWN")
+    udyam_number: Mapped[Optional[str]] = mapped_column(String(32))
+    #: True / False / None, and None is not False. See the class docstring.
+    written_agreement: Mapped[Optional[bool]] = mapped_column(Boolean)
+    #: Only meaningful when ``written_agreement`` is True, and capped at the
+    #: statutory maximum when the deadline is computed rather than on write —
+    #: what was agreed and what the law allows are two different facts, and
+    #: overwriting the first with the second loses the disagreement.
+    agreed_days: Mapped[Optional[int]] = mapped_column(Integer)
+    #: ``MsmeEvidence``.
+    evidence: Mapped[str] = mapped_column(String(24), default="NONE")
+    #: When this status began to be true. A supplier can cross out of micro or
+    #: small, and a bill is judged against the status in force on its own date.
+    effective_from: Mapped[Optional[date]] = mapped_column(Date)
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    set_by_user_id: Mapped[Optional[str]] = mapped_column(String(64))
+    note: Mapped[Optional[str]] = mapped_column(String(512))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
+                                                 onupdate=_now)
+
+
 class ItemCategoryOverride(Base):
     """What a person said an item's line is, when the catalogue could not say.
 

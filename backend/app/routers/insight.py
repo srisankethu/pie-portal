@@ -33,12 +33,14 @@ from ..commercial import floor, incentive, policy, portfolio, principals
 from ..commercial import categories as cat
 from ..commercial.insight import (bonds, cadence, cashflow, cohorts, composition,
                                   daily as daily_view,
-                                  dependency, flow, landscape, mix, payments,
+                                  dependency, flow, landscape, mix, msme, payments,
                                   periods, radar, schemes, simulate, stock, story,
-                                  supply, terms as vendor_terms, weather)
+                                  supply, terms as vendor_terms, weather,
+                                  withholding)
 from ..db import get_session
 from ..domain import models
-from ..domain.enums import DecisionStatus, Role
+from ..domain.enums import (DecisionStatus, EnterpriseActivity, MsmeClassification,
+                            MsmeEvidence, Role)
 from ..domain.origin import Companies, index_of
 from ..signals.aggregates import label_for, load_snapshot
 from ..commercial.insight import series
@@ -2743,3 +2745,261 @@ def daily(moved_from: Optional[date] = Query(None),
             committed_weeks=committed_weeks,
             th=th),
         th=th)
+
+
+# ── statutory payment timing ────────────────────────────────────────────────
+#
+# Two screens over the same book, both manager-or-owner and both scoped that
+# way for the reason ``/payables`` is: what we owe a supplier is purchase cost
+# by another name, and this platform does not put cost in front of a
+# salesperson. The MSME view additionally carries a cost estimate derived from
+# the organization's tax rate, which is RESTRICTED in its own right.
+#
+# Neither endpoint interprets anything. They assemble rows, hand them to a pure
+# module in ``commercial/insight`` and map the result — there is no arithmetic
+# here, and the figures that come back are dates and amounts rather than a
+# position anybody should file a return on.
+
+
+def _msme_statuses(session: Session, org: str) -> dict[str, msme.Status]:
+    """Every MSME status somebody recorded, keyed by vendor id.
+
+    Absent means UNKNOWN, which ``msme.NO_STATUS`` supplies at the point of
+    use. Deliberately not defaulted here: a dict that answered for every vendor
+    would hide the difference between a supplier nobody has assessed and one
+    that is not in the book at all.
+    """
+    return {
+        row.vendor_id: msme.Status(
+            classification=row.classification,
+            activity=row.enterprise_activity,
+            written_agreement=row.written_agreement,
+            agreed_days=row.agreed_days,
+            evidence=row.evidence,
+            captured_at=(row.captured_at.date() if row.captured_at else None),
+        )
+        for row in session.scalars(
+            select(models.VendorMsmeStatus).where(
+                models.VendorMsmeStatus.organization_id == org)).all()
+    }
+
+
+def _unpaid_bills(session: Session, org: str) -> list[msme.OpenBill]:
+    """Bills with something still owed on them, whether or not they resolved.
+
+    ``vendor_id`` is not required, unlike ``_open_bills``. A bill from a
+    supplier the contact pull never returned is still money owed on a date, and
+    dropping it here would take exactly the least visible bills off a list
+    whose whole job is to be complete about a deadline.
+    """
+    rows = session.scalars(
+        select(models.BillDoc).where(models.BillDoc.organization_id == org)).all()
+    return [
+        msme.OpenBill(vendor_id=b.vendor_id, external_ref=b.external_ref,
+                      number=b.number, bill_date=b.date, due_date=b.due_date,
+                      balance=float(b.balance or 0))
+        for b in rows if (b.balance or 0) > 0
+    ]
+
+
+def _vendor_names(session: Session, org: str) -> dict[str, str]:
+    return {v.vendor_id: v.name for v in session.scalars(
+        select(models.Vendor).where(models.Vendor.organization_id == org)).all()}
+
+
+@router.get("/msme-watchlist")
+def msme_watchlist(principal: Principal = Depends(require_manager_or_owner),
+                   session: Session = Depends(get_session)) -> dict:
+    """Open bills approaching or past the MSME 45-day deadline.
+
+    Section 43B(h) disallows the deduction for anything still owed to a
+    registered micro or small supplier past the section 15 limit, for that
+    year. Every input but one was already here; the missing one is the
+    supplier's status, which is captured through ``PUT /msme-status`` and is
+    never inferred.
+
+    A supplier with no status on record produces a row in the ``gaps`` band
+    rather than being quietly dropped, and the amount beside it is what *would*
+    be at risk — reported separately and never added to the confirmed total.
+    """
+    org, _snapshot, th = _labels_only(session, principal)
+    as_of = clock.today(th.timezone)
+
+    bills = _unpaid_bills(session, org)
+    if not bills:
+        return _no_data(th, "supplier payment deadlines", missing="supplier bill",
+                        synced=_books_have_sales(session, org))
+
+    # No ``po_receipts``, and deliberately not a stub that returns nothing.
+    # Section 15 counts from acceptance, for which a recorded goods receipt is
+    # the better proxy — but ``BillDoc`` carries no link to a purchase order,
+    # so there is nothing to join on. ``msme.deadline_for`` accepts receipts
+    # for when there is, and until then every row reports its
+    # ``deadline_start_basis`` as BILL_DATE, which is the true statement about
+    # what the date rests on. An always-empty resolver here would look like the
+    # feature exists.
+    built = msme.watchlist(bills, _msme_statuses(session, org),
+                           _vendor_names(session, org), as_of=as_of, th=th)
+    Companies(session, org).stamp(built["rows"],
+                                  index_of(session, org, models.Vendor),
+                                  by="vendor_id")
+    return _envelope(
+        built, th=th,
+        empty_reason=(None if built["rows"] else
+                      "No open bill is inside the watch horizon, and none has "
+                      "passed its deadline. Suppliers confirmed as outside the "
+                      "rule are not listed at all."))
+
+
+class MsmeStatusIn(BaseModel):
+    """What was established about one supplier, and on what evidence."""
+
+    vendor_id: str = Field(min_length=1)
+    classification: str = Field(default=MsmeClassification.UNKNOWN.value)
+    enterprise_activity: str = Field(default=EnterpriseActivity.UNKNOWN.value)
+    # Tri-state on the wire as well as in the column. A client that omits this
+    # is saying "not established", which is not the same as sending false.
+    written_agreement: Optional[bool] = Field(default=None)
+    agreed_days: Optional[int] = Field(default=None, ge=0, le=365)
+    evidence: str = Field(default=MsmeEvidence.NONE.value)
+    udyam_number: Optional[str] = Field(default=None, max_length=32)
+    effective_from: Optional[date] = Field(default=None)
+    note: Optional[str] = Field(default=None, max_length=512)
+
+
+@router.put("/msme-status", status_code=status.HTTP_200_OK)
+def set_msme_status(body: MsmeStatusIn,
+                    principal: Principal = Depends(require_manager_or_owner),
+                    session: Session = Depends(get_session)) -> dict:
+    """Record what was established about a supplier's MSME position.
+
+    An upsert on the supplier: a status gets corrected and re-confirmed, and a
+    second row would make "their classification" a question about which row
+    won.
+
+    Zoho's ``payment_terms`` is untouched and unconsulted. Whether a *written*
+    agreement exists is a separate fact from what the ERP's dropdown holds, and
+    conflating them is what would push a supplier with no contract from the
+    fifteen-day limit to the forty-five-day one.
+    """
+    org = principal.organization_id
+    vendor = session.get(models.Vendor, body.vendor_id)
+    if vendor is None or vendor.organization_id != org:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such supplier")
+    try:
+        checked = msme.validate_status(
+            classification=body.classification, activity=body.enterprise_activity,
+            written_agreement=body.written_agreement, agreed_days=body.agreed_days,
+            evidence=body.evidence)
+    except msme.InvalidStatus as e:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e)) from e
+
+    row = session.scalar(
+        select(models.VendorMsmeStatus).where(
+            models.VendorMsmeStatus.organization_id == org,
+            models.VendorMsmeStatus.vendor_id == body.vendor_id))
+    if row is None:
+        row = models.VendorMsmeStatus(organization_id=org, vendor_id=body.vendor_id)
+        session.add(row)
+    row.classification = checked.classification
+    row.enterprise_activity = checked.activity
+    row.written_agreement = checked.written_agreement
+    row.agreed_days = checked.agreed_days
+    row.evidence = checked.evidence
+    row.udyam_number = body.udyam_number
+    row.effective_from = body.effective_from
+    row.note = body.note
+    row.captured_at = clock.now()
+    row.set_by_user_id = principal.user_id
+    session.flush()
+
+    return {"vendor_id": row.vendor_id, "classification": row.classification,
+            "enterprise_activity": row.enterprise_activity,
+            "written_agreement": row.written_agreement,
+            "agreed_days": row.agreed_days, "evidence": row.evidence,
+            "udyam_number": row.udyam_number, "scope": checked.scope,
+            "scope_label": msme.SCOPE_LABELS[checked.scope],
+            "zoho_terms_days": vendor.payment_terms_days}
+
+
+@router.get("/msme-capture-backlog")
+def msme_capture_backlog(principal: Principal = Depends(require_manager_or_owner),
+                         session: Session = Depends(get_session)) -> dict:
+    """Which suppliers are worth establishing an MSME status for, in order.
+
+    The watchlist is only as good as its coverage, and coverage is collected by
+    a person one supplier at a time. "Go and check four hundred vendors" is
+    advice nobody takes, so this ranks the question by what knowing the answer
+    is worth: spend, weighted by how often that supplier is already paid past
+    the limit.
+    """
+    org, _snapshot, th = _labels_only(session, principal)
+    as_of = clock.today(th.timezone)
+    limit_days = int(th.msme_default_days)
+
+    spend: dict[str, list[float]] = {}
+    for bill in session.scalars(
+            select(models.BillDoc).where(
+                models.BillDoc.organization_id == org,
+                models.BillDoc.vendor_id.is_not(None))).all():
+        bucket = spend.setdefault(bill.vendor_id, [0.0, 0.0])
+        bucket[0] += float(bill.total or 0)
+        bucket[1] += 1
+
+    settled: dict[str, list[int]] = {}
+    for row in session.scalars(
+            select(models.BillPaymentApplication).where(
+                models.BillPaymentApplication.organization_id == org,
+                models.BillPaymentApplication.vendor_id.is_not(None))).all():
+        counts = settled.setdefault(row.vendor_id, [0, 0])
+        counts[1] += 1
+        if (row.paid_on - row.bill_date).days > limit_days:
+            counts[0] += 1
+
+    spends = [
+        msme.VendorSpend(vendor_id=vendor_id, spend=totals[0], bills=int(totals[1]),
+                         settled_past_limit=settled.get(vendor_id, [0, 0])[0],
+                         settled_total=settled.get(vendor_id, [0, 0])[1])
+        for vendor_id, totals in spend.items()
+    ]
+    ranked = msme.capture_backlog(spends, _msme_statuses(session, org),
+                                  _vendor_names(session, org))
+    return _envelope(
+        {"as_of": as_of.isoformat(), "limit_days": limit_days,
+         "suppliers": ranked},
+        th=th,
+        empty_reason=(None if ranked else
+                      "Every supplier with purchase history already has an MSME "
+                      "status on record."))
+
+
+@router.get("/withholding-crossings")
+def withholding_crossings(principal: Principal = Depends(require_manager_or_owner),
+                          session: Session = Depends(get_session)) -> dict:
+    """Suppliers crossing the section 194Q threshold this financial year.
+
+    Silent until the organization's own turnover gate is confirmed in Settings
+    — that figure spans three legal entities and is not derivable from a
+    two-year window of synced documents, and an alert built on an unverified
+    gate asserts a duty nobody established applies.
+    """
+    org, _snapshot, th = _labels_only(session, principal)
+    as_of = clock.today(th.timezone)
+
+    purchases = [
+        withholding.Purchase(vendor_id=b.vendor_id, date=b.date,
+                             amount=float(b.total or 0))
+        for b in session.scalars(
+            select(models.BillDoc).where(
+                models.BillDoc.organization_id == org,
+                models.BillDoc.vendor_id.is_not(None))).all()
+    ]
+    built = withholding.crossings(purchases, _vendor_names(session, org),
+                                  as_of=as_of, th=th)
+    return _envelope(
+        built, th=th,
+        empty_reason=(None if built["crossings"] else
+                      ("Confirm this entity's prior-year turnover in Settings to "
+                       "enable this check."
+                       if not built["gate_confirmed"] else
+                       "No supplier is near the threshold this financial year.")))

@@ -327,6 +327,46 @@ def test_selling_below_cost_is_escalated_to_the_owner_not_the_manager(client):
     assert allowed.status_code == 200 and allowed.json()["status"] == "APPROVED"
 
 
+def test_a_manager_is_not_offered_an_approval_they_cannot_grant(client):
+    """`can_decide` must reflect the rule the decide path actually enforces.
+
+    It answered from role and authority alone, so a manager's own request came
+    back `can_decide: true`, the card rendered an enabled Approve, and pressing it
+    403'd with "You cannot approve your own request". The same mismatch inflated
+    `pending_for_me`, which feeds the nav badge — so the badge counted work the
+    manager was then refused.
+    """
+    rid = _raise(client, MANAGER, 135.0).json()["approval_request_id"]
+
+    mine = client.get(f"/api/v1/approvals/{rid}", headers=_hdr(client, MANAGER)).json()
+    assert mine["can_decide"] is False, "a manager cannot decide their own request"
+    assert mine["cannot_decide_reason"] == "You cannot approve your own request"
+
+    # The count agrees with the queue: this request is not work waiting on them.
+    listed = client.get("/api/v1/approvals", headers=_hdr(client, MANAGER)).json()
+    assert listed["pending_for_me"] == 0
+
+    # And the rule the flag now mirrors is still enforced where it matters.
+    refused = client.post(f"/api/v1/approvals/{rid}/decide",
+                          json={"status": "APPROVED"}, headers=_hdr(client, MANAGER))
+    assert refused.status_code == 403
+    assert refused.json()["detail"] == "You cannot approve your own request"
+
+    # An owner may decide it, and is told so.
+    theirs = client.get(f"/api/v1/approvals/{rid}", headers=_hdr(client, OWNER)).json()
+    assert theirs["can_decide"] is True
+    assert theirs["cannot_decide_reason"] is None
+
+
+def test_a_manager_is_still_offered_someone_elses_thin_price(client):
+    """The fix must not withdraw the authority a manager does have."""
+    rid = _raise(client, SALES, 135.0).json()["approval_request_id"]
+    body = client.get(f"/api/v1/approvals/{rid}", headers=_hdr(client, MANAGER)).json()
+    assert body["can_decide"] is True and body["cannot_decide_reason"] is None
+    assert client.get("/api/v1/approvals",
+                      headers=_hdr(client, MANAGER)).json()["pending_for_me"] == 1
+
+
 def test_the_request_carries_economics_to_the_approver_and_not_to_the_requester(client):
     """The approver needs the margin to judge; the salesperson still must not
     see it, even on their own request."""

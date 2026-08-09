@@ -50,8 +50,9 @@ def list_approvals(
 ) -> dict:
     rows = approvals.inbox(session, principal, status=status_filter)
     names = _names(session, principal.organization_id, rows)
+    policy = approvals.get_policy(session, principal.organization_id)
     return {
-        "requests": [approvals.to_dict(r, principal.role, names) for r in rows],
+        "requests": [approvals.to_dict(r, principal, policy, names) for r in rows],
         "pending_for_me": approvals.pending_count(session, principal),
     }
 
@@ -69,7 +70,8 @@ def get_approval(
             and row.requested_by_user_id != principal.user_id):
         raise HTTPException(http.HTTP_403_FORBIDDEN, "That request is not yours")
     names = _names(session, principal.organization_id, [row])
-    return approvals.to_dict(row, principal.role, names)
+    policy = approvals.get_policy(session, principal.organization_id)
+    return approvals.to_dict(row, principal, policy, names)
 
 
 class RaiseQuoteApproval(BaseModel):
@@ -156,7 +158,7 @@ def request_quote_line_approval(
         title=title, summary=summary, required_authority=authority,
         reason=body.reason, reason_code=body.reason_code,
         thresholds_version=th.version)
-    return approvals.to_dict(row, principal.role,
+    return approvals.to_dict(row, principal, policy,
                              {principal.user_id: principal.name})
 
 
@@ -185,7 +187,8 @@ def decide_approval(
     except ApprovalError as e:
         raise HTTPException(http.HTTP_409_CONFLICT, str(e)) from e
     names = _names(session, principal.organization_id, [row])
-    return approvals.to_dict(row, principal.role, names)
+    policy = approvals.get_policy(session, principal.organization_id)
+    return approvals.to_dict(row, principal, policy, names)
 
 
 def _below_floor_lines(quote_id: str) -> dict[str, str]:
@@ -223,6 +226,7 @@ def quote_gate(
                models.ApprovalRequest.subject_id == quote_id)
         .order_by(models.ApprovalRequest.requested_at)))
     names = _names(session, org, rows)
+    policy = approvals.get_policy(session, org)
     outcome = session.scalar(
         select(models.QuoteOutcome)
         .where(models.QuoteOutcome.organization_id == org,
@@ -232,9 +236,8 @@ def quote_gate(
         "can_submit": blocked is None,
         "blocked_reason": blocked,
         "outcome": outcome.status if outcome else QuoteOutcomeStatus.DRAFT.value,
-        "requests": [approvals.to_dict(r, principal.role, names) for r in rows],
+        "requests": [approvals.to_dict(r, principal, policy, names) for r in rows],
         "policy": {
-            "require_approval_for_quotes":
-                approvals.get_policy(session, org).require_approval_for_quotes,
+            "require_approval_for_quotes": policy.require_approval_for_quotes,
         },
     }

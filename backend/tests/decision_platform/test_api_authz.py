@@ -12,7 +12,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.db import Base, get_session
 from app.domain import models
-from app.routers import decisions, internal, platform_auth
+from app.routers import admin, decisions, internal, platform_auth
 from app.seed import SEED_PASSWORD, ensure_org_and_users
 
 ORG = "org_sanketh"
@@ -35,6 +35,9 @@ def client_and_maker():
     app.include_router(platform_auth.router)
     app.include_router(internal.router)
     app.include_router(decisions.router)
+    # The forced password change is the one thing a flagged account may
+    # reach, so the tests for that gate need the endpoint mounted.
+    app.include_router(admin.router)
 
     def _override():
         sess = Maker()
@@ -79,6 +82,18 @@ def test_login_and_roles(client_and_maker):
                        json={"email": "nobody@x.com", "password": "x"}).status_code == 401
     r = client.post("/api/v1/auth/login", json={"email": "r.nair@sanketh.in", "password": SEED_PASSWORD})
     assert r.json()["role"] == "SALESPERSON"
+
+
+def test_sign_in_returns_the_address_it_signed_in_with(client_and_maker):
+    """The Settings change-password form needs a `username` field, and the only
+    correct value is the address the person just used. Without it a password
+    manager files the new secret against nothing and can lock somebody out of the
+    account they just secured."""
+    client, _ = client_and_maker
+    body = client.post("/api/v1/auth/login",
+                       json={"email": "r.nair@sanketh.in",
+                             "password": SEED_PASSWORD}).json()
+    assert body["email"] == "r.nair@sanketh.in"
 
 
 def test_auth_required(client_and_maker):
@@ -144,6 +159,134 @@ def test_human_action_lifecycle(client_and_maker):
     # unknown action rejected
     assert client.post(f"/api/v1/decisions/{did}/action",
                        json={"action": "NOPE"}, headers=sales).status_code == 400
+
+
+def test_an_account_owing_a_password_change_can_do_nothing_else(client_and_maker):
+    """The flag was a label on an admin grid and nothing else.
+
+    It was set by the seed and by every owner-issued reset, read in exactly two
+    places — the login response and that label — and enforced nowhere. So
+    `change-me-now`, which is published in the README, stayed live on every seeded
+    account indefinitely. Enforced on the server rather than in the sign-in
+    screen: a rule the client owns is a rule anything not the client ignores.
+    """
+    from app.domain import models
+
+    client, maker = client_and_maker
+    session = maker()
+    user = session.get(models.User, "usr_sales")
+    user.must_change_password = True
+    session.commit()
+    session.close()
+
+    sales = _hdr(_login(client, "r.nair@sanketh.in"))
+    assert client.get("/api/v1/decisions", headers=sales).status_code == 403
+    blocked = client.get("/api/v1/decisions", headers=sales)
+    assert "Change your password" in blocked.json()["detail"]
+
+    # The one thing it may reach is the change itself — otherwise the forced path
+    # is a loop with no way out.
+    changed = client.post("/api/v1/admin/me/password",
+                          json={"current_password": SEED_PASSWORD,
+                                "new_password": "Sales-Review-2026!"},
+                          headers=sales)
+    assert changed.status_code == 200, changed.text
+    # And it hands back a token, because the change just retired the one used here.
+    fresh = {"Authorization": f"Bearer {changed.json()['token']}"}
+    assert client.get("/api/v1/decisions", headers=fresh).status_code == 200
+
+
+def test_changing_a_password_retires_the_sessions_opened_with_the_old_one(client_and_maker):
+    """Otherwise a password change does nothing about the thing it is for.
+
+    A token minted before the change kept working indefinitely, so a credential
+    believed to be compromised stayed usable by whoever held a session.
+    """
+    client, maker = client_and_maker
+    stale = _hdr(_login(client, "r.nair@sanketh.in"))
+    assert client.get("/api/v1/decisions", headers=stale).status_code == 200
+
+    changed = client.post("/api/v1/admin/me/password",
+                          json={"current_password": SEED_PASSWORD,
+                                "new_password": "Sales-Review-2026!"},
+                          headers=stale)
+    assert changed.status_code == 200, changed.text
+
+    assert client.get("/api/v1/decisions", headers=stale).status_code == 401, (
+        "the token that made the change must not outlive it")
+    fresh = {"Authorization": f"Bearer {changed.json()['token']}"}
+    assert client.get("/api/v1/decisions", headers=fresh).status_code == 200
+
+    # The old password is refused, and the new one works.
+    assert client.post("/api/v1/auth/login",
+                       json={"email": "r.nair@sanketh.in",
+                             "password": SEED_PASSWORD}).status_code == 401
+    assert client.post("/api/v1/auth/login",
+                       json={"email": "r.nair@sanketh.in",
+                             "password": "Sales-Review-2026!"}).status_code == 200
+
+
+def test_undo_does_not_destroy_the_reason_that_was_recorded(client_and_maker):
+    """The reversal joins the trail; it does not overwrite what it reversed.
+
+    `record_human_action` used to assign, so pressing Undo replaced an owner's
+    reasoning with "Undone by the user" and the reason they had recorded was gone
+    for good — while `api.ts` promised the trail kept both. Reproduced from the
+    owner's own note.
+    """
+    client, maker = client_and_maker
+    did = _seed_decision(maker, dtype="CUSTOMER_DORMANCY", subject_id="cust1",
+                         assigned_user_id="usr_sales")
+    sales = _hdr(_login(client, "r.nair@sanketh.in"))
+    reason = ("Owner: holding price for this account; renegotiating the supply "
+              "cost with the principal instead.")
+
+    client.post(f"/api/v1/decisions/{did}/action",
+                json={"action": "ACT", "note": reason}, headers=sales)
+    body = client.post(f"/api/v1/decisions/{did}/action",
+                       json={"action": "REOPEN", "note": "Undone by the user"},
+                       headers=sales).json()
+
+    # The latest action is still denormalised at the top level: that is what a
+    # queue row reads, and it is why this field's shape did not change.
+    assert body["status"] == "OPEN"
+    assert body["human_action"]["action"] == "REOPEN"
+
+    trail = body["human_action"]["trail"]
+    assert [e["action"] for e in trail] == ["ACT", "REOPEN"], "oldest first"
+    assert trail[0]["note"] == reason, "the reason survives its own reversal"
+    assert all(e["actor_user_id"] == "usr_sales" for e in trail)
+    assert all(e["acted_at"] for e in trail)
+
+
+def test_a_decision_written_before_the_trail_existed_keeps_its_action(client_and_maker):
+    """Legacy rows are backfilled on touch rather than by a data migration.
+
+    `human_action` is schemaless JSON, so rows already in the wild hold a bare
+    action with no trail. The first append must carry it forward instead of
+    starting the history at the second thing that ever happened.
+    """
+    from app.domain.enums import HumanAction
+    from app.repositories import DecisionRepository
+
+    client, maker = client_and_maker
+    did = _seed_decision(maker, dtype="CUSTOMER_DORMANCY", subject_id="cust1",
+                         assigned_user_id="usr_sales")
+    session = maker()
+    repo = DecisionRepository(session, "org_sanketh")
+    d = repo.get(did)
+    # Exactly the shape the old code wrote: no trail key at all.
+    d.human_action = {"action": "ACT", "actor_user_id": "usr_owner",
+                      "acted_at": "2026-08-01T10:00:00+00:00", "note": "first call"}
+    session.commit()
+
+    repo.record_human_action(d, HumanAction.REOPEN, actor_user_id="usr_owner",
+                             note="Undone by the user")
+    session.commit()
+    trail = d.human_action["trail"]
+    assert [e["action"] for e in trail] == ["ACT", "REOPEN"]
+    assert trail[0]["note"] == "first call"
+    session.close()
 
 
 def test_sync_requires_manager_or_owner(client_and_maker):

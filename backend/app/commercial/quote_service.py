@@ -22,6 +22,7 @@ from typing import Any, Iterable, Optional
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .. import clock
 from ..domain import models
 from ..domain.enums import (
     QUOTE_OUTCOME_TRANSITIONS,
@@ -56,6 +57,12 @@ class QuoteLineInput:
     qty: Decimal = Decimal("1")
     proposed_price: Optional[Decimal] = None
     family: Optional[str] = None
+    #: The landed cost the books hold against this item, read from the server's
+    #: own quote — never from a request body, for the reason
+    #: ``request_quote_line_approval`` gives: an approval whose numbers came from
+    #: the requester is a request to approve whatever they typed. Used only when
+    #: no bill-derived cost record exists; see ``assess_line``.
+    item_master_cost: Optional[Decimal] = None
 
 
 @dataclass
@@ -197,7 +204,8 @@ def assess_quote(
             benchmark=benchmark,
             family=ln.family,
             as_of=reference,
-            th=th))
+            th=th,
+            item_master_cost=ln.item_master_cost))
     return result
 
 
@@ -538,7 +546,7 @@ def snapshot_to_dict(row: models.QuoteDecision, role: Role) -> dict:
         "engine_version": row.engine_version,
         "catalog_version": row.catalog_version,
         "as_of": row.as_of.isoformat() if row.as_of else None,
-        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "created_at": clock.iso(row.created_at),
         "created_by_user_id": row.created_by_user_id,
     }
     if not is_sales:
@@ -616,8 +624,8 @@ def outcome_to_dict(row: Optional[models.QuoteOutcome]) -> Optional[dict]:
         "note": row.note,
         "customer_ref": row.customer_ref,
         "customer_id": row.customer_id,
-        "sent_at": row.sent_at.isoformat() if row.sent_at else None,
-        "decided_at": row.decided_at.isoformat() if row.decided_at else None,
+        "sent_at": clock.iso(row.sent_at),
+        "decided_at": clock.iso(row.decided_at),
         "allowed_next": sorted(
             s.value for s in QUOTE_OUTCOME_TRANSITIONS[QuoteOutcomeStatus(row.status)]),
     }

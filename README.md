@@ -35,6 +35,7 @@ nothing, macOS/Linux and Windows, in about 15 minutes.
 | [Hosting](docs/hosting.md) | Running it on your own machine: Docker Compose, TLS, backups |
 | [Operations](docs/operations.md) | Configuration reference, production deploy, runbook |
 | [Zoho setup](docs/zoho-setup.md) | Connecting a live Zoho Books account (read-only) |
+| [Role reviews](docs/reviews/) | What each role actually experienced, end to end, and the disposition of every finding |
 
 ---
 
@@ -61,8 +62,17 @@ Open **http://localhost:5173**. The backend creates and seeds its own database
 on first start — there is no separate migrate/seed step.
 
 Sign in with the seed password — `change-me-now` unless `SEED_PASSWORD` was set.
-Each account is flagged to change it at first sign-in; a wrong password is
-rejected, so there is no "any password" shortcut:
+A wrong password is rejected, so there is no "any password" shortcut.
+
+**You will be asked to choose a password immediately, and the app is not usable
+until you do.** That sentence used to say the accounts were "flagged" to change
+it, which was true and did nothing: the flag was read by the sign-in response and
+by a label on the admin grid, and enforced nowhere, so the password printed above
+stayed live on every account indefinitely. The server now refuses a flagged
+account every request except the change itself. To seed accounts that are *not*
+flagged — a throwaway demo, or a test harness — set
+`ISSUED_ACCOUNTS_MUST_CHANGE_PASSWORD=0`. It switches who gets flagged, never the
+rule.
 
 | Email | Role | Sees |
 |---|---|---|
@@ -161,6 +171,7 @@ frontend/src/
   platform/      Decision Platform UI
   components/    Quote Builder UI + decision-support panel
 docs/            getting-started · architecture · development · operations
+  reviews/       per-role end-to-end reviews, with each finding's disposition
 ```
 
 ---

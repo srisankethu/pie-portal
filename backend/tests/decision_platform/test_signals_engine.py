@@ -66,6 +66,56 @@ def test_run_detectors_persists_with_provenance(session):
         assert isinstance(sig.severity_base, int)
 
 
+def test_the_owner_editable_threshold_governs_what_reaches_the_queue(session):
+    """Raising the erosion threshold in Settings must quieten the queue too.
+
+    It used to quieten only the commercial screens. The queue ran on
+    `SignalThresholds.margin_drop_points`, reachable solely by redeploying with
+    `SIG_MARGIN_DROP_POINTS`, so an owner turning the knob watched the screens go
+    silent while the decisions kept arriving — a control that did half of what it
+    said, with no way to tell from the outside which half.
+    """
+    from app.commercial.policy import save_for_org
+
+    _load_all(session, ORG)
+    session.commit()
+
+    before = run_detectors(session, ORG)
+    assert "MARGIN_DETERIORATION" in before["by_type"], (
+        "the fixture must deteriorate at the default threshold, or this proves nothing")
+
+    # 20 pp: wider than the fixture's drop, so the queue should fall silent.
+    save_for_org(session, ORG, {"queue_margin_drop_pp": 0.20})
+    session.commit()
+    after = run_detectors(session, ORG)
+    assert "MARGIN_DETERIORATION" not in after["by_type"]
+
+    # The stamp moves with the threshold, so a signal says which one judged it.
+    # Without this, two runs under different policies would be indistinguishable
+    # after the fact — which is the whole point of stamping a version at all.
+    assert before["threshold_config_version"] != after["threshold_config_version"]
+
+    # And back: the threshold is the only thing that changed.
+    save_for_org(session, ORG, {"queue_margin_drop_pp": 0.05})
+    session.commit()
+    assert "MARGIN_DETERIORATION" in run_detectors(session, ORG)["by_type"]
+
+
+def test_an_explicitly_passed_threshold_set_is_left_alone(session):
+    """Passing thresholds is a deliberate act; the org's policy must not override it."""
+    from dataclasses import replace
+
+    from app.commercial.policy import save_for_org
+    from app.signals.config import load_thresholds
+
+    _load_all(session, ORG)
+    save_for_org(session, ORG, {"queue_margin_drop_pp": 0.20})
+    session.commit()
+
+    explicit = replace(load_thresholds(), margin_drop_points=0.01)
+    assert "MARGIN_DETERIORATION" in run_detectors(session, ORG, explicit)["by_type"]
+
+
 def test_signals_are_write_once_rerun_adds_new(session):
     _load_all(session, ORG)
     session.commit()

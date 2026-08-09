@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session
 
 from .. import approvals
 from ..authz import Principal, current_principal
+from ..store import store
 from ..commercial.policy import load_for_org
 from ..commercial.quote_service import (
     InvalidTransition,
@@ -70,7 +71,12 @@ def _inputs(body: AssessRequest) -> list[QuoteLineInput]:
     return [
         QuoteLineInput(line_id=ln.line_id, product_ref=ln.product,
                        qty=ln.qty, proposed_price=ln.proposed_price,
-                       family=ln.family)
+                       family=ln.family,
+                       # Only when the caller named the quote. Without an id
+                       # there is no server-held line to read a cost from, and
+                       # the assessment falls back to bills alone as before.
+                       item_master_cost=(store.line_cost(body.quote_id, ln.line_id)
+                                         if body.quote_id else None))
         for ln in body.lines
     ]
 
@@ -150,7 +156,9 @@ def snapshot(
     result, rows = assess_and_record(
         session, org, quote_id=body.quote_id.strip(), customer_ref=customer_ref,
         lines=[QuoteLineInput(line_id=ln.line_id, product_ref=ln.product, qty=ln.qty,
-                              proposed_price=ln.proposed_price, family=ln.family)
+                              proposed_price=ln.proposed_price, family=ln.family,
+                              item_master_cost=store.line_cost(body.quote_id,
+                                                               ln.line_id))
                for ln in body.lines],
         user_id=principal.user_id,
         overrides={ln.line_id: (ln.override_reason, ln.override_reason_code)

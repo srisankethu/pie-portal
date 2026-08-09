@@ -112,6 +112,7 @@ def assess_line(
     family: Optional[str],
     as_of: date,
     th: CommercialThresholds,
+    item_master_cost: Optional[Decimal] = None,
 ) -> QuoteLineIntelligence:
     """Assess one quote line. Pure, total, and deterministic.
 
@@ -120,6 +121,9 @@ def assess_line(
     cost history, date-ascending; the applicable cost is resolved **as of the
     quote date**, which is the whole reason a quote cannot reuse the analysis
     screen's "current cost" without re-deriving it.
+
+    ``item_master_cost`` is the landed cost the books hold against the item
+    itself, and it is the *second* cost basis — see below for why it exists.
     """
     band = band_for(qty, th)
 
@@ -129,6 +133,29 @@ def assess_line(
     # rule ``line_economics`` applies, for the same reason.
     if unit_cost is not None and unit_cost <= _ZERO:
         unit_cost, basis = None, None
+
+    # No bill has landed against this item yet — a first purchase, or an item
+    # the books carry that our own bill history does not reach. The item master
+    # still holds a landed cost, and the Quote Builder is already showing it on
+    # this very line. Withholding it *here* is what let a price below cost pass
+    # as "within policy": the grid flagged the line from the item cost while
+    # this assessment, reading only bills, found no cost, raised no exception,
+    # and reported `requires_approval: False`. The gate believed the blind one.
+    #
+    # Second in precedence and never first. A bill is what we actually paid; the
+    # item master is what the books think the item costs. Where both exist the
+    # bill wins, which is why this runs only when `unit_cost` is still None.
+    if unit_cost is None and item_master_cost is not None and item_master_cost > _ZERO:
+        unit_cost = Decimal(item_master_cost)
+        # Its own provenance, so a manager reading the economics can tell which
+        # of the two answered. `_economics` passes `source_ref` straight through
+        # to `cost_source_ref`, and a cost with no traceable origin is exactly
+        # what §1 forbids.
+        basis = CostRow(
+            product_id=product_id or "", date=as_of, qty=qty, unit_cost=unit_cost,
+            source_ref={"system": "zoho", "record_type": "item",
+                        "basis": "item_master_landed_cost"},
+            external_ref="")
 
     references = build_references(
         lines=lines, band=band, unit_cost=unit_cost, benchmark=benchmark,

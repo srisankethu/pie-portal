@@ -19,12 +19,25 @@ from .config import CommercialThresholds
 from .metrics import COST_DRIVEN, MIXED, PRICE_DRIVEN, RelationshipMetrics
 
 
+#: The precision the API serves a ratio at (`routers/commercial._ratio`). These
+#: sentences round to it *before* formatting so the narrative and the tile above
+#: it cannot straddle a rounding boundary: the payload served 0.1735 and the tile
+#: rendered 17.3%, while this file formatted the unrounded 0.17351874 and read
+#: 17.4%. Two formatters, one number, and a manager quoting the screen could pick
+#: either. Rounding here first means both sides format the identical value.
+_SERVED_DP = 4
+
+
 def _pct(ratio: Optional[float]) -> str:
-    return f"{ratio * 100:.1f}%" if ratio is not None else "unknown"
+    if ratio is None:
+        return "unknown"
+    return f"{round(ratio, _SERVED_DP) * 100:.1f}%"
 
 
 def _pp(points: Optional[float]) -> str:
-    return f"{abs(points) * 100:.1f} percentage points" if points is not None else "unknown"
+    if points is None:
+        return "unknown"
+    return f"{abs(round(points, _SERVED_DP)) * 100:.1f} percentage points"
 
 
 def _change(pct: Optional[float]) -> str:

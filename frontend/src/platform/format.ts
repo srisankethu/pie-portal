@@ -3,6 +3,30 @@
 import type { Fact } from "./types";
 import { money } from "../money";
 
+/** What a role is called on screen.
+ *
+ *  `Record<string, string>` rather than `Record<Role, string>` because callers
+ *  index it with a role that arrived over the wire — `decision.assigned_role` is
+ *  a string, and a build that trusted it to be a known `Role` would render
+ *  `undefined` for one the server added first. Callers fall back to the raw
+ *  value. Lived privately in `AdminScreens` until a second screen needed it. */
+export const ROLE_LABEL: Record<string, string> = {
+  SALESPERSON: "Salesperson",
+  SALES_MANAGER: "Sales manager",
+  OWNER: "Owner",
+};
+
+/** Subject-verb agreement for a counted noun.
+ *
+ *  A two-word function because the inline ternary was written out at four call
+ *  sites and forgotten at a fifth — "1 are past their own buying rhythm", in the
+ *  same sentence as a sibling clause that got it right. A count of one is the
+ *  common case on a small book, so this reads wrong exactly when somebody is
+ *  looking at their first real number. */
+export function isAre(count: number): string {
+  return count === 1 ? "is" : "are";
+}
+
 export const TYPE_LABEL: Record<string, string> = {
   CUSTOMER_DECLINE: "Customer decline",
   CUSTOMER_DORMANCY: "Customer dormancy",
@@ -23,7 +47,20 @@ export const TYPE_LABEL: Record<string, string> = {
   CASH_RECEIVABLE_OVERDUE: "Receivables past due",
   CASH_CREDIT_EXPOSURE: "Credit exposure",
   SUP_SPEND_CONCENTRATION: "Supplier concentration",
-  SUP_SOLE_SOURCE: "Only source for these items" };
+  SUP_SOLE_SOURCE: "Only source for these items",
+
+  // Commercial-intelligence signals, folded in from a second map that lived in
+  // `CommercialScreens.tsx`. One concept had two owners: these six were complete
+  // there and absent here, so the decision queue — which reads this one through
+  // `ui.typeLabel` — rendered them as raw enums like `CI_MARGIN_DECLINE_NO_VOLUME`
+  // while the commercial screen three clicks away said "No volume gained". Adding
+  // the missing rows to the incomplete map would have made a third copy.
+  CI_MARGIN_EROSION: "Margin eroding",
+  CI_COST_NOT_PASSED: "Cost not passed on",
+  CI_LOW_PEER_PRICING: "Below peers",
+  CI_MARGIN_DECLINE_NO_VOLUME: "No volume gained",
+  CI_MARGIN_DECLINE_WITH_VOLUME: "Volume traded for margin",
+  CI_MATERIAL_MARGIN_GAP: "Material gap" };
 
 /** The state fields a card shows, in the words a person reads.
  *

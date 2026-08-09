@@ -51,6 +51,9 @@ export type Screen =
   | "approvals" | "settings"
   /** Which connector records describe the same customer or item. */
   | "identity"
+  /** What leaves for a model, who has opened this tenant, and the two
+   *  irreversible things an owner can do with their own data. Owner only. */
+  | "trust"
   /** One customer's relationship with one item — needs two ids, so it carries
    *  an extra `itemId` alongside the customer in `id`. */
   | "customerItem";
@@ -74,6 +77,7 @@ export const PATH: Record<Screen, string> = {
   approvals: "/approvals",
   settings: "/settings",
   identity: "/identity",
+  trust: "/trust",
   weather: "/weather",
   opportunities: "/opportunities",
   lostRevenue: "/lost-revenue",

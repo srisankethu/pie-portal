@@ -72,7 +72,8 @@ def _line(days_ago, qty, price, cost=None, customer="c1"):
     return line_economics(sale, costs)
 
 
-def _assess(*, qty, price, lines=(), costs=(), family=None, benchmark=None, th=TH):
+def _assess(*, qty, price, lines=(), costs=(), family=None, benchmark=None, th=TH,
+            item_master_cost=None):
     lines = list(lines)
     metrics = (compute_relationship("c1", "p1", lines, AS_OF, th) if lines else None)
     return assess_line(
@@ -80,7 +81,9 @@ def _assess(*, qty, price, lines=(), costs=(), family=None, benchmark=None, th=T
         qty=Decimal(str(qty)),
         proposed_price=(Decimal(str(price)) if price is not None else None),
         lines=lines, costs=list(costs), metrics=metrics, benchmark=benchmark,
-        family=family, as_of=AS_OF, th=th)
+        family=family, as_of=AS_OF, th=th,
+        item_master_cost=(Decimal(str(item_master_cost))
+                          if item_master_cost is not None else None))
 
 
 def _codes(intel):
@@ -188,6 +191,50 @@ def test_a_price_under_cost_is_critical_and_needs_approval():
     assert NEGATIVE_MARGIN in _codes(intel)
     assert intel.blocking and intel.requires_approval
     assert intel.exceptions[0].severity == CRITICAL
+
+
+def test_the_item_master_cost_is_a_cost_basis_when_no_bill_has_landed():
+    """A below-cost line must not pass as "within policy" for want of a bill.
+
+    The Quote Builder shows the books' landed cost on the line and flagged it;
+    this assessment read only bill-derived cost records, found none, raised no
+    exception and reported `requires_approval: False` — and the send gate
+    believed the blind one. A line losing money went out with a green chip.
+    """
+    intel = _assess(qty=10, price=399, costs=[], item_master_cost=420)
+    assert intel.economics.unit_cost == Decimal("420")
+    assert NEGATIVE_MARGIN in _codes(intel)
+    assert intel.blocking and intel.requires_approval
+    # Traceable to where it came from, and distinguishable from a purchase.
+    assert intel.economics.cost_source_ref["basis"] == "item_master_landed_cost"
+
+
+def test_a_bill_outranks_the_item_master_cost():
+    """A bill is what we actually paid; the item master is what the books think.
+
+    Precedence matters both ways round: without it, a stale item-master figure
+    would silently overrule the purchase history the margin policy is built on.
+    """
+    intel = _assess(qty=10, price=399, costs=[_cost(10, 300)], item_master_cost=420)
+    assert intel.economics.unit_cost == Decimal("300")
+    assert intel.economics.cost_source_ref["record_type"] == "bill"
+    assert NEGATIVE_MARGIN not in _codes(intel)
+
+
+def test_no_cost_anywhere_still_means_no_cost():
+    """The fallback adds a second basis; it does not invent one."""
+    intel = _assess(qty=10, price=399, costs=[], item_master_cost=None)
+    assert intel.economics.unit_cost is None
+    assert NO_COST_BASIS in _codes(intel)
+    assert NEGATIVE_MARGIN not in _codes(intel)
+
+
+def test_a_placeholder_item_master_cost_is_not_a_cost():
+    """Zero is what an unfilled field holds, and a zero cost reads as 100% margin
+    — the same rule `line_economics` applies to a zero bill rate."""
+    intel = _assess(qty=10, price=399, costs=[], item_master_cost=0)
+    assert intel.economics.unit_cost is None
+    assert NO_COST_BASIS in _codes(intel)
 
 
 def test_a_critical_exception_survives_the_materiality_floor():

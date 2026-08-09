@@ -26,6 +26,7 @@ from typing import Any, Optional
 
 from sqlalchemy.orm import Session
 
+from .. import clock
 from ..domain import models
 from .config import CommercialThresholds, load_commercial_thresholds
 
@@ -40,6 +41,7 @@ EDITABLE: tuple[str, ...] = (
     "min_quote_exception_impact",
     "min_material_gap",
     "min_margin_deterioration_pp",
+    "queue_margin_drop_pp",
     "price_rounding_increment",
     "carrying_cost_annual_pct",
     "carrying_rate_is_published",
@@ -99,9 +101,17 @@ FIELD_HELP: dict[str, tuple[str, str]] = {
         "afternoon. Ranking by percentage instead of by money is how teams end "
         "up working trivial accounts first."),
     "min_margin_deterioration_pp": (
-        "Erosion threshold",
+        "Erosion threshold — commercial screens",
         "How far margin must fall, in percentage points, before the platform "
-        "calls it erosion rather than noise from mix and freight."),
+        "calls it erosion rather than noise from mix and freight. This one "
+        "governs what the commercial screens flag. It does not decide what "
+        "reaches anybody's queue — that is the threshold below."),
+    "queue_margin_drop_pp": (
+        "Erosion threshold — decision queue",
+        "How far margin must fall before a deterioration is routed to someone as "
+        "a decision. Usually set wider than the screen threshold: a screen can "
+        "afford to be sensitive, a queue cannot. Raise this to quieten the "
+        "queue without desensitising the screens."),
     "carrying_cost_annual_pct": (
         "Annual carrying cost",
         "What a rupee of stock costs to hold for a year — interest, warehouse, "
@@ -350,7 +360,7 @@ def describe(session: Session, organization_id: str) -> dict:
         # rupee sign ended up hardcoded in four components.
         "currency": effective.currency,
         "fields": fields,
-        "updated_at": row.updated_at.isoformat() if row is not None and row.updated_at else None,
+        "updated_at": clock.iso(row.updated_at) if row is not None and row.updated_at else None,
     }
 
 

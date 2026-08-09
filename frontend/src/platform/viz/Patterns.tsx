@@ -28,7 +28,7 @@ import { EntityName } from "../EntityName";
 import { papi } from "../api";
 import type { EntityOrigin, PlatformSession } from "../types";
 import { Figure, Panel, ValueAxis, stateOf } from "./Panel";
-import { pct, useInsight } from "./useInsight";
+import { pct, useInsight, pp } from "./useInsight";
 import { compactMoney, thinLabels, useMeasure } from "./useMeasure";
 
 // ── Landscape (margin vs revenue · product momentum) ────────────────────────
@@ -419,8 +419,8 @@ export function CompositionScreen({
         <p className="viz-headline">
           Biggest shift: <strong>{String(mover.label)}</strong> held{" "}
           {pct(Number(mover.from), 0)} of the first half of this window and{" "}
-          {pct(Number(mover.to), 0)} of the second — {Number(mover.change) >= 0 ? "up" : "down"}{" "}
-          {pct(Math.abs(Number(mover.change)), 0)} of share.
+          {pct(Number(mover.to), 0)} of the second — a change of{" "}
+          {pp(Number(mover.change))} in share.
         </p>
       )}
 

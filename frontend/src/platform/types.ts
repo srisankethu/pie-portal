@@ -4,6 +4,11 @@ export interface PlatformSession {
   token: string;
   role: Role;
   name: string;
+  /** The address this account signs in with. Present so a change-password form
+   *  can carry a `username` field — without one a password manager saves the new
+   *  secret against nothing. Optional: a session stored before it was sent is
+   *  still valid, and the field is simply omitted. */
+  email?: string;
   user_id: string;
   organization_id: string;
   /** ISO code this organization trades in, from the sign-in response. Drives
@@ -13,6 +18,33 @@ export interface PlatformSession {
    *  timestamp the client renders — see `src/when.ts` for why the browser's
    *  own zone is the wrong answer here. */
   timezone: string;
+  /** True while this account holds a password somebody else issued. The server
+   *  refuses every request but the change itself, so the shell shows the change
+   *  screen instead of the app. */
+  must_change_password?: boolean;
+}
+
+/** One entry in a decision's human trail.
+ *
+ *  `actor_name` is recorded at the moment of the action rather than resolved on
+ *  read, so a past entry keeps saying who it actually was. Optional because rows
+ *  written before the trail existed carry only the id. */
+export interface HumanActionEntry {
+  action: string;
+  actor_user_id: string;
+  actor_name?: string | null;
+  acted_at: string;
+  note?: string | null;
+}
+
+/** The latest action, with the full trail beside it.
+ *
+ *  The top level mirrors the most recent entry — a queue row wants "what
+ *  happened last" and reads it without walking a list. `trail` is append-only
+ *  and oldest-first: a reversal is recorded next to what it reversed rather than
+ *  replacing it. Absent on rows last touched before the trail existed. */
+export interface HumanAction extends HumanActionEntry {
+  trail?: HumanActionEntry[];
 }
 
 export interface DecisionSummary {
@@ -27,7 +59,7 @@ export interface DecisionSummary {
   priority_score: number;
   status: string;
   ai_status: string;
-  human_action: { action: string; actor_user_id: string; acted_at: string; note?: string } | null;
+  human_action: HumanAction | null;
   created_at: string;
   updated_at: string;
   /** Which connected company this decision's *subject* belongs to. Not
@@ -141,6 +173,9 @@ export interface DecisionDetail {
   subject_entity_id: string;
   subject_label: string;
   assigned_user_id: string | null;
+  /** The assignee's name. Null *with* `assigned_role` set is not missing data:
+   *  the decision belongs to a role rather than to a person. */
+  assigned_to?: string | null;
   assigned_role: string;
   detected_at: string | null;
   priority: { band: string; score: number; deterministic_base: number; ai_adjustment: number };
@@ -201,6 +236,10 @@ export interface Account extends Sourced {
   name: string;
   status: string;
   assigned_user_id: string | null;
+  /** The assignee's name, resolved server-side. Null means unassigned — the
+   *  client does not resolve this itself because it would need the user
+   *  directory, which a salesperson cannot read. */
+  assigned_to?: string | null;
   /** Operational trade, so the directory can be chosen from rather than only
    *  searched. No cost, no margin — those live behind the Customer × Item
    *  surface where the permission gating is. */
@@ -538,6 +577,12 @@ export interface ApprovalRequest {
   decision_note: string | null;
   thread: ApprovalThreadEntry[];
   can_decide: boolean;
+  /** Why not, when `can_decide` is false — rendered in place of the button
+   *  rather than inferred from `required_authority`. */
+  cannot_decide_reason?: string | null;
+  /** Whether approving must carry a note. True for a below-cost line; the server
+   *  enforces it as well, so this only saves a round trip. */
+  requires_rationale?: boolean;
   is_open: boolean;
   /** Carries cost and margin — absent for a salesperson, even on their own request. */
   subject?: Record<string, unknown>;
@@ -822,15 +867,30 @@ export interface IdentityEvent {
 }
 
 export interface IdentitySuggestion {
-  suggestion_id: string;
-  /** Which rule proposed it — GSTIN, SKU, … */
+  /** Which rule proposed it — GSTIN, SKU, NAME. `NAME` is the weak one: it only
+   *  runs where no exact identifier exists, and it is never auto-linked. */
   strategy: string;
+  suggestion_id: string;
   /** The value it matched on, so a reviewer judges the match not a score. */
   evidence: string;
   created_at: string | null;
   incoming: ConnectorRecord;
   incoming_identity_id: string;
   target: Identity;
+}
+
+/** How far the matcher can even see, so an empty review queue can say which
+ *  kind of empty it is. Nothing found and nothing *lookable-at* were one
+ *  sentence, and the screen chose the reassuring reading of both. */
+export interface IdentityCoverage {
+  records: number;
+  /** Records carrying an identifier a strong strategy can compare. */
+  with_key: number;
+  without_key: number;
+  /** Records still alone on their identity — nothing has been linked to them. */
+  unlinked: number;
+  /** "GSTIN" or "SKU", so the screen names the right one. */
+  key_name: string;
 }
 
 export interface IdentityPolicy {
@@ -891,4 +951,82 @@ export interface AiWindowSummary {
 export interface AiMetricsReport {
   generated_at: string;
   windows: Record<string, AiWindowSummary>;
+}
+
+/* ── the trust surface (owner only) ──────────────────────────────────────────
+ * What leaves for a model, who has opened this tenant, and the two irreversible
+ * things an owner can do with their own data. Shapes mirror `routers/trust.py`;
+ * every one of them is the server's own words, because the point of the screen
+ * is that the promise is checkable rather than restated by the client.
+ */
+
+/** One category of fact the model is allowed to receive, and why. */
+export interface DisclosureAllowed {
+  category: string;
+  example: string;
+  why: string;
+}
+
+export interface DisclosureStatement {
+  provider: string;
+  /** The configured model. Note that the server reports this whatever the
+   *  provider is, so with `provider: "mock"` it names a model nothing calls —
+   *  the screen says which provider is running rather than asserting this. */
+  model: string;
+  training_on_customer_data: boolean;
+  zero_retention_requested: boolean;
+  allowed: DisclosureAllowed[];
+  never_sent: string[];
+  notes: string;
+}
+
+export interface ModelPayloadRow {
+  payload_id: string;
+  decision_type: string | null;
+  provider: string;
+  model: string;
+  created_at: string | null;
+  /** Anything the outbound checker found that the disclosure says never leaves.
+   *  Non-empty is a defect report, not a statistic. */
+  findings: string[];
+  payload: string | null;
+}
+
+export interface PayloadsReport {
+  summary: { payloads: number; flagged: number };
+  payloads: ModelPayloadRow[];
+}
+
+/** One entry in the break-glass log. `GRANTED` and `REVOKED` bracket a window;
+ *  `ACCESSED` is one use inside it, and there is one row per use. */
+export interface AccessEventRow {
+  event_id: string;
+  staff_user_id: string;
+  action: string;
+  detail: string | null;
+  at: string | null;
+}
+
+export interface AccessReport {
+  events: AccessEventRow[];
+  note: string;
+}
+
+export interface ErasureReceipt {
+  organization_id: string;
+  erased_at: string | null;
+  reason: string;
+  actor_user_id: string | null;
+  manifest: Record<string, unknown>;
+  method: string;
+  signature: string;
+  /** Re-checked server-side on every read, so a receipt cannot be believed on
+   *  the strength of its own presence. */
+  verified: boolean;
+}
+
+export interface ErasureState {
+  erased: boolean;
+  receipt: ErasureReceipt | null;
+  key_destroyed?: boolean;
 }

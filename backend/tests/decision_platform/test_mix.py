@@ -656,3 +656,47 @@ def test_the_window_accepts_a_quarter(client):
         r = c.get(f"/api/v1/insight/mix?months={months}", headers=head)
         assert r.status_code == 200, months
         assert r.json()["months"] == months
+
+
+def test_the_empty_grid_says_which_of_three_things_is_missing():
+    """A wrong reason is worse than none — it sends somebody to the wrong place.
+
+    These were served as two states keyed on whether any column existed, and the
+    interesting one fell on the wrong side: with trade on the book and every
+    item's category unset, the screen said "Nothing has been traded yet" while the
+    Customers screen in the same session showed the revenue.
+    """
+    from datetime import date
+
+    from app.commercial.config import CommercialThresholds
+    from app.commercial.insight.mix import BY_CATEGORY, Column, MixLine, build
+
+    as_of = date(2026, 7, 22)
+    th = CommercialThresholds()
+    cols = [Column(key="inserts", label="Inserts")]
+    traded = [MixLine(customer_id="c1", date=as_of, amount=1000.0, key="inserts")]
+
+    def reason(lines, columns):
+        return build(lines, {"c1": "Acme"}, as_of, thresholds=th,
+                     columns=columns, dimension=BY_CATEGORY)["empty_reason"]
+
+    # 1. Nothing traded at all.
+    assert "Nothing has been traded yet" in reason([], cols)
+
+    # 2. Trade exists, but no line of business has been defined to group it into.
+    only_uncategorised = reason(
+        [MixLine(customer_id="c1", date=as_of, amount=1000.0, key="inserts")], [])
+    assert "No line of the business has been defined" in only_uncategorised
+    assert "Nothing has been traded" not in only_uncategorised, (
+        "there is trade — saying otherwise is the bug this test exists for")
+
+    # 3. Trade and columns both exist, and none of the trade landed in one.
+    unattributed = reason(
+        [MixLine(customer_id="c1", date=as_of, amount=1000.0, key="something-else")],
+        cols)
+    assert "There is trade on the book" in unattributed
+    assert "Nothing has been traded" not in unattributed
+
+    # And the populated case still has no reason at all.
+    assert build(traded, {"c1": "Acme"}, as_of, thresholds=th,
+                 columns=cols, dimension=BY_CATEGORY)["empty_reason"] is None

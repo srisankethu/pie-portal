@@ -25,6 +25,11 @@ before writing a screen, it listed six rules, and the one it left out was the
 one that screen was breaking. A rule that is not in the digest is a rule that
 gets followed by whoever happens to open the long document.
 
+That table is a `DataGrid` now (`components/LineGrid.tsx`), and the sentence
+above is kept in the past tense on purpose. It is the reason the rule is in the
+digest, not an open defect — a reader who greps for the fault and finds it
+already fixed learns to distrust the rest of this file.
+
 `<table>` is still right for a fact panel (a label and a value, four rows) and
 for the accessible table under a chart. `platform/DataGrid.tsx` states the line;
 the check in §6 finds the cases worth thinking about.
@@ -54,21 +59,65 @@ rg -n '^\s*(from|import)\s+.*commercial' backend/app/ai
 ```
 
 **Cost and margin never reach a salesperson.** Absent from the response, not
-hidden in the browser. The server omits the fields; there is nothing to read out
-of a network tab.
+hidden in the browser: the server omits the fields, so there is nothing to read
+out of a network tab. `filterCounts.MFLOOR` was the counter-example — a
+below-floor *count*, computed for every role two lines below the guard that
+correctly withheld `marginFloor`, and hidden in the component by `{mgmt && …}`.
+Twenty bisection probes turned it into the exact floor price, and the floor is
+cost × (1 + margin floor).
+
+The boundary of this rule, stated because it is real rather than because it is
+comfortable. A line's negotiation floor and its `recommended` price are both
+cost × a policy multiplier, and a salesperson needs both to do the job; anyone
+willing to do the algebra recovers cost from either. That is **accepted, not
+engineered around** — coarsening those numbers would blunt the one screen this
+role uses to decide rather than to read. So the rule is: no cost or margin
+*field*, no count or flag that answers a margin question, and no new number
+whose only purpose is economics. The rule is *not* that cost is unrecoverable.
+Two corollaries, and they point in opposite directions: do not "fix" a leak by
+degrading the negotiation desk, and do not wave a new field through on the
+grounds that cost is derivable anyway.
 
 **Money is `Decimal`.** Margin is a ratio (`0.24`), never a percentage. Movement
 is percentage points (`_pp`). Aggregated margin is `Σ gross_profit ÷ Σ revenue`,
 never the mean of per-line margins.
 
 **Thresholds carry a version.** `CommercialThresholds.version` is a content hash
-stamped on every metric row, signal and quote snapshot. That is what makes the
-margin policy editable without making past numbers unexplainable. Never remove
-it, and never let a computed row be written without one.
+stamped on every computed row, and it is what lets the margin policy be edited
+without making the numbers on screen unexplainable. Never remove it, and never
+let a computed row be written without one.
+
+What it buys is narrower than "past numbers stay explainable", so read it as:
+
+- A row says which policy judged **the value it currently holds**.
+  `customer_item_metrics` is upserted, so a full recompute overwrites the value
+  and its stamp together. There is no history of superseded numbers in that
+  table and there is not meant to be — it is derived state that a complete
+  re-sync rebuilds from Zoho.
+- History lives where rows are append-only: signals, approval requests and quote
+  snapshots. Anything a human signed keeps the version that was in force when
+  they signed it, which is the part an audit actually needs.
+- Signals from the Signal Engine stamp `SignalThresholds.version` (`th_…`), not
+  `ci_…`. That hash moves when an owner edits `queue_margin_drop_pp`, so a signal
+  does say which threshold judged it — but it cannot name the commercial version
+  directly. `th_` and `ci_` are not the same stamp; do not read one as the other.
 
 **Do not weaken a rule to make output appear.** If a screen is empty because the
 evidence is thin, that is the correct answer. Lowering a threshold, fabricating a
 decision, or widening a band to produce a demo is a defect, not a fix.
+
+**Absence of evidence is not a pass.** The same mistake has now been found in
+three unrelated places, and in all three it read as good news. The weather front
+divided profit earned on costed revenue by *all* revenue and banded a 19.7% book
+POOR. The send gate found no recorded snapshot and answered "nothing is wrong",
+so a line losing money on every unit went out with a green chip. A priced line
+with no cost on record passed as within policy, because the only check that would
+have objected sat behind `if unit_cost is not None`. When the evidence for a
+claim is missing the answer is UNKNOWN, or a refusal that names what is missing —
+never the benign default. The tells are worth knowing by sight: `sum(… or 0)`
+over rows that may hold `None`, `if not rows: return None` in something whose job
+is to refuse, and a `is not None` guard wrapped around the objection rather than
+around the arithmetic.
 
 ---
 

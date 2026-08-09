@@ -13,9 +13,11 @@ quotes; the shape here is the persistence contract.
 from __future__ import annotations
 
 import itertools
+import re
 import threading
 import time
 from dataclasses import dataclass, field
+from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
 from . import pricing
@@ -67,29 +69,128 @@ def sales_tax_label() -> str:
     return settings.SALES_TAX_LABEL
 
 
+#: Words a buyer puts next to a number to mean "this many of them".
+#:
+#: Load-bearing twice over. They let a quantity be read out of "- 100 nos" and
+#: "100 nos CNMG…", and — where one is present and *not* consumed — they are the
+#: evidence that a quantity was stated and this parser failed to read it. That
+#: second use is why the list is deliberately short: a word here that also occurs
+#: inside a tool description would flag good lines, and a flag that is usually
+#: wrong is one people learn to click through.
+_UNIT_WORDS = r"(?:nos?|no\.|pcs?|pieces?|units?|ea|each|qty|quantity)"
+
+#: A list marker a person typed to number their enquiry — "1." or "2)".
+#:
+#: Stripped before anything reads a quantity, and it must never be read *as* one:
+#: the review's own example is `1. CNMG 120408-MP insert - 100 nos`, where taking
+#: the marker as the quantity would quote one of a hundred and look deliberate.
+#: The leading-quantity rule below cannot make that mistake because it requires a
+#: unit word, which a list marker never has.
+_LIST_MARKER = re.compile(r"^\(?\d{1,2}[.)]\s+")
+
+#: How many digits a bare, space-separated trailing number may have and still be
+#: read as a quantity.
+#:
+#: Four, because an insert code is six — `DNMG 150608`, `CNMG 120408`. The old
+#: rule matched any trailing number after whitespace, so `DNMG 150608` came back
+#: as code `DNMG` at a quantity of a hundred and fifty thousand: the code mangled
+#: and the quantity invented, from a line a buyer would call perfectly ordinary.
+#: A comma, an `x` or a unit word is explicit enough to lift the bound; bare
+#: whitespace is not.
+_BARE_QTY_DIGITS = 4
+
+#: Tried in order, strongest evidence first, and the bare-number rule last
+#: because it is the only one that guesses. Each names its quantity `qty` and the
+#: rest of the line `code`.
+_QTY_PATTERNS = (
+    # "<code>, 100"  ·  "<code>, x100" — a comma is a deliberate separator.
+    re.compile(r"^(?P<code>.*?)\s*,\s*x?\s*(?P<qty>\d+)\s*$", re.IGNORECASE),
+    # "<code> x100"  ·  "<code>x100"
+    re.compile(r"^(?P<code>.*?)\s*\bx\s*(?P<qty>\d+)\s*$", re.IGNORECASE),
+    # "<code> - 100 nos"  ·  "<code> 100 pcs"  ·  "<code> qty 100 nos"
+    # A unit word has to be present — that is what makes this safe on a code
+    # whose own tail is numeric.
+    re.compile(rf"^(?P<code>.*?)[\s,\t:\u2013\u2014-]+"
+               rf"(?:(?:qty|quantity)[\s.:-]*)?(?P<qty>\d+)\s*{_UNIT_WORDS}\s*[.]?$",
+               re.IGNORECASE),
+    # "<code> qty 100" — the keyword standing in for the unit word.
+    re.compile(r"^(?P<code>.*?)[\s,\t:\u2013\u2014-]+(?:qty|quantity)[\s.:-]*"
+               r"(?P<qty>\d+)\s*[.]?$", re.IGNORECASE),
+    # "100 nos <code>"  ·  "100 nos of <code>" — leading, and it needs a unit
+    # word to be told apart from a code that starts with digits.
+    re.compile(rf"^(?P<qty>\d+)\s*{_UNIT_WORDS}[\s.:]*(?:of\s+)?(?P<code>.+)$",
+               re.IGNORECASE),
+    # "qty 25 <code>"  ·  "qty: 25 nos <code>"
+    re.compile(rf"^(?:qty|quantity)[\s.:-]*(?P<qty>\d+)\s*(?:{_UNIT_WORDS})?"
+               rf"[\s.:]*(?:of\s+)?(?P<code>.+)$", re.IGNORECASE),
+    # "<code>  100" — bare, and bounded. Last on purpose.
+    re.compile(rf"^(?P<code>.*?)[\s\t]+(?P<qty>\d{{1,{_BARE_QTY_DIGITS}}})\s*$"),
+)
+
+
 def _split_rfq(text: str) -> List[Dict[str, Any]]:
     """Split pasted RFQ text into (raw, code, qty) rows.
 
-    Accepts ``code, qty`` / ``code  qty`` / ``code xNN`` / bare ``code``.
-    Qty parsing mirrors the design's intake heuristic.
+    Accepts ``code, qty`` / ``code  qty`` / ``code xNN`` / ``code - NN nos`` /
+    ``NN nos code`` / bare ``code``.
+
+    **A quantity that was stated and not read is flagged, never defaulted.** The
+    original rule matched only a trailing bare number, so every one of these came
+    back as one unit, silently:
+
+        CNMG 120408 TN2000 - 100 nos
+        CNMG 120408-MP insert 100 nos
+        100 nos CNMG 120408 TN2000
+
+    Priced end to end that is a quotation out by a factor of a hundred, and it
+    also picks the wrong quantity band, which is what decides the margin floor a
+    manager signs against. Three of the five shapes a reviewer tried failed.
+
+    A bare code still means one, because pasting a column of codes is a
+    documented and common way to use this screen and flagging all of it would
+    make the feature unusable. What is flagged is the middle case: a line
+    carrying a unit word this parser did not turn into a quantity. The unit word
+    is the evidence that a number was meant, so failing to find it is a gap to
+    report rather than a default to take — `CLAUDE.md` §1, absence of evidence is
+    not a pass.
+
+    A flagged row travels as ``proposed`` with a ``reading``, which is the
+    machinery a model-read line already uses: status ``CONFIRM READING``,
+    technical, so ``blockers`` stops the estimate until a person clears it one
+    line at a time. ``Line.reading``'s docstring named "a quantity implied" as an
+    example from the beginning; this is the path that finally produces one.
     """
     rows: List[Dict[str, Any]] = []
     for raw in (text or "").splitlines():
         raw = raw.strip()
         if not raw:
             continue
-        code, qty = raw, 1
-        # trailing quantity: "<code><sep><digits>"
-        import re
-        m = re.match(r"^(.*?)[\s,\t]+x?\s*(\d+)\s*$", raw, re.IGNORECASE)
-        if m and any(ch.isalnum() for ch in m.group(1)):
-            code = m.group(1).strip().rstrip(",").strip()
-            code = re.sub(r"\s*x$", "", code, flags=re.IGNORECASE).strip()
-            qty = int(m.group(2))
+
+        body = _LIST_MARKER.sub("", raw).strip()
+        code, qty, read = body, 1, ""
+
+        for pattern in _QTY_PATTERNS:
+            m = pattern.match(body)
+            if m and any(ch.isalnum() for ch in m.group("code")):
+                code = m.group("code").strip().rstrip(",").strip()
+                code = re.sub(r"\s*x$", "", code, flags=re.IGNORECASE).strip()
+                code = re.sub(rf"[\s,:–—-]*{_UNIT_WORDS}[\s.]*$", "", code,
+                              flags=re.IGNORECASE).strip()
+                qty = int(m.group("qty"))
+                break
         else:
-            code = raw.rstrip(",").strip()
+            code = body.rstrip(",").strip()
+            # No quantity found. A unit word left in the line says one was meant.
+            if re.search(rf"\b{_UNIT_WORDS}\b", code, re.IGNORECASE):
+                read = ("quantity not read from this line — assumed 1. "
+                        "Check it against what the customer wrote.")
+
         code = re.sub(r"\s{2,}", " ", code)
-        rows.append({"raw": raw, "code": code, "qty": max(1, qty)})
+        row: Dict[str, Any] = {"raw": raw, "code": code, "qty": max(1, qty)}
+        if read:
+            row["proposed"] = True
+            row["reading"] = read
+        rows.append(row)
     return rows
 
 
@@ -293,8 +394,7 @@ class Quote:
         )
         rate = sales_tax_rate()
         tax = subtotal * rate
-        counts = self._filter_counts()
-        floor = self._margin_floor() if mgmt else None
+        counts = self._filter_counts(mgmt)
         return {
             "id": self.id, "customer": self.customer,
             "customerId": self.customerId, "number": self.number,
@@ -322,7 +422,10 @@ class Quote:
                                    if ln.quoted is not None and ln.priceSource == "LIST"),
             },
             "filterCounts": counts,
-            "marginFloor": floor,
+            # Both margin keys are *absent* for a salesperson rather than null or
+            # zero. §1 asks for absent, and here the difference is not cosmetic:
+            # see `_filter_counts`.
+            **({"marginFloor": self._margin_floor()} if mgmt else {}),
             # What has already gone to Zoho from this quote, so the screen can
             # say so rather than leaving an unchanged primary button as the only
             # evidence that anything happened.
@@ -332,9 +435,9 @@ class Quote:
                          if self.estimateNumber else None),
         }
 
-    def _filter_counts(self) -> Dict[str, int]:
+    def _filter_counts(self, mgmt: bool) -> Dict[str, int]:
         fl = [ln.flags() for ln in self.lines]
-        return {
+        counts = {
             "ALL": len(self.lines),
             "NEEDS": sum(f["attention"] for f in fl),
             "PROC": sum(f["procurement"] for f in fl),
@@ -342,8 +445,22 @@ class Quote:
             "MANUAL": sum(f["manualReview"] for f in fl),
             "UNRES": sum(f["unresolved"] for f in fl),
             "SUBST": sum(f["substituted"] for f in fl),
-            "MFLOOR": sum(1 for ln in self.lines if ln.economics().below_floor),
         }
+        # MFLOOR is a margin fact and it used to be sent to everyone, two lines
+        # below the guard that correctly withheld `marginFloor`. On its own it
+        # looks harmless — a count. It is a yes/no oracle on the floor price:
+        # re-price one line and read the count back, and about twenty probes
+        # bisect the floor to the rupee. The floor is cost x (1 + margin floor),
+        # so that recovers the cost. The Quote Builder already hid the chip
+        # behind `{mgmt && ...}`, which is exactly the failure §1 names —
+        # "absent from the response, not hidden in the browser".
+        #
+        # Omitted, not zeroed. A zero still answers "is any line below the
+        # floor?" with "no", and that is the same oracle at lower resolution.
+        if mgmt:
+            counts["MFLOOR"] = sum(
+                1 for ln in self.lines if ln.economics().below_floor)
+        return counts
 
     def _margin_floor(self) -> Optional[Dict[str, Any]]:
         below = [ln for ln in self.lines if ln.economics().below_floor]
@@ -380,6 +497,29 @@ class QuoteStore:
 
     def get(self, quote_id: str) -> Optional[Quote]:
         return self._quotes.get(quote_id)
+
+    def line_cost(self, quote_id: str, line_id: str) -> Optional[Decimal]:
+        """The landed cost this server already holds against one quote line.
+
+        Read by the assessment path so the gate is judging the same cost the
+        grid is showing. One accessor rather than the same three-line lookup in
+        the approvals router and the quote-intelligence router, because "where
+        does a quote line's cost come from" is exactly the question that had two
+        answers in the first place.
+
+        Server-held, never requester-supplied: the cost arrived from the books at
+        intake and lives here, so passing it into an assessment is not the same
+        thing as trusting a number in a request body.
+        """
+        quote = self._quotes.get(quote_id)
+        if quote is None:
+            return None
+        line = next((row for row in quote.lines if row.id == line_id), None)
+        if line is None or line.cost is None:
+            return None
+        # `Decimal(str(...))` rather than `Decimal(float)`: money is Decimal (§1),
+        # and the binary-float detour is how 420.0 becomes 419.99999999999994.
+        return Decimal(str(line.cost))
 
     def create(self, customer: str, customer_id: Optional[str] = None) -> Quote:
         with self._lock:

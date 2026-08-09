@@ -116,7 +116,6 @@ These live in `frontend/src/platform/kit.tsx`:
 |---|---|---|
 | `SectionHeader` | page and section headings, with an optional tip and actions | `.dp-head`, `.section-h`, hand-written `<h1>`/`<h3>` pairs |
 | `MetricCard` | one figure with its label and optional movement | `.dp-count`, the stock KPI row |
-| `ChartContainer` | a titled chart surface with its accessible fallback | `viz/Panel.tsx` `Panel` + `Figure` |
 | `FilterPanel` | the controls above a list | `.acct-controls`, `.stock-filters`, `.seg-controls` |
 | `EmptyState` | nothing to show, and **why** | `.dp-empty`, `Panel`'s empty branch |
 | `LoadingState` | shaped skeletons that reserve the height | `.skeleton`, `.viz-skeleton` divs |
@@ -126,10 +125,30 @@ These live in `frontend/src/platform/kit.tsx`:
 | `CurrencyValue` | money, tabular, with an optional sign | bare `money()` in JSX |
 | `PercentageValue` | a ratio as a percentage | bare `pct()` in JSX |
 | `VarianceIndicator` | a movement, as an arrow **and** a word | `.wf-row-value.pos/.neg`, `.story-hero-value.up/.down` |
-| `AuditTimeline` | an ordered trail of what happened | the trace list in `PlatformApp` |
+| `HumanLog` | the trail of what a person did to a decision, and who | the inline `human_action` block in `PlatformApp` |
 
-`RiskCard`, `InsightCard`, `ActionCard` and `TrendCard` are `Card` — each wraps
-a business entity with an identity, per §2.
+Two rows of this table used to name components that were never written —
+`ChartContainer` and `AuditTimeline`. A standard that lists a component nobody
+can import is worse than one that lists nothing: the next person looks for the
+pattern, is told it already exists, cannot import it, and writes it by hand
+anyway. A standard that cannot be trusted on its easy claims does not get read on
+the hard ones. `kit.contract.test.ts` now parses this table and asserts every row
+against `kit.tsx`, so adding a row before the export fails the gate.
+
+The chart surface stays `viz/Panel.tsx`'s `Panel` + `Figure`, which is where it
+belongs — a titled surface with an accessible fallback is a visualization
+concern, and moving it into `kit.tsx` for symmetry would put chart code in the
+file every screen imports. `ChartTip` is in `kit.tsx` because the tooltip *is*
+shared. `HumanLog` is the trail component, written when the decision card needed
+it.
+
+Where a surface wraps a business entity with an identity of its own, it is a
+`Card`, per §2. This used to name `RiskCard`, `InsightCard`, `ActionCard` and
+`TrendCard` in the present tense; none of the four has ever existed, which read
+as a set of components a newcomer should go and find. The app's one `Card` today
+is the Quote Builder's narrow-screen line card (`components/LineGrid.tsx`) —
+correct, because a quote line is an entity — and everything else that looks like
+a card is a `Paper` surface, also correct. Name a component here once it exists.
 
 Existing shared pieces stay and are used rather than duplicated:
 `EntityName`/`EntitySource` (an imported record and its company),
@@ -195,25 +214,43 @@ The distinction that decides it: **is the colour the only thing saying what this
 means?** If a reader in greyscale loses the meaning, it is a defect. If they
 lose only emphasis, it is fine.
 
-**Not yet aligned — nothing clear-cut, two worth arguing about.** The previous
-two revisions of this section each said "nothing the current audit can name",
-and each was wrong within a release, so this one does not say it. The claim is
-an enumeration rather than a promise, and the next reader can check it in a
-minute:
+**Not yet aligned — nothing clear-cut, three worth arguing about.** The previous
+two revisions of this section each said "nothing the current audit can name", and
+each was wrong within a release, so this one does not say it either. Check the
+current set in a minute:
 
 ```bash
 rg -n '<table' frontend/src --glob '*.tsx'
 ```
 
-| Raw `<table>` | What it holds | Verdict |
+The list below used to enumerate every one of them and mark each correct. It
+drifted, exactly as the two revisions before it did: it said `facttable` appeared
+three times when there were five, and it never mentioned `ci-table`
+(`CommercialScreens`) or the two `class="grid"` accessible twins in
+`viz/BookFlow` and `viz/Mix`. So this is now a **rule you can apply to a table
+you are looking at**, plus the short list of cases still worth an argument. A
+rule cannot go stale between releases; a census of eighteen tables always will.
+
+**Correct by construction — do not convert these:**
+
+- a **fact panel**: a label and a value, a fixed handful of rows (`facttable`)
+- the **accessible twin under a chart**: same data, table form, for a screen
+  reader (`viz-table`, and the `class="grid"` twins in `viz/BookFlow` and
+  `viz/Mix`) — §13 requires it
+- a **fixed matrix**: an n×n whose n is a property of the business's own
+  structure, not of its size (`mig-grid`, the `viz/Mix` matrix)
+- a **fixed shape belonging to the screen**: the OAuth scopes on one connection
+  (`cx-scopes`), a few reference rows in a drawer (`qi-refs`)
+
+**Convert these:** anything whose row count is set by the size of the business —
+customers, items, invoices, quote lines, users, signals. That is §3, and it is
+the only test that matters.
+
+| Still arguable | What it holds | Why it is open |
 |---|---|---|
-| `facttable` (`DataScreen` ×2, `ui.tsx`) | label/value fact panels | **Correct.** Not a grid — §3. |
-| `viz-table` (`viz/*`, seven of them) | the accessible table under a chart | **Correct.** Required by §13. |
-| `mig-grid` (`viz/History`) | the migration matrix — a chart in table clothing | **Correct.** |
-| `qi-refs` (`QuoteIntelligence`) | a few reference rows inside a drawer | **Correct.** |
-| `cx-scopes` (`ConnectionsPanel`) | the fixed OAuth scopes on one connection | **Correct.** Shape of the screen. |
-| `dp-table` (`DataScreen`) | a capped *sample* of skipped records | Arguable — bounded by the sample, not by the book. |
-| `id-table` (`IdentityScreen`) | the records behind one identity | Arguable — a handful per identity today. |
+| `dp-table` (`DataScreen`) | a capped *sample* of skipped records | Bounded by the sample, not by the book — so it never grows, but it is a list of records. |
+| `id-table` (`IdentityScreen`) | the records behind one identity | A handful per identity today. Grows with connectors, not with the book. |
+| `ci-table` (`CommercialScreens`) | volume against margin, a few periods | Fixed period count, so probably a fact panel in table clothing. |
 
 Two tables have been converted since this table was written, and both were the
 same defect at different sizes. The Quote Builder's line grid was the worse one:

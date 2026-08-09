@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from .. import clock
 from ..authz import Principal, require_manager_or_owner, require_owner
 from ..db import get_session
 from ..domain import models
@@ -51,7 +52,7 @@ def _record_dict(r: Any, entity_type: str, companies: Optional[Companies] = None
         # same projection every other list uses.
         "origin": companies.of(r).to_dict() if companies is not None else None,
         "external_id": r.external_id,
-        "last_synced_at": r.last_synced_at.isoformat() if r.last_synced_at else None,
+        "last_synced_at": clock.iso(r.last_synced_at),
         # The raw values exactly as the connector supplied them. Kept visible
         # because the point of not merging is that you can always see what each
         # system actually said.
@@ -93,7 +94,7 @@ def _identity_dict(session: Session, row: Any, entity_type: str,
         # Zoho books, one customer, three records, one connector.
         "company_count": len({r.connection_id for r in records}),
         "record_count": len(records),
-        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "created_at": clock.iso(row.created_at),
     }
     if with_records:
         out["records"] = [_record_dict(r, entity_type, companies) for r in records]
@@ -201,7 +202,7 @@ def get_identity(
         **_identity_dict(session, row, entity_type),
         "history": [
             {"action": e.action, "actor": e.actor, "detail": e.detail,
-             "record_id": e.record_id, "at": e.at.isoformat() if e.at else None}
+             "record_id": e.record_id, "at": clock.iso(e.at)}
             for e in identity.history(session, principal.organization_id,
                                       entity_type, identity_id)
         ],
@@ -248,12 +249,17 @@ def list_suggestions(
             "suggestion_id": s.suggestion_id,
             "strategy": s.strategy,
             "evidence": s.evidence,
-            "created_at": s.created_at.isoformat() if s.created_at else None,
+            "created_at": clock.iso(s.created_at),
             "incoming": _record_dict(record, entity_type),
             "incoming_identity_id": record.identity_id,
             "target": _identity_dict(session, target, entity_type),
         })
-    return {"suggestions": out, "can_manage": principal.role.value == "OWNER"}
+    return {"suggestions": out, "can_manage": principal.role.value == "OWNER",
+            # So an empty queue can say which kind of empty it is. See
+            # `identity.review_coverage` — the screen used to read every empty
+            # queue as "no matches found", including the case where nothing was
+            # eligible to be matched.
+            "coverage": identity.review_coverage(session, org, entity_type)}
 
 
 class Decide(BaseModel):

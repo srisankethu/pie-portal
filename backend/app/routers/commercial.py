@@ -24,6 +24,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .. import clock
 from ..authz import Principal, require_manager_or_owner
 from ..commercial.compute import compute_for, recompute
 from ..commercial.policy import load_for_org
@@ -84,6 +85,13 @@ def _metric_row(r: models.CustomerItemMetric, product: Optional[models.Product])
     }
 
 
+def _row_versions(rows: list) -> dict:
+    """The `thresholds_version` a set of computed rows was judged under."""
+    seen = sorted({r.thresholds_version for r in rows if r.thresholds_version})
+    return {"thresholds_version": seen[0] if len(seen) == 1 else None,
+            "thresholds_versions": seen if len(seen) > 1 else None}
+
+
 @router.get("/customers/{customer_id}/portfolio")
 def customer_portfolio(
     customer_id: str,
@@ -115,8 +123,18 @@ def customer_portfolio(
             _metric_row(r, products.get(r.product_id))
             for r in sorted(portfolio.rows,
                             key=lambda x: -(float(x.revenue_12m or 0)))],
-        "computed_at": max((r.computed_at.isoformat() for r in portfolio.rows),
-                           default=None),
+        # Max over the datetimes, then serialise once — not max over ISO strings.
+        # Lexicographic order happens to agree with chronological order only while
+        # every string carries the same offset and the same precision, which is a
+        # property of the serializer rather than of the data.
+        "computed_at": clock.iso(max((r.computed_at for r in portfolio.rows),
+                                     default=None)),
+        # The stamp the rows actually carry, not the policy in force now. One
+        # value when they agree; null when they do not, with the set named beside
+        # it — a portfolio spanning two policy versions is itself worth seeing
+        # rather than something to average away, and `recompute` is per-customer,
+        # so it is reachable.
+        **_row_versions(portfolio.rows),
     }
 
 
@@ -167,6 +185,17 @@ def customer_item_detail(
         "item": {"product_id": product.product_id, "name": product.name,
                  "code": product.external_id, "uom": product.uom},
         "as_of": reference.isoformat(),
+        # Which policy produced the numbers below. This is the screen a manager
+        # argues a price from, and its floor references — TARGET_MARGIN_PRICE,
+        # MARGIN_FLOOR_PRICE, MIN_MARGIN_PRICE — are all threshold-derived, so a
+        # figure here could not be traced to the policy behind it without going
+        # to the database.
+        #
+        # `th.version` is the honest stamp *here* precisely because this endpoint
+        # recomputes the pair live under `th` rather than reading the stored row —
+        # see the docstring. The portfolio below is the opposite case and reports
+        # the stamp its rows carry.
+        "thresholds_version": th.version,
 
         "headline": {
             "revenue_recent": _money(m.revenue_recent),

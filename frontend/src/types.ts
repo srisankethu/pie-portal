@@ -126,7 +126,9 @@ export interface Quote {
   lines: Line[];
   summary: QuoteSummary;
   filterCounts: Record<string, number>;
-  marginFloor: MarginFloor | null;
+  /** Manager and owner only, and *absent* rather than null for a salesperson —
+   *  as is `filterCounts.MFLOOR`, for the reason `store._filter_counts` gives. */
+  marginFloor?: MarginFloor | null;
   /** The Zoho estimate already created from this quote, if any. */
   estimate: QuoteEstimate | null;
   /** Present when the last action taught the system something durable — today

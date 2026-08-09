@@ -72,8 +72,21 @@ def _spell(v: float, currency: str) -> str:
 
 
 def build(*, flow: dict, lost: dict, radar: list[dict], radar_totals: dict,
-          dormant: dict, concentration: dict, currency: str) -> dict:
-    """Assemble the beats. Order is fixed; presence is earned."""
+          dormant: dict, concentration: dict, currency: str,
+          restricted_ok: bool) -> dict:
+    """Assemble the beats. Order is fixed; presence is earned.
+
+    ``restricted_ok`` says whether this reader may open the manager-scoped
+    screens. It is required rather than defaulted: the whole defect it fixes was
+    a beat that assumed everyone could follow it, and a default would let the
+    next caller inherit that assumption silently.
+
+    The radar-derived beats never reach a salesperson anyway — the caller passes
+    an empty ``radar``, so they are not built. The lost-revenue beat is different:
+    it is computed from ``lost``, which is revenue rather than margin and is
+    served to every role, so it *is* built for a salesperson and used to hand
+    them a button to a screen that answers 403.
+    """
     beats: list[Beat] = []
 
     # ── what was lost, and why ───────────────────────────────────────────────
@@ -96,9 +109,21 @@ def build(*, flow: dict, lost: dict, radar: list[dict], radar_totals: dict,
                     round(sum(c["amount"] for c in named) / total_lost, 2)
                     if total_lost else None),
             },
-            action={"label": "Open the lost-revenue breakdown",
-                    "route": "lost-revenue",
-                    "count": sum(c["count"] for c in lost["causes"])},
+            # The headline and the causes stay — a salesperson is entitled to
+            # know their revenue stopped, and the breakdown is in this beat
+            # already. What changes is where the button goes. `/lost-revenue` is
+            # `require_manager_or_owner`, so for this role the primary
+            # call-to-action on the first screen they see led to "This did not
+            # load. Manager or owner role required" — which `PlatformApp` itself
+            # calls out as the thing that teaches people the product is broken.
+            # `journey` is the sibling beat's destination and opens for everyone.
+            action=({"label": "Open the lost-revenue breakdown",
+                     "route": "lost-revenue",
+                     "count": sum(c["count"] for c in lost["causes"])}
+                    if restricted_ok else
+                    {"label": "See revenue by customer",
+                     "route": "journey",
+                     "count": sum(c["count"] for c in lost["causes"])}),
             evidence=top.get("customers", [])[:3]))
 
     # ── margin, from the radar's own classification ──────────────────────────

@@ -51,12 +51,12 @@ def ensure_org_and_users(session: Session) -> str:
                 user_id=u["user_id"], organization_id=settings.DEFAULT_ORG_ID,
                 email=u["email"], name=u["name"], role=u["role"].value, active=True,
                 password_hash=hash_password(SEED_PASSWORD),
-                must_change_password=True))
+                must_change_password=settings.ISSUED_ACCOUNTS_MUST_CHANGE_PASSWORD))
         elif not existing.password_hash:
             # An account seeded before passwords existed would otherwise be
             # locked out entirely by the new login check.
             existing.password_hash = hash_password(SEED_PASSWORD)
-            existing.must_change_password = True
+            existing.must_change_password = settings.ISSUED_ACCOUNTS_MUST_CHANGE_PASSWORD
     session.flush()
     return settings.DEFAULT_ORG_ID
 

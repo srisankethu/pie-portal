@@ -1,4 +1,4 @@
-import type { AiMetricsReport, AiReadiness, Account, AccountItem, StatusFilter, ApprovalRequest, EntityKind, Identity, IdentityPolicy, IdentitySuggestion, ConnectionCheck, ConnectionsView, FixedThresholds, MarginPolicy, MarginPolicyPatch, NewConnectionInput, ZohoConnection, ZohoCredential, ZohoVisibleOrg, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, DecisionTrace, OrgPolicy, PlatformSession, PlatformUser, QuoteGate, Role, SyncOptions, SyncStartResponse, SyncState, ThresholdView, ZohoConnectionInput } from "./types";
+import type { AccessReport, AiMetricsReport, AiReadiness, Account, AccountItem, StatusFilter, ApprovalRequest, DisclosureStatement, EntityKind, ErasureState, Identity, IdentityCoverage, IdentityPolicy, IdentitySuggestion, ConnectionCheck, ConnectionsView, FixedThresholds, MarginPolicy, MarginPolicyPatch, NewConnectionInput, PayloadsReport, ZohoConnection, ZohoCredential, ZohoVisibleOrg, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, DecisionTrace, OrgPolicy, PlatformSession, PlatformUser, QuoteGate, Role, SyncOptions, SyncStartResponse, SyncState, ThresholdView, ZohoConnectionInput } from "./types";
 
 import { setMoneyCurrency } from "../money";
 import { setBusinessTimezone } from "../when";
@@ -86,6 +86,9 @@ interface LoginResp {
   token: string;
   role: PlatformSession["role"];
   name: string;
+  /** The address signed in with. `LoginResponse` defaults it to "" server-side,
+   *  so an older backend simply sends nothing and the field stays unset. */
+  email?: string;
   user_id: string;
   organization_id: string;
   currency: string;
@@ -428,8 +431,11 @@ export const papi = {
     req<{ user_id: string; temporary_password: string }>(
       `/api/v1/admin/users/${id}/reset-password`, { method: "POST" }, t),
 
+  // Returns a fresh token: changing the password retires the one used to make
+  // the change, so a caller that keeps the old one is signed out by its own
+  // success. Callers must swap it in.
   changeOwnPassword: (t: string, current_password: string, new_password: string) =>
-    req<{ ok: boolean }>("/api/v1/admin/me/password",
+    req<{ ok: boolean; token: string }>("/api/v1/admin/me/password",
       { method: "POST", body: JSON.stringify({ current_password, new_password }) }, t),
 
   getPolicy: (t: string) =>
@@ -456,7 +462,8 @@ export const papi = {
     req<Identity>(`/api/v1/identity/${kind}/${id}`, {}, t),
 
   listSuggestions: (t: string, kind: EntityKind) =>
-    req<{ suggestions: IdentitySuggestion[]; can_manage: boolean }>(
+    req<{ suggestions: IdentitySuggestion[]; can_manage: boolean;
+          coverage: IdentityCoverage }>(
       `/api/v1/identity/${kind}/suggestions/pending`, {}, t),
 
   decideSuggestion: (t: string, kind: EntityKind, id: string, accept: boolean) =>
@@ -510,6 +517,38 @@ export const papi = {
 
   /** What the AI has actually cost and how often it degraded. */
   aiMetrics: (t: string) => req<AiMetricsReport>("/api/v1/internal/ai-metrics", {}, t),
+
+  // ── the trust surface (owner only) ────────────────────────────────────────
+  // Every endpoint under here is `require_owner` server-side. The nav item is
+  // gated too, for the reason `ability.ts` gives — the gate is the server's.
+
+  /** What may reach a model and what never does, served from the constants the
+   *  outbound checker enforces rather than from a static document. */
+  disclosure: (t: string) => req<DisclosureStatement>("/api/v1/trust/disclosure", {}, t),
+
+  /** Every payload logged for this organization. `reveal` decrypts the text;
+   *  left false the list is metadata, which is all the summary needs. */
+  payloads: (t: string, limit = 50, reveal = false) =>
+    req<PayloadsReport>(
+      `/api/v1/trust/payloads?limit=${limit}&reveal=${reveal}`, {}, t),
+
+  /** Break-glass grants, uses and revocations. No filter — deliberately. */
+  accessLog: (t: string, limit = 200) =>
+    req<AccessReport>(`/api/v1/trust/access?limit=${limit}`, {}, t),
+
+  /** Everything this organization owns, as JSON, including the identity graph. */
+  trustExport: (t: string) => req<Record<string, unknown>>("/api/v1/trust/export", {}, t),
+
+  erasureState: (t: string) => req<ErasureState>("/api/v1/trust/erasure", {}, t),
+
+  /** Irreversible. The organization id is required in the body by the server as
+   *  deliberate friction, and this passes through whatever the owner typed so a
+   *  mismatch is refused there rather than smoothed over here. */
+  erase: (t: string, confirmOrganizationId: string, reason: string) =>
+    req<ErasureState>("/api/v1/trust/erasure", {
+      method: "POST",
+      body: JSON.stringify({ confirm_organization_id: confirmOrganizationId, reason }),
+    }, t),
 };
 
 /** True when a request failed because the session is no longer valid. */

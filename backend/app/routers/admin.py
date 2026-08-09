@@ -27,8 +27,9 @@ from pydantic import BaseModel, Field, create_model, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import approvals
-from ..authz import Principal, current_principal, require_manager_or_owner, require_owner
+from .. import clock, approvals
+from ..authz import (Principal, current_principal, issue_token,
+                     require_manager_or_owner, require_owner)
 from ..commercial import policy as commercial_policy
 from ..db import get_session
 from ..domain import models
@@ -54,12 +55,11 @@ def _user_dict(u: models.User, names: dict[str, str]) -> dict:
         "active": u.active,
         "has_password": bool(u.password_hash),
         "must_change_password": u.must_change_password,
-        "last_login_at": u.last_login_at.isoformat() if u.last_login_at else None,
-        "created_at": u.created_at.isoformat() if u.created_at else None,
+        "last_login_at": clock.iso(u.last_login_at),
+        "created_at": clock.iso(u.created_at),
         "created_by": names.get(u.created_by_user_id or "", None),
         "role_changed_by": names.get(u.role_changed_by_user_id or "", None),
-        "role_changed_at": (u.role_changed_at.isoformat()
-                            if u.role_changed_at else None),
+        "role_changed_at": (clock.iso(u.role_changed_at)),
     }
 
 
@@ -210,6 +210,10 @@ def reset_password(
     password = generate_password()
     user.password_hash = hash_password(password)
     user.must_change_password = True
+    # Retires whatever sessions this account had open. An owner resetting a
+    # password because it may be compromised should not leave the compromised
+    # session working.
+    user.password_changed_at = clock.now()
     session.flush()
     log.info("password reset org=%s user=%s by=%s", principal.organization_id,
              user.user_id, principal.user_id)
@@ -243,8 +247,13 @@ def change_own_password(
         raise HTTPException(http.HTTP_400_BAD_REQUEST, problem)
     user.password_hash = hash_password(body.new_password)
     user.must_change_password = False
+    user.password_changed_at = clock.now()
     session.flush()
-    return {"ok": True}
+    # A fresh token, because the line above just retired the one this request
+    # arrived with. Without handing one back, changing your own password would
+    # sign you out — and on the forced-change path that is a loop: the only thing
+    # the old token could still reach was the change it had already made.
+    return {"ok": True, "token": issue_token(user.user_id, user.organization_id)}
 
 
 # ── approval policy ─────────────────────────────────────────────────────────
@@ -255,7 +264,7 @@ def _policy_dict(p: models.OrgPolicy) -> dict:
         "below_cost_requires_owner": p.below_cost_requires_owner,
         "allow_self_approval": p.allow_self_approval,
         "escalation_creates_approval": p.escalation_creates_approval,
-        "updated_at": p.updated_at.isoformat() if p.updated_at else None,
+        "updated_at": clock.iso(p.updated_at),
     }
 
 

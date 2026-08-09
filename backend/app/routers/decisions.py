@@ -9,20 +9,22 @@ only sees decisions assigned to them and never the RESTRICTED decision types.
 """
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .. import approvals
 from ..authz import Principal, can_view_decision, current_principal, decision_list_scope
+from ..commercial import subject
 from ..context.assembler import _flatten, _is_restricted
 from ..db import get_session
 from ..domain import models
 from ..domain.origin import Companies, index_of
 from ..domain.enums import (ApprovalKind, DecisionType, HumanAction, Role,
                             SubjectEntityType)
-from .. import approvals
+from .. import clock
 from ..domain.schemas import ActionRequest, DecisionRead
 from ..repositories import DecisionRepository
 from ..state.engine import why as state_why
@@ -41,13 +43,40 @@ _SUBJECT_MASTERS = {
 }
 
 
+def _subject_rows(session: Session, d: models.Decision) -> list[Any]:
+    """The master row or rows this decision is about, in reading order.
+
+    Most subjects are one row. A ``CUSTOMER_ITEM`` subject is a *pair* — its id
+    is ``customer_id::product_id`` — and it was absent from `_SUBJECT_MASTERS`
+    altogether, so both functions below fell through to their id fallback and put
+    `cst_pitti::prd_dnmg` on screen where a name belongs, with no company badge
+    beside it.
+
+    `commercial.subject.decode` is what splits it. That function was written when
+    the encoding was and had never had a caller; this is it, rather than a second
+    place that knows the separator.
+    """
+    pair = subject.decode(d.subject_entity_id) if (
+        d.subject_entity_type == SubjectEntityType.CUSTOMER_ITEM.value) else None
+    if pair is None:
+        entry = _SUBJECT_MASTERS.get(d.subject_entity_type)
+        if entry is None:
+            return []
+        row = session.get(entry[0], d.subject_entity_id)
+        return [row] if row is not None else []
+
+    customer_id, product_id = pair
+    rows = [session.get(models.Customer, customer_id),
+            session.get(models.Product, product_id)]
+    return [r for r in rows if r is not None]
+
+
 def _subject_label(session: Session, d: models.Decision) -> str:
-    entry = _SUBJECT_MASTERS.get(d.subject_entity_type)
-    if entry is None:
-        return d.subject_entity_id
-    model, attr = entry
-    row = session.get(model, d.subject_entity_id)
-    return getattr(row, attr, None) or d.subject_entity_id
+    rows = _subject_rows(session, d)
+    names = [n for n in (getattr(r, "name", None) for r in rows) if n]
+    # The raw id if nothing resolved, never a blank: a card that cannot name its
+    # subject must still say which one it is, and an id is at least traceable.
+    return " · ".join(names) or d.subject_entity_id
 
 
 def _subject_origin(session: Session, d: models.Decision) -> dict:
@@ -66,8 +95,12 @@ def _subject_origin(session: Session, d: models.Decision) -> dict:
     without knowing which book it belongs to is opening the wrong one half the
     time.
     """
-    entry = _SUBJECT_MASTERS.get(d.subject_entity_type)
-    row = session.get(entry[0], d.subject_entity_id) if entry else None
+    # The first resolved row, which for a Customer × Item pair is the customer —
+    # the company whose book the relationship sits in. Through `_subject_rows` so
+    # a pair subject gets a badge at all; it used to get none, for the same
+    # reason it got no name.
+    rows = _subject_rows(session, d)
+    row = rows[0] if rows else None
     companies = Companies(session, d.organization_id)
     return {
         "subject_origin": companies.of(row).to_dict() if row is not None else None,
@@ -133,8 +166,15 @@ def _detail(session: Session, d: models.Decision, principal: Principal) -> dict:
         "subject_label": _subject_label(session, d),
         **_subject_origin(session, d),
         "assigned_user_id": d.assigned_user_id,
+        # The name, so the card can say whose this is. Null with a role set is
+        # not missing data: a decision routed to SALES_MANAGER belongs to the
+        # role rather than to a person, and the card says that instead of
+        # rendering a blank.
+        "assigned_to": (approvals.user_names(
+            session, d.organization_id, [d.assigned_user_id]).get(d.assigned_user_id)
+            if d.assigned_user_id else None),
         "assigned_role": d.assigned_role,
-        "detected_at": d.detected_at.isoformat() if d.detected_at else None,
+        "detected_at": clock.iso(d.detected_at),
         "priority": {"band": d.priority_band, "score": d.priority_score,
                      "deterministic_base": d.priority_deterministic_base,
                      "ai_adjustment": d.priority_ai_adjustment},

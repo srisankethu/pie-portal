@@ -29,6 +29,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from .. import clock
 from ..authz import Principal, require_owner
 from ..db import get_session
 from ..trust import access, disclosure, erasure, keys
@@ -69,7 +70,7 @@ def get_payloads(limit: int = Query(50, ge=1, le=200),
                 "decision_type": r.decision_type,
                 "provider": r.provider,
                 "model": r.model,
-                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "created_at": clock.iso(r.created_at),
                 "findings": r.disclosure_findings or [],
                 "payload": disclosure.reveal(session, r) if reveal else None,
             }
@@ -96,7 +97,7 @@ def get_access(limit: int = Query(200, ge=1, le=500),
                 "staff_user_id": e.staff_user_id,
                 "action": e.action,
                 "detail": e.detail,
-                "at": e.created_at.isoformat() if e.created_at else None,
+                "at": clock.iso(e.created_at),
             }
             for e in rows
         ],

@@ -2,6 +2,7 @@
 // ag-grid it pulls in — is a lazy chunk rather than part of the main bundle.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useTheme } from "@mui/material/styles";
 import {
   AllCommunityModule,
   ModuleRegistry,
@@ -19,29 +20,53 @@ import type { DataGridProps } from "./DataGrid";
 ModuleRegistry.registerModules([AllCommunityModule]);
 
 // The v33+ Theming API rather than a CSS import, so the grid takes this app's
-// tokens instead of arriving with its own look. The values below are read off
-// styles.css deliberately — a grid that is nearly the same grey as everything
-// around it reads worse than one that is either identical or clearly separate.
-const theme = themeQuartz.withParams({
-  accentColor: "#5980a6",
-  backgroundColor: "#ffffff",
-  borderColor: "color-mix(in srgb, #1d1f20 12%, transparent)",
-  browserColorScheme: "light",
-  cellHorizontalPadding: 10,
-  fontFamily: "inherit",
-  fontSize: "13px",
-  foregroundColor: "#1d1f20",
-  headerBackgroundColor: "#ffffff",
-  headerFontSize: "11px",
-  headerFontWeight: 600,
-  headerTextColor: "#6b6f76",
-  headerVerticalPaddingScale: 0.8,
-  oddRowBackgroundColor: "transparent",
-  rowHoverColor: "#eef6ff",
-  rowVerticalPaddingScale: 0.9,
-  spacing: 6,
-  wrapperBorderRadius: 0,
-});
+// tokens instead of arriving with its own look.
+//
+// These used to be seven literal hex codes and `browserColorScheme: "light"`,
+// with a comment saying the values were "read off styles.css deliberately".
+// Reading them off is the problem: `theme.ts` says in its own opening paragraph
+// that the look had two owners and that "two copies of a hex code diverge on the
+// first tweak, and the failure is silent". This was the second copy, and it sat
+// in the file every table in the product renders through — §3 routes them all
+// here — so a palette change would have moved every surface except the grids,
+// and a dark mode would have left them lit.
+//
+// Derived from the MUI theme now, which is itself built from `tokens`. Two
+// deliberate choices survive as choices rather than as literals:
+//
+//   * **White, not `background.paper`.** The paper token is `neutral-100`, and a
+//     grid nearly the same grey as the panel around it reads worse than one that
+//     is either identical or clearly separate. `common.white` says that in the
+//     theme's own vocabulary, so it still moves with the palette.
+//   * **`divider` for the border**, which is text at 16% where this said 12% — a
+//     hair stronger, and worth it to have one owner for the line between rows.
+//
+// Built inside the component rather than at module scope because it now depends
+// on the theme; memoised on it, so a grid is not re-themed on every render.
+function useGridTheme() {
+  const mui = useTheme();
+  return useMemo(() => themeQuartz.withParams({
+    accentColor: mui.palette.primary.main,
+    backgroundColor: mui.palette.common.white,
+    borderColor: mui.palette.divider,
+    browserColorScheme: mui.palette.mode,
+    cellHorizontalPadding: 10,
+    fontFamily: "inherit",
+    fontSize: `${mui.typography.body2.fontSize}px`,
+    foregroundColor: mui.palette.text.primary,
+    headerBackgroundColor: mui.palette.common.white,
+    // The uppercase small-caps header ramp, which is what a column header is.
+    headerFontSize: `${mui.typography.overline.fontSize}px`,
+    headerFontWeight: Number(mui.typography.overline.fontWeight),
+    headerTextColor: mui.palette.text.secondary,
+    headerVerticalPaddingScale: 0.8,
+    oddRowBackgroundColor: "transparent",
+    rowHoverColor: mui.palette.info.light,
+    rowVerticalPaddingScale: 0.9,
+    spacing: 6,
+    wrapperBorderRadius: 0,
+  }), [mui]);
+}
 
 /** Checkbox selection, click-to-select off.
  *
@@ -62,6 +87,7 @@ export default function DataGridImpl<T>({
   rowClass: rowClassFor, selection, onCellValueChanged,
 }: DataGridProps<T>) {
   const [api, setApi] = useState<GridApi<T> | null>(null);
+  const gridTheme = useGridTheme();
   const defaultColDef = useMemo<ColDef<T>>(() => ({
     sortable: true,
     resizable: true,
@@ -140,7 +166,7 @@ export default function DataGridImpl<T>({
   return (
     <div className="ag-shell" style={{ height: height ?? Math.min(auto, 720) }}>
       <AgGridReact<T>
-        theme={theme}
+        theme={gridTheme}
         rowData={rows ?? []}
         columnDefs={columns}
         defaultColDef={defaultColDef}

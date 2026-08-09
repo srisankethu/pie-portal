@@ -62,6 +62,14 @@ describe("the manager's table — mirrors require_manager_or_owner and approvals
     expect(manager.can("approve", "approvals")).toBe(true);
   });
 
+  it("reads the policy it is judged against, and the identity screen with it", () => {
+    // Asserted because things now hang off it: the Identities nav item is gated
+    // on `read policy`, since every call that screen makes is
+    // `require_manager_or_owner`. Only the salesperson side of this rule was
+    // covered, so gating a screen on it was gating on an untested assumption.
+    expect(manager.can("read", "policy")).toBe(true);
+  });
+
   it("cannot widen its own authority", () => {
     // A manager who could edit the policy they are judged against would not
     // have one. Mirrors `require_owner`.

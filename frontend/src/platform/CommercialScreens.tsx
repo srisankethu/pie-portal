@@ -3,6 +3,7 @@ import Button from "@mui/material/Button";
 import MenuItem from "@mui/material/MenuItem";
 import TextField from "@mui/material/TextField";
 import { useCallback, useEffect, useState } from "react";
+import { pp } from "./viz/useInsight";
 import { DataGrid, numeric, text } from "./DataGrid";
 import { formatDate } from "../when";
 import { papi } from "./api";
@@ -14,7 +15,7 @@ import type {
   CustomerPortfolio,
   PeerRow,
   PlatformSession } from "./types";
-import { Bp, Labelled } from "./ui";
+import { Bp, Labelled, typeLabel } from "./ui";
 import { money, count } from "../money";
 
 /**
@@ -37,13 +38,6 @@ function pct(v: number | null | undefined, digits = 1): string {
   return v == null ? "—" : `${(v * 100).toFixed(digits)}%`;
 }
 
-/** A percentage-POINT movement, signed. Never a percent change of a percent. */
-function pp(v: number | null | undefined): string {
-  if (v == null) return "—";
-  const sign = v > 0 ? "+" : "";
-  return `${sign}${(v * 100).toFixed(1)} pp`;
-}
-
 function signedPct(v: number | null | undefined): string {
   if (v == null) return "—";
   const sign = v > 0 ? "+" : "";
@@ -56,14 +50,6 @@ function num(v: number | null | undefined): string {
 }
 
 const when = formatDate;
-
-const SIGNAL_LABEL: Record<string, string> = {
-  CI_MARGIN_EROSION: "Margin eroding",
-  CI_COST_NOT_PASSED: "Cost not passed on",
-  CI_LOW_PEER_PRICING: "Below peers",
-  CI_MARGIN_DECLINE_NO_VOLUME: "No volume gained",
-  CI_MARGIN_DECLINE_WITH_VOLUME: "Volume traded for margin",
-  CI_MATERIAL_MARGIN_GAP: "Material gap" };
 
 const EROSION_LABEL: Record<string, string> = {
   COST_DRIVEN: "Cost rose, price didn't follow",
@@ -309,7 +295,7 @@ export function CustomerCommercial({
                 <div style={{ padding: "4px 0" }}>
                   <div className="ci-tags">
                     {p.data.signals.map((sig) => (
-                      <span key={sig} className="ci-tag">{SIGNAL_LABEL[sig] || sig}</span>
+                      <span key={sig} className="ci-tag">{typeLabel(sig)}</span>
                     ))}
                   </div>
                   {p.data.erosion_kind && p.data.erosion_kind !== "NONE" && (

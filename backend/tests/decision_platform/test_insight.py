@@ -252,6 +252,7 @@ def test_every_beat_carries_all_three_answers():
     movement = flow.compute(sales, {"c1": "Acme"}, c)
     lost = cohorts.lost_revenue(sales, {"c1": "Acme"}, c, {})
     built = story.build(
+        restricted_ok=True,
         flow=movement.to_dict(), lost=lost, radar=[],
         radar_totals={"confident_impact": 0, "count": 0},
         dormant={"count": 0, "customers": []},
@@ -267,8 +268,50 @@ def test_every_beat_carries_all_three_answers():
         assert beat["action"].get("route"), f"{beat['kind']} has no 'what next'"
 
 
+def test_no_beat_sends_a_salesperson_to_a_screen_they_cannot_open():
+    """The storyboard's primary call-to-action used to 403 for this role.
+
+    `/lost-revenue` is `require_manager_or_owner`, and the lost-revenue beat is
+    built from revenue rather than margin — so it *is* built for a salesperson,
+    and its button read "Open the lost-revenue breakdown" and landed on "This did
+    not load. Manager or owner role required". The radar beats never had this
+    problem because the caller passes them an empty radar.
+
+    The beat itself stays: a salesperson is entitled to know their revenue
+    stopped, and the causes are in the beat already. Only the destination moves.
+    """
+    c = periods.comparison(date(2026, 6, 30), months=1)
+    sales = [_sale("c1", date(2026, 5, 10), 100000),
+             _sale("c1", date(2026, 6, 10), 40000)]
+    movement = flow.compute(sales, {"c1": "Acme"}, c)
+    lost = cohorts.lost_revenue(sales, {"c1": "Acme"}, c, {})
+
+    def beats(restricted_ok: bool) -> list[dict]:
+        return story.build(
+            restricted_ok=restricted_ok,
+            flow=movement.to_dict(), lost=lost, radar=[],
+            radar_totals={"confident_impact": 0, "count": 0},
+            dormant={"count": 0, "customers": []},
+            concentration=story.concentration_of(
+                [m.to_dict() for m in movement.moves], {"c1": "Acme"}),
+            currency="INR")["beats"]
+
+    #: Every route these screens serve behind `require_manager_or_owner`.
+    restricted_routes = {"lost-revenue", "opportunities"}
+
+    for beat in beats(restricted_ok=False):
+        assert beat["action"]["route"] not in restricted_routes, (
+            f"{beat['kind']} points a salesperson at {beat['action']['route']}")
+
+    # The manager keeps the breakdown, so this is a role difference and not a
+    # feature quietly removed for everybody.
+    manager_routes = {b["action"]["route"] for b in beats(restricted_ok=True)}
+    assert "lost-revenue" in manager_routes
+
+
 def test_an_empty_storyboard_explains_itself():
     built = story.build(flow={}, lost={"total_lost": 0, "causes": []}, radar=[],
+                        restricted_ok=True,
                         radar_totals={}, dormant={"count": 0},
                         concentration={"top_customer_share": None},
                         currency="INR")
@@ -296,6 +339,7 @@ def test_headlines_carry_their_currency():
              _sale("c1", date(2026, 6, 10), 40000)]
     movement = flow.compute(sales, {"c1": "Acme"}, c)
     built = story.build(
+        restricted_ok=True,
         flow=movement.to_dict(),
         lost=cohorts.lost_revenue(sales, {"c1": "Acme"}, c, {}),
         radar=[], radar_totals={"confident_impact": 0, "count": 0},
@@ -315,6 +359,7 @@ def test_a_dollar_tenant_gets_a_dollar_headline():
              _sale("c1", date(2026, 6, 10), 40000)]
     movement = flow.compute(sales, {"c1": "Acme"}, c)
     built = story.build(
+        restricted_ok=True,
         flow=movement.to_dict(),
         lost=cohorts.lost_revenue(sales, {"c1": "Acme"}, c, {}),
         radar=[], radar_totals={}, dormant={"count": 0, "customers": []},

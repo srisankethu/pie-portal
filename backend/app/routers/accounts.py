@@ -19,8 +19,8 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .. import clock
-from ..authz import Principal, current_principal
+from .. import approvals, clock
+from ..authz import Principal, can_view_customer, current_principal
 from ..db import get_session
 from ..domain import models
 from ..domain.origin import Companies
@@ -77,12 +77,21 @@ def list_accounts(
     # wrong company's account. Same projection as the item picker, so the two
     # cannot end up describing their source two different ways.
     companies = Companies(session, principal.organization_id)
+    # Who covers this account. `assigned_user_id` has been on the wire all along
+    # and rendered nowhere, so no screen could answer "whose account is this" —
+    # on a landing page called "Team focus". Resolved here rather than in the
+    # browser: the client would need the user directory, which a salesperson
+    # cannot read, and it is one indexed query for the whole list.
+    assignees = approvals.user_names(
+        session, principal.organization_id,
+        [c.assigned_user_id for c in rows if c.assigned_user_id])
     return [
         {
             "customer_id": c.customer_id,
             "name": c.name,
             "status": c.status,
             "assigned_user_id": c.assigned_user_id,
+            "assigned_to": assignees.get(c.assigned_user_id),
             "origin": companies.of(c).to_dict(),
             # One connected company means every badge says the same thing, and a
             # column of identical badges is width spent on decoration.
@@ -162,10 +171,12 @@ def list_account_items(
     Identity only — no price, no cost, no margin. The quantity and the last
     date are what make two similarly-named inserts distinguishable in a list.
     """
-    customer = session.get(models.Customer, customer_id)
-    if customer is None or customer.organization_id != principal.organization_id:
-        return []
-    if principal.is_salesperson and customer.assigned_user_id != principal.user_id:
+    # An empty list for an account this principal cannot see, and the same empty
+    # list for one that does not exist — the two must not be distinguishable. The
+    # rule itself is `authz.can_view_customer`, shared with the timeline endpoint,
+    # which answers 404 instead: a dropdown that errors is a field that breaks,
+    # while a screen that draws itself empty claims the account exists.
+    if not can_view_customer(principal, session.get(models.Customer, customer_id)):
         return []
 
     rows = session.execute(

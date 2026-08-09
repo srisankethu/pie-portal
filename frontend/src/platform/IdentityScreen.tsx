@@ -2,7 +2,8 @@ import Button from "@mui/material/Button";
 import { useCallback, useEffect, useState } from "react";
 import { since } from "../when";
 import { papi } from "./api";
-import type { ConnectorRecord, EntityKind, Identity, IdentityPolicy, IdentitySuggestion } from "./types";
+import { EmptyState, ErrorState, StatusChip } from "./kit";
+import type { ConnectorRecord, EntityKind, Identity, IdentityCoverage, IdentityPolicy, IdentitySuggestion } from "./types";
 import { Bp, Labelled, Tip } from "./ui";
 
 /**
@@ -187,10 +188,28 @@ function SuggestionCard({
         Possible existing identity found
         <span className="id-evidence">{s.evidence}</span>
       </div>
-      <p className="st-help">
-        Matched on {s.strategy}. Nothing has been linked — this is a proposal, and
-        the two records below stay exactly as their connectors hold them either way.
-      </p>
+      {/* A name match and a GSTIN match are not the same claim, and a reviewer
+          reading one sentence for both would weigh them the same. The name rule
+          only runs where there is no identifier to compare at all — so it is the
+          difference between two rows nobody could ever link and two rows a
+          government registration says are one company. */}
+      {s.strategy === "NAME" ? (
+        <>
+          <StatusChip label="Weaker evidence — a name, not an identifier" tone="warn" />
+          <p className="st-help">
+            Matched on the name alone, because neither record carries a{" "}
+            {kind === "customers" ? "GSTIN" : "SKU"} to compare. Two unrelated businesses can
+            share a name and one group can trade under several, so this is never
+            linked automatically however the setting above is set — it waits for
+            you every time. Nothing has been linked yet.
+          </p>
+        </>
+      ) : (
+        <p className="st-help">
+          Matched on {s.strategy}. Nothing has been linked — this is a proposal, and
+          the two records below stay exactly as their connectors hold them either way.
+        </p>
+      )}
 
       <div className="id-compare">
         <div>
@@ -243,6 +262,54 @@ function SuggestionCard({
   );
 }
 
+/** An empty review queue, saying which kind of empty it is.
+ *
+ *  This replaced one sentence that read every empty queue the same way: "None
+ *  means no exact matches were found — not that matching is switched off." True
+ *  and reassuring, and it was on screen while two `Pitti Engineering Ltd` rows
+ *  billed separately, because neither carried a GSTIN and the GSTIN rule could
+ *  not look at either of them. Nothing found and nothing *lookable-at* are
+ *  different answers and only one of them means the book is fine.
+ *
+ *  The counts come from the records rather than from the queue, for the reason
+ *  `identity.review_coverage` gives: a number derived from an empty queue can
+ *  only ever describe the queue.
+ */
+function NothingToReview({
+  kind, coverage,
+}: { kind: EntityKind; coverage: IdentityCoverage | null }) {
+  const noun = kind === "customers" ? "customer" : "item";
+  if (!coverage || coverage.records === 0) {
+    return (
+      <EmptyState
+        title="Nothing to review"
+        reason={`No ${noun} records have been imported yet, so there is nothing to match. Run a sync from Data & connection.`} />
+    );
+  }
+  const { records, with_key: keyed, without_key: keyless, key_name } = coverage;
+  if (keyless === 0) {
+    return (
+      <EmptyState
+        title="Nothing to review"
+        reason={`All ${records} ${noun} records carry a ${key_name}, and no two of them share one. This is the matcher having looked at everything and found nothing to join — the answer, not a gap.`} />
+    );
+  }
+  return (
+    <EmptyState
+      title="Nothing to review"
+      reason={
+        <>
+          {keyless} of {records} {noun} records carry no {key_name}, so the{" "}
+          {key_name} rule cannot compare them however often a sync runs
+          {keyed > 0 && <> — the other {keyed} it can</>}. Those {keyless} are
+          matched on their name instead, which only proposes an exact match after
+          case, punctuation and company-form words are set aside. Nothing here
+          means no two of them are named the same either.
+        </>
+      } />
+  );
+}
+
 /* ── the screen ─────────────────────────────────────────────────────────── */
 
 export function IdentityScreen({ token }: { token: string }) {
@@ -250,6 +317,7 @@ export function IdentityScreen({ token }: { token: string }) {
   const [tab, setTab] = useState<"review" | "all">("review");
   const [identities, setIdentities] = useState<Identity[]>([]);
   const [suggestions, setSuggestions] = useState<IdentitySuggestion[]>([]);
+  const [coverage, setCoverage] = useState<IdentityCoverage | null>(null);
   const [policy, setPolicy] = useState<IdentityPolicy | null>(null);
   const [canManage, setCanManage] = useState(false);
   const [q, setQ] = useState("");
@@ -268,6 +336,7 @@ export function IdentityScreen({ token }: { token: string }) {
       setIdentities(list.identities);
       setCanManage(list.can_manage);
       setSuggestions(sugg.suggestions);
+      setCoverage(sugg.coverage);
       setPolicy(pol);
       setError(null);
     } catch (e) {
@@ -325,7 +394,11 @@ export function IdentityScreen({ token }: { token: string }) {
         </div>
       </div>
 
-      {error && <div className="dp-error">{error}</div>}
+      {/* `ErrorState`, not a bare Alert: "we could not look" must never be read
+          as "there is nothing to see", and the empty states below are now
+          specific enough that an error styled like one would be mistaken for
+          one. The kit component is the one that also offers the way back. */}
+      {error && <div style={{ marginBottom: 12 }}><ErrorState error={error} onRetry={load} busy={loading} /></div>}
 
       <div className="cx-tabs" style={{ marginBottom: 12 }}>
         <button type="button" className="cx-tab" aria-pressed={tab === "review"}
@@ -362,15 +435,7 @@ export function IdentityScreen({ token }: { token: string }) {
           )}
 
           {!loading && suggestions.length === 0 && (
-            <Bp className="dp-empty">
-              <h4>Nothing to review.</h4>
-              <p>
-                Suggestions appear here when a sync imports a record whose{" "}
-                {kind === "customers" ? "GSTIN" : "SKU"} already exists under another
-                connector. None means no exact matches were found — not that
-                matching is switched off.
-              </p>
-            </Bp>
+            <NothingToReview kind={kind} coverage={coverage} />
           )}
 
           <div className="id-list">

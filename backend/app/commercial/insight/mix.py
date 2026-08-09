@@ -31,10 +31,41 @@ involved at any point — which is what makes "34% of your cutting-tool customer
 also take coolant" a fact somebody can check rather than a claim they have to
 believe.
 
-**Support before lift.** A share computed over two customers is not a pattern,
-so a pairing below ``MIN_PEERS`` reports no affinity at all rather than a
-number that will be quoted in a meeting. Same discipline as every other floor in
-this package.
+**Confidence, base rate and lift — three numbers, because one of them lies on
+its own.** ``confidence`` is that co-occurrence share, P(B│A). It is the figure
+a person quotes and the figure this grid displays, and taken alone it is
+systematically misleading in exactly the direction that wastes a sales visit: if
+almost every customer on the book buys cutting tools, then "90% of your coolant
+customers also take cutting tools" is 90% and carries no information at all,
+because 90% of *everybody* takes them. ``base_rate`` is P(B) — how common the
+line is regardless of the anchor — and ``lift`` is the ratio of the two. Lift
+near 1.0 means the pairing tells you nothing; above 1.0 means holding A really
+does go with holding B.
+
+So gaps are **ordered by lift and shown with confidence**, and the base rate
+travels with both so the reader can see why a big-looking share was demoted.
+
+This matters far more on the principal pivot than on the category one, and it is
+worth knowing which you are looking at. There are five lines of the business and
+nearly every customer takes cutting tools, so on ``BY_CATEGORY`` the base rate of
+the dominant line is close to 1 and lift can only ever say "no information here"
+about it. Across principals the base rates are uneven and lift genuinely
+reorders the list.
+
+The function behind ``confidence`` was called ``_lift`` and returned P(B│A) —
+which is confidence, not lift. Nothing computed the wrong thing; the name did.
+It is worth recording because the next person to want a real lift would have
+found the name taken, written ``_lift2`` beside it, and left two functions
+disagreeing about a word.
+
+**Support before either.** A share computed over two customers is not a pattern,
+so a pairing whose anchor is below ``MIN_PEERS`` reports no affinity at all
+rather than a number that will be quoted in a meeting. Lift needs the same floor
+on the *other* side as well: dividing by a base rate drawn from three customers
+produces a large ratio out of nothing, and a rare line would top every list on
+noise. Both floors are applied, and a pairing that clears the first but not the
+second reports its confidence with ``lift`` left null rather than being dropped —
+the co-occurrence is still a fact, and only the comparison is unsupported.
 
 **One grid, two pivots.** The columns are lines of the business or they are
 principals, and nothing else in here changes: the cell states, the affinity, the
@@ -75,6 +106,14 @@ CELL_MEANING: dict[str, str] = {
 #: Fewer customers than this behind an affinity figure and it is a coincidence
 #: wearing a percentage sign.
 MIN_PEERS = 5
+
+#: Fewer customers than this taking a line and its base rate cannot carry a
+#: division. Lift is confidence ÷ base rate, so a rare line produces a huge
+#: ratio out of two coincidences and tops the list on noise. Separate from
+#: ``MIN_PEERS`` because they floor different sides of the comparison: that one
+#: guards the anchor a share is computed *over*, this one guards the target the
+#: share is compared *against*.
+MIN_BASE = 5
 
 #: How long a line has to be quiet before a customer counts as having lapsed
 #: out of it, as a multiple of the window. Expressed against the window rather
@@ -182,7 +221,7 @@ def build(lines: Iterable[MixLine], names: dict[str, str], as_of: date, *,
             "categories": [c.__dict__ | {"category": c.key} for c in cols],
             "customers": [], "affinity": [], "counts": {},
             "cell_meanings": CELL_MEANING, "months": months,
-            "min_peers": MIN_PEERS,
+            "min_peers": MIN_PEERS, "min_base": MIN_BASE, "population": 0,
             "empty_reason": _empty_reason(all_lines, order, dimension),
             "thresholds_version": thresholds.version,
         }
@@ -211,6 +250,12 @@ def build(lines: Iterable[MixLine], names: dict[str, str], as_of: date, *,
             if cell.state == BUYS and key in taken:
                 taken[key].add(customer)
 
+    # The denominator of every base rate: customers with any live trade in the
+    # window. Not `len(per)`, which includes customers whose every line has
+    # lapsed — they take nothing now, so counting them would depress every base
+    # rate and inflate every lift by the same factor.
+    population = len({c for holders in taken.values() for c in holders})
+
     customers = []
     for customer, cells in sorted(
             per.items(),
@@ -229,7 +274,7 @@ def build(lines: Iterable[MixLine], names: dict[str, str], as_of: date, *,
             # The gaps, ranked by how many comparable customers take them. This
             # is the "worth a call" ordering, and it is a *suggestion of where
             # to look*, never an assertion that the money is there.
-            "gaps": _gaps(present, held, taken, order, label_of),
+            "gaps": _gaps(present, held, taken, order, label_of, population),
         })
 
     return {
@@ -237,7 +282,7 @@ def build(lines: Iterable[MixLine], names: dict[str, str], as_of: date, *,
         "dimension": dimension,
         "categories": [{"category": c.key, "label": c.label} for c in cols],
         "customers": customers,
-        "affinity": _affinity_table(taken, order, label_of),
+        "affinity": _affinity_table(taken, order, label_of, population),
         "counts": {
             "customers": len(customers),
             "full_coverage": sum(1 for c in customers
@@ -249,6 +294,10 @@ def build(lines: Iterable[MixLine], names: dict[str, str], as_of: date, *,
         "cell_meanings": CELL_MEANING,
         "months": months,
         "min_peers": MIN_PEERS,
+        "min_base": MIN_BASE,
+        # What every base rate was computed over, so a reader can check a lift
+        # rather than take it.
+        "population": population,
         "empty_reason": None,
         "thresholds_version": thresholds.version,
     }
@@ -256,13 +305,21 @@ def build(lines: Iterable[MixLine], names: dict[str, str], as_of: date, *,
 
 def _gaps(cells: dict[str, Cell], held: list[str],
           taken: dict[str, set[str]], order: list[str],
-          label_of: dict[str, str]) -> list[dict]:
+          label_of: dict[str, str], population: int) -> list[dict]:
     """Every line this customer does not currently buy, with its affinity.
 
     ``affinity`` is the strongest single pairing: of the customers who take a
     line this one *does* hold, what share also take the missing line. The line
     it is measured from travels with it, because "34%" is meaningless without
     "of your cutting-tool customers".
+
+    **Strongest by lift, not by confidence.** The anchor worth naming is the one
+    that tells the reader something they did not already know. Picking by
+    confidence picks whichever anchor happens to sit beside the commonest line
+    on the book, which is the same answer for every customer and is why an
+    affinity column stops being read. Where no pairing supports a lift, the best
+    confidence is used instead — a fact with a weaker ordering behind it beats
+    an empty cell.
     """
     out = []
     for key in order:
@@ -270,61 +327,124 @@ def _gaps(cells: dict[str, Cell], held: list[str],
         if cell.state == BUYS:
             continue
         best: Optional[dict] = None
+        best_rank: tuple[int, float] = (-1, -1.0)
         for anchor in held:
-            share, peers = _lift(taken, anchor, key)
-            if share is None:
+            affinity = _affinity(taken, anchor, key, population)
+            if affinity.confidence is None:
                 continue
-            if best is None or share > best["share"]:
-                best = {"from": anchor, "from_label": label_of.get(anchor, anchor),
-                        "share": share, "peers": peers}
+            # Lift first where it exists, confidence as the tiebreak and the
+            # fallback. The leading flag keeps a pairing that has a lift above
+            # every pairing that does not, whatever their shares.
+            rank = ((1, affinity.lift) if affinity.lift is not None
+                    else (0, affinity.confidence))
+            if rank > best_rank:
+                best_rank = rank
+                best = {"from": anchor,
+                        "from_label": label_of.get(anchor, anchor),
+                        **affinity.to_dict()}
         out.append({
             "category": key, "label": label_of.get(key, key),
             "state": cell.state,
             "last_traded": cell.last_traded.isoformat() if cell.last_traded else None,
             "affinity": best,
         })
-    # Lapsed first — the line was already approved once — then by how many
-    # comparable customers take it.
+    # Lapsed first — the line was already approved once — then by how much the
+    # pairing actually tells you. Ordering on the raw share put whichever line
+    # everybody buys at the top of every customer's list.
     out.sort(key=lambda g: (g["state"] != LAPSED,
-                            -((g["affinity"] or {}).get("share") or 0.0)))
+                            -((g["affinity"] or {}).get("lift") or 0.0),
+                            -((g["affinity"] or {}).get("confidence") or 0.0)))
     return out
 
 
-def _lift(taken: dict[str, set[str]], anchor: str, target: str
-          ) -> tuple[Optional[float], int]:
-    """Share of ``anchor``'s customers who also take ``target``.
+@dataclass(frozen=True)
+class Affinity:
+    """One ordered pairing, and the three numbers needed to read it.
 
-    ``None`` below the support floor. A share over four customers is an anecdote,
-    and an anecdote rendered as a percentage is how a screen ends up quoted in a
-    meeting as though it were evidence.
+    Kept as a value rather than a bare tuple because the three travel together
+    everywhere and always have to: ``confidence`` alone is the misleading half,
+    and a caller that received only it would have no way of knowing.
     """
-    base = taken.get(anchor) or set()
-    if len(base) < MIN_PEERS:
-        return None, len(base)
-    both = base & (taken.get(target) or set())
-    return round(len(both) / len(base), 4), len(base)
+
+    #: P(B│A) — of the customers who take the anchor, the share who also take
+    #: the target. The figure a person quotes. ``None`` below ``MIN_PEERS``.
+    confidence: Optional[float]
+    #: P(B) — how common the target is across the whole book, regardless of the
+    #: anchor. What makes a large confidence readable.
+    base_rate: Optional[float]
+    #: confidence ÷ base_rate. 1.0 means the pairing carries no information;
+    #: above 1.0 means holding the anchor really does go with holding the
+    #: target. ``None`` when either side is below its floor.
+    lift: Optional[float]
+    #: How many customers the anchor share was computed over.
+    peers: int
+    #: How many take the target at all — the denominator of the base rate.
+    base: int
+
+    def to_dict(self) -> dict:
+        return {"confidence": self.confidence, "base_rate": self.base_rate,
+                "lift": self.lift, "peers": self.peers, "base": self.base,
+                # The old wire name for confidence. Kept so a client rendering
+                # this grid does not break on the same release that adds lift;
+                # `share` and `confidence` are the same number by construction.
+                "share": self.confidence,
+                "estimable": self.confidence is not None}
+
+
+def _affinity(taken: dict[str, set[str]], anchor: str, target: str,
+              population: int) -> Affinity:
+    """How much more likely a customer is to take ``target`` given ``anchor``.
+
+    Two independent floors, because the comparison has two sides and each can
+    be thin on its own. ``MIN_PEERS`` guards the anchor: a share over four
+    customers is an anecdote, and an anecdote rendered as a percentage is how a
+    screen ends up quoted in a meeting as though it were evidence. ``MIN_BASE``
+    guards the target: lift divides by the base rate, so a line taken by three
+    customers yields a huge ratio out of a coincidence and would top every list.
+
+    Clearing the first but not the second returns the confidence with a null
+    lift rather than nothing at all — the co-occurrence remains a fact, and it
+    is only the comparison against the base rate that is unsupported.
+    """
+    base_set = taken.get(target) or set()
+    base_rate = (round(len(base_set) / population, 4)
+                 if population > 0 and len(base_set) >= MIN_BASE else None)
+
+    peers = taken.get(anchor) or set()
+    if len(peers) < MIN_PEERS:
+        return Affinity(None, base_rate, None, len(peers), len(base_set))
+
+    confidence = round(len(peers & base_set) / len(peers), 4)
+    lift = (round(confidence / base_rate, 4)
+            if base_rate else None)
+    return Affinity(confidence, base_rate, lift, len(peers), len(base_set))
 
 
 def _affinity_table(taken: dict[str, set[str]], order: list[str],
-                    label_of: dict[str, str]) -> list[dict]:
+                    label_of: dict[str, str], population: int) -> list[dict]:
     """Every ordered pair, for the legend under the grid.
 
     Ordered pairs rather than unordered: "of coolant buyers, 90% take cutting
     tools" and "of cutting-tool buyers, 20% take coolant" are both true, both
     useful, and describe completely different opportunities. Collapsing them
     into one symmetric number would lose the only one worth acting on.
+
+    Lift is *not* symmetric-looking by accident either: it is the same number
+    both ways round, since P(B│A)/P(B) equals P(A│B)/P(A). That is a property
+    worth knowing rather than a bug — the two confidences differ and say which
+    direction is worth selling, while the single shared lift says whether the
+    pair is related at all.
     """
     out = []
     for anchor in order:
         for target in order:
             if anchor == target:
                 continue
-            share, peers = _lift(taken, anchor, target)
+            affinity = _affinity(taken, anchor, target, population)
             out.append({
                 "from": anchor, "from_label": label_of.get(anchor, anchor),
                 "to": target, "to_label": label_of.get(target, target),
-                "share": share, "peers": peers,
-                "estimable": share is not None,
+                **affinity.to_dict(),
             })
     return out
 

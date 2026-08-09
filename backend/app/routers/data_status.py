@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from .. import clock
 from ..authz import Principal, current_principal, require_manager_or_owner, require_owner
 from ..config import settings
 from ..db import get_session
@@ -85,10 +86,10 @@ def _run_dict(r: Optional[models.SyncRun]) -> Optional[dict[str, Any]]:
         # unlike a document count Zoho will not reveal in advance.
         "windows_total": r.windows_total,
         "windows_done": r.windows_done,
-        "heartbeat_at": r.heartbeat_at.isoformat() if r.heartbeat_at else None,
+        "heartbeat_at": clock.iso(r.heartbeat_at),
         "connection_id": r.connection_id,
-        "started_at": r.started_at.isoformat() if r.started_at else None,
-        "finished_at": r.finished_at.isoformat() if r.finished_at else None,
+        "started_at": clock.iso(r.started_at),
+        "finished_at": clock.iso(r.finished_at),
         "customers": r.customers, "products": r.products,
         "sales_txns": r.sales_txns, "cost_records": r.cost_records,
         "vendors": r.vendors, "stock_snapshots": r.stock_snapshots,
@@ -292,8 +293,8 @@ def _credential_dict(session: Session, cred, org: str) -> dict:
         "shared_with_organization_ids": cred.shared_with_organization_ids or [],
         "accounts_base": cred.accounts_base,
         "api_base": cred.api_base,
-        "rotated_at": cred.rotated_at.isoformat() if cred.rotated_at else None,
-        "created_at": cred.created_at.isoformat() if cred.created_at else None,
+        "rotated_at": clock.iso(cred.rotated_at),
+        "created_at": clock.iso(cred.created_at),
         "used_by": [
             {"organization_id": c.organization_id,
              "zoho_organization_id": c.zoho_organization_id}
@@ -501,7 +502,7 @@ def _sync_state(session: Session, org: str) -> dict:
         "busy_connections": [r.connection_id for r in running
                              if r.connection_id is not None],
         "last": _run_dict(last),
-        "last_successful_at": (ok.started_at.isoformat()
+        "last_successful_at": (clock.iso(ok.started_at)
                                if ok is not None and ok.started_at else None),
         # Kept, and no longer the gate for a per-connection button. An
         # organization-wide pull — the "sync everything" path, which carries no

@@ -26,6 +26,7 @@ from typing import Any, Optional
 
 from sqlalchemy.orm import Session
 
+from .. import clock
 from ..domain import models
 from .config import CommercialThresholds, load_commercial_thresholds
 
@@ -359,7 +360,7 @@ def describe(session: Session, organization_id: str) -> dict:
         # rupee sign ended up hardcoded in four components.
         "currency": effective.currency,
         "fields": fields,
-        "updated_at": row.updated_at.isoformat() if row is not None and row.updated_at else None,
+        "updated_at": clock.iso(row.updated_at) if row is not None and row.updated_at else None,
     }
 
 

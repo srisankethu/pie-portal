@@ -2483,8 +2483,8 @@ def _last_two_syncs(session: Session, org: str) -> tuple[Optional[dict], Optiona
             return None
         return {
             "status": run.status,
-            "started_at": run.started_at.isoformat() if run.started_at else None,
-            "finished_at": run.finished_at.isoformat() if run.finished_at else None,
+            "started_at": clock.iso(run.started_at),
+            "finished_at": clock.iso(run.finished_at),
         }
 
     return (_d(rows[0] if rows else None), _d(rows[1] if len(rows) > 1 else None))

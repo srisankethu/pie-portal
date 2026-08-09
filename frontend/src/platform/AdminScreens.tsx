@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { ROLE_LABEL } from "./format";
 import { formatDateTime } from "../when";
 import { papi } from "./api";
 import type {
@@ -37,11 +38,6 @@ import { money, moneySymbol } from "../money";
  * anything. The queue is where that now lands; settings is where an owner
  * decides how strict it should be and who is allowed to answer it.
  */
-
-const ROLE_LABEL: Record<Role, string> = {
-  SALESPERSON: "Salesperson",
-  SALES_MANAGER: "Sales manager",
-  OWNER: "Owner" };
 
 const ROLE_HELP: Record<Role, string> = {
   SALESPERSON: "Their own accounts. Never sees cost or margin.",
@@ -161,13 +157,24 @@ function ApprovalCard({
         <div className="ap-actions">
           <input
             className="input"
-            placeholder="Add a note (required to reject or return)"
+            placeholder={
+              req.requires_rationale
+                ? "Why is this worth it? (required — this price is below cost)"
+                : "Add a note (required to reject or return)"
+            }
             value={note}
             onChange={(e) => setNote(e.target.value)}
             aria-label="Decision note"
           />
           <div className="ap-buttons">
-            <Button variant="contained" size="small" disabled={busy} onClick={() => act("APPROVED")}>
+            {/* Signing a below-cost line is the one irreversible concession here,
+                and it was the only decision in the app that took no reason at
+                all. The server refuses it too — this only stops the round trip. */}
+            <Button
+              variant="contained" size="small"
+              disabled={busy || (req.requires_rationale && !note.trim())}
+              onClick={() => act("APPROVED")}
+            >
               Approve
             </Button>
             <Button
@@ -190,9 +197,13 @@ function ApprovalCard({
 
       {req.is_open && !req.can_decide && (
         <div className="ap-waiting">
-          {isMine
-            ? `Waiting on ${req.required_authority === "OWNER" ? "an owner" : "a manager"}.`
-            : "You are not authorized to decide this one."}
+          {/* The server's own reason, when it gave one. Deriving the sentence
+              from `required_authority` told a manager that their own
+              manager-authority request was "waiting on a manager". */}
+          {req.cannot_decide_reason
+            ?? (isMine
+              ? `Waiting on ${req.required_authority === "OWNER" ? "an owner" : "a manager"}.`
+              : "You are not authorized to decide this one.")}
           {isMine && (
             <Button variant="text" size="small" disabled={busy} onClick={() => act("WITHDRAWN")}>
               Withdraw
@@ -273,7 +284,7 @@ export function ApprovalsScreen({ session }: { session: PlatformSession }) {
         </div>
       </div>
 
-      {error && <div className="dp-error">{error}</div>}
+      {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
       {loading && <div className="text-muted">Loading…</div>}
 
       {!loading && visible.length === 0 && (
@@ -1145,7 +1156,14 @@ export function SettingsScreen({ session }: { session: PlatformSession }) {
   const [pw, setPw] = useState({ current: "", next: "" });
   const [pwMsg, setPwMsg] = useState<string | null>(null);
 
+  // Mirrors `require_manager_or_owner`, which guards both calls below. A
+  // salesperson used to fetch them anyway and get the 403 detail string rendered
+  // as a red banner above their own account panel — an API error where a sentence
+  // belonged. Don't ask for what this role cannot have.
+  const mayReadOrg = abilityFor(session).can("read", "economics");
+
   const load = useCallback(async () => {
+    if (!mayReadOrg) return;    // the account panel below needs nothing from the server
     try {
       const [u, p] = await Promise.all([
         papi.listUsers(session.token),
@@ -1160,7 +1178,7 @@ export function SettingsScreen({ session }: { session: PlatformSession }) {
     } catch (e) {
       setError((e as Error).message);
     }
-  }, [session.token]);
+  }, [session.token, mayReadOrg]);
 
   useEffect(() => {
     load();
@@ -1210,7 +1228,7 @@ export function SettingsScreen({ session }: { session: PlatformSession }) {
   // below comes from the server's own `can_manage` on the users response, and
   // swapping a server answer for a client guess would be a downgrade however
   // tidy it looked.
-  const isSales = !abilityFor(session).can("read", "economics");
+  const isSales = !mayReadOrg;
 
   return (
     <div className="dp-screen">
@@ -1220,12 +1238,14 @@ export function SettingsScreen({ session }: { session: PlatformSession }) {
           <p className="text-muted">
             {canManage
               ? "You are the owner: accounts, roles and approval policy are yours."
-              : "Your account, and how this organization is configured."}
+              : isSales
+                ? "Your account. Organization settings are the owner's."
+                : "Your account, and how this organization is configured."}
           </p>
         </div>
       </div>
 
-      {error && <div className="dp-error">{error}</div>}
+      {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
 
       {/* ── your own account ── */}
       <Bp className="st-section">

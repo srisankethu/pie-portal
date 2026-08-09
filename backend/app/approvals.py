@@ -30,6 +30,7 @@ from typing import Any, Iterable, Mapping, Optional
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from . import clock
 from .domain import models
 from .domain.enums import (
     APPROVER_DECISIONS,
@@ -49,6 +50,10 @@ class ApprovalError(Exception):
 
 class NotAuthorized(ApprovalError):
     """The actor's role is below the authority this request requires."""
+
+
+class RationaleRequired(ApprovalError):
+    """An approval that must carry a reason was submitted without one."""
 
 
 # ── policy ──────────────────────────────────────────────────────────────────
@@ -72,24 +77,63 @@ def authority_for(*, below_cost: bool, policy: models.OrgPolicy) -> ApprovalAuth
     return ApprovalAuthority.MANAGER
 
 
+def rationale_required(request: models.ApprovalRequest) -> bool:
+    """Whether approving this request must come with a reason.
+
+    True for an owner-authority request, which today means exactly one thing:
+    `authority_for` escalates to the owner when a line is priced below what the
+    item cost us. That is the one irreversible commercial concession the product
+    offers — the money is gone the moment the quote goes out — and it was the
+    only decision in the app that took no reason at all. "Ask for a different
+    price" and the decision screen's "Do something different" both refuse to
+    proceed without text; approving a loss did not.
+
+    Asked here rather than derived in the browser from `required_authority`, so
+    the rule has one home and the screen renders what the server enforces.
+    """
+    return ApprovalAuthority(request.required_authority) is ApprovalAuthority.OWNER
+
+
 def can_decide(role: Role, required: ApprovalAuthority) -> bool:
     if required is ApprovalAuthority.OWNER:
         return role is Role.OWNER
     return role in (Role.SALES_MANAGER, Role.OWNER)
 
 
-def _assert_can_decide(principal, request: models.ApprovalRequest,
-                       policy: models.OrgPolicy) -> None:
+def refusal_for(principal, request: models.ApprovalRequest,
+                policy: models.OrgPolicy) -> Optional[str]:
+    """Why this principal may not decide this request, or None if they may.
+
+    One predicate, because there used to be two and they disagreed. `can_decide`
+    above answers from role and authority alone, and `to_dict` served that as
+    `can_decide: true` on a manager's *own* request — so the card rendered an
+    enabled Approve, and pressing it 403'd from the rule this function now holds.
+    The same mismatch inflated `pending_count`, which is what the nav badge and
+    "2 waiting on you" read, so a manager was told they had work they could not
+    do and then shown a queue where one item refused them.
+
+    Returns the reason rather than a bool so the screen can say why the action is
+    unavailable instead of guessing from the authority field. Guessing is how the
+    not-decidable branch ended up telling a manager their own manager-authority
+    request was "waiting on a manager".
+    """
     required = ApprovalAuthority(request.required_authority)
     if not can_decide(principal.role, required):
-        raise NotAuthorized(
-            "Selling below what the item cost us is the owner's decision"
-            if required is ApprovalAuthority.OWNER
-            else "A sales manager or owner must decide this")
+        return ("Selling below what the item cost us is the owner's decision"
+                if required is ApprovalAuthority.OWNER
+                else "A sales manager or owner must decide this")
     if (request.requested_by_user_id == principal.user_id
             and not policy.allow_self_approval
             and principal.role is not Role.OWNER):
-        raise NotAuthorized("You cannot approve your own request")
+        return "You cannot approve your own request"
+    return None
+
+
+def _assert_can_decide(principal, request: models.ApprovalRequest,
+                       policy: models.OrgPolicy) -> None:
+    reason = refusal_for(principal, request, policy)
+    if reason is not None:
+        raise NotAuthorized(reason)
 
 
 # ── raising ─────────────────────────────────────────────────────────────────
@@ -183,6 +227,15 @@ def decide(session: Session, principal, request: models.ApprovalRequest,
 
     policy = get_policy(session, principal.organization_id)
     _assert_can_decide(principal, request, policy)
+    if (status is ApprovalStatus.APPROVED
+            and rationale_required(request)
+            and not (note or "").strip()):
+        # Enforced here and not only in the form. A rule that lives in the client
+        # is a rule anything not the client ignores, which is the shape of most
+        # of what this branch has been fixing.
+        raise RationaleRequired(
+            "Signing a price below what the item cost us needs a reason on the "
+            "record. Say why this one is worth it.")
 
     request.status = status.value
     request.decided_by_user_id = principal.user_id
@@ -398,16 +451,29 @@ def inbox(session: Session, principal, *, status: Optional[ApprovalStatus] = Non
 
 
 def pending_count(session: Session, principal) -> int:
+    """How many open requests this principal can actually decide.
+
+    "Can actually" includes the self-approval rule, which this used to ignore —
+    so the badge counted a manager's own request as work waiting on them.
+    """
+    policy = get_policy(session, principal.organization_id)
     return sum(1 for r in inbox(session, principal, status=ApprovalStatus.PENDING)
-               if can_decide(principal.role, ApprovalAuthority(r.required_authority)))
+               if refusal_for(principal, r, policy) is None)
 
 
-def to_dict(request: models.ApprovalRequest, role: Role,
+def to_dict(request: models.ApprovalRequest, principal,
+            policy: models.OrgPolicy,
             names: Optional[dict[str, str]] = None) -> dict:
     """Serialize a request. ``subject`` carries cost and margin, so a
-    salesperson — including the one who raised it — does not receive it."""
+    salesperson — including the one who raised it — does not receive it.
+
+    Takes the principal and the policy rather than a bare role, because whether
+    this request is decidable depends on who is asking and on
+    ``allow_self_approval`` — see ``refusal_for``.
+    """
     names = names or {}
-    is_sales = role is Role.SALESPERSON
+    is_sales = principal.role is Role.SALESPERSON
+    refusal = refusal_for(principal, request, policy)
     out: dict[str, Any] = {
         "approval_request_id": request.approval_request_id,
         "kind": request.kind,
@@ -422,13 +488,31 @@ def to_dict(request: models.ApprovalRequest, role: Role,
         "requested_by": names.get(request.requested_by_user_id,
                                   request.requested_by_user_id),
         "requested_by_user_id": request.requested_by_user_id,
-        "requested_at": request.requested_at.isoformat() if request.requested_at else None,
+        # `clock.iso`, not a bare `isoformat()`: these columns are
+        # `DateTime(timezone=True)` and SQLite drops the tzinfo, so the same field
+        # went out as "…T16:46:31+00:00" from the POST and "…T16:46:31" from the
+        # GET. The browser reads the offsetless one as local time, so an approval
+        # raised at 10:16 pm IST rendered on `/approvals` as "4:46 pm" — five and
+        # a half hours wrong, on an audit record, while the Quote Builder's own
+        # "Saved 10:13 pm" on the adjacent screen was right.
+        "requested_at": clock.iso(request.requested_at),
         "decided_by": (names.get(request.decided_by_user_id, request.decided_by_user_id)
                        if request.decided_by_user_id else None),
-        "decided_at": request.decided_at.isoformat() if request.decided_at else None,
+        "decided_at": clock.iso(request.decided_at),
         "decision_note": request.decision_note,
         "thread": request.thread or [],
-        "can_decide": can_decide(role, ApprovalAuthority(request.required_authority)),
+        # Which margin policy judged this price. The column was always populated
+        # and never served, so the one screen where "was this signed off under
+        # the rules we had then?" is the whole question could not answer it.
+        "thresholds_version": request.thresholds_version or None,
+        "can_decide": refusal is None,
+        # Whether the approve action must carry a note. The screen disables the
+        # button until there is one rather than deriving the rule from the
+        # authority field.
+        "requires_rationale": rationale_required(request),
+        # Why not, for the screen to render in place of the button it is not
+        # offering. Absent when the action is available.
+        "cannot_decide_reason": refusal,
         "is_open": ApprovalStatus(request.status) in OPEN_APPROVAL_STATUSES,
     }
     if not is_sales:

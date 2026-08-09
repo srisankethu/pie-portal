@@ -18,6 +18,9 @@
 // a bar's colour is an *encoding* with a legend, not a status.
 
 import type { ReactNode } from "react";
+
+import { formatDateTime } from "../when";
+import type { HumanAction, HumanActionEntry } from "./types";
 import Alert from "@mui/material/Alert";
 import AlertTitle from "@mui/material/AlertTitle";
 import Avatar from "@mui/material/Avatar";
@@ -525,5 +528,48 @@ export function ChartTip({
     >
       {children}
     </Tooltip>
+  );
+}
+
+
+/** A decision's human trail: who did what, when, and why.
+ *
+ * One component because the same block was written twice in `PlatformApp` — the
+ * state-derived panel and the signal-derived one — and §2 asks for a shared
+ * piece the second time a pattern appears. It was also wrong in both copies in
+ * the same way: it rendered the action and the note and dropped the actor,
+ * which in a three-person business is the first thing anyone asks.
+ *
+ * Renders the whole trail, oldest first, so a reversal appears next to what it
+ * reversed. Falls back to the single latest action for a decision last touched
+ * before the trail existed. Times, not just dates: two actions on one day are
+ * the normal case, and a trail whose order you cannot see is not a trail.
+ */
+export function HumanLog({ action }: { action: HumanAction }) {
+  const entries: HumanActionEntry[] =
+    action.trail && action.trail.length > 0 ? action.trail : [action];
+  return (
+    <>
+      <SectionHeader title="Human log" level="widget" />
+      <Stack spacing={0.5}>
+        {entries.map((e, i) => (
+          <Stack
+            key={`${e.acted_at}-${i}`}
+            direction="row"
+            spacing={1}
+            sx={{ justifyContent: "space-between", alignItems: "baseline" }}
+          >
+            <Typography variant="body2">
+              <strong>{e.action}</strong>
+              {" · "}
+              {e.note || "no note"}
+            </Typography>
+            <Typography variant="caption" color="text.secondary" sx={{ whiteSpace: "nowrap" }}>
+              {e.actor_name || e.actor_user_id} · {formatDateTime(e.acted_at)}
+            </Typography>
+          </Stack>
+        ))}
+      </Stack>
+    </>
   );
 }

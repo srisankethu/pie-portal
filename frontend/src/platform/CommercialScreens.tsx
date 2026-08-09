@@ -3,6 +3,7 @@ import Button from "@mui/material/Button";
 import MenuItem from "@mui/material/MenuItem";
 import TextField from "@mui/material/TextField";
 import { useCallback, useEffect, useState } from "react";
+import { pp } from "./viz/useInsight";
 import { DataGrid, numeric, text } from "./DataGrid";
 import { formatDate } from "../when";
 import { papi } from "./api";
@@ -35,13 +36,6 @@ import { money, count } from "../money";
 /** A ratio (0.261) rendered as a percentage. */
 function pct(v: number | null | undefined, digits = 1): string {
   return v == null ? "—" : `${(v * 100).toFixed(digits)}%`;
-}
-
-/** A percentage-POINT movement, signed. Never a percent change of a percent. */
-function pp(v: number | null | undefined): string {
-  if (v == null) return "—";
-  const sign = v > 0 ? "+" : "";
-  return `${sign}${(v * 100).toFixed(1)} pp`;
 }
 
 function signedPct(v: number | null | undefined): string {

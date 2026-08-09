@@ -2,7 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react
 import { DataGrid, numeric } from "./DataGrid";
 import { EntityName, EntitySource } from "./EntityName";
 import { CompanyFilter, useCompanyFilter } from "./CompanyFilter";
-import { EmptyState, ErrorState, FilterChip, LoadingState, StatusChip } from "./kit";
+import { EmptyState, ErrorState, FilterChip, HumanLog, LoadingState, SectionHeader, StatusChip } from "./kit";
 import { formatDate } from "../when";
 import {
   clearPlatformSession,
@@ -12,9 +12,10 @@ import {
   savePlatformSession,
 } from "./api";
 import type { Account, DecisionDetail, DecisionSummary, DecisionTrace, PlatformSession, Role, StatusFilter } from "./types";
-import { aiState, factLabel, factValue, isPrimaryFact, stateFieldLabel } from "./format";
+import { aiState, factLabel, factValue, isPrimaryFact, stateFieldLabel, ROLE_LABEL } from "./format";
 import { ActionsPanel, Bp, Conf, DecisionCard, ImpactPanel, Interpretation, Labelled,
          Pri, RankingPanel, Tip, WhyPanel, typeLabel } from "./ui";
+import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
 import Paper from "@mui/material/Paper";
 import Button from "@mui/material/Button";
@@ -121,9 +122,14 @@ const NegotiateScreen = lazy(() =>
 const ROLE_HOME: Record<Role, { title: string; sub: string; nav: string }> = {
   SALESPERSON: { title: "Today", sub: "Decisions that need you, most urgent first", nav: "Today" },
   SALES_MANAGER: {
-    title: "Team focus",
-    sub: "Where the team's attention is worth spending, and what is waiting on you",
-    nav: "Team focus",
+    // Not "Team focus". This page shows the organization's decisions and the
+    // approvals waiting on you; it has never shown a view of the team, and a
+    // title promising one sends a manager looking for a screen that does not
+    // exist. The per-person roll-up is a deliberate omission while there is one
+    // salesperson to roll up — but the title should describe the page as it is.
+    title: "Where to act",
+    sub: "The decisions worth your attention, and what is waiting on your sign-off",
+    nav: "Where to act",
   },
   OWNER: { title: "Where to intervene", sub: "The commercial situations that deserve a decision", nav: "Where to intervene" },
 };
@@ -143,7 +149,8 @@ function SignIn({ onIn, notice }: { onIn: (s: PlatformSession) => void; notice?:
         const r = await papi.login(email, password);
         onIn({ token: r.token, role: r.role, name: r.name, user_id: r.user_id,
                organization_id: r.organization_id, currency: r.currency,
-               timezone: r.timezone });
+               timezone: r.timezone,
+               must_change_password: r.must_change_password });
       }}
       footer={
         "Your account decides your role. An owner creates accounts and sets roles " +
@@ -399,6 +406,24 @@ export default function PlatformApp() {
 
   if (!session) return <SignIn onIn={signIn} notice={notice} />;
 
+  // An account still holding the password it was issued reaches nothing else —
+  // the server refuses every request but the change, so showing the shell would
+  // be showing a screen where everything 403s. This is the way out, not a nag.
+  if (session.must_change_password) {
+    return (
+      <ForcedPasswordChange
+        session={session}
+        onChanged={(token) => {
+          const next = { ...session, token, must_change_password: false };
+          savePlatformSession(next);
+          setSession(next);
+          navigate(PATH.home);
+        }}
+        onSignOut={signOut}
+      />
+    );
+  }
+
   const rh = ROLE_HOME[session.role];
   const roleShort = session.role === "SALESPERSON" ? "Salesperson" : session.role === "SALES_MANAGER" ? "Manager" : "Owner";
   // What this role is offered, from one table rather than a ternary per item.
@@ -504,7 +529,15 @@ export default function PlatformApp() {
       ? ([{ key: "catalogue", label: "Item lines", group: "setup" }] as NavItem[])
       : []),
     { key: "data", label: "Data & connection", group: "setup" },
-    { key: "identity", label: "Identities", group: "setup" },
+    // Every call this screen makes is `require_manager_or_owner` — the list, the
+    // pending suggestions, the settings policy — so for a salesperson it was a
+    // nav item where nothing on the page worked. Unconditional here, three lines
+    // below the comment forbidding exactly that. `read policy` is the same
+    // manager-or-owner pair the identity reads carry; reusing it keeps the
+    // vocabulary in `ability.ts` from growing a noun per screen.
+    ...(ability.can("read", "policy")
+      ? ([{ key: "identity", label: "Identities", group: "setup" }] as NavItem[])
+      : []),
     { key: "states", label: "AI states", group: "setup" },
     { key: "settings", label: "Settings", group: "setup" },
   ];
@@ -1299,6 +1332,16 @@ function DetailScreen({
       <h1 style={{ margin: "2px 0 4px" }}>{d.subject_label}</h1>
       <div style={{ margin: "0 0 18px" }}>
         <EntitySource origin={d.subject_origin} show={Boolean(d.sources_differ)} />
+        {/* Whose this is. `assigned_user_id` and `assigned_role` were both on the
+            wire and neither reached a screen, so a card could not answer the
+            first question anybody asks about a decision. A null assignee with a
+            role set is not missing data — the decision belongs to the role — and
+            saying that beats rendering a blank. */}
+        <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>
+          {d.assigned_to
+            ? `Covered by ${d.assigned_to}`
+            : `Routed to ${ROLE_LABEL[d.assigned_role] ?? d.assigned_role} — no individual owner`}
+        </Typography>
       </div>
 
       <div className="dp-split">
@@ -1312,13 +1355,7 @@ function DetailScreen({
               <WhyPanel rationale={d.rationale} evidence={d.state_evidence} />
               <TracePanel decisionId={d.decision_id} token={token} />
               {d.human_action && (
-                <>
-                  <div className="section-h">Human log</div>
-                  <div className="evi">
-                    <span>{d.human_action.action} · {d.human_action.note || "no note"}</span>
-                    <span className="text-muted">{formatDate(d.human_action.acted_at)}</span>
-                  </div>
-                </>
+                <HumanLog action={d.human_action} />
               )}
             </>
           ) : (
@@ -1365,15 +1402,7 @@ function DetailScreen({
           )}
 
           {d.human_action && (
-            <>
-              <div className="section-h">Human log</div>
-              <div className="evi">
-                <span>
-                  {d.human_action.action} · {d.human_action.note || "no note"}
-                </span>
-                <span className="text-muted">{formatDate(d.human_action.acted_at)}</span>
-              </div>
-            </>
+            <HumanLog action={d.human_action} />
           )}
           </>
           )}
@@ -1627,6 +1656,18 @@ function CustomerScreen({
                   valueFormatter: (p) =>
                     Number(p.value) > 0 ? `${p.value} open` : "nothing",
                 }),
+                {
+                  // Whose account this is. The server has always sent
+                  // `assigned_user_id` and nothing rendered it, so no screen
+                  // could answer the first question a manager asks — on a
+                  // landing page called "Team focus". Last column and the first
+                  // to drop on a narrow screen: it is context, not the number
+                  // somebody came for.
+                  field: "assigned_to", headerName: "Covered by", width: 150, flex: 0,
+                  context: { minGridWidth: 1040 },
+                  filter: "agTextColumnFilter",
+                  valueFormatter: (p) => (p.value ? String(p.value) : "unassigned"),
+                },
               ]}
             />
           </>
@@ -1742,4 +1783,76 @@ function groupEvidence(evi: { source_system?: string; record_type?: string }[]) 
     m.set(k, (m.get(k) || 0) + 1);
   });
   return [...m.entries()].map(([system, n]) => ({ system, count: `${n} record${n === 1 ? "" : "s"}` }));
+}
+
+/** The way out for an account holding a password somebody else issued.
+ *
+ * Not a nag screen. `authz.current_principal` refuses a flagged account every
+ * path but the change itself, so the shell behind this would be a screen where
+ * every panel 403s. The seed sets the flag and the README publishes the password
+ * it sets, which is why this exists at all: for a while the flag was read only by
+ * the login response and a label on the admin grid, and `change-me-now` stayed
+ * live on every seeded account indefinitely.
+ *
+ * Sign out is offered because the alternative — a screen with one action and no
+ * exit — traps somebody who signed in as the wrong account.
+ */
+function ForcedPasswordChange({
+  session, onChanged, onSignOut,
+}: {
+  session: PlatformSession;
+  onChanged: (token: string) => void;
+  onSignOut: () => void;
+}) {
+  const [current, setCurrent] = useState("");
+  const [next, setNext] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await papi.changeOwnPassword(session.token, current, next);
+      onChanged(r.token);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Box sx={{ maxWidth: 460, mx: "auto", mt: 8, px: 2 }}>
+      <Paper sx={{ p: 3 }}>
+        <SectionHeader
+          title="Choose a password"
+          sub={`This account still uses the password it was issued, ${session.name}. Set your own before going on.`}
+          level="section"
+        />
+        {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
+        <form onSubmit={submit}>
+          <Stack spacing={2}>
+            <TextField
+              label="Current password" type="password" autoComplete="current-password"
+              value={current} onChange={(e) => setCurrent(e.target.value)} required fullWidth
+            />
+            <TextField
+              label="New password" type="password" autoComplete="new-password"
+              value={next} onChange={(e) => setNext(e.target.value)} required fullWidth
+            />
+            <Stack direction="row" spacing={1} sx={{ justifyContent: "space-between" }}>
+              <Button type="button" variant="text" onClick={onSignOut} disabled={busy}>
+                Sign out
+              </Button>
+              <Button type="submit" variant="contained" disabled={busy || !current || !next}>
+                {busy ? "Saving…" : "Set password"}
+              </Button>
+            </Stack>
+          </Stack>
+        </form>
+      </Paper>
+    </Box>
+  );
 }

@@ -24,6 +24,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .. import clock
 from ..authz import Principal, require_manager_or_owner
 from ..commercial.compute import compute_for, recompute
 from ..commercial.policy import load_for_org
@@ -115,8 +116,12 @@ def customer_portfolio(
             _metric_row(r, products.get(r.product_id))
             for r in sorted(portfolio.rows,
                             key=lambda x: -(float(x.revenue_12m or 0)))],
-        "computed_at": max((r.computed_at.isoformat() for r in portfolio.rows),
-                           default=None),
+        # Max over the datetimes, then serialise once — not max over ISO strings.
+        # Lexicographic order happens to agree with chronological order only while
+        # every string carries the same offset and the same precision, which is a
+        # property of the serializer rather than of the data.
+        "computed_at": clock.iso(max((r.computed_at for r in portfolio.rows),
+                                     default=None)),
     }
 
 

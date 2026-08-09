@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .. import approvals
 from ..authz import Principal, can_view_decision, current_principal, decision_list_scope
 from ..context.assembler import _flatten, _is_restricted
 from ..db import get_session
@@ -22,7 +23,7 @@ from ..domain import models
 from ..domain.origin import Companies, index_of
 from ..domain.enums import (ApprovalKind, DecisionType, HumanAction, Role,
                             SubjectEntityType)
-from .. import approvals
+from .. import clock
 from ..domain.schemas import ActionRequest, DecisionRead
 from ..repositories import DecisionRepository
 from ..state.engine import why as state_why
@@ -133,8 +134,15 @@ def _detail(session: Session, d: models.Decision, principal: Principal) -> dict:
         "subject_label": _subject_label(session, d),
         **_subject_origin(session, d),
         "assigned_user_id": d.assigned_user_id,
+        # The name, so the card can say whose this is. Null with a role set is
+        # not missing data: a decision routed to SALES_MANAGER belongs to the
+        # role rather than to a person, and the card says that instead of
+        # rendering a blank.
+        "assigned_to": (approvals.user_names(
+            session, d.organization_id, [d.assigned_user_id]).get(d.assigned_user_id)
+            if d.assigned_user_id else None),
         "assigned_role": d.assigned_role,
-        "detected_at": d.detected_at.isoformat() if d.detected_at else None,
+        "detected_at": clock.iso(d.detected_at),
         "priority": {"band": d.priority_band, "score": d.priority_score,
                      "deterministic_base": d.priority_deterministic_base,
                      "ai_adjustment": d.priority_ai_adjustment},

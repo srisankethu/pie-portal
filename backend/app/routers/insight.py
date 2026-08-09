@@ -27,7 +27,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..authz import Principal, current_principal, require_manager_or_owner
-from .. import clock
+from .. import approvals, clock
 from ..commercial import floor, incentive, policy, portfolio, principals
 from ..commercial import categories as cat
 from ..commercial.insight import (bonds, cadence, cashflow, cohorts, composition,
@@ -37,7 +37,7 @@ from ..commercial.insight import (bonds, cadence, cashflow, cohorts, composition
                                   supply, terms as vendor_terms, weather)
 from ..db import get_session
 from ..domain import models
-from ..domain.enums import ApprovalStatus, DecisionStatus, Role
+from ..domain.enums import DecisionStatus, Role
 from ..domain.origin import Companies, index_of
 from ..signals.aggregates import label_for, load_snapshot
 from ..commercial.insight import series
@@ -77,6 +77,20 @@ def _context(session: Session, principal: Principal, **bound: Any):
     snapshot = load_snapshot(session, org, **bound)
     th = policy.load_for_org(session, org)
     return org, snapshot, th
+
+
+def _books_have_sales(session: Session, org: str) -> bool:
+    """Whether any sale has ever been synced. One indexed count, no lines.
+
+    Deliberately not `bool(snapshot.sales)`: the screens that need this read a
+    labels-only snapshot, which carries no lines at all — so that test would be
+    permanently False — and `test_bounded_loads` asserts structurally that none
+    of those callers touches `snapshot.sales`. This answers the same question
+    without loading the history the snapshot was trimmed to avoid.
+    """
+    return bool(session.scalar(
+        select(func.count()).select_from(models.SalesTxn)
+        .where(models.SalesTxn.organization_id == org).limit(1)))
 
 
 def _labels_only(session: Session, principal: Principal):
@@ -158,10 +172,29 @@ def _as_of(snapshot) -> Optional[date]:
     return snapshot.as_of()
 
 
-def _no_data(currency: str, what: str) -> dict:
+def _no_data(currency: str, what: str, *, missing: str = "sales history",
+             synced: bool = False) -> dict:
+    """An empty screen, and the *actual* reason it is empty.
+
+    Two parameters because one message was being used for two different states.
+    Every screen with nothing to show said "No sales history has been synced yet
+    … connect a Zoho company and run a sync", which is right for a screen that
+    needs sales and has none, and wrong in both halves for `/payments`: 26 sale
+    lines were synced and it is `payment_receipts` that is empty. It named the
+    wrong missing thing and then gave advice that could not help — somebody sent
+    to re-run a sync that had already worked.
+
+    `missing` names what has to arrive. `synced` says the books are demonstrably
+    connected, so the closing sentence stops suggesting otherwise.
+    """
+    if synced:
+        return _envelope(
+            {}, currency=currency,
+            empty_reason=(f"The books are synced, but no {missing} has come with "
+                          f"them, so {what} cannot be computed yet."))
     return _envelope(
         {}, currency=currency,
-        empty_reason=(f"No sales history has been synced yet, so {what} cannot be "
+        empty_reason=(f"No {missing} has been synced yet, so {what} cannot be "
                       f"computed. Connect a Zoho company and run a sync."))
 
 
@@ -430,9 +463,17 @@ def opportunities(limit: int = Query(100, ge=1, le=300),
             f"{excluded['excluded_count']} of {excluded['relationships_examined']} "
             f"relationships have a real gap, but every one is below your "
             f"{excluded['floor']:,.0f} materiality floor — the largest is "
-            f"{excluded['largest_excluded']:,.0f}. Lower the floor in Settings to "
-            f"see them, or leave it: below this, a gap is real and not worth an "
-            f"afternoon.")
+            f"{excluded['largest_excluded']:,.0f}. "
+            # The materiality floor is part of the margin policy, which is
+            # `require_owner` — the Settings field is rendered disabled for a
+            # manager. Telling them to lower it addressed the action to the wrong
+            # role; the Data screen already says "Ask an owner to add one" for the
+            # same reason.
+            + ("Lower the floor in Settings to see them, or leave it: "
+               if principal.role is Role.OWNER else
+               "Ask an owner to lower the floor if you want to see them, or "
+               "leave it: ")
+            + "below this, a gap is real and not worth an afternoon.")
     else:
         reason = ("No relationship shows a named gap. Either margins are holding, "
                   "or there is not enough cost coverage yet to tell — check "
@@ -656,7 +697,11 @@ def payment_behaviour(principal: Principal = Depends(current_principal),
             models.PaymentReceipt.organization_id == org)).all()
     settled = _settlements(session, org)
     if not receipts and not settled:
-        return _no_data(th.currency, "payment behaviour")
+        # Not "no sales history": the sales may be entirely there, and what is
+        # missing is a payment against them.
+        return _no_data(th.currency, "payment behaviour",
+                        missing="customer payment",
+                        synced=_books_have_sales(session, org))
 
     result = payments.build(
         settled, snapshot.customer_names, as_of,
@@ -703,7 +748,9 @@ def payable_behaviour(principal: Principal = Depends(require_manager_or_owner),
         select(models.VendorPaymentDoc).where(
             models.VendorPaymentDoc.organization_id == org)).all()
     if not made and not settled:
-        return _no_data(th.currency, "payment behaviour towards suppliers")
+        return _no_data(th.currency, "payment behaviour towards suppliers",
+                        missing="supplier payment",
+                        synced=_books_have_sales(session, org))
 
     result = payments.build(
         settled, {vid: v.name for vid, v in vendors.items()}, as_of,
@@ -766,7 +813,10 @@ def cash_projection(weeks: int = Query(cashflow.WEEKS, ge=1, le=26),
     org, _snapshot, th = _labels_only(session, principal)
     on = latest_as_of(session, org, CASH_SCHEDULE)
     if on is None:
-        return _no_data(th.currency, "a cash projection")
+        # The projection is folded from receivables and payables state, not read
+        # from sales lines, so a synced book with no open invoices lands here.
+        return _no_data(th.currency, "a cash projection",
+                        missing="receivable or payable")
     agreed = _agreed_terms(session, org)
     settled_bills, _unattributed = _bill_settlements(session, org, terms=agreed)
     return _envelope(
@@ -907,7 +957,8 @@ def supplier_position(principal: Principal = Depends(require_manager_or_owner),
         select(models.PurchaseOrderDoc)
         .where(models.PurchaseOrderDoc.organization_id == org)).all()
     if not rows:
-        return _no_data(th.currency, "supplier orders")
+        return _no_data(th.currency, "supplier orders",
+                        missing="purchase order")
 
     orders = [
         supply.SupplierOrder(
@@ -2483,8 +2534,8 @@ def _last_two_syncs(session: Session, org: str) -> tuple[Optional[dict], Optiona
             return None
         return {
             "status": run.status,
-            "started_at": run.started_at.isoformat() if run.started_at else None,
-            "finished_at": run.finished_at.isoformat() if run.finished_at else None,
+            "started_at": clock.iso(run.started_at),
+            "finished_at": clock.iso(run.finished_at),
         }
 
     return (_d(rows[0] if rows else None), _d(rows[1] if len(rows) > 1 else None))
@@ -2636,10 +2687,14 @@ def daily(moved_from: Optional[date] = Query(None),
                       thresholds=load_signal_thresholds())
         if _as_of(full) else {})
 
-    approvals_pending = session.scalar(
-        select(func.count()).select_from(models.ApprovalRequest)
-        .where(models.ApprovalRequest.organization_id == org,
-               models.ApprovalRequest.status == ApprovalStatus.PENDING.value)) or 0
+    # Role-scoped, and the same function the queue and the nav badge use. This
+    # was an unscoped `count(*)` over every PENDING request in the organization,
+    # so one role's landing page said 3 while the badge said 2 and exactly 1 was
+    # decidable: the tile counted an OWNER-authority below-cost request that
+    # `approvals.inbox` deliberately keeps out of a manager's queue, and its
+    # "Work through these →" therefore landed on a screen where the third item
+    # did not exist and could not be made to appear. One number, from one place.
+    approvals_pending = approvals.pending_count(session, principal)
 
     band_rows = session.execute(
         select(models.Decision.priority_band, func.count())

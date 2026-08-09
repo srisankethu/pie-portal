@@ -30,6 +30,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
+from .. import clock
 from ..authz import Principal, require_manager_or_owner, require_owner
 from ..config import settings
 from ..db import get_session
@@ -156,7 +157,7 @@ def _dict(session: Session, row: models.ZohoConnection) -> dict:
         # or under-reads at least one.
         "last_sync": None if last is None else {
             "status": last.status,
-            "started_at": last.started_at.isoformat() if last.started_at else None,
+            "started_at": clock.iso(last.started_at),
             "since": last.since.isoformat() if last.since else None,
             "sales_txns": last.sales_txns,
             "cost_records": last.cost_records,
@@ -181,14 +182,14 @@ def _dict(session: Session, row: models.ZohoConnection) -> dict:
         # An identifier, not a secret — it is what tells two grants apart in a list.
         "client_id": cred.client_id if cred else row.client_id,
         "credential_label": (cred.label or "Zoho connection") if cred else "inline (legacy)",
-        "credential_rotated_at": (cred.rotated_at.isoformat()
+        "credential_rotated_at": (clock.iso(cred.rotated_at)
                                   if cred and cred.rotated_at else None),
         "accounts_base": row.accounts_base,
         "api_base": row.api_base,
-        "last_checked_at": row.last_checked_at.isoformat() if row.last_checked_at else None,
+        "last_checked_at": clock.iso(row.last_checked_at),
         "last_check_ok": row.last_check_ok,
         "last_check_detail": row.last_check_detail,
-        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "created_at": clock.iso(row.created_at),
     }
 
 
@@ -207,7 +208,7 @@ def list_connections(
              "label": c.label or "Zoho connection",
              "client_id": c.client_id,
              "is_owner": c.owner_organization_id == org,
-             "rotated_at": c.rotated_at.isoformat() if c.rotated_at else None,
+             "rotated_at": clock.iso(c.rotated_at),
              "used_by": len(conn.connections_using(session, c.credential_id))}
             for c in credentials
         ],

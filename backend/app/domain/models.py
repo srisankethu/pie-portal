@@ -233,6 +233,13 @@ class User(Base):
     # roles a display preference rather than a boundary.
     password_hash: Mapped[Optional[str]] = mapped_column(String(255))
     must_change_password: Mapped[bool] = mapped_column(Boolean, default=False)
+    #: When this account's password last changed. Tokens carry an `iat`, so this
+    #: is what makes a credential change retire the sessions that were opened
+    #: with the old one — otherwise a token minted before the change kept working
+    #: indefinitely, which is the one thing a password change is for after a
+    #: suspected compromise. Null on an account whose password has never changed.
+    password_changed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True))
     last_login_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     # Who created this account, and who last changed its role. Role changes are
     # the most security-relevant edit in the product; an unattributed one is not

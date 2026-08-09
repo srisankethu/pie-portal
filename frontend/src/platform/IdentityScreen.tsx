@@ -1,5 +1,6 @@
 import Button from "@mui/material/Button";
 import { useCallback, useEffect, useState } from "react";
+import Alert from "@mui/material/Alert";
 import { since } from "../when";
 import { papi } from "./api";
 import type { ConnectorRecord, EntityKind, Identity, IdentityPolicy, IdentitySuggestion } from "./types";
@@ -325,7 +326,7 @@ export function IdentityScreen({ token }: { token: string }) {
         </div>
       </div>
 
-      {error && <div className="dp-error">{error}</div>}
+      {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
 
       <div className="cx-tabs" style={{ marginBottom: 12 }}>
         <button type="button" className="cx-tab" aria-pressed={tab === "review"}

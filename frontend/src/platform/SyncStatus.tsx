@@ -263,7 +263,17 @@ export function SyncStatusCard({
         <>
           <div className="sy-line">
             <span className="sy-phase">
-              {status === "OK" && "Finished cleanly"}
+              {/* The source belongs on the result, not only in the page header.
+                  A run against the offline sample source reported "Finished
+                  cleanly · Customers 3 · Items 2 · Sales lines 75" — which reads
+                  exactly like a successful pull from the owner's own books, and
+                  the numbers underneath it are fixture rows. The header did say
+                  "running against the offline sample source", several inches
+                  away and before the run; this is the block somebody screenshots
+                  and believes. */}
+              {status === "OK" && (shown.source === "fixture"
+                ? "Finished cleanly — sample source, not your books"
+                : "Finished cleanly")}
               {status === "PARTIAL" && "Stopped before it finished"}
               {status === "FAILED" && "Did not complete"}
             </span>

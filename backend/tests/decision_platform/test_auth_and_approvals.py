@@ -322,9 +322,130 @@ def test_selling_below_cost_is_escalated_to_the_owner_not_the_manager(client):
     assert denied.status_code == 403
     assert "owner" in denied.json()["detail"].lower()
 
+    # The note is required for a below-cost signature — see
+    # `test_signing_a_below_cost_price_needs_a_reason_on_the_record`. What this
+    # test is about is *who* may sign, so it complies rather than asserting the
+    # older, quieter behaviour.
     allowed = client.post(f"/api/v1/approvals/{rid}/decide",
-                          json={"status": "APPROVED"}, headers=_hdr(client, OWNER))
+                          json={"status": "APPROVED", "note": "Strategic account."},
+                          headers=_hdr(client, OWNER))
     assert allowed.status_code == 200 and allowed.json()["status"] == "APPROVED"
+
+
+def test_a_manager_is_not_offered_an_approval_they_cannot_grant(client):
+    """`can_decide` must reflect the rule the decide path actually enforces.
+
+    It answered from role and authority alone, so a manager's own request came
+    back `can_decide: true`, the card rendered an enabled Approve, and pressing it
+    403'd with "You cannot approve your own request". The same mismatch inflated
+    `pending_for_me`, which feeds the nav badge — so the badge counted work the
+    manager was then refused.
+    """
+    rid = _raise(client, MANAGER, 135.0).json()["approval_request_id"]
+
+    mine = client.get(f"/api/v1/approvals/{rid}", headers=_hdr(client, MANAGER)).json()
+    assert mine["can_decide"] is False, "a manager cannot decide their own request"
+    assert mine["cannot_decide_reason"] == "You cannot approve your own request"
+
+    # The count agrees with the queue: this request is not work waiting on them.
+    listed = client.get("/api/v1/approvals", headers=_hdr(client, MANAGER)).json()
+    assert listed["pending_for_me"] == 0
+
+    # And the rule the flag now mirrors is still enforced where it matters.
+    refused = client.post(f"/api/v1/approvals/{rid}/decide",
+                          json={"status": "APPROVED"}, headers=_hdr(client, MANAGER))
+    assert refused.status_code == 403
+    assert refused.json()["detail"] == "You cannot approve your own request"
+
+    # An owner may decide it, and is told so.
+    theirs = client.get(f"/api/v1/approvals/{rid}", headers=_hdr(client, OWNER)).json()
+    assert theirs["can_decide"] is True
+    assert theirs["cannot_decide_reason"] is None
+
+
+def test_signing_a_below_cost_price_needs_a_reason_on_the_record(client):
+    """The one irreversible concession here took no reason at all.
+
+    "Ask for a different price" and the decision screen's "Do something
+    different" both refuse to proceed without text. Approving a line priced below
+    what the item cost us — where the money is gone the moment the quote goes out
+    — decided immediately and stored `decision_note = None`.
+    """
+    _snapshot(client, SALES, 100.0)                 # under the 124.0 unit cost
+    raised = _raise(client, SALES, 100.0).json()
+    assert raised["required_authority"] == "OWNER"
+    assert raised["requires_rationale"] is True, "the server says so, not the browser"
+
+    bare = client.post(f"/api/v1/approvals/{raised['approval_request_id']}/decide",
+                       json={"status": "APPROVED"}, headers=_hdr(client, OWNER))
+    assert bare.status_code == 400, bare.text
+    assert "needs a reason" in bare.json()["detail"]
+
+    blank = client.post(f"/api/v1/approvals/{raised['approval_request_id']}/decide",
+                        json={"status": "APPROVED", "note": "   "},
+                        headers=_hdr(client, OWNER))
+    assert blank.status_code == 400, "whitespace is not a reason"
+
+    signed = client.post(f"/api/v1/approvals/{raised['approval_request_id']}/decide",
+                         json={"status": "APPROVED",
+                               "note": "Strategic account; recovering it on the holder."},
+                         headers=_hdr(client, OWNER))
+    assert signed.status_code == 200
+    body = signed.json()
+    assert body["status"] == "APPROVED"
+    assert body["decision_note"] == "Strategic account; recovering it on the holder."
+    assert body["thread"][-1]["note"] == body["decision_note"], "and it is in the thread"
+
+
+def test_a_thin_price_can_still_be_approved_without_a_note(client):
+    """Only the irreversible one is gated. A manager signing an ordinary thin
+    margin should not be made to write a sentence to clear their queue."""
+    raised = _raise(client, SALES, 135.0).json()
+    assert raised["required_authority"] == "MANAGER"
+    assert raised["requires_rationale"] is False
+
+    r = client.post(f"/api/v1/approvals/{raised['approval_request_id']}/decide",
+                    json={"status": "APPROVED"}, headers=_hdr(client, MANAGER))
+    assert r.status_code == 200 and r.json()["status"] == "APPROVED"
+
+
+def test_a_managers_count_excludes_what_only_an_owner_may_sign(client):
+    """One number, and it is the number the queue will show.
+
+    The storyboard tile used an unscoped `count(*)` over every PENDING request in
+    the organization, so a manager's landing page said 3 while the badge said 2
+    and exactly 1 was decidable. The extra one was a below-cost request that
+    `inbox` deliberately keeps out of a manager's queue, and the tile's "Work
+    through these →" therefore landed on a screen where it did not appear. The
+    tile reads `pending_count` now; this is that function's half of the contract.
+    """
+    _snapshot(client, SALES, 135.0, line_id="L1")
+    thin = _raise(client, SALES, 135.0, line_id="L1")
+    assert thin.status_code == 201, thin.text
+    assert thin.json()["required_authority"] == "MANAGER"
+
+    _snapshot(client, SALES, 100.0, line_id="L2")     # under the 124.0 unit cost
+    below = _raise(client, SALES, 100.0, line_id="L2")
+    assert below.status_code == 201, below.text
+    assert below.json()["required_authority"] == "OWNER", "below cost is the owner's"
+
+    mgr = client.get("/api/v1/approvals", headers=_hdr(client, MANAGER)).json()
+    decidable = [r for r in mgr["requests"] if r["can_decide"]]
+    assert mgr["pending_for_me"] == 1, "not 2 — one of these is the owner's to sign"
+    assert len(decidable) == 1
+    assert decidable[0]["approval_request_id"] == thin.json()["approval_request_id"]
+
+    own = client.get("/api/v1/approvals", headers=_hdr(client, OWNER)).json()
+    assert own["pending_for_me"] == 2, "the owner can sign both"
+
+
+def test_a_manager_is_still_offered_someone_elses_thin_price(client):
+    """The fix must not withdraw the authority a manager does have."""
+    rid = _raise(client, SALES, 135.0).json()["approval_request_id"]
+    body = client.get(f"/api/v1/approvals/{rid}", headers=_hdr(client, MANAGER)).json()
+    assert body["can_decide"] is True and body["cannot_decide_reason"] is None
+    assert client.get("/api/v1/approvals",
+                      headers=_hdr(client, MANAGER)).json()["pending_for_me"] == 1
 
 
 def test_the_request_carries_economics_to_the_approver_and_not_to_the_requester(client):

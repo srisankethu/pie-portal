@@ -81,6 +81,20 @@ class CommercialThresholds:
     # Percentage POINTS of margin. 3 pp is roughly where a distributor's margin
     # move stops being noise from mix and freight.
     min_margin_deterioration_pp: float = 0.03
+    # The same question at a coarser setting: how far margin must fall before a
+    # deterioration is worth *a person's queue*, as opposed to worth showing on a
+    # screen. Deliberately a separate number from the one above — a distributor
+    # wants the screens sensitive and the queue quiet, and one knob cannot do
+    # both — but it belongs to the same object so there is one place an owner
+    # edits margin sensitivity and one version stamped on what it produced.
+    #
+    # It used to be `SignalThresholds.margin_drop_points`, settable only by
+    # redeploying with SIG_MARGIN_DROP_POINTS. So an owner who raised the
+    # "Erosion threshold" in Settings to quieten the noise watched the commercial
+    # screens go silent while the decision queue carried on exactly as before.
+    # Default 0.05 rather than 0.03: it is the value that was in force, and the
+    # fold is not the place to change what the platform detects.
+    queue_margin_drop_pp: float = 0.05
     meaningful_cost_increase_pct: float = 0.05
     meaningful_price_change_pct: float = 0.02
     meaningful_volume_change_pct: float = 0.15
@@ -381,6 +395,10 @@ class CommercialThresholds:
             previous_days=_i("CI_PREVIOUS_DAYS", 90),
             historical_lookback_days=_i("CI_HISTORICAL_LOOKBACK_DAYS", 730),
             min_margin_deterioration_pp=_f("CI_MIN_MARGIN_DETERIORATION_PP", 0.03),
+            # `SIG_MARGIN_DROP_POINTS` is still read, and still means what it
+            # meant, so a deployment that set it keeps the value it chose.
+            queue_margin_drop_pp=_f("CI_QUEUE_MARGIN_DROP_PP",
+                                    _f("SIG_MARGIN_DROP_POINTS", 0.05)),
             meaningful_cost_increase_pct=_f("CI_MEANINGFUL_COST_INCREASE_PCT", 0.05),
             meaningful_price_change_pct=_f("CI_MEANINGFUL_PRICE_CHANGE_PCT", 0.02),
             meaningful_volume_change_pct=_f("CI_MEANINGFUL_VOLUME_CHANGE_PCT", 0.15),

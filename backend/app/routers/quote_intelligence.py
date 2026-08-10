@@ -10,7 +10,10 @@ immutable ``quote_decisions`` audit trail, optionally with the reason a
 salesperson went ahead anyway.
 
 ``POST /api/v1/quote-intelligence/outcome`` moves the quote along
-DRAFT → SENT → WON/LOST, so a price can later be joined to whether it won.
+DRAFT → SENT → WON/LOST, so a price can later be joined to whether it won. A
+loss carries a reason from ``QuoteLossReason`` and is refused without one —
+``/api/v1/insight/quote-outcomes`` reads that column directly, and a loss
+recorded without it is a row that can be counted and never learned from.
 
 No endpoint here calls a model. Every number is computed by ``app.commercial``.
 Role scoping is enforced server-side: a salesperson's response contains no cost,

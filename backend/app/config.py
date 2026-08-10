@@ -213,6 +213,27 @@ class Settings:
     AI_DEGRADED_RATE_MIN: float = float(os.environ.get("AI_DEGRADED_RATE_MIN", "0.005"))
     AI_HEALTH_MIN_SAMPLE: int = int(os.environ.get("AI_HEALTH_MIN_SAMPLE", "20"))
 
+    # ── detector outcome bands (decisions/outcomes.py) ───────────────────────
+    # The share of *judged* decisions a human dismissed, per signal type. A band
+    # rather than one ceiling, for the reason the AI band above is two-sided: a
+    # detector nothing is ever dismissed from is as much a finding as a noisy one.
+    #
+    # Observability bounds, not commercial policy — so they live here beside the
+    # AI health band and deliberately not in ``SignalThresholds``. They judge the
+    # detectors; they do not feed them, and nothing computed from them is stamped
+    # onto a row. Putting them in the thresholds hash would move ``th_…`` every
+    # time a *report* was tuned, making past signals look re-judged when nothing
+    # about what produced them had changed.
+    SIGNAL_DISMISSAL_RATE_MAX: float = float(
+        os.environ.get("SIGNAL_DISMISSAL_RATE_MAX", "0.40"))
+    SIGNAL_DISMISSAL_RATE_MIN: float = float(
+        os.environ.get("SIGNAL_DISMISSAL_RATE_MIN", "0.02"))
+    # Lower than the AI sample floor: a detector opens far fewer cards than the
+    # AI layer makes calls, and 20 judged MARGIN_DETERIORATION decisions could
+    # take a quarter to accumulate.
+    SIGNAL_OUTCOME_MIN_SAMPLE: int = int(
+        os.environ.get("SIGNAL_OUTCOME_MIN_SAMPLE", "10"))
+
 
 settings = Settings()
 # Re-resolve PIE-derived paths in case PIE_PARSER_ROOT came from the env.

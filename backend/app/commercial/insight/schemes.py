@@ -10,11 +10,12 @@ done about it.
 
 ``dependency.progress_of`` already answers "where does the number stand" — spend
 against target, achievement against pace, and the run rate that would close the
-gap. Nothing here restates any of that. This module answers the two questions it
-deliberately does not:
+gap. Nothing here restates any of that. This module answers the three questions
+it deliberately does not:
 
     "What does hitting it pay?"      -> ``outlook(...)["secured"]`` / ``["next_slab"]``
     "Am I going to get there?"       -> ``outlook(...)["projection"]``
+    "What does getting there cost?"  -> ``outlook(...)["marginal"]``
 
 **Slabs are the shape, not an extension of it.** The common scheme here is not
 one number: it is 2% at forty lakh and 3% at sixty. A model that held a single
@@ -35,6 +36,34 @@ double-counts money the book has already earned and turns an incentive into a
 headline. Where no slab is cleared yet the uplift is the whole rebate, which is
 exactly the sentence in the brief: forty-two lakh against fifty, eight short,
 ₹1.25 lakh at stake.
+
+**What the increment costs is a different question from what the rung pays, and
+it is the one that decides anything.** ``at_stake`` says ₹1.25 lakh is on the
+table. It does not say whether chasing it is sensible, because the same ₹1.25
+lakh is worth 12.5% off ₹10 lakh of buying and 125% off ₹1 lakh of it. Since the
+rate is paid on the whole amount, the rung's bonus arrives as a **lump**, so its
+value per rupee is set by how far there still is to go — and below a gap of
+``uplift`` the increment costs *less than nothing*: ₹1 lakh of stock against
+₹1.25 lakh of rebate is a negative acquisition cost. That is the number an owner
+needs in week ten and it appeared on no screen, which is why ``marginal`` exists.
+
+**The increment is measured from the projected close, never from what has been
+bought.** A book already running past the rung will clear it without doing
+anything, and pricing that as an opportunity would sell somebody stock they were
+going to buy anyway. So the discretionary gap is ``threshold − projected_close``,
+which makes ``marginal`` inherit the projection's evidence floors exactly: below
+them there is no projection, so there is no marginal number either, and the
+reason travels rather than a zero. A confident cost-of-increment computed off
+three days of buying is the same defect as a confident close computed off it.
+
+**None of this may reach a line's margin, and that is a decision rather than an
+omission.** A rebate is period-level, principal-level and contingent on a total;
+putting it on a line needs an allocation, every allocation is a choice, and once
+it is in the line it moves a negotiation floor on the strength of an accrual
+nobody has earned yet. The figures here stay denominated in purchase spend and
+stay beside the principal. If a rebate is ever genuinely *accrued*, it belongs in
+cost at the point the accrual is booked — through ``CostRecord``, where the rest
+of cost lives — and never as an allocation inside ``economics.py``.
 
 **Nothing here extrapolates from a week.** A run-rate projection is a claim
 about the rest of the period, and a quarter three days old cannot support one —
@@ -228,6 +257,39 @@ REFUSALS: dict[str, dict[str, str]] = {
 }
 
 
+#: Why no marginal cost was computed. Distinct from ``REFUSALS`` above because
+#: these are not evidence failures — ``LANDS_ANYWAY`` in particular is a *good*
+#: answer, and folding it in with "too early to project" would make a book that
+#: is comfortably clearing its top rung read as one the platform cannot see.
+NO_SCHEME = "NO_SCHEME"
+NO_PROJECTION = "NO_PROJECTION"
+LANDS_ANYWAY = "LANDS_ANYWAY"
+
+MARGINAL_REFUSALS: dict[str, dict[str, str]] = {
+    NO_SCHEME: {
+        "label": "No scheme on record",
+        "why": ("Nobody has said what this principal pays, so there is no rung "
+                "to buy towards and no cost to put on reaching one. That is a "
+                "gap in what has been typed in, not a principal who pays "
+                "nothing."),
+    },
+    NO_PROJECTION: {
+        "label": "Not enough of the period to price the next rung",
+        "why": ("What the next rung costs depends on how much still has to be "
+                "bought above where the period is heading, and the period is "
+                "not far enough along to say where that is. The rung and what "
+                "it pays are still exact."),
+    },
+    LANDS_ANYWAY: {
+        "label": "On course to clear it without buying more",
+        "why": ("At the rate this book is already buying, the period closes "
+                "past every rung of this scheme. There is nothing discretionary "
+                "left to price — buying earlier would only carry the stock "
+                "sooner."),
+    },
+}
+
+
 def refusal(elapsed_days: int, documents: int) -> Optional[str]:
     """Which floor stops a projection, or ``None`` when both are cleared.
 
@@ -281,6 +343,7 @@ def outlook(target: Target, scheme: Optional[Scheme], *, actual: Decimal,
     stalled = refusal(elapsed, documents)
     projection = (None if (stalled or elapsed <= 0)
                   else _projection(scheme, actual, amount, elapsed, target.days))
+    marginal, unpriced = _marginal(scheme, projection)
 
     # The headline number, and the one an owner acts on. ``None`` — not zero —
     # where no scheme is on record: nothing is at stake because nobody has said
@@ -307,6 +370,14 @@ def outlook(target: Target, scheme: Optional[Scheme], *, actual: Decimal,
         },
         "at_stake": at_stake,
         "projection": projection,
+        # What the next rung costs per rupee above the projected close, and — in
+        # the same shape as ``projection``/``absent`` — the named reason when
+        # there is no such number. ``LANDS_ANYWAY`` is not a failure; see
+        # ``MARGINAL_REFUSALS``.
+        "marginal": marginal,
+        "marginal_absent": (None if unpriced is None
+                            else {"reason": unpriced,
+                                  **MARGINAL_REFUSALS[unpriced]}),
         "absent": None if stalled is None else {"reason": stalled,
                                                 **REFUSALS[stalled]},
         "evidence": {
@@ -316,6 +387,69 @@ def outlook(target: Target, scheme: Optional[Scheme], *, actual: Decimal,
             "min_documents": MIN_DOCUMENTS,
         },
     }
+
+
+def _marginal(scheme: Optional[Scheme],
+              projection: Optional[dict]) -> tuple[Optional[dict], Optional[str]]:
+    """What the next rung costs per rupee, measured above the projected close.
+
+    Returns the figures and ``None``, or ``None`` and the reason there are none —
+    the same shape ``outlook`` uses for ``projection``/``absent``, so a caller
+    reads one pattern rather than two.
+
+    The rung priced here is the next one above the **projected close**, not above
+    what has been bought. Those are different rungs whenever the book is running
+    ahead, and the one above today's actual is the wrong answer: it is often
+    already paid for by the rest of the period. Where the projection clears every
+    rung there is nothing discretionary and that is reported as its own state.
+
+    Both figures come out of the same subtraction:
+
+        gain = (what the rung pays at its own threshold)
+             − (what the projected close earns without it)
+
+    ``gain`` is always positive, which is a property of ``validate`` rather than
+    an assumption — rungs ascend in both threshold and rate, so a higher rung on
+    a larger amount cannot pay less. ``gap`` is strictly positive for the same
+    structural reason: ``next_above`` is a strict comparison, so the projected
+    close sits below the rung it returns and the division is safe.
+    """
+    if scheme is None:
+        return None, NO_SCHEME
+    if projection is None:
+        return None, NO_PROJECTION
+
+    close = Decimal(str(projection["projected_close"]))
+    rung = scheme.next_above(close)
+    if rung is None:
+        return None, LANDS_ANYWAY
+
+    gap = rung.threshold - close
+    landed = scheme.cleared(close)
+    gain = rung.rebate_on(rung.threshold) - (landed.rebate_on(close)
+                                             if landed else _ZERO)
+
+    # Quantised at the same six places a rate is stored, so what a screen shows
+    # is what the arithmetic did rather than a wider float rounded on the way
+    # out — the effective cost is a rate like any other in this package.
+    earned = (gain / gap).quantize(_RATE_DP, rounding=ROUND_HALF_UP)
+    cost = Decimal("1") - earned
+    return {
+        **rung.to_dict(),
+        # What must be bought *above where the period is already heading*. Not
+        # ``next_slab.gap``, which is measured from today and is the larger,
+        # more alarming and less actionable of the two.
+        "gap": float(_money(gap)),
+        "gain": float(_money(gain)),
+        "earned_per_rupee": float(earned),
+        # 1.00 is full price, 0.75 is a quarter off, below zero is paid to take
+        # the stock. Named for what it is rather than "discount", which reads as
+        # something the principal offered on the invoice.
+        "effective_cost": float(cost),
+        # The whole point of the card, as a boolean the screen can lead with:
+        # the gap has fallen below what the rung pays.
+        "free": cost <= _ZERO,
+    }, None
 
 
 def _projection(scheme: Optional[Scheme], actual: Decimal, amount: Decimal,

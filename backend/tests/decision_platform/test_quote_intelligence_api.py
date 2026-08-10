@@ -38,8 +38,13 @@ def _seed(s) -> None:
     """c1 buys p1 (eroding, cost 100 → 124); c2..c4 pay more. p2 has no cost."""
     for cid, name in (("c1", "Acme Engineering"), ("c2", "Beta Works"),
                       ("c3", "Gamma Tools"), ("c4", "Delta Precision")):
+        # `usr_sales` is the id `app.seed` gives r.nair, and every other suite
+        # uses it. This one said "u_sales", which matched no user — harmless
+        # while `/assess` ignored assignment, and the moment it stopped doing so
+        # it would have turned every salesperson case in this file green by
+        # resolving no customer at all. Absence of evidence is not a pass.
         s.add(models.Customer(customer_id=cid, organization_id=ORG, external_id=cid,
-                              name=name, assigned_user_id="u_sales"))
+                              name=name, assigned_user_id="usr_sales"))
     s.add(models.Product(product_id="p1", organization_id=ORG, external_id="ITEM-900",
                          name="CNMG 120408-MP insert", uom="pcs"))
     s.add(models.Product(product_id="p2", organization_id=ORG, external_id="ITEM-901",
@@ -213,11 +218,22 @@ def test_a_salesperson_receives_no_cost_or_margin_anywhere_in_the_response(clien
 
 
 def test_a_salesperson_still_learns_that_approval_is_needed(client):
-    """Withholding cost must not mean withholding the control. They can see
-    the line is under the floor; they cannot see how far under."""
+    """Withholding cost must not mean withholding the control.
+
+    This docstring used to read "they can see the line is under the floor; they
+    cannot see how far under". That was true of one response and false of two —
+    which rule fired is a predicate on cost, and the caller supplies the price,
+    so the boundary can be walked. The named rule is withheld now and a fixed
+    substitute carries the control; see ``quote_service._project_exceptions``.
+    """
     line = _assess(client, SALES, [_line("L1", price=130.0)])["lines"][0]
-    fired = next(e for e in line["exceptions"] if e["code"] == "BELOW_MIN_MARGIN")
+    codes = {e["code"] for e in line["exceptions"]}
+    assert "BELOW_MIN_MARGIN" not in codes, "naming the rule names its boundary"
+    assert "NEGATIVE_MARGIN" not in codes
+
+    fired = next(e for e in line["exceptions"] if e["code"] == "APPROVAL_REQUIRED")
     assert line["requires_approval"] is True
+    assert line["blocking"] is True, "the send gate still stops this line"
     assert "manager_detail" not in fired, "the reasoning names cost — absent, not masked"
     assert fired["impact_amount"] is None, "the gap to the floor reveals cost"
     assert fired["detail"], "but the salesperson is told, in plain words"
@@ -237,6 +253,122 @@ def test_the_peer_median_price_is_not_shown_to_a_salesperson(client):
     mgmt = _assess(client, MANAGER, [_line("L1", price=120.0)])["lines"][0]
     assert "PEER_MEDIAN_PRICE" in {r["code"] for r in mgmt["references"]}
     assert "PEER_MEDIAN_PRICE" not in {r["code"] for r in sales["references"]}
+
+
+# ── inference across requests ───────────────────────────────────────────────
+#
+# The tests above ask what one response contains. These ask what a sequence of
+# them reveals, which is the question `filterCounts.MFLOOR` failed and the one
+# every field-level assertion here passed while the endpoint gave up cost.
+def _sales_boundaries(client, prices) -> set[float]:
+    """Every price at which the salesperson's view of the line changes.
+
+    The response is walked as the attacker would walk it: assess the same line
+    at many prices and watch for the value where the answer flips. Whatever is
+    in this set is a number a salesperson can recover to any precision they care
+    to spend requests on.
+    """
+    seen, boundaries = None, set()
+    for price in prices:
+        line = _assess(client, SALES, [_line("L1", price=price)])["lines"][0]
+        # Everything a salesperson could read off this line, minus the price
+        # they typed and the figures that move with it by construction.
+        state = (tuple(sorted(e["code"] for e in line["exceptions"])),
+                 line["worst_severity"], line["requires_approval"],
+                 line["blocking"])
+        if seen is not None and state != seen:
+            boundaries.add(price)
+        seen = state
+    return boundaries
+
+
+def test_a_salesperson_cannot_walk_the_price_to_recover_cost(client):
+    """The unit cost is 124 and the approval floor is 124/0.88 = 140.91.
+
+    Sweeping the price in one-rupee steps, a salesperson's view must not change
+    at 124. It used to: `NEGATIVE_MARGIN` fired at `price <= unit_cost` with no
+    policy multiplier in the comparison, so the step where it appeared *was* the
+    purchase price, readable without knowing any threshold.
+    """
+    boundaries = _sales_boundaries(client, [float(p) for p in range(118, 150)])
+    assert not any(123 <= b <= 126 for b in boundaries), (
+        f"the response changes at {sorted(boundaries)} — a step at the unit "
+        f"cost hands it over")
+
+
+def test_the_manager_view_still_moves_at_cost(client):
+    """The counterpart, so the test above cannot pass by flattening the engine.
+
+    A manager may see cost, so their view *should* change at 124 — if it stopped
+    doing so, the exception rules would have been broken rather than scoped.
+    """
+    below = _assess(client, MANAGER, [_line("L1", price=120.0)])["lines"][0]
+    above = _assess(client, MANAGER, [_line("L1", price=130.0)])["lines"][0]
+    assert "NEGATIVE_MARGIN" in {e["code"] for e in below["exceptions"]}
+    assert "BELOW_MIN_MARGIN" in {e["code"] for e in above["exceptions"]}
+
+
+def test_a_salesperson_cannot_bracket_the_peer_median(client):
+    """`PEER_MEDIAN_PRICE` is RESTRICTED and stripped from `references`.
+
+    The below/above pair bracketed it from both sides, and the tolerance that
+    sets the bracket width is published to every role by `/thresholds` — so the
+    two together inverted to the median exactly.
+    """
+    codes = set()
+    for price in (80.0, 120.0, 160.0, 200.0, 260.0):
+        line = _assess(client, SALES, [_line("L1", price=price)])["lines"][0]
+        codes |= {e["code"] for e in line["exceptions"]}
+    assert not (codes & {"BELOW_PEER_MEDIAN", "ABOVE_PEER_MEDIAN"})
+
+
+def test_the_quote_summary_withholds_the_counts_derived_from_cost(client):
+    """A count over lines the caller priced is a sharper oracle than the
+    per-line flag: two hundred probes in one request turn it into a rank.
+
+    Omitted rather than zeroed, for the reason the MFLOOR fix in `store.py`
+    gives — a zero still answers the question.
+    """
+    sales = _assess(client, SALES, [_line("L1", price=130.0)])["summary"]
+    mgmt = _assess(client, MANAGER, [_line("L1", price=130.0)])["summary"]
+    assert "critical" not in sales and "requires_approval" not in sales
+    assert mgmt["critical"] >= 1 and mgmt["requires_approval"] >= 1
+    assert sales["lines_assessed"] == 1, "the operational counts stay"
+
+
+def test_one_product_cannot_be_priced_many_ways_in_a_single_request(client):
+    """The batch is what made the walk two round trips instead of fifty."""
+    body = {"customer": "Acme Engineering", "as_of": AS_OF.isoformat(),
+            "lines": [_line(f"L{i}", price=100.0 + i) for i in range(12)]}
+    r = client.post("/api/v1/quote-intelligence/assess", json=body,
+                    headers=_hdr(client, SALES))
+    assert r.status_code == 400
+    assert "different prices" in r.json()["detail"]
+
+
+def test_an_assessment_date_far_from_today_is_refused(client):
+    """Repeating the walk per date reads the item's cost history, which is
+    worth more to a competitor than today's cost is."""
+    body = {"customer": "Acme Engineering", "lines": [_line("L1")],
+            "as_of": (date.today() - timedelta(days=400)).isoformat()}
+    r = client.post("/api/v1/quote-intelligence/assess", json=body,
+                    headers=_hdr(client, SALES))
+    assert r.status_code == 422, r.text
+
+
+def test_a_salesperson_cannot_assess_a_customer_they_are_not_assigned(client):
+    """The scope rule `/accounts` and the insight timeline both apply. An
+    out-of-scope account must be indistinguishable from one we have never seen,
+    so this degrades to unresolved rather than answering 403."""
+    with client.Maker() as s:
+        s.add(models.Customer(customer_id="c9", organization_id=ORG, external_id="c9",
+                              name="Zenith Machining", assigned_user_id="u_other"))
+        s.commit()
+    out = _assess(client, SALES, [_line("L1")], customer="Zenith Machining")
+    assert out["customer"]["resolved"] is False
+    assert out["customer"]["customer_id"] is None
+    unknown = _assess(client, SALES, [_line("L1")], customer="No Such Company")
+    assert out["customer"]["resolved"] == unknown["customer"]["resolved"]
 
 
 def test_the_threshold_endpoint_withholds_margin_policy_from_a_salesperson(client):
@@ -333,7 +465,15 @@ def test_an_override_reason_is_captured_with_the_rules_it_overrode(client):
     assert snap["overridden"] is True
     assert snap["override_reason"] == "Volume commitment for Q3"
     assert snap["override_reason_code"] == "VOLUME_COMMITMENT"
-    assert "BELOW_MIN_MARGIN" in snap["overridden_exception_codes"]
+
+    # The audit records the real rule; the salesperson's own read-back does not
+    # name it. Both halves matter: an audit trail that stored the substitute
+    # would have lost what was actually overridden, and a read-back that named
+    # the rule would undo the redaction two fields above it.
+    assert "BELOW_MIN_MARGIN" not in snap["overridden_exception_codes"]
+    audit = client.get("/api/v1/quote-intelligence/quotes/q2",
+                       headers=_hdr(client, MANAGER)).json()
+    assert "BELOW_MIN_MARGIN" in audit["decisions"][0]["overridden_exception_codes"]
 
 
 def test_a_stored_margin_is_still_restricted_when_read_back(client):

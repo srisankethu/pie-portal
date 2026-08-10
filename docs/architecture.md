@@ -329,23 +329,13 @@ Stating these explicitly matters as much as the design itself.
   each situation is worth at the moment it is raised, so value-*at-risk*-weighted
   acceptance needs no new table; only realised impact does.
 
-- **Reporting on the queue's own lifecycle.** Nothing aggregates what the
-  Decision Store captures. The three numbers that would say whether this
-  platform works — acceptance by category and by user, modify rate and modify
-  distance, and acceptance as a function of queue volume — are not computed
-  anywhere. The data for the first and third is present today; the second needs
-  `quote_decisions`, where the distance from the recommended price is already a
-  number on every priced line.
-
-  When it is built it belongs in `commercial/` — deterministic aggregation over
-  persisted rows, and it must never be able to import `ai/`. Copy the shape of
-  `ai/metrics.py`: a pure `summarize` over a row sequence, a `report` for the
-  rolling windows, an owner-only route, and a **two-sided** band. A category
-  accepted almost every time is as suspect as one nobody accepts — it is being
-  rubber-stamped, or the detector only fires on the already-obvious — exactly as
-  a gate that never rejects is as suspect as one that rejects constantly. Below
-  `AI_HEALTH_MIN_SAMPLE` the answer is `INSUFFICIENT_DATA` and no inference is
-  drawn in either direction.
+- **Realised monetary impact.** See the Outcome Tracker above. Adoption and
+  decision quality *are* measured: `decisions/outcomes.py` reports detector
+  false-alarm rate at `GET /internal/detector-outcomes` and queue adoption —
+  acceptance by category and user, modify rate and distance, and acceptance
+  against queue depth — at `GET /internal/queue-adoption`. Both owner-only, both
+  two-sided, both `INSUFFICIENT_DATA` below the minimum sample. What neither can
+  say is whether the business improved, which is what `Outcome` is for.
 - **Prompt/response content logging.** The easiest way to debug a bad
   recommendation, and rejected on purpose: it would create an unscoped second
   copy of the cost/margin facts the permission model works to contain. The

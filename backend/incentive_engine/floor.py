@@ -113,3 +113,29 @@ def m_floor_for_family(cfg: Config, family: str, *, strict: bool = False) -> Dec
             raise UnknownFamily(family, table.keys())
         return Decimal(str(table["default"]))
     return Decimal(str(table[family]))
+
+
+def terms_adjusted(base_floor: Decimal, k: Decimal) -> Decimal:
+    """The floor once the credit period is paid for. OPERATIONS ZONE.
+
+    ``CAF = q.P(1-k) - q.F`` factors to ``(1-k) . q . (P - F/(1-k))``, so the
+    whole term charge can be shown as a floor that rises with the credit period
+    rather than as a sixth term to explain. ``F/(1-k)`` is the price at which
+    the line breaks even on that term, which is what "floor" already means — so
+    the number on the desk keeps its meaning and only its value moves.
+
+    Safe to show. ``F`` is already disclosable and ``k`` is published; the
+    quotient adds no equation containing cost. It is also item-independent as a
+    *multiplier*, which is why the uplift can be published as one small table
+    instead of per-item.
+
+    ``k >= 1`` would mean the credit period costs more than the entire invoice
+    — roughly seven years at the published rate. It is refused rather than
+    returned as a negative or infinite floor, because either would silently
+    invert the price discipline.
+    """
+    if k >= Decimal("1"):
+        raise ValueError(
+            f"a term charge of {k} cannot be expressed as a floor: at or above "
+            "1 the credit period costs more than the line is sold for")
+    return base_floor / (Decimal("1") - k)

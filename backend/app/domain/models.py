@@ -2164,6 +2164,94 @@ class InvoiceDoc(Base):
                                                  onupdate=_now)
 
 
+class CreditNoteDoc(Base):
+    """A credit note at header grain — what was given back, and to whom.
+
+    The mirror of ``InvoiceDoc``. Credit notes were not read at all until this
+    was added, and the gap was invisible precisely because it did *not* corrupt
+    today's numbers: Zoho nets applied credit into ``InvoiceDoc.balance``, so
+    the receivables fold has always been correct about the present.
+
+    What it could not do is describe the past. Reconstructing what a customer
+    owed on a date gone by means invoices raised, minus receipts applied, minus
+    credit applied — and the third term had no source. Without it a
+    reconstructed receivable is overstated by exactly the credit issued, in the
+    direction that flatters collection performance.
+
+    **This is not a second outstanding balance.** ``state/reducers/receivables``
+    reads ``InvoiceDoc.balance`` and must keep doing so; folding these rows into
+    it as well would subtract the same credit twice. Nothing here belongs in the
+    current-position fold.
+    """
+
+    __tablename__ = "credit_notes"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "external_ref",
+                         name="uq_credit_note_org_ref"),
+        Index("ix_credit_note_org_date", "organization_id", "date"),
+    )
+
+    credit_note_id: Mapped[str] = mapped_column(String(64), primary_key=True,
+                                                default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    external_ref: Mapped[str] = mapped_column(String(128), index=True)
+    number: Mapped[Optional[str]] = mapped_column(String(128))
+    customer_id: Mapped[Optional[str]] = mapped_column(
+        String(64), ForeignKey("customers.customer_id"), index=True)
+    date: Mapped[date] = mapped_column(Date, index=True)
+    status: Mapped[str] = mapped_column(String(48), default="")
+    total: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
+    #: Credit raised but not yet set against any invoice. Read from Zoho, never
+    #: derived as total minus the applications below — a refund against the
+    #: credit note would make that subtraction overstate what is still available.
+    balance: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
+    source_ref: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
+                                                 onupdate=_now)
+
+
+class CreditNoteApplication(Base):
+    """One credit note set against one invoice — the row a past balance needs.
+
+    The exact analogue of ``PaymentApplication``, and stored at the same grain
+    and for the same reason: one credit note may be spread across several
+    invoices, and each application is its own dated fact. The invoice's own date
+    is stored here rather than joined to ``invoices``, because a credit note can
+    be applied to an invoice raised before the sync window begins and a join
+    would silently drop the oldest positions — the ones a receivables history
+    most needs.
+    """
+
+    __tablename__ = "credit_note_applications"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "external_ref",
+                         name="uq_credit_note_application_org_external"),
+        Index("ix_credit_note_app_org_invoice",
+              "organization_id", "invoice_external_ref"),
+    )
+
+    credit_note_application_id: Mapped[str] = mapped_column(String(64),
+                                                            primary_key=True,
+                                                            default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    external_ref: Mapped[str] = mapped_column(String(128), index=True)
+    credit_note_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("credit_notes.credit_note_id"), index=True)
+    customer_id: Mapped[Optional[str]] = mapped_column(
+        String(64), ForeignKey("customers.customer_id"), index=True)
+    invoice_external_ref: Mapped[str] = mapped_column(String(128), index=True)
+    invoice_number: Mapped[Optional[str]] = mapped_column(String(128))
+    #: Absent where Zoho did not state it. A missing invoice date makes this
+    #: application unplaceable on a receivables timeline — reported as such by
+    #: whatever reads it, never defaulted to the application date.
+    invoice_date: Mapped[Optional[date]] = mapped_column(Date)
+    applied_on: Mapped[date] = mapped_column(Date, index=True)
+    amount_applied: Mapped[Any] = mapped_column(Numeric(18, 4))
+    source_ref: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
 class VendorPaymentDoc(Base):
     """Money out, at the payment grain.
 

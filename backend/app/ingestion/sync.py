@@ -42,6 +42,7 @@ from .normalize import (
     normalize_bill,
     normalize_bill_terms,
     normalize_invoice_terms,
+    normalize_credit_note,
     normalize_customer,
     normalize_invoice,
     normalize_payment,
@@ -72,6 +73,7 @@ class SyncReport:
     purchase_orders: int = 0
     sales_orders: int = 0
     vendor_payments: int = 0
+    credit_notes: int = 0
     documents_fetched: int = 0
     documents_resumed: int = 0
     #: Calendar windows this run listed in full because they had never been
@@ -183,7 +185,7 @@ class SyncReport:
                     or self.cost_records or self.assignments or self.vendors
                     or self.stock_snapshots or self.payments
                     or self.purchase_orders or self.sales_orders
-                    or self.vendor_payments)
+                    or self.vendor_payments or self.credit_notes)
 
     def merge(self, other: "SyncReport") -> "SyncReport":
         """Fold another connected company's pull into this one.
@@ -221,6 +223,7 @@ class SyncReport:
             "payments": self.payments, "purchase_orders": self.purchase_orders,
             "sales_orders": self.sales_orders,
             "vendor_payments": self.vendor_payments,
+            "credit_notes": self.credit_notes,
             "documents_fetched": self.documents_fetched,
             "documents_resumed": self.documents_resumed,
             "skipped_count": len(self.skipped), "skipped": self.skipped,
@@ -424,6 +427,15 @@ class SyncService:
         if hasattr(self.source, "list_vendor_payments"):
             self._supply_phase("Reading payments out", "vendor_payment",
                                self._sync_vendor_payments)
+        # Credit given back. Probed like every other optional pull: it needs a
+        # scope the older connections were never authorised for, and a 401 here
+        # must not take the phases around it down. Today's receivable is already
+        # correct without this — Zoho nets applied credit into an invoice's
+        # balance — so a connection that cannot read credit notes loses only the
+        # ability to reconstruct a *past* position, and loses it visibly.
+        if hasattr(self.source, "list_credit_notes"):
+            self._supply_phase("Reading credit notes", "credit_note",
+                               self._sync_credit_notes)
         self.s.flush()
 
     def _supply_phase(self, label: str, kind: str,
@@ -572,6 +584,40 @@ class SyncService:
             self.log.record(ev.SALES_ORDER_PLACED, so.date,
                        Source("sales_order", so.external_ref), so)
             self.report.sales_orders += 1
+
+    def _sync_credit_notes(self) -> None:
+        """Credit notes and the invoices they were applied to.
+
+        **No event is emitted, and that is deliberate.** Every event this log
+        carries is folded into a state, and the only state a credit note could
+        plausibly join is ``RECEIVABLES`` — where it would be *wrong*. That fold
+        reads ``InvoiceDoc.balance``, which Zoho has already netted applied
+        credit out of, so folding these rows in as well would subtract the same
+        credit twice and understate what every customer owes. These are stored
+        as plain rows, the same way ``StockSnapshot`` is, and read directly by
+        whatever needs to reconstruct a past position.
+        """
+        for raw in self.source.list_credit_notes(skip=self._skipper("creditnote")):
+            ref = str(raw.get("creditnote_id", "?"))
+            try:
+                note, applications = normalize_credit_note(raw)
+            except NormalizationError as e:
+                self.report.skip("credit_note", ref, e.code, e.detail)
+                continue
+            customer_id = None
+            if note.customer_external_id:
+                customer = self.repo.get_customer_by_external(note.customer_external_id)
+                # Credit given to a customer the contact pull did not return is
+                # still credit given. Kept with a null customer rather than
+                # dropped, exactly as a sales order against an unknown customer
+                # is kept — dropping it would overstate what that customer owes.
+                customer_id = customer.customer_id if customer else None
+            row = self.repo.upsert_credit_note(customer_id, note)
+            self.s.flush()
+            for app in applications:
+                self.repo.upsert_credit_note_application(
+                    row.credit_note_id, customer_id, app)
+            self.report.credit_notes += 1
 
     def _sync_vendor_payments(self) -> None:
         for raw in self.source.list_vendor_payments(

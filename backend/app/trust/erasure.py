@@ -70,6 +70,13 @@ EXPORTED: tuple[tuple[str, Any], ...] = (
     ("payment_applications", models.PaymentApplication),
     ("vendor_payments", models.VendorPaymentDoc),
     ("bill_payment_applications", models.BillPaymentApplication),
+    # Credit given back, and which invoice each note was set against. Exported
+    # rather than excluded for the same reason as the invoice it reduces: it is
+    # this customer's own trading record, and an export that showed what they
+    # were billed while withholding what was credited would overstate what they
+    # were charged.
+    ("credit_notes", models.CreditNoteDoc),
+    ("credit_note_applications", models.CreditNoteApplication),
     # ── what a person typed, which no re-sync can rebuild ───────────────────
     #
     # The most important group here and the least obvious. Everything above is

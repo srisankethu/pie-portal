@@ -18,9 +18,10 @@ from sqlalchemy.orm import Session
 
 from .domain import models
 from .domain.enums import DecisionStatus, HumanAction
-from .domain.schemas import (BillIn, CostRecordIn, CustomerIn,
-                            DocumentApplicationIn, InvoiceIn, PaymentReceiptIn,
-                            ProductIn, PurchaseOrderIn, SalesOrderIn, SalesTxnIn,
+from .domain.schemas import (BillIn, CostRecordIn, CreditNoteApplicationIn,
+                            CreditNoteIn, CustomerIn, DocumentApplicationIn,
+                            InvoiceIn, PaymentReceiptIn, ProductIn,
+                            PurchaseOrderIn, SalesOrderIn, SalesTxnIn,
                             StockSnapshotIn, VendorIn, VendorPaymentIn)
 
 
@@ -752,6 +753,56 @@ class ReadModelRepository:
         row.total = inv.total
         row.balance = inv.balance
         row.source_ref = inv.source_ref.model_dump()
+        return row
+
+    def upsert_credit_note(self, customer_id: Optional[str],
+                           note: CreditNoteIn) -> models.CreditNoteDoc:
+        """The credit-note header. Re-read on every pull that touches it, for
+        the same reason as an invoice: ``status`` and ``balance`` move as the
+        credit is applied or refunded, and a row written once would keep
+        reporting credit as available long after it was spent."""
+        row = self.s.scalar(
+            select(models.CreditNoteDoc).where(
+                models.CreditNoteDoc.organization_id == self.org,
+                models.CreditNoteDoc.external_ref == note.external_ref,
+            )
+        )
+        if row is None:
+            row = models.CreditNoteDoc(organization_id=self.org,
+                                       external_ref=note.external_ref)
+            self.s.add(row)
+        row.number = note.number
+        row.customer_id = customer_id
+        row.date = note.date
+        row.status = note.status
+        row.total = note.total
+        row.balance = note.balance
+        row.source_ref = note.source_ref.model_dump()
+        return row
+
+    def upsert_credit_note_application(
+        self, credit_note_id: str, customer_id: Optional[str],
+        app: CreditNoteApplicationIn,
+    ) -> models.CreditNoteApplication:
+        """One credit note set against one invoice."""
+        row = self.s.scalar(
+            select(models.CreditNoteApplication).where(
+                models.CreditNoteApplication.organization_id == self.org,
+                models.CreditNoteApplication.external_ref == app.external_ref,
+            )
+        )
+        if row is None:
+            row = models.CreditNoteApplication(organization_id=self.org,
+                                               external_ref=app.external_ref)
+            self.s.add(row)
+        row.credit_note_id = credit_note_id
+        row.customer_id = customer_id
+        row.invoice_external_ref = app.invoice_external_ref
+        row.invoice_number = app.invoice_number
+        row.invoice_date = app.invoice_date
+        row.applied_on = app.applied_on
+        row.amount_applied = app.amount_applied
+        row.source_ref = app.source_ref.model_dump()
         return row
 
     def upsert_vendor_payment(self, vendor_id: Optional[str],

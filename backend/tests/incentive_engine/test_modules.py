@@ -15,7 +15,7 @@ from incentive_engine.baseline import CustomerBaseline, build
 from incentive_engine.gates import evaluate
 from incentive_engine.models import (
     CustomerAttributes, CustomerPoints, FloorPriceSchedule, Payment, Trial,
-    ValidationError, VendorYield,
+    ValidationError, VendorYield, WalletDeclaration,
 )
 
 
@@ -144,10 +144,43 @@ def test_a_missing_health_component_scores_one_rather_than_zero(cfg):
 # ── rsi / weighting / baseline ──────────────────────────────────────────────
 def test_rsi_advances_on_tenure_so_a_band_cannot_be_held_by_underselling(cfg):
     thin = CustomerAttributes("c", "g", ("SLS",), date(2020, 1, 1), 1, 1,
-                              D("0.05"), D("0"), 1)
+                              D("0"), 1)
     young = rsi.compute(cfg, thin, tenure_months=2)
     old = rsi.compute(cfg, thin, tenure_months=60)
     assert old.score > young.score
+
+
+def test_a_declared_wallet_share_cannot_move_the_rsi(cfg):
+    """The one input the person being paid supplies about their own account.
+
+    Weighted zero on purpose. If this test fails, somebody has restored the
+    weight — which needs an observed basis for the number, not a tidier form.
+    """
+    def attrs(declaration):
+        return CustomerAttributes("c", "g", ("SLS",), date(2020, 1, 1), 6, 3,
+                                  D("2"), 2,
+                                  share_of_wallet_declared=declaration)
+
+    silent = rsi.compute(cfg, attrs(None), tenure_months=30)
+    boasted = rsi.compute(cfg, attrs(
+        WalletDeclaration(D("1"), "s1", date(2026, 4, 1))), tenure_months=30)
+    modest = rsi.compute(cfg, attrs(
+        WalletDeclaration(D("0"), "s1", date(2026, 4, 1))), tenure_months=30)
+
+    assert silent.score == boasted.score == modest.score
+    # And an undeclared account says so, rather than reading as a measured 0%.
+    assert silent.unmeasured == ("share_of_wallet",)
+    assert boasted.unmeasured == ()
+    assert modest.unmeasured == ()
+
+
+def test_a_wallet_declaration_must_name_who_said_it(cfg):
+    """A number with no author cannot be weighed, so it cannot be constructed."""
+    with pytest.raises(ValidationError):
+        WalletDeclaration(D("0.4"), "", date(2026, 4, 1))
+    # And it is a ratio, like margin — 40 is not 40%.
+    with pytest.raises(ValidationError):
+        WalletDeclaration(D("40"), "s1", date(2026, 4, 1))
 
 
 def test_an_rsi_outside_every_band_is_loud(cfg):
@@ -162,7 +195,7 @@ def test_the_new_band_pays_incremental_only_never_both(cfg):
     """Every rupee from a brand-new account is incremental by definition;
     a base multiplier as well would pay twice for the same rupee."""
     new = rsi.compute(cfg, CustomerAttributes(
-        "c", "g", ("SLS",), None, 1, 1, D("0"), D("0"), 0), tenure_months=0)
+        "c", "g", ("SLS",), None, 1, 1, D("0"), 0), tenure_months=0)
     assert new.w_base is None
     base = CustomerBaseline("g", D("0"), D("10000"), D("10000"), D("0"))
     clean = weighting.RetentionCheck(False, (), D("1.00"))

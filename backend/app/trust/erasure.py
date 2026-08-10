@@ -82,6 +82,11 @@ EXPORTED: tuple[tuple[str, Any], ...] = (
     ("vendor_payment_terms", models.VendorPaymentTerm),
     ("vendor_msme_statuses", models.VendorMsmeStatus),
     ("item_category_overrides", models.ItemCategoryOverride),
+    # Read off a published tender portal by hand and typed in. Nothing syncs
+    # it, so an export without it hands back a book whose measured share of
+    # wallet cannot be reconstructed — and the source URLs on these rows are
+    # the only record of where those figures came from.
+    ("tender_results", models.TenderResult),
     ("commercial_policies", models.CommercialPolicy),
     ("org_policies", models.OrgPolicy),
     ("identity_policies", models.IdentityPolicy),

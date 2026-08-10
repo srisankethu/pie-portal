@@ -47,6 +47,7 @@ from ..store import store
 from ..commercial.policy import load_for_org
 from ..commercial.quote_service import (
     InvalidTransition,
+    MissingLossReason,
     QuoteLineInput,
     assess_and_record,
     assess_quote,
@@ -60,7 +61,7 @@ from ..commercial.quote_service import (
     summarize,
 )
 from ..db import get_session
-from ..domain.enums import QuoteOutcomeStatus
+from ..domain.enums import QuoteLossReason, QuoteOutcomeStatus
 
 router = APIRouter(prefix="/api/v1/quote-intelligence", tags=["quote-intelligence"])
 
@@ -316,6 +317,12 @@ class OutcomeRequest(BaseModel):
     status: QuoteOutcomeStatus
     customer: str = ""
     note: Optional[str] = None
+    #: Required when ``status`` is LOST. Not enforced here as a Pydantic
+    #: constraint on purpose — ``quote_service.set_outcome`` owns the rule, so
+    #: the CLI, a future importer and this endpoint cannot drift about what
+    #: counts as a recordable loss.
+    loss_reason: Optional[QuoteLossReason] = None
+    lost_to: Optional[str] = None
 
 
 @router.post("/outcome")
@@ -335,7 +342,13 @@ def quote_outcome(
             session, org, quote_id=body.quote_id.strip(), status=body.status,
             customer_ref=customer_ref,
             customer_id=customer.customer_id if customer else None,
-            note=body.note, user_id=principal.user_id)
+            note=body.note, loss_reason=body.loss_reason,
+            lost_to=body.lost_to, user_id=principal.user_id)
+    except MissingLossReason as e:
+        # 422 rather than 409: the request is well-formed and the transition is
+        # legal, one required field is absent, and the message names the
+        # choices. A 409 would send the caller looking at the lifecycle.
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e)) from e
     except InvalidTransition as e:
         raise HTTPException(status.HTTP_409_CONFLICT, str(e)) from e
     return outcome_to_dict(row) or {}

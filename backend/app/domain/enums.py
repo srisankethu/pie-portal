@@ -7,6 +7,7 @@ portable across the DB (stored as strings) and JSON APIs.
 from __future__ import annotations
 
 from enum import Enum
+from typing import Optional
 
 
 class Role(str, Enum):
@@ -355,6 +356,76 @@ QUOTE_OUTCOME_TRANSITIONS: dict[QuoteOutcomeStatus, frozenset] = {
 }
 
 
+class QuoteLossReason(str, Enum):
+    """Why a quote was lost, from a list short enough that people use it.
+
+    Five entries, because the owner's question has four answers and one of them
+    is "they never came back": *losing at 8% below my quote is a pricing
+    problem; losing on delivery is a stock problem*. A free-text field alone
+    could not separate those two — every loss would be a sentence, and nobody
+    counts sentences. The note beside this is what stops the list from lying
+    when reality does not fit one of the five.
+
+    Deliberately about *the customer's reason*, not ours. "Priced too high" and
+    "cost too high" are the same loss to the person recording it and two
+    different problems to the person fixing it, so this records only what was
+    heard and leaves the diagnosis to the modules that read it.
+
+    **This vocabulary is deliberately not mine.** It is `claude/quote-win-loss`'s
+    (PR #42), adopted here verbatim rather than shipped alongside a second set of
+    names for the same fact. That branch carries ~1,100 lines of analysis and UI
+    reading these exact values; a competing enum would have made whichever landed
+    second a rename across all of it, for no gain. What is added below is the one
+    question that branch does not answer and `insight/wallet.py` needs. If both
+    land, the reconciliation is deleting one migration file — not a vocabulary
+    argument.
+    """
+
+    PRICE = "PRICE"
+    DELIVERY = "DELIVERY"
+    COMPETITOR = "COMPETITOR"
+    CUSTOMER_CANCELLED = "CUSTOMER_CANCELLED"
+    NO_DECISION = "NO_DECISION"
+
+    @property
+    def went_elsewhere(self) -> Optional[bool]:
+        """Whether this loss is evidence somebody else supplied the line.
+
+        Three-valued on purpose, and the third value is the point. ``True`` a
+        competitor took it, ``False`` the requirement died, ``None`` the record
+        cannot say. ``None`` is **not** "no" and must never be folded into it:
+        anything reasoning about what a customer buys elsewhere has to exclude
+        the unknowns from both sides, because counting them as "nobody bought
+        it" shrinks the competitor's side and overstates our own share.
+
+        A property on the enum rather than a set literal in each consumer, so
+        adding a sixth reason forces the question to be answered once, here,
+        instead of being silently defaulted in three places.
+
+        ``NO_DECISION`` is ``None`` rather than ``False`` deliberately: a stalled
+        requirement may still land with somebody, so it is neither ours nor
+        theirs yet.
+        """
+        if self in (QuoteLossReason.PRICE, QuoteLossReason.DELIVERY,
+                    QuoteLossReason.COMPETITOR):
+            return True
+        if self is QuoteLossReason.CUSTOMER_CANCELLED:
+            return False
+        return None
+
+
+#: Losses recorded before the vocabulary existed. Not a member of the enum —
+#: nothing may ever be *written* with it — but a reader has to be able to name
+#: the bucket rather than quietly dropping those quotes out of a denominator.
+#: Distinct from a recorded ``NO_DECISION``: one is "nobody asked", the other is
+#: "we asked and the customer has not decided".
+LOSS_REASON_NOT_RECORDED = "NOT_RECORDED"
+
+#: Reasons a person may choose when recording a loss — every member, since the
+#: not-recorded sentinel is deliberately outside the enum and so cannot be
+#: offered by construction.
+SELECTABLE_LOSS_REASONS: tuple[QuoteLossReason, ...] = tuple(QuoteLossReason)
+
 class MsmeClassification(str, Enum):
     """A supplier's registered size under the MSMED Act, as somebody saw it.
 
@@ -415,7 +486,6 @@ class MsmeEvidence(str, Enum):
     VENDOR_EMAIL = "VENDOR_EMAIL"
     PORTAL_LOOKUP = "PORTAL_LOOKUP"
     NONE = "NONE"
-
 
 # Data classes for permission redaction (§14). RESTRICTED fields are visible to
 # SALES_MANAGER and OWNER only. Enforced downstream (context assembly / API);

@@ -654,6 +654,83 @@ class ItemCategoryOverride(Base):
                                                  onupdate=_now)
 
 
+class TenderResult(Base):
+    """A published tender, what it asked for, and what we won of it.
+
+    The one place this platform can *measure* share of wallet rather than
+    estimate it. A government or PSU tender states the quantity and value it is
+    buying, in a document anybody can read, and the award says who supplied it.
+    So for that customer, over that tender, ``won ÷ tendered`` is arithmetic
+    over two published facts — not an inference about spend the platform cannot
+    see, which is what ``insight/dependency.py`` correctly refuses to make.
+
+    **Scoped to what was tendered, and named for it.** This says nothing about
+    the same customer's off-tender buying — the spares, the consumables, the
+    repeat orders that never reach a bid. A customer at 60% of their tendered
+    tooling may be at 5% of their total, and a field called "share of wallet"
+    holding this number would be a lie of scope. ``insight/wallet.py`` reports
+    it as ``MEASURED_TENDER`` for that reason.
+
+    **Typed in, not derived.** Nothing syncs this: tender portals are not a
+    connector and the award notice is a PDF. It is therefore a *record of what
+    somebody read*, and it carries the reference and the source so a figure
+    built on it can be checked back to the document. A row with no reference is
+    refused at the router — a measured share whose measurement cannot be looked
+    up is no better than a guess.
+
+    Append-only in spirit and mutable in fact: an award is learned after the
+    bid, so ``won_value`` and ``awarded_on`` fill in later. What must never
+    change is ``tendered_value`` — that is what the published document said, and
+    editing it to reconcile a share would be editing the evidence.
+    """
+
+    __tablename__ = "tender_results"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "tender_ref",
+                         name="uq_tender_result_org_ref"),
+        Index("ix_tender_results_org_customer", "organization_id", "customer_id"),
+    )
+
+    tender_result_id: Mapped[str] = mapped_column(String(64), primary_key=True,
+                                                  default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    #: The bid number as the portal writes it — GeM bid id, NIT number, tender
+    #: id. Unique per organization: the same bid recorded twice would count its
+    #: value twice in a denominator, which inflates a share silently.
+    tender_ref: Mapped[str] = mapped_column(String(128), index=True)
+    #: Who is buying. Resolved where possible; the ref is kept regardless,
+    #: because a tender from a customer not yet on the book is still a real
+    #: observation and dropping it would lose exactly the accounts with the
+    #: least trade behind them.
+    customer_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    customer_ref: Mapped[str] = mapped_column(String(255), default="")
+
+    #: What the published document asked for. Never edited to reconcile a
+    #: share — this is the evidence, not a working figure.
+    tendered_value: Mapped[Any] = mapped_column(Numeric(18, 2))
+    #: What we were awarded. NULL until the award is known, which is not zero:
+    #: an undecided tender excluded from the denominator is honest, and one
+    #: counted as a loss is a share understated by however many bids are open.
+    won_value: Mapped[Optional[Any]] = mapped_column(Numeric(18, 2))
+
+    #: Which lines of the business this tender covers, so a share can say what
+    #: it is a share *of*. One of ``commercial.categories.ORDER`` per entry.
+    categories: Mapped[list[str]] = mapped_column(JSON, default=list)
+
+    closed_on: Mapped[date] = mapped_column(Date, index=True)
+    awarded_on: Mapped[Optional[date]] = mapped_column(Date)
+
+    #: Where this was read — a portal URL, a document name, an ingested
+    #: document id. Required at the router: a measured share whose measurement
+    #: cannot be looked up is not measured.
+    source: Mapped[str] = mapped_column(String(512), default="")
+    recorded_by_user_id: Mapped[Optional[str]] = mapped_column(String(64))
+    note: Mapped[Optional[str]] = mapped_column(String(1024))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
+                                                 onupdate=_now)
+
+
 class SalesTxn(Base):
     """Invoice-line grain (§4)."""
 
@@ -1294,6 +1371,28 @@ class QuoteOutcome(Base):
 
     status: Mapped[str] = mapped_column(String(16), default="DRAFT", index=True)
     note: Mapped[Optional[str]] = mapped_column(String(1024))
+    # Why it was lost — a ``QuoteLossReason``, and specifically whether the
+    # money went to somebody else or the requirement died. Those two look
+    # identical in a bare LOST row and mean opposite things about what this
+    # customer spends elsewhere, so anything reasoning about that has to be
+    # able to separate them, and a free-text ``note`` cannot be aggregated.
+    #
+    # NULL only on rows written before this column existed. Backfilling them to
+    # UNKNOWN would be indistinguishable from somebody having answered
+    # "unknown", so they are left NULL and read as "not recorded" — which is
+    # the true statement. New losses cannot be NULL: ``set_outcome`` refuses a
+    # LOST transition without a reason rather than defaulting to a benign one.
+    # 32 rather than the 24 the longest member needs: it is the width
+    # `claude/quote-win-loss` chose for this same column, and matching it means
+    # whichever branch lands second deletes a migration instead of altering a
+    # type on a live table.
+    loss_reason: Mapped[Optional[str]] = mapped_column(String(32), index=True)
+    #: Who won it, where that is known. Free text on purpose — a competitor is
+    #: not an entity this platform holds, and a lookup table of them would be a
+    #: second customer master maintained by nobody. Never required: a reason is
+    #: the part that has to be answerable, and a rep who does not know the
+    #: winner must still be able to record the loss.
+    lost_to: Mapped[Optional[str]] = mapped_column(String(255))
     sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     decided_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     updated_by_user_id: Mapped[Optional[str]] = mapped_column(String(64))

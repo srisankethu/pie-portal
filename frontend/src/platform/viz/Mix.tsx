@@ -345,11 +345,18 @@ function Heatmap({ rows: list, columns }: { rows: Row[]; columns: Row[] }) {
   );
 }
 
-/** The strongest reason to look at this gap, in one sentence. */
+/** The strongest reason to look at this gap, in one sentence.
+ *
+ *  Strongest by *lift*, shown as confidence. Ranking on the share alone always
+ *  named whichever anchor sits beside the commonest line on the book — the same
+ *  sentence under every gap, for every customer, which is how an affinity note
+ *  stops being read. Lift asks the useful question instead: does holding that
+ *  line actually go with holding this one, or does everybody take it anyway? */
 function AffinityNote({ affinity, target }: { affinity: Row[]; target: string }) {
   const best = affinity
-    .filter((a) => a.to === target && a.share != null)
-    .sort((a, b) => num(b.share) - num(a.share))[0];
+    .filter((a) => a.to === target && a.confidence != null)
+    .sort((a, b) =>
+      (num(b.lift) - num(a.lift)) || (num(b.confidence) - num(a.confidence)))[0];
   if (!best) {
     return (
       <span className="viz-muted">
@@ -357,11 +364,17 @@ function AffinityNote({ affinity, target }: { affinity: Row[]; target: string })
       </span>
     );
   }
+  const lift = best.lift == null ? null : num(best.lift);
   return (
     <span className="viz-muted">
-      {pct(num(best.share), 0)} of your {String(best.from_label).toLowerCase()}{" "}
-      customers also take it. That is a reason to look, not evidence these ones
-      need it.
+      {pct(num(best.confidence), 0)} of your{" "}
+      {String(best.from_label).toLowerCase()} customers also take it
+      {lift == null
+        ? ""
+        : lift >= 1.15
+          ? `, against ${pct(num(best.base_rate), 0)} of the book`
+          : " — about the same as the book at large, so the pairing says little"}
+      . That is a reason to look, not evidence these ones need it.
     </span>
   );
 }
@@ -373,7 +386,7 @@ function AffinityNote({ affinity, target }: { affinity: Row[]; target: string })
  *  is the fact-panel case `ui-standards` §3 names. The customer grid above is
  *  the one whose row count is the size of the business. */
 function Affinity({ rows: pairs, minPeers }: { rows: Row[]; minPeers: number }) {
-  const estimable = pairs.filter((p) => p.share != null);
+  const estimable = pairs.filter((p) => p.confidence != null);
   if (!estimable.length) {
     return (
       <p className="bond-unscored">
@@ -392,19 +405,32 @@ function Affinity({ rows: pairs, minPeers }: { rows: Row[]; minPeers: number }) 
         tools” and “few cutting-tool buyers take coolant” are both true and
         mean different things.
       </p>
+      <p className="viz-muted">
+        <strong>vs book</strong> compares that share against how common the
+        second line is across the whole book. ×1.0 means the pairing tells you
+        nothing — those customers take it at the same rate everybody does. A
+        blank means too few customers buy the second line for the comparison to
+        stand up, which is not the same as the pairing being weak.
+      </p>
       <table className="grid">
         <thead>
-          <tr><th>Customers who buy</th><th>also buy</th><th>Share</th><th>Of</th></tr>
+          <tr>
+            <th>Customers who buy</th><th>also buy</th><th>Share</th>
+            <th>vs book</th><th>Of</th>
+          </tr>
         </thead>
         <tbody>
           {estimable
             .slice()
-            .sort((a, b) => num(b.share) - num(a.share))
+            .sort((a, b) =>
+              (num(b.lift) - num(a.lift))
+              || (num(b.confidence) - num(a.confidence)))
             .map((p, i) => (
               <tr key={i}>
                 <td>{String(p.from_label)}</td>
                 <td>{String(p.to_label)}</td>
-                <td>{pct(num(p.share), 0)}</td>
+                <td>{pct(num(p.confidence), 0)}</td>
+                <td>{p.lift == null ? "—" : `×${num(p.lift).toFixed(2)}`}</td>
                 <td>{num(p.peers)} customers</td>
               </tr>
             ))}

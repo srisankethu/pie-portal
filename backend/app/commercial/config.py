@@ -126,6 +126,42 @@ class CommercialThresholds:
     # A peer whose last purchase predates this is not evidence about today.
     peer_recency_days: int = 365
 
+    # ── share of wallet ──────────────────────────────────────────────────────
+    #
+    # What fraction of a customer's tooling spend comes to us. The platform
+    # cannot see this directly — ``insight/dependency.py`` says so at length —
+    # so ``insight/wallet.py`` reports a band with its basis named and refuses
+    # where the basis is too thin. These floors decide where the refusal falls,
+    # and they are here rather than in that module for the reason
+    # ``target_margin_by_family`` is: they move every share figure downstream,
+    # so they belong inside ``version``.
+    #
+    # The bound from observed asks divides our revenue by our revenue plus what
+    # we are recorded as having lost. It is only as tight as the quoting is
+    # disciplined: a customer whose orders mostly arrive without a recorded
+    # quote looks like a high-share customer *because* nobody wrote the losses
+    # down. That is what this floor exists to prevent — the one direction where
+    # a missing record flatters the answer.
+    #
+    # 0.30 is not a confident number. It is a starting position that will be
+    # wrong until a quarter of quoting stands behind it, and it is deliberately
+    # low: a floor high enough to be safe would refuse every customer, and a
+    # screen that always refuses teaches nobody anything. Revisit it against
+    # real coverage rather than leaving it because it shipped.
+    wallet_min_quote_coverage: float = 0.30
+    # How long a declared share is worth anything. Somebody's view of a
+    # customer's spend eighteen months ago describes a different shop floor.
+    wallet_declaration_max_age_months: int = 12
+    # How many lost quotes must stand behind a bound. One lost order is an
+    # anecdote, and an anecdote rendered as a percentage range is still an
+    # anecdote — the same discipline as ``min_peer_customers``.
+    wallet_min_lost_quotes: int = 3
+    # How wide a declared share's band is, either side of the stated number. A
+    # declaration is somebody's estimate, so reporting it as a point would give
+    # a guess the look of a measurement. ±0.10 says "about a third" rather than
+    # "34%", which is the most a declaration can support.
+    wallet_declared_band: float = 0.10
+
     # ── pricing policy (the authority; ``app.pricing`` reads it from here) ────
     # These used to live as module constants in ``app/pricing.py``, where the
     # Quote Builder read one set of numbers and the commercial analysis another.
@@ -533,6 +569,11 @@ class CommercialThresholds:
             annualize_min_history_months=_f("CI_ANNUALIZE_MIN_HISTORY_MONTHS", 6.0),
             annualize_min_transactions=_i("CI_ANNUALIZE_MIN_TRANSACTIONS", 4),
             peer_recency_days=_i("CI_PEER_RECENCY_DAYS", 365),
+            wallet_min_quote_coverage=_f("CI_WALLET_MIN_QUOTE_COVERAGE", 0.30),
+            wallet_declaration_max_age_months=_i(
+                "CI_WALLET_DECLARATION_MAX_AGE_MONTHS", 12),
+            wallet_min_lost_quotes=_i("CI_WALLET_MIN_LOST_QUOTES", 3),
+            wallet_declared_band=_f("CI_WALLET_DECLARED_BAND", 0.10),
             target_margin_default=_f("CI_TARGET_MARGIN_DEFAULT", 0.24),
             target_margin_by_family=_families(),
             min_margin=_f("CI_MIN_MARGIN", 0.12),

@@ -33,6 +33,15 @@ That asymmetry is reported rather than papered over — it is the difference
 between "they are 8% of our revenue" (a fact) and "we are 8% of their
 purchasing" (a guess this platform is not entitled to make).
 
+**That limit still holds, and ``insight/wallet.py`` does not overturn it.** What
+that module adds is the narrow set of cases where the other side *is* observable
+— a published tender states the quantity being bought, and a quote recorded as
+lost to a named competitor is spend this book watched go elsewhere — and it
+reports those as a band with the basis named, or refuses. It never produces the
+figure this paragraph refuses. Read the two together: this module says what a
+customer is worth to us, that one says how much of them we might not have, and
+neither is allowed to be stated as the other.
+
 Layer rules, inherited: ``commercial/``, deterministic, never imports ``ai/``.
 The vendor half is denominated in purchase spend, so the router — not this
 module — decides who may read it.

@@ -26,7 +26,9 @@ from .. import clock
 from ..domain import models
 from ..domain.enums import (
     QUOTE_OUTCOME_TRANSITIONS,
+    SELECTABLE_LOSS_REASONS,
     EvidenceSufficiency,
+    QuoteLossReason,
     QuoteOutcomeStatus,
     Role,
 )
@@ -692,16 +694,52 @@ class InvalidTransition(ValueError):
     """A quote outcome change the lifecycle does not permit."""
 
 
+class MissingLossReason(ValueError):
+    """A loss recorded without saying which kind of loss it was.
+
+    Its own type rather than a ``ValueError``, because a router has to map it
+    to a 422 with a usable message while ``InvalidTransition`` is a 409 — and a
+    caller that cannot tell them apart will collapse both into "bad request"
+    and lose the only part the person filling the form can act on.
+    """
+
+
 def set_outcome(session: Session, org: str, *, quote_id: str,
                 status: QuoteOutcomeStatus, customer_ref: str = "",
                 customer_id: Optional[str] = None, note: Optional[str] = None,
+                loss_reason: Optional[QuoteLossReason] = None,
+                lost_to: Optional[str] = None,
                 user_id: Optional[str] = None) -> models.QuoteOutcome:
     """Move a quote along DRAFT → SENT → WON/LOST.
 
     Won and lost are terminal. Reopening a decided quote would rewrite history a
     margin analysis has already counted, so it is refused rather than silently
     allowed.
+
+    **A loss must say which kind of loss it was.** Recording LOST without a
+    reason raises rather than storing a benign default, because the two things
+    a bare LOST can mean — a competitor supplied it, or nobody did — point in
+    opposite directions for every later question about what this customer buys
+    elsewhere. Defaulting to UNKNOWN would make the gap invisible at exactly
+    the moment it is cheapest to close: the person recording the loss is the
+    one person who knows.
+
+    "Not recorded" is unreachable rather than rejected: it lives outside
+    ``QuoteLossReason`` as a plain sentinel, so there is no value a caller could
+    pass to mean it. A state history can be in, but not one a new record can be
+    created in — enforced by construction rather than by a guard that has to be
+    remembered.
     """
+    if status is QuoteOutcomeStatus.LOST:
+        if loss_reason is None:
+            raise MissingLossReason(
+                "Recording a quote as lost needs a reason: "
+                + ", ".join(r.value for r in SELECTABLE_LOSS_REASONS)
+                + ". Whether the order went to another supplier or the "
+                  "requirement went away are opposite facts about this "
+                  "customer, and a lost quote with neither recorded cannot be "
+                  "counted as either.")
+
     row = session.scalar(
         select(models.QuoteOutcome).where(
             models.QuoteOutcome.organization_id == org,
@@ -726,6 +764,11 @@ def set_outcome(session: Session, org: str, *, quote_id: str,
         row.sent_at = row.sent_at or now
     if status in (QuoteOutcomeStatus.WON, QuoteOutcomeStatus.LOST):
         row.decided_at = now
+    if status is QuoteOutcomeStatus.LOST:
+        # Only on the LOST edge. Setting these on any status would let a WON
+        # quote carry a stale reason from an earlier attempt at the form.
+        row.loss_reason = loss_reason.value if loss_reason else None
+        row.lost_to = (lost_to or "").strip()[:255] or None
     if note is not None:
         row.note = note[:1024]
     if customer_ref:
@@ -745,12 +788,18 @@ def outcome_to_dict(row: Optional[models.QuoteOutcome]) -> Optional[dict]:
         "quote_id": row.quote_id,
         "status": row.status,
         "note": row.note,
+        # Null means the loss predates the field being asked for — not that
+        # somebody answered "unknown". A screen should render the two
+        # differently, and it cannot if the API folds them together.
+        "loss_reason": row.loss_reason,
+        "lost_to": row.lost_to,
         "customer_ref": row.customer_ref,
         "customer_id": row.customer_id,
         "sent_at": clock.iso(row.sent_at),
         "decided_at": clock.iso(row.decided_at),
         "allowed_next": sorted(
             s.value for s in QUOTE_OUTCOME_TRANSITIONS[QuoteOutcomeStatus(row.status)]),
+        "loss_reasons": [r.value for r in SELECTABLE_LOSS_REASONS],
     }
 
 

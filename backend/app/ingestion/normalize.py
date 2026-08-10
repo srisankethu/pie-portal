@@ -13,9 +13,10 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Optional
 
 from ..domain.enums import CustomerStatus
-from ..domain.schemas import (BillIn, CostRecordIn, CustomerIn,
-                             DocumentApplicationIn, InvoiceIn, PaymentReceiptIn,
-                             ProductIn, PurchaseOrderIn, SalesOrderIn, SalesTxnIn,
+from ..domain.schemas import (BillIn, CostRecordIn, CreditNoteApplicationIn,
+                             CreditNoteIn, CustomerIn, DocumentApplicationIn,
+                             InvoiceIn, PaymentReceiptIn, ProductIn,
+                             PurchaseOrderIn, SalesOrderIn, SalesTxnIn,
                              SourceRef, StockSnapshotIn, VendorIn, VendorPaymentIn)
 
 #: The system every record in this module came from. Stated once, and stated
@@ -414,6 +415,74 @@ def normalize_invoice_terms(raw: dict[str, Any]) -> InvoiceIn:
         balance=raw.get("balance"),
         source_ref=SourceRef(system=ZOHO, record_type="invoice", record_id=invoice_id),
     )
+
+
+def normalize_credit_note(
+    raw: dict[str, Any],
+) -> tuple[CreditNoteIn, list[CreditNoteApplicationIn]]:
+    """One credit note → its header, and each invoice it was applied to.
+
+    Returns a tuple rather than nesting the applications on the header, because
+    the two have different failure modes: a credit note raised and not yet
+    applied to anything is a complete, valid record with an empty list, and
+    nesting would invite a reader to treat the empty list as a parse failure.
+
+    **Why this does not reuse ``_applications``.** That helper drops any
+    application whose document carries no date, which is right for days-to-pay:
+    with no invoice date there is no interval to measure, and defaulting it
+    would manufacture a book that always settles same-day. Here the same rule
+    would be a defect. A dropped credit application does not lose an
+    observation, it loses *money* — and it loses it in the direction that
+    overstates what a customer historically owed, which is the precise error
+    this table exists to correct. So an application with no invoice date is
+    kept, with ``invoice_date`` left ``None``, and whatever reconstructs a
+    timeline reports it as unplaceable rather than silently dropping it.
+    """
+    note_id = str(_require(raw, "creditnote_id", "credit note"))
+    ctx = f"credit note {note_id}"
+    customer_ext = str(raw["customer_id"]) if raw.get("customer_id") else None
+    header = CreditNoteIn(
+        external_ref=note_id,
+        number=(str(raw["creditnote_number"]) if raw.get("creditnote_number") else None),
+        customer_external_id=customer_ext,
+        date=_parse_date(_require(raw, "date", ctx), ctx),
+        status=str(raw.get("status") or ""),
+        total=raw.get("total"),
+        balance=raw.get("balance"),
+        source_ref=SourceRef(system=ZOHO, record_type="credit_note", record_id=note_id),
+    )
+    applications: list[CreditNoteApplicationIn] = []
+    for i, a in enumerate(raw.get("invoices_credited") or []):
+        invoice_ref = str(a.get("invoice_id") or "")
+        if not invoice_ref:
+            # Credit with no invoice on it is unapplied credit, which the
+            # header's own ``balance`` already reports. It is not an error and
+            # it is not an application.
+            continue
+        amount = a.get("amount_applied")
+        if amount in (None, ""):
+            amount = a.get("credited_amount")
+        if amount in (None, ""):
+            # An application with no amount cannot reduce anything. Skipped
+            # rather than read as zero, which would assert the credit was
+            # applied for nothing.
+            continue
+        applied_raw = a.get("date") or raw.get("date")
+        invoice_raw = a.get("invoice_date")
+        applications.append(CreditNoteApplicationIn(
+            external_ref=str(a.get("creditnote_invoice_id")
+                             or f"{note_id}:{invoice_ref}:{i}"),
+            credit_note_external_ref=note_id,
+            customer_external_id=customer_ext,
+            invoice_external_ref=invoice_ref,
+            invoice_number=(str(a["invoice_number"]) if a.get("invoice_number") else None),
+            invoice_date=(_parse_date(invoice_raw, ctx) if invoice_raw else None),
+            applied_on=_parse_date(applied_raw, ctx),
+            amount_applied=_parse_decimal(amount, ctx, "amount_applied"),
+            source_ref=SourceRef(system=ZOHO, record_type="credit_note",
+                                 record_id=note_id, line_id=invoice_ref),
+        ))
+    return header, applications
 
 
 def normalize_vendor_payment(raw: dict[str, Any]) -> VendorPaymentIn:

@@ -302,6 +302,75 @@ class InvoiceIn(BaseModel):
         return v if isinstance(v, Decimal) else Decimal(str(v))
 
 
+class CreditNoteIn(BaseModel):
+    """A credit note's header. The mirror of ``InvoiceIn``, opposite sign.
+
+    Deliberately the same shape as the receivable it reduces: an invoice is what
+    a customer owes, a credit note is what was given back, and two different
+    shapes for one ledger would mean two ways to ask what a customer's position
+    actually is.
+
+    ``balance`` here is what remains *unapplied* — credit the customer holds but
+    which has not yet been set against any invoice. It is passed through exactly
+    as Zoho states it, never derived from ``total`` minus the applications read
+    below, because a refund against the credit note would make that subtraction
+    wrong in the direction that overstates the credit still available.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    external_ref: str = Field(min_length=1)
+    number: Optional[str] = None
+    customer_external_id: Optional[str] = None
+    date: date
+    status: str = ""
+    total: Optional[Decimal] = None
+    #: Credit raised but not yet applied to any invoice. ``None`` where Zoho did
+    #: not say — never coerced to 0, which would read as "fully applied".
+    balance: Optional[Decimal] = None
+    source_ref: SourceRef
+
+    @field_validator("total", "balance", mode="before")
+    @classmethod
+    def _to_decimal(cls, v: Any) -> Optional[Decimal]:
+        if v is None or v == "":
+            return None
+        return v if isinstance(v, Decimal) else Decimal(str(v))
+
+
+class CreditNoteApplicationIn(BaseModel):
+    """One credit note set against one invoice, on one date.
+
+    The grain a historical receivable is reconstructed at, and the reason this
+    table exists at all: today's outstanding balance already nets applied credit
+    (Zoho states it and ``state/reducers/receivables`` reads it), but "what was
+    owed on 31 March" cannot be answered from a balance that only describes now.
+    That answer is invoices raised, minus receipts applied, minus *this*.
+
+    ``invoice_date`` is carried here rather than joined from ``InvoiceDoc``, for
+    the same reason ``PaymentApplication`` carries it: a credit note landing
+    today may settle an invoice raised before the sync window starts, and a join
+    would silently drop exactly the oldest positions.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    external_ref: str = Field(min_length=1)
+    credit_note_external_ref: str = Field(min_length=1)
+    customer_external_id: Optional[str] = None
+    invoice_external_ref: str = Field(min_length=1)
+    invoice_number: Optional[str] = None
+    invoice_date: Optional[date] = None
+    applied_on: date
+    amount_applied: Decimal
+    source_ref: SourceRef
+
+    @field_validator("amount_applied", mode="before")
+    @classmethod
+    def _amount_to_decimal(cls, v: Any) -> Decimal:
+        return v if isinstance(v, Decimal) else Decimal(str(v))
+
+
 class VendorPaymentIn(BaseModel):
     """One payment out. Amount is required — a payment with no amount is not a
     payment, and defaulting it to zero would understate cash out silently."""

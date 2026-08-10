@@ -42,6 +42,10 @@ SkipPredicate = Callable[[str, str], bool]
 # Invoice/bill statuses that do not represent real trade.
 _EXCLUDED_INVOICE_STATUS = {"draft", "void"}
 _EXCLUDED_BILL_STATUS = {"draft", "void"}
+#: A draft credit note has been given to nobody and a void one has been taken
+#: back. Neither ever reduced a receivable, so neither belongs in a
+#: reconstruction of what was owed.
+_EXCLUDED_CREDIT_NOTE_STATUS = {"draft", "void"}
 
 
 @dataclass(frozen=True)
@@ -129,6 +133,7 @@ SCOPE_FOR_PATH: dict[str, str] = {
     "contacts": "ZohoBooks.contacts.READ",
     "items": "ZohoBooks.settings.READ",
     "invoices": "ZohoBooks.invoices.READ",
+    "creditnotes": "ZohoBooks.creditnotes.READ",
     "bills": "ZohoBooks.bills.READ",
     "customerpayments": "ZohoBooks.customerpayments.READ",
     "purchaseorders": "ZohoBooks.purchaseorders.READ",
@@ -708,6 +713,55 @@ class ZohoApiSource(ZohoTransport):
                     for li in (inv.get("line_items") or [])
                     # A line with no item_id is a comment/charge row, not a product.
                     if li.get("item_id")
+                ],
+            }
+
+    def list_credit_notes(self,
+                          skip: Optional[SkipPredicate] = None,
+                          ) -> Iterable[dict[str, Any]]:
+        """Credit notes, with the invoices each was applied to.
+
+        Read through ``_documents`` rather than ``_paginate`` because the
+        applications live on the detail payload — ``invoices_credited`` is not
+        on the list response — and ``_documents`` is already fetching that
+        detail for every other document type. No extra call beyond the one the
+        detail fetch makes, and the same resume predicate applies.
+
+        Line items are deliberately not passed through. A credit note's lines
+        would be negative revenue against a product, and revenue already has one
+        owner in ``SalesTxn``; a second signed source for the same quantity is
+        how two screens start disagreeing about what was sold. What this pull is
+        for is the *money*, at header and application grain.
+        """
+        for note in self._documents("creditnotes", "creditnotes", "creditnote",
+                                    "creditnote_id", _EXCLUDED_CREDIT_NOTE_STATUS,
+                                    skip=skip):
+            yield {
+                "creditnote_id": str(note.get("creditnote_id")),
+                "creditnote_number": note.get("creditnote_number"),
+                "customer_id": (str(note["customer_id"])
+                                if note.get("customer_id") else None),
+                "date": note.get("date"),
+                "last_modified_time": note.get("last_modified_time"),
+                "status": note.get("status"),
+                "total": note.get("total"),
+                # What is still unapplied. Zoho's own figure — never derived
+                # from total minus the applications below, because a refund
+                # against the note would make that subtraction overstate the
+                # credit a customer still holds.
+                "balance": note.get("balance"),
+                "invoices_credited": [
+                    {
+                        "creditnote_invoice_id": ic.get("creditnote_invoice_id"),
+                        "invoice_id": str(ic.get("invoice_id")),
+                        "invoice_number": ic.get("invoice_number"),
+                        "invoice_date": ic.get("invoice_date"),
+                        "date": ic.get("date"),
+                        "amount_applied": ic.get("amount_applied"),
+                        "credited_amount": ic.get("credited_amount"),
+                    }
+                    for ic in (note.get("invoices_credited") or [])
+                    if ic.get("invoice_id")
                 ],
             }
 

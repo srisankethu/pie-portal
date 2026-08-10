@@ -146,6 +146,19 @@ class Settings:
     # "fixture" (deterministic offline source) or "api" (live Zoho).
     ZOHO_SOURCE: str = os.environ.get("ZOHO_SOURCE", "fixture")
 
+    # Which adapter the Quote Builder reads prices from and writes estimates to:
+    # "mock" (deterministic, offline — dev/test/demo default) or "live" (the real
+    # Zoho Books API). Separate from ZOHO_SOURCE above because the two answer
+    # different questions: that one is where analysis *reads history* from, this
+    # one is whether the quoting screen may *write*. Defaulting this to live
+    # would mean a fresh clone could put an estimate in front of a customer.
+    ZOHO_QUOTE_SERVICE: str = os.environ.get("ZOHO_QUOTE_SERVICE", "mock")
+    # How long a reachability probe stands for. ``available`` is read once per
+    # quote line, so without a cache a fifty-line RFQ spends fifty calls of the
+    # rate-limit budget asking whether Zoho is up.
+    ZOHO_HEALTH_TTL_SECONDS: float = float(
+        os.environ.get("ZOHO_HEALTH_TTL_SECONDS", "60"))
+
     # Live pull shape. History is bounded because the detectors compare a recent
     # window against a prior one — pulling a decade of ledger costs API calls and
     # buys nothing.

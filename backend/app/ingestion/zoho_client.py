@@ -90,6 +90,17 @@ class ZohoThrottleError(ZohoError):
     different: wait and resume, rather than fix a credential."""
 
 
+class ZohoWriteUncertain(ZohoError):
+    """A write was sent and its outcome is unknown.
+
+    Raised instead of retrying when a non-idempotent call fails in a way that
+    cannot distinguish "Zoho never saw it" from "Zoho did it and the answer was
+    lost" — a 5xx, or a dropped connection. Replaying either of those is how one
+    quote becomes two estimates in a customer's inbox, so the caller is told the
+    truth and given a way to look the record up instead.
+    """
+
+
 class ZohoScopeError(ZohoAuthError):
     """The credentials are fine; this *endpoint* was not granted.
 
@@ -131,18 +142,31 @@ def scope_for_path(path: str) -> Optional[str]:
     return SCOPE_FOR_PATH.get(path.lstrip("/").split("/", 1)[0].split("?", 1)[0])
 
 
-class ZohoApiSource:
-    """Read-only Zoho Books client.
+class ZohoTransport:
+    """Authenticated, paced, retrying HTTP against one Zoho Books company.
 
-    ``since`` bounds how far back documents are pulled. When omitted it falls
-    back to ``ZOHO_SYNC_FROM`` and then to the rolling ``ZOHO_HISTORY_DAYS``
-    window, so an operator can choose an explicit start date per run without
-    changing configuration.
+    Everything true of *any* Books call lives here: exchanging the refresh
+    token, staying under the rate limit, backing off a 429, telling a missing
+    scope apart from a bad token, and turning Zoho's own error body into the
+    taxonomy above.
+
+    It is a class of its own so the Quote Builder's write adapter
+    (``zoho_books_service.ZohoBooksService``) shares it instead of growing a
+    second OAuth stack. Two auth paths against one API is how a rotated
+    credential ends up applied on one side and stale on the other.
+
+    ``_request`` is method-aware on purpose. A GET may be replayed freely, so it
+    keeps the full retry budget. Anything else is replayed only where the
+    request provably never reached the books — a rejected token, a rate-limit
+    refusal — and never after a 5xx, which cannot be told apart from a
+    successful write whose response was lost.
     """
 
-    def __init__(self, http: Any = None, since: Optional[date] = None,
-                 credentials: Optional[ZohoCredentials] = None,
-                 until: Optional[date] = None) -> None:
+    #: Methods safe to replay. Replaying anything else risks a duplicate write.
+    _REPLAYABLE = frozenset({"GET"})
+
+    def __init__(self, http: Any = None,
+                 credentials: Optional[ZohoCredentials] = None) -> None:
         creds = credentials or ZohoCredentials.from_settings()
         self._creds = creds
         self._base = creds.api_base.rstrip("/")
@@ -151,52 +175,9 @@ class ZohoApiSource:
         self._http = http                      # injectable for tests
         self._token: Optional[str] = None
         self._token_expires_at: float = 0.0
-        self._since = since or configured_since()
-        # Upper bound of the window this source reads. Set when a long pull is
-        # split into calendar slices so each one asks Zoho for its own months
-        # instead of every source walking the whole ledger.
-        self._until = until
         self._last_call_at: float = 0.0
-        # ── incremental listing ─────────────────────────────────────────────
-        #
-        # ``{document kind: newest modification stamp already held}``. Set by
-        # ``SyncService`` on a nightly pull, so the listing sorts by
-        # modification time and stops as soon as it reaches something known,
-        # instead of paging through every document in the history window to
-        # discover that almost none of them moved.
-        #
-        # Per kind, not one stamp for the pull: invoices and bills move at
-        # different rates, and a single mark would either re-list one of them
-        # needlessly or — far worse — skip the other's changes.
-        #
-        # Empty for a full pass. A full pass costs those list calls on purpose:
-        # it is the only thing that sees the *whole* book, and so the only thing
-        # that can notice a document Zoho no longer has.
-        self.modified_since: dict[str, str] = {}
-        # Forces the complete, date-ordered listing even when a high-water mark
-        # is available — the weekly reconciliation.
-        self._full_listing = False
         # Observable so a sync run can report what the pull actually cost.
         self.calls = 0
-        self.documents_fetched = 0
-        self.documents_resumed = 0
-        # How many listings stopped early, for the run summary: a nightly pull
-        # that reports zero of these did not go incremental and nobody would
-        # otherwise know why it took an hour.
-        self.listings_short_circuited = 0
-        # ── what the listing saw, for mirroring ──────────────────────────────
-        #
-        # Every document id Zoho currently reports as real trade inside this
-        # pull's window, per document kind — including the ones the resume
-        # cursor then skipped. That inclusion is the whole point: a resumed
-        # pull *yields* almost nothing, so a caller that reconciled against
-        # what it received would conclude the entire book had been deleted.
-        self.listed: dict[str, set[str]] = {}
-        # Kinds whose listing ran to the end without raising. Only these may be
-        # reconciled — a pull that was throttled out halfway saw part of the
-        # book, and treating the part it missed as deleted would destroy real
-        # history on a bad network day.
-        self.listing_complete: set[str] = set()
 
     # ── transport ────────────────────────────────────────────────────────────
     def _client(self):
@@ -281,11 +262,14 @@ class ZohoApiSource:
         except (TypeError, ValueError):
             return None
 
-    def _get(self, path: str, **params: Any) -> dict[str, Any]:
-        """One authenticated GET, with retry on throttling and transient faults."""
+    def _request(self, method: str, path: str, *, json: Any = None,
+                 **params: Any) -> dict[str, Any]:
+        """One authenticated call, with retry bounded by what the method allows."""
         url = f"{self._base}/{path.lstrip('/')}"
         params = {k: v for k, v in params.items() if v is not None}
         params["organization_id"] = self._org
+        verb = method.upper()
+        replayable = verb in self._REPLAYABLE
 
         last: Optional[str] = None
         throttled = False
@@ -293,14 +277,20 @@ class ZohoApiSource:
         for attempt in range(attempts):
             token = self._access_token()
             self._pace()
-            resp = self._client().get(
-                url, params=params,
-                headers={"Authorization": f"Zoho-oauthtoken {token}"})
+            kwargs: dict[str, Any] = {
+                "params": params,
+                "headers": {"Authorization": f"Zoho-oauthtoken {token}"},
+            }
+            if json is not None:
+                kwargs["json"] = json
+            resp = getattr(self._client(), verb.lower())(url, **kwargs)
             self._last_call_at = time.monotonic()
             self.calls += 1
 
             if resp.status_code == 401:
-                # Token may have been revoked mid-run; drop the cache and retry once.
+                # Token may have been revoked mid-run; drop the cache and retry
+                # once. Safe for a write too: a rejected token never reached the
+                # books, so nothing can have been created.
                 self._token, self._token_expires_at = None, 0.0
                 last = "401 unauthorized"
                 if attempt == 0:
@@ -320,6 +310,8 @@ class ZohoApiSource:
                     "Zoho rejected the access token. Confirm the refresh token, the "
                     "client credentials and the data centre all belong to the same account.")
             if resp.status_code == 429:
+                # Also safe to replay for a write: the limiter refuses the call
+                # outright rather than half-applying it.
                 throttled = True
                 last = "HTTP 429 (rate limited)"
                 delay = self._retry_after(resp)
@@ -331,6 +323,11 @@ class ZohoApiSource:
                 self._sleep(delay)
                 continue
             if resp.status_code >= 500:
+                if not replayable:
+                    raise ZohoWriteUncertain(
+                        f"Zoho returned HTTP {resp.status_code} to {verb} {path}. "
+                        "Whether the record was written cannot be told from here, so "
+                        "it has not been retried — check Zoho before sending again.")
                 last = f"HTTP {resp.status_code}"
                 self._sleep(min(settings.ZOHO_MAX_BACKOFF_SECONDS, 2 ** attempt))
                 continue
@@ -338,7 +335,7 @@ class ZohoApiSource:
                 body = resp.json()
             except ValueError:
                 raise ZohoError(f"Zoho returned non-JSON for {path} (HTTP {resp.status_code})")
-            if resp.status_code != 200 or body.get("code", 0) not in (0, None):
+            if resp.status_code not in (200, 201) or body.get("code", 0) not in (0, None):
                 raise ZohoError(
                     f"Zoho error on {path}: {body.get('message') or resp.status_code}")
             return body
@@ -349,6 +346,9 @@ class ZohoApiSource:
                 f"{attempts} attempts. Everything fetched so far has been kept — run the "
                 "sync again later and it will resume from where it stopped.")
         raise ZohoError(f"Zoho call to {path} failed after retries ({last}).")
+
+    def _get(self, path: str, **params: Any) -> dict[str, Any]:
+        return self._request("GET", path, **params)
 
     @staticmethod
     def _is_scope_refusal(resp: Any) -> bool:
@@ -368,19 +368,6 @@ class ZohoApiSource:
         if body.get("code") == 57:
             return True
         return "not authorized" in str(body.get("message") or "").lower()
-
-    def _paginate(self, path: str, key: str, **params: Any) -> Iterator[dict[str, Any]]:
-        """Yield every record across pages, bounded by ZOHO_MAX_PAGES."""
-        for page in range(1, settings.ZOHO_MAX_PAGES + 1):
-            body = self._get(path, page=page, per_page=settings.ZOHO_PAGE_SIZE, **params)
-            rows = body.get(key) or []
-            for row in rows:
-                yield row
-            ctx = body.get("page_context") or {}
-            if not ctx.get("has_more_page") or not rows:
-                return
-        log.warning("zoho %s: stopped at the ZOHO_MAX_PAGES limit (%d) — raise it if "
-                    "the account has more history than that.", path, settings.ZOHO_MAX_PAGES)
 
     # ── health ───────────────────────────────────────────────────────────────
     def ping(self) -> dict[str, Any]:
@@ -402,6 +389,81 @@ class ZohoApiSource:
                 for o in orgs
             ],
         }
+
+class ZohoApiSource(ZohoTransport):
+    """Read-only Zoho Books client.
+
+    Read-only by construction: every call it makes is a GET, and no method here
+    can create, update or delete anything. The write side is
+    ``zoho_books_service.ZohoBooksService``, which shares only the transport.
+
+    ``since`` bounds how far back documents are pulled. When omitted it falls
+    back to ``ZOHO_SYNC_FROM`` and then to the rolling ``ZOHO_HISTORY_DAYS``
+    window, so an operator can choose an explicit start date per run without
+    changing configuration.
+    """
+
+    def __init__(self, http: Any = None, since: Optional[date] = None,
+                 credentials: Optional[ZohoCredentials] = None,
+                 until: Optional[date] = None) -> None:
+        super().__init__(http=http, credentials=credentials)
+        self._since = since or configured_since()
+        # Upper bound of the window this source reads. Set when a long pull is
+        # split into calendar slices so each one asks Zoho for its own months
+        # instead of every source walking the whole ledger.
+        self._until = until
+        # ── incremental listing ─────────────────────────────────────────────
+        #
+        # ``{document kind: newest modification stamp already held}``. Set by
+        # ``SyncService`` on a nightly pull, so the listing sorts by
+        # modification time and stops as soon as it reaches something known,
+        # instead of paging through every document in the history window to
+        # discover that almost none of them moved.
+        #
+        # Per kind, not one stamp for the pull: invoices and bills move at
+        # different rates, and a single mark would either re-list one of them
+        # needlessly or — far worse — skip the other's changes.
+        #
+        # Empty for a full pass. A full pass costs those list calls on purpose:
+        # it is the only thing that sees the *whole* book, and so the only thing
+        # that can notice a document Zoho no longer has.
+        self.modified_since: dict[str, str] = {}
+        # Forces the complete, date-ordered listing even when a high-water mark
+        # is available — the weekly reconciliation.
+        self._full_listing = False
+        self.documents_fetched = 0
+        self.documents_resumed = 0
+        # How many listings stopped early, for the run summary: a nightly pull
+        # that reports zero of these did not go incremental and nobody would
+        # otherwise know why it took an hour.
+        self.listings_short_circuited = 0
+        # ── what the listing saw, for mirroring ──────────────────────────────
+        #
+        # Every document id Zoho currently reports as real trade inside this
+        # pull's window, per document kind — including the ones the resume
+        # cursor then skipped. That inclusion is the whole point: a resumed
+        # pull *yields* almost nothing, so a caller that reconciled against
+        # what it received would conclude the entire book had been deleted.
+        self.listed: dict[str, set[str]] = {}
+        # Kinds whose listing ran to the end without raising. Only these may be
+        # reconciled — a pull that was throttled out halfway saw part of the
+        # book, and treating the part it missed as deleted would destroy real
+        # history on a bad network day.
+        self.listing_complete: set[str] = set()
+
+    def _paginate(self, path: str, key: str, **params: Any) -> Iterator[dict[str, Any]]:
+        """Yield every record across pages, bounded by ZOHO_MAX_PAGES."""
+        for page in range(1, settings.ZOHO_MAX_PAGES + 1):
+            body = self._get(path, page=page, per_page=settings.ZOHO_PAGE_SIZE, **params)
+            rows = body.get(key) or []
+            for row in rows:
+                yield row
+            ctx = body.get("page_context") or {}
+            if not ctx.get("has_more_page") or not rows:
+                return
+        log.warning("zoho %s: stopped at the ZOHO_MAX_PAGES limit (%d) — raise it if "
+                    "the account has more history than that.", path, settings.ZOHO_MAX_PAGES)
+
 
     # ── pulls (the ZohoSource protocol) ──────────────────────────────────────
     def list_contacts(self) -> Iterable[dict[str, Any]]:

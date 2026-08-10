@@ -22,6 +22,7 @@ keeps working with no migration step required of it.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -32,6 +33,9 @@ from .. import crypto
 from ..config import settings
 from ..domain import models
 from .zoho_client import ZohoCredentials
+
+#: The connector name every Zoho pull records itself under (``sync.SyncService``).
+ZOHO_CONNECTOR = "zoho"
 
 
 class CredentialNotUsable(PermissionError):
@@ -147,6 +151,68 @@ def get_zoho_credentials(session: Session, organization_id: str,
 
 def has_zoho_connection(session: Session, organization_id: str) -> bool:
     return get_zoho_credentials(session, organization_id) is not None
+
+
+@dataclass(frozen=True)
+class CustomerBook:
+    """Which connected company holds a customer, and their contact id in it."""
+
+    connection: models.ZohoConnection
+    contact_id: str
+
+    @property
+    def label(self) -> str:
+        return self.connection.label or self.connection.zoho_organization_id
+
+
+def book_for_customer(session: Session, organization_id: str,
+                      customer: models.Customer) -> CustomerBook:
+    """The one set of books this customer belongs to. Refuses to guess.
+
+    Almost entirely a lookup rather than a search, because ``Customer`` already
+    stores the identity triple ``domain/origin.py`` defines: connector, the
+    connected company, and that system's own id. An estimate therefore goes to
+    the company the customer was *imported from*, not to one matched by name —
+    "ABC Industries" can exist in all three books and be three different
+    customers, which is the reason that triple exists.
+
+    Two things are refused rather than resolved. A connection that is disabled
+    or gone cannot be written to. And a row whose ``connection_id`` is NULL —
+    imported before provenance was recorded — is only placeable when the
+    organization has a single connected company; with more than one, choosing
+    would be inventing the provenance the column deliberately leaves blank.
+    """
+    enabled = {c.connection_id: c
+               for c in list_connections(session, organization_id, enabled_only=True)}
+
+    if customer.connector and customer.connector != ZOHO_CONNECTOR:
+        raise ConnectionNotFound(
+            f"{customer.name} was imported from "
+            f"{customer.connector}, not Zoho Books, so this quote cannot be "
+            f"written as a Zoho estimate.")
+
+    if customer.connection_id:
+        conn = enabled.get(customer.connection_id)
+        if conn is None:
+            raise ConnectionNotFound(
+                f"The Zoho company {customer.name} came from is no longer "
+                f"connected or has been disabled, so there is no ledger to "
+                f"write this quote into.")
+        return CustomerBook(conn, str(customer.external_id))
+
+    # Provenance not recorded. One connected company leaves nothing to choose
+    # between; more than one is the case that must not be guessed.
+    if len(enabled) == 1 and customer.external_id:
+        return CustomerBook(next(iter(enabled.values())), str(customer.external_id))
+    if not enabled:
+        raise ConnectionNotFound(
+            f"This organization has no connected Zoho company, so there is no "
+            f"ledger to write {customer.name}'s quote into.")
+    raise ConnectionNotFound(
+        f"{customer.name} was imported before the source company was recorded, "
+        f"and this organization has {len(enabled)} connected Zoho companies. "
+        f"Which one this quote belongs to cannot be decided from the quote "
+        f"alone — re-sync the company this customer belongs to.")
 
 
 # ── credentials ─────────────────────────────────────────────────────────────

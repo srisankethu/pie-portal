@@ -366,8 +366,13 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
 
   const doCreateItem = (id: string) =>
     guard(async () => {
-      setQuote(await api.createItem(t, quote!.id, id));
-      flash("Item created in Zoho Books");
+      const q = await api.createItem(t, quote!.id, id);
+      setQuote(q);
+      // Against the mock this write could not fail, so the message was
+      // unconditional. Against a real ledger it can, and announcing a creation
+      // that did not happen is the one thing this screen must not do — the line
+      // is left reading CREATE FAILED, and the reason is said out loud.
+      flash(q.createItemError || "Item created in Zoho Books");
     });
 
   const doDiscount = (pct: number) =>

@@ -9,6 +9,8 @@ second sign-in decided whether cost and margin were sent.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -18,8 +20,14 @@ from sqlalchemy.pool import StaticPool
 
 from app.db import Base, get_session
 from app.domain import models  # noqa: F401  (populate metadata)
+from app.ingestion.zoho_books_service import ZohoBooksService
+from app.ingestion.zoho_client import ZohoCredentials
 from app.routers import platform_auth, quote
+from app.routers.quote import QuoteBooks, books_for_quote
 from app.seed import SEED_PASSWORD, ensure_org_and_users
+from app.zoho import MockZoho, ZohoWriteRefused, ZohoWriteUnknown
+
+from decision_platform.test_zoho_books_service import FakeBooks
 
 OWNER = "s.menon@sanketh.in"
 SALES = "r.nair@sanketh.in"
@@ -417,3 +425,139 @@ def test_a_quote_id_is_not_reused_by_the_next_process(client, mgmt_hdr):
     a = client.post("/api/quotes", json={"customer": "Pitti"}, headers=mgmt_hdr).json()
     assert a["id"] != "q1"
     assert "-" in a["id"], "the id carries a per-process part"
+
+
+# ── the live adapter, through the API ────────────────────────────────────────
+# These drive the real ``ZohoBooksService`` (over a fake transport) and the real
+# refusal paths through the endpoints, because what they protect are properties
+# of the *response*, not of the adapter: that a salesperson never receives cost,
+# and that a failed write is never reported as an estimate.
+
+class _StubBooks:
+    """A ``ZohoService`` whose writes fail on demand, priced like the mock."""
+
+    def __init__(self, error: Exception | None = None):
+        self.error = error
+        self._mock = MockZoho()
+
+    def get_item(self, code):
+        return self._mock.get_item(code)
+
+    def create_item(self, code, name, list_price=None):
+        if self.error:
+            raise self.error
+        return self._mock.create_item(code, name, list_price)
+
+    def create_estimate(self, customer, lines, *, customer_ref=None, reference=None):
+        if self.error:
+            raise self.error
+        return self._mock.create_estimate(customer, lines)
+
+    @property
+    def available(self) -> bool:
+        return True
+
+
+@contextmanager
+def _books(client, service):
+    """Bind every Zoho-touching quote endpoint to ``service`` for one test."""
+    client.app.dependency_overrides[books_for_quote] = lambda: QuoteBooks(
+        zoho=service, contact_id="3300000009")
+    try:
+        yield
+    finally:
+        client.app.dependency_overrides.pop(books_for_quote, None)
+
+
+def _live_service():
+    """The real live adapter over a fake transport, holding a real cost."""
+    item = {"item_id": "4400000001", "name": "Insert 2001174", "sku": "2001174",
+            "rate": "1250.00", "purchase_rate": "980.50",
+            "available_stock": "42", "status": "active"}
+    http = FakeBooks(routes={
+        "/items": {"code": 0, "items": [item], "page_context": {"has_more_page": False}},
+        "/organizations": {"code": 0, "organizations": [
+            {"organization_id": "60036630487", "name": "SLS Engineers"}]},
+    })
+    creds = ZohoCredentials(organization_id="60036630487", client_id="cid",
+                            client_secret="sec", refresh_token="rtok")
+    return ZohoBooksService(credentials=creds, http=http)
+
+
+@pytest.mark.requires_pie
+def test_a_live_items_cost_never_reaches_a_sales_response(client, sales_hdr, mgmt_hdr):
+    """A live lookup returns ``purchase_rate``. It is management data, and the
+    server omitting it is the whole mechanism — there is nothing in the payload
+    for a network tab to reveal."""
+    with _books(client, _live_service()):
+        q = client.post("/api/quotes", json={"customer": "Pitti"}, headers=sales_hdr).json()
+        qid = q["id"]
+        client.post(f"/api/quotes/{qid}/intake", json={"text": "2001174, 10"},
+                    headers=sales_hdr)
+        sales_raw = client.get(f"/api/quotes/{qid}", headers=sales_hdr).text
+        mgmt_view = client.get(f"/api/quotes/{qid}", headers=mgmt_hdr).json()
+
+    assert "980.5" not in sales_raw and "economics" not in sales_raw
+    assert mgmt_view["lines"][0]["economics"]["cost"] == 980.5, \
+        "management must still get the real landed cost"
+    # The list price is operational and does reach sales; only cost does not.
+    assert '"quoted":1250.0' in sales_raw.replace(" ", "")
+
+
+@pytest.mark.requires_pie
+def test_a_refused_estimate_does_not_report_one(client, mgmt_hdr):
+    with _books(client, _StubBooks(ZohoWriteRefused("no ledger for this customer"))):
+        qid = _clean_quote(client, mgmt_hdr)
+        est = client.post(f"/api/quotes/{qid}/estimate", headers=mgmt_hdr).json()
+    assert est["ok"] is False
+    assert est["estimateNumber"] is None
+    assert "no ledger for this customer" in est["message"]
+
+
+@pytest.mark.requires_pie
+def test_a_refusal_points_at_the_lines_that_caused_it(client, mgmt_hdr):
+    with _books(client, _StubBooks()):
+        qid = _clean_quote(client, mgmt_hdr)
+        qd = client.get(f"/api/quotes/{qid}", headers=mgmt_hdr).json()
+    code = qd["lines"][0]["supplyCode"]
+
+    with _books(client, _StubBooks(ZohoWriteRefused("not in these books", codes=[code]))):
+        est = client.post(f"/api/quotes/{qid}/estimate", headers=mgmt_hdr).json()
+    assert est["ok"] is False and est["blockers"] == [qd["lines"][0]["id"]]
+
+
+@pytest.mark.requires_pie
+def test_an_unknown_write_outcome_is_neither_success_nor_silence(client, mgmt_hdr):
+    """The state that must never be rounded off. The response says the outcome
+    is unresolved and carries the reference to look up in Zoho."""
+    with _books(client, _StubBooks(ZohoWriteUnknown(
+            "sent, reply lost — look for reference QB-1-abcd", reference="QB-1-abcd"))):
+        qid = _clean_quote(client, mgmt_hdr)
+        est = client.post(f"/api/quotes/{qid}/estimate", headers=mgmt_hdr).json()
+    assert est["ok"] is False and est["estimateNumber"] is None
+    assert "QB-1-abcd" in est["message"]
+
+
+@pytest.mark.requires_pie
+def test_a_failed_item_creation_leaves_the_line_in_create_failed(client, mgmt_hdr):
+    """It used to leave the line on "CREATING…" and 500 the request: the mock
+    could not fail, so the CREATE FAILED state had no path into it."""
+    with _books(client, _StubBooks(ZohoWriteRefused("Zoho would not create item 2001174"))):
+        q = client.post("/api/quotes", json={"customer": "Pitti"}, headers=mgmt_hdr).json()
+        qid = q["id"]
+        q = client.post(f"/api/quotes/{qid}/intake", json={"text": "2001174, 10"},
+                        headers=mgmt_hdr).json()
+        lid = q["lines"][0]["id"]
+        r = client.post(f"/api/quotes/{qid}/lines/{lid}/create-item", headers=mgmt_hdr)
+
+    assert r.status_code == 200, "one failed line must not take the whole quote down"
+    body = r.json()
+    assert body["lines"][0]["status"]["label"] == "CREATE FAILED"
+    assert "2001174" in body["createItemError"]
+
+
+def test_every_quote_carries_a_reference_a_person_could_search_for(client, mgmt_hdr):
+    a = client.post("/api/quotes", json={"customer": "Pitti"}, headers=mgmt_hdr).json()
+    b = client.post("/api/quotes", json={"customer": "Pitti"}, headers=mgmt_hdr).json()
+    assert a["reference"] and a["reference"] != b["reference"], \
+        "the reference is this quote's idempotency key; two quotes may never share one"

@@ -16,13 +16,19 @@ import itertools
 import re
 import threading
 import time
+import uuid
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
 from . import pricing
 from .pie_service import Bands, Candidate, Resolution, pie_service
-from .zoho import ZohoService
+from .zoho import (
+    ZohoService,
+    ZohoUnavailable,
+    ZohoWriteRefused,
+    ZohoWriteUnknown,
+)
 
 _REL_LABELS = {
     "EXACT": "EXACT", "TECH": "TECH EQUIV", "COMPAT": "COMPATIBLE",
@@ -245,6 +251,12 @@ class Line:
     sel: str = "AUTO"                 # AUTO | USER | MANUAL
     # zoho-derived
     supplyDesc: str = ""
+    #: The supply product's id in the books this quote is bound to, when the
+    #: adapter had one. Server-side only and never serialized: it is how the
+    #: estimate names the item it already resolved rather than matching the
+    #: code a second time at send time — a call per line against the rate
+    #: limit, and a second chance to land on a different item.
+    itemId: Optional[str] = None
     inBooks: Optional[bool] = None
     avail: Optional[int] = None
     listPrice: Optional[float] = None
@@ -372,6 +384,12 @@ class Quote:
     #: match — so carrying the id turns a tolerant guess into an exact lookup,
     #: and the name stays for the header to print.
     customerId: Optional[str] = None
+    #: The key any Zoho estimate for this quote is written under, and the whole
+    #: of this quote's idempotency. ``number`` is not enough on its own — it is
+    #: derived from a truncated clock and repeats about once a day — and an
+    #: estimate keyed on a value that repeats would let one quote silently
+    #: return another's.
+    reference: str = ""
     lines: List[Line] = field(default_factory=list)
     savedAt: Optional[str] = None
     #: The Zoho estimate this quote has already produced, and the priced content
@@ -398,6 +416,9 @@ class Quote:
         return {
             "id": self.id, "customer": self.customer,
             "customerId": self.customerId, "number": self.number,
+            # Shown so that when a send fails in a way nobody can resolve from
+            # here, the person has the string to search for in Zoho.
+            "reference": self.reference,
             "savedAt": self.savedAt,
             "lines": line_dicts,
             "summary": {
@@ -526,7 +547,8 @@ class QuoteStore:
             qid = f"q{_RUN}-{next(_ids)}"
             num = f"QB-{int(time.time()) % 100000:05d}"
             q = Quote(id=qid, customer=customer or "New customer", number=num,
-                      customerId=customer_id or None)
+                      customerId=customer_id or None,
+                      reference=f"{num}-{uuid.uuid4().hex[:8]}")
             self._quotes[qid] = q
             return q
 
@@ -596,12 +618,20 @@ class QuoteStore:
         if not zoho.available:
             ln.service = "BOOKS"
             return
-        item = zoho.get_item(ln.supplyCode)
+        try:
+            item = zoho.get_item(ln.supplyCode)
+        except ZohoUnavailable:
+            # A live adapter can fail mid-intake — a revoked token, a throttle,
+            # a price Zoho sent in a shape that is not a number. That is the
+            # BOOKS OFFLINE state on this line, not a 500 for the whole RFQ.
+            ln.service = "BOOKS"
+            return
         if item is None:
             ln.inBooks = False
             return
         ln.supplyDesc = item.name if item.name != ln.supplyCode else ln.reqDesc
         ln.inBooks = item.in_books
+        ln.itemId = item.item_id
         ln.avail = item.stock
         ln.listPrice = item.list_price
         ln.cost = item.cost
@@ -687,17 +717,32 @@ class QuoteStore:
             n += 1
         return n
 
-    def create_item(self, ln: Line, zoho: ZohoService) -> None:
+    def create_item(self, ln: Line, zoho: ZohoService) -> str:
+        """Create the supply product in the books. Returns "" or why it failed.
+
+        A failed write leaves the line in CREATE FAILED, which the status
+        taxonomy already has and nothing ever set: the mock could not fail, so
+        ``createPhase`` moved to "progress" and back with no path between.
+        Against a real ledger the write does fail — a rejected token, a name
+        Zoho will not accept — and a line stuck on "CREATING…" forever while the
+        request 500s is the version of that a salesperson cannot act on.
+        """
         if not ln.supplyCode:
-            return
+            return ""
         ln.createPhase = "progress"
-        item = zoho.create_item(ln.supplyCode, ln.supplyDesc or ln.reqDesc, ln.listPrice)
+        try:
+            item = zoho.create_item(ln.supplyCode, ln.supplyDesc or ln.reqDesc, ln.listPrice)
+        except (ZohoWriteRefused, ZohoWriteUnknown, ZohoUnavailable) as e:
+            ln.createPhase = "failed"
+            return str(e)
         ln.inBooks = True
         ln.createPhase = None
+        ln.itemId = item.item_id or ln.itemId
         ln.cost = item.cost
         if ln.quoted is None and item.list_price is not None:
             ln.quoted = item.list_price
             ln.priceSource = "LIST"
+        return ""
 
     def confirm_reading(self, ln: Line) -> None:
         """A person has checked this line against what the customer wrote.

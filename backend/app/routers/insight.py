@@ -3747,7 +3747,8 @@ def daily(moved_from: Optional[date] = Query(None),
             decisions_by_band=decisions_by_band, stock=stock_result,
             supply=supply_result, cadence=cadence_result, cash=cash,
             moved=moved, moved_window=(moved_from, moved_to),
-            committed_weeks=committed_weeks),
+            committed_weeks=committed_weeks,
+            currency=th.currency),
         th=th)
 
 

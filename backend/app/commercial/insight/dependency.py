@@ -54,6 +54,7 @@ from typing import Iterable, Optional
 
 from ..categories import LABELS, UNCATEGORISED
 from ..config import CommercialThresholds
+from . import absence
 
 #: Which end of the book a row describes.
 VENDOR = "vendor"
@@ -503,6 +504,9 @@ def unavailable() -> list[dict]:
     return [
         {
             "what": "How much they depend on us",
+            # Epistemic, not a gap: the platform will never see what a customer
+            # buys elsewhere, however complete this book becomes.
+            "kind": absence.PERMANENT,
             "why": ("This measures our exposure to a customer. The platform "
                     "sees what they buy here and nothing of what they buy "
                     "elsewhere, so a customer giving us a fifth of a large "
@@ -512,6 +516,7 @@ def unavailable() -> list[dict]:
         },
         {
             "what": "Whether a second source exists",
+            "kind": absence.PERMANENT,
             "why": ("Sole-source counts say nobody else has supplied us an "
                     "item. That is not the same as nobody else being able to, "
                     "and the difference is a purchasing conversation rather "

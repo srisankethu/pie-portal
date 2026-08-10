@@ -32,6 +32,22 @@ collection:
   # Beyond this, any provisional payout is clawed back, not merely unearned.
   clawback_after_days: 120
 
+# ── the cost of money ───────────────────────────────────────────────────────
+# One rate, published, used on BOTH sides of the ledger. It was previously only
+# under `vendor.valuation`, where it valued credit a supplier extends to us —
+# so the mechanism paid for extracting credit days and charged nothing for
+# giving them away. Promoted here so the two directions read the same number.
+#
+# NOT `commercial/config.py::carrying_cost_annual_pct`, and the two must never
+# be merged. That one is RESTRICTED: monthly stock drain is
+# `quantity x cost x rate / 12` and the quantity is on the row, so publishing
+# it inverts every purchase cost in the catalogue. This one is applied to a
+# SELLING price, leaks nothing, and has to be published for a salesperson to
+# compute their own contribution (I4). Equal today by coincidence of the same
+# bank rate; not the same parameter.
+cost_of_capital:
+  annual: "0.12"
+
 # ── the currency ────────────────────────────────────────────────────────────
 caf:
   # Toolkit charged at 50 paise in the rupee. This is the whole S<->C control:
@@ -47,6 +63,54 @@ caf:
   # success criterion is EV maximisation, and alpha > 1 pays out value that was
   # never contributed on the marginal rupee.
   vendor_yield_credit: "1.00"
+
+  # ── the term charge: credit days, priced ───────────────────────────────────
+  # CAF has no term for payment terms, so credit days are given away free on
+  # every deal. `c(d)` does not catch it: c(d) reads days LATE against the DUE
+  # date, and the due date already moves with whatever terms were agreed — so
+  # 30 days and 90 days both score 1.00 for an invoice paid on time.
+  #
+  #     CAF = q(P - F) - K - 0.5T + Y - q x P x rate_annual x (d / 365)
+  #
+  # which is algebraically the existing formula with the floor grossed up:
+  #
+  #     CAF = (1 - k) x q x (P - F/(1-k)),   k = rate_annual x d / 365
+  #
+  # so the desk shows one number that already exists — a floor that rises with
+  # the credit period — and `discount_to_floor` stays a subtraction (I5).
+  #
+  # DISCLOSURE: q, P and d are on the salesperson's own quote and this rate is
+  # published, so the charge is computed entirely inside the selling-price
+  # domain. It adds no equation containing F or cost. Contrast the stock
+  # carrying rate, which is computed FROM cost — that is the difference, and it
+  # is why this one is safe to publish and that one is not.
+  term_charge:
+    # OFF. Turning this on changes what people are paid, so it is a decision
+    # somebody makes on a date, not a default that arrives with a deploy (I6).
+    # Every number the engine produces with this false is bit-identical to what
+    # it produced before the term existed.
+    enabled: false
+    # `cost_of_capital.annual` grossed up for GST. The receivable actually
+    # funded is the tax-INCLUSIVE invoice — the tax is remitted before it is
+    # collected — while `unit_price_net` is tax-exclusive. Charging 0.12 on a
+    # tax-exclusive base under-recovers by the GST share, so the published rate
+    # carries the gross-up rather than the formula carrying a second base.
+    rate_annual: "0.1416"
+    # What `d` means when a line does not carry one — a historical invoice, or
+    # an entity that has not started recording agreed terms.
+    #
+    # NOT zero. Zero would read as "paid against delivery", which is the single
+    # most valuable term in the book, and would hand every unrecorded line the
+    # best possible treatment — absence of evidence passing as a pass, which is
+    # the one thing the invariants refuse. Set to the book's own measured
+    # revenue-weighted term so an unrecorded line is treated as ordinary rather
+    # than as free money.
+    assumed_days_when_unknown: 30
+    # BEFORE ENABLING: `approvals._covers` freezes `quoted_unit_price` and
+    # nothing else. While this is false that is harmless. Turn it on without
+    # first putting credit days into the approval subject and an approval
+    # granted at 30 days can be spent at 120 — the same defeat the approval
+    # gate exists to prevent, through the one door it does not watch.
 
 # ── floor prices ────────────────────────────────────────────────────────────
 floor:
@@ -198,7 +262,9 @@ vendor:
     free_tooling: "1.00"          # at standard buy price
     demo_stock: "0.50"            # it comes back; half credit
     training_day_cap: "25000"     # per day, market rate cap
-    cost_of_capital_annual: "0.12"  # extended credit: rate x amount x days/365
+    # Extended credit is valued at `cost_of_capital.annual` x amount x days/365.
+    # The rate moved to the top level so the sell side charges what the buy side
+    # credits; this key is gone rather than duplicated.
   # Vendor SPIFFs: surrendered -> re-credited as Y; retained -> deducted 1:1.
   spiff_retained_charge_rate: "1.00"
 

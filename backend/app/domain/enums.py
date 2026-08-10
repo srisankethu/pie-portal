@@ -426,6 +426,66 @@ LOSS_REASON_NOT_RECORDED = "NOT_RECORDED"
 #: offered by construction.
 SELECTABLE_LOSS_REASONS: tuple[QuoteLossReason, ...] = tuple(QuoteLossReason)
 
+class MsmeClassification(str, Enum):
+    """A supplier's registered size under the MSMED Act, as somebody saw it.
+
+    ``UNKNOWN`` is the default and is not a synonym for ``NOT_REGISTERED``.
+    Section 43B(h) bites on micro and small suppliers only, so the difference
+    between "we checked and they are not registered" and "nobody has checked"
+    decides whether a bill is safe or merely unexamined — and only one of those
+    is a fact. Nothing infers this from turnover, bill size or a supplier's
+    name; see ``Customer.incentive_eligibility`` for the same rule applied to
+    the same temptation.
+    """
+
+    MICRO = "MICRO"
+    SMALL = "SMALL"
+    # Outside 43B(h) entirely. Recorded rather than filed under NOT_REGISTERED
+    # because "registered, and out of scope" is a checked answer.
+    MEDIUM = "MEDIUM"
+    NOT_REGISTERED = "NOT_REGISTERED"
+    UNKNOWN = "UNKNOWN"
+
+
+#: The classifications section 43B(h) actually reaches.
+MSME_PROTECTED_CLASSES = frozenset({MsmeClassification.MICRO,
+                                    MsmeClassification.SMALL})
+
+
+class EnterpriseActivity(str, Enum):
+    """What the supplier does, which decides whether registration means anything.
+
+    Not decoration, and the most load-bearing field on the record for a
+    distributor. Wholesale and retail traders hold Udyam registration for
+    priority-sector lending, and that registration does not carry the section
+    15 payment protection 43B(h) enforces. A cutting-tool distributor buys a
+    large share of its stock from dealers, so a watchlist that ignored this
+    would raise most of its rows against suppliers who are not in scope — and a
+    list that is usually wrong is a list people learn to scroll past.
+    """
+
+    MANUFACTURER = "MANUFACTURER"
+    SERVICE = "SERVICE"
+    TRADER = "TRADER"
+    UNKNOWN = "UNKNOWN"
+
+
+#: Activities for which registration carries the section 15 benefit.
+MSME_PROTECTED_ACTIVITIES = frozenset({EnterpriseActivity.MANUFACTURER,
+                                       EnterpriseActivity.SERVICE})
+
+
+class MsmeEvidence(str, Enum):
+    """What was actually seen. A status nobody can source is one nobody can
+    defend when somebody asks where the 45 days came from."""
+
+    UDYAM_CERT = "UDYAM_CERT"
+    # Most registered suppliers print their Udyam number on the tax invoice.
+    # The cheapest evidence available, and already in the document set.
+    INVOICE_DECLARATION = "INVOICE_DECLARATION"
+    VENDOR_EMAIL = "VENDOR_EMAIL"
+    PORTAL_LOOKUP = "PORTAL_LOOKUP"
+    NONE = "NONE"
 
 # Data classes for permission redaction (§14). RESTRICTED fields are visible to
 # SALES_MANAGER and OWNER only. Enforced downstream (context assembly / API);

@@ -38,7 +38,7 @@ Do not attempt to run both — the second will die on a duplicate column, which 
 the loud failure and the one worth having.
 
 Revision ID: b7c41e0a9d38
-Revises: d55f6ff18460
+Revises: b3f7a1c05d29
 Create Date: 2026-08-09
 """
 from alembic import op
@@ -46,7 +46,7 @@ import sqlalchemy as sa
 
 
 revision = 'b7c41e0a9d38'
-down_revision = 'd55f6ff18460'
+down_revision = 'b3f7a1c05d29'
 branch_labels = None
 depends_on = None
 

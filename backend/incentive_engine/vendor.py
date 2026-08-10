@@ -105,8 +105,15 @@ def spiff_adjustment(cfg: Config, spiffs: Iterable[VendorSpiff]) -> tuple[Decima
 
 
 def value_extended_credit(cfg: Config, amount: Decimal, days: int) -> Decimal:
-    """Q3(c): cost of capital x amount x days / 365."""
-    rate = cfg.dec("vendor", "valuation", "cost_of_capital_annual")
+    """Q3(c): cost of capital x amount x days / 365.
+
+    Reads the top-level ``cost_of_capital.annual`` rather than a rate of its
+    own. The same arithmetic now runs on the sell side as ``caf`` term charge,
+    and two copies of "what money costs" is one copy that gets re-cut and one
+    that does not — which would leave the mechanism paying more for a credit
+    day extracted from a vendor than it charges for one given to a customer.
+    """
+    rate = cfg.dec("cost_of_capital", "annual")
     return (amount * rate * Decimal(days) / Decimal("365"))
 
 

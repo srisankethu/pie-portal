@@ -62,6 +62,7 @@ from decimal import Decimal
 from typing import Iterable, Optional
 
 from ..config import CommercialThresholds
+from . import absence
 
 #: Which rung the answer stands on, strongest first. The order is the ranking:
 #: a customer with both a tender history and recorded losses is reported on the
@@ -472,13 +473,39 @@ def _refusal(asks: list[LostAsk], tenders: list[TenderObservation],
 
 
 def unavailable() -> list[dict]:
-    """What this module will not tell you, said where it would be read."""
-    return [{
-        "what": "A single share-of-wallet percentage",
-        "why": ("The platform sees what a customer buys here and nothing of "
-                "what they buy elsewhere. Where there is observable evidence — "
-                "published tender quantities, or enquiries recorded as lost to "
-                "a competitor — a band is reported with that basis named. "
-                "Where there is not, the answer is UNKNOWN. A midpoint is not "
-                "offered at all: the width of the band is the point of it."),
-    }]
+    """What this module will not tell you, said where it would be read.
+
+    Two entries, and they are deliberately different *kinds* of not-knowing —
+    the distinction ``absence.py`` exists to draw. Lumping them together would
+    be the more damaging error in both directions: it would invite somebody to
+    go and "fix" the first, and it would let the second sit unfixed as though
+    it were a law of nature.
+    """
+    return [
+        {
+            "what": "A single share-of-wallet percentage",
+            "why": ("The platform sees what a customer buys here and has no "
+                    "sight of what they buy elsewhere. No amount of recording "
+                    "inside this book closes that — a competitor's invoices "
+                    "are not ours to read. Where evidence does exist a band is "
+                    "reported with its basis named; where it does not, the "
+                    "answer is UNKNOWN. A midpoint is never offered: the width "
+                    "of the band is the point of it."),
+            # PERMANENT, not COLLECTABLE: this is the epistemic limit
+            # `dependency.py` states, and it is why the ladder exists at all.
+            "kind": absence.PERMANENT,
+        },
+        {
+            "what": "A bound for a customer whose orders are not quoted here",
+            "why": ("The upper bound is built from enquiries recorded as lost. "
+                    "A customer whose orders arrive without a recorded quote "
+                    "has few recorded losses, so a bound computed for them "
+                    "would sit near 100% and read as an account we own — the "
+                    "missing record flatters us. Quoting through the platform, "
+                    "and recording who won the ones we lose, is what turns "
+                    "this into an answer."),
+            # COLLECTABLE, and the difference from the entry above is the whole
+            # value of saying so: this one is somebody's afternoon, not a law.
+            "kind": absence.COLLECTABLE,
+        },
+    ]

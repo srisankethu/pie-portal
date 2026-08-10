@@ -32,7 +32,7 @@ from . import clock
 from .config import settings
 from .db import get_session
 from .domain import models
-from .domain.enums import RESTRICTED_DECISION_TYPES, Role
+from .domain.enums import RESTRICTED_DECISION_TYPES, DecisionType, Role
 
 
 @dataclass
@@ -182,6 +182,32 @@ def decision_list_scope(principal: Principal) -> dict:
             "exclude_types": tuple(t.value for t in RESTRICTED_DECISION_TYPES),
         }
     return {}
+
+
+def decision_queue_scope(principal: Principal,
+                         requested_type: Optional[str] = None) -> dict:
+    """``decision_list_scope`` plus the queue's own exclusion. One definition.
+
+    The proactive queue is not simply "this principal's decisions": QUOTE_CONTEXT
+    is on-demand support assembled from inside the Quote Builder, not an
+    attention item, so it stays out unless a caller asks for it by type.
+
+    That rule lived inline in ``list_decisions``, which meant the landing page's
+    "Decisions in the queue" tile — a plain org-wide ``count(*)`` over every OPEN
+    row — could report a large number while the screen it linked to showed two.
+    For a salesperson the gap is most of the taxonomy: nineteen of the twenty-two
+    decision types are RESTRICTED and never reach them.
+
+    This is the same defect, and the same fix, as ``approvals.pending_count``
+    eleven lines above the tile's query: a count and the list it promises to
+    count have to come from one place, or they eventually disagree about
+    something nobody can reproduce.
+    """
+    scope = decision_list_scope(principal)
+    if requested_type != DecisionType.QUOTE_CONTEXT.value:
+        existing = tuple(scope.get("exclude_types", ()))
+        scope["exclude_types"] = existing + (DecisionType.QUOTE_CONTEXT.value,)
+    return scope
 
 
 def can_view_customer(principal: Principal,

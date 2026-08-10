@@ -34,6 +34,7 @@ import { useMemo, useState } from "react";
 import { money } from "../../money";
 import { formatDate } from "../../when";
 import { papi } from "../api";
+import { Unavailable } from "../kit";
 import { EntityName } from "../EntityName";
 import { CompanyScope } from "../CompanyFilter";
 import type { CompanyScopeOption } from "../CompanyFilter";
@@ -280,7 +281,7 @@ export function MixScreen({
       </div>
 
       <Affinity rows={affinity} minPeers={num(data?.min_peers)} />
-      <Unavailable items={rows(data?.unavailable)} />
+      <Unavailable items={rows(data?.unavailable)} verb="not claimed" />
     </Panel>
   );
 }
@@ -439,16 +440,3 @@ function Affinity({ rows: pairs, minPeers }: { rows: Row[]; minPeers: number }) 
   );
 }
 
-function Unavailable({ items }: { items: Row[] }) {
-  if (!items.length) return null;
-  return (
-    <ul className="tl-unavailable said-plain">
-      {items.map((u, i) => (
-        <li key={i}>
-          <strong>{String(u.what)}</strong> — not claimed.{" "}
-          <span className="viz-muted">{String(u.why)}</span>
-        </li>
-      ))}
-    </ul>
-  );
-}

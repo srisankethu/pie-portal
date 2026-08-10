@@ -53,6 +53,14 @@ class InvoiceLine:
     #: never in this record.
     floor_price: Decimal
     salesperson_id: str
+    #: Agreed credit days on this line — the term conceded, not the days the
+    #: customer actually took. Those are two different facts and only one of
+    #: them is a decision the salesperson made: measured lateness is already
+    #: priced, once, by ``collection.c(d)``, and charging it here as well would
+    #: be double jeopardy and would price the customer's history rather than
+    #: the line. ``None`` means no term was recorded, which is not the same as
+    #: zero — see ``caf.term_charge``.
+    credit_days: Optional[int] = None
     is_aged_stock: bool = False
     stock_age_days: Optional[int] = None
     #: Who drove the procurement of this stock. The Q1(d) causation control and
@@ -66,6 +74,11 @@ class InvoiceLine:
             raise ValidationError(f"{self.invoice_id}: qty must be positive")
         if self.unit_price_net < _ZERO:
             raise ValidationError(f"{self.invoice_id}: negative net price")
+        if self.credit_days is not None and self.credit_days < 0:
+            raise ValidationError(
+                f"{self.invoice_id}: negative credit days. An advance is 0 "
+                "days of credit, not a negative number — a negative term "
+                "would pay a bonus through the charge rather than removing it.")
         if self.is_aged_stock and self.stock_age_days is None:
             raise ValidationError(
                 f"{self.invoice_id}: aged stock with no age — the bounty rate "

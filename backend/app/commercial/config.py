@@ -254,6 +254,60 @@ class CommercialThresholds:
     #: before and after the change is distinguishable.
     carrying_rate_is_published: bool = False
 
+    # ── statutory payment timing (MSMED s.15 / income-tax s.43B(h)) ──────────
+    #
+    # Money owed to a registered micro or small supplier past the section 15
+    # limit is disallowed as a deduction for that year. It is a cliff on a
+    # date, not a slope, and every input to it except the supplier's status is
+    # already computed here — which is why these are thresholds rather than
+    # constants in a detector.
+    #
+    # **15 is the default and 45 is the ceiling, not the other way round.**
+    # Absent a written agreement the Act allows fifteen days; a written
+    # agreement may extend that to a maximum of forty-five. Defaulting to 45
+    # because a Zoho dropdown says 45 would understate exposure on exactly the
+    # suppliers with no contract, who are the ones the rule protects.
+    msme_default_days: int = 15
+    msme_max_agreed_days: int = 45
+    # How far ahead the watchlist looks. A bill whose deadline is three months
+    # out is not yet a decision; one inside this window is.
+    msme_watch_horizon_days: int = 60
+
+    # What a disallowed rupee of deduction actually costs, expressed as the
+    # rate that would apply to it. **RESTRICTED, and owner-set with no default
+    # — this is deliberately ``None``.**
+    #
+    # Three entities with possibly three constitutions and two regimes sit
+    # behind this platform, and a plausible-looking 0.25 would be a made-up
+    # number driving a figure somebody plans a payment run around. Left unset,
+    # the watchlist still reports the date and the amount at risk — the two
+    # facts that matter — and simply omits the cost estimate rather than
+    # inventing one. Same discipline as ``carrying_cost_annual_pct`` above,
+    # taken one step further because the consequence of being wrong is a tax
+    # position rather than a stock decision.
+    #
+    # Note what this is *not*: the cost of a disallowance is not the tax on it.
+    # The deduction returns in the year the money is actually paid, so the
+    # economic cost is one year's carry on tax brought forward — which is why
+    # ``commercial/insight/msme.py`` multiplies by the carrying rate as well,
+    # and why sizing it as the full tax would overstate it roughly tenfold.
+    effective_tax_rate: Optional[float] = None
+
+    # ── withholding on purchases (income-tax s.194Q) ─────────────────────────
+    #
+    # A buyer above the turnover gate deducts on purchases from one resident
+    # supplier beyond the party threshold, in a financial year. The seller-side
+    # mirror, s.206C(1H), was omitted with effect from 1 April 2025, so there is
+    # no longer an interaction to model — only this one obligation.
+    #
+    # ``s194q_org_gate_met`` is a fact about *us* that this platform cannot
+    # derive: our own prior-year turnover spans three legal entities and lives
+    # in Tally, not here. Off by default, and the detector emits nothing at all
+    # while it is off — an alert derived from an unverified gate is a confident
+    # statement about a statutory duty nobody confirmed applies.
+    s194q_party_threshold: float = 5_000_000.0
+    s194q_org_gate_met: bool = False
+
     # ── the decision queue ───────────────────────────────────────────────────
     #
     # How money becomes rank. A decision derived from Business State is scored
@@ -377,6 +431,56 @@ class CommercialThresholds:
         (8456, 8465, "MACHINES"),
     )
 
+    # ── which floor family an item prices in ─────────────────────────────────
+    #
+    # `m_floor` is published per family in
+    # `incentive_engine/config/parameters.yaml` and nothing mapped a product
+    # onto those names, so every line priced at `default`. See
+    # `commercial/floor_families.py` for why that was two problems and not one:
+    # the floors were wrong family by family, and the disclosure defence — that
+    # `m_floor` varies by family, so two observed lines still do not invert to
+    # cost — was down to a single constant.
+    #
+    # Here rather than in `parameters.yaml` for the reason `hsn_category_ranges`
+    # is here: this is a classification, it changes every floor downstream of
+    # it, and it belongs inside the version hash so a floor computed last
+    # quarter stays explicable. The *rates* stay in the parameter block under
+    # I6. A classification is not a rate and the two are governed differently.
+    #
+    # This is where the tariff earns its keep, because it already draws the
+    # distinction the families need and no catalogue category does:
+    hsn_floor_family_ranges: tuple[tuple[int, int, str], ...] = (
+        # 8209 — plates, sticks, tips and the like for tools, UNMOUNTED, of
+        # cermets. That is an indexable insert and very little else, which
+        # makes it the sharpest single heading in this table.
+        (8209, 8209, "inserts"),
+        # 8207 — the interchangeable tool itself: drills, endmills, taps,
+        # reamers, boring and broaching tools. Mostly solid carbide or HSS in
+        # this book. It also carries indexable tool *bodies*, which belong with
+        # holders rather than here; the heading cannot separate them and a
+        # catalogue category usually can, which is why ZOHO is tried first.
+        (8207, 8207, "solid_carbide"),
+        # 8466 — parts and accessories for machine tools: tool holders,
+        # self-opening dieheads, work holders, arbors.
+        (8466, 8466, "holders_toolsystems"),
+        # Drawing and measuring instruments; measuring, checking and regulating
+        # instruments.
+        (9017, 9017, "metrology"),
+        (9031, 9032, "metrology"),
+        # Petroleum oils and lubricating preparations. Same caveat the line map
+        # makes about 2710: broader than coolant, but in this book's purchase
+        # pattern it is neat cutting oil far more often than anything else.
+        (2710, 2710, "chemicals"),
+        (3403, 3403, "chemicals"),
+        # Machine tools, as one block.
+        (8456, 8465, "machines"),
+        # Deliberately absent: 8202 saws, 8208 machine knives, 8203–8206 hand
+        # tools, 6804–6805 abrasives, 7318 hardware. Every one of them is a
+        # real line for this trade and none of them is one of the six families,
+        # so they price at the default multiplier and are counted as unplaced
+        # rather than being pushed into the nearest family to flatter coverage.
+    )
+
     # ── inferring a line from the principal who supplies it ──────────────────
     #
     # An authorised distributor's suppliers are mostly single-line: everything
@@ -408,6 +512,23 @@ class CommercialThresholds:
             slow_stock_days=_i("CI_SLOW_STOCK_DAYS", _default("slow_stock_days")),
             carrying_rate_is_published=(
                 os.environ.get("CI_CARRYING_RATE_IS_PUBLISHED", "").strip().lower()
+                in ("1", "true", "yes")),
+            msme_default_days=_i("CI_MSME_DEFAULT_DAYS",
+                                 _default("msme_default_days")),
+            msme_max_agreed_days=_i("CI_MSME_MAX_AGREED_DAYS",
+                                    _default("msme_max_agreed_days")),
+            msme_watch_horizon_days=_i("CI_MSME_WATCH_HORIZON_DAYS",
+                                       _default("msme_watch_horizon_days")),
+            # Unset stays unset. ``_f`` would turn a missing variable into a
+            # number, and the whole point of this one being ``None`` is that
+            # there is no defensible default for it.
+            effective_tax_rate=(float(os.environ["CI_EFFECTIVE_TAX_RATE"])
+                                if os.environ.get("CI_EFFECTIVE_TAX_RATE", "").strip()
+                                else _default("effective_tax_rate")),
+            s194q_party_threshold=_f("CI_S194Q_PARTY_THRESHOLD",
+                                     _default("s194q_party_threshold")),
+            s194q_org_gate_met=(
+                os.environ.get("CI_S194Q_ORG_GATE_MET", "").strip().lower()
                 in ("1", "true", "yes")),
             decision_rupees_per_point=_f("CI_DECISION_RUPEES_PER_POINT",
                                          _default("decision_rupees_per_point")),

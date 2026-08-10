@@ -25,6 +25,7 @@ import TextField from "@mui/material/TextField";
 import { useEffect, useState } from "react";
 import { money } from "../../money";
 import { papi } from "../api";
+import { Unavailable } from "../kit";
 import { optionLabel } from "../EntityName";
 import { distinguishes } from "../CompanyFilter";
 import type { Account, AccountItem, PlatformSession, StatusFilter } from "../types";
@@ -321,16 +322,7 @@ export function NegotiateScreen({
             </div>
           )}
 
-          {unavailable.length > 0 && (
-            <ul className="tl-unavailable">
-              {unavailable.map((u, i) => (
-                <li key={i}>
-                  <strong>{String(u.series).replace(/_/g, " ")}</strong> — not
-                  shown. <span className="viz-muted">{String(u.reason)}</span>
-                </li>
-              ))}
-            </ul>
-          )}
+          <Unavailable items={unavailable} />
         </>
       )}
     </Panel>

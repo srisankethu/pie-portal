@@ -152,6 +152,27 @@ def scope_for_path(path: str) -> Optional[str]:
     return SCOPE_FOR_PATH.get(path.lstrip("/").split("/", 1)[0].split("?", 1)[0])
 
 
+#: Paths that cannot answer on their own — they need ids a previous call
+#: produced, and a probe is meant to cost one request and carry no state.
+_UNPROBEABLE = frozenset({"itemdetails"})
+
+
+def probe_paths() -> dict[str, str]:
+    """One cheap listing per distinct scope: ``{scope: path to ask it with}``.
+
+    Derived from ``SCOPE_FOR_PATH`` rather than written out a second time, so an
+    endpoint cannot be added with a scope the check never probes. First entry
+    wins, which is why this returns a *scope* map and not a path map:
+    ``settings.READ`` gates items, locations and per-location stock alike, and
+    asking three times triples the cost of the answer without changing it.
+    """
+    out: dict[str, str] = {}
+    for path, scope in SCOPE_FOR_PATH.items():
+        if path not in _UNPROBEABLE:
+            out.setdefault(scope, path)
+    return out
+
+
 class ZohoTransport:
     """Authenticated, paced, retrying HTTP against one Zoho Books company.
 
@@ -399,6 +420,56 @@ class ZohoTransport:
                 for o in orgs
             ],
         }
+
+    def probe_scopes(self) -> list[dict[str, Any]]:
+        """Ask Zoho, one listing per scope, what this grant can actually reach.
+
+        ``ping`` cannot answer this and never could. It reads ``organizations``,
+        which sits behind no scope at all — so a connection granted nothing but
+        the login still pings green, which is precisely what a half-granted
+        token looks like right up until the sync fails on it.
+
+        Three answers, not two. A refusal is a definite no and a listing that
+        returns is a definite yes, but a 5xx, a timeout or a throttle is
+        ``None`` — *unknown*. Reporting an endpoint that could not be reached as
+        granted is the benign default this codebase refuses to take: the caller
+        is told which questions went unanswered rather than being handed a pass
+        built out of missing evidence.
+
+        Costs one call per granted scope and three per refused one (Zoho's 401
+        is retried once against a freshly minted token before it counts as a
+        scope refusal), so it belongs on a deliberate act — connecting,
+        rotating, or pressing Check — and not on a page load.
+        """
+        probes = probe_paths()
+        results: list[dict[str, Any]] = []
+        for index, (scope, path) in enumerate(probes.items()):
+            granted: Optional[bool]
+            detail: Optional[str]
+            try:
+                self._get(path, per_page=1)
+                granted, detail = True, None
+            except ZohoScopeError as e:
+                granted, detail = False, str(e)
+            except ZohoAuthError:
+                # The credential itself is the problem, so every remaining probe
+                # would return the same answer for a reason that has nothing to
+                # do with scopes. Raised rather than recorded ten times over.
+                raise
+            except ZohoThrottleError as e:
+                # Every remaining probe would meet the same limiter, and each
+                # one pays the full backoff before saying so. Stop, and mark
+                # what was never asked as unknown rather than implying it passed.
+                results.extend(
+                    {"scope": s, "endpoint": p, "granted": None, "detail": str(e)}
+                    for s, p in list(probes.items())[index:])
+                break
+            except ZohoError as e:
+                granted, detail = None, f"{type(e).__name__}: {e}"
+            results.append({"scope": scope, "endpoint": path,
+                            "granted": granted, "detail": detail})
+        return results
+
 
 class ZohoApiSource(ZohoTransport):
     """Read-only Zoho Books client.

@@ -50,6 +50,14 @@ class ConnectionNotFound(LookupError):
 # Surfaced in the UI because a half-granted scope is the single most common
 # reason a connection authenticates and then returns nothing: the token works,
 # the endpoint 401s, and the sync reports zero rows with no obvious cause.
+#
+# This list is what an owner is told to paste into the Zoho console, so a scope
+# the pull uses and this list omits is one *nobody can ever have granted*.
+# ``ZohoBooks.creditnotes.READ`` was exactly that: the client had called the
+# endpoint since credit notes were added, the scope was never named here, and
+# because the credit-note stage degrades gracefully the only symptom was one
+# skip line in a sync report. ``test_every_scope_the_pull_uses_is_declared``
+# pins the two lists together in both directions.
 REQUIRED_SCOPES: tuple[tuple[str, str, bool], ...] = (
     ("ZohoBooks.contacts.READ", "Customers and vendors", True),
     ("ZohoBooks.settings.READ", "Items — the product master", True),
@@ -61,6 +69,11 @@ REQUIRED_SCOPES: tuple[tuple[str, str, bool], ...] = (
      "Payments — when money actually arrived. The Cash screen, every payment "
      "pattern, and the collection factor the incentive is earned on all read "
      "this. Without it an invoice looks paid the day it was raised.", True),
+    ("ZohoBooks.creditnotes.READ",
+     "Credit notes — credit given back. Optional because Zoho already nets "
+     "applied credit into an invoice's balance, so today's receivable is right "
+     "without it; what it buys is the ability to reconstruct a *past* "
+     "position.", False),
     ("ZohoBooks.salesorders.READ",
      "Sales orders — what customers have ordered and we have not yet shipped or "
      "billed. This is demand and a promise, before any accounting entry exists; "

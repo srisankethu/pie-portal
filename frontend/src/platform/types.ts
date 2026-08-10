@@ -777,7 +777,21 @@ export interface ZohoConnection {
   covered_from: string | null;
 }
 
-/** A check result: the row as stored, plus what the grant could actually see. */
+/** One scope, as the grant itself answered for it. `granted: null` means the
+ *  probe could not get an answer — not a quiet pass. */
+export interface ProbedScope {
+  scope: string;
+  endpoint: string;
+  granted: boolean | null;
+  detail: string | null;
+}
+
+/** A check result: the row as stored, plus what the grant could actually see.
+ *
+ *  `scopes` is the half a ping cannot answer. Zoho's `organizations` endpoint
+ *  sits behind no scope, so a connection granted the login and nothing else
+ *  passes a ping and then fails every sync — which is why the check probes each
+ *  scope and reports them separately from reachability. */
 export interface ConnectionCheck extends ZohoConnection {
   checked: boolean;
   ok?: boolean;
@@ -785,6 +799,11 @@ export interface ConnectionCheck extends ZohoConnection {
   organization_name?: string;
   currency?: string;
   visible_organizations?: { organization_id: string; name: string }[];
+  scopes?: ProbedScope[];
+  /** Refused scopes without which no sync can run. Non-empty means `ok` false. */
+  missing_required_scopes?: string[];
+  /** Scopes the probe could not reach a verdict on. Neither granted nor refused. */
+  untested_scopes?: string[];
 }
 
 /** A scope, and what the platform loses without it. */

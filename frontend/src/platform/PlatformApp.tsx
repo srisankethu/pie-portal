@@ -114,6 +114,8 @@ const PayablesScreen = lazy(() =>
   import("./viz/TheBook").then((m) => ({ default: m.PayablesScreen })));
 const PaymentsScreen = lazy(() =>
   import("./viz/TheBook").then((m) => ({ default: m.PaymentsScreen })));
+const StatutoryScreen = lazy(() =>
+  import("./viz/Statutory").then((m) => ({ default: m.StatutoryScreen })));
 const StockScreen = lazy(() =>
   import("./viz/TheBook").then((m) => ({ default: m.StockScreen })));
 const SupplyScreen = lazy(() =>
@@ -583,6 +585,12 @@ export default function PlatformApp() {
       // call list, so it is scoped like Suppliers rather than like Cash.
       ? ([{ key: "payables", label: "How we pay", group: "book" }] as NavItem[])
       : []),
+    ...(ability.can("read", "supply")
+      // Every row is a supplier balance against a date, so it is scoped with
+      // the rest of the payable side rather than shown and then refused.
+      ? ([{ key: "statutory", label: "Statutory deadlines",
+            group: "book" }] as NavItem[])
+      : []),
 
     // ── Setup ──
     // Setup, not Understand: placing an item is catalogue maintenance, and it
@@ -744,6 +752,7 @@ export default function PlatformApp() {
             <Route path={PATH.cadence} element={<CadenceScreen session={session} onNavigate={goViz} />} />
             <Route path={PATH.payments} element={<PaymentsScreen session={session} onNavigate={goViz} />} />
             <Route path={PATH.payables} element={<PayablesScreen session={session} onNavigate={goViz} />} />
+            <Route path={PATH.statutory} element={<StatutoryScreen session={session} />} />
             <Route path={PATH.stock} element={<StockScreen session={session} />} />
             <Route path={PATH.supply} element={<SupplyScreen session={session} />} />
             <Route path={PATH.bonds} element={<BondsScreen session={session} onNavigate={goViz} />} />

@@ -102,12 +102,21 @@ def test_every_editable_field_declares_the_kind_it_is_parsed_as(session):
         "days": int,
         "money": float,
         "ratio": float,
+        # A ratio an owner is allowed to leave undecided. It parses to a float
+        # like any other ratio; the separate kind exists so the screen renders
+        # an empty field rather than "0 %" for a rate nobody has set.
+        "optional_ratio": float,
     }
     for f in policy.describe(session, org_id)["fields"]:
         kind = f["kind"]
         if kind not in expected:      # family_margins / band_edges are containers
             continue
         coerced = policy._coerce(f["field"], f["value"])
+        if kind == "optional_ratio" and coerced is None:
+            # Unset is the whole point of the kind, and it must survive a round
+            # trip as None rather than arriving back as 0.0.
+            assert f["value"] is None
+            continue
         assert type(coerced) is expected[kind], (
             f"{f['field']} is rendered as {kind!r} but parses to "
             f"{type(coerced).__name__}")

@@ -2393,9 +2393,11 @@ class SimulationRequest(BaseModel):
     #: user's assumptions; neither is guessed at.
     share_moved: float = Field(1.0, ge=0.0, le=1.0)
     discount: float = Field(0.0, ge=0.0, le=1.0)
-    #: Restrict to one band of the shelf — DEAD, SLOW or HEALTHY. Absent means
-    #: the whole shelf.
-    band: Optional[str] = Field(None, pattern="^(DEAD|SLOW|HEALTHY)$")
+    #: Restrict to one band of the shelf — DEAD, SLOW, HEALTHY or UNKNOWN.
+    #: Absent means the whole shelf. UNKNOWN is accepted so a scenario can be
+    #: run over "too new to judge" deliberately; it is never folded into DEAD,
+    #: which is the whole point of the band existing.
+    band: Optional[str] = Field(None, pattern="^(DEAD|SLOW|HEALTHY|UNKNOWN)$")
     # ── supplier delay ──────────────────────────────────────────────────────
     delay_days: int = Field(30, ge=1, le=365)
     price_change_pct: Optional[float] = Field(None, ge=-0.9, le=2.0)

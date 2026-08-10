@@ -1555,11 +1555,44 @@ def test_health_is_age_alone_because_value_does_not_make_stock_fresh():
     assert _shelf(last_sold=date(2026, 7, 1)).health(as_of, CARRYING) == _stock.HEALTHY
     assert _shelf(last_sold=date(2026, 1, 1)).health(as_of, CARRYING) == _stock.SLOW
     assert _shelf(last_sold=date(2024, 1, 1)).health(as_of, CARRYING) == _stock.DEAD
-    # Never sold and on the shelf is the strongest version of dead, not a
-    # reason to leave the row out.
-    assert _shelf(last_sold=None).health(as_of, CARRYING) == _stock.DEAD
     # Nothing on the shelf cannot be dead stock — there is no stock.
     assert _shelf(on_hand=0.0, last_sold=None).health(as_of, CARRYING) == _stock.HEALTHY
+
+
+def test_never_sold_is_dead_only_once_there_has_been_time_to_sell_it():
+    """The defect this band exists for.
+
+    ``health`` used to read ``if days is None or days >= dead_days``, so a line
+    with no sale date took the worst verdict on the screen no matter how long
+    it had been there. Measured against the live SLS book, that banded ₹10.6
+    lakh of stock bought in the previous ten weeks as DEAD and put a write-off
+    on it — a 5.3x overstatement of dead stock, all of it in the direction of
+    telling the owner to discard stock they had just paid for.
+
+    Three distinct outcomes rather than one, because that is the point: "never
+    sold" is not a single situation.
+    """
+    as_of = date(2026, 8, 5)
+    # Bought five weeks ago and not sold yet. Not a finding.
+    assert _shelf(last_sold=None,
+                  first_seen=date(2026, 7, 1)).health(as_of, CARRYING) == _stock.UNKNOWN
+    # Two years on the books and never once sold. That is a finding.
+    assert _shelf(last_sold=None,
+                  first_seen=date(2024, 1, 1)).health(as_of, CARRYING) == _stock.DEAD
+    # We cannot show how long it has been here, so we cannot say. Absence of
+    # evidence is not the worst verdict any more than it is a pass.
+    assert _shelf(last_sold=None,
+                  first_seen=None).health(as_of, CARRYING) == _stock.UNKNOWN
+
+
+def test_stock_too_new_to_judge_is_never_proposed_for_write_off():
+    as_of = date(2026, 8, 5)
+    fresh = _shelf(last_sold=None, first_seen=date(2026, 7, 1))
+    assert fresh.recommended_action(as_of, CARRYING) == "HOLD"
+    # Nor is it in the idle group: a group headed "nothing sold in N days"
+    # asserts exactly what the band exists to withhold.
+    assert fresh.idle(as_of, CARRYING) is False
+    assert fresh.opportunity_days(as_of) == 35
 
 
 def test_the_recommended_action_is_a_band_not_a_judgement():
@@ -1571,9 +1604,13 @@ def test_the_recommended_action_is_a_band_not_a_judgement():
                   buyers=("Brakes India",)).recommended_action(as_of, CARRYING) == "DISCOUNT"
     # Dead with nobody who has ever bought it: bundling is the remaining lever.
     assert _shelf(last_sold=date(2025, 1, 1)).recommended_action(as_of, CARRYING) == "BUNDLE"
-    # Never sold once. Nothing here evidences a discount; it is a question for
-    # whoever bought it, so the proposal is a write-off rather than a price.
-    assert _shelf(last_sold=None).recommended_action(as_of, CARRYING) == "WRITE_OFF"
+    # Never sold once, and here long enough for that to be a finding. Nothing
+    # evidences a discount; it is a question for whoever bought it, so the
+    # proposal is a write-off rather than a price. The ``first_seen`` date is
+    # what earns that verdict — without it the answer is HOLD.
+    assert _shelf(last_sold=None,
+                  first_seen=date(2024, 1, 1),
+                  ).recommended_action(as_of, CARRYING) == "WRITE_OFF"
 
 
 def test_priority_is_the_drain_itself_not_an_invented_score():

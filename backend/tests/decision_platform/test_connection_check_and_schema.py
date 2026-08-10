@@ -126,8 +126,13 @@ def test_a_check_survives_whatever_zoho_does(client, monkeypatch, boom):
     assert body["detail"], "a failed check has to say why"
 
 
-def test_a_successful_check_reports_every_company_the_grant_reaches(client, monkeypatch):
-    cid = _add(client).json()["connection_id"]
+def _reached(monkeypatch, scopes=None):
+    """A connection whose login reaches the company, with a canned grant probe.
+
+    ``probe_scopes`` is stubbed in every test that gets past ``ping`` — left
+    real it would open an httpx client against accounts.zoho.in and sit there
+    until the timeout, which is a test suite that fails on a train.
+    """
     monkeypatch.setattr(cr.settings, "ZOHO_SOURCE", "api")
     monkeypatch.setattr(cr.ZohoApiSource, "ping", lambda self: {
         "organization_found": True, "organization_name": "4U PRECISION",
@@ -136,11 +141,89 @@ def test_a_successful_check_reports_every_company_the_grant_reaches(client, monk
             {"organization_id": "60036630626", "name": "4U PRECISION"},
             {"organization_id": "60036630999", "name": "SLS ENGINEERS"},
         ]})
+    granted = [{"scope": s, "endpoint": s, "granted": True, "detail": None}
+               for s, _, _ in cr.conn.REQUIRED_SCOPES]
+    monkeypatch.setattr(cr.ZohoApiSource, "probe_scopes",
+                        lambda self: scopes if scopes is not None else granted)
+
+
+def test_a_successful_check_reports_every_company_the_grant_reaches(client, monkeypatch):
+    cid = _add(client).json()["connection_id"]
+    _reached(monkeypatch)
 
     body = client.post(f"/api/v1/connections/{cid}/check", headers=_hdr(client)).json()
     assert body["ok"] is True
     assert len(body["visible_organizations"]) == 2, (
         "the answer to 'do I need another credential for the next entity?'")
+
+
+# ── the check tests the grant, not just the login ───────────────────────────
+#
+# `ping` reads `organizations`, which sits behind no scope at all. A connection
+# granted the login and nothing else therefore passed this check and then failed
+# every sync — with an error naming a credential that was perfectly fine.
+def test_a_refused_required_scope_fails_the_check_and_is_named(client, monkeypatch):
+    cid = _add(client).json()["connection_id"]
+    _reached(monkeypatch, scopes=[
+        {"scope": "ZohoBooks.contacts.READ", "endpoint": "contacts",
+         "granted": True, "detail": None},
+        {"scope": "ZohoBooks.bills.READ", "endpoint": "bills",
+         "granted": False, "detail": "not granted"},
+    ])
+
+    body = client.post(f"/api/v1/connections/{cid}/check", headers=_hdr(client)).json()
+    assert body["ok"] is False, "a grant that cannot run a sync is not a pass"
+    assert body["missing_required_scopes"] == ["ZohoBooks.bills.READ"]
+    assert "ZohoBooks.bills.READ" in body["detail"]
+    # Still reached — the detail must not send somebody to the credential.
+    assert "Reached this company." in body["detail"]
+
+
+def test_a_refused_optional_scope_is_reported_without_failing_the_check(client, monkeypatch):
+    """Credit notes are the case this was found on. Losing them costs the
+    ability to reconstruct a past position and nothing else, so the connection
+    is still fit to sync — but the gap has to be visible, because for as long
+    as the scope went undeclared the only trace was one line in a sync report."""
+    cid = _add(client).json()["connection_id"]
+    _reached(monkeypatch, scopes=[
+        {"scope": "ZohoBooks.creditnotes.READ", "endpoint": "creditnotes",
+         "granted": False, "detail": "not granted"},
+    ])
+
+    body = client.post(f"/api/v1/connections/{cid}/check", headers=_hdr(client)).json()
+    assert body["ok"] is True
+    assert body["missing_required_scopes"] == []
+    assert "ZohoBooks.creditnotes.READ" in body["detail"]
+
+
+def test_a_scope_the_probe_could_not_test_is_never_reported_as_granted(client, monkeypatch):
+    """Absence of evidence is not a pass (§1). An untested scope is disclosed as
+    untested; what it must never do is disappear into a green check."""
+    cid = _add(client).json()["connection_id"]
+    _reached(monkeypatch, scopes=[
+        {"scope": "ZohoBooks.bills.READ", "endpoint": "bills",
+         "granted": None, "detail": "ZohoError: HTTP 503"},
+    ])
+
+    body = client.post(f"/api/v1/connections/{cid}/check", headers=_hdr(client)).json()
+    assert body["untested_scopes"] == ["ZohoBooks.bills.READ"]
+    assert body["missing_required_scopes"] == [], "unknown is not the same as refused"
+    assert "could not test" in body["detail"]
+
+
+def test_a_probe_that_blows_up_leaves_the_connection_reachable(client, monkeypatch):
+    """The ping succeeded, so the company *was* reached. Reporting "not
+    reachable" because the follow-up probe fell over points at the one thing
+    that is demonstrably fine."""
+    cid = _add(client).json()["connection_id"]
+    _reached(monkeypatch)
+    monkeypatch.setattr(cr.ZohoApiSource, "probe_scopes",
+                        lambda self: (_ for _ in ()).throw(RuntimeError("socket died")))
+
+    body = client.post(f"/api/v1/connections/{cid}/check", headers=_hdr(client)).json()
+    assert body["ok"] is True
+    assert "could not be tested" in body["detail"]
+    assert body["untested_scopes"], "every scope is unanswered, and says so"
 
 
 def test_a_check_records_its_result_so_a_stale_connection_is_visible(client, monkeypatch):

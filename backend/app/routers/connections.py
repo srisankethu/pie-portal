@@ -422,12 +422,59 @@ def check_connection(
     return _check(session, row)
 
 
+def _scope_note(scopes: list[dict]) -> tuple[list[str], list[str], str]:
+    """``(missing required, untested, sentence)`` from a grant probe.
+
+    Required and optional are kept apart because they call for different acts: a
+    refused *required* scope means every sync fails until the connection is
+    re-authorised, while a refused optional one means one screen stays empty and
+    nothing else changes. Only the first decides the verdict.
+
+    Untested is a third thing and is returned as itself rather than folded into
+    either. A probe that could not reach an endpoint has established neither
+    that the scope is missing nor that it is granted.
+
+    **The trade-off, stated rather than hidden.** An untested *required* scope
+    does not flip ``ok`` to false. What ``ok`` answers is "was anything
+    definitely found wrong", and a transient 5xx on one probe is not evidence of
+    a bad grant — failing the connection on it would cry wolf on every blip and
+    teach an owner to ignore the chip, which costs more than it saves. The
+    honesty is paid for in disclosure instead: the scope is named in the
+    sentence and returned in ``untested_scopes``, so nothing claims to have
+    checked what it did not.
+    """
+    required = {s for s, _, req in conn.REQUIRED_SCOPES if req}
+    refused = [r["scope"] for r in scopes if r["granted"] is False]
+    untested = [r["scope"] for r in scopes if r["granted"] is None]
+    missing_required = [s for s in refused if s in required]
+
+    parts: list[str] = []
+    if missing_required:
+        parts.append("the pull cannot run without " + ", ".join(missing_required))
+    optional_gap = [s for s in refused if s not in required]
+    if optional_gap:
+        parts.append("granted without " + ", ".join(optional_gap)
+                     + ", so what those read stays empty")
+    if untested:
+        parts.append("could not test " + ", ".join(untested))
+    if not parts:
+        return [], [], ""
+    return missing_required, untested, " Permissions: " + "; ".join(parts) + "."
+
+
 def _check(session: Session, row: models.ZohoConnection) -> dict:
-    """Ping, record the result on the row, and report what the grant sees.
+    """Ping, probe the grant, record the result, and report what it can reach.
 
     Recorded even on failure: a connection that has never been checked and one
     that failed an hour ago look the same on a list, and only one of them is a
     problem.
+
+    The probe is the half this used to be missing. ``ping`` reads
+    ``organizations``, which no scope gates, so a connection granted the login
+    and nothing else passed a check and then failed every sync — and the failure
+    named a credential that was perfectly fine. Every caller of this function is
+    a deliberate act on one connection (adding, rotating, pressing Check), which
+    is what makes the extra calls affordable here and nowhere else.
     """
     if settings.ZOHO_SOURCE != "api":
         detail = f"Source is {settings.ZOHO_SOURCE!r}, so nothing was contacted."
@@ -436,7 +483,8 @@ def _check(session: Session, row: models.ZohoConnection) -> dict:
 
     try:
         creds = conn.credentials_for(session, row)
-        info = ZohoApiSource(credentials=creds).ping()
+        source = ZohoApiSource(credentials=creds)
+        info = source.ping()
     except (ZohoAuthError, conn.CredentialNotUsable) as e:
         conn.record_check(session, row, ok=False, detail=str(e))
         return {**_dict(session, row), "checked": True, "ok": False, "detail": str(e)}
@@ -457,15 +505,41 @@ def _check(session: Session, row: models.ZohoConnection) -> dict:
             org.timezone = zone
             session.flush()
 
+    # Only worth asking once the login is known to reach this company: against
+    # the wrong company every answer would describe a grant nobody is going to
+    # sync with, at ten calls a time.
+    scopes: list[dict] = []
+    missing_required: list[str] = []
+    untested: list[str] = []
+    scope_note = ""
+    if found:
+        try:
+            scopes = source.probe_scopes()
+        except Exception as e:  # noqa: BLE001 — a check must report, not 500
+            # The ping worked, so this is not the credential. Reported as an
+            # untested grant rather than a failed connection: saying "not
+            # reachable" about a company we just reached sends somebody to look
+            # at the one thing that is fine.
+            untested = [s for s, _, _ in conn.REQUIRED_SCOPES]
+            scope_note = f" Permissions could not be tested ({type(e).__name__}: {e})."
+        else:
+            missing_required, untested, scope_note = _scope_note(scopes)
+
     detail = ("Reached this company." if found else
               f"Authenticated, but company {row.zoho_organization_id} is not among "
-              f"the ones this login can see.")
-    conn.record_check(session, row, ok=bool(found), detail=detail)
+              f"the ones this login can see.") + scope_note
+    ok = bool(found) and not missing_required
+    conn.record_check(session, row, ok=ok, detail=detail)
     return {
         **_dict(session, row),
         "checked": True,
-        "ok": bool(found),
+        "ok": ok,
         "detail": detail,
+        # What the grant answered for, scope by scope. `granted: null` is a
+        # question the probe could not get an answer to — not a quiet pass.
+        "scopes": scopes,
+        "missing_required_scopes": missing_required,
+        "untested_scopes": untested,
         "organization_name": info.get("organization_name"),
         "currency": info.get("currency"),
         "time_zone": info.get("time_zone"),

@@ -522,6 +522,106 @@ def test_every_endpoint_the_pull_uses_has_a_named_scope():
         assert scope_for_path(path), path
 
 
+def test_every_scope_the_pull_uses_is_declared():
+    """The other direction, which nothing checked and which drifted.
+
+    ``REQUIRED_SCOPES`` is what an owner is told to paste into the Zoho console.
+    A scope the client calls for and that list omits is one *nobody can ever
+    have granted* — and ``ZohoBooks.creditnotes.READ`` was exactly that for as
+    long as credit notes had been pulled. Because that stage degrades
+    gracefully, the only symptom was a single skip line in a sync report, so
+    the endpoint was refused on every connection, for ever, in silence.
+
+    Asserted as an equality rather than a subset so the reverse also fails: a
+    scope asked of an owner that nothing calls is a permission requested for no
+    reason, which is its own small breach of trust.
+    """
+    from app.ingestion.connections import REQUIRED_SCOPES
+    from app.ingestion.zoho_client import SCOPE_FOR_PATH
+
+    declared = {s for s, _, _ in REQUIRED_SCOPES}
+    used = set(SCOPE_FOR_PATH.values())
+    assert used == declared, (
+        f"used but never requested: {sorted(used - declared)}; "
+        f"requested but never used: {sorted(declared - used)}")
+
+
+def test_the_scope_probe_asks_each_scope_exactly_once():
+    """``settings.READ`` gates items, locations and per-location stock alike, so
+    probing per endpoint would ask one question three times and charge three
+    calls for it. Also pins that nothing unprobeable creeps into the map:
+    ``itemdetails`` needs ids from a previous call and cannot answer alone."""
+    from app.ingestion.zoho_client import SCOPE_FOR_PATH, probe_paths
+
+    probes = probe_paths()
+    assert set(probes) == set(SCOPE_FOR_PATH.values())
+    assert probes["ZohoBooks.settings.READ"] == "items"
+    assert "itemdetails" not in probes.values()
+
+
+def _probe_http(refused: set[str] = frozenset(), broken: set[str] = frozenset(),
+                token_refusal: bool = False) -> FakeHttp:
+    """A transport that answers each probe path differently: refused (401 with
+    Zoho's out-of-scope code), broken (a 200 carrying no JSON), or fine."""
+    scope_401 = FakeResponse({"code": 57, "message": "You are not authorized"}, status=401)
+    bad_token_401 = FakeResponse({"code": 14, "message": "Invalid oauth token"}, status=401)
+    no_json = FakeResponse(None)
+    fine = FakeResponse({"code": 0, "page_context": {"has_more_page": False}})
+
+    http = FakeHttp({})
+
+    def get(url, params=None, headers=None, **kw):
+        if token_refusal:
+            return bad_token_401
+        path = url.rstrip("/").rsplit("/", 1)[-1]
+        if path in refused:
+            return scope_401
+        if path in broken:
+            return no_json
+        return fine
+
+    http.get = get                                    # type: ignore[assignment]
+    return http
+
+
+def test_the_probe_separates_a_refused_scope_from_the_granted_ones():
+    """What ``ping`` could never answer. ``organizations`` sits behind no scope,
+    so a connection granted nothing else still pings green — the probe is the
+    only thing that tells a whole grant from a login."""
+    source = ZohoApiSource(http=_probe_http(refused={"customerpayments"}))
+
+    by_scope = {r["scope"]: r for r in source.probe_scopes()}
+    assert by_scope["ZohoBooks.customerpayments.READ"]["granted"] is False
+    assert "ZohoBooks.customerpayments.READ" in by_scope[
+        "ZohoBooks.customerpayments.READ"]["detail"]
+    assert by_scope["ZohoBooks.bills.READ"]["granted"] is True
+    assert by_scope["ZohoBooks.settings.READ"]["granted"] is True
+
+
+def test_an_endpoint_the_probe_could_not_reach_is_unknown_and_not_granted():
+    """Absence of evidence is not a pass (§1). A 5xx, a timeout or a body that
+    will not parse says nothing about the grant, and recording it as granted
+    would hand back a green check built out of a question nobody answered."""
+    source = ZohoApiSource(http=_probe_http(broken={"bills"}))
+
+    by_scope = {r["scope"]: r for r in source.probe_scopes()}
+    assert by_scope["ZohoBooks.bills.READ"]["granted"] is None
+    assert "non-JSON" in by_scope["ZohoBooks.bills.READ"]["detail"]
+    assert by_scope["ZohoBooks.invoices.READ"]["granted"] is True
+
+
+def test_a_dead_token_stops_the_probe_rather_than_blaming_every_scope():
+    """A revoked credential refuses all ten endpoints. Reporting that as ten
+    missing permissions would send somebody to the Zoho console to re-grant
+    scopes they already have, when the token is the thing that died."""
+    source = ZohoApiSource(http=_probe_http(token_refusal=True))
+
+    with pytest.raises(ZohoAuthError) as caught:
+        source.probe_scopes()
+    from app.ingestion.zoho_client import ZohoScopeError
+    assert not isinstance(caught.value, ZohoScopeError)
+
+
 # ── commitments and money out ───────────────────────────────────────────────
 def test_a_draft_order_is_not_a_commitment():
     """A draft promises nobody anything and can be deleted without trace.

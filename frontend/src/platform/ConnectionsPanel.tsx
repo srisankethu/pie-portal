@@ -71,10 +71,21 @@ function when(iso: string | null | undefined): string {
   return iso ? since(iso) : "never";
 }
 
-function health(c: ZohoConnection): { tone: "ok" | "bad" | "unknown" | "off"; label: string } {
+// "Check failed" rather than "Not reachable" for the stored false, because
+// there are now two ways to earn it and they send you to different places: a
+// dead credential, or a login that reaches the company perfectly and was never
+// granted a scope the pull needs. Calling the second one unreachable points at
+// the one thing that is demonstrably fine. A live check knows which it was and
+// says so; the stored row only knows that something failed, and the detail line
+// under the chip carries the specifics either way.
+function health(c: ZohoConnection, check?: ConnectionCheck | null):
+  { tone: "ok" | "bad" | "unknown" | "off"; label: string } {
   if (!c.enabled) return { tone: "off", label: "Paused" };
+  if (check?.missing_required_scopes?.length) {
+    return { tone: "bad", label: "Missing permissions" };
+  }
   if (c.last_check_ok === true) return { tone: "ok", label: "Reachable" };
-  if (c.last_check_ok === false) return { tone: "bad", label: "Not reachable" };
+  if (c.last_check_ok === false) return { tone: "bad", label: "Check failed" };
   return { tone: "unknown", label: "Not checked" };
 }
 
@@ -135,7 +146,7 @@ function ConnectionCard({
   useEffect(() => setLabel(conn.label), [conn.label]);
   useEffect(() => setSince(conn.suggested_since), [conn.suggested_since]);
 
-  const h = health(conn);
+  const h = health(conn, check);
 
   async function run(fn: () => Promise<unknown>) {
     setBusy(true);
@@ -286,6 +297,23 @@ function ConnectionCard({
         <p className={`cx-detail ${h.tone === "bad" ? "bad" : ""}`}>
           {check?.detail ?? conn.last_check_detail}
         </p>
+      )}
+
+      {/* Only the gaps. A list of ten green ticks is noise on a healthy
+          connection, and it buries the one line that needs acting on. */}
+      {check?.scopes && check.scopes.some((s) => s.granted !== true) && (
+        <ul className="cx-scopegaps">
+          {check.scopes.filter((s) => s.granted !== true).map((s) => (
+            <li key={s.scope} className={s.granted === false ? "bad" : ""}>
+              <code>{s.scope}</code>{" "}
+              {s.granted === false
+                ? (check.missing_required_scopes?.includes(s.scope)
+                    ? "refused — no sync can run until this is granted"
+                    : "refused — what it reads stays empty")
+                : "could not be tested, so this says nothing either way"}
+            </li>
+          ))}
+        </ul>
       )}
 
       {check?.visible_organizations && check.visible_organizations.length > 0 && (

@@ -75,7 +75,10 @@ function ruleFor(field: PolicyField): z.ZodTypeAny {
 export function policySchema(fields: PolicyField[]) {
   const shape: Record<string, z.ZodTypeAny> = {};
   for (const f of fields) {
-    if (f.kind === "family_margins") continue;   // its own editor, its own rules
+    // Two fields carry their own editor and their own rules. Both are rows
+    // rather than a scalar, and running the number rules over them would
+    // demand a single value from a control that has none.
+    if (f.kind === "family_margins" || f.kind === "retained_pat") continue;
     shape[f.field] = ruleFor(f);
   }
   return z.object(shape).superRefine((values, ctx) => {

@@ -21,7 +21,9 @@ above target, and the screens would argue with each other forever.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import replace
+from decimal import Decimal, InvalidOperation
 from typing import Any, Optional
 
 from sqlalchemy.orm import Session
@@ -59,6 +61,11 @@ EDITABLE: tuple[str, ...] = (
     "effective_tax_rate",
     "s194q_party_threshold",
     "s194q_org_gate_met",
+    # Retained profit after tax, per entity per year. Editable for the reason
+    # the 194Q gate is: the platform holds documents, not a ledger, so this is a
+    # figure only the owner can supply — and until they do, the self-funding
+    # reading says so rather than guessing from gross profit.
+    "retained_pat",
 )
 #: Incentive rates are deliberately absent. They are not org policy edited from
 #: a settings screen — they are the published mechanism parameters in
@@ -205,6 +212,16 @@ FIELD_HELP: dict[str, tuple[str, str]] = {
         "limit in the previous financial year. That figure is not in this "
         "platform, so nothing is asserted until somebody confirms it here — "
         "the crossing list stays empty and says why."),
+    "retained_pat": (
+        "Retained profit after tax",
+        "What each entity kept after tax in a financial year, taken from its "
+        "own accounts. This platform reads invoices and bills, not a ledger — "
+        "there is no opex, tax or depreciation in it — so it cannot work this "
+        "out, and it will not substitute gross profit, which is a different "
+        "and much larger number. Take it from the entity's Profit & Loss in "
+        "Zoho Books. Enter a loss as a negative. Until every trading entity has "
+        "a figure for a year, the self-funding reading stays empty and names "
+        "the ones still missing."),
 }
 
 
@@ -229,8 +246,55 @@ class PolicyError(ValueError):
     """A policy that would make the screens contradict each other."""
 
 
+#: A financial year as this codebase writes one — ``insight/msme.fy_of`` is what
+#: produces the label, and this is the shape it produces.
+_FY_LABEL = re.compile(r"^FY\d{4}-\d{2}$")
+
+
+def _decimal_string(value: Any) -> str:
+    """A money figure normalized to the string it will be stored as.
+
+    Stored as text rather than a float because it is money: see
+    ``CommercialThresholds.retained_pat``. Grouping separators are stripped
+    because an owner reading a figure off an Indian P&L types ``1,25,00,000``,
+    and refusing that would be refusing the only form the number appears in.
+
+    ``InvalidOperation`` is re-raised as ``ValueError`` on purpose. It descends
+    from ``ArithmeticError``, so ``load_for_org``'s ``(TypeError, ValueError)``
+    guard would not catch it, and one bad stored row would take an entire
+    organization's analysis down instead of falling back to the default.
+    """
+    text = str(value).strip().replace(",", "").replace("₹", "")
+    try:
+        parsed = Decimal(text)
+    except InvalidOperation as exc:
+        raise ValueError(f"{value!r} is not an amount") from exc
+    if not parsed.is_finite():
+        raise ValueError(f"{value!r} is not a finite amount")
+    return str(parsed)
+
+
 def _coerce(field: str, value: Any) -> Any:
     """Normalize an incoming value into the shape the dataclass expects."""
+    if field == "retained_pat":
+        rows = []
+        for entry in (value or []):
+            # A mapping is what a JSON client naturally sends and a triple is
+            # what the dataclass stores; both are accepted and normalized here
+            # so neither shape reaches the rest of the module.
+            if isinstance(entry, dict):
+                parts = (entry.get("entity"), entry.get("financial_year"),
+                         entry.get("amount"))
+            else:
+                parts = tuple(entry)
+            if len(parts) != 3:
+                raise ValueError(
+                    "A retained-profit row is an entity, a financial year and "
+                    "an amount")
+            entity, fy, amount = parts
+            rows.append((str(entity or "").strip(), str(fy or "").strip(),
+                         _decimal_string(amount)))
+        return tuple(sorted(rows))
     if field == "target_margin_by_family":
         if isinstance(value, dict):
             pairs = [(str(k), float(v)) for k, v in value.items()]
@@ -329,6 +393,34 @@ def validate(th: CommercialThresholds) -> None:
             f"{th.effective_tax_rate}")
     if th.s194q_party_threshold < 0:
         raise PolicyError("The 194Q party threshold cannot be negative")
+
+    # ── owner-confirmed retained profit ─────────────────────────────────────
+    # Nothing here checks the *size* of the figure. A loss year is a real year
+    # and its figure is negative, and a rule that refused one would be a rule
+    # that hides the reading this field exists to produce. What is checked is
+    # that a row can be read at all, and that one entity's accounts do not
+    # produce two answers for the same year.
+    seen: set[tuple[str, str]] = set()
+    for entity, fy, amount in th.retained_pat:
+        if not entity:
+            raise PolicyError(
+                "A retained-profit figure has to say which entity it belongs "
+                "to — three sets of accounts produce three figures, and one "
+                "unattributed number cannot be added to the others.")
+        if not _FY_LABEL.match(fy):
+            raise PolicyError(
+                f"{fy!r} is not a financial year — write it as FY2025-26.")
+        if (entity, fy) in seen:
+            raise PolicyError(
+                f"Two retained-profit figures for {fy} in the same entity. One "
+                f"set of accounts closes one year once; keeping both would make "
+                f"the total depend on which row was read.")
+        seen.add((entity, fy))
+        try:
+            _decimal_string(amount)
+        except ValueError as exc:
+            raise PolicyError(
+                f"The {fy} retained-profit figure is not an amount: {exc}") from exc
 
 
 # ── loading ─────────────────────────────────────────────────────────────────
@@ -476,6 +568,12 @@ def _kind(field: str) -> str:
     """
     if field == "target_margin_by_family":
         return "family_margins"
+    if field == "retained_pat":
+        # Its own editor for the same reason ``family_margins`` has one: a row
+        # is three values and one of them names an entity, which no scalar
+        # control can express. Rendered as a ratio it would show a crore as
+        # "1250000000 %".
+        return "retained_pat"
     if field == "quantity_band_edges":
         return "band_edges"
     if field in _BOOLEAN:
@@ -493,8 +591,18 @@ def _kind(field: str) -> str:
 
 
 def _jsonable(value: Any) -> Any:
+    """A dataclass value in the shape the settings screen reads.
+
+    A tuple of *pairs* is a mapping — that is what ``target_margin_by_family``
+    is. Anything wider is a list of rows, and ``retained_pat`` is the first:
+    (entity, year, amount). The width test is explicit because the pair-only
+    version raised on a triple rather than dropping a column, and a settings
+    screen that 500s is a worse answer than one that renders three cells.
+    """
     if isinstance(value, tuple):
         if value and isinstance(value[0], tuple):
-            return {k: v for k, v in value}
+            if all(len(row) == 2 for row in value):
+                return {k: v for k, v in value}
+            return [list(row) for row in value]
         return list(value)
     return value

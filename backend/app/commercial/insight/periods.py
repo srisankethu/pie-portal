@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+from decimal import Decimal
 from typing import Iterable, Optional
 
 from ...signals.base import SaleRow
@@ -103,6 +104,18 @@ def comparison(as_of: date, months: int = 3) -> Comparison:
         previous=Period(prev_start, prev_end, label_for(prev_start, prev_end)))
 
 
+def revenue_in_exact(sales: Iterable[TradeRow], period: Period) -> Decimal:
+    """Revenue inside one window, kept as ``Decimal``.
+
+    The same window test as ``revenue_in`` — one bucketing, not two — without
+    the float coercion. Money is ``Decimal`` here, and a caller that divides one
+    revenue figure by another needs it to stay that way; a caller drawing a bar
+    does not, which is what the float wrapper below is for.
+    """
+    return sum((s.line_revenue for s in sales if period.contains(s.date)),
+               Decimal(0))
+
+
 def revenue_in(sales: Iterable[TradeRow], period: Period) -> float:
     """Revenue inside one window, from lines or from monthly totals.
 
@@ -110,7 +123,7 @@ def revenue_in(sales: Iterable[TradeRow], period: Period) -> float:
     fields and every period here is a whole calendar month — so a month's total
     lands in the same window its lines would. That is what lets the
     period-comparison screens read the fold instead of scanning the book."""
-    return float(sum(s.line_revenue for s in sales if period.contains(s.date)))
+    return float(revenue_in_exact(sales, period))
 
 
 def orders_in(sales: Iterable[SaleRow], period: Period) -> int:

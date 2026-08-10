@@ -51,6 +51,30 @@ def _families() -> tuple[tuple[str, float], ...]:
     return tuple(sorted(out)) or _default("target_margin_by_family")
 
 
+def _retained_pat() -> tuple[tuple[str, str, str], ...]:
+    """``CI_RETAINED_PAT=cx_sls:FY2025-26:12500000,cx_4u:FY2025-26:-400000``.
+
+    Entity, financial year, amount — and the amount stays the string it was
+    written as, because it is money. See the field for why.
+
+    Deliberately no fallback to the default when a variable is set but
+    unparseable: the default is "nothing confirmed", which is also what a
+    malformed entry has to mean. ``_families`` falls back because its default is
+    a real policy; falling back here would turn a typo into silence that reads
+    the same as an owner who has not answered yet.
+    """
+    raw = os.environ.get("CI_RETAINED_PAT")
+    if not raw:
+        return _default("retained_pat")
+    out = []
+    for part in raw.split(","):
+        entity, _, rest = part.partition(":")
+        fy, _, amount = rest.partition(":")
+        if entity.strip() and fy.strip() and amount.strip():
+            out.append((entity.strip(), fy.strip(), amount.strip()))
+    return tuple(sorted(out))
+
+
 @dataclass(frozen=True)
 class CommercialThresholds:
     # ── currency ─────────────────────────────────────────────────────────────
@@ -308,6 +332,43 @@ class CommercialThresholds:
     s194q_party_threshold: float = 5_000_000.0
     s194q_org_gate_met: bool = False
 
+    # ── retained profit (owner-confirmed; there is no P&L here) ───────────────
+    #
+    # Profit after tax kept in the business, per legal entity per financial
+    # year. Empty by default, and ``insight/selffunding`` says nothing at all
+    # while it is empty — the same discipline as ``s194q_org_gate_met`` two
+    # lines up, and for the same reason: it is a fact about *us* that this
+    # platform cannot derive.
+    #
+    # **It is not derivable, and building it would be worse than not having
+    # it.** PIE ingests documents, not a ledger: there is no opex, no tax and no
+    # depreciation here, so the nearest thing available is gross profit — and
+    # gross profit is not PAT. Substituting it is exactly the benign default
+    # CLAUDE.md §1 forbids, and it would overstate retained profit by whatever
+    # the business costs to run. Deriving the real figure would mean rebuilding
+    # Profit & Loss, Balance Sheet, Cash Flow and Movement of Equity, all four
+    # of which Zoho Books already reports natively, and getting accrual-vs-cash
+    # or an inter-entity transaction subtly wrong would produce a confidently
+    # wrong headline number rather than a visibly missing one.
+    #
+    # Per entity because three legal entities keep three sets of accounts and
+    # each produces its own figure; per year because that is the period a PAT
+    # figure exists for at all.
+    #
+    # Triples rather than a mapping so the dataclass stays frozen, hashable and
+    # JSON-stable for the version hash — the shape ``target_margin_by_family``
+    # and ``hsn_category_ranges`` already use.
+    #
+    # The amount is a **decimal string**, not a float. Money is ``Decimal``,
+    # ``Decimal`` is not JSON-serializable, and ``version`` is a ``json.dumps``
+    # of every field — so the figure is carried as the string it was entered as
+    # and parsed back exactly where the arithmetic happens. Same round trip
+    # ``insight/cashflow._money`` makes for the same reason.
+    #
+    # A loss year is representable and must stay so: a negative retained figure
+    # is the reading this whole module exists to make visible.
+    retained_pat: tuple[tuple[str, str, str], ...] = ()
+
     # ── the decision queue ───────────────────────────────────────────────────
     #
     # How money becomes rank. A decision derived from Business State is scored
@@ -530,6 +591,7 @@ class CommercialThresholds:
             s194q_org_gate_met=(
                 os.environ.get("CI_S194Q_ORG_GATE_MET", "").strip().lower()
                 in ("1", "true", "yes")),
+            retained_pat=_retained_pat(),
             decision_rupees_per_point=_f("CI_DECISION_RUPEES_PER_POINT",
                                          _default("decision_rupees_per_point")),
             excess_cover_months=_f("CI_EXCESS_COVER_MONTHS",
@@ -594,6 +656,26 @@ class CommercialThresholds:
                 if name == family:
                     return value
         return self.target_margin_default
+
+    def retained_pat_for(self, financial_year: str) -> dict[str, str]:
+        """Confirmed retained profit for one financial year, entity → amount.
+
+        Raw strings on the way out, deliberately. These are money, money is
+        ``Decimal``, and a config lookup that returned floats would drop the
+        last paise of a figure somebody typed off an audited account. The
+        conversion belongs where the arithmetic is — ``insight/selffunding``
+        parses once and sums in ``Decimal``.
+
+        An entity absent from the result has *not* confirmed that year, which is
+        a different thing from having confirmed a zero, and the caller has to be
+        able to tell those apart.
+        """
+        return {entity: amount
+                for entity, fy, amount in self.retained_pat if fy == financial_year}
+
+    def retained_pat_years(self) -> tuple[str, ...]:
+        """Every financial year any entity has confirmed, newest last."""
+        return tuple(sorted({fy for _, fy, _ in self.retained_pat}))
 
     def money(self, amount, unknown: str = "unknown") -> str:
         """An amount spelled in this policy's currency — ``₹4,00,000``.

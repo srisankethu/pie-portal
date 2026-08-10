@@ -28,7 +28,8 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..authz import (Principal, can_view_customer, current_principal,
-                     decision_queue_scope, require_manager_or_owner)
+                     decision_queue_scope, require_manager_or_owner,
+                     require_owner)
 from ..repositories import DecisionRepository
 from .. import approvals, clock
 from ..commercial import (floor, incentive, ownership, policy, portfolio,
@@ -39,7 +40,8 @@ from ..commercial.insight import (absence, bonds, cadence, cashflow, cohorts,
                                   daily as daily_view,
                                   dependency, flow, landscape, mix, msme,
                                   outcomes as outcomes_view, payments,
-                                  periods, radar, schemes, simulate, stock,
+                                  periods, radar, schemes, selffunding,
+                                  simulate, stock,
                                   story, supply, terms as vendor_terms, wallet,
                                   weather, withholding)
 from ..db import get_session
@@ -4010,3 +4012,45 @@ def withholding_crossings(principal: Principal = Depends(require_manager_or_owne
                        "enable this check."
                        if not built["gate_confirmed"] else
                        "No supplier is near the threshold this financial year.")))
+
+
+@router.get("/self-funding")
+def self_funding(principal: Principal = Depends(require_owner),
+                 session: Session = Depends(get_session)) -> dict:
+    """Retained profit against the revenue growth it had to pay for.
+
+    Owner only, and not merely manager: this is entity economics — what three
+    legal entities kept after tax — rather than a commercial figure a sales
+    manager works from. The whole payload is that one comparison, so scoping the
+    endpoint is the honest control; stripping fields would leave a screen with
+    nothing on it, which `/cashflow` above makes the same call about.
+
+    Silent until confirmed. Retained profit after tax is not derivable from a
+    platform that ingests documents rather than a ledger, and `insight/
+    selffunding` refuses rather than standing in gross profit — see that module
+    for why the substitution would read as good news in every case.
+
+    Revenue comes from the same monthly rows every other period-comparison
+    screen reads. A financial year is twelve whole calendar months, so the fold
+    answers the same question the lines do — the argument `insight/series` makes
+    at length, and the reason there is no bucketing in this function.
+    """
+    rows, _names, _as_of, _folded = _flow_rows(session, principal)
+    org = principal.organization_id
+    th = policy.load_for_org(session, org)
+
+    # Only the companies that have actually traded. A connection added this
+    # morning has no accounts to close and no revenue in the year, and waiting
+    # for its figure would hold the reading back for ever.
+    entities = {c["connection_id"]: c["label"]
+                for c in _companies(session, org) if c["customers"]}
+
+    built = selffunding.reading(
+        rows, entities=entities,
+        # Today rather than the book's own last trading day: which financial
+        # years have *closed* is a fact about the calendar, not about when this
+        # business last raised an invoice.
+        as_of=clock.today(th.timezone), th=th)
+    return _envelope(
+        built, th=th,
+        empty_reason=(None if built["confirmed"] else built["blocked_by"]))

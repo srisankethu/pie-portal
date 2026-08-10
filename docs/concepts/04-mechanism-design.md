@@ -284,6 +284,31 @@ two share a multiplier, and one leaked cost would invert both.
 It moves floors, deliberately: inserts −2.4%, solid carbide +0.8%, holders
 +4.0%, metrology +7.2%, chemicals −5.6%, machines −10.4%.
 
+### 4.1 What this leaves open, and why it was not closed here
+
+The disclosure-control work (`06-disclosure-control.md`) landed while this was
+in flight and made `m_floor_for_family` **strict** when the family comes off a
+request: a name the table does not hold is refused rather than silently
+defaulted, because otherwise a caller can sweep names to enumerate the table.
+
+That closes enumeration. It does not close the **ratio**. A caller who supplies
+one of the six *valid* names can still price one item as `inserts` and again as
+`metrology`, and read `1.34 / 1.22` straight off the two floors — no invalid
+name required. Repeat across the six and the whole table is known up to a single
+scale factor; one leaked cost then fixes the scale.
+
+Resolving the family **from the item** is what removes that, and after this
+change it happens whenever the caller supplies nothing. But the request
+parameter is still honoured when they do send one, so the ratio sweep survives
+for anyone who does.
+
+**Deliberately not fixed here.** The strictness is three days old and belongs to
+another piece of work; changing whether its parameter is honoured at all is that
+work's contract to change, not this one's. The item-side resolver is the
+prerequisite and it now exists — removing `family` from `NegotiationRequest`, or
+ignoring it on the operations path, is a one-line follow-up that should be taken
+deliberately rather than as a side effect of a mechanism change.
+
 ---
 
 ## 5. The gaming paths still open, ranked

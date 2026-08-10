@@ -1,5 +1,5 @@
 .PHONY: help setup verify verify-fast catalog bootstrap migrate seed \
-        backend frontend dev test test-frontend test-live lint \
+        backend frontend dev test test-frontend test-live e2e lint \
         deploy-build deploy-release deploy-up deploy-down deploy-logs \
         deploy-runbook deploy-sync
 
@@ -19,6 +19,7 @@ help:
 	@echo ""
 	@echo "  make test         backend tests only"
 	@echo "  make test-frontend  frontend tests only (vitest)"
+	@echo "  make e2e          browser end-to-end: role scoping through the real API"
 	@echo "  make test-live    the live contract suites — real AI, real Zoho"
 	@echo "  make lint         ruff only"
 	@echo "  make bootstrap    create the DB, migrate, seed users + demo data"
@@ -81,6 +82,17 @@ test:
 
 test-frontend:
 	cd frontend && npm test
+
+# Deliberately outside `make verify`. It starts the API on a database of its
+# own, a Vite server and a browser — about fifteen seconds, against `verify`'s
+# four minutes of checks that need none of that. The gate stays something people
+# run without thinking about it; this is the one you run when you have touched
+# the quote screen, the login, or anything that decides what a role is sent.
+#
+# Needs a browser: `npx playwright install chromium` once, or set
+# PLAYWRIGHT_CHROMIUM_PATH on an image that already ships one.
+e2e:
+	cd frontend && npm run e2e
 
 # Excluded from `make verify` and from `make test`, for the reason pytest.ini
 # gives: these call a real model and a real Zoho book, so they cost money and

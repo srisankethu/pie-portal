@@ -109,6 +109,17 @@ export interface QuoteEstimate {
   current: boolean;
 }
 
+/** How the lines in this response were produced. Sent only by `/intake`, so it
+ *  is optional on `Quote` — the screen uses it to say "read from your message,
+ *  check each line" rather than presenting a model's reading as though somebody
+ *  had typed it. Declared because the server sends it: an undeclared field and
+ *  a renamed one look identical from here, which is what
+ *  `backend/tests/test_frontend_contract.py` exists to tell apart. */
+export interface QuoteIntake {
+  read_by: "ai" | "pattern";
+  detail: string;
+}
+
 export interface MarginFloor {
   count: number;
   worst: number;
@@ -135,6 +146,8 @@ export interface Quote {
    *  that is a confirmed "this customer's code means that product". Server-
    *  written prose, shown as-is; the client does not compose it. */
   note?: string;
+  /** Only on an intake response. */
+  intake?: QuoteIntake;
 }
 
 /* ── Quote intelligence (deterministic; app/commercial) ──────────────────────

@@ -22,6 +22,15 @@ families does not help either, because the two multipliers differ and they know
 neither. What they get is a number they can subtract from their own agreed price
 to compute exactly what the line contributes. F is disclosable; cost is not.
 
+That argument holds only while the family is a property of the *item*. It is
+supplied on the request, and the floor table used to fall back to ``default``
+for a name it did not recognise — so pricing one item under two families
+returned two floors whose ratio is the ratio of their multipliers, and sweeping
+the name enumerated the table. ``_m_floor`` therefore resolves **strictly** and
+``UnknownFamily`` reaches the caller as a bad request. The reconciliation report
+stays lenient, because there the family comes off a recorded line rather than a
+request; see ``incentive_engine.floor.m_floor_for_family``.
+
 **The markup convention here is deliberate and differs from the rest of this
 package.** ``references.price_at_margin`` computes ``cost / (1 - m)`` because
 every margin in the commercial layer is margin-on-selling-price. ``m_floor`` is
@@ -109,6 +118,14 @@ class FloorUnavailable(Exception):
         self.reason = reason
 
 
+class UnknownFamily(ValueError):
+    """A family the floor table does not hold. Distinct from ``FloorUnavailable``
+    on purpose: that one means "this item has no floor", which a screen reports
+    calmly, and this one means the request named something that does not exist,
+    which is a 400. Collapsing them would let a probe read "no such family" as
+    "no floor for this item" and keep going."""
+
+
 @lru_cache(maxsize=8)
 def parameters(on: date):
     """The parameter block in force on a date.
@@ -156,8 +173,21 @@ def _unit_cost(session: Session, org: str, product_id: str,
 
 
 def _m_floor(family: Optional[str], on: date) -> Decimal:
+    """The multiplier for a family, refusing a name the table does not hold.
+
+    An absent family is not an unknown one — "no family given" means the default
+    multiplier and always has. A *named* family that is not in the table is a
+    caller asking a question about a parameter block they cannot read, and it is
+    answered rather than absorbed.
+    """
+    from incentive_engine.floor import UnknownFamily as _UnknownFamily
     from incentive_engine.floor import m_floor_for_family
-    return m_floor_for_family(parameters(on), family or "default")
+    try:
+        return m_floor_for_family(parameters(on), family or "default", strict=True)
+    except _UnknownFamily as e:
+        raise UnknownFamily(
+            f"{e.family!r} is not a product family this business prices against. "
+            f"Leave it unset for the standard floor.") from e
 
 
 def resolve(session: Session, org: str, product_id: str, *,

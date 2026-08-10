@@ -233,9 +233,14 @@ export interface QuoteIntelligence {
     lines_assessed: number;
     lines_unresolved: number;
     exceptions_total: number;
-    critical: number;
-    requires_approval: number;
     insufficient_data: number;
+    // Absent for a salesperson, not zero: both counts are derived from cost, and
+    // a count over lines the caller priced locates the floor faster than the
+    // per-line flag does. Optional here because the server omits them — a
+    // required field would be the client asserting a guarantee the server does
+    // not make.
+    critical?: number;
+    requires_approval?: number;
   };
   outcome: QuoteOutcome | null;
   thresholds_version: string;

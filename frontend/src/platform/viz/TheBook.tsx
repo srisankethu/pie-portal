@@ -935,6 +935,10 @@ function decileOf(rowsIn: Row[], field: string): number {
 
 const HEALTH_LABEL: Record<string, string> = {
   HEALTHY: "Moving", SLOW: "Slow", DEAD: "Quiet",
+  // Never sold, and not on the books long enough for that to mean anything.
+  // Its own word rather than a shade of "Quiet": these rows used to be counted
+  // as dead stock, and on the live book they were the majority of it.
+  UNKNOWN: "Too new to say",
 };
 
 export function StockScreen({ session }: { session: PlatformSession }) {

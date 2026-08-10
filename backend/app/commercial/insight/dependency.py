@@ -33,6 +33,15 @@ That asymmetry is reported rather than papered over — it is the difference
 between "they are 8% of our revenue" (a fact) and "we are 8% of their
 purchasing" (a guess this platform is not entitled to make).
 
+**That limit still holds, and ``insight/wallet.py`` does not overturn it.** What
+that module adds is the narrow set of cases where the other side *is* observable
+— a published tender states the quantity being bought, and a quote recorded as
+lost to a named competitor is spend this book watched go elsewhere — and it
+reports those as a band with the basis named, or refuses. It never produces the
+figure this paragraph refuses. Read the two together: this module says what a
+customer is worth to us, that one says how much of them we might not have, and
+neither is allowed to be stated as the other.
+
 Layer rules, inherited: ``commercial/``, deterministic, never imports ``ai/``.
 The vendor half is denominated in purchase spend, so the router — not this
 module — decides who may read it.
@@ -45,6 +54,7 @@ from typing import Iterable, Optional
 
 from ..categories import LABELS, UNCATEGORISED
 from ..config import CommercialThresholds
+from . import absence
 
 #: Which end of the book a row describes.
 VENDOR = "vendor"
@@ -494,6 +504,9 @@ def unavailable() -> list[dict]:
     return [
         {
             "what": "How much they depend on us",
+            # Epistemic, not a gap: the platform will never see what a customer
+            # buys elsewhere, however complete this book becomes.
+            "kind": absence.PERMANENT,
             "why": ("This measures our exposure to a customer. The platform "
                     "sees what they buy here and nothing of what they buy "
                     "elsewhere, so a customer giving us a fifth of a large "
@@ -503,6 +516,7 @@ def unavailable() -> list[dict]:
         },
         {
             "what": "Whether a second source exists",
+            "kind": absence.PERMANENT,
             "why": ("Sole-source counts say nobody else has supplied us an "
                     "item. That is not the same as nobody else being able to, "
                     "and the difference is a purchasing conversation rather "

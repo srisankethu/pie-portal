@@ -47,6 +47,12 @@ _PREFIX = {
     "CUSTOMER": "Customer",
     "PRODUCT": "Item",
     "ITEM": "Item",
+    # Suppliers were missing from every part of this layer — not vaulted, not
+    # pseudonymous, not checked for in a payload — while every argument in
+    # ``vault`` for splitting customer names applied to them word for word. It
+    # started to matter when the statutory-timing work put a screen full of
+    # supplier names next to amounts and dates.
+    "VENDOR": "Supplier",
 }
 
 

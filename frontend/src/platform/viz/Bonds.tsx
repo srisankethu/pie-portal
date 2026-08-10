@@ -50,7 +50,7 @@ import { formatDate } from "../../when";
 import { papi } from "../api";
 import { isAre } from "../format";
 import { EntityName } from "../EntityName";
-import { ChartTip, InlineLink, StatusChip } from "../kit";
+import { ChartTip, InlineLink, StatusChip, Unavailable } from "../kit";
 import Autocomplete from "@mui/material/Autocomplete";
 import Chip from "@mui/material/Chip";
 import TextField from "@mui/material/TextField";
@@ -453,7 +453,7 @@ export function BondsScreen({
       {chosen && <FacetBreakdown bond={chosen} sourcesDiffer={sourcesDiffer}
                                  onOpen={onNavigate} onClose={() => setSelected(null)} />}
 
-      <Unavailable items={rows(data?.unavailable)} />
+      <Unavailable items={rows(data?.unavailable)} verb="not in the score" />
 
       <div className="tier3-list">
         <h4>The ledger</h4>
@@ -870,20 +870,6 @@ function FacetBreakdown({
   );
 }
 
-/** What the server says it cannot answer. Rendered, never dropped. */
-function Unavailable({ items }: { items: Row[] }) {
-  if (!items.length) return null;
-  return (
-    <ul className="tl-unavailable said-plain">
-      {items.map((u, i) => (
-        <li key={i}>
-          <strong>{String(u.what)}</strong> — not in the score.{" "}
-          <span className="viz-muted">{String(u.why)}</span>
-        </li>
-      ))}
-    </ul>
-  );
-}
 
 /** The chart's table fallback. A `<table>` is right here for exactly the reason
  *  `ui-standards` §13 gives — it is the accessible twin of one figure, not the

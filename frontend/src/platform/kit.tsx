@@ -405,6 +405,81 @@ export function EmptyState({
   );
 }
 
+// ── what a screen will not answer ────────────────────────────────────────────
+
+/** The words for each `kind` the server stamps on a refusal.
+ *
+ *  The taxonomy is the server's (`commercial/insight/absence.py`); the wording
+ *  is this file's, so there is one map rather than one on each side of the
+ *  wire. `tone` is doing real work here — a limit and a job somebody could
+ *  finish this week should not read the same, and until they carried a kind
+ *  they did. */
+const ABSENCE: Record<string, { label: string; tone: Tone; tip: string }> = {
+  PERMANENT: {
+    label: "Not answerable", tone: "neutral",
+    tip: "No amount of extra data would answer this. Nothing to chase.",
+  },
+  COLLECTABLE: {
+    label: "Needs data nobody records", tone: "warn",
+    tip: "Answerable, once somebody records the missing field. This is a job.",
+  },
+  BUILDABLE: {
+    label: "Not built yet", tone: "info",
+    tip: "The data exists or can be bought; wiring it is engineering work.",
+  },
+  TRANSIENT: {
+    label: "Too early", tone: "neutral",
+    tip: "Resolves on its own as the period runs. Nothing to do.",
+  },
+  WITHHELD: {
+    label: "Management information", tone: "neutral",
+    tip: "Computed and correct, and not shown to your role.",
+  },
+};
+
+/** What a screen says it cannot answer — rendered, never dropped.
+ *
+ *  Replaces six copies: three identical local `Unavailable` components (Mix,
+ *  Dependency, Bonds — differing in one word) and three inline `<ul>` blocks
+ *  (History, Negotiate, Screens). They also read three different server shapes,
+ *  which is why the normalising happens here: `{what, why}`, `{series, reason}`
+ *  and `{scenario, needs, why}` all describe one thing, and unifying them at
+ *  the render layer costs nothing where unifying them on the wire would break
+ *  every reader at once.
+ *
+ *  `verb` is the only thing the call sites still differ on, because "not in the
+ *  score" and "not claimed" genuinely say different things about a bond and
+ *  about a grid. */
+export function Unavailable({
+  items, verb = "not shown",
+}: {
+  items: ReadonlyArray<Record<string, unknown>>;
+  verb?: string;
+}) {
+  if (!items.length) return null;
+  return (
+    <Stack component="ul" spacing={0.75} className="tl-unavailable said-plain">
+      {items.map((u, i) => {
+        const raw = String(u.what ?? u.series ?? u.scenario ?? "");
+        // `what` is already prose; `series`/`scenario` are identifiers.
+        const title = u.what ? raw : raw.replace(/_/g, " ").toLowerCase();
+        const body = String(u.why ?? u.reason ?? "");
+        const needs = u.needs ? `Needs ${String(u.needs)}. ` : "";
+        const kind = ABSENCE[String(u.kind ?? "")];
+        return (
+          <Box component="li" key={i}>
+            <strong>{title}</strong> — {verb}.{" "}
+            {kind && (
+              <StatusChip label={kind.label} tone={kind.tone} tip={kind.tip} dense />
+            )}{" "}
+            <span className="viz-muted">{needs}{body}</span>
+          </Box>
+        );
+      })}
+    </Stack>
+  );
+}
+
 /** It did not load. What went wrong, and the way back.
  *
  *  Replaces `LoadFailed` and the `.state-panel` blocks. This must never be

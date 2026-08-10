@@ -34,6 +34,9 @@ export type Screen =
   /** The book itself: the shelf, the suppliers and the cash — the three things the book
    *  always knew and the platform did not read until it ingested them. */
   | "payments" | "payables" | "stock" | "supply"
+  /** Deadlines the tax code sets: the MSME payment cliff, whose status is still
+   *  unknown, and the 194Q threshold. Dates and amounts, never advice. */
+  | "statutory"
   /** Who is actually close to this book, on both sides of it, over time. */
   | "bonds"
   /** Which lines of the business each customer takes, and which they do not. */
@@ -88,6 +91,7 @@ export const PATH: Record<Screen, string> = {
   cadence: "/cadence",
   payments: "/payments",
   payables: "/payables",
+  statutory: "/statutory",
   stock: "/stock",
   supply: "/supply",
   bonds: "/bonds",
@@ -182,6 +186,7 @@ export function vizPath(route: string): string {
     cadence: "cadence",
     payments: "payments",
     payables: "payables",
+    statutory: "statutory",
     stock: "stock",
     supply: "supply",
     negotiate: "negotiate",

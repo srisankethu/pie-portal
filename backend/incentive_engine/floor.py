@@ -79,7 +79,63 @@ def resolve(cfg: Config, base_floor: Decimal,
     raise ValueError(f"no aged floor band covers {stock_age_days} days")
 
 
-def m_floor_for_family(cfg: Config, family: str) -> Decimal:
-    """OWNER ZONE. Used only by the reconciliation report."""
+class UnknownFamily(KeyError):
+    """A family name that has no entry in the floor table."""
+
+    def __init__(self, family: str, known: Iterable[str]) -> None:
+        self.family = family
+        self.known = sorted(known)
+        super().__init__(family)
+
+
+def m_floor_for_family(cfg: Config, family: str, *, strict: bool = False) -> Decimal:
+    """OWNER ZONE. The floor multiplier for a family.
+
+    ``strict`` decides what an unrecognised family means, and the two callers
+    genuinely need different answers.
+
+    Reporting over *recorded* lines is lenient: ``item_family`` comes off a sold
+    line, an item mastered without a family must still appear in the owner's
+    reconciliation, and falling back to the default multiplier is the honest
+    reading of "no family was set".
+
+    Resolving a floor from a *request* is strict. The docstring at the top of
+    this module rests on the salesperson not knowing ``m_floor`` — but if they
+    choose the family, they can price one item under two families and read the
+    ratio of the two multipliers straight off the two floors, then sweep the
+    name to enumerate the table. Silently substituting the default is what makes
+    that free: an unknown name has to be refused for the parameter to stay
+    unpublished.
+    """
     table = cfg.get("floor", "m_floor_by_family")
-    return Decimal(str(table.get(family, table["default"])))
+    if family not in table:
+        if strict:
+            raise UnknownFamily(family, table.keys())
+        return Decimal(str(table["default"]))
+    return Decimal(str(table[family]))
+
+
+def terms_adjusted(base_floor: Decimal, k: Decimal) -> Decimal:
+    """The floor once the credit period is paid for. OPERATIONS ZONE.
+
+    ``CAF = q.P(1-k) - q.F`` factors to ``(1-k) . q . (P - F/(1-k))``, so the
+    whole term charge can be shown as a floor that rises with the credit period
+    rather than as a sixth term to explain. ``F/(1-k)`` is the price at which
+    the line breaks even on that term, which is what "floor" already means — so
+    the number on the desk keeps its meaning and only its value moves.
+
+    Safe to show. ``F`` is already disclosable and ``k`` is published; the
+    quotient adds no equation containing cost. It is also item-independent as a
+    *multiplier*, which is why the uplift can be published as one small table
+    instead of per-item.
+
+    ``k >= 1`` would mean the credit period costs more than the entire invoice
+    — roughly seven years at the published rate. It is refused rather than
+    returned as a negative or infinite floor, because either would silently
+    invert the price discipline.
+    """
+    if k >= Decimal("1"):
+        raise ValueError(
+            f"a term charge of {k} cannot be expressed as a floor: at or above "
+            "1 the credit period costs more than the line is sold for")
+    return base_floor / (Decimal("1") - k)

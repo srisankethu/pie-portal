@@ -21,7 +21,7 @@ import { MonthPicker as SharedMonthPicker } from "./Seg";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { money } from "../../money";
 import { Tip } from "../../Tip";
-import { ChartTip, InlineLink, VarianceIndicator } from "../kit";
+import { ChartTip, InlineLink, Unavailable, VarianceIndicator } from "../kit";
 import { DataGrid, numeric } from "../DataGrid";
 import { papi } from "../api";
 import type { PlatformSession } from "../types";
@@ -682,15 +682,14 @@ export function SimulatorScreen({ session }: { session: PlatformSession }) {
 
       {unavailable.length > 0 && (
         <details className="sim-blocked">
-          <summary>Two scenarios are blocked on data ({unavailable.length})</summary>
-          <ul>
-            {unavailable.map((u) => (
-              <li key={u.scenario}>
-                <strong>{u.scenario.replace(/_/g, " ").toLowerCase()}</strong> — needs{" "}
-                {u.needs}. {u.why}
-              </li>
-            ))}
-          </ul>
+          {/* Counted rather than spelled. `simulate.UNAVAILABLE` has been
+              narrowed once already as blocked scenarios were built, and a
+              hardcoded "Two" is only correct until the next time. */}
+          <summary>
+            {unavailable.length} scenario{unavailable.length === 1 ? " is" : "s are"}{" "}
+            blocked on data
+          </summary>
+          <Unavailable items={unavailable} verb="blocked" />
         </details>
       )}
     </Panel>

@@ -35,6 +35,7 @@ import { IntakeModal } from "./components/IntakeModal";
 import { SupplyDrawer } from "./components/SupplyDrawer";
 import { LineGrid } from "./components/LineGrid";
 import { NARROW_BREAKPOINT } from "./platform/DataGrid";
+import { QuoteOutcomeBar } from "./components/QuoteOutcomeBar";
 import { SummaryBar } from "./components/SummaryBar";
 import { EmptyState, FilterChip, FilterPanel, LoadingState, SectionHeader, TOUCH }
   from "./platform/kit";
@@ -671,6 +672,16 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
         onCreateEstimate={doEstimate}
         gateBlockedReason={ci.gate && !ci.gate.can_submit ? ci.gate.blocked_reason : null}
         busy={busy}
+      />
+
+      {/* Below the total, not above it: the question "did this win?" only
+          arises once the quote has gone out, and the estimate button is what
+          sends it. Nothing rendered until the quote has been recorded at all —
+          QuoteOutcomeBar returns null without an outcome. */}
+      <QuoteOutcomeBar
+        outcome={ci.data?.outcome ?? null}
+        onRecord={ci.recordOutcome}
+        busy={busy || ci.loading}
       />
 
       {intakeOpen && <IntakeModal onClose={() => setIntakeOpen(false)} onSubmit={doIntake} />}

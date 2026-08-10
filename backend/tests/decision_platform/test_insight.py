@@ -1354,6 +1354,159 @@ def test_batching_and_part_payment_are_counted_because_they_change_the_call():
     assert got["part_paid_documents"] == 1
 
 
+# ── the same settlements, per salesperson ───────────────────────────────────
+#
+# The one that is easy to get wrong is the weighting. Every other assertion here
+# is about a refusal: below the floor, and for an account nobody owns.
+
+def _amount(customer, invoiced, paid, amount, ref=None):
+    from app.commercial.insight.payments import Settlement
+    return Settlement(customer, ref or f"{customer}-{invoiced}", None, invoiced,
+                      None, paid, amount)
+
+
+def test_a_book_is_weighted_by_settled_value_not_by_account():
+    """The mean of per-customer medians gives a ₹40,000 account the same say as
+    a ₹40 lakh one. A book whose one large account pays in 75 days and whose
+    nine small ones pay in 20 takes 75 days in the only unit that funds a week,
+    and the mean of ten medians would call it 25."""
+    from datetime import timedelta
+
+    from app.commercial.insight import payments
+
+    base = date(2026, 1, 1)
+    rows = [_amount("big", base, base + timedelta(days=75), 4_000_000.0)]
+    rows += [_amount(f"small{i}", base, base + timedelta(days=20), 200_000.0)
+             for i in range(9)]
+
+    got = payments.by_owner(rows, {c: "u1" for c in
+                                   ["big"] + [f"small{i}" for i in range(9)]},
+                            {"u1": "R. Nair"})
+
+    assert [b["label"] for b in got] == ["R. Nair"]
+    # Half of ₹58 lakh had not arrived until the 75-day invoice did.
+    assert got[0]["weighted_days_to_pay"] == 75.0
+    assert got[0]["accounts"] == 10
+    assert got[0]["settlements"] == 10
+    assert got[0]["total_settled"] == 5_800_000.0
+    # The mean of the ten per-customer medians, which this must not be:
+    # (75 + 9×20) / 10 = 25.5 days.
+    assert got[0]["weighted_days_to_pay"] != pytest.approx(25.5)
+
+
+def test_a_book_below_the_floor_is_not_estimable_rather_than_fast():
+    """Three settled invoices is where "how this book pays" stops being one
+    invoice wearing a suit. Below it the counts are still reported — they are
+    observations — and the two derived figures are withheld."""
+    from datetime import timedelta
+
+    from app.commercial.insight import payments
+
+    base = date(2026, 1, 1)
+    thin = [_amount("a", base, base + timedelta(days=8), 1000.0),
+            _amount("b", base, base + timedelta(days=9), 1000.0, ref="b-1")]
+
+    got = payments.by_owner(thin, {"a": "u1", "b": "u1"}, {"u1": "R. Nair"})[0]
+
+    assert got["estimable"] is False
+    assert got["weighted_days_to_pay"] is None
+    assert got["late_share"] is None
+    # Not withheld: these are counted, not estimated.
+    assert (got["settlements"], got["accounts"]) == (2, 2)
+    assert got["total_settled"] == 2000.0
+
+
+def test_the_floor_is_the_books_evidence_not_each_accounts():
+    """Three accounts of one settlement each is three observations about how
+    this person's book pays, which is what the figure claims to describe."""
+    from datetime import timedelta
+
+    from app.commercial.insight import payments
+
+    base = date(2026, 1, 1)
+    rows = [_amount(c, base, base + timedelta(days=30), 1000.0)
+            for c in ("a", "b", "c")]
+
+    got = payments.by_owner(rows, {"a": "u1", "b": "u1", "c": "u1"},
+                            {"u1": "R. Nair"})[0]
+    assert got["estimable"] is True
+    assert got["weighted_days_to_pay"] == 30.0
+
+
+def test_settlements_on_unowned_accounts_are_a_named_bucket_not_a_silent_drop():
+    """A per-person list that does not add up to the book is a list quietly
+    losing whatever the ownership join could not place — and an unowned overdue
+    account is precisely the one nobody is chasing."""
+    from datetime import timedelta
+
+    from app.commercial.insight import payments
+
+    base = date(2026, 1, 1)
+    rows = [_amount("mine", base, base + timedelta(days=20), 1000.0),
+            _amount("orphan", base, base + timedelta(days=90), 5000.0)]
+
+    got = payments.by_owner(rows, {"mine": "u1"}, {"u1": "R. Nair"})
+
+    assert sum(b["settlements"] for b in got) == 2
+    orphan = next(b for b in got if b["owner_user_id"] is None)
+    assert orphan["label"] == "Unassigned"
+    assert orphan["total_settled"] == 5000.0
+
+
+def test_a_book_with_no_measurable_figure_never_heads_a_list_titled_slowest():
+    """Unknown is not slow. A book below the floor sorts last rather than
+    above a book that is measurably taking 60 days."""
+    from datetime import timedelta
+
+    from app.commercial.insight import payments
+
+    base = date(2026, 1, 1)
+    measured = [_amount(f"m{i}", base, base + timedelta(days=60), 1000.0)
+                for i in range(3)]
+    thin = [_amount("t", base, base + timedelta(days=200), 1000.0)]
+
+    got = payments.by_owner(
+        measured + thin,
+        {**{f"m{i}": "u1" for i in range(3)}, "t": "u2"},
+        {"u1": "R. Nair", "u2": "S. Iyer"})
+
+    assert [b["label"] for b in got] == ["R. Nair", "S. Iyer"]
+    assert got[1]["weighted_days_to_pay"] is None
+
+
+def test_lateness_across_a_book_is_a_sum_over_documents_not_a_mean_of_shares():
+    """Σ late ÷ Σ with terms on record, and the denominator excludes documents
+    that could never be late — the same rule the per-account row applies."""
+    from datetime import timedelta
+
+    from app.commercial.insight import payments
+
+    base = date(2026, 1, 1)
+    rows = [
+        # Two late, one on time, all with terms.
+        _pay("a", base, base + timedelta(days=40), due=base + timedelta(days=30)),
+        _pay("a", base, base + timedelta(days=45), due=base + timedelta(days=30),
+             ref="a-2"),
+        _pay("b", base, base + timedelta(days=10), due=base + timedelta(days=30)),
+        # No due date on record: counted as a settlement, not as a punctual one.
+        _pay("b", base, base + timedelta(days=99), ref="b-2"),
+    ]
+
+    got = payments.by_owner(rows, {"a": "u1", "b": "u1"}, {"u1": "R. Nair"})[0]
+
+    assert got["settlements"] == 4
+    assert (got["late_count"], got["datable_count"]) == (2, 3)
+    assert got["late_share"] == pytest.approx(2 / 3, abs=1e-4)
+
+
+def test_a_book_is_named_by_its_person_and_an_unnamed_id_is_still_a_book():
+    from app.commercial.insight import payments
+
+    rows = [_amount("a", date(2026, 1, 1), date(2026, 1, 21), 1000.0)]
+    got = payments.by_owner(rows, {"a": "usr_gone"}, {})
+    assert got[0]["label"] == "usr_gone"
+
+
 # ── the payable side, on the same arithmetic ────────────────────────────────
 #
 # There is no `payables.py` to test. The measurement is identical whichever

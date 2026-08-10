@@ -30,6 +30,11 @@ document date to subtract, so it produces no observation at all. Counting it as
 zero days would make every party who pays up front look like the fastest payer
 in the book, which is the opposite of what a prepayment means for risk.
 
+**The same settlements group by whose book the account is in.** ``by_owner``
+is the receivable side read per salesperson rather than per customer — one
+statistics module, one grain, one evidence floor. It is days-to-pay and not
+DSO; the comment above it says why that distinction is not pedantry.
+
 **Late is measured against the due date; slow is measured against the document
 date.** They answer different questions — "were the terms honoured" and "how
 long is the cash tied up" — and a document with no due date on record can answer
@@ -569,6 +574,177 @@ def _counts(patterns: dict[str, dict], side: Side = RECEIVABLE) -> dict[str, int
     for p in patterns.values():
         out[p["pattern"]] = out.get(p["pattern"], 0) + 1
     return out
+
+
+# ── The same settlements, grouped by whose book the account is in ───────────
+#
+# **This is days-to-pay, not DSO.** The name is worth spending a paragraph on
+# because the wrong one is already in circulation. Days sales outstanding is a
+# ratio — receivable balance over revenue in a window — and
+# ``state/reducers/receivables`` records why the denominator does not exist
+# here: the fold holds balances, not a revenue window, and inventing one to
+# make a familiar acronym fit would be a number nobody could reproduce. What is
+# computed below is the same measurement the rest of this module makes, pooled
+# over one person's accounts: how many days a settled invoice took.
+#
+# **Weighted by settled value, never by account.** The mean of a book's
+# per-customer medians answers a question nobody asked — it gives a ₹40,000
+# account the same say as a ₹40 lakh one, so a person whose one large account
+# pays in 75 days and whose nine small ones pay in 20 reads as a 25-day book
+# while their cash says otherwise. The rule is CLAUDE.md §1's, applied to days
+# instead of margin: aggregate over the rows, never average the per-row
+# summaries.
+#
+# **The evidence floor applies to the group, not only to the accounts in it.**
+# A salesperson holding three accounts of one settlement each has three
+# observations, which is the floor, and that is deliberate: the floor is about
+# how much evidence there is for the number being reported, and the number
+# being reported here is about the book rather than about any one account.
+
+#: The bucket for accounts in nobody's book. Reported rather than dropped: a
+#: list of people whose settlements do not add up to the book's is a list that
+#: quietly loses whatever the ownership join could not place.
+UNOWNED = "__unassigned__"
+
+
+def _value_weighted_days(settled: list[Settlement]) -> Optional[float]:
+    """The days-to-pay by which half of this group's settled value had arrived.
+
+    A median rather than a weighted mean, for the reason ``_spread`` gives: one
+    invoice settled nine months late is a story about that invoice, and a mean
+    would let it redefine the book. Weighted, because the pooled rupee is the
+    unit the question is asked in — see the note above.
+
+    Weights that do not sum to anything positive fall back to counting each
+    settlement once. That is still a median pooled over the group's own
+    documents rather than a mean of per-customer medians, so the rule above
+    holds; it only means a group whose applications all came through as zero
+    gets the shape of its book instead of nothing.
+    """
+    if not settled:
+        return None
+    pairs = sorted(((s.days_to_pay, s.amount) for s in settled),
+                   key=lambda p: p[0])
+    total = sum(w for _, w in pairs if w > 0)
+    if total <= 0:
+        return round(statistics.median(d for d, _ in pairs), 1)
+    half, seen = total / 2, 0.0
+    for days, weight in pairs:
+        if weight <= 0:
+            continue
+        seen += weight
+        if seen >= half:
+            return round(float(days), 1)
+    return round(float(pairs[-1][0]), 1)
+
+
+@dataclass(frozen=True)
+class OwnerPayment:
+    """One person's book, as how long the money in it takes to arrive.
+
+    ``owner_user_id`` is ``None`` for the unowned bucket. The counts are
+    observations and are always reported; the two derived figures are ``None``
+    below the floor, because that is where they stop being measurements and
+    start being one invoice wearing a suit.
+    """
+
+    owner_user_id: Optional[str]
+    label: str
+    accounts: int
+    settlements: int
+    total_settled: float
+    #: Of the settlements that have a due date on record — the same denominator
+    #: ``PartyPayment`` uses, and for the same reason.
+    datable_count: int
+    late_count: int
+    weighted_days_to_pay: Optional[float]
+    trend: str
+
+    @property
+    def estimable(self) -> bool:
+        return self.settlements >= MIN_SETTLEMENTS
+
+    @property
+    def late_share(self) -> Optional[float]:
+        """Σ late ÷ Σ datable across the whole book, not the mean of each
+        account's own share. ``None`` below the floor, and ``None`` again when
+        nothing in the book has a due date to be late against."""
+        if not self.estimable or not self.datable_count:
+            return None
+        return self.late_count / self.datable_count
+
+    def to_dict(self) -> dict:
+        return {
+            "owner_user_id": self.owner_user_id,
+            "label": self.label,
+            "accounts": self.accounts,
+            "settlements": self.settlements,
+            "total_settled": round(self.total_settled, 2),
+            "datable_count": self.datable_count,
+            "late_count": self.late_count,
+            "weighted_days_to_pay": (self.weighted_days_to_pay
+                                     if self.estimable else None),
+            "late_share": (round(self.late_share, 4)
+                           if self.late_share is not None else None),
+            "trend": self.trend,
+            # Named rather than shown as a figure derived from one or two
+            # invoices. A screen reads this flag; it never tests the number.
+            "estimable": self.estimable,
+        }
+
+
+def by_owner(settlements: Iterable[Settlement],
+             owner_of: dict[str, str],
+             names: dict[str, str],
+             *, unowned_label: str = "Unassigned") -> list[dict]:
+    """Every account owner's book, slowest first.
+
+    ``owner_of`` maps a customer id to the user id whose book that account is
+    in — resolved by ``commercial/ownership.owners``, which is the one place
+    that decides between a typed assignment and Zoho's salesperson. This
+    function is handed the answer rather than reading a column, because an
+    account handed over by hand lives in the typed table and a second join on
+    ``assigned_user_id`` would file it under the wrong person here while the
+    account directory showed it under the right one.
+
+    ``names`` maps a user id to that person's name. A user id with no name is
+    rendered as the id rather than dropped — a row nobody can name is still a
+    book somebody owns.
+    """
+    rows = list(settlements)
+    if not rows:
+        return []
+
+    by_book: dict[str, list[Settlement]] = {}
+    accounts: dict[str, set[str]] = {}
+    for s in rows:
+        key = owner_of.get(s.party_id) or UNOWNED
+        by_book.setdefault(key, []).append(s)
+        accounts.setdefault(key, set()).add(s.party_id)
+
+    books: list[OwnerPayment] = []
+    for key, group in by_book.items():
+        datable = [s for s in group if s.days_late is not None]
+        books.append(OwnerPayment(
+            owner_user_id=(None if key == UNOWNED else key),
+            label=(unowned_label if key == UNOWNED else names.get(key, key)),
+            accounts=len(accounts[key]),
+            settlements=len(group),
+            total_settled=float(sum(s.amount for s in group)),
+            datable_count=len(datable),
+            late_count=sum(1 for s in datable if s.late),
+            weighted_days_to_pay=_value_weighted_days(group),
+            trend=_trend(group),
+        ))
+
+    # Slowest first, then by money at stake — the same rank ``build`` applies to
+    # accounts, for the same reason. A book with no measurable figure sorts
+    # last: it is not fast, it is unknown, and it must not head a list titled
+    # "slowest".
+    books.sort(key=lambda b: (b.estimable, b.weighted_days_to_pay or 0,
+                              b.total_settled),
+               reverse=True)
+    return [b.to_dict() for b in books]
 
 
 def monthly_series(settlements: Iterable[Settlement], periods) -> list[dict]:

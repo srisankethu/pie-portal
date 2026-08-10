@@ -479,3 +479,97 @@ def test_the_collections_screen_carries_the_limit_beside_the_behaviour(book):
     assert row["over_by"] == OUTSTANDING - 50000
     assert row["outstanding"] == OUTSTANDING
     assert body["credit_statuses"][credit.OVER]["label"] == "Over the limit"
+
+
+# ── the same settlements, read per salesperson ──────────────────────────────
+def _book_of(body: dict, user_id) -> dict:
+    return next(b for b in body["by_owner"] if b["owner_user_id"] == user_id)
+
+
+def test_the_collection_book_follows_the_typed_assignment_not_the_column(book):
+    """The join that had to go through ``ownership``. A handed-over account
+    lives in the typed table; reading ``assigned_user_id`` would file its
+    settlements under whoever Zoho last had on an invoice while the account
+    directory showed the account under the person who now owns it."""
+    client, token = _api(book)
+    customer_id = _customer_of(book)
+
+    # Before anybody assigns it, this book has no owner the platform can name.
+    before = client.get("/api/v1/insight/payments",
+                        headers=token(MANAGER)).json()
+    assert _book_of(before, None)["label"] == "Unassigned"
+
+    client.put("/api/v1/insight/account-owners",
+               json={"customer_id": customer_id, "user_id": SALES_USER},
+               headers=token(MANAGER))
+
+    after = client.get("/api/v1/insight/payments",
+                       headers=token(MANAGER)).json()
+    mine = _book_of(after, SALES_USER)
+    assert mine["label"] == "R. Nair"
+    assert mine["accounts"] == 1
+    # Every settlement moved with the account rather than being counted twice.
+    assert [b["owner_user_id"] for b in after["by_owner"]] == [SALES_USER]
+    assert (sum(b["settlements"] for b in after["by_owner"])
+            == sum(c["settlements"] for c in after["customers"]))
+
+
+def test_a_salespersons_book_is_their_own_and_a_managers_is_the_org(session):
+    """The scope ``/credit`` already applies to anything keyed by who owns an
+    account. A salesperson's own figure is computed from their own accounts —
+    not from a book they cannot see, and with no "unassigned" bucket standing
+    in for everybody else's."""
+    _seed(session, contacts=[
+        {"contact_id": "c1", "contact_name": "Pitti Engineering", "status": "active"},
+        {"contact_id": "c2", "contact_name": "Rane Madras", "status": "active"},
+    ])
+    _fold(session)
+    client, token = _api(session)
+    # The account with a settlement against it is c1, and it stays unowned.
+    # c2 is the one handed to the salesperson, and nothing has settled on it.
+    client.put("/api/v1/insight/account-owners",
+               json={"customer_id": _customer_of(session, "c2"),
+                     "user_id": SALES_USER},
+               headers=token(MANAGER))
+
+    manager = client.get("/api/v1/insight/payments",
+                         headers=token(MANAGER)).json()
+    assert [b["owner_user_id"] for b in manager["by_owner"]] == [None]
+
+    salesperson = client.get("/api/v1/insight/payments",
+                             headers=token(SALESPERSON)).json()
+    # Nothing has settled in their book, so there is no book figure — and the
+    # unassigned bucket holds an account outside it, which is not theirs to
+    # read. A salesperson seeing it would be reading the org's collection
+    # behaviour through the one bucket nobody is named on.
+    assert salesperson["by_owner"] == []
+    # The per-account list is unchanged for either role — it is receivables,
+    # and this endpoint has always shown the whole book.
+    assert len(salesperson["customers"]) == len(manager["customers"])
+
+
+def test_the_book_figure_is_days_to_pay_and_never_reaches_for_cost(book):
+    """`/payments` is salesperson-visible, so what a row may carry is the rule
+    in CLAUDE.md §1: no cost field, no margin field, and no count or flag that
+    answers a margin question.
+
+    The fixture book has settled exactly one invoice, which is below the floor
+    — so this also pins the refusal end to end: the count is reported and the
+    figure is not."""
+    client, token = _api(book)
+    client.put("/api/v1/insight/account-owners",
+               json={"customer_id": _customer_of(book), "user_id": SALES_USER},
+               headers=token(MANAGER))
+
+    row = _book_of(client.get("/api/v1/insight/payments",
+                              headers=token(SALESPERSON)).json(), SALES_USER)
+
+    assert row["settlements"] == 1
+    assert row["estimable"] is False
+    assert row["weighted_days_to_pay"] is None and row["late_share"] is None
+    assert not [k for k in row
+                if any(word in k for word in
+                       ("cost", "margin", "profit", "purchase", "floor"))]
+    # Named "days to pay" and not "dso": the ratio needs a revenue window this
+    # platform does not hold — see ``state/reducers/receivables``.
+    assert not [k for k in row if "dso" in k.lower()]

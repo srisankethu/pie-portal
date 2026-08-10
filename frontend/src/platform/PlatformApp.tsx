@@ -169,11 +169,32 @@ function SignIn({ onIn, notice }: { onIn: (s: PlatformSession) => void; notice?:
 }
 
 // ── action modal ─────────────────────────────────────────────────────────────
+//
+// Four intents, four distinct server actions. They used to be three, and both
+// collapses cost something.
+//
+// `modify` posted `ACT`, exactly as `accept` did. Afterwards the two were
+// indistinguishable, so the queue could report how often it was engaged with
+// and never how often it was *agreed* with — while this very dialog told the
+// person that "the difference from the recommendation is the most useful
+// feedback the system gets", and then discarded it.
+//
+// `escalate` posted `OVERRIDE`, which is a closing status. That is the bug
+// `HumanAction.ESCALATE` was added to fix: the server grew the whole
+// escalation path — raise the approval request, park the decision in
+// ESCALATED, settle it from the approvals queue — and this map was never
+// pointed at it, so "Send to management" closed the decision and told
+// management nothing. `AdminScreens` has described that as fixed since the
+// server side landed.
+//
+// Rows written before this carry the old meanings: `ACTIONED` is accept-or-
+// modify, `OVERRIDDEN` is escalate. `docs/architecture.md` records the
+// cut-over — any adoption figure spanning it compares two definitions.
 const ACTION_META: Record<string, { title: string; body: string; api: string; needsNote?: boolean }> = {
   accept: { title: "Accept and act", body: "The recommendation is logged against this decision. Nothing is sent to the customer.", api: "ACT" },
-  modify: { title: "Do something different", body: "Record what you will actually do — the difference from the recommendation is the most useful feedback the system gets.", api: "ACT", needsNote: true },
+  modify: { title: "Do something different", body: "Record what you will actually do — the difference from the recommendation is the most useful feedback the system gets.", api: "OVERRIDE", needsNote: true },
   dismiss: { title: "Dismiss this decision", body: "Tell us why, so the same thing is not raised again next week.", api: "DISMISS", needsNote: true },
-  escalate: { title: "Send to management", body: "Routed to someone who can see the full economics and approve a price. They receive the facts, the interpretation and your note.", api: "OVERRIDE" },
+  escalate: { title: "Send to management", body: "Routed to someone who can see the full economics and approve a price. They receive the facts, the interpretation and your note.", api: "ESCALATE" },
 };
 
 /** Record what was decided.
@@ -364,9 +385,6 @@ export default function PlatformApp() {
     setSession(s);
     navigate(PATH.home);
   };
-  const openDetail = useCallback(
-    (id: string) => navigate(pathFor("detail", id)), [navigate]);
-
   const refresh = useCallback(async (id?: string) => {
     if (!session) return;
     if (id) {
@@ -375,6 +393,35 @@ export default function PlatformApp() {
     }
     setSummaries(await papi.listDecisions(session.token));
   }, [session]);
+
+  // Opening a card is the one lifecycle event nothing recorded, and it is the
+  // denominator for all the others: without it "nobody looked at this" and
+  // "somebody read it and moved on" are the same row — which is the difference
+  // between a detector that is wrong and a queue that is not being worked.
+  //
+  // Recorded here rather than in `getDetail`, because `load` prefetches the
+  // detail of every decision in the list: hanging it off the fetch would mark
+  // the whole queue VIEWED the moment the queue rendered. Navigation is the
+  // only place that means a person opened this one.
+  //
+  // Sent only while the decision is still OPEN. That is exactly when it carries
+  // information — the server's VIEW handler moves OPEN → VIEWED and leaves every
+  // other status alone — so it fires once per open period, and again after a
+  // REOPEN, instead of appending a trail entry on every visit. Fire-and-forget:
+  // reading a card must never fail because recording the read did.
+  const openDetail = useCallback(
+    (id: string) => {
+      navigate(pathFor("detail", id));
+      if (!session) return;
+      // Unknown status — the list has not loaded — is not OPEN for this
+      // purpose. Recording a view we cannot place in the lifecycle would be a
+      // guess, and the whole value of this event is that it is not one.
+      if (summaries?.find((s) => s.decision_id === id)?.status !== "OPEN") return;
+      papi.act(session.token, id, { action: "VIEW" })
+        .then(() => refresh(id))
+        .catch(() => undefined);
+    },
+    [navigate, session, summaries, refresh]);
 
   const undoAction = async (id: string) => {
     if (!session) return;
@@ -393,7 +440,15 @@ export default function PlatformApp() {
     setBusy(true);
     try {
       const meta = ACTION_META[kind];
-      await papi.act(session.token, id, { action: meta.api, note, reason: kind === "dismiss" ? note : undefined });
+      // `reason` is what the server persists to `override_reason`, and it does
+      // that for OVERRIDE exactly as it does for DISMISS. Sending it only for
+      // `dismiss` left the column null on the modify rows — the ones where the
+      // reason is the entire point, because a modify is a disagreement with the
+      // recommendation and the note is what says why. Keyed on `needsNote`
+      // rather than on the kind, so an action that asks for a note is always
+      // the same action that stores one.
+      await papi.act(session.token, id,
+        { action: meta.api, note, reason: meta.needsNote ? note : undefined });
       setModal(null);
       await refresh(id);
       // Every action here closes or changes a decision. Offer the way back:

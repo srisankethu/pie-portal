@@ -29,9 +29,32 @@ Zoho Books
   → Context Assembly               compact, permission-scoped fact bundle
   → AI Decision Layer              validated interpretation; degradable
   → Decision Store                 routed · prioritised · auditable
-  → Human action                   accept / modify / dismiss
+  → Human action                   accept / modify / dismiss / escalate
   → Outcome capture                (not built — see "Deliberately not built")
 ```
+
+### A cut-over in the human-action data
+
+Until the fix that accompanies this note, the clients collapsed two pairs of
+intents onto one action each, so rows written before it mean something different
+from rows written after:
+
+| Recorded | Before the fix | After |
+|---|---|---|
+| `ACTIONED` | accept **or** modify | accept |
+| `OVERRIDDEN` | escalate | modify |
+| `ESCALATED` | never occurred | escalate |
+| `VIEWED` | never occurred | a person opened the card |
+
+Both collapses were client-side; the server has always distinguished all seven
+actions, and `HumanAction.ESCALATE` — with its approval request and its
+deliberately non-closing status — was built, tested and then never called.
+
+**Any adoption figure that spans the cut-over is comparing two definitions**, and
+will show a fictitious drop in acceptance on the day of the fix as modifies stop
+counting as accepts. Report from the cut-over forward, or label the earlier
+period. Do not restate the old rows: nobody recorded which of them were modifies,
+and inferring it from the presence of a note would be a guess presented as data.
 
 ---
 
@@ -298,6 +321,21 @@ Stating these explicitly matters as much as the design itself.
 - **Outcome Tracker.** The `Outcome` model exists but nothing writes it. Until
   it does, adoption and decision quality are measurable; realised monetary
   impact is not. This is the most valuable next increment.
+
+  Note that `quote_outcomes` is a different table with live writers and a real
+  `DRAFT → SENT → WON/LOST` machine. Outcome capture is half-built, on the half
+  that produces revenue — scope the Tracker against what exists rather than from
+  zero. For state-derived decisions, `impact.financial` already quantifies what
+  each situation is worth at the moment it is raised, so value-*at-risk*-weighted
+  acceptance needs no new table; only realised impact does.
+
+- **Realised monetary impact.** See the Outcome Tracker above. Adoption and
+  decision quality *are* measured: `decisions/outcomes.py` reports detector
+  false-alarm rate at `GET /internal/detector-outcomes` and queue adoption —
+  acceptance by category and user, modify rate and distance, and acceptance
+  against queue depth — at `GET /internal/queue-adoption`. Both owner-only, both
+  two-sided, both `INSUFFICIENT_DATA` below the minimum sample. What neither can
+  say is whether the business improved, which is what `Outcome` is for.
 - **Prompt/response content logging.** The easiest way to debug a bad
   recommendation, and rejected on purpose: it would create an unscoped second
   copy of the cost/margin facts the permission model works to contain. The

@@ -19,6 +19,7 @@ from app.commercial.metrics import (
     MIXED,
     NONE,
     PRICE_DRIVEN,
+    _sufficiency,
     classify_erosion,
     compute_relationship,
 )
@@ -116,6 +117,12 @@ def test_empty_relationship_is_insufficient_not_zero():
     (-0.10, 0.00, NONE),           # cost down, price flat — not erosion
     (0.20, -0.10, MIXED),          # cost up AND price down
     (0.01, 0.00, NONE),            # neither moved materially
+    # Exactly on the thresholds. "Material" is defined as at-or-above, so the
+    # boundary value itself counts. Without these three the comparisons could be
+    # loosened to a strict > and nothing in the suite would object.
+    (0.05, 0.00, COST_DRIVEN),     # cost rise exactly at meaningful_cost_increase_pct
+    (0.00, -0.02, PRICE_DRIVEN),   # price fall exactly at meaningful_price_change_pct
+    (0.05, -0.02, MIXED),          # both exactly at their thresholds
 ])
 def test_erosion_classification_is_deterministic(cost_change, price_change, expected):
     assert classify_erosion(cost_change, price_change, TH) == expected
@@ -124,6 +131,51 @@ def test_erosion_classification_is_deterministic(cost_change, price_change, expe
 def test_erosion_classification_needs_both_measurements():
     assert classify_erosion(None, 0.1, TH) == NONE
     assert classify_erosion(0.1, None, TH) == NONE
+
+
+# ── Evidence sufficiency, exactly on each threshold ──────────────────────────
+#
+# Every number in this ladder is a policy decision about when the platform is
+# allowed to sound certain, and each is written as "at or above". Every case
+# below sits precisely on a threshold, because that is the one value a test
+# supplying round numbers never reaches — and a rung quietly loosened from >= to
+# > changes what the whole platform is willing to assert while every other test
+# stays green.
+def test_a_relationship_exactly_on_the_floor_thresholds_is_not_insufficient():
+    """3 transactions, 3.0 months, 60% costed — each exactly the stated minimum.
+
+    "Below this: nothing is asserted" means below, not at.
+    """
+    verdict, reasons = _sufficiency(3, 3.0, 0.6, TH)
+    assert verdict is not EvidenceSufficiency.INSUFFICIENT
+    assert not any("need" in r for r in reasons)
+
+
+def test_a_relationship_exactly_on_the_strong_thresholds_is_sufficient():
+    """6 transactions and 6.0 months is the definition of enough — with no
+    caveat attached, because a caveat here reads as doubt the data does not
+    warrant."""
+    verdict, reasons = _sufficiency(6, 6.0, 0.6, TH)
+    assert verdict is EvidenceSufficiency.SUFFICIENT
+    assert reasons == []
+
+
+def test_history_exactly_at_the_strong_span_is_not_given_as_a_reason():
+    """Short of the transaction count but with the full span: the span is not
+    what is lacking, so it must not appear in the reasons."""
+    verdict, reasons = _sufficiency(5, 6.0, 0.6, TH)
+    assert verdict is EvidenceSufficiency.PARTIAL
+    assert len(reasons) == 1
+    assert "transactions" in reasons[0]
+    assert not any("months" in r for r in reasons)
+
+
+def test_transactions_exactly_at_the_strong_count_are_not_given_as_a_reason():
+    """The mirror of the case above — enough trades, not enough span."""
+    verdict, reasons = _sufficiency(6, 5.0, 0.6, TH)
+    assert verdict is EvidenceSufficiency.PARTIAL
+    assert len(reasons) == 1
+    assert "months" in reasons[0]
 
 
 def test_cost_driven_erosion_is_detected_end_to_end():

@@ -344,6 +344,37 @@ class Product(Base):
     #: be chained.
     manufacturer: Mapped[Optional[str]] = mapped_column(String(128))
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    #: The decoded manufacturer catalogue record this item **is** — pie-parser's
+    #: ``record_id`` (a Kennametal MM#), or NULL.
+    #:
+    #: Link, never merge, for the reason ``identity/`` gives: the master row and
+    #: the catalogue row stay separate objects with a pointer between them, so a
+    #: wrong link is undone by clearing a column rather than by reconstructing a
+    #: record that a merge destroyed.
+    #:
+    #: **NULL means unlinked and must never be read as anything else.** It is
+    #: the value for an item nobody has matched, for a principal this pack does
+    #: not cover, and for a sync that ran with the catalogue absent. Measured
+    #: against the live master, ~9% of items link — so NULL is the common case,
+    #: and a caller that reads it as "no such product" rather than "not known
+    #: here" will be wrong about the other 91%.
+    #: See ``docs/concepts/01-application-engineering.md``.
+    pie_record_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+
+    #: How the link was established. Only ``SKU_EXACT`` today, and the column
+    #: exists so a second method can never be mistaken for the first: an exact
+    #: catalogue-number hit and a human confirmation are different evidence, and
+    #: a reader must be able to tell which one a row rests on.
+    pie_link_method: Mapped[Optional[str]] = mapped_column(String(32))
+
+    #: The ruleset checksum of the catalogue that produced the link — the stamp
+    #: ``QuoteDecision.catalog_version`` also carries, here for the reason
+    #: ``thresholds_version`` is on a computed row: it says *which* catalogue
+    #: judged this, so a link written under a superseded corpus is identifiable
+    #: rather than merely stale.
+    pie_catalog_version: Mapped[Optional[str]] = mapped_column(String(128))
+
     source_ref: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,

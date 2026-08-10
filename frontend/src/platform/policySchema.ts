@@ -79,7 +79,16 @@ export function policySchema(fields: PolicyField[]) {
     shape[f.field] = ruleFor(f);
   }
   return z.object(shape).superRefine((values, ctx) => {
-    const [approval, review, target] = LADDER.map((k) => Number(values[k]));
+    const raw = LADDER.map((k) => values[k]);
+    // A cleared box is somebody mid-edit — the rule at the top of this file —
+    // and this is where that nearly failed to hold. `Number("")` is 0, not NaN,
+    // so the finite check below cannot see a blank box: clearing the review
+    // floor to retype it read as a review floor of 0%, and the form answered
+    // with a ladder error under the *approval floor*, a box the reader had not
+    // touched. The blank field already has its own message; a second one
+    // somewhere else is the noise this schema exists to remove.
+    if (raw.some((v) => typeof v === "string" && v.trim() === "")) return;
+    const [approval, review, target] = raw.map(Number);
     if (![approval, review, target].every(Number.isFinite)) return;
     if (approval > review) {
       ctx.addIssue({

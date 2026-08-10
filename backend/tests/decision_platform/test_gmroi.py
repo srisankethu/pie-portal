@@ -214,6 +214,26 @@ def test_no_stock_has_ever_been_observed_is_its_own_sentence():
     assert "no stock history to backfill" in result["window"]["shortfall"]
 
 
+def test_the_branch_dimension_is_still_named_as_missing():
+    """Branch is the dimension a reader most expects here, and it is absent.
+
+    This exists because the entry was once deleted rather than restated. Its
+    original wording said Zoho reported location-level stock only on the
+    Inventory plan's warehouse endpoints; that turned out to be untrue, and
+    removing the claim took the notice with it — leaving the gap present and
+    unexplained, which is the defect ``gmroi.withheld`` exists to prevent.
+
+    The reason may change again as the split is built. The entry must not
+    silently vanish while the figure is still company-wide.
+    """
+    result = _build(observations=_shelf("p1", days=400))
+    entry = next(u for u in result["unavailable"] if u["series"] == "branch")
+    # BUILDABLE, not PERMANENT: the per-branch holding *is* recorded now. What
+    # is missing is splitting the sales side to match it.
+    assert entry["kind"] == absence.BUILDABLE
+    assert "stock_location_snapshots" in entry["reason"]
+
+
 def test_an_annualised_figure_is_refused_where_it_would_be_read():
     result = _build(observations=_shelf("p1", days=60))
     entry = next(u for u in result["unavailable"]

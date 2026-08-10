@@ -694,6 +694,27 @@ def _unavailable(window: Window, *, partial_cost_skus: int,
                        "shelf cannot be valued. They carry no GMROI rather than "
                        "a large one computed against a free shelf."),
         })
+    out.append({
+        "series": "branch",
+        # Still BUILDABLE, and the reason has changed rather than gone away.
+        # The entry this replaces claimed Zoho reported location-level stock
+        # only on the Inventory plan's warehouse endpoints — that was untrue,
+        # and `stock_location_snapshots` now holds a per-branch holding and its
+        # valuation. What is missing is only the reading of it here.
+        #
+        # Restated rather than deleted, deliberately. Removing it would leave
+        # the one dimension a reader most expects on this screen absent with
+        # nothing said, which is the same defect `withheld()` below exists to
+        # prevent: a gap with no explanation reads as a bug, and the next person
+        # to notice either files one or "fixes" it.
+        "kind": absence.BUILDABLE,
+        "reason": ("This figure is computed across the whole company. Stock is "
+                   "now recorded per branch, with its valuation — see "
+                   "`stock_location_snapshots` — but sales are not yet split "
+                   "the same way, and a return computed from a company-wide "
+                   "margin over one branch's shelf would not be that branch's "
+                   "return."),
+    })
     return out
 
 

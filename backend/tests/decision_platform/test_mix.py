@@ -700,3 +700,135 @@ def test_the_empty_grid_says_which_of_three_things_is_missing():
     # And the populated case still has no reason at all.
     assert build(traded, {"c1": "Acme"}, as_of, thresholds=th,
                  columns=cols, dimension=BY_CATEGORY)["empty_reason"] is None
+
+
+# ── lift, and why confidence alone misleads ──────────────────────────────────
+#
+# The defect these cover is not an arithmetic error — the old `_lift` computed
+# P(B|A) correctly, it just called it lift. The defect is what a screen ordered
+# by that number tells a salesperson: "90% of your coolant customers also take
+# cutting tools" is a true sentence carrying no information when 90% of
+# *everybody* takes cutting tools, and it sat at the top of every gap list.
+
+RECENT = date(2026, 6, 1)
+
+
+def _universal_line_book():
+    """Ten customers. All take CUTTING_TOOLS; six of the ten also take COOLANTS.
+
+    So P(COOLANTS) = 0.6 and P(CUTTING_TOOLS) = 1.0. Confidence from coolant to
+    cutting tools is a perfect 1.0 and means nothing; the reverse pairing is the
+    one that carries information.
+    """
+    lines = []
+    for i in range(10):
+        lines.append(_line(f"c{i}", cat.CUTTING_TOOLS, RECENT))
+        if i < 6:
+            lines.append(_line(f"c{i}", cat.COOLANTS, RECENT))
+    return lines
+
+
+def _pair(grid: dict, frm: str, to: str) -> dict:
+    return next(a for a in grid["affinity"]
+                if a["from"] == frm and a["to"] == to)
+
+
+def test_a_line_everybody_buys_scores_a_perfect_confidence_and_no_lift():
+    grid = _grid(_universal_line_book())
+    pair = _pair(grid, cat.COOLANTS, cat.CUTTING_TOOLS)
+    assert pair["confidence"] == 1.0        # every coolant buyer takes tools
+    assert pair["base_rate"] == 1.0         # …and so does everybody else
+    assert pair["lift"] == 1.0              # which is the whole point
+
+
+def test_the_informative_direction_keeps_its_lift():
+    grid = _grid(_universal_line_book())
+    pair = _pair(grid, cat.CUTTING_TOOLS, cat.COOLANTS)
+    assert pair["confidence"] == 0.6
+    assert pair["base_rate"] == 0.6
+    assert pair["lift"] == 1.0
+
+
+def test_a_genuinely_related_pair_lifts_above_one():
+    """Coolant buyers take metrology far more often than the book at large."""
+    lines = []
+    for i in range(12):
+        lines.append(_line(f"c{i}", cat.CUTTING_TOOLS, RECENT))
+    for i in range(6):                       # half the book takes coolant
+        lines.append(_line(f"c{i}", cat.COOLANTS, RECENT))
+    for i in range(5):                       # and nearly all of those, metrology
+        lines.append(_line(f"c{i}", cat.METROLOGY, RECENT))
+
+    grid = _grid(lines)
+    pair = _pair(grid, cat.COOLANTS, cat.METROLOGY)
+    assert pair["confidence"] == pytest.approx(5 / 6, abs=1e-3)
+    assert pair["base_rate"] == pytest.approx(5 / 12, abs=1e-3)
+    assert pair["lift"] == pytest.approx(2.0, abs=1e-3)
+
+
+def test_a_rare_line_reports_confidence_with_no_lift_rather_than_a_huge_one():
+    """Dividing by a base rate drawn from two customers manufactures a ratio."""
+    lines = []
+    for i in range(10):
+        lines.append(_line(f"c{i}", cat.CUTTING_TOOLS, RECENT))
+    for i in range(2):                       # below MIN_BASE
+        lines.append(_line(f"c{i}", cat.MACHINES, RECENT))
+
+    grid = _grid(lines)
+    pair = _pair(grid, cat.CUTTING_TOOLS, cat.MACHINES)
+    assert pair["confidence"] == 0.2         # the co-occurrence is still a fact
+    assert pair["base_rate"] is None
+    assert pair["lift"] is None
+
+
+def test_a_thin_anchor_still_reports_nothing_at_all():
+    """MIN_PEERS is unchanged: a share over four customers is an anecdote."""
+    lines = [_line(f"c{i}", cat.CUTTING_TOOLS, RECENT) for i in range(10)]
+    lines += [_line(f"c{i}", cat.MACHINES, RECENT) for i in range(3)]
+    grid = _grid(lines)
+    pair = _pair(grid, cat.MACHINES, cat.CUTTING_TOOLS)
+    assert pair["confidence"] is None
+    assert pair["estimable"] is False
+
+
+def test_the_wire_still_carries_share_for_a_client_mid_upgrade():
+    grid = _grid(_universal_line_book())
+    pair = _pair(grid, cat.CUTTING_TOOLS, cat.COOLANTS)
+    assert pair["share"] == pair["confidence"]
+
+
+def test_a_gap_names_the_anchor_that_actually_tells_you_something():
+    """Ordering on confidence names whichever anchor sits beside the commonest
+    line, which is the same answer for every customer."""
+    lines = []
+    for i in range(12):
+        lines.append(_line(f"c{i}", cat.CUTTING_TOOLS, RECENT))
+    for i in range(6):
+        lines.append(_line(f"c{i}", cat.COOLANTS, RECENT))
+    for i in range(5):
+        lines.append(_line(f"c{i}", cat.METROLOGY, RECENT))
+    # c99 holds both common lines and lacks metrology.
+    lines.append(_line("c99", cat.CUTTING_TOOLS, RECENT))
+    lines.append(_line("c99", cat.COOLANTS, RECENT))
+
+    grid = _grid(lines)
+    gap = next(g for g in _row(grid, "c99")["gaps"]
+               if g["category"] == cat.METROLOGY)
+    # Coolant is the anchor with the real lift; cutting tools is the one every
+    # customer holds and would have been picked on confidence alone.
+    assert gap["affinity"]["from"] == cat.COOLANTS
+    assert gap["affinity"]["lift"] > 1.0
+
+
+def test_the_population_behind_every_base_rate_is_published():
+    grid = _grid(_universal_line_book())
+    assert grid["population"] == 10
+    assert grid["min_base"] == mix.MIN_BASE
+
+
+def test_a_lapsed_only_customer_does_not_depress_every_base_rate():
+    """They take nothing now, so counting them would inflate every lift."""
+    lines = _universal_line_book()
+    lines.append(_line("old", cat.CUTTING_TOOLS, date(2019, 1, 1)))
+    grid = _grid(lines)
+    assert grid["population"] == 10

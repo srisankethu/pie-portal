@@ -65,6 +65,26 @@ const AI_STATE: Record<string, { mark: string; tone: "ok" | "degraded" | "failed
   PENDING: { mark: "Interpretation pending", tone: "withheld" },
 };
 
+/** Why there is nothing to accept, per AI status.
+ *
+ *  Accepting is offered only on a reading that passed the grounding gate. That
+ *  is the right rule — a degraded card carrying an "Accept recommendation"
+ *  button would make the status taxonomy decorative, saying the model output
+ *  was not used while inviting somebody to act on it — but it used to be
+ *  enforced by simply not rendering the button, and an absent control reads as
+ *  a missing feature rather than a decision.
+ *
+ *  It matters for measurement too. A card where accepting was impossible is not
+ *  a card somebody declined to accept; counting the two together would report a
+ *  property of this component as a property of the person. */
+const NO_ACCEPT: Record<string, string> = {
+  OK: "This line has facts but no recommendation to accept.",
+  DEGRADED: "There is nothing to accept here: the model's response did not pass the grounding check, so the reading above is the deterministic one. The facts stand; the call is yours.",
+  FAILED: "There is nothing to accept here: the model could not be reached. The facts above stand on their own.",
+  SUPPRESSED: "There is nothing to accept here: the evidence was too thin to interpret, so no recommendation was made.",
+  PENDING: "No interpretation has run for this line yet.",
+};
+
 /** @param token the signed-in session's token, passed down from the screen.
  *
  *  This used to read `pie_platform_session` out of `localStorage` through a
@@ -112,7 +132,11 @@ export function DecisionSupport({ customer, line, token }: {
   // Builder had a login of its own, so somebody could be on this screen holding
   // no platform session at all; reaching it means the support call can be made.
 
-  async function act(action: "ACT" | "DISMISS", label: string, reason?: string) {
+  // OVERRIDE is "I am doing something else", not "I am overruling authority" —
+  // that is ESCALATE, and this drawer does not offer it. `modify` used to post
+  // ACT, the same action as accepting, which made agreement and disagreement
+  // the same row afterwards on the one screen a salesperson actually works.
+  async function act(action: "ACT" | "OVERRIDE" | "DISMISS", label: string, reason?: string) {
     if (!data?.decision_id) return;
     try {
       const r = await fetch(`/api/v1/decisions/${data.decision_id}/action`, {
@@ -130,6 +154,8 @@ export function DecisionSupport({ customer, line, token }: {
   }
 
   const ai = data ? AI_STATE[data.interpretation.status] || AI_STATE.PENDING : AI_STATE.PENDING;
+  const canAccept = !!data && data.interpretation.status === "OK"
+    && !!data.interpretation.recommendation;
   const conf = data?.confidence?.evidence_sufficiency;
   const confLabel = conf === "SUFFICIENT" ? "High" : conf === "PARTIAL" ? "Medium" : conf === "INSUFFICIENT" ? "Low" : null;
 
@@ -253,7 +279,7 @@ export function DecisionSupport({ customer, line, token }: {
                   <Button
                     variant="contained" size="small"
                     onClick={() =>
-                      act(modifying === "reject" ? "DISMISS" : "ACT",
+                      act(modifying === "reject" ? "DISMISS" : "OVERRIDE",
                           modifying === "reject" ? "set aside" : "acting differently", note)
                     }
                   >
@@ -265,19 +291,26 @@ export function DecisionSupport({ customer, line, token }: {
                 </div>
               </div>
             ) : (
-              <div className="qs-actions">
-                {data.interpretation.status === "OK" && data.interpretation.recommendation && (
-                  <Button variant="contained" size="small" onClick={() => act("ACT", "accepted")}>
-                    Accept recommendation
-                  </Button>
+              <>
+                {!canAccept && (
+                  <p className="qs-ai-caveat">
+                    {NO_ACCEPT[data.interpretation.status] || NO_ACCEPT.PENDING}
+                  </p>
                 )}
-                <Button variant="outlined" size="small" onClick={() => setModifying("modify")}>
-                  Modify
-                </Button>
-                <Button variant="text" size="small" onClick={() => setModifying("reject")}>
-                  Set aside
-                </Button>
-              </div>
+                <div className="qs-actions">
+                  {canAccept && (
+                    <Button variant="contained" size="small" onClick={() => act("ACT", "accepted")}>
+                      Accept recommendation
+                    </Button>
+                  )}
+                  <Button variant="outlined" size="small" onClick={() => setModifying("modify")}>
+                    Modify
+                  </Button>
+                  <Button variant="text" size="small" onClick={() => setModifying("reject")}>
+                    Set aside
+                  </Button>
+                </div>
+              </>
             ))}
         </>
       )}

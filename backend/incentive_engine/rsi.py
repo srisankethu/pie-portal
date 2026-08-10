@@ -12,6 +12,16 @@ suppressing twice.
 
 RSI advances on tenure automatically, whatever the volume. That is what stops a
 salesperson holding an account in the high-w_inc "New" band by underselling it.
+
+**Share of wallet is weighted zero, and the reason is worth keeping.** It scored
+15 of 100 here — inside the index that decides w_base and w_inc — from a number
+the salesperson supplies about their own account. That is a self-report in a pay
+loop, and it survived review because the field looked like every other input on
+`CustomerAttributes`. It was also never populated: the only constructions of
+that type were in tests, so the weight was live while the value was not.
+
+The component still computes and still appears in `components`, at weight zero.
+A component deleted outright is one nobody can find the argument about later.
 """
 from __future__ import annotations
 
@@ -35,6 +45,15 @@ class RSIResult:
     w_inc: Decimal
     toolkit_cap_pct: Decimal
     retention_gate: str
+    #: Components with nothing behind them, named the way ``insight/bonds.py``
+    #: names its missing facets — so a reader knows which question the score
+    #: did not answer rather than reading a zero as a measurement.
+    #:
+    #: The score is **not** renormalised over the rest. Bonds renormalises
+    #: because a missing facet there is a gap in Zoho; here the only unmeasured
+    #: component carries zero weight, and renormalising would make an RSI move
+    #: — and a payout with it — because somebody typed a number into a form.
+    unmeasured: tuple[str, ...] = ()
 
 
 def _capped(value: Decimal, full: Decimal) -> Decimal:
@@ -46,6 +65,7 @@ def _capped(value: Decimal, full: Decimal) -> Decimal:
 def compute(cfg: Config, attrs: CustomerAttributes,
             tenure_months: int) -> RSIResult:
     w = cfg.get("rsi", "weights")
+    declared = attrs.share_of_wallet_declared
     parts: dict[str, Decimal] = {
         "tenure": _capped(Decimal(tenure_months),
                           Decimal(cfg.int_("rsi", "tenure_months_full"))),
@@ -53,7 +73,13 @@ def compute(cfg: Config, attrs: CustomerAttributes,
                               Decimal(cfg.int_("rsi", "regularity_months_full"))),
         "breadth": _capped(Decimal(attrs.families_bought),
                            Decimal(cfg.int_("rsi", "breadth_families_full"))),
-        "share_of_wallet": _capped(attrs.share_of_wallet_est, Decimal("1")),
+        # Undeclared contributes nothing, and says so through ``unmeasured``
+        # rather than through a zero that reads like a measured 0% share. At
+        # weight zero the arithmetic is the same either way; the distinction is
+        # for the person reading the components, who cannot otherwise tell
+        # "nobody has said" from "somebody said none".
+        "share_of_wallet": (_capped(declared.share, Decimal("1"))
+                            if declared is not None else _ZERO),
         # Inverted: 100 at zero days beyond terms, 0 at the stated ceiling.
         "payment_behaviour": Decimal("1") - _capped(
             max(_ZERO, attrs.avg_days_beyond_terms_12),
@@ -74,6 +100,7 @@ def compute(cfg: Config, attrs: CustomerAttributes,
         w_inc=Decimal(str(band["w_inc"])),
         toolkit_cap_pct=Decimal(str(band["toolkit_cap_pct"])),
         retention_gate=str(band["retention_gate"]),
+        unmeasured=(("share_of_wallet",) if declared is None else ()),
     )
 
 

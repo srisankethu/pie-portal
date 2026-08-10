@@ -24,6 +24,8 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Iterable, Optional
 
+from . import absence
+
 #: Orders older than this with stock still to come. Not a promise breach —
 #: there is no promise — but long enough to be worth a phone call.
 STALE_ORDER_DAYS = 45
@@ -169,6 +171,10 @@ def _unavailable(promised: int, total: int) -> list[dict]:
     if promised == 0:
         out.append({
             "series": "delivery_against_promise",
+            # A field nobody fills, not a limit. ``simulate`` blocks a whole
+            # scenario on the same blank, which makes this the highest-value
+            # COLLECTABLE in the package.
+            "kind": absence.COLLECTABLE,
             "reason": ("No purchase order in this book carries a promised "
                        "delivery date, so there is nothing to be late against. "
                        "Order age is shown instead — it is answerable, and an "
@@ -177,6 +183,7 @@ def _unavailable(promised: int, total: int) -> list[dict]:
     elif promised < total:
         out.append({
             "series": "delivery_against_promise",
+            "kind": absence.COLLECTABLE,
             "reason": (f"Only {promised} of {total} orders carry a promised "
                        "date. The rest are ranked by age, which is what the "
                        "data supports."),

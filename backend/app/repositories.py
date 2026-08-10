@@ -20,9 +20,10 @@ from .domain import models
 from .domain.enums import DecisionStatus, HumanAction
 from .domain.schemas import (BillIn, CostRecordIn, CreditNoteApplicationIn,
                             CreditNoteIn, CustomerIn, DocumentApplicationIn,
-                            InvoiceIn, PaymentReceiptIn, ProductIn,
+                            InvoiceIn, LocationIn, PaymentReceiptIn, ProductIn,
                             PurchaseOrderIn, SalesOrderIn, SalesTxnIn,
-                            StockSnapshotIn, VendorIn, VendorPaymentIn)
+                            StockLocationSnapshotIn, StockSnapshotIn, VendorIn,
+                            VendorPaymentIn)
 
 
 class ReadModelRepository:
@@ -239,6 +240,21 @@ class ReadModelRepository:
         # this row.
         self.s.flush()
         return row
+
+    def product_ids_by_external(self) -> dict[str, str]:
+        """Every product in this organization, keyed by its Zoho id.
+
+        One query rather than a lookup per row: the per-location stock pull asks
+        about the whole master, and ``get_product_by_external`` in a loop would
+        be one statement per item on an eight-hundred-line catalogue.
+        """
+        rows = self.s.execute(
+            select(models.Product.external_id, models.Product.product_id).where(
+                models.Product.organization_id == self.org,
+                models.Product.external_id.is_not(None),
+            )
+        ).all()
+        return {str(external_id): product_id for external_id, product_id in rows}
 
     def get_product_by_external(self, external_id: str) -> Optional[models.Product]:
         """Resolve within this repository's own source.
@@ -797,6 +813,55 @@ class ReadModelRepository:
         for ref_id, stale in existing.items():
             if ref_id not in seen:
                 self.s.delete(stale)
+
+    def upsert_location(self, loc: LocationIn) -> models.Location:
+        """Where the business trades from. Re-read every pull: a branch can be
+        deactivated, renamed or re-parented, and a row written once would keep
+        a closed location in every branch total."""
+        row = self.s.scalar(
+            select(models.Location).where(
+                models.Location.organization_id == self.org,
+                models.Location.external_ref == loc.external_ref,
+            )
+        )
+        if row is None:
+            row = models.Location(organization_id=self.org,
+                                  external_ref=loc.external_ref)
+            self.s.add(row)
+        row.name = loc.name
+        row.kind = loc.kind
+        row.parent_external_ref = loc.parent_external_ref
+        row.is_active = loc.is_active
+        row.is_primary = loc.is_primary
+        row.tax_reg_no = loc.tax_reg_no
+        row.source_ref = loc.source_ref.model_dump()
+        return row
+
+    def upsert_stock_location_snapshot(
+        self, product_id: str, snap: StockLocationSnapshotIn,
+    ) -> models.StockLocationSnapshot:
+        """One item at one location on one day. Upserted on the day, so a second
+        sync in the same day corrects the reading rather than adding a row that
+        would double the location's holding."""
+        row = self.s.scalar(
+            select(models.StockLocationSnapshot).where(
+                models.StockLocationSnapshot.organization_id == self.org,
+                models.StockLocationSnapshot.product_id == product_id,
+                models.StockLocationSnapshot.location_external_ref
+                == snap.location_external_ref,
+                models.StockLocationSnapshot.as_of == snap.as_of,
+            )
+        )
+        if row is None:
+            row = models.StockLocationSnapshot(
+                organization_id=self.org, product_id=product_id,
+                location_external_ref=snap.location_external_ref, as_of=snap.as_of)
+            self.s.add(row)
+        row.on_hand = snap.on_hand
+        row.available = snap.available
+        row.asset_value = snap.asset_value
+        row.source_ref = snap.source_ref.model_dump()
+        return row
 
     def upsert_credit_note(self, customer_id: Optional[str],
                            note: CreditNoteIn) -> models.CreditNoteDoc:

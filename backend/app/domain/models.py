@@ -2227,6 +2227,99 @@ class InvoiceSalesOrderLink(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
+class Location(Base):
+    """A place the business trades from — Zoho's "location", the book's "branch".
+
+    The invoice payload carries both names for one id (``location_id`` and
+    ``branch_id`` hold the same value), so this table is named for the concept
+    rather than for either field.
+
+    **These are not labels.** On this book Head Office and the Bangalore branch
+    carry *different GST registrations*, which is what makes "which branch
+    earned this" a question about a trading entity rather than a reporting
+    preference. A third entry — a godown — is a child of head office and is not
+    a branch at all, which is why the nesting below is stored rather than
+    flattened.
+    """
+
+    __tablename__ = "locations"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "external_ref",
+                         name="uq_location_org_ref"),
+    )
+
+    location_id: Mapped[str] = mapped_column(String(64), primary_key=True,
+                                             default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    external_ref: Mapped[str] = mapped_column(String(128), index=True)
+    name: Mapped[str] = mapped_column(String(255))
+    #: Zoho's own kind — ``general`` trades, ``line_item_only`` is a store that
+    #: may appear on a document line without being a branch. Stored raw and
+    #: judged at read time: which kinds count as a branch is policy, and a value
+    #: rewritten at sync time could never be re-read under a corrected rule.
+    kind: Mapped[Optional[str]] = mapped_column(String(48))
+    #: Parent, where Zoho nests one location under another. A roll-up that
+    #: ignored this would count a godown's stock twice — once as itself and once
+    #: inside the head office that contains it.
+    parent_external_ref: Mapped[Optional[str]] = mapped_column(String(128))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_primary: Mapped[bool] = mapped_column(Boolean, default=False)
+    #: The GSTIN registered here, where there is one.
+    tax_reg_no: Mapped[Optional[str]] = mapped_column(String(32))
+    source_ref: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
+                                                 onupdate=_now)
+
+
+class StockLocationSnapshot(Base):
+    """What one item held at one location, on one day.
+
+    **Deliberately a separate table from ``StockSnapshot``, not columns on it.**
+    That one is organization-grain — one row per item per day, and its unique
+    constraint says so. Adding a location column would turn each of those rows
+    into one row per location, and every reader that sums it without knowing
+    would silently multiply its answer by the number of branches. Two grains,
+    two tables; the same reason ``InvoiceDoc`` sits beside ``SalesTxn`` rather
+    than being copied onto it.
+
+    The organization-grain row remains the total and remains authoritative.
+    Nothing here is meant to replace it, and a reader wanting "what do we hold"
+    should still ask ``StockSnapshot``.
+
+    ``asset_value`` is what Zoho values the holding at, and it is **cost** —
+    manager scope only, exactly like ``StockSnapshot.purchase_rate``.
+    """
+
+    __tablename__ = "stock_location_snapshots"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "product_id", "location_external_ref",
+                         "as_of", name="uq_stock_loc_org_product_location_day"),
+        Index("ix_stock_loc_org_asof", "organization_id", "as_of"),
+    )
+
+    stock_location_snapshot_id: Mapped[str] = mapped_column(String(64),
+                                                            primary_key=True,
+                                                            default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    product_id: Mapped[str] = mapped_column(String(64),
+                                            ForeignKey("products.product_id"),
+                                            index=True)
+    #: Zoho's location id, not this platform's. Kept as the external reference
+    #: rather than a foreign key to ``locations`` because stock can be reported
+    #: against a location the location pull has not returned — an inactive one,
+    #: or one added between phases — and dropping the row would understate the
+    #: shelf in order to say where it sat.
+    location_external_ref: Mapped[str] = mapped_column(String(128), index=True)
+    as_of: Mapped[date] = mapped_column(Date, index=True)
+    on_hand: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
+    available: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
+    #: Zoho's valuation of this location's holding. Cost — manager scope only.
+    asset_value: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
+    source_ref: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
 class CreditNoteDoc(Base):
     """A credit note at header grain — what was given back, and to whom.
 

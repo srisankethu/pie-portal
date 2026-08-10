@@ -15,9 +15,11 @@ from typing import Any, Optional
 from ..domain.enums import CustomerStatus
 from ..domain.schemas import (BillIn, CostRecordIn, CreditNoteApplicationIn,
                              CreditNoteIn, CustomerIn, DocumentApplicationIn,
-                             InvoiceIn, InvoiceSalesOrderRef, PaymentReceiptIn,
-                             ProductIn, PurchaseOrderIn, SalesOrderIn, SalesTxnIn,
-                             SourceRef, StockSnapshotIn, VendorIn, VendorPaymentIn)
+                             InvoiceIn, InvoiceSalesOrderRef, LocationIn,
+                             PaymentReceiptIn, ProductIn, PurchaseOrderIn,
+                             SalesOrderIn, SalesTxnIn, SourceRef,
+                             StockLocationSnapshotIn, StockSnapshotIn, VendorIn,
+                             VendorPaymentIn)
 
 #: The system every record in this module came from. Stated once, and stated
 #: *here* rather than defaulted in ``SourceRef``, because this file is the Zoho
@@ -454,6 +456,49 @@ def normalize_invoice_terms(raw: dict[str, Any]) -> InvoiceIn:
         balance=raw.get("balance"),
         sales_orders=_invoice_sales_orders(raw),
         source_ref=SourceRef(system=ZOHO, record_type="invoice", record_id=invoice_id),
+    )
+
+
+def normalize_location(raw: dict[str, Any]) -> LocationIn:
+    """One place the business trades from."""
+    loc_id = str(_require(raw, "location_id", "location"))
+    return LocationIn(
+        external_ref=loc_id,
+        name=str(raw.get("location_name") or ""),
+        kind=(str(raw["type"]) if raw.get("type") else None),
+        parent_external_ref=(str(raw["parent_location_id"])
+                             if raw.get("parent_location_id") else None),
+        # Absent means Zoho did not say, and an unstated flag is not a false
+        # one: a location the pull cannot classify is better read as live than
+        # quietly dropped out of every branch total.
+        is_active=(True if raw.get("is_location_active") is None
+                   else bool(raw["is_location_active"])),
+        is_primary=bool(raw.get("is_primary_location")),
+        tax_reg_no=(str(raw["tax_reg_no"]) if raw.get("tax_reg_no") else None),
+        source_ref=SourceRef(system=ZOHO, record_type="location", record_id=loc_id),
+    )
+
+
+def normalize_item_location(raw: dict[str, Any], as_of: date) -> StockLocationSnapshotIn:
+    """One item's holding at one location, on one day.
+
+    Quantities and the valuation are passed through exactly as Zoho states
+    them, including blanks. A blank is "the source did not say" and must not be
+    read as zero — a location reporting no figure is not a location holding
+    nothing, and treating it as empty would understate the shelf and overstate
+    every return computed against it.
+    """
+    item_id = str(_require(raw, "item_id", "item location"))
+    location_id = str(_require(raw, "location_id", f"item {item_id} location"))
+    return StockLocationSnapshotIn(
+        product_external_id=item_id,
+        location_external_ref=location_id,
+        as_of=as_of,
+        on_hand=raw.get("on_hand"),
+        available=raw.get("available"),
+        asset_value=raw.get("asset_value"),
+        source_ref=SourceRef(system=ZOHO, record_type="item_location",
+                             record_id=item_id, line_id=location_id),
     )
 
 

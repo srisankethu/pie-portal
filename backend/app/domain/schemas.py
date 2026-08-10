@@ -321,6 +321,67 @@ class InvoiceIn(BaseModel):
         return v if isinstance(v, Decimal) else Decimal(str(v))
 
 
+class LocationIn(BaseModel):
+    """One place the business trades from. Zoho calls these locations; the books
+    call them branches, and the invoice payload carries both names for the same
+    id.
+
+    Not merely a label. Head Office and the Bangalore branch hold **separate GST
+    registrations**, which is what makes "which branch earned this" a real
+    question rather than a reporting preference.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    external_ref: str = Field(min_length=1)
+    name: str
+    #: Zoho's own kind. ``general`` is a place that trades; ``line_item_only``
+    #: is a store that can appear on a document line but is not a branch in its
+    #: own right. Kept raw and interpreted at read time, the same discipline
+    #: ``Product.category`` uses — mapping this onto "is a branch" is policy.
+    kind: Optional[str] = None
+    #: Zoho's parent/child nesting: a godown under a head office. Carried so a
+    #: roll-up can be correct rather than double-counting a child into a total
+    #: that already includes it.
+    parent_external_ref: Optional[str] = None
+    is_active: bool = True
+    is_primary: bool = False
+    #: The GSTIN registered at this location, where there is one. The strongest
+    #: evidence that a location is a real trading entity rather than a shelf.
+    tax_reg_no: Optional[str] = None
+    source_ref: SourceRef
+
+
+class StockLocationSnapshotIn(BaseModel):
+    """What one item held at one location, on one day.
+
+    **Deliberately not columns on ``StockSnapshotIn``.** That record is
+    organization-grain — one row per item per day — and several readers count on
+    exactly that. Adding a location column would turn one row into one row per
+    location and silently multiply every existing total. Two grains, two
+    records, the same reason ``InvoiceDoc`` sits beside ``SalesTxn``.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    product_external_id: str = Field(min_length=1)
+    location_external_ref: str = Field(min_length=1)
+    as_of: date
+    on_hand: Optional[Decimal] = None
+    available: Optional[Decimal] = None
+    #: What Zoho values this location's holding at. Cost — manager scope only,
+    #: and the numerator of nothing a salesperson may see.
+    asset_value: Optional[Decimal] = None
+    source_ref: SourceRef
+
+    @field_validator("on_hand", "available", "asset_value", mode="before")
+    @classmethod
+    def _to_decimal(cls, v: Any) -> Optional[Decimal]:
+        if v is None or v == "":
+            return None
+        return v if isinstance(v, Decimal) else Decimal(str(v))
+
+
 class CreditNoteIn(BaseModel):
     """A credit note's header. The mirror of ``InvoiceIn``, opposite sign.
 

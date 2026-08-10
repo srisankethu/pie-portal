@@ -61,6 +61,12 @@ EXPORTED: tuple[tuple[str, Any], ...] = (
     ("cost_records", models.CostRecord),
     ("customer_item_metrics", models.CustomerItemMetric),
     ("stock_snapshots", models.StockSnapshot),
+    # Where the business trades from, and what each place held. Exported with
+    # the rest of the read model: a branch is this tenant's own structure, and
+    # a shelf history that could not say which shelf is a weaker record than the
+    # one they gave us.
+    ("locations", models.Location),
+    ("stock_location_snapshots", models.StockLocationSnapshot),
     # ── the documents: what is owed, by whom, and what has settled ──────────
     ("bills", models.BillDoc),
     ("invoices", models.InvoiceDoc),

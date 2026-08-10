@@ -134,6 +134,11 @@ SCOPE_FOR_PATH: dict[str, str] = {
     "items": "ZohoBooks.settings.READ",
     "invoices": "ZohoBooks.invoices.READ",
     "creditnotes": "ZohoBooks.creditnotes.READ",
+    # Locations and per-location stock both sit behind the settings scope, the
+    # same one the item master already needs — so a connection that can read
+    # items can read where they sit.
+    "locations": "ZohoBooks.settings.READ",
+    "itemdetails": "ZohoBooks.settings.READ",
     "bills": "ZohoBooks.bills.READ",
     "customerpayments": "ZohoBooks.customerpayments.READ",
     "purchaseorders": "ZohoBooks.purchaseorders.READ",
@@ -555,6 +560,71 @@ class ZohoApiSource(ZohoTransport):
                 "track_inventory": i.get("track_inventory"),
                 "item_type": i.get("item_type"),
             }
+
+    #: How many item ids one ``itemdetails`` call carries. Zoho accepts a list;
+    #: batching is the whole reason per-location stock is affordable at all —
+    #: the per-item detail endpoint would be one call per item, which on an
+    #: 800-line master is 800 calls a sync to answer a question about three
+    #: branches. Kept modest because the ids travel in the query string.
+    ITEM_DETAIL_BATCH = 25
+
+    def list_locations(self) -> Iterable[dict[str, Any]]:
+        """Where this company trades from.
+
+        Small, unpaginated in practice, and read once per sync. On this book it
+        returns three: a head office, a branch in another state with its own
+        GSTIN, and an inactive godown nested under the head office.
+        """
+        for loc in self._paginate("locations", "locations"):
+            yield {
+                "location_id": str(loc.get("location_id")),
+                "location_name": loc.get("location_name") or "",
+                "type": loc.get("type"),
+                # Zoho nests one location under another. Passed through so a
+                # roll-up can avoid counting a godown inside the head office
+                # that already contains it.
+                "parent_location_id": (str(loc["parent_location_id"])
+                                       if loc.get("parent_location_id") else None),
+                "is_location_active": loc.get("is_location_active"),
+                "is_primary_location": loc.get("is_primary_location"),
+                "tax_reg_no": loc.get("tax_reg_no"),
+            }
+
+    def list_item_locations(self, item_ids: list[str]) -> Iterable[dict[str, Any]]:
+        """Per-location stock for the given items, in batches.
+
+        The item *list* endpoint the master pull already reads carries only the
+        organization-wide totals; ``locations`` appears on the detail payload.
+        Rather than fetching one detail per item, ids go to ``itemdetails`` in
+        batches of ``ITEM_DETAIL_BATCH``.
+
+        Yields one row per (item, location) pair, so a caller never has to know
+        the batching happened.
+        """
+        for start in range(0, len(item_ids), self.ITEM_DETAIL_BATCH):
+            batch = item_ids[start:start + self.ITEM_DETAIL_BATCH]
+            if not batch:
+                continue
+            payload = self._get("itemdetails", item_ids=",".join(batch))
+            for item in (payload.get("items") or []):
+                item_id = str(item.get("item_id") or "")
+                if not item_id:
+                    continue
+                for loc in (item.get("locations") or []):
+                    location_id = str(loc.get("location_id") or "")
+                    if not location_id:
+                        continue
+                    yield {
+                        "item_id": item_id,
+                        "location_id": location_id,
+                        # Named for what they are rather than for Zoho's
+                        # `location_` prefix, which would read as redundant on a
+                        # row already keyed by location.
+                        "on_hand": loc.get("location_stock_on_hand"),
+                        "available": loc.get("location_available_stock"),
+                        # Zoho's own valuation of this location's holding. Cost.
+                        "asset_value": loc.get("location_asset_value"),
+                    }
 
     def _cutoff(self) -> date:
         return self._since or (date.today() - timedelta(days=settings.ZOHO_HISTORY_DAYS))

@@ -656,6 +656,188 @@ const PAYABLE_SIDE: LedgerSide = {
   href: null,
 };
 
+// ── The same settlements, one level up: whose book the slow money is in ────
+//
+// The panel above ranks accounts, which answers "who do I call". This one ranks
+// books, which answers "whose terms are not holding" — a different conversation
+// with a different person, and the reason it is a second panel rather than
+// another column on the first.
+//
+// **It says days to pay, never DSO.** The acronym is already in circulation and
+// it means something this platform cannot compute: days sales outstanding is a
+// ratio over a revenue window, and `state/reducers/receivables` records that the
+// denominator does not exist here. Labelling a days-to-pay figure DSO would
+// invite somebody to compare it against a benchmark computed the other way.
+//
+// **The figure is weighted by settled value.** The wording on the footnote says
+// so, because "typical" without the weighting reads as an average of accounts —
+// and an average of accounts is the number this deliberately is not.
+//
+// A grid, because the row count is the number of salespeople, which is set by
+// the size of the business — the rule in `platform/DataGrid.tsx`. Sorting by
+// whose money comes back slowest is the whole point of the panel.
+
+type OwnerBookRow = {
+  owner_user_id: string | null;
+  label: string;
+  accounts: number;
+  settlements: number;
+  total_settled: number;
+  datable_count: number;
+  late_count: number;
+  weighted_days_to_pay: number | null;
+  late_share: number | null;
+  trend: string;
+  estimable: boolean;
+};
+
+function OwnerBooksPanel({
+  data, loading, error, reload,
+}: {
+  data: Record<string, unknown> | null;
+  loading: boolean; error: string | null; reload: () => void;
+}) {
+  const books = useMemo(
+    () => (data?.by_owner as OwnerBookRow[] | undefined) ?? [], [data]);
+  const minSettlements = num(data?.min_settlements);
+  const trends = (data?.trends as Record<string, string>) ?? {};
+
+  const columns = useMemo<ColDef<OwnerBookRow>[]>(() => [
+    {
+      field: "label", headerName: "Salesperson", flex: 1.2, minWidth: 180,
+      cellRenderer: (p: { data?: OwnerBookRow }) => (p.data ? (
+        p.data.owner_user_id === null
+          // Not a person, and it must not read as one. An unowned account is
+          // one nobody is chasing, which is why the bucket is shown at all.
+          ? <Box component="span" className="viz-muted">{p.data.label}</Box>
+          : <Box component="span">{p.data.label}</Box>
+      ) : null),
+    },
+    {
+      headerName: "Typical days to pay", flex: 1, minWidth: 210,
+      // Below the floor there is no figure, and the row sorts last rather than
+      // as zero — unknown is not fast.
+      valueGetter: (p) => (p.data?.estimable
+        ? (p.data?.weighted_days_to_pay ?? null) : null),
+      headerTooltip: "The day by which half this book's settled value had "
+        + "arrived, weighted by value rather than averaged across accounts. "
+        + "Days to pay, not DSO — the ratio needs a revenue window the "
+        + "platform does not hold.",
+      cellRenderer: (p: { data?: OwnerBookRow }) => {
+        const row = p.data;
+        if (!row) return null;
+        if (!row.estimable) {
+          return (
+            <StatusChip
+              label={`only ${row.settlements} settled`} tone="neutral" dense
+              tip={`Fewer than ${minSettlements} settled invoices in this `
+                + "book, so no figure is asserted rather than one being read "
+                + "out of a couple of invoices."} />
+          );
+        }
+        return (
+          <Stack direction="row" spacing={0.75} sx={{ alignItems: "center" }}>
+            <Box component="span">{row.weighted_days_to_pay} days</Box>
+            {row.trend !== "STEADY" && row.trend !== "UNKNOWN" && (
+              <StatusChip
+                label={row.trend === "IMPROVING" ? "improving" : "slower"}
+                tone={row.trend === "IMPROVING" ? "good" : "warn"} dense
+                tip={trends[row.trend]} />
+            )}
+          </Stack>
+        );
+      },
+    },
+    {
+      headerName: "Paid late", width: 150, flex: 0,
+      valueGetter: (p) => p.data?.late_share ?? null,
+      headerTooltip: "Of the invoices in this book with terms on record. "
+        + "Invoices that could never be late are out of the denominator.",
+      cellRenderer: (p: { data?: OwnerBookRow }) => {
+        const row = p.data;
+        if (!row) return null;
+        // The denominator travels with the share, for the reason the panel
+        // above gives: "100% late" over one invoice is true and useless.
+        if (row.late_share === null) {
+          return <Box component="span" className="viz-muted">—</Box>;
+        }
+        return (
+          <Box component="span">
+            {pct(row.late_share)}
+            <Box component="span" className="viz-muted">
+              {" "}· {row.late_count} of {row.datable_count}
+            </Box>
+          </Box>
+        );
+      },
+    },
+    numeric<OwnerBookRow>("total_settled", "Value settled", (v) => money(v), {
+      width: 150, flex: 0,
+      headerTooltip: "What has actually come back through this book. It is the "
+        + "weight behind the days figure beside it.",
+    }),
+    numeric<OwnerBookRow>("accounts", "Accounts", (v) => String(v),
+                          { width: 116, flex: 0 }),
+    numeric<OwnerBookRow>("settlements", "Invoices settled", (v) => String(v), {
+      width: 160, flex: 0,
+      headerTooltip: "One transfer clearing ten invoices is ten observations — "
+        + "the grain is the invoice, not the payment.",
+    }),
+  ], [minSettlements, trends]);
+
+  const measured = books.filter((b) => b.estimable);
+
+  return (
+    <Panel
+      title="Collection by salesperson"
+      question="Whose book does the money come back slowest from"
+      state={stateOf(loading, error, data?.empty_reason as string)}
+      error={error} emptyReason={data?.empty_reason as string} onRetry={reload} wide
+    >
+      <p className="viz-headline">
+        {measured.length > 0 ? (
+          <>
+            Money comes back slowest from{" "}
+            <strong>{measured[0].label}</strong>'s book, at{" "}
+            <strong>{measured[0].weighted_days_to_pay} days</strong> against{" "}
+            {money(measured[0].total_settled)} settled.
+          </>
+        ) : (
+          <>
+            No book has {minSettlements} settled invoices yet, so no figure is
+            asserted for anybody.
+          </>
+        )}{" "}
+        <span className="viz-muted">
+          Weighted by settled value, not averaged across accounts — one large
+          slow account is what the week has to be funded around, and an average
+          of accounts would hide it behind nine small quick ones.
+        </span>
+      </p>
+      <DataGrid<OwnerBookRow>
+        ariaLabel="Days to pay by salesperson"
+        rows={books}
+        columns={columns}
+        pageSize={20}
+        rowHeight={48}
+        getRowId={(r) => r.owner_user_id ?? "__unassigned__"}
+      />
+      <p className="viz-muted viz-footnote">
+        Days to pay, not days sales outstanding: DSO is a ratio over a revenue
+        window this platform does not hold, and a figure named after it would
+        invite comparison against a benchmark computed a different way. An
+        account is in the book it was assigned to here, falling back to the
+        salesperson on its latest Zoho invoice — the same rule the credit list
+        below applies, resolved in one place so an account handed over by hand
+        cannot sit in two books at once. Accounts nobody owns are shown as a
+        book of their own rather than left out, because an unowned overdue
+        account is the one nobody is chasing.
+      </p>
+      <Unavailable items={rows(data?.unavailable)} />
+    </Panel>
+  );
+}
+
 // ── The line we gave them, and whose book the account is in ────────────────
 //
 // "Rane Madras takes 69 days to pay" is an observation. "Rane Madras is ₹8 lakh
@@ -979,6 +1161,12 @@ export function PaymentsScreen({
       <SettlementPanel data={data} loading={loading} error={error}
                        reload={reload} side={RECEIVABLE_SIDE}
                        onNavigate={onNavigate} />
+      {/* The same settlements one level up. It reads the response the panel
+          above already fetched — a second request for a second grouping of
+          rows the browser is holding would be a second answer waiting to
+          disagree with the first. */}
+      <OwnerBooksPanel data={data} loading={loading} error={error}
+                       reload={reload} />
       {/* Who is past their line, and whose account it is. Below the measured
           behaviour rather than above it, for the same reason the supplier terms
           sit below the payables panel: somebody arrives asking "how do they

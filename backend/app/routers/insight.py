@@ -684,6 +684,39 @@ def _annotate_with_credit(session: Session, org: str, rows: list[dict]) -> None:
         row["outstanding"] = float(e.outstanding) if e else None
 
 
+def _settlement_books(session: Session, principal: Principal,
+                      settled: list[payments.Settlement]) -> list[dict]:
+    """The same settlements, read per salesperson instead of per account.
+
+    Scoped through ``_customers_in_scope``, which is the credit screen's join
+    and therefore ``ownership.owners`` — never ``Customer.assigned_user_id``.
+    An account handed over by hand lives in the typed table, and reading the
+    column would file its settlements under whoever Zoho last had on an
+    invoice while the account directory showed it under the person who now
+    owns it.
+
+    A salesperson sees their own book and no further, the same scope
+    ``/credit`` applies to owner-keyed rows. The settlements are filtered to
+    the accounts in scope *before* grouping, so their own figure is computed
+    from their own accounts rather than from a book they cannot see, and no
+    "unassigned" bucket appears holding everybody else's.
+
+    Days-to-pay, not DSO — ``insight/payments`` and
+    ``state/reducers/receivables`` both record why the ratio's denominator does
+    not exist in this platform.
+    """
+    org = principal.organization_id
+    customers, owners = _customers_in_scope(session, principal)
+    in_scope = {c.customer_id for c in customers}
+    people = session.scalars(
+        select(models.User).where(models.User.organization_id == org)).all()
+    return payments.by_owner(
+        [s for s in settled if s.party_id in in_scope],
+        {cid: owner.user_id for cid, owner in owners.items()
+         if cid in in_scope},
+        {u.user_id: u.name for u in people})
+
+
 def _agreed_terms(session: Session, org: str) -> dict[str, vendor_terms.Term]:
     """Every supplier term somebody typed, keyed by vendor id.
 
@@ -763,7 +796,13 @@ def _bill_settlements(session: Session, org: str,
 @router.get("/payments")
 def payment_behaviour(principal: Principal = Depends(current_principal),
                       session: Session = Depends(get_session)) -> dict:
-    """How long customers take to pay. Receivables — no cost, so every role."""
+    """How long customers take to pay. Receivables — no cost, so every role.
+
+    The per-account list is the whole book for every role, unchanged. The
+    per-salesperson roll-up beside it is scoped to the reader's own book when
+    they are a salesperson — see ``_settlement_books`` — because that is the
+    scope this router already applies to anything keyed by who owns an account.
+    """
     org, snapshot, th = _labels_only(session, principal)
     as_of = _as_of(snapshot) or clock.today(th.timezone)
 
@@ -799,6 +838,10 @@ def payment_behaviour(principal: Principal = Depends(current_principal),
     # What each credit status means, so the row can be read without the reader
     # inferring a rule nobody stated.
     result["credit_statuses"] = credit.STATUSES
+    # The same settlements, one level up: whose book the slow money is in. A
+    # per-account list answers "who do I call"; this answers "whose terms are
+    # not holding", which is a different conversation with a different person.
+    result["by_owner"] = _settlement_books(session, principal, settled)
     return _envelope(
         result, th=th,
         empty_reason=(None if result["customers"] else

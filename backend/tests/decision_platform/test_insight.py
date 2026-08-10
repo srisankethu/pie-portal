@@ -711,6 +711,28 @@ def test_same_day_orders_are_not_a_rhythm_anyone_can_be_late_against():
     assert c.days_since_last == 176
 
 
+def test_a_customer_exactly_on_their_expected_interval_is_not_yet_overdue():
+    """Ratio 1.0 is due, not late — the customer has arrived exactly when the
+    rhythm says they should.
+
+    Worth pinning because "overdue" is what puts somebody in a queue to be
+    chased, and a rule that trips at exactly the expected day would chase every
+    punctual customer the platform has.
+    """
+    from app.signals.aggregates import Cadence
+
+    def _at(ratio):
+        return Cadence(order_dates=[], typical_interval_days=30.0,
+                       expected_interval_days=45.0, days_since_last=45,
+                       overdue_ratio=ratio)
+
+    assert _at(1.0).overdue is False
+    assert _at(0.999).overdue is False
+    assert _at(1.001).overdue is True
+    # No rhythm is not "fine" — it is unestimable, and must not read as on-time.
+    assert _at(None).overdue is False
+
+
 def test_the_three_cadence_readers_share_one_implementation():
     """Not "agree today" — the same function. dormancy raises the signal,
     quote_context publishes the facts, the rhythm screen shows the population."""

@@ -430,3 +430,31 @@ def test_the_outcome_endpoint_requires_authentication(client):
     r = client.post("/api/v1/quote-intelligence/outcome",
                     json={"quote_id": "q1", "status": "SENT"})
     assert r.status_code in (401, 403)
+
+
+# ── product resolution: the length floor on containment matching ─────────────
+def test_a_four_character_code_still_matches_by_containment(client):
+    """Four normalized characters is the shortest fragment allowed to match a
+    product by containment, and "shortest allowed" means four resolves.
+
+    The floor exists because a two- or three-character fragment is inside half
+    the catalogue, so it would resolve to whichever row happened to be closest in
+    length — a confident wrong product on a quote. Both sides are asserted here:
+    raise the floor by one and the first case silently stops resolving; remove it
+    and the second silently starts.
+    """
+    from app.commercial.quote_service import _resolve_products
+
+    s = client.Maker()
+    try:
+        # "CNMG" normalizes to exactly 4 characters and is a fragment of
+        # "CNMG 120408-MP insert".
+        out = _resolve_products(s, ORG, ["CNMG"])
+        assert out["CNMG"] is not None, "a four-character fragment must resolve"
+        assert out["CNMG"].product_id == "p1"
+
+        # Three characters is below the floor — and it is a fragment of the same
+        # product, so only the floor is stopping it.
+        assert _resolve_products(s, ORG, ["CNM"])["CNM"] is None
+    finally:
+        s.close()

@@ -38,6 +38,7 @@ from ..commercial.insight import (absence, bonds, cadence, cashflow, cohorts,
                                   composition, credit,
                                   daily as daily_view,
                                   dependency, flow, landscape, mix, msme,
+                                  order_to_cash,
                                   outcomes as outcomes_view, payments,
                                   periods, radar, schemes, simulate, stock,
                                   story, supply, terms as vendor_terms, wallet,
@@ -869,6 +870,114 @@ def payable_behaviour(principal: Principal = Depends(require_manager_or_owner),
                       "a bill yet — so there is no bill date to measure from. "
                       "A sync run before bill breakdowns were read will fill "
                       "this in on its next pass."))
+
+
+def _last_days_to_pay(settled: list[payments.Settlement]) -> dict[str, int]:
+    """Each invoice's days-to-pay at the moment it was finally settled.
+
+    Read from ``payments.Settlement``, never recomputed — that property is the
+    one owner of "paid on, minus the invoice date" and a second subtraction here
+    is how this screen and ``/payments`` would start disagreeing about one
+    invoice.
+
+    The *latest* application, because an invoice settled in three instalments is
+    not paid until the last one lands. Taking the first would report the day the
+    customer started paying as the day the cash arrived.
+    """
+    latest: dict[str, payments.Settlement] = {}
+    for s in settled:
+        held = latest.get(s.document_ref)
+        if held is None or s.paid_on > held.paid_on:
+            latest[s.document_ref] = s
+    return {ref: s.days_to_pay for ref, s in latest.items()}
+
+
+def _order_dates(session: Session, org: str) -> dict[str, date]:
+    """Every sales order this platform holds, by the id its ERP gave it."""
+    return {
+        row.external_ref: row.date
+        for row in session.scalars(
+            select(models.SalesOrderDoc).where(
+                models.SalesOrderDoc.organization_id == org)).all()
+    }
+
+
+def _cycles(session: Session, org: str,
+            names: dict[str, str]) -> list[order_to_cash.Cycle]:
+    """Every invoice, with its orders joined on and its settlement read off.
+
+    Assembled here rather than in ``commercial/`` because it is four indexed
+    reads and a join; the module it feeds does the measuring and touches no
+    session, which is the split every other view in this router uses.
+    """
+    links: dict[str, list[models.InvoiceSalesOrderLink]] = {}
+    for link in session.scalars(
+            select(models.InvoiceSalesOrderLink).where(
+                models.InvoiceSalesOrderLink.organization_id == org)).all():
+        links.setdefault(link.invoice_external_ref, []).append(link)
+
+    orders = _order_dates(session, org)
+    paid = _last_days_to_pay(_settlements(session, org))
+
+    out: list[order_to_cash.Cycle] = []
+    for inv in session.scalars(
+            select(models.InvoiceDoc).where(
+                models.InvoiceDoc.organization_id == org)).all():
+        mine = links.get(inv.external_ref, [])
+        dated = [orders[link.sales_order_external_ref] for link in mine
+                 if link.sales_order_external_ref in orders]
+        out.append(order_to_cash.Cycle(
+            invoice_ref=inv.external_ref,
+            invoice_number=inv.number,
+            customer_id=inv.customer_id,
+            customer_label=(names.get(inv.customer_id or "")
+                            or inv.customer_id or "Unattributed"),
+            invoice_date=inv.date,
+            # The earliest of them, per the module's stated rule — never the
+            # one Zoho flagged primary.
+            order_date=(min(dated) if dated else None),
+            orders_linked=len(mine),
+            order_numbers=tuple(
+                link.sales_order_number or link.sales_order_external_ref
+                for link in mine),
+            days_to_pay=paid.get(inv.external_ref),
+            # `None` stays `None`: an invoice whose source states no balance
+            # cannot be called settled, and 0 would say it was collected.
+            outstanding=(None if inv.balance is None else inv.balance > 0),
+        ))
+    return out
+
+
+@router.get("/order-to-cash")
+def order_to_cash_cycle(principal: Principal = Depends(current_principal),
+                        session: Session = Depends(get_session)) -> dict:
+    """How long an order takes to become cash, split into whose wait it is.
+
+    Dates and day counts only — no cost, no price, no margin — so every role
+    sees it, on the same rule ``/payments`` follows.
+    """
+    org, snapshot, th = _labels_only(session, principal)
+    as_of = _as_of(snapshot) or clock.today(th.timezone)
+
+    rows = _cycles(session, org, snapshot.customer_names)
+    if not rows:
+        return _no_data(th, "the order-to-cash cycle", missing="invoice",
+                        synced=_books_have_sales(session, org))
+
+    result = order_to_cash.build(rows, as_of)
+    # Two accounts sharing a name across two books are two conversations. Same
+    # projection every other list in this router uses.
+    companies = Companies(session, org)
+    companies.stamp(result.get("invoices") or [],
+                    index_of(session, org, models.Customer), by="customer_id")
+    result["sources_differ"] = companies.count > 1
+    return _envelope(
+        result, th=th,
+        empty_reason=(None if result["coverage"]["with_order"] else
+                      "Invoices have synced, but none of them names a sales "
+                      "order — so the order-to-invoice half of the cycle cannot "
+                      "be measured. A sync run before invoice order references "
+                      "were read will fill this in on its next pass."))
 
 
 # ── quotes: what was won, what was lost, and whether price is the reason ────

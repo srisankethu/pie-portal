@@ -266,6 +266,21 @@ class BillIn(BaseModel):
         return v if isinstance(v, Decimal) else Decimal(str(v))
 
 
+class InvoiceSalesOrderRef(BaseModel):
+    """One order an invoice bills against, as the invoice itself names it.
+
+    A list of these rather than a scalar on ``InvoiceIn`` because the
+    relationship is many-to-many in this book — see
+    ``models.InvoiceSalesOrderLink``. ``is_primary`` carries which one Zoho's
+    scalar ``salesorder_id`` named, which is a fact about the payload rather
+    than about the trade.
+    """
+
+    external_ref: str = Field(min_length=1)
+    number: Optional[str] = None
+    is_primary: bool = False
+
+
 class InvoiceIn(BaseModel):
     """An invoice's receivable terms, header grain. The mirror of ``BillIn``.
 
@@ -292,6 +307,10 @@ class InvoiceIn(BaseModel):
     #: What Zoho says is still owed on this invoice. ``None`` where the field is
     #: absent — never coerced to 0, which would read as "collected".
     balance: Optional[Decimal] = None
+    #: Every order this invoice bills against. Empty is legitimate and common —
+    #: stock sold across the counter has no order behind it — and it means the
+    #: order-to-invoice lag for this invoice is unknown, never zero.
+    sales_orders: list[InvoiceSalesOrderRef] = Field(default_factory=list)
     source_ref: SourceRef
 
     @field_validator("total", "balance", mode="before")

@@ -116,6 +116,8 @@ const PayablesScreen = lazy(() =>
   import("./viz/TheBook").then((m) => ({ default: m.PayablesScreen })));
 const PaymentsScreen = lazy(() =>
   import("./viz/TheBook").then((m) => ({ default: m.PaymentsScreen })));
+const OrderToCashScreen = lazy(() =>
+  import("./viz/OrderToCash").then((m) => ({ default: m.OrderToCashScreen })));
 const StatutoryScreen = lazy(() =>
   import("./viz/Statutory").then((m) => ({ default: m.StatutoryScreen })));
 const StockScreen = lazy(() =>
@@ -586,6 +588,10 @@ export default function PlatformApp() {
       ? ([{ key: "supply", label: "Suppliers", group: "book" }] as NavItem[])
       : []),
     { key: "payments", label: "Cash", group: "book" },
+    // Beside Cash and scoped with it: dates and day counts carry no commercial
+    // position, and the half of the cycle this screen exists to surface is the
+    // half a salesperson can chase.
+    { key: "orderToCash", label: "Order to cash", group: "book" },
     ...(ability.can("read", "supply")
       // How long we string a supplier along is a commercial position, not a
       // call list, so it is scoped like Suppliers rather than like Cash.
@@ -758,6 +764,7 @@ export default function PlatformApp() {
             <Route path={PATH.cadence} element={<CadenceScreen session={session} onNavigate={goViz} />} />
             <Route path={PATH.payments} element={<PaymentsScreen session={session} onNavigate={goViz} />} />
             <Route path={PATH.payables} element={<PayablesScreen session={session} onNavigate={goViz} />} />
+            <Route path={PATH.orderToCash} element={<OrderToCashScreen session={session} />} />
             <Route path={PATH.statutory} element={<StatutoryScreen session={session} />} />
             <Route path={PATH.stock} element={<StockScreen session={session} />} />
             <Route path={PATH.supply} element={<SupplyScreen session={session} />} />

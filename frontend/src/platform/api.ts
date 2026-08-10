@@ -201,6 +201,13 @@ export const papi = {
   payables: (t: string) =>
     req<Record<string, unknown>>("/api/v1/insight/payables", {}, t),
 
+  // The whole cycle the two above sit inside: order → invoice → payment. Dates
+  // and day counts only, so it is scoped like `payments` rather than like
+  // `payables` — how long we take to bill is not a commercial position, it is
+  // the half of the wait this business controls.
+  orderToCash: (t: string) =>
+    req<Record<string, unknown>>("/api/v1/insight/order-to-cash", {}, t),
+
   // Which quotes were won and which were lost. No cost anywhere in it, so
   // every role reads it — a salesperson sees their own accounts, scoped by the
   // server exactly as `/api/v1/accounts` is.

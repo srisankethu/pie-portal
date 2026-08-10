@@ -695,6 +695,27 @@ class ZohoApiSource(ZohoTransport):
                 "salesperson_id": (str(inv["salesperson_id"])
                                    if inv.get("salesperson_id") else None),
                 "salesperson_name": inv.get("salesperson_name"),
+                # Which customer orders this invoice bills against. The detail
+                # payload above already carries them, so this is a passthrough:
+                # no extra call, no extra scope — the same trade `due_date` and
+                # `balance` make two fields up.
+                #
+                # Both forms are passed on. The array is the truth — one invoice
+                # can consolidate several orders, which is why Zoho returns a
+                # list at all — and the scalar is Zoho's own "primary". Sending
+                # only the scalar would silently drop every order past the first
+                # on a consolidated invoice; sending only the array would lose
+                # which one Zoho itself considered primary. `normalize.py`
+                # unions them and marks the scalar.
+                "salesorder_id": (str(inv["salesorder_id"])
+                                  if inv.get("salesorder_id") else None),
+                "salesorder_number": inv.get("salesorder_number"),
+                "salesorders": [
+                    {"salesorder_id": str(so.get("salesorder_id")),
+                     "salesorder_number": so.get("salesorder_number")}
+                    for so in (inv.get("salesorders") or [])
+                    if so.get("salesorder_id")
+                ],
                 "line_items": [
                     {
                         "line_item_id": str(li.get("line_item_id")),

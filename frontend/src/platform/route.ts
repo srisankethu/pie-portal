@@ -34,6 +34,9 @@ export type Screen =
   /** The book itself: the shelf, the suppliers and the cash — the three things the book
    *  always knew and the platform did not read until it ingested them. */
   | "payments" | "payables" | "stock" | "supply"
+  /** The cycle the two payment screens sit inside: order → invoice → payment,
+   *  reported by stage so a delay can be attributed rather than argued about. */
+  | "orderToCash"
   /** Deadlines the tax code sets: the MSME payment cliff, whose status is still
    *  unknown, and the 194Q threshold. Dates and amounts, never advice. */
   | "statutory"
@@ -94,6 +97,7 @@ export const PATH: Record<Screen, string> = {
   cadence: "/cadence",
   payments: "/payments",
   payables: "/payables",
+  orderToCash: "/order-to-cash",
   statutory: "/statutory",
   stock: "/stock",
   supply: "/supply",
@@ -190,6 +194,7 @@ export function vizPath(route: string): string {
     cadence: "cadence",
     payments: "payments",
     payables: "payables",
+    "order-to-cash": "orderToCash",
     statutory: "statutory",
     stock: "stock",
     supply: "supply",

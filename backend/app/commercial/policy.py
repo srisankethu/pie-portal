@@ -49,6 +49,16 @@ EDITABLE: tuple[str, ...] = (
     "slow_stock_days",
     "receivable_exposure_share",
     "supplier_spend_share",
+    # Statutory timing. Editable because all four are facts about *this*
+    # business rather than about the analysis: the limits vary with the statute,
+    # the tax rate varies by entity and regime, and whether our own turnover
+    # crossed the 194Q gate is something only the owner can confirm.
+    "msme_default_days",
+    "msme_max_agreed_days",
+    "msme_watch_horizon_days",
+    "effective_tax_rate",
+    "s194q_party_threshold",
+    "s194q_org_gate_met",
 )
 #: Incentive rates are deliberately absent. They are not org policy edited from
 #: a settings screen — they are the published mechanism parameters in
@@ -160,6 +170,41 @@ FIELD_HELP: dict[str, tuple[str, str]] = {
         "an exact 1,847.31 invites an argument about the 31. Scale it to the "
         "currency — a tick that is sensible on a ₹2,000 insert is a 5% "
         "distortion on a $100 one. Set 0 to quote the unrounded number."),
+    "msme_default_days": (
+        "MSME limit without a written agreement",
+        "How long you have to pay a registered micro or small supplier when no "
+        "written agreement is on record. Fifteen days under the MSMED Act, and "
+        "this is the limit that applies to most small suppliers — a payment "
+        "term picked from a dropdown in your books is not a written agreement."),
+    "msme_max_agreed_days": (
+        "MSME limit with a written agreement",
+        "The longest a written agreement with a micro or small supplier can "
+        "push the payment deadline. Forty-five days is the statutory ceiling; "
+        "an agreement above it is capped to this when a deadline is computed, "
+        "and the watchlist says it was capped."),
+    "msme_watch_horizon_days": (
+        "Watchlist horizon",
+        "How far ahead the MSME watchlist looks. Bills whose deadline has "
+        "already passed are always listed, however old — a deadline that has "
+        "gone by does not stop mattering."),
+    "effective_tax_rate": (
+        "Effective tax rate",
+        "Used only to estimate what a disallowed deduction costs. Leave it "
+        "empty if it has not been decided: the watchlist still reports the "
+        "deadline and the amount at risk, and simply shows no cost estimate "
+        "rather than one computed from a guess. Note the estimate is a year's "
+        "financing cost on tax paid early, not the tax itself — the deduction "
+        "comes back in the year the supplier is actually paid."),
+    "s194q_party_threshold": (
+        "194Q threshold per supplier",
+        "Purchases from one supplier in a financial year beyond which tax has "
+        "to be deducted. Applies only if the turnover gate below is confirmed."),
+    "s194q_org_gate_met": (
+        "194Q applies to this entity",
+        "Turn on only if this entity's own turnover exceeded the statutory "
+        "limit in the previous financial year. That figure is not in this "
+        "platform, so nothing is asserted until somebody confirms it here — "
+        "the crossing list stays empty and says why."),
 }
 
 
@@ -170,8 +215,14 @@ FIELD_HELP: dict[str, tuple[str, str]] = {
 #: ``_kind`` reads these too, so what the screen renders and what the server
 #: parses come from one list. They were separate for one commit and the screen
 #: showed "36500 %" for a 365-day threshold.
-_BOOLEAN = frozenset({"carrying_rate_is_published"})
-_DAY_COUNTS = frozenset({"dead_stock_days", "slow_stock_days"})
+_BOOLEAN = frozenset({"carrying_rate_is_published", "s194q_org_gate_met"})
+_DAY_COUNTS = frozenset({"dead_stock_days", "slow_stock_days",
+                         "msme_default_days", "msme_max_agreed_days",
+                         "msme_watch_horizon_days"})
+#: Fields whose *absence* is a meaningful answer, so clearing one has to be
+#: possible. Everything else coerces a blank to a number, which for these would
+#: silently invent the value the field exists to withhold.
+_NULLABLE_RATES = frozenset({"effective_tax_rate"})
 
 
 class PolicyError(ValueError):
@@ -198,6 +249,14 @@ def _coerce(field: str, value: Any) -> Any:
         return bool(value)
     if field in _DAY_COUNTS:
         return int(value)
+    if field in _NULLABLE_RATES:
+        # An owner who has not set their tax rate, or who clears it again, must
+        # end up with None rather than 0.0. A zero rate would report the cost
+        # of a disallowance as nothing at all — the benign default this
+        # codebase keeps finding in its own past.
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return None
+        return float(value)
     return float(value)
 
 
@@ -247,6 +306,29 @@ def validate(th: CommercialThresholds) -> None:
             raise PolicyError(f"{name.replace('_', ' ')} cannot be negative")
     if not (0 <= th.min_margin_deterioration_pp < 1):
         raise PolicyError("Erosion threshold must be between 0 and 1 (0.03 is 3 points)")
+
+    # ── statutory timing ────────────────────────────────────────────────────
+    for name in ("msme_default_days", "msme_max_agreed_days",
+                 "msme_watch_horizon_days"):
+        if getattr(th, name) < 0:
+            raise PolicyError(f"{name.replace('_', ' ')} cannot be negative — a "
+                              f"bill is not overdue before it is raised")
+    if th.msme_default_days > th.msme_max_agreed_days:
+        raise PolicyError(
+            f"The default limit ({th.msme_default_days} days) cannot exceed the "
+            f"agreed maximum ({th.msme_max_agreed_days} days) — a supplier with "
+            f"no written agreement would get longer than one with an agreement, "
+            f"which inverts the rule.")
+    # None is the honest state and stays allowed; a rate that is set has to be
+    # a rate. Zero is refused rather than accepted as "no tax": an owner who
+    # means "I have not decided" clears the field.
+    if th.effective_tax_rate is not None and not (0 < th.effective_tax_rate < 1):
+        raise PolicyError(
+            f"The effective tax rate must be a fraction between 0 and 1 "
+            f"(0.25 is 25%), or left unset if it has not been decided — got "
+            f"{th.effective_tax_rate}")
+    if th.s194q_party_threshold < 0:
+        raise PolicyError("The 194Q party threshold cannot be negative")
 
 
 # ── loading ─────────────────────────────────────────────────────────────────
@@ -373,6 +455,7 @@ MONEY_FIELDS: frozenset[str] = frozenset({
     "min_quote_exception_impact",
     "min_material_gap",
     "price_rounding_increment",
+    "s194q_party_threshold",
 })
 
 
@@ -401,6 +484,11 @@ def _kind(field: str) -> str:
         return "days"
     if field in MONEY_FIELDS:
         return "money"
+    if field in _NULLABLE_RATES:
+        # A ratio the screen must be able to leave *empty*. Rendered as a plain
+        # ratio it would show "0 %" for an unset rate, which is the one reading
+        # this field must never have.
+        return "optional_ratio"
     return "ratio"
 
 

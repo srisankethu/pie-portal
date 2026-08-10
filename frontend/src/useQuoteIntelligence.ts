@@ -7,7 +7,9 @@
  * answer cannot have changed.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { LineIntelligence, Quote, QuoteIntelligence } from "./types";
+import type {
+  LineIntelligence, Quote, QuoteIntelligence, QuoteLossReason, QuoteOutcomeStatus,
+} from "./types";
 import { AssessLine, QuoteGate, byLine, intelligence } from "./intelligence";
 import { productRef } from "./rel";
 
@@ -31,6 +33,9 @@ export interface QuoteIntelligenceState {
   error: string | null;
   recordOverride: (lineId: string, reasonCode: string, reason: string) => Promise<void>;
   requestApproval: (lineId: string, reasonCode: string, reason: string) => Promise<void>;
+  recordOutcome: (
+    status: QuoteOutcomeStatus, lossReason?: QuoteLossReason, lostTo?: string,
+  ) => Promise<void>;
   gate: QuoteGate | null;
   refresh: () => void;
 }
@@ -123,6 +128,24 @@ export function useQuoteIntelligence(quote: Quote | null, token: string): QuoteI
     [token, quoteId, customer],
   );
 
+  /** Record what happened to the quote.
+   *
+   *  The 422 the server raises for a LOST with no reason is propagated rather
+   *  than pre-empted with a check here. The rule belongs to
+   *  `commercial/quote_service`, and a copy of it in this hook is a copy that
+   *  goes stale the first time a reason is added.
+   */
+  const recordOutcome = useCallback(
+    async (status: QuoteOutcomeStatus, lossReason?: QuoteLossReason,
+           lostTo?: string) => {
+      if (!quoteId) throw new Error("There is no quote open to record this against");
+      await intelligence.outcome(token, quoteId, status, customer, undefined,
+                                 lossReason, lostTo);
+      setNonce((n) => n + 1);
+    },
+    [token, quoteId, customer],
+  );
+
   return {
     data,
     byLineId: useMemo(() => byLine(data), [data]),
@@ -130,6 +153,7 @@ export function useQuoteIntelligence(quote: Quote | null, token: string): QuoteI
     error,
     recordOverride,
     requestApproval,
+    recordOutcome,
     gate,
     refresh: () => setNonce((n) => n + 1),
   };

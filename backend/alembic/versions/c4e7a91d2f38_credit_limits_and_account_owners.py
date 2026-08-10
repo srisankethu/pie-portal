@@ -1,7 +1,7 @@
 """customer_credit_limits, customer_account_owners — the line, and whose book
 
 Revision ID: c4e7a91d2f38
-Revises: b2d95e11c74a
+Revises: c3f8a2b19e47
 Create Date: 2026-08-08
 
 Two tables, added together because they answer one question between them. The
@@ -43,7 +43,13 @@ from alembic import op
 import sqlalchemy as sa
 
 revision = "c4e7a91d2f38"
-down_revision = "0e8d9299b0c7"
+# Re-pointed from 0e8d9299b0c7 when this branch was merged: main had moved on to
+# c3f8a2b19e47 and 0e8d9299b0c7 already had a child there, so keeping the old
+# parent would have left two heads. Editing this revision is safe precisely
+# because it has never been released — CLAUDE.md §4's rule is about revisions
+# that have run somewhere — and both tables here are additive, so a linear chain
+# is honest rather than a merge revision for nothing.
+down_revision = "c3f8a2b19e47"
 branch_labels = None
 depends_on = None
 

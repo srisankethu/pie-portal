@@ -26,7 +26,9 @@ from .. import clock
 from ..domain import models
 from ..domain.enums import (
     QUOTE_OUTCOME_TRANSITIONS,
+    SELECTABLE_LOSS_REASONS,
     EvidenceSufficiency,
+    QuoteLossReason,
     QuoteOutcomeStatus,
     Role,
 )
@@ -36,7 +38,14 @@ from .config import CommercialThresholds
 from .policy import load_for_org
 from .economics import LineEconomics, line_economics
 from .metrics import RelationshipMetrics, compute_relationship
-from .quote_exceptions import CRITICAL, RESTRICTED
+from .quote_exceptions import (
+    APPROVAL_REQUIRED,
+    COST_BASIS,
+    CRITICAL,
+    RESTRICTED,
+    REVIEW_EXPECTED,
+    WARNING,
+)
 from .quote_intelligence import QuoteLineIntelligence, assess_line
 
 log = logging.getLogger("pie_portal.commercial.quote")
@@ -243,6 +252,102 @@ def _costs_for_products(session: Session, org: str,
 
 
 # ── role projection ─────────────────────────────────────────────────────────
+def _withheld_boundaries(reference_dicts: list[dict], is_sales: bool) -> frozenset[str]:
+    """What this recipient may not learn the value of, on this line.
+
+    Derived from the line's own references rather than from a list of codes kept
+    here, so a reference whose ``data_class`` changes moves this with it. A
+    second copy of that classification is a second thing to forget.
+    """
+    if not is_sales:
+        return frozenset()
+    return frozenset(
+        {r["code"] for r in reference_dicts if r.get("data_class") == RESTRICTED}
+    ) | {COST_BASIS}
+
+
+def _substitute(code: str, severity: str, title: str, detail: str, *,
+                requires_approval: bool = False) -> dict:
+    """The one exception standing in for every withheld cost rule.
+
+    Fixed text, no impact figure, no reference code: it has to say the same
+    thing however far below the floor the price sits, or the wording becomes the
+    oracle the code was withheld to close.
+    """
+    return {
+        "code": code, "severity": severity, "title": title, "detail": detail,
+        "impact_amount": None, "impact_data_class": RESTRICTED,
+        "reference_code": None, "requires_approval": requires_approval,
+        "policy": True,
+    }
+
+
+def _project_exceptions(raw: list[dict], reference_dicts: list[dict],
+                        is_sales: bool) -> list[dict]:
+    """Strip the reasoning, then withhold the rules whose boundary is restricted.
+
+    The first half is the old behaviour and was never enough. Removing
+    ``manager_detail`` and a RESTRICTED ``impact_amount`` still leaves the fact
+    that a *named* rule fired — and the caller chooses ``proposed_price``, so
+    that fact is a probe. Walking the price finds the value at which the answer
+    changes, and for the cost rules that value is cost, or cost over one minus a
+    margin the same response deliberately withholds. Two hundred lines fit in
+    one request, so the walk was two round trips.
+
+    So a rule is withheld outright when its ``boundary_refs`` name anything this
+    recipient may not see, and one substitute is emitted in its place. The
+    substitute is what keeps the control: a salesperson must still learn that a
+    line needs approval, and hiding that would be a worse defect than the one
+    being closed — they would send it.
+
+    **The residual, stated rather than left to be discovered.** A substitute is
+    itself a boundary; anything that tells somebody "this needs approval" has to
+    be. What changes is how many, and which. ``NEGATIVE_MARGIN`` and
+    ``BELOW_MIN_MARGIN`` collapse into one, and that collapse is the point: cost
+    is always at or below the approval floor, so the union of the two fires at
+    the approval floor alone and the ``price <= unit_cost`` edge — the one that
+    yielded cost with no policy parameter attached — stops existing. What is
+    left is two boundaries, ``cost/(1 - min_margin)`` and
+    ``cost/(1 - margin_floor)``, in three unknowns. Underdetermined; cost does
+    not come out.
+
+    Read that as the standing bound on this function. It may disclose one
+    boundary per distinct action the recipient can take, because that is the
+    information the control exists to convey. Anything past that is a leak.
+    """
+    withheld = _withheld_boundaries(reference_dicts, is_sales)
+    out: list[dict] = []
+    approval = review = False
+    for entry in raw:
+        d = dict(entry)
+        if is_sales:
+            d.pop("manager_detail", None)
+            d.pop("inputs", None)
+            if d.get("impact_data_class") == RESTRICTED:
+                d["impact_amount"] = None
+            if withheld & frozenset(d.get("boundary_refs") or ()):
+                # Dropped, and remembered as the state it stood for.
+                approval = approval or bool(d.get("requires_approval"))
+                review = review or bool(d.get("policy"))
+                continue
+        d.pop("boundary_refs", None)
+        out.append(d)
+
+    if approval:
+        out.insert(0, _substitute(
+            APPROVAL_REQUIRED, CRITICAL,
+            "Needs approval before it can go out",
+            "This price is below what this item may be sold at without "
+            "approval. Send it for approval, or raise the price.",
+            requires_approval=True))
+    elif review:
+        out.insert(0, _substitute(
+            REVIEW_EXPECTED, WARNING, "Thin on this line",
+            "This price is below the level the business normally reviews. It "
+            "can go out, but it will be looked at."))
+    return out
+
+
 def project(intel: QuoteLineIntelligence, role: Role, *,
             product_ref: str = "", unresolved: bool = False) -> dict:
     """Serialize one line's intelligence for a recipient.
@@ -251,24 +356,19 @@ def project(intel: QuoteLineIntelligence, role: Role, *,
     them are **absent** — not zeroed, not masked, not rounded away. What remains
     is what they may act on: prices this customer has actually paid, the rules
     that fired, and whether approval is needed. A salesperson can still see that
-    a price is below the floor; they cannot see how far below cost it sits.
+    a line needs approval; they cannot walk the price to find where approval
+    begins and read cost off it — see ``_project_exceptions``.
     """
     is_sales = role is Role.SALESPERSON
 
-    references = [r.to_dict() for r in intel.references
-                  if not (is_sales and r.data_class == RESTRICTED)]
+    reference_dicts = [r.to_dict() for r in intel.references]
+    references = [r for r in reference_dicts
+                  if not (is_sales and r["data_class"] == RESTRICTED)]
     withheld = [r.label for r in intel.references
                 if is_sales and r.data_class == RESTRICTED]
 
-    exceptions = []
-    for e in intel.exceptions:
-        d = e.to_dict()
-        if is_sales:
-            d.pop("manager_detail", None)
-            d.pop("inputs", None)
-            if e.impact_data_class == RESTRICTED:
-                d["impact_amount"] = None
-        exceptions.append(d)
+    exceptions = _project_exceptions(
+        [e.to_dict() for e in intel.exceptions], reference_dicts, is_sales)
 
     out: dict[str, Any] = {
         "line_id": intel.line_id,
@@ -281,9 +381,15 @@ def project(intel: QuoteLineIntelligence, role: Role, *,
         "references": references,
         "references_withheld": withheld,
         "exceptions": exceptions,
-        "worst_severity": intel.worst_severity,
-        "requires_approval": intel.requires_approval,
-        "blocking": intel.blocking,
+        # Read off the *projected* list, not the assessment. Taken from `intel`
+        # these are a second, finer copy of what the withheld rules said:
+        # CRITICAL rather than WARNING separates "below the approval floor" from
+        # "below the review floor", which is a second boundary arriving through
+        # a field nobody was looking at. That is how `filterCounts.MFLOOR`
+        # happened — the guard was right and the line below it was not.
+        "worst_severity": (exceptions[0]["severity"] if exceptions else None),
+        "requires_approval": any(e["requires_approval"] for e in exceptions),
+        "blocking": any(e["severity"] == CRITICAL for e in exceptions),
         "data_quality": {
             "data_sufficiency": intel.data_sufficiency.value,
             "reasons": intel.sufficiency_reasons,
@@ -332,18 +438,31 @@ def summarize(assessment: QuoteAssessment, role: Role) -> dict:
     blended margin across a mixed quote is the number people quote back at each
     other while the loss-making line stays invisible. The per-line view is the
     honest one.
+
+    ``role`` was taken and ignored, which is how the two cost-derived counts came
+    to be computed for everybody. A count over lines the caller priced is a
+    *sharper* oracle than the per-line flag, not a blunter one: two hundred
+    probe lines in one request turn "how many are below the floor" into a
+    rank, and a rank bisects in a single round trip. This is the shape of
+    ``filterCounts.MFLOOR`` exactly, at quote scale.
+
+    Omitted for a salesperson rather than zeroed, for the reason the MFLOOR fix
+    in ``store.py`` gives: a zero still answers the question.
     """
     exceptions = [e for ln in assessment.lines for e in ln.exceptions]
-    return {
+    out = {
         "lines_assessed": len(assessment.lines),
         "lines_unresolved": len(assessment.unresolved),
         "exceptions_total": len(exceptions),
-        "critical": sum(1 for e in exceptions if e.severity == CRITICAL),
-        "requires_approval": sum(1 for ln in assessment.lines if ln.requires_approval),
         "insufficient_data": sum(
             1 for ln in assessment.lines
             if ln.data_sufficiency is EvidenceSufficiency.INSUFFICIENT),
     }
+    if role is not Role.SALESPERSON:
+        out["critical"] = sum(1 for e in exceptions if e.severity == CRITICAL)
+        out["requires_approval"] = sum(
+            1 for ln in assessment.lines if ln.requires_approval)
+    return out
 
 
 def _catalog_version() -> str:
@@ -511,15 +630,15 @@ def snapshot_to_dict(row: models.QuoteDecision, role: Role) -> dict:
     """Read a snapshot back. Economics stay RESTRICTED on the way out too —
     a stored margin is still a margin."""
     is_sales = role is Role.SALESPERSON
-    exceptions = []
-    for e in row.exceptions or []:
-        e = dict(e)
-        if is_sales:
-            e.pop("manager_detail", None)
-            e.pop("inputs", None)
-            if e.get("impact_data_class") == RESTRICTED:
-                e["impact_amount"] = None
-        exceptions.append(e)
+    references = list(row.references or [])
+    # The same projection the live path uses, so the audit screen and the quote
+    # screen cannot disagree about what a salesperson may read. A snapshot
+    # written before ``boundary_refs`` existed carries none, so nothing is
+    # withheld from it — acceptable, and worth saying why: a stored row holds
+    # one price somebody actually quoted. It cannot be walked, so it is a single
+    # historical fact rather than an oracle.
+    exceptions = _project_exceptions(
+        [dict(e) for e in (row.exceptions or [])], references, is_sales)
 
     out: dict[str, Any] = {
         "quote_decision_id": row.quote_decision_id,
@@ -541,7 +660,13 @@ def snapshot_to_dict(row: models.QuoteDecision, role: Role) -> dict:
         "overridden": row.overridden,
         "override_reason": row.override_reason,
         "override_reason_code": row.override_reason_code,
-        "overridden_exception_codes": row.overridden_exception_codes or [],
+        # Narrowed to the codes that survived projection. This list is built
+        # from the exceptions requiring approval, so unfiltered it names
+        # BELOW_MIN_MARGIN straight back to the reader the line above just
+        # withheld it from — the redaction and its undo in one payload.
+        "overridden_exception_codes": [
+            c for c in (row.overridden_exception_codes or [])
+            if not is_sales or c in {e["code"] for e in exceptions}],
         "thresholds_version": row.thresholds_version,
         "engine_version": row.engine_version,
         "catalog_version": row.catalog_version,
@@ -569,16 +694,52 @@ class InvalidTransition(ValueError):
     """A quote outcome change the lifecycle does not permit."""
 
 
+class MissingLossReason(ValueError):
+    """A loss recorded without saying which kind of loss it was.
+
+    Its own type rather than a ``ValueError``, because a router has to map it
+    to a 422 with a usable message while ``InvalidTransition`` is a 409 — and a
+    caller that cannot tell them apart will collapse both into "bad request"
+    and lose the only part the person filling the form can act on.
+    """
+
+
 def set_outcome(session: Session, org: str, *, quote_id: str,
                 status: QuoteOutcomeStatus, customer_ref: str = "",
                 customer_id: Optional[str] = None, note: Optional[str] = None,
+                loss_reason: Optional[QuoteLossReason] = None,
+                lost_to: Optional[str] = None,
                 user_id: Optional[str] = None) -> models.QuoteOutcome:
     """Move a quote along DRAFT → SENT → WON/LOST.
 
     Won and lost are terminal. Reopening a decided quote would rewrite history a
     margin analysis has already counted, so it is refused rather than silently
     allowed.
+
+    **A loss must say which kind of loss it was.** Recording LOST without a
+    reason raises rather than storing a benign default, because the two things
+    a bare LOST can mean — a competitor supplied it, or nobody did — point in
+    opposite directions for every later question about what this customer buys
+    elsewhere. Defaulting to UNKNOWN would make the gap invisible at exactly
+    the moment it is cheapest to close: the person recording the loss is the
+    one person who knows.
+
+    "Not recorded" is unreachable rather than rejected: it lives outside
+    ``QuoteLossReason`` as a plain sentinel, so there is no value a caller could
+    pass to mean it. A state history can be in, but not one a new record can be
+    created in — enforced by construction rather than by a guard that has to be
+    remembered.
     """
+    if status is QuoteOutcomeStatus.LOST:
+        if loss_reason is None:
+            raise MissingLossReason(
+                "Recording a quote as lost needs a reason: "
+                + ", ".join(r.value for r in SELECTABLE_LOSS_REASONS)
+                + ". Whether the order went to another supplier or the "
+                  "requirement went away are opposite facts about this "
+                  "customer, and a lost quote with neither recorded cannot be "
+                  "counted as either.")
+
     row = session.scalar(
         select(models.QuoteOutcome).where(
             models.QuoteOutcome.organization_id == org,
@@ -603,6 +764,11 @@ def set_outcome(session: Session, org: str, *, quote_id: str,
         row.sent_at = row.sent_at or now
     if status in (QuoteOutcomeStatus.WON, QuoteOutcomeStatus.LOST):
         row.decided_at = now
+    if status is QuoteOutcomeStatus.LOST:
+        # Only on the LOST edge. Setting these on any status would let a WON
+        # quote carry a stale reason from an earlier attempt at the form.
+        row.loss_reason = loss_reason.value if loss_reason else None
+        row.lost_to = (lost_to or "").strip()[:255] or None
     if note is not None:
         row.note = note[:1024]
     if customer_ref:
@@ -622,12 +788,18 @@ def outcome_to_dict(row: Optional[models.QuoteOutcome]) -> Optional[dict]:
         "quote_id": row.quote_id,
         "status": row.status,
         "note": row.note,
+        # Null means the loss predates the field being asked for — not that
+        # somebody answered "unknown". A screen should render the two
+        # differently, and it cannot if the API folds them together.
+        "loss_reason": row.loss_reason,
+        "lost_to": row.lost_to,
         "customer_ref": row.customer_ref,
         "customer_id": row.customer_id,
         "sent_at": clock.iso(row.sent_at),
         "decided_at": clock.iso(row.decided_at),
         "allowed_next": sorted(
             s.value for s in QUOTE_OUTCOME_TRANSITIONS[QuoteOutcomeStatus(row.status)]),
+        "loss_reasons": [r.value for r in SELECTABLE_LOSS_REASONS],
     }
 
 

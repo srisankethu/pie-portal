@@ -344,6 +344,37 @@ class Product(Base):
     #: be chained.
     manufacturer: Mapped[Optional[str]] = mapped_column(String(128))
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    #: The decoded manufacturer catalogue record this item **is** — pie-parser's
+    #: ``record_id`` (a Kennametal MM#), or NULL.
+    #:
+    #: Link, never merge, for the reason ``identity/`` gives: the master row and
+    #: the catalogue row stay separate objects with a pointer between them, so a
+    #: wrong link is undone by clearing a column rather than by reconstructing a
+    #: record that a merge destroyed.
+    #:
+    #: **NULL means unlinked and must never be read as anything else.** It is
+    #: the value for an item nobody has matched, for a principal this pack does
+    #: not cover, and for a sync that ran with the catalogue absent. Measured
+    #: against the live master, ~9% of items link — so NULL is the common case,
+    #: and a caller that reads it as "no such product" rather than "not known
+    #: here" will be wrong about the other 91%.
+    #: See ``docs/concepts/01-application-engineering.md``.
+    pie_record_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+
+    #: How the link was established. Only ``SKU_EXACT`` today, and the column
+    #: exists so a second method can never be mistaken for the first: an exact
+    #: catalogue-number hit and a human confirmation are different evidence, and
+    #: a reader must be able to tell which one a row rests on.
+    pie_link_method: Mapped[Optional[str]] = mapped_column(String(32))
+
+    #: The ruleset checksum of the catalogue that produced the link — the stamp
+    #: ``QuoteDecision.catalog_version`` also carries, here for the reason
+    #: ``thresholds_version`` is on a computed row: it says *which* catalogue
+    #: judged this, so a link written under a superseded corpus is identifiable
+    #: rather than merely stale.
+    pie_catalog_version: Mapped[Optional[str]] = mapped_column(String(128))
+
     source_ref: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
@@ -615,6 +646,78 @@ class CustomerAccountOwner(Base):
                                                  onupdate=_now)
 
 
+class VendorMsmeStatus(Base):
+    """Whether a supplier is protected by the MSME 45-day rule, and on what evidence.
+
+    Section 43B(h) disallows a deduction for anything owed to a registered
+    micro or small enterprise beyond the section 15 limit. Every other input to
+    that test is already here — bill dates, payment dates, balances — so this
+    single field is the whole distance between the platform holding the answer
+    and being unable to ask the question.
+
+    A separate table rather than a column on ``Vendor``, for the reason
+    ``VendorPaymentTerm`` gives: ``upsert_vendor`` rewrites the vendor row from
+    the payload on every sync, so a status stored there would survive exactly
+    until the next pull. This is typed by a person, it is the only copy, and it
+    must outlive a complete re-sync.
+
+    **Nothing here is ever inferred.** Not from turnover in our own books, not
+    from how much we buy, not from the supplier's name. ``UNKNOWN`` is the
+    default and produces a data-gap row on the watchlist — never a silent pass.
+    That is the same rule ``Customer.incentive_eligibility`` follows and the
+    same rule the cost placeholders follow, and it is here for the same reason:
+    a benign default on a missing fact reads as good news.
+
+    ``written_agreement`` is nullable on purpose, and the three states are
+    genuinely different. Absent a written agreement section 15 allows **15**
+    days, not 45; a written one may extend that to a maximum of 45. ``None``
+    means nobody has established which, so the conservative 15 applies and the
+    row says the basis was a default. Zoho's ``payment_terms`` is emphatically
+    not evidence of a written agreement — it is a fixed dropdown, as
+    ``commercial/insight/terms.py`` explains at length — so reading a Zoho term
+    of 45 as an agreement would understate exposure on precisely the suppliers
+    with no contract, who are the ones this rule exists to protect.
+    """
+
+    __tablename__ = "vendor_msme_statuses"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "vendor_id",
+                         name="uq_vendor_msme_status_vendor"),
+    )
+
+    vendor_msme_status_id: Mapped[str] = mapped_column(String(64), primary_key=True,
+                                                       default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    vendor_id: Mapped[str] = mapped_column(String(64),
+                                           ForeignKey("vendors.vendor_id"),
+                                           index=True)
+    #: ``MsmeClassification``. MICRO and SMALL are in scope; MEDIUM is not.
+    classification: Mapped[str] = mapped_column(String(16), default="UNKNOWN")
+    #: ``EnterpriseActivity``. A registered TRADER is out of scope — see the
+    #: enum, where the reason is worth reading before anyone "simplifies" this
+    #: field away.
+    enterprise_activity: Mapped[str] = mapped_column(String(16), default="UNKNOWN")
+    udyam_number: Mapped[Optional[str]] = mapped_column(String(32))
+    #: True / False / None, and None is not False. See the class docstring.
+    written_agreement: Mapped[Optional[bool]] = mapped_column(Boolean)
+    #: Only meaningful when ``written_agreement`` is True, and capped at the
+    #: statutory maximum when the deadline is computed rather than on write —
+    #: what was agreed and what the law allows are two different facts, and
+    #: overwriting the first with the second loses the disagreement.
+    agreed_days: Mapped[Optional[int]] = mapped_column(Integer)
+    #: ``MsmeEvidence``.
+    evidence: Mapped[str] = mapped_column(String(24), default="NONE")
+    #: When this status began to be true. A supplier can cross out of micro or
+    #: small, and a bill is judged against the status in force on its own date.
+    effective_from: Mapped[Optional[date]] = mapped_column(Date)
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    set_by_user_id: Mapped[Optional[str]] = mapped_column(String(64))
+    note: Mapped[Optional[str]] = mapped_column(String(512))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
+                                                 onupdate=_now)
+
+
 class ItemCategoryOverride(Base):
     """What a person said an item's line is, when the catalogue could not say.
 
@@ -650,6 +753,83 @@ class ItemCategoryOverride(Base):
     #: no name on it is one nobody can ask about.
     set_by_user_id: Mapped[Optional[str]] = mapped_column(String(64))
     note: Mapped[Optional[str]] = mapped_column(String(512))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
+                                                 onupdate=_now)
+
+
+class TenderResult(Base):
+    """A published tender, what it asked for, and what we won of it.
+
+    The one place this platform can *measure* share of wallet rather than
+    estimate it. A government or PSU tender states the quantity and value it is
+    buying, in a document anybody can read, and the award says who supplied it.
+    So for that customer, over that tender, ``won ÷ tendered`` is arithmetic
+    over two published facts — not an inference about spend the platform cannot
+    see, which is what ``insight/dependency.py`` correctly refuses to make.
+
+    **Scoped to what was tendered, and named for it.** This says nothing about
+    the same customer's off-tender buying — the spares, the consumables, the
+    repeat orders that never reach a bid. A customer at 60% of their tendered
+    tooling may be at 5% of their total, and a field called "share of wallet"
+    holding this number would be a lie of scope. ``insight/wallet.py`` reports
+    it as ``MEASURED_TENDER`` for that reason.
+
+    **Typed in, not derived.** Nothing syncs this: tender portals are not a
+    connector and the award notice is a PDF. It is therefore a *record of what
+    somebody read*, and it carries the reference and the source so a figure
+    built on it can be checked back to the document. A row with no reference is
+    refused at the router — a measured share whose measurement cannot be looked
+    up is no better than a guess.
+
+    Append-only in spirit and mutable in fact: an award is learned after the
+    bid, so ``won_value`` and ``awarded_on`` fill in later. What must never
+    change is ``tendered_value`` — that is what the published document said, and
+    editing it to reconcile a share would be editing the evidence.
+    """
+
+    __tablename__ = "tender_results"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "tender_ref",
+                         name="uq_tender_result_org_ref"),
+        Index("ix_tender_results_org_customer", "organization_id", "customer_id"),
+    )
+
+    tender_result_id: Mapped[str] = mapped_column(String(64), primary_key=True,
+                                                  default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    #: The bid number as the portal writes it — GeM bid id, NIT number, tender
+    #: id. Unique per organization: the same bid recorded twice would count its
+    #: value twice in a denominator, which inflates a share silently.
+    tender_ref: Mapped[str] = mapped_column(String(128), index=True)
+    #: Who is buying. Resolved where possible; the ref is kept regardless,
+    #: because a tender from a customer not yet on the book is still a real
+    #: observation and dropping it would lose exactly the accounts with the
+    #: least trade behind them.
+    customer_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    customer_ref: Mapped[str] = mapped_column(String(255), default="")
+
+    #: What the published document asked for. Never edited to reconcile a
+    #: share — this is the evidence, not a working figure.
+    tendered_value: Mapped[Any] = mapped_column(Numeric(18, 2))
+    #: What we were awarded. NULL until the award is known, which is not zero:
+    #: an undecided tender excluded from the denominator is honest, and one
+    #: counted as a loss is a share understated by however many bids are open.
+    won_value: Mapped[Optional[Any]] = mapped_column(Numeric(18, 2))
+
+    #: Which lines of the business this tender covers, so a share can say what
+    #: it is a share *of*. One of ``commercial.categories.ORDER`` per entry.
+    categories: Mapped[list[str]] = mapped_column(JSON, default=list)
+
+    closed_on: Mapped[date] = mapped_column(Date, index=True)
+    awarded_on: Mapped[Optional[date]] = mapped_column(Date)
+
+    #: Where this was read — a portal URL, a document name, an ingested
+    #: document id. Required at the router: a measured share whose measurement
+    #: cannot be looked up is not measured.
+    source: Mapped[str] = mapped_column(String(512), default="")
+    recorded_by_user_id: Mapped[Optional[str]] = mapped_column(String(64))
+    note: Mapped[Optional[str]] = mapped_column(String(1024))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
                                                  onupdate=_now)
@@ -1295,6 +1475,28 @@ class QuoteOutcome(Base):
 
     status: Mapped[str] = mapped_column(String(16), default="DRAFT", index=True)
     note: Mapped[Optional[str]] = mapped_column(String(1024))
+    # Why it was lost — a ``QuoteLossReason``, and specifically whether the
+    # money went to somebody else or the requirement died. Those two look
+    # identical in a bare LOST row and mean opposite things about what this
+    # customer spends elsewhere, so anything reasoning about that has to be
+    # able to separate them, and a free-text ``note`` cannot be aggregated.
+    #
+    # NULL only on rows written before this column existed. Backfilling them to
+    # UNKNOWN would be indistinguishable from somebody having answered
+    # "unknown", so they are left NULL and read as "not recorded" — which is
+    # the true statement. New losses cannot be NULL: ``set_outcome`` refuses a
+    # LOST transition without a reason rather than defaulting to a benign one.
+    # 32 rather than the 24 the longest member needs: it is the width
+    # `claude/quote-win-loss` chose for this same column, and matching it means
+    # whichever branch lands second deletes a migration instead of altering a
+    # type on a live table.
+    loss_reason: Mapped[Optional[str]] = mapped_column(String(32), index=True)
+    #: Who won it, where that is known. Free text on purpose — a competitor is
+    #: not an entity this platform holds, and a lookup table of them would be a
+    #: second customer master maintained by nobody. Never required: a reason is
+    #: the part that has to be answerable, and a rep who does not know the
+    #: winner must still be able to record the loss.
+    lost_to: Mapped[Optional[str]] = mapped_column(String(255))
     sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     decided_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     updated_by_user_id: Mapped[Optional[str]] = mapped_column(String(64))

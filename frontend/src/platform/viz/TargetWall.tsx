@@ -184,6 +184,8 @@ function Rebate({ rebate }: { rebate: Row }) {
   const next = obj(rebate.next_slab);
   const projection = obj(rebate.projection);
   const absent = obj(rebate.absent);
+  const marginal = obj(rebate.marginal);
+  const unpriced = obj(rebate.marginal_absent);
 
   // Absent, not zero. Nobody having said what the rebate is differs from a
   // principal who pays none, and the wall must not read the first as the second.
@@ -211,6 +213,16 @@ function Rebate({ rebate }: { rebate: Row }) {
           tip={secured
             ? "Earned on everything bought so far, if the period closed today."
             : "Nothing is earned below the first rung of this scheme."} />
+        {/* The one state on this wall that expires when the quarter does, so
+            it gets a chip rather than a sentence three lines down. */}
+        {marginal?.free === true && (
+          <StatusChip
+            dense
+            tone="good"
+            label="next rung is free"
+            tip={"There is less left to buy than the rung pays, so the "
+              + "increment costs nothing net. It lapses when the period closes."} />
+        )}
       </div>
 
       {next && (
@@ -238,6 +250,31 @@ function Rebate({ rebate }: { rebate: Row }) {
           // here would be putting a confident number on a week of evidence.
           <p className="viz-muted wall-note">
             <em>{String(absent.label)}.</em> {String(absent.why)}
+          </p>
+        )
+      )}
+
+      {/* What the rung costs, as against what it pays. Measured above the
+          projected close, so it reads after it. Every figure here is formatted
+          rather than derived — `effective_cost` and `earned_per_rupee` are two
+          sides of one number the server computed, and working the second out
+          from the first on this screen would put margin arithmetic in the UI. */}
+      {marginal ? (
+        <p className="viz-muted wall-note">
+          <strong>{money(num(marginal.gap))}</strong> more than that collects{" "}
+          <strong>{money(num(marginal.gain))}</strong>
+          {marginal.free === true
+            ? <> — <strong>that buying costs nothing net</strong>.</>
+            : <>, so the extra costs {pct(num(marginal.effective_cost), 0)} of
+                list — <strong>{pct(num(marginal.earned_per_rupee), 0)} back</strong>.</>}
+        </p>
+      ) : (
+        // Only the "already clearing it" state is worth saying here. The other
+        // two reasons are a missing projection, which the refusal above has
+        // just explained, and a missing scheme, which this card returned on.
+        unpriced?.reason === "LANDS_ANYWAY" && (
+          <p className="viz-muted wall-note">
+            <em>{String(unpriced.label)}.</em> {String(unpriced.why)}
           </p>
         )
       )}

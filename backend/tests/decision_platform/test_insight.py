@@ -370,11 +370,60 @@ def test_a_dollar_tenant_gets_a_dollar_headline():
     assert "$" in headline and "₹" not in headline
 
 
+# ── the radar, and the two ways it empties ──────────────────────────────────
+def test_a_relationship_with_no_nameable_cause_is_counted_not_dropped(session):
+    """The radar's one silent exclusion, now audible.
+
+    ``_kind_of`` returns None for a relationship whose rows show no margin move,
+    no peer gap and no volume fall. Those were skipped by a bare ``continue``
+    before ``below_floor`` counted anything, so they appeared in no total and
+    the only trace was a subtraction the reader had to think to do. Every other
+    exclusion in this package explains itself; this one now does too.
+    """
+    from app.commercial.insight import radar
+
+    # Two with nothing to say, one with a named cause and a gap under the floor.
+    _metric(session, "c-quiet-1", "p1", 50_000, margin=0.30)
+    _metric(session, "c-quiet-2", "p1", 60_000, margin=0.31)
+    _metric(session, "c-eroding", "p1", 70_000, margin=0.20,
+            margin_change_pp=-0.04, historical_margin_gap=2_500)
+    session.flush()
+
+    th = CommercialThresholds(min_material_gap=10_000.0)
+    excluded = radar.below_floor(session, ORG, th)
+
+    assert excluded["relationships_examined"] == 3
+    assert excluded["unnamed_cause_count"] == 2
+    # The named-but-small one still lands in the floor bucket. The two counts
+    # answer different questions and must not be folded together.
+    assert excluded["excluded_count"] == 1
+    assert excluded["largest_excluded"] == pytest.approx(2_500)
+
+
+def test_the_two_exclusions_stay_separate_when_only_one_applies(session):
+    """A book where every gap is real and small must report zero unnamed —
+    otherwise the empty-state sentence blames the wrong thing."""
+    from app.commercial.insight import radar
+
+    _metric(session, "c-a", "p1", 70_000, margin=0.20,
+            margin_change_pp=-0.02, historical_margin_gap=1_000)
+    _metric(session, "c-b", "p1", 80_000, margin=0.21,
+            margin_change_pp=-0.03, historical_margin_gap=4_000)
+    session.flush()
+
+    excluded = radar.below_floor(session, ORG,
+                                 CommercialThresholds(min_material_gap=10_000.0))
+    assert excluded["unnamed_cause_count"] == 0
+    assert excluded["excluded_count"] == 2
+
+
 # ── landscape ───────────────────────────────────────────────────────────────
 def _metric(session, customer: str, product: str, revenue: float, *,
             margin: float | None = None, profit: float | None = None,
             txns: int = 5, qty_recent: float = 0.0, qty_previous: float = 0.0,
-            sufficiency: str = "SUFFICIENT"):
+            sufficiency: str = "SUFFICIENT",
+            margin_change_pp: float | None = None,
+            historical_margin_gap: float | None = None):
     from datetime import datetime
 
     row = models.CustomerItemMetric(
@@ -384,6 +433,12 @@ def _metric(session, customer: str, product: str, revenue: float, *,
         revenue_12m=Decimal(str(revenue)),
         gross_profit_12m=None if profit is None else Decimal(str(profit)),
         current_margin=margin,
+        # Both default to None, which is what every existing caller already
+        # got implicitly. The radar is the only view that reads them: a cause
+        # it can name, and a gap it can size.
+        margin_change_pp=margin_change_pp,
+        historical_margin_gap=(None if historical_margin_gap is None
+                               else Decimal(str(historical_margin_gap))),
         qty_recent=Decimal(str(qty_recent)), qty_previous=Decimal(str(qty_previous)),
         volume_change_pct=(None if not qty_previous
                            else (qty_recent - qty_previous) / qty_previous),
@@ -1555,11 +1610,44 @@ def test_health_is_age_alone_because_value_does_not_make_stock_fresh():
     assert _shelf(last_sold=date(2026, 7, 1)).health(as_of, CARRYING) == _stock.HEALTHY
     assert _shelf(last_sold=date(2026, 1, 1)).health(as_of, CARRYING) == _stock.SLOW
     assert _shelf(last_sold=date(2024, 1, 1)).health(as_of, CARRYING) == _stock.DEAD
-    # Never sold and on the shelf is the strongest version of dead, not a
-    # reason to leave the row out.
-    assert _shelf(last_sold=None).health(as_of, CARRYING) == _stock.DEAD
     # Nothing on the shelf cannot be dead stock — there is no stock.
     assert _shelf(on_hand=0.0, last_sold=None).health(as_of, CARRYING) == _stock.HEALTHY
+
+
+def test_never_sold_is_dead_only_once_there_has_been_time_to_sell_it():
+    """The defect this band exists for.
+
+    ``health`` used to read ``if days is None or days >= dead_days``, so a line
+    with no sale date took the worst verdict on the screen no matter how long
+    it had been there. Measured against the live SLS book, that banded ₹10.6
+    lakh of stock bought in the previous ten weeks as DEAD and put a write-off
+    on it — a 5.3x overstatement of dead stock, all of it in the direction of
+    telling the owner to discard stock they had just paid for.
+
+    Three distinct outcomes rather than one, because that is the point: "never
+    sold" is not a single situation.
+    """
+    as_of = date(2026, 8, 5)
+    # Bought five weeks ago and not sold yet. Not a finding.
+    assert _shelf(last_sold=None,
+                  first_seen=date(2026, 7, 1)).health(as_of, CARRYING) == _stock.UNKNOWN
+    # Two years on the books and never once sold. That is a finding.
+    assert _shelf(last_sold=None,
+                  first_seen=date(2024, 1, 1)).health(as_of, CARRYING) == _stock.DEAD
+    # We cannot show how long it has been here, so we cannot say. Absence of
+    # evidence is not the worst verdict any more than it is a pass.
+    assert _shelf(last_sold=None,
+                  first_seen=None).health(as_of, CARRYING) == _stock.UNKNOWN
+
+
+def test_stock_too_new_to_judge_is_never_proposed_for_write_off():
+    as_of = date(2026, 8, 5)
+    fresh = _shelf(last_sold=None, first_seen=date(2026, 7, 1))
+    assert fresh.recommended_action(as_of, CARRYING) == "HOLD"
+    # Nor is it in the idle group: a group headed "nothing sold in N days"
+    # asserts exactly what the band exists to withhold.
+    assert fresh.idle(as_of, CARRYING) is False
+    assert fresh.opportunity_days(as_of) == 35
 
 
 def test_the_recommended_action_is_a_band_not_a_judgement():
@@ -1571,9 +1659,13 @@ def test_the_recommended_action_is_a_band_not_a_judgement():
                   buyers=("Brakes India",)).recommended_action(as_of, CARRYING) == "DISCOUNT"
     # Dead with nobody who has ever bought it: bundling is the remaining lever.
     assert _shelf(last_sold=date(2025, 1, 1)).recommended_action(as_of, CARRYING) == "BUNDLE"
-    # Never sold once. Nothing here evidences a discount; it is a question for
-    # whoever bought it, so the proposal is a write-off rather than a price.
-    assert _shelf(last_sold=None).recommended_action(as_of, CARRYING) == "WRITE_OFF"
+    # Never sold once, and here long enough for that to be a finding. Nothing
+    # evidences a discount; it is a question for whoever bought it, so the
+    # proposal is a write-off rather than a price. The ``first_seen`` date is
+    # what earns that verdict — without it the answer is HOLD.
+    assert _shelf(last_sold=None,
+                  first_seen=date(2024, 1, 1),
+                  ).recommended_action(as_of, CARRYING) == "WRITE_OFF"
 
 
 def test_priority_is_the_drain_itself_not_an_invented_score():

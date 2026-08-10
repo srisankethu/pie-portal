@@ -260,6 +260,33 @@ export const papi = {
     req<Record<string, unknown>>(
       `/api/v1/insight/account-owners/${encodeURIComponent(customerId)}`,
       { method: "DELETE" }, t),
+  // Statutory payment timing. Manager and above, scoped like `payables` for the
+  // same reason: every row is a supplier balance, and the watchlist additionally
+  // carries a cost estimate derived from the organization's tax rate.
+  msmeWatchlist: (t: string) =>
+    req<Record<string, unknown>>("/api/v1/insight/msme-watchlist", {}, t),
+
+  /** Which suppliers are worth establishing a status for, ranked. The watchlist
+   *  is only as good as its coverage, coverage is collected by a person one
+   *  supplier at a time, so the question itself is prioritised. */
+  msmeCaptureBacklog: (t: string) =>
+    req<Record<string, unknown>>("/api/v1/insight/msme-capture-backlog", {}, t),
+
+  /** Record what was established about a supplier. `written_agreement` is
+   *  tri-state on the wire as well as in the column: omitting it says "not
+   *  established", which is not the same as sending false. */
+  setMsmeStatus: (t: string, body: {
+    vendor_id: string; classification: string; enterprise_activity: string;
+    evidence: string; written_agreement?: boolean | null;
+    agreed_days?: number | null; udyam_number?: string | null;
+    note?: string | null;
+  }) =>
+    req<Record<string, unknown>>("/api/v1/insight/msme-status", {
+      method: "PUT", body: JSON.stringify(body),
+    }, t),
+
+  msmeWithholding: (t: string) =>
+    req<Record<string, unknown>>("/api/v1/insight/withholding-crossings", {}, t),
 
   // Manager and above. The inflow half is receivables, but the outflow half is
   // what we owe suppliers — purchase cost by another name — so the endpoint is

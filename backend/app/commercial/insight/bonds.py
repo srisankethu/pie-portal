@@ -87,7 +87,7 @@ from ...signals import aggregates as agg
 from ...signals.config import SignalThresholds, load_thresholds as load_signal_thresholds
 from ..categories import UNCATEGORISED
 from ..config import CommercialThresholds
-from . import payments, periods
+from . import absence, payments, periods
 
 #: Which side of the book a bond describes. The word "side" rather than "type"
 #: because it is the same measurement pointed in two directions.
@@ -843,6 +843,10 @@ def unavailable(side: str, *, has_reliability: bool) -> list[dict]:
     if not has_reliability:
         out.append({
             "what": f"Reliability ({who})",
+            # Conditional on this book, not on the platform: due dates and
+            # purchase orders are both modelled and both ingested. What is
+            # missing is the entry.
+            "kind": absence.COLLECTABLE,
             "why": ("No settled invoice carries a due date, so on-time payment "
                     "cannot be measured."
                     if side == CUSTOMER else
@@ -854,6 +858,15 @@ def unavailable(side: str, *, has_reliability: bool) -> list[dict]:
     if side == VENDOR:
         out.append({
             "what": "Whether we pay them on time",
+            # BUILDABLE, and this reason is very likely stale. It is true of
+            # ``bills``, which is what this module reads — but
+            # ``BillPaymentApplication`` carries ``bill_date``, ``bill_due_date``
+            # and ``paid_on`` at exactly the grain a past month needs, and it is
+            # ingested. Left in place rather than narrowed here because the fix
+            # changes what the reliability facet scores, which is a bonds
+            # change and not a labelling one. Compare ``stock.supplier_and_brand``,
+            # which was narrowed once for the same reason.
+            "kind": absence.BUILDABLE,
             "why": ("Bills carry a current balance and no payment date, so it "
                     "can be stated for today but not reconstructed for a past "
                     "month. It is shown beside the score rather than inside "

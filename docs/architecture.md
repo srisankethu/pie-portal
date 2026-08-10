@@ -29,9 +29,32 @@ Zoho Books
   → Context Assembly               compact, permission-scoped fact bundle
   → AI Decision Layer              validated interpretation; degradable
   → Decision Store                 routed · prioritised · auditable
-  → Human action                   accept / modify / dismiss
+  → Human action                   accept / modify / dismiss / escalate
   → Outcome capture                (not built — see "Deliberately not built")
 ```
+
+### A cut-over in the human-action data
+
+Until the fix that accompanies this note, the clients collapsed two pairs of
+intents onto one action each, so rows written before it mean something different
+from rows written after:
+
+| Recorded | Before the fix | After |
+|---|---|---|
+| `ACTIONED` | accept **or** modify | accept |
+| `OVERRIDDEN` | escalate | modify |
+| `ESCALATED` | never occurred | escalate |
+| `VIEWED` | never occurred | a person opened the card |
+
+Both collapses were client-side; the server has always distinguished all seven
+actions, and `HumanAction.ESCALATE` — with its approval request and its
+deliberately non-closing status — was built, tested and then never called.
+
+**Any adoption figure that spans the cut-over is comparing two definitions**, and
+will show a fictitious drop in acceptance on the day of the fix as modifies stop
+counting as accepts. Report from the cut-over forward, or label the earlier
+period. Do not restate the old rows: nobody recorded which of them were modifies,
+and inferring it from the presence of a note would be a guess presented as data.
 
 ---
 
@@ -189,6 +212,71 @@ repository query is scoped to one organization. There is deliberately no
 cross-organization query surface. V1 runs a single organization; the seam is
 built in rather than bolted on.
 
+**Taking it all with you, and proving it is gone.** `trust/erasure.py` keeps two
+lists, and they answer different questions. `EXPORTED` is what travels in the
+JSON export; `MANIFESTED` is every tenant-scoped table, and it is what the
+signed erasure receipt attests to. They were one list for a while, which meant
+the receipt could only ever account for the subset somebody had remembered to
+make exportable — and a dozen tables added after the list was written were in
+neither. `test_trust_export_completeness.py` now fails when a model carrying an
+`organization_id` is in neither `EXPORTED` nor `EXCLUDED`: the *decision* stays
+a human one, the *coverage* does not.
+
+Three tables are excluded for size rather than secrecy — `business_events` and
+the two projections folded from it. They are derived, a complete re-sync
+rebuilds them, and two years of line-grain events would be a download in the
+hundreds of megabytes. Every exclusion carries its reason in `EXCLUDED_REASONS`,
+served to the customer with the export.
+
+---
+
+## Statutory timing
+
+Four dates the tax code sets, of which two are built. They are a different kind
+of output from the five decision categories: no interpretation, no priority, no
+model — a deadline, an amount, and the basis each was computed on.
+
+| Check | What it states | Status |
+|---|---|---|
+| **MSME 45-day rule** (43B(h) / MSMED s.15) | Bills to registered micro and small suppliers approaching or past their statutory deadline, and the deduction that moves if they pass. | Built — `commercial/insight/msme.py` |
+| **194Q** | Suppliers crossing the purchase threshold in a financial year. | Built — `commercial/insight/withholding.py` |
+| **GST input-credit blockage** | The financing cost of the gap between output tax paid and input credit claimable. | Not built — needs the tax split, which is on the payload and dropped in `zoho_client` |
+| **s.234 advance tax** | — | Deliberately not built. The platform computes gross margin on synced trade in a bounded window, not taxable profit; the distance between those is opex, depreciation, regime and constitution, none of which is here. |
+
+**The platform does not give tax advice, and this is a design constraint rather
+than a disclaimer.** A wrong margin costs a deal; a wrong tax position is the
+operator's liability. So these views surface a date, an amount and a stated
+basis, and stop. No model touches any of it — the AI layer never sees a
+statutory figure, which the `commercial/` ↔ `ai/` import boundary already
+enforces mechanically.
+
+Three things the arithmetic gets right that the obvious version does not:
+
+- **Fifteen days is the default, not forty-five.** MSMED s.15 allows fifteen
+  days absent a *written* agreement and caps a written one at forty-five. Zoho's
+  `payment_terms` is a fixed dropdown that real agreements get filed under — as
+  `insight/terms.py` establishes — so reading it as an agreement would
+  understate exposure on exactly the suppliers with no contract.
+- **A disallowance is a timing difference.** The deduction returns in the year
+  the money is paid, so the cost is a year's carry on tax brought forward
+  (`balance × tax_rate × carrying_cost_annual_pct`), not the tax. Sizing it as
+  the tax overstates it by roughly an order of magnitude.
+- **Unknown is not safe.** A supplier nobody has classified produces a gap row
+  carrying what *would* be at risk, reported beside the confirmed total and
+  never added to it. `MsmeClassification.UNKNOWN` is never inferred from
+  turnover, bill size or a name — the same rule `incentive_eligibility` follows.
+
+`effective_tax_rate` and `s194q_org_gate_met` are owner-set with no defaults,
+and both views degrade honestly without them: the watchlist shows the deadline
+and the amount and omits the cost estimate, and the 194Q list stays empty while
+*saying it is gated* rather than implying nobody crossed.
+
+**Known limit, stated on every row.** Section 15 runs from acceptance or deemed
+acceptance, which this platform does not hold. `BillDoc` carries no link to a
+purchase order, so the goods-receipt date that would be the better proxy cannot
+be joined; every row reports `deadline_start_basis` as `BILL_DATE`.
+`msme.deadline_for` takes receipts for when that link exists.
+
 ---
 
 ## Quote Builder integration
@@ -298,6 +386,21 @@ Stating these explicitly matters as much as the design itself.
 - **Outcome Tracker.** The `Outcome` model exists but nothing writes it. Until
   it does, adoption and decision quality are measurable; realised monetary
   impact is not. This is the most valuable next increment.
+
+  Note that `quote_outcomes` is a different table with live writers and a real
+  `DRAFT → SENT → WON/LOST` machine. Outcome capture is half-built, on the half
+  that produces revenue — scope the Tracker against what exists rather than from
+  zero. For state-derived decisions, `impact.financial` already quantifies what
+  each situation is worth at the moment it is raised, so value-*at-risk*-weighted
+  acceptance needs no new table; only realised impact does.
+
+- **Realised monetary impact.** See the Outcome Tracker above. Adoption and
+  decision quality *are* measured: `decisions/outcomes.py` reports detector
+  false-alarm rate at `GET /internal/detector-outcomes` and queue adoption —
+  acceptance by category and user, modify rate and distance, and acceptance
+  against queue depth — at `GET /internal/queue-adoption`. Both owner-only, both
+  two-sided, both `INSUFFICIENT_DATA` below the minimum sample. What neither can
+  say is whether the business improved, which is what `Outcome` is for.
 - **Prompt/response content logging.** The easiest way to debug a bad
   recommendation, and rejected on purpose: it would create an unscoped second
   copy of the cost/margin facts the permission model works to contain. The

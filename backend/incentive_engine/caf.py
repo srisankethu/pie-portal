@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Iterable, Sequence
+from typing import Iterable, Optional, Sequence
 
 from .config import Config
 from .models import InvoiceLine, ThirdPartyIncentive, ToolkitSpend, VendorYield
@@ -45,6 +45,14 @@ class LineCAF:
     toolkit_charged: Decimal
     vendor_yield: Decimal
     caf: Decimal
+    #: What the credit period on this line cost. Zero — and zero for every line
+    #: — while ``caf.term_charge.enabled`` is false, which is the shipped
+    #: default and reproduces the mechanism as it was before this term existed.
+    term_charge: Decimal = _ZERO
+    #: The credit days the charge was computed on, and where they came from:
+    #: the line, or the published fallback for a line that carries none.
+    credit_days: Optional[int] = None
+    credit_days_assumed: bool = False
     #: Aged lines are computed but routed to the recovery pool, never into CAF.
     #: Below some age the aged floor sits under cost, so a cash-losing line
     #: would produce positive CAF and corrupt the margin signal S is learning.
@@ -71,6 +79,9 @@ class LineCAF:
             "third_party_K": m(self.third_party),
             "toolkit_charged": m(self.toolkit_charged),
             "vendor_yield_Y": m(self.vendor_yield),
+            "term_charge": m(self.term_charge),
+            "credit_days": self.credit_days,
+            "credit_days_assumed": self.credit_days_assumed,
             "caf": m(self.caf),
             "is_aged": self.is_aged,
         }
@@ -86,6 +97,30 @@ def price_contribution(line: InvoiceLine) -> Decimal:
     return line.qty * (line.unit_price_net - line.floor_price)
 
 
+def term_charge_rate(cfg: Config, credit_days: Optional[int]
+                     ) -> tuple[Decimal, Optional[int], bool]:
+    """``k`` for a line, plus the days used and whether they were assumed.
+
+    Returns ``k = 0`` when the term charge is disabled, which is the shipped
+    default and the reason every number this module produces is unchanged until
+    somebody decides otherwise.
+
+    A line with no recorded term does **not** get ``k = 0``. Zero credit days
+    reads as "paid against delivery" — the most valuable term in the book — so
+    defaulting to it would give every unrecorded line the best possible
+    treatment and make not recording a term the profitable choice. The
+    published fallback is used instead, and the fact that it *was* a fallback
+    travels on the result rather than being lost.
+    """
+    if not cfg.get("caf", "term_charge", "enabled"):
+        return _ZERO, credit_days, False
+    assumed = credit_days is None
+    days = (cfg.int_("caf", "term_charge", "assumed_days_when_unknown")
+            if assumed else int(credit_days))
+    rate = cfg.dec("caf", "term_charge", "rate_annual")
+    return (rate * Decimal(days) / Decimal("365")), days, assumed
+
+
 def line_caf(cfg: Config, line: InvoiceLine, *,
              third_party: Decimal = _ZERO,
              toolkit: Decimal = _ZERO,
@@ -98,13 +133,22 @@ def line_caf(cfg: Config, line: InvoiceLine, *,
     k_charge = third_party * k_rate
     t_charge = toolkit * t_rate
     y_credit = vendor_yield * y_rate
+
+    # The base is the invoiced amount, not the contribution: what is financed
+    # is the whole receivable, not the margin on it.
+    k_term, days, assumed = term_charge_rate(cfg, line.credit_days)
+    term = line.qty * line.unit_price_net * k_term
+
     return LineCAF(
         line=line,
         price_contribution=contribution,
         third_party=k_charge,
         toolkit_charged=t_charge,
         vendor_yield=y_credit,
-        caf=contribution - k_charge - t_charge + y_credit,
+        caf=contribution - k_charge - t_charge + y_credit - term,
+        term_charge=term,
+        credit_days=days,
+        credit_days_assumed=assumed,
         is_aged=line.is_aged_stock,
     )
 

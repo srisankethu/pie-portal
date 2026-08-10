@@ -90,6 +90,12 @@ class SyncReport:
     # quietly parks forty decisions has not finished the job.
     identity_suggestions: int = 0
     identity_links: int = 0
+    # Items this pull matched to a decoded catalogue record. Worth reporting for
+    # the reason the coverage assessment exists: this number is expected to be a
+    # minority of `products` — roughly a tenth on the live master — so a reader
+    # who meets it without that context will read a working sync as a broken
+    # one. See docs/concepts/01-application-engineering.md.
+    catalog_links: int = 0
     # Documents this pull retired because Zoho no longer reports them — deleted
     # there, or voided, which for a platform that only counts real trade is the
     # same thing. Reported rather than silent: removing data is the one thing a
@@ -802,6 +808,7 @@ class SyncService:
                 self.report.skip("item", ref, e.code, e.detail)
                 continue
             self._record_stock(row, raw, stock_as_of)
+            self._link_catalog(row, raw)
             result = identity.ingest_item(
                 self.s, self.org, connector=self.connector,
                 connection_id=self.connection_id, external_id=ref,
@@ -813,6 +820,36 @@ class SyncService:
             self.report.identity_suggestions += len(result.suggestions)
             if result.linked:
                 self.report.identity_links += 1
+
+    def _link_catalog(self, row, raw: dict[str, Any]) -> None:
+        """Point this item at its decoded catalogue record, if it has one.
+
+        Derived state, so it is recomputed every sync rather than written once:
+        a rebuilt catalogue may resolve a SKU it previously did not, and a link
+        nobody re-derives would keep asserting a superseded ``record_id`` under
+        a stamp claiming otherwise. Recomputing means a lost match also *clears*
+        the link, which is the half that keeps the column honest.
+
+        The exception is a catalogue that is not there at all. Writing NULL then
+        would be the lie CLAUDE.md §1 names: "the pack does not cover this item"
+        and "nobody asked the pack" are different facts and only the first is
+        evidence, so an unavailable catalogue leaves every existing link as it
+        was rather than quietly erasing the lot on one bad deployment.
+        """
+        from ..pie_service import pie_service
+
+        if not pie_service.catalog_available:
+            return                          # assert nothing
+        record = pie_service.lookup_record(raw.get("sku"))
+        if record is None:
+            row.pie_record_id = None
+            row.pie_link_method = None
+            row.pie_catalog_version = None
+            return
+        row.pie_record_id = str(record.get("record_id"))
+        row.pie_link_method = "SKU_EXACT"
+        row.pie_catalog_version = pie_service.catalog_version or None
+        self.report.catalog_links += 1
 
     def _sync_invoices(self) -> None:
         for raw in self.source.list_invoices(skip=self._skipper("invoice")):

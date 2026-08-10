@@ -49,6 +49,58 @@ def ai_metrics(
     return report(AiTelemetryRepository(session, principal.organization_id))
 
 
+@router.get("/detector-outcomes")
+def detector_outcomes(
+    principal: Principal = Depends(require_owner),
+    session: Session = Depends(get_session),
+) -> dict:
+    """What each detector raised, and what humans did with it (owner only).
+
+    The question the signal layer has never been able to answer about itself:
+    how much of what it raises does somebody then throw away. Per signal type,
+    over 7- and 30-day windows — signals emitted, decisions opened, the outcome
+    distribution, and the dismissal rate with a two-sided band.
+
+    Reads only rows that already exist. It computes nothing commercial, stores
+    nothing, and calls no provider.
+    """
+    from ..decisions.outcomes import report
+    from ..repositories import DecisionRepository, SignalRepository
+
+    org = principal.organization_id
+    return report(DecisionRepository(session, org), SignalRepository(session, org))
+
+
+@router.get("/queue-adoption")
+def queue_adoption(
+    principal: Principal = Depends(require_owner),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Whether the queue is worked, and whether it deserves to be (owner only).
+
+    The other half of the question `/detector-outcomes` asks. That endpoint asks
+    whether a detector is noisy — how much of what it raises gets thrown away.
+    This asks what the people did: acceptance by category and by user, the modify
+    rate with a distance measured only where a distance genuinely exists, and
+    acceptance against how deep the queue was when they ruled.
+
+    Two endpoints and one module on purpose. They read the same rows and share
+    one vocabulary for what a human did, so the definitions cannot drift; they
+    are named separately because a payload carrying per-user acceptance and
+    quote-line pricing distance is not a statement about detectors, and an
+    endpoint whose name is wrong is worse than a second endpoint.
+
+    Owner-only for the same two reasons `ai-metrics` is. It reads across every
+    role's queue, so it is a view of how other people work, and the value-at-risk
+    figures come from `impact.financial`, which is cost information.
+    """
+    from ..decisions.outcomes import adoption_report
+    from ..repositories import DecisionRepository
+
+    org = principal.organization_id
+    return adoption_report(session, DecisionRepository(session, org))
+
+
 @router.get("/ai-readiness")
 def ai_readiness(
     principal: Principal = Depends(require_owner),

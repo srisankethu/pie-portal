@@ -109,6 +109,17 @@ export interface QuoteEstimate {
   current: boolean;
 }
 
+/** How the lines in this response were produced. Sent only by `/intake`, so it
+ *  is optional on `Quote` — the screen uses it to say "read from your message,
+ *  check each line" rather than presenting a model's reading as though somebody
+ *  had typed it. Declared because the server sends it: an undeclared field and
+ *  a renamed one look identical from here, which is what
+ *  `backend/tests/test_frontend_contract.py` exists to tell apart. */
+export interface QuoteIntake {
+  read_by: "ai" | "pattern";
+  detail: string;
+}
+
 export interface MarginFloor {
   count: number;
   worst: number;
@@ -122,6 +133,11 @@ export interface Quote {
    *  Null on a quote started before the picker existed, or from a draft. */
   customerId: string | null;
   number: string;
+  /** The key any Zoho estimate for this quote is written under. It is what
+   *  makes sending twice return the first estimate rather than create a second,
+   *  and what a person searches Zoho for when a send fails in a way the screen
+   *  cannot resolve. */
+  reference: string;
   savedAt: string | null;
   lines: Line[];
   summary: QuoteSummary;
@@ -135,6 +151,12 @@ export interface Quote {
    *  that is a confirmed "this customer's code means that product". Server-
    *  written prose, shown as-is; the client does not compose it. */
   note?: string;
+  /** Present only when creating the item in the books failed, and carrying why.
+   *  The line already reads CREATE FAILED; this is the reason, so the screen
+   *  does not have to say "something went wrong". */
+  createItemError?: string;
+  /** Only on an intake response. */
+  intake?: QuoteIntake;
 }
 
 /* ── Quote intelligence (deterministic; app/commercial) ──────────────────────
@@ -216,13 +238,38 @@ export interface LineIntelligence {
 
 export type QuoteOutcomeStatus = "DRAFT" | "SENT" | "WON" | "LOST";
 
+/** Why a quote was lost — the customer's reason, as heard.
+ *
+ *  PRICE, DELIVERY and COMPETITOR all mean somebody else supplied it, so the
+ *  spend is evidence about what this customer buys elsewhere.
+ *  CUSTOMER_CANCELLED means nobody supplied it. NO_DECISION means it is still
+ *  nobody's and may yet move.
+ *
+ *  NOT_RECORDED is only ever read, never sent: it marks a loss decided before
+ *  the vocabulary existed, which is not the same as somebody answering
+ *  "no decision". The server's `loss_reasons` list cannot contain it. */
+export type QuoteLossReason =
+  | "PRICE"
+  | "DELIVERY"
+  | "COMPETITOR"
+  | "CUSTOMER_CANCELLED"
+  | "NO_DECISION";
+
 export interface QuoteOutcome {
   quote_id: string;
   status: QuoteOutcomeStatus;
   note: string | null;
+  /** Null is the NOT_RECORDED bucket: a loss decided before the vocabulary
+   *  existed. Not the same as a recorded NO_DECISION, and a screen should
+   *  render the two differently. */
+  loss_reason: QuoteLossReason | null;
+  lost_to: string | null;
   sent_at: string | null;
   decided_at: string | null;
   allowed_next: QuoteOutcomeStatus[];
+  /** What a person may choose. Served rather than hardcoded here, so the form
+   *  and the rule cannot drift — UNKNOWN is deliberately absent from it. */
+  loss_reasons: QuoteLossReason[];
 }
 
 export interface QuoteIntelligence {
@@ -233,9 +280,14 @@ export interface QuoteIntelligence {
     lines_assessed: number;
     lines_unresolved: number;
     exceptions_total: number;
-    critical: number;
-    requires_approval: number;
     insufficient_data: number;
+    // Absent for a salesperson, not zero: both counts are derived from cost, and
+    // a count over lines the caller priced locates the floor faster than the
+    // per-line flag does. Optional here because the server omits them — a
+    // required field would be the client asserting a guarantee the server does
+    // not make.
+    critical?: number;
+    requires_approval?: number;
   };
   outcome: QuoteOutcome | null;
   thresholds_version: string;

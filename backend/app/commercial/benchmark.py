@@ -109,7 +109,7 @@ def compute_benchmark(product_id: str, subject_customer_id: str,
     prices = [p.net_unit_price for p in bm.peers if p.net_unit_price is not None]
     margins = [p.margin for p in bm.peers if p.margin is not None]
     if prices:
-        bm.median_price = _median_decimal(prices)
+        bm.median_price = median_decimal(prices)
     if margins:
         bm.median_margin = statistics.median(margins)
 
@@ -122,9 +122,15 @@ def compute_benchmark(product_id: str, subject_customer_id: str,
     return bm
 
 
-def _median_decimal(values: list[Decimal]) -> Decimal:
+def median_decimal(values: list[Decimal]) -> Decimal:
     """Median without leaving Decimal — ``statistics.median`` would average the
-    middle pair in float and reintroduce binary noise into a money value."""
+    middle pair in float and reintroduce binary noise into a money value.
+
+    Public because ``insight/outcomes`` needs exactly this when it compares the
+    price on a lost quote against the price that won. It was private until a
+    second caller appeared; a second copy would have been a second rounding
+    behaviour for the same kind of number.
+    """
     ordered = sorted(values)
     n = len(ordered)
     mid = n // 2

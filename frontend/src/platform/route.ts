@@ -34,6 +34,9 @@ export type Screen =
   /** The book itself: the shelf, the suppliers and the cash — the three things the book
    *  always knew and the platform did not read until it ingested them. */
   | "payments" | "payables" | "stock" | "supply"
+  /** Deadlines the tax code sets: the MSME payment cliff, whose status is still
+   *  unknown, and the 194Q threshold. Dates and amounts, never advice. */
+  | "statutory"
   /** Who is actually close to this book, on both sides of it, over time. */
   | "bonds"
   /** Which lines of the business each customer takes, and which they do not. */
@@ -47,6 +50,9 @@ export type Screen =
   /** The negotiation desk: the one screen a salesperson uses to decide rather
    *  than to read. */
   | "negotiate"
+  /** Which quotes were won, which were lost, and why — the outcome half of the
+   *  quoting loop, which the platform recorded and never read. */
+  | "quoteOutcomes"
   /** The approval queue, and organization settings (owner is super admin). */
   | "approvals" | "settings"
   /** Which connector records describe the same customer or item. */
@@ -88,6 +94,7 @@ export const PATH: Record<Screen, string> = {
   cadence: "/cadence",
   payments: "/payments",
   payables: "/payables",
+  statutory: "/statutory",
   stock: "/stock",
   supply: "/supply",
   bonds: "/bonds",
@@ -96,6 +103,7 @@ export const PATH: Record<Screen, string> = {
   targets: "/targets",
   catalogue: "/item-lines",
   negotiate: "/negotiate",
+  quoteOutcomes: "/quote-outcomes",
 };
 
 /** The three screens whose URL carries an id, as route patterns.
@@ -182,9 +190,11 @@ export function vizPath(route: string): string {
     cadence: "cadence",
     payments: "payments",
     payables: "payables",
+    statutory: "statutory",
     stock: "stock",
     supply: "supply",
     negotiate: "negotiate",
+    "quote-outcomes": "quoteOutcomes",
     // Bare `customer` — no id — is the Customers screen with its own picker.
     // It routes here now that Customers is a nav destination in its own right
     // rather than only ever a link carrying an account.

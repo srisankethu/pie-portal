@@ -146,6 +146,19 @@ class Settings:
     # "fixture" (deterministic offline source) or "api" (live Zoho).
     ZOHO_SOURCE: str = os.environ.get("ZOHO_SOURCE", "fixture")
 
+    # Which adapter the Quote Builder reads prices from and writes estimates to:
+    # "mock" (deterministic, offline — dev/test/demo default) or "live" (the real
+    # Zoho Books API). Separate from ZOHO_SOURCE above because the two answer
+    # different questions: that one is where analysis *reads history* from, this
+    # one is whether the quoting screen may *write*. Defaulting this to live
+    # would mean a fresh clone could put an estimate in front of a customer.
+    ZOHO_QUOTE_SERVICE: str = os.environ.get("ZOHO_QUOTE_SERVICE", "mock")
+    # How long a reachability probe stands for. ``available`` is read once per
+    # quote line, so without a cache a fifty-line RFQ spends fifty calls of the
+    # rate-limit budget asking whether Zoho is up.
+    ZOHO_HEALTH_TTL_SECONDS: float = float(
+        os.environ.get("ZOHO_HEALTH_TTL_SECONDS", "60"))
+
     # Live pull shape. History is bounded because the detectors compare a recent
     # window against a prior one — pulling a decade of ledger costs API calls and
     # buys nothing.
@@ -212,6 +225,27 @@ class Settings:
     AI_DEGRADED_RATE_MAX: float = float(os.environ.get("AI_DEGRADED_RATE_MAX", "0.25"))
     AI_DEGRADED_RATE_MIN: float = float(os.environ.get("AI_DEGRADED_RATE_MIN", "0.005"))
     AI_HEALTH_MIN_SAMPLE: int = int(os.environ.get("AI_HEALTH_MIN_SAMPLE", "20"))
+
+    # ── detector outcome bands (decisions/outcomes.py) ───────────────────────
+    # The share of *judged* decisions a human dismissed, per signal type. A band
+    # rather than one ceiling, for the reason the AI band above is two-sided: a
+    # detector nothing is ever dismissed from is as much a finding as a noisy one.
+    #
+    # Observability bounds, not commercial policy — so they live here beside the
+    # AI health band and deliberately not in ``SignalThresholds``. They judge the
+    # detectors; they do not feed them, and nothing computed from them is stamped
+    # onto a row. Putting them in the thresholds hash would move ``th_…`` every
+    # time a *report* was tuned, making past signals look re-judged when nothing
+    # about what produced them had changed.
+    SIGNAL_DISMISSAL_RATE_MAX: float = float(
+        os.environ.get("SIGNAL_DISMISSAL_RATE_MAX", "0.40"))
+    SIGNAL_DISMISSAL_RATE_MIN: float = float(
+        os.environ.get("SIGNAL_DISMISSAL_RATE_MIN", "0.02"))
+    # Lower than the AI sample floor: a detector opens far fewer cards than the
+    # AI layer makes calls, and 20 judged MARGIN_DETERIORATION decisions could
+    # take a quarter to accumulate.
+    SIGNAL_OUTCOME_MIN_SAMPLE: int = int(
+        os.environ.get("SIGNAL_OUTCOME_MIN_SAMPLE", "10"))
 
 
 settings = Settings()

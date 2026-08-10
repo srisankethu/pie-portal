@@ -10,11 +10,29 @@ immutable ``quote_decisions`` audit trail, optionally with the reason a
 salesperson went ahead anyway.
 
 ``POST /api/v1/quote-intelligence/outcome`` moves the quote along
-DRAFT → SENT → WON/LOST, so a price can later be joined to whether it won.
+DRAFT → SENT → WON/LOST, so a price can later be joined to whether it won. A
+loss carries a reason from ``QuoteLossReason`` and is refused without one —
+``/api/v1/insight/quote-outcomes`` reads that column directly, and a loss
+recorded without it is a row that can be counted and never learned from.
 
 No endpoint here calls a model. Every number is computed by ``app.commercial``.
 Role scoping is enforced server-side: a salesperson's response contains no cost,
 no margin, and no figure derived from them — absent, not masked.
+
+**Repeated querying is part of the threat model here, and it is the reason for
+three otherwise-odd restrictions below.** Every guard in this file used to be
+correct for one request and useless across two: ``proposed_price`` is supplied
+by the caller and the response says which rules fired, so walking the price
+locates the boundary each rule fires at, and a boundary computed from cost
+discloses cost. That is the ``filterCounts.MFLOOR`` defect (CLAUDE.md §1) in a
+second costume, and it survived here because the tests assert what one response
+contains rather than what a sequence of them reveals.
+
+What the rules themselves disclose is handled in ``quote_service.project`` via
+``QuoteException.boundary_refs``. This file handles the three things that made
+the walk *cheap*: an unbounded ``as_of`` (the same probe per date recovers the
+item's whole cost history), an unscoped customer, and a 200-line batch that
+turns 200 probes into one request.
 """
 from __future__ import annotations
 
@@ -23,15 +41,16 @@ from decimal import Decimal
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
 from .. import approvals
-from ..authz import Principal, current_principal
+from ..authz import Principal, can_view_customer, current_principal
 from ..store import store
 from ..commercial.policy import load_for_org
 from ..commercial.quote_service import (
     InvalidTransition,
+    MissingLossReason,
     QuoteLineInput,
     assess_and_record,
     assess_quote,
@@ -45,11 +64,47 @@ from ..commercial.quote_service import (
     summarize,
 )
 from ..db import get_session
-from ..domain.enums import QuoteOutcomeStatus
+from ..domain.enums import QuoteLossReason, QuoteOutcomeStatus
 
 router = APIRouter(prefix="/api/v1/quote-intelligence", tags=["quote-intelligence"])
 
 _MAX_LINES = 200
+
+#: How far from today a quote may be assessed. Back-dating a quote by a few
+#: weeks is ordinary; assessing one as of an arbitrary past date is how the
+#: cost *history* of an item is read out one day at a time, which is worth more
+#: to a competitor than today's cost is. Wide enough that no real quote hits it.
+_AS_OF_WINDOW_DAYS = 90
+
+#: How many distinct prices one product may carry within a single request.
+#: Quoting an item at three quantity-break prices on one RFQ is real work; two
+#: hundred is a bisection. This does not stop the walk — it removes the batch
+#: that made it two requests instead of fifty, which is what makes it visible.
+_MAX_PRICES_PER_PRODUCT = 4
+
+
+class _AsOfBounded(BaseModel):
+    """A request body carrying an assessment date, bounded to near today.
+
+    Inherited rather than repeated, because the two bodies below are assessed by
+    the same engine and a bound on only one of them is not a bound.
+    """
+
+    as_of: Optional[date] = None
+
+    @field_validator("as_of")
+    @classmethod
+    def _within_window(cls, value: Optional[date]) -> Optional[date]:
+        """``date.today()`` rather than ``clock.today(th.timezone)``
+        deliberately: this decides whether a request body is well-formed, and it
+        must not need a database session to do it. ``assess_quote`` defaults to
+        the same clock, so the two cannot disagree about what "today" is."""
+        if value is not None and abs((value - date.today()).days) > _AS_OF_WINDOW_DAYS:
+            raise ValueError(
+                f"An assessment date must be within {_AS_OF_WINDOW_DAYS} days "
+                f"of today. Assessing as of a date well outside that window "
+                f"reads an item's cost history rather than pricing a quote.")
+        return value
 
 
 class LineIn(BaseModel):
@@ -60,11 +115,68 @@ class LineIn(BaseModel):
     family: Optional[str] = None
 
 
-class AssessRequest(BaseModel):
+class AssessRequest(_AsOfBounded):
     customer: str
     lines: list[LineIn] = Field(default_factory=list)
     quote_id: Optional[str] = None
-    as_of: Optional[date] = None
+
+
+def _visible_customer_ref(session: Session, principal: Principal, ref: str) -> str:
+    """``ref`` if this principal may see the customer it names, else ``""``.
+
+    A salesperson is scoped to their own accounts on ``/api/v1/accounts``, on the
+    insight timeline and on ``/insight/negotiate``; this endpoint skipped the
+    rule entirely, so any customer name in the book returned that relationship's
+    price history to anyone who typed it. The rule is `authz.can_view_customer`,
+    shared rather than rewritten, for the reason that function's own docstring
+    gives.
+
+    Answering with an empty ref rather than 404 is the deliberate part. An
+    unresolved customer is an ordinary case here — quoting somebody who has
+    never bought before is the point of the screen, and a test pins that
+    behaviour — so degrading to "we do not know this customer" makes an
+    out-of-scope account **indistinguishable from a new one**. A 403 would
+    confirm the account exists, which is most of what an enumeration is after.
+    """
+    customer = resolve_customer(session, principal.organization_id, ref)
+    if customer is not None and not can_view_customer(principal, customer, session):
+        return ""
+    return ref
+
+
+def _reject_price_sweep(lines: list[LineIn]) -> None:
+    """Refuse a request that prices one product many ways at once.
+
+    A quote carries one price per line. Two hundred lines naming the same
+    product at two hundred prices is not a quote — it is a parallel search for
+    the price at which the exception rules change their answer, and the answer
+    they change at is computed from cost. Refused rather than truncated: a
+    silently shortened assessment is a screen quietly telling somebody their
+    line is fine.
+    """
+    prices: dict[str, set[Decimal]] = {}
+    for ln in lines:
+        if ln.proposed_price is None:
+            continue
+        key = (ln.product or "").strip().casefold()
+        prices.setdefault(key, set()).add(ln.proposed_price)
+    for key, distinct in prices.items():
+        if len(distinct) > _MAX_PRICES_PER_PRODUCT:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"One product may carry at most {_MAX_PRICES_PER_PRODUCT} "
+                f"different prices in a single assessment; this request prices "
+                f"{key or 'a line'} {len(distinct)} ways. Assess the quote you "
+                f"are sending.")
+
+
+def _validate(body: AssessRequest | SnapshotRequest, *, what: str) -> None:
+    """The shape checks both endpoints share. One implementation, so a limit
+    added to the assessment path cannot be missing from the recording one."""
+    if len(body.lines) > _MAX_LINES:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            f"At most {_MAX_LINES} lines per {what}")
+    _reject_price_sweep(list(body.lines))
 
 
 def _inputs(body: AssessRequest) -> list[QuoteLineInput]:
@@ -89,13 +201,14 @@ def assess(
 ) -> dict:
     if not body.customer.strip():
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "A customer is required")
-    if len(body.lines) > _MAX_LINES:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST,
-                            f"At most {_MAX_LINES} lines per request")
+    _validate(body, what="request")
 
     org = principal.organization_id
-    result = assess_quote(session, org, customer_ref=body.customer.strip(),
-                          lines=_inputs(body), as_of=body.as_of)
+    result = assess_quote(
+        session, org,
+        customer_ref=_visible_customer_ref(session, principal,
+                                           body.customer.strip()),
+        lines=_inputs(body), as_of=body.as_of)
     refs = {ln.line_id: ln.product for ln in body.lines}
 
     outcome = get_outcome(session, org, body.quote_id) if body.quote_id else None
@@ -124,11 +237,10 @@ class SnapshotLine(LineIn):
     override_reason_code: Optional[str] = None
 
 
-class SnapshotRequest(BaseModel):
+class SnapshotRequest(_AsOfBounded):
     quote_id: str
     customer: str
     lines: list[SnapshotLine] = Field(default_factory=list)
-    as_of: Optional[date] = None
 
 
 @router.post("/snapshot", status_code=status.HTTP_201_CREATED)
@@ -147,12 +259,10 @@ def snapshot(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "A quote id is required")
     if not body.lines:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "No lines to record")
-    if len(body.lines) > _MAX_LINES:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST,
-                            f"At most {_MAX_LINES} lines per request")
+    _validate(body, what="request")
 
     org = principal.organization_id
-    customer_ref = body.customer.strip()
+    customer_ref = _visible_customer_ref(session, principal, body.customer.strip())
     result, rows = assess_and_record(
         session, org, quote_id=body.quote_id.strip(), customer_ref=customer_ref,
         lines=[QuoteLineInput(line_id=ln.line_id, product_ref=ln.product, qty=ln.qty,
@@ -210,6 +320,12 @@ class OutcomeRequest(BaseModel):
     status: QuoteOutcomeStatus
     customer: str = ""
     note: Optional[str] = None
+    #: Required when ``status`` is LOST. Not enforced here as a Pydantic
+    #: constraint on purpose — ``quote_service.set_outcome`` owns the rule, so
+    #: the CLI, a future importer and this endpoint cannot drift about what
+    #: counts as a recordable loss.
+    loss_reason: Optional[QuoteLossReason] = None
+    lost_to: Optional[str] = None
 
 
 @router.post("/outcome")
@@ -219,14 +335,23 @@ def quote_outcome(
     session: Session = Depends(get_session),
 ) -> dict:
     org = principal.organization_id
-    customer = (resolve_customer(session, org, body.customer.strip())
-                if body.customer.strip() else None)
+    # Through the same scope rule as the other two: this endpoint hands back a
+    # resolved `customer_id`, so without it a name typed here is a lookup from
+    # any customer's name to their platform id.
+    customer_ref = _visible_customer_ref(session, principal, body.customer.strip())
+    customer = resolve_customer(session, org, customer_ref) if customer_ref else None
     try:
         row = set_outcome(
             session, org, quote_id=body.quote_id.strip(), status=body.status,
-            customer_ref=body.customer.strip(),
+            customer_ref=customer_ref,
             customer_id=customer.customer_id if customer else None,
-            note=body.note, user_id=principal.user_id)
+            note=body.note, loss_reason=body.loss_reason,
+            lost_to=body.lost_to, user_id=principal.user_id)
+    except MissingLossReason as e:
+        # 422 rather than 409: the request is well-formed and the transition is
+        # legal, one required field is absent, and the message names the
+        # choices. A 409 would send the caller looking at the lifecycle.
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e)) from e
     except InvalidTransition as e:
         raise HTTPException(status.HTTP_409_CONFLICT, str(e)) from e
     return outcome_to_dict(row) or {}

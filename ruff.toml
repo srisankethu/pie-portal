@@ -77,3 +77,14 @@ select = [
 # an assertion still being written — which the test result reports more clearly
 # than the linter would.
 "backend/tests/**" = ["F841"]
+
+# Reusing a fixture from another test module means importing its name and then
+# binding it again as a test parameter, which pyflakes reads as a redefinition.
+# The alternative is a third copy of the quote client fixture, which CLAUDE.md §2
+# calls out by name.
+#
+# Scoped to this one file rather than to `backend/tests/**`, because F811 in a
+# test file otherwise earns its keep: two test functions with the same name are
+# not a style issue — the second silently replaces the first, and the one that
+# stops running is the one nobody notices.
+"backend/tests/test_frontend_contract.py" = ["F811"]

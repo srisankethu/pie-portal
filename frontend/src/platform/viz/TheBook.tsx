@@ -573,6 +573,19 @@ function SettlementPanel({
                       </span>
                     )}
                   </span>
+                  {/* Past their line, said on the row that already says how
+                      slowly they pay. Absent on the payable side, where a
+                      supplier has no credit limit with us — the field simply
+                      is not there, rather than being rendered as zero. */}
+                  {c.credit_status === "OVER" && (
+                    <span>
+                      <StatusChip label={`${money(num(c.over_by))} over limit`}
+                                  tone="bad" dense
+                                  tip={(data?.credit_statuses as Record<string,
+                                        Record<string, string>>
+                                        )?.OVER?.meaning} />
+                    </span>
+                  )}
                   <span className="viz-muted">
                     {patterns[String(c.pattern)]?.label ?? ""}
                     {c.spread_days != null && Number(c.spread_days) > 0 &&
@@ -643,6 +656,307 @@ const PAYABLE_SIDE: LedgerSide = {
   href: null,
 };
 
+// ── The line we gave them, and whose book the account is in ────────────────
+//
+// "Rane Madras takes 69 days to pay" is an observation. "Rane Madras is ₹8 lakh
+// past the limit we gave them, and it is Rahul's account" is a decision, and
+// this panel is the difference between the two. It sits on the collections
+// screen beside the payment behaviour for exactly that reason — the two facts
+// are read together or neither is worth much.
+//
+// **Absent is never rendered as zero.** An account with no limit recorded shows
+// "none recorded", not "₹0" and not a full bar: nobody has decided, which is a
+// different thing from having decided nothing. The server keeps the two apart
+// with `has_limit`; this reads that flag rather than testing the number.
+//
+// A grid, because the row count is the number of customers — the size of the
+// business, which is the rule in `platform/DataGrid.tsx`. Sorting by how far
+// over the line an account is *is* the collections queue.
+
+type CreditRow = Sourced & {
+  customer_id: string; label: string;
+  has_limit: boolean;
+  limit: number | null;
+  outstanding: number;
+  overdue: number;
+  headroom: number | null;
+  over_by: number | null;
+  status: string;
+  note: string | null;
+  set_by: string | null;
+  owner_user_id: string | null;
+  owner_name: string | null;
+  owner_source: string | null;
+  open_invoices: number;
+  overdue_invoices: number;
+};
+
+type Person = { user_id: string; name: string; role: string };
+
+/** Which book to look at. "Anyone" for a manager scanning the org, a person for
+ *  "what is Rahul sitting on", and the accounts nobody owns — which is its own
+ *  answer, because an unowned overdue account is one nobody is chasing. */
+const ANYONE = "";
+const NOBODY = "__unassigned__";
+
+const STATUS_TONE: Record<string, "neutral" | "good" | "warn" | "bad"> = {
+  OVER: "bad", NEAR: "warn", WITHIN: "good", NO_LIMIT: "neutral",
+};
+
+function CreditPanel({ session }: { session: PlatformSession }) {
+  const { data, loading, error, reload } = useInsight(
+    "credit", () => papi.credit(session.token), [session.token]);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [failed, setFailed] = useState<string | null>(null);
+  const [owner, setOwner] = useState<string>(ANYONE);
+
+  const maySet = Boolean(data?.may_set);
+  const people = useMemo(
+    () => (data?.people as Person[] | undefined) ?? [], [data]);
+  const statuses = (data?.statuses as Record<string, Record<string, string>>) ?? {};
+  const all = useMemo(
+    () => (data?.accounts as CreditRow[] | undefined) ?? [], [data]);
+  const filter = useCompanyFilter(all);
+  const accounts = useMemo(
+    () => filter.filtered.filter((r) =>
+      owner === ANYONE ? true
+        : owner === NOBODY ? r.owner_user_id == null
+          : r.owner_user_id === owner),
+    [filter.filtered, owner]);
+
+  async function save(row: CreditRow, amount: number | null) {
+    setBusy(row.customer_id);
+    setFailed(null);
+    try {
+      if (amount === null) await papi.clearCreditLimit(session.token, row.customer_id);
+      else await papi.setCreditLimit(session.token, row.customer_id, amount, row.note);
+      // Refetched rather than patched in place: the status and the headroom are
+      // read against a balance the browser does not hold.
+      reload();
+    } catch (e) {
+      setFailed(e instanceof Error ? e.message : "Could not save that limit");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function assign(row: CreditRow, userId: string) {
+    setBusy(row.customer_id);
+    setFailed(null);
+    try {
+      if (userId === "") await papi.clearAccountOwner(session.token, row.customer_id);
+      else await papi.setAccountOwner(session.token, row.customer_id, userId);
+      reload();
+    } catch (e) {
+      setFailed(e instanceof Error ? e.message : "Could not assign that account");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const columns = useMemo<ColDef<CreditRow>[]>(() => [
+    {
+      field: "label", headerName: "Account", flex: 1.3, minWidth: 190,
+      cellRenderer: (p: { data?: CreditRow }) => (p.data ? (
+        <EntityName name={p.data.label} origin={p.data.origin}
+                    show={filter.show} strong={false} />
+      ) : null),
+    },
+    {
+      headerName: "Owner", width: 190, flex: 0,
+      valueGetter: (p) => p.data?.owner_name ?? "",
+      cellRenderer: (p: { data?: CreditRow }) => {
+        const row = p.data;
+        if (!row) return null;
+        if (!maySet) {
+          return row.owner_name ? (
+            <Box component="span">{row.owner_name}</Box>
+          ) : <Box component="span" className="viz-muted">unassigned</Box>;
+        }
+        return (
+          <TextField
+            select size="small" value={row.owner_user_id ?? ""}
+            disabled={busy === row.customer_id}
+            aria-label={`Who owns ${row.label}`}
+            onChange={(e) => void assign(row, e.target.value)}
+            sx={{ width: 168, "& .MuiInputBase-input": { py: 0.5, fontSize: 12.5 } }}
+          >
+            <MenuItem value="">
+              {/* Withdrawing an assignment falls back to Zoho's salesperson,
+                  which is not the same as picking nobody. */}
+              <span className="viz-muted">unassigned</span>
+            </MenuItem>
+            {people.map((u) => (
+              <MenuItem key={u.user_id} value={u.user_id}>{u.name}</MenuItem>
+            ))}
+          </TextField>
+        );
+      },
+    },
+    numeric<CreditRow>("outstanding", "Owed now", (v) => money(v), {
+      width: 130, flex: 0,
+      headerTooltip: "What Zoho says is still owed on their open invoices. Read "
+        + "from the receivables fold, never recomputed here.",
+    }),
+    numeric<CreditRow>("overdue", "Of it, overdue", (v) => money(v), {
+      width: 140, flex: 0,
+      headerTooltip: "The part past its due date. Over the limit with none of it "
+        + "late and over the limit with all of it late are two different calls.",
+    }),
+    {
+      headerName: "Credit limit", width: 180, flex: 0,
+      valueGetter: (p) => p.data?.limit ?? null,
+      cellRenderer: (p: { data?: CreditRow }) => {
+        const row = p.data;
+        if (!row) return null;
+        if (!maySet) {
+          return row.has_limit ? (
+            <Box component="span">{money(row.limit ?? 0)}</Box>
+          ) : <Box component="span" className="viz-muted">none recorded</Box>;
+        }
+        return (
+          <TextField
+            size="small" type="number"
+            defaultValue={row.has_limit ? String(row.limit) : ""}
+            placeholder="none recorded"
+            disabled={busy === row.customer_id}
+            aria-label={`Credit limit for ${row.label}`}
+            // Commits when the field is finished with, never per keystroke —
+            // the same rule the supplier terms grid follows.
+            onKeyDown={(e) => {
+              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+            }}
+            onBlur={(e) => {
+              const raw = e.target.value.trim();
+              const next = raw === "" ? null : Number(raw);
+              if (next !== null && (!Number.isFinite(next) || next < 0)) return;
+              if (next === null && !row.has_limit) return;
+              if (next !== null && row.has_limit && next === row.limit) return;
+              void save(row, next);
+            }}
+            sx={{ width: 132, "& .MuiInputBase-input": { py: 0.5, fontSize: 12.5 } }}
+          />
+        );
+      },
+    },
+    {
+      headerName: "Against the limit", flex: 1, minWidth: 220,
+      // Sorted on how far past the line they are, which is the collections
+      // queue. Accounts with no limit sort last rather than as zero.
+      valueGetter: (p) => (p.data?.has_limit ? (p.data?.headroom ?? 0) : null),
+      cellRenderer: (p: { data?: CreditRow }) => {
+        const row = p.data;
+        if (!row) return null;
+        const meaning = statuses[row.status]?.meaning;
+        if (!row.has_limit) {
+          return (
+            <StatusChip label="no limit recorded" tone="neutral" dense
+                        tip={meaning} />
+          );
+        }
+        return (
+          <Stack direction="row" spacing={0.75} sx={{ alignItems: "center" }}>
+            <StatusChip label={statuses[row.status]?.label ?? row.status}
+                        tone={STATUS_TONE[row.status] ?? "neutral"} dense
+                        tip={meaning} />
+            <Box component="span">
+              {row.status === "OVER"
+                ? `${money(row.over_by ?? 0)} over`
+                : `${money(row.headroom ?? 0)} left`}
+              {row.overdue_invoices > 0 && (
+                <Box component="span" className="viz-muted">
+                  {" "}· {row.overdue_invoices} invoice
+                  {row.overdue_invoices === 1 ? "" : "s"} past due
+                </Box>
+              )}
+            </Box>
+          </Stack>
+        );
+      },
+    },
+    {
+      headerName: "", width: 96, flex: 0, sortable: false, filter: false,
+      cellRenderer: (p: { data?: CreditRow }) => (
+        maySet && p.data && p.data.has_limit ? (
+          <Button size="small" color="inherit"
+                  disabled={busy === p.data.customer_id}
+                  onClick={() => void save(p.data!, null)}>
+            Clear
+          </Button>
+        ) : null
+      ),
+    },
+  ], [busy, filter.show, maySet, people, statuses]);
+
+  const over = num(data?.over_limit_count);
+  const recorded = num(data?.limits_recorded);
+
+  return (
+    <Panel
+      title="Credit and exposure"
+      question="Who is past the line we gave them, and whose account is it"
+      state={stateOf(loading, error, data?.empty_reason as string)}
+      error={error} emptyReason={data?.empty_reason as string} onRetry={reload} wide
+      actions={
+        <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
+          {maySet && people.length > 0 && (
+            <TextField
+              select size="small" value={owner}
+              aria-label="Show one person's book"
+              onChange={(e) => setOwner(e.target.value)}
+              sx={{ minWidth: 160,
+                    "& .MuiInputBase-input": { py: 0.5, fontSize: 12.5 } }}
+            >
+              <MenuItem value={ANYONE}>Everyone's accounts</MenuItem>
+              {people.map((u) => (
+                <MenuItem key={u.user_id} value={u.user_id}>{u.name}'s book</MenuItem>
+              ))}
+              <MenuItem value={NOBODY}>Unassigned</MenuItem>
+            </TextField>
+          )}
+          <CompanyFilter options={filter.options} value={filter.company}
+                         onChange={filter.setCompany} show={filter.show} />
+        </Stack>
+      }
+    >
+      <p className="viz-headline">
+        {over > 0 ? (
+          <>
+            <strong>{over} account{over === 1 ? " is" : "s are"}</strong> past the
+            credit limit they were given, by{" "}
+            <strong>{money(num(data?.over_limit_total))}</strong> in total.
+          </>
+        ) : (
+          <>No account is past its credit limit.</>
+        )}{" "}
+        <span className="viz-muted">
+          {recorded} of {rows(data?.accounts).length} accounts have a limit on
+          record at all — the rest are not unlimited, they are undecided, and
+          nothing here treats a missing limit as one.
+        </span>
+      </p>
+      {failed && <p className="viz-muted" role="alert">{failed}</p>}
+      <DataGrid<CreditRow>
+        ariaLabel="Credit limits and exposure by account"
+        rows={accounts}
+        columns={columns}
+        pageSize={20}
+        rowHeight={54}
+        getRowId={(r) => r.customer_id}
+      />
+      <p className="viz-muted viz-footnote">
+        The balance is what Zoho says is still owed, read from the receivables
+        fold rather than recomputed — deriving it as invoiced minus received
+        would be wrong the moment a credit note lands, in the direction that gets
+        a customer chased for money they do not owe. An account's owner is
+        whoever it was assigned to here; where nobody has assigned one it falls
+        back to the salesperson on their latest Zoho invoice, and Zoho's own
+        value is never overwritten.
+      </p>
+    </Panel>
+  );
+}
+
 export function PaymentsScreen({
   session, onNavigate,
 }: { session: PlatformSession; onNavigate: (r: string) => void }) {
@@ -665,6 +979,12 @@ export function PaymentsScreen({
       <SettlementPanel data={data} loading={loading} error={error}
                        reload={reload} side={RECEIVABLE_SIDE}
                        onNavigate={onNavigate} />
+      {/* Who is past their line, and whose account it is. Below the measured
+          behaviour rather than above it, for the same reason the supplier terms
+          sit below the payables panel: somebody arrives asking "how do they
+          pay", and what to do about it is the answer to that, not the
+          question. */}
+      <CreditPanel session={session} />
     </div>
   );
 }
@@ -935,6 +1255,10 @@ function decileOf(rowsIn: Row[], field: string): number {
 
 const HEALTH_LABEL: Record<string, string> = {
   HEALTHY: "Moving", SLOW: "Slow", DEAD: "Quiet",
+  // Never sold, and not on the books long enough for that to mean anything.
+  // Its own word rather than a shade of "Quiet": these rows used to be counted
+  // as dead stock, and on the live book they were the majority of it.
+  UNKNOWN: "Too new to say",
 };
 
 export function StockScreen({ session }: { session: PlatformSession }) {

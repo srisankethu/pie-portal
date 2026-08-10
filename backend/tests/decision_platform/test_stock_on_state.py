@@ -172,6 +172,24 @@ def _lines_the_old_way(session, with_cost: bool) -> list[stock.StockLine]:
             if c.date > last_purchased.get(c.product_id, date.min):
                 last_purchased[c.product_id] = c.date
 
+    # The earliest evidence each item existed: first stock reading or first
+    # purchase, whichever came first. Computed here as well rather than
+    # excluded from the comparison — the fold derives it from the same two
+    # facts this scan already holds, so parity stays checkable and the harness
+    # keeps its teeth. Not gated on ``with_cost``: the health band reads it and
+    # every role sees the band.
+    first_seen: dict[str, date] = {}
+
+    def _note_first(pid: str, when: date) -> None:
+        if when < first_seen.get(pid, date.max):
+            first_seen[pid] = when
+
+    for snap in session.query(models.StockSnapshot).filter_by(
+            organization_id=ORG).all():
+        _note_first(snap.product_id, snap.as_of)
+    for c in snapshot.costs:
+        _note_first(c.product_id, c.date)
+
     return [
         stock.StockLine(
             product_id=pid,
@@ -191,6 +209,7 @@ def _lines_the_old_way(session, with_cost: bool) -> list[stock.StockLine]:
                 label_for(snapshot.customer_names, cid, kind="customer")
                 for cid, _w in sorted((buyer_seen.get(pid) or {}).items(),
                                       key=lambda kv: kv[1], reverse=True)[:6]),
+            first_seen=first_seen.get(pid),
         )
         for pid, row in latest.items() if row.tracked
     ]

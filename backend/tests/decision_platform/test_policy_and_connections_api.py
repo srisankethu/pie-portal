@@ -116,15 +116,24 @@ def test_editing_changes_the_version_so_old_numbers_stay_attributable(client):
 
 def test_the_floor_ladder_cannot_be_inverted(client):
     """Approval floor above review floor means a line is flagged for review and
-    cleared for sending at the same time."""
+    cleared for sending at the same time.
+
+    Asserted on the half of the message only this rule produces. It used to
+    check for "approval floor", which the *family target* rule also says — "…is
+    below the approval floor…" — and that rule fires on the same edit, because
+    raising `min_margin` to 30% also puts it above every default family target.
+    So the rung this test is named for could be deleted outright and the test
+    stayed green. A test that a second rule can satisfy is not testing the first.
+    """
     r = _patch(client, OWNER, {"min_margin": 0.30, "margin_floor": 0.15})
     assert r.status_code == 400
-    assert "approval floor" in r.json()["detail"].lower()
+    assert "cannot sit above the review floor" in r.json()["detail"]
 
 
 def test_a_review_floor_above_the_target_is_refused(client):
     r = _patch(client, OWNER, {"margin_floor": 0.40, "target_margin_default": 0.24})
     assert r.status_code == 400
+    assert "cannot sit above the target margin" in r.json()["detail"]
 
 
 def test_a_family_target_below_the_approval_floor_is_refused(client):
@@ -145,8 +154,10 @@ def test_validation_is_of_the_result_not_the_edit(client):
     assert _patch(client, OWNER, {"min_margin": 0.10,
                                   "margin_floor": 0.12}).status_code == 200
     # 0.30 is a fine number on its own; against the saved 0.12 review floor it
-    # is not.
-    assert _patch(client, OWNER, {"min_margin": 0.30}).status_code == 400
+    # is not. Named rule, not just a 400 — see the note on the ladder test above.
+    r = _patch(client, OWNER, {"min_margin": 0.30})
+    assert r.status_code == 400
+    assert "cannot sit above the review floor" in r.json()["detail"]
 
 
 def test_analysis_internals_are_not_editable(client):
@@ -177,7 +188,7 @@ def test_every_editable_field_carries_a_label_and_an_explanation(client):
     r = client.get("/api/v1/admin/policy", headers=_hdr(client, OWNER)).json()
     for f in r["margin_policy"]["fields"]:
         assert f["label"] and f["help"], f["field"]
-        assert f["kind"] in ("ratio", "money", "days", "flag",
+        assert f["kind"] in ("ratio", "optional_ratio", "money", "days", "flag",
                              "family_margins", "band_edges")
 
 

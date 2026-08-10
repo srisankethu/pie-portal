@@ -307,6 +307,11 @@ def get_policy(
 #: it, the parser that coerces it and the schema that accepts it.
 _PATCH_TYPE: dict[str, type] = {
     "ratio": float,
+    # A ratio the owner is allowed not to have decided. The same wire type as a
+    # ratio; what differs is that the screen must render it empty rather than
+    # as 0%, and that ``policy._coerce`` keeps a blank as None instead of
+    # turning it into zero. See ``policy._NULLABLE_RATES``.
+    "optional_ratio": float,
     "money": float,
     "days": int,
     "flag": bool,

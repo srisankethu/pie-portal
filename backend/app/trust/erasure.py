@@ -43,28 +43,154 @@ from . import keys, vault
 #: from the metadata: a new table must be a deliberate decision to include or
 #: to leave out, and a silent "everything with an organization_id" would sweep
 #: in credential ciphertext the moment someone adds a column.
+#:
+#: That reasoning is right and it used to have no teeth. This list was written
+#: when the platform held customers, products and the analysis over them; the
+#: whole supply and payables layer arrived afterwards and none of it was
+#: decided about, so an export promising "everything this organization owns"
+#: quietly omitted about half of it.
+#: ``tests/decision_platform/test_trust_export_completeness.py`` now fails when
+#: a tenant-scoped table appears in neither this list nor ``EXCLUDED``. The
+#: decision stays a human one; only the *coverage* is automatic.
 EXPORTED: tuple[tuple[str, Any], ...] = (
+    # ── the read model ──────────────────────────────────────────────────────
     ("customers", models.Customer),
     ("products", models.Product),
+    ("vendors", models.Vendor),
     ("sales_txns", models.SalesTxn),
     ("cost_records", models.CostRecord),
     ("customer_item_metrics", models.CustomerItemMetric),
+    ("stock_snapshots", models.StockSnapshot),
+    # ── the documents: what is owed, by whom, and what has settled ──────────
+    ("bills", models.BillDoc),
+    ("invoices", models.InvoiceDoc),
+    ("purchase_orders", models.PurchaseOrderDoc),
+    ("sales_orders", models.SalesOrderDoc),
+    ("payment_receipts", models.PaymentReceipt),
+    ("payment_applications", models.PaymentApplication),
+    ("vendor_payments", models.VendorPaymentDoc),
+    ("bill_payment_applications", models.BillPaymentApplication),
+    # ── what a person typed, which no re-sync can rebuild ───────────────────
+    #
+    # The most important group here and the least obvious. Everything above is
+    # recoverable from Zoho; these are judgements somebody made inside this
+    # platform — a negotiated term Zoho's dropdown could not express, an item's
+    # real category, a scheme slab, the approval policy. Leaving them out would
+    # be the export that keeps you.
+    ("vendor_targets", models.VendorTarget),
+    ("vendor_scheme_slabs", models.VendorSchemeSlab),
+    ("vendor_payment_terms", models.VendorPaymentTerm),
+    ("vendor_msme_statuses", models.VendorMsmeStatus),
+    ("item_category_overrides", models.ItemCategoryOverride),
+    # The customer side of the same rule. Zoho holds no credit limit on a
+    # contact, and its salesperson field is derived — the sync rewrites it from
+    # whoever was on the last invoice. Both of these are the typed decision
+    # beside that: the line somebody set, and the book somebody was given. A
+    # departing customer whose export omitted them would get back every invoice
+    # and no record of the terms they were actually traded on.
+    ("customer_credit_limits", models.CustomerCreditLimit),
+    ("customer_account_owners", models.CustomerAccountOwner),
+    # Read off a published tender portal by hand and typed in. Nothing syncs
+    # it, so an export without it hands back a book whose measured share of
+    # wallet cannot be reconstructed — and the source URLs on these rows are
+    # the only record of where those figures came from.
+    ("tender_results", models.TenderResult),
+    ("commercial_policies", models.CommercialPolicy),
+    ("org_policies", models.OrgPolicy),
+    ("identity_policies", models.IdentityPolicy),
+    ("confirmed_code_mappings", models.ConfirmedCodeMapping),
+    # ── what the platform decided, and what a human did about it ────────────
     ("signals", models.Signal),
     ("decisions", models.Decision),
     ("approval_requests", models.ApprovalRequest),
+    ("quote_drafts", models.QuoteDraft),
     ("quote_decisions", models.QuoteDecision),
+    ("quote_outcomes", models.QuoteOutcome),
     ("outcomes", models.Outcome),
+    # ── the identity graph ──────────────────────────────────────────────────
     ("customer_identities", models.CustomerIdentity),
     ("customer_connector_records", models.CustomerConnectorRecord),
     ("item_identities", models.ItemIdentity),
     ("item_connector_records", models.ItemConnectorRecord),
+    ("identity_suggestions", models.IdentitySuggestion),
     ("identity_events", models.IdentityEvent),
+    # ── the record of what we did with their data ───────────────────────────
+    #
+    # Small, and exactly what a departing customer wants: who reached in, when
+    # and why; what was sent to a model and how each call went. A trust surface
+    # that is visible while you are a customer and gone the moment you leave is
+    # a trust surface with an expiry date on it.
+    ("ai_call_logs", models.AiCallLog),
+    ("access_grants", models.AccessGrant),
+    ("access_events", models.AccessEvent),
+    ("erasure_receipts", models.ErasureReceipt),
 )
 
-#: Never exported: it is either a secret of ours or a secret of theirs that a
-#: JSON file has no business carrying.
-EXCLUDED = ("zoho_credentials", "zoho_connections", "users", "tenant_keys",
-            "model_payloads")
+#: Never exported, and each one has a reason a customer can read. Keyed by
+#: table name so ``EXCLUDED`` stays the flat tuple its callers expect while the
+#: justification travels with it — an exclusion nobody can explain is one
+#: nobody should trust.
+EXCLUDED_REASONS: dict[str, str] = {
+    "zoho_credentials": (
+        "Your ERP credentials are yours to rotate at the source, and exporting "
+        "them would put live secrets in a file that travels by email."),
+    "zoho_connections": (
+        "Holds the same credentials, encrypted. Same reason."),
+    "users": (
+        "Staff accounts and password hashes. Yours to administer, and not "
+        "something a data export should carry."),
+    "tenant_keys": (
+        "Your data key, wrapped by our master key. Exporting it would export "
+        "nothing usable and weaken the thing that makes erasure provable."),
+    "model_payloads": (
+        "Stored encrypted under your data key. The readable version is served "
+        "decrypted by /trust/payloads, which is where to take it from."),
+    "name_vault": (
+        "Encrypted display names. The plaintext of every one of them is "
+        "already in customers, products and vendors above; a second, "
+        "undecryptable copy would be noise."),
+    "organizations": (
+        "Your organization's own row is the header of this export rather than "
+        "a table inside it."),
+    "business_events": (
+        "The append-only reading of every document, at line grain. Derived, "
+        "not canonical — Zoho is the system of record and a complete re-sync "
+        "rebuilds all of it — and two years of it would be a download in the "
+        "hundreds of megabytes. The documents it was read from are exported "
+        "above."),
+    "business_states": (
+        "Derived from business_events by replay, and rebuilt with them."),
+    "state_transitions": (
+        "Derived from business_events by replay, and rebuilt with them."),
+    "sync_runs": (
+        "Our own record of how each pull went. Operational plumbing with no "
+        "fact about your business in it."),
+    "ingested_documents": (
+        "Which document was last read at which timestamp — the bookkeeping "
+        "that makes a resumed sync cheap. No business content."),
+}
+
+EXCLUDED = tuple(EXCLUDED_REASONS)
+
+#: Every tenant-scoped table, exported or not. The manifest is a different
+#: question from the export and needs a different list: the export says what
+#: you may take, the receipt says what *existed* when the key was destroyed.
+#: A receipt built from ``EXPORTED`` would silently under-report precisely the
+#: tables somebody decided not to hand over — which is the half a customer
+#: verifying an erasure would most want counted.
+MANIFESTED: tuple[tuple[str, Any], ...] = EXPORTED + (
+    ("name_vault", models.NameVaultEntry),
+    ("model_payloads", models.ModelPayload),
+    ("organizations", models.Organization),
+    ("business_events", models.BusinessEvent),
+    ("business_states", models.BusinessState),
+    ("state_transitions", models.StateTransition),
+    ("sync_runs", models.SyncRun),
+    ("ingested_documents", models.IngestedDocument),
+    ("zoho_connections", models.ZohoConnection),
+    ("tenant_keys", models.TenantKey),
+    ("users", models.User),
+)
 
 
 def _rows(session: Session, model, organization_id: str) -> list[dict[str, Any]]:
@@ -100,10 +226,11 @@ def export(session: Session, organization_id: str) -> dict[str, Any]:
         },
         "exported_at": datetime.now(timezone.utc).isoformat(),
         "excluded": list(EXCLUDED),
-        "excluded_note": (
-            "Credentials and staff accounts are deliberately absent. Your ERP "
-            "credentials are yours to rotate at the source, and exporting them "
-            "would put live secrets in a file that travels by email."),
+        # One reason per exclusion rather than one sentence about credentials.
+        # The old note explained the three things a reader would have guessed
+        # and said nothing about the rest, which is how a list grows entries
+        # nobody can account for.
+        "excluded_note": dict(EXCLUDED_REASONS),
         "counts": {name: len(rows) for name, rows in data.items()},
         "data": data,
     }
@@ -111,19 +238,19 @@ def export(session: Session, organization_id: str) -> dict[str, Any]:
 
 # ── the receipt ─────────────────────────────────────────────────────────────
 def _manifest(session: Session, organization_id: str) -> dict[str, int]:
-    """What existed at the moment of erasure, per table."""
-    counts = {}
-    for name, model in EXPORTED:
-        counts[name] = int(session.scalar(
+    """What existed at the moment of erasure, per table.
+
+    Built from ``MANIFESTED`` — every tenant-scoped table — and not from the
+    export list. The two used to be the same list plus two hand-added counts,
+    which meant the receipt could only ever attest to the subset somebody had
+    remembered to make exportable.
+    """
+    return {
+        name: int(session.scalar(
             select(func.count()).select_from(model)
             .where(model.organization_id == organization_id)) or 0)
-    counts["name_vault_entries"] = int(session.scalar(
-        select(func.count()).select_from(models.NameVaultEntry)
-        .where(models.NameVaultEntry.organization_id == organization_id)) or 0)
-    counts["model_payloads"] = int(session.scalar(
-        select(func.count()).select_from(models.ModelPayload)
-        .where(models.ModelPayload.organization_id == organization_id)) or 0)
-    return counts
+        for name, model in MANIFESTED
+    }
 
 
 def _sign(body: dict[str, Any]) -> str:

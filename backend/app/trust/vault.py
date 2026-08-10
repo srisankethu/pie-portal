@@ -127,10 +127,15 @@ def backfill(session: Session, organization_id: str) -> dict[str, int]:
     Safe to re-run. Called at the end of a sync so a name changed in the ERP
     reaches the vault without a separate job.
     """
-    counts = {"CUSTOMER": 0, "PRODUCT": 0}
+    counts = {"CUSTOMER": 0, "PRODUCT": 0, "VENDOR": 0}
     for kind, model, id_attr in (
         ("CUSTOMER", models.Customer, "customer_id"),
         ("PRODUCT", models.Product, "product_id"),
+        # Suppliers, for the same reason as customers: a supplier's name is
+        # identifying and nothing computes with it. Their absence here was the
+        # reason a destroyed key left a readable list of who this book buys
+        # from.
+        ("VENDOR", models.Vendor, "vendor_id"),
     ):
         rows = session.scalars(
             select(model).where(model.organization_id == organization_id)).all()

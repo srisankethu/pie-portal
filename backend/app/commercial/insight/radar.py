@@ -125,6 +125,18 @@ def below_floor(session: Session, org: str, th: CommercialThresholds) -> dict:
     fix for an always-empty radar on a small book is a better empty state, never
     a lower floor — lowering it to make the screen look busy would make every
     figure on it untrustworthy.
+
+    **Two exclusions, and the second used to be invisible.** A relationship is
+    left off the radar either because its gap is below the floor — reported
+    here since this function was written — or because ``_kind_of`` could not
+    name a cause, which was a bare ``continue`` counted nowhere. That made it
+    the one suppression in this package that did not say it had happened: a
+    reader could subtract from ``relationships_examined`` and get a number, but
+    nothing told them there was a number to get. It is reported now, separately,
+    because the two mean different things. A small gap is a decision the owner's
+    own floor already made. An unnamed cause is the platform declining to guess,
+    and if it is most of the book that is a finding about the metrics rather
+    than about the customers.
     """
     floor = th.min_material_gap
     rows = session.scalars(
@@ -132,8 +144,10 @@ def below_floor(session: Session, org: str, th: CommercialThresholds) -> dict:
         .where(models.CustomerItemMetric.organization_id == org)).all()
 
     excluded = []
+    unnamed = 0
     for row in rows:
         if _kind_of(row) is None:
+            unnamed += 1
             continue
         impact, _ = _impact(row)
         if 0 < impact < floor:
@@ -145,6 +159,10 @@ def below_floor(session: Session, org: str, th: CommercialThresholds) -> dict:
         "largest_excluded": round(max(excluded), 2) if excluded else None,
         "total_excluded": round(sum(excluded), 2) if excluded else 0.0,
         "relationships_examined": len(rows),
+        #: Relationships with no nameable cause. Not a gap that was too small —
+        #: a gap the metrics could not attribute, so no conversation could be
+        #: opened about it. See ``_kind_of``.
+        "unnamed_cause_count": unnamed,
     }
 
 

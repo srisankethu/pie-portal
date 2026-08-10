@@ -26,6 +26,7 @@ from datetime import date
 from decimal import Decimal
 from typing import Any, Iterable
 
+from ...commercial import offtake
 from ...domain.enums import DecisionType, SubjectEntityType
 from ..reducers.inventory import INVENTORY
 from .base import (BUNDLE_WITH_MOVING, CANCEL_PURCHASE_ORDER, DEFER_PURCHASE,
@@ -37,11 +38,14 @@ from .base import (BUNDLE_WITH_MOVING, CANCEL_PURCHASE_ORDER, DEFER_PURCHASE,
 
 _PRODUCT = SubjectEntityType.PRODUCT.value
 
-#: A month, for turning a daily offtake rate into months of cover. 30 rather
-#: than 30.4: cover is a coarse measure and a spurious decimal in the divisor
-#: would imply a precision the underlying "units sold since we first saw it"
-#: does not have.
-_DAYS_PER_MONTH = Decimal(30)
+#: A month, for turning a daily offtake rate into months of cover.
+#:
+#: Re-exported from ``commercial/offtake.py`` rather than declared here. It used
+#: to be a module constant beside a private copy of the cover arithmetic, and
+#: the stock screen has since grown a days-of-cover column off the same two fold
+#: fields — so the calculation moved to one place and this name now points at it.
+#: The reasoning for 30 rather than 30.4 travelled with it.
+_DAYS_PER_MONTH = offtake.DAYS_PER_MONTH
 
 
 def _on_shelf(states: dict[str, dict[str, dict[str, Any]]],
@@ -250,11 +254,12 @@ class ExcessCoverDetector:
                as_of: date) -> Iterable[OpportunityDraft]:
         for product_id, value, on_hand in _on_shelf(states):
             sold = number(value, "units_sold")
-            # The window the offtake was measured over, from the *first* sale
-            # to today. Using the last movement instead would give a period of
-            # days, an enormous implied daily rate, and an excess-cover figure
-            # that never fires — the arithmetic version of measuring a year's
-            # rainfall with this morning's bucket.
+            # The window the offtake is measured over runs from the *first* sale
+            # to today — ``first_sold_on``, never ``last_sold_on``. The full
+            # reasoning now lives with the arithmetic in
+            # ``commercial/offtake.py``; the short version is that measuring
+            # from the last movement gives a period of days, an enormous implied
+            # daily rate, and an excess-cover figure that never fires.
             first_sold = day(value, "first_sold_on")
             if not sold or sold <= 0 or first_sold is None:
                 continue
@@ -263,11 +268,14 @@ class ExcessCoverDetector:
             # the idle detectors own it. See the class docstring.
             if idle is None or idle >= policy.slow_days:
                 continue
-            observed_days = Decimal(max((as_of - first_sold).days, 1))
-            daily = sold / observed_days
-            if daily <= 0:
+            observed_days = offtake.observed_days(first_sold, as_of)
+            # One copy of the cover calculation, shared with the days-of-cover
+            # column on the stock screen. Two copies would let the queue tell an
+            # owner they hold nine months of something the screen calls four.
+            daily = offtake.daily_offtake(sold, first_sold, as_of)
+            cover_months = offtake.months_of_cover(on_hand, sold, first_sold, as_of)
+            if daily is None or cover_months is None:
                 continue
-            cover_months = (on_hand / daily) / _DAYS_PER_MONTH
             if cover_months < policy.excess_cover_months:
                 continue
             priced = _value_of(on_hand, value)

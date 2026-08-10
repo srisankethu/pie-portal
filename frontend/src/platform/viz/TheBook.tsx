@@ -1449,6 +1449,25 @@ export function StockScreen({ session }: { session: PlatformSession }) {
               p.value == null ? "never sold" : `${p.value} d`,
           },
           {
+            // Quantity only, so it is on every role's grid — there is no cost
+            // term in it to pair with the drain beside it. The server decides
+            // that, as always; this renders what arrives.
+            field: "days_of_cover", headerName: "Cover", width: 140, flex: 0,
+            type: "numericColumn", cellClass: "ag-num",
+            filter: "agNumberColumnFilter",
+            // The wording is the whole point of the column. "At the rate it has
+            // moved" is a measurement over the past; "will last" would be a
+            // forecast, which this data cannot support and the response still
+            // refuses by name.
+            headerTooltip: "How much you hold, in days, at the rate this item "
+              + "has actually moved since it first sold. A measurement, not a "
+              + "forecast — it does not say how long the stock will last. Blank "
+              + "means the item has never sold, so there is no rate to divide by.",
+            valueFormatter: (p) =>
+              p.value == null ? "never sold"
+                : `${Number(p.value).toLocaleString("en-IN")} d`,
+          },
+          {
             field: "monthly_holding_cost",
             // Named for the reader. A manager is deciding where to put the
             // team; a salesperson is being told what their shelf costs them,

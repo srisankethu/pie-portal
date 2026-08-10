@@ -155,10 +155,21 @@ class OpportunityDraft:
 class DecisionPolicy:
     """The thresholds a detector reads, lifted out of ``CommercialThresholds``.
 
-    Built by the caller and passed in, exactly like ``stock.Carrying`` — so
-    ``state/`` never imports ``commercial/`` and the arrow between them keeps
-    pointing one way. ``version`` travels with it so every decision this
-    produces can be stamped with the policy that produced it.
+    Built by the caller and passed in, exactly like ``stock.Carrying`` — so no
+    detector here ever reaches for commercial *policy*, and a threshold arrives
+    already resolved and already versioned. ``version`` travels with it so every
+    decision this produces can be stamped with the policy that produced it.
+
+    That is the invariant, and it is narrower than the sentence that used to be
+    here ("``state/`` never imports ``commercial/``"). ``opportunities/inventory``
+    now imports ``commercial.offtake`` — pure quantity arithmetic, no config
+    read, no cost term, no session — because the stock screen grew a
+    days-of-cover column off the same two fold fields the excess-cover detector
+    divides, and one calculation with two copies is the drift ``CLAUDE.md`` §2
+    exists to prevent. What must not cross is a *policy read*: the moment a
+    detector loads ``CommercialThresholds`` itself, a card and the screen beside
+    it can be judged by different versions of the same rule, and this dataclass
+    stops being able to say which one judged what.
     """
 
     dead_days: int

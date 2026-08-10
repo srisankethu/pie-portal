@@ -157,11 +157,18 @@ def _lines_the_old_way(session, with_cost: bool) -> list[stock.StockLine]:
 
     sold_qty: dict[str, float] = {}
     last_sold: dict[str, date] = {}
+    # The other end of the offtake window. Scanned here as well rather than
+    # excluded from the comparison, for the same reason ``first_seen`` is below:
+    # the fold MINs it off the same sale lines this scan already walks, so the
+    # days-of-cover column stays inside the parity check rather than beside it.
+    first_sold: dict[str, date] = {}
     buyer_seen: dict[str, dict[str, date]] = {}
     for sale in snapshot.sales:
         sold_qty[sale.product_id] = sold_qty.get(sale.product_id, 0.0) + float(sale.qty)
         if sale.date > last_sold.get(sale.product_id, date.min):
             last_sold[sale.product_id] = sale.date
+        if sale.date < first_sold.get(sale.product_id, date.max):
+            first_sold[sale.product_id] = sale.date
         seen = buyer_seen.setdefault(sale.product_id, {})
         if sale.date > seen.get(sale.customer_id, date.min):
             seen[sale.customer_id] = sale.date
@@ -210,6 +217,7 @@ def _lines_the_old_way(session, with_cost: bool) -> list[stock.StockLine]:
                 for cid, _w in sorted((buyer_seen.get(pid) or {}).items(),
                                       key=lambda kv: kv[1], reverse=True)[:6]),
             first_seen=first_seen.get(pid),
+            first_sold=first_sold.get(pid),
         )
         for pid, row in latest.items() if row.tracked
     ]
@@ -408,3 +416,56 @@ def test_the_setting_is_inside_the_thresholds_version(client):
     secret = CommercialThresholds()
     published = CommercialThresholds(carrying_rate_is_published=True)
     assert secret.version != published.version
+
+
+# ── days of cover, through the endpoint ─────────────────────────────────────
+#
+# The arithmetic is pinned in ``test_inventory_cover.py``. What is checked here
+# is that it survives the round trip: read off the fold, stamped with a
+# thresholds version, and reaching the role that asked for it.
+def test_the_shelf_reports_days_of_cover_from_the_fold(client):
+    _build_state(client)
+    body = _stock_body(client, OWNER)
+    as_of = date.fromisoformat(body["as_of"])
+    inserts = next(r for r in body["items"] if "CNMG" in r["label"])
+
+    # 52 sold (40 on 2026-05-10, 12 on 2026-06-14), so the offtake window opens
+    # on the earlier of the two — MINed by the fold, not guessed at here.
+    assert inserts["first_sold"] == "2026-05-10"
+    window = (as_of - date(2026, 5, 10)).days
+    expected = round(inserts["on_hand"] / (52 / window))
+    assert inserts["days_of_cover"] == expected
+
+    # The end mill has stock and no sale on record: unknown cover, and the
+    # response says so rather than leaving a blank a reader has to interpret.
+    mill = next(r for r in body["items"] if "End mill" in r["label"])
+    assert mill["days_of_cover"] is None
+    assert any(u["series"] == "days_of_cover_for_lines_that_have_never_sold"
+               for u in body["unavailable"])
+
+
+def test_a_salesperson_sees_cover_while_still_seeing_no_cost(client):
+    """The whole point of the column: quantity is operations information, and
+    withholding it would leave the one screen this role uses unable to answer
+    "how much of this do we hold"."""
+    _build_state(client)
+    body = _stock_body(client, SALESPERSON)
+    rows = body["items"]
+    assert rows
+    assert any(r["days_of_cover"] is not None for r in rows)
+    for row in rows:
+        assert "days_of_cover" in row
+        assert "purchase_rate" not in row
+        assert "inventory_value" not in row
+
+
+def test_the_screen_no_longer_refuses_the_number_it_now_prints(client):
+    """The refusal and the column cannot both be blanket claims. ``weeks_of_cover``
+    stays — projected cover is still not knowable — but restated, so a reader
+    cannot disprove it from the grid two inches away."""
+    _build_state(client)
+    body = _stock_body(client, OWNER)
+    entry = next(u for u in body["unavailable"] if u["series"] == "weeks_of_cover")
+    assert entry["kind"] == "PERMANENT"
+    assert "projected cover" in entry["reason"].lower()
+    assert any(r["days_of_cover"] is not None for r in body["items"])

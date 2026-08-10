@@ -34,6 +34,9 @@ export type Screen =
   /** The book itself: the shelf, the suppliers and the cash — the three things the book
    *  always knew and the platform did not read until it ingested them. */
   | "payments" | "payables" | "stock" | "supply"
+  /** How long a rupee is tied up, per legal entity — the composite Zoho
+   *  reports one period of, for one company, and never as a trend. */
+  | "cashCycle"
   /** Deadlines the tax code sets: the MSME payment cliff, whose status is still
    *  unknown, and the 194Q threshold. Dates and amounts, never advice. */
   | "statutory"
@@ -94,6 +97,7 @@ export const PATH: Record<Screen, string> = {
   cadence: "/cadence",
   payments: "/payments",
   payables: "/payables",
+  cashCycle: "/cash-cycle",
   statutory: "/statutory",
   stock: "/stock",
   supply: "/supply",
@@ -190,6 +194,7 @@ export function vizPath(route: string): string {
     cadence: "cadence",
     payments: "payments",
     payables: "payables",
+    "cash-cycle": "cashCycle",
     statutory: "statutory",
     stock: "stock",
     supply: "supply",

@@ -112,6 +112,8 @@ const CustomerHealthTimeline = lazy(() =>
   import("./viz/History").then((m) => ({ default: m.CustomerHealthTimeline })));
 const MigrationMatrix = lazy(() =>
   import("./viz/History").then((m) => ({ default: m.MigrationMatrix })));
+const CashCycleScreen = lazy(() =>
+  import("./viz/CashCycle").then((m) => ({ default: m.CashCycleScreen })));
 const PayablesScreen = lazy(() =>
   import("./viz/TheBook").then((m) => ({ default: m.PayablesScreen })));
 const PaymentsScreen = lazy(() =>
@@ -592,6 +594,12 @@ export default function PlatformApp() {
       ? ([{ key: "payables", label: "How we pay", group: "book" }] as NavItem[])
       : []),
     ...(ability.can("read", "supply")
+      // Two of its three legs are denominated in what stock cost — the shelf
+      // valued at purchase rate, and what we owe suppliers. Scoped with the
+      // rest of the payable side rather than shown and then refused.
+      ? ([{ key: "cashCycle", label: "Cash cycle", group: "book" }] as NavItem[])
+      : []),
+    ...(ability.can("read", "supply")
       // Every row is a supplier balance against a date, so it is scoped with
       // the rest of the payable side rather than shown and then refused.
       ? ([{ key: "statutory", label: "Statutory deadlines",
@@ -758,6 +766,7 @@ export default function PlatformApp() {
             <Route path={PATH.cadence} element={<CadenceScreen session={session} onNavigate={goViz} />} />
             <Route path={PATH.payments} element={<PaymentsScreen session={session} onNavigate={goViz} />} />
             <Route path={PATH.payables} element={<PayablesScreen session={session} onNavigate={goViz} />} />
+            <Route path={PATH.cashCycle} element={<CashCycleScreen session={session} />} />
             <Route path={PATH.statutory} element={<StatutoryScreen session={session} />} />
             <Route path={PATH.stock} element={<StockScreen session={session} />} />
             <Route path={PATH.supply} element={<SupplyScreen session={session} />} />

@@ -178,6 +178,138 @@ def test_the_projection_never_moves_what_has_actually_been_bought():
     assert early["projection"]["projected_close"] != late["projection"]["projected_close"]
 
 
+# ── what the next rung costs ────────────────────────────────────────────────
+#
+# ``at_stake`` says what is on the table. It does not say whether chasing it is
+# sensible, and those come apart hard: the rate is paid on the whole amount, so
+# the rung's bonus is a lump and its value per rupee is set by how far there is
+# still to go. Priced above the *projected* close, never above what has been
+# bought — a book already running past the rung clears it for nothing.
+#
+# The quarter's last day is the clean case and the acute one: elapsed equals the
+# period, so the projection is the actual and the arithmetic is visible.
+CLOSE = date(2026, 6, 30)
+
+
+def _marginal(scheme, actual: str, **kw) -> dict:
+    return _outlook(scheme, actual, as_of=CLOSE, **kw)
+
+
+def test_the_lump_is_worth_more_per_rupee_the_smaller_the_gap():
+    """The same ₹1.25 lakh, against two different amounts of buying.
+
+    ₹45 lakh against a ₹50 lakh rung: ₹5 lakh of buying earns ₹1.25 lakh, so the
+    increment costs 75 paise in the rupee. This is the sentence the brief asks
+    for and it is the whole reason the card exists — ``at_stake`` is ₹1.25 lakh
+    in both rows below and says nothing about the difference between them.
+    """
+    out = _marginal(_flat(), "4500000")
+
+    assert out["marginal"]["gap"] == 500_000.0
+    assert out["marginal"]["gain"] == 125_000.0
+    assert out["marginal"]["earned_per_rupee"] == 0.25
+    assert out["marginal"]["effective_cost"] == 0.75
+    assert out["marginal"]["free"] is False
+    assert out["at_stake"] == 125_000.0
+
+
+def test_a_gap_smaller_than_the_rebate_costs_less_than_nothing():
+    """₹1 lakh of buying to collect ₹1.25 lakh. A negative acquisition cost —
+    and the one state on this screen an owner should never learn about at year
+    end, because it expires when the quarter does."""
+    out = _marginal(_flat(), "4900000")
+
+    assert out["marginal"]["gap"] == 100_000.0
+    assert out["marginal"]["earned_per_rupee"] == 1.25
+    assert out["marginal"]["effective_cost"] == -0.25
+    assert out["marginal"]["free"] is True
+
+
+def test_the_free_zone_opens_exactly_where_the_gap_equals_what_the_rung_pays():
+    """The boundary is not a threshold somebody chose — it falls out of the
+    arithmetic, and it is the sentence worth remembering: the increment is free
+    once there is less left to buy than the rung pays."""
+    out = _marginal(_flat(), "4875000")
+
+    assert out["marginal"]["gap"] == 125_000.0 == out["marginal"]["gain"]
+    assert out["marginal"]["effective_cost"] == 0.0
+    assert out["marginal"]["free"] is True
+
+
+def test_the_cost_is_measured_against_the_rebate_already_being_earned():
+    """2% is landing anyway, so moving to 3% is worth only the difference —
+    the same uplift rule ``at_stake`` follows, now denominated per rupee.
+
+    ₹58 lakh: the 3% rung pays ₹1.8 lakh, the close already earns ₹1.16 lakh at
+    2%, so ₹2 lakh of buying gains ₹64,000 — 32 paise in the rupee back.
+    """
+    out = _marginal(_slabbed(), "5800000")
+
+    assert out["marginal"]["rate"] == 0.03
+    assert out["marginal"]["gain"] == 64_000.0
+    assert out["marginal"]["effective_cost"] == 0.68
+
+
+def test_a_rung_far_off_is_priced_as_the_poor_deal_it_is():
+    """₹18 lakh of buying for ₹96,000. Barely five points, against two points
+    for standing still — the card has to be able to say "not worth it", or it
+    is an advertisement rather than a number."""
+    out = _marginal(_slabbed(), "4200000")
+
+    assert out["marginal"]["gap"] == 1_800_000.0
+    assert out["marginal"]["gain"] == 96_000.0
+    assert out["marginal"]["effective_cost"] == 0.946667
+    assert out["marginal"]["free"] is False
+
+
+def test_a_book_already_running_past_every_rung_is_told_so_not_sold_to():
+    """₹42 lakh eight weeks in closes at ₹68.25 lakh, past the ₹60 lakh rung.
+    Pricing an increment here would sell somebody stock the quarter was going to
+    buy anyway — so it is a named state, and deliberately not a refusal."""
+    out = _outlook(_slabbed(), "4200000")          # mid-quarter, on the run rate
+
+    assert out["marginal"] is None
+    assert out["marginal_absent"]["reason"] == schemes.LANDS_ANYWAY
+    assert "nothing discretionary" in out["marginal_absent"]["why"]
+
+
+def test_below_the_evidence_floor_the_increment_is_unpriced_rather_than_zero():
+    """The projection's floors carry straight through: what the next rung costs
+    depends on where the period is heading, so no projection means no cost.
+
+    A zero here would read as "free", which is the most expensive possible way
+    to be wrong on this screen.
+    """
+    out = _outlook(_flat(), "200000", as_of=date(2026, 4, 3))
+
+    assert out["projection"] is None
+    assert out["marginal"] is None
+    assert out["marginal_absent"]["reason"] == schemes.NO_PROJECTION
+    # The rung and what it pays are unaffected — those are exact all along.
+    assert out["at_stake"] == 125_000.0
+
+
+def test_no_scheme_leaves_the_increment_unpriced_for_its_own_reason():
+    """Distinguished from a missing projection because the fixes differ: one is
+    somebody typing in the rebate, the other is waiting a fortnight."""
+    out = _marginal(None, "4500000")
+
+    assert out["marginal"] is None
+    assert out["marginal_absent"]["reason"] == schemes.NO_SCHEME
+
+
+def test_the_increment_is_measured_from_the_projection_not_from_what_is_bought():
+    """Two books that have bought the same amount, one on pace to clear the rung
+    and one not. ``next_slab.gap`` is identical; the cost of the increment is a
+    different question and only one of them has one."""
+    early = _outlook(_flat(), "4200000", as_of=date(2026, 4, 20))   # closes high
+    late = _marginal(_flat(), "4200000")                            # closes flat
+
+    assert early["next_slab"]["gap"] == late["next_slab"]["gap"] == 800_000.0
+    assert early["marginal_absent"]["reason"] == schemes.LANDS_ANYWAY
+    assert late["marginal"]["gap"] == 800_000.0
+
+
 # ── what may be stored ──────────────────────────────────────────────────────
 def test_a_scheme_where_buying_more_earns_less_is_refused():
     """Always a transcription error, and stored it would render as an incentive

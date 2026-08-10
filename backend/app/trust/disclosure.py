@@ -139,9 +139,15 @@ def check_names(session: Session, organization_id: str, payload: str) -> list[st
 
     Reads the plaintext display columns rather than the vault: no decryption,
     one query, and it is the same set of names either way.
+
+    ``Vendor`` is here alongside the other two, and was missing until the
+    statutory-timing work started assembling supplier rows. A checker that knew
+    two thirds of this tenant's names would have reported clean on a payload
+    naming a supplier, which is the failure mode the whole function exists to
+    close.
     """
     found: list[str] = []
-    for model in (models.Customer, models.Product):
+    for model in (models.Customer, models.Product, models.Vendor):
         names = session.scalars(
             select(model.name).where(model.organization_id == organization_id)
             .limit(_MAX_NAMES)).all()

@@ -657,6 +657,31 @@ def test_an_uncosted_line_is_left_out_rather_than_ranked_as_free(session):
     assert DecisionType.INV_DEAD_STOCK.value not in _by_type(session)
 
 
+def test_stock_that_has_never_had_time_to_sell_raises_no_dead_stock_card(session):
+    """Never sold is not the same claim as dead, and the queue used to conflate
+    them.
+
+    ``_Idle._drafts`` read ``days = idle if idle is not None else at_least`` —
+    so a missing sale date satisfied *every* idleness bound automatically, and
+    an item first seen this week raised an INV_DEAD_STOCK decision with
+    PROPOSE_WRITE_OFF among its actions. Measured on the live SLS book, 81% of
+    the value in that band was stock bought in the previous ten weeks.
+
+    The line below is expensive enough to clear materiality and has never sold.
+    The only thing keeping it out of the queue is that there has not yet been
+    time to sell it.
+    """
+    _seed(session, items=[
+        {"item_id": "justarrived", "name": "Shell mill arbor", "unit": "pcs",
+         "status": "active", "track_inventory": True, "item_type": "inventory",
+         "stock_on_hand": 40, "available_stock": 40, "actual_available_stock": 40,
+         "purchase_rate": "21356"}],
+        invoices=[], bills=[], purchase_orders=[])
+    _generate(session)
+    assert DecisionType.INV_DEAD_STOCK.value not in _by_type(session)
+    assert DecisionType.INV_SLOW_MOVING.value not in _by_type(session)
+
+
 def test_no_detector_reports_an_order_as_late(session):
     """This book records no promised delivery dates. Age is a fact; lateness
     would be an invention."""

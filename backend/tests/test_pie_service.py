@@ -149,3 +149,41 @@ def test_an_unknown_code_stays_unresolved_under_a_scope():
     res = pie_service.resolve("XZ-CUSTOM-778-NOTREAL", "identity-abc")
     assert res.rel == "UNRESOLVED"
     assert res.supplyCode is None
+
+
+# ── the decode on the authoritative path ────────────────────────────────────
+def test_an_exact_identity_carries_its_decoded_geometry():
+    """The 0.97-confidence path must describe the product at least as fully as
+    the fuzzy one.
+
+    It used not to. ``IdentityMatch.to_dict`` projects a match down to four
+    fields, so geometry never crossed the boundary on an EXACT hit while the
+    lower-confidence suggestion path carried it all along — a salesperson got
+    *more* about a guess than about a certainty.
+    """
+    res = pie_service.resolve("2001174")
+    assert res.rel == "EXACT"
+    attrs = res.candidates[0].attributes
+    assert attrs, "an exact identity must carry the decode, not just a code"
+    assert attrs.get("iso_shape") == "C"
+    assert attrs.get("product_family") == "turning_insert"
+    # Absent slots are omitted rather than nulled: a null key would claim the
+    # engine looked and found nothing.
+    assert all(v is not None for v in attrs.values())
+
+
+def test_attributes_are_shaped_the_same_on_both_paths():
+    """One product, described one way, however it was found."""
+    from app.pie_service import ATTRIBUTE_FIELDS
+
+    exact = pie_service.resolve("2001174").candidates[0]
+    assert set(exact.attributes) <= set(ATTRIBUTE_FIELDS)
+
+
+def test_lookup_record_is_exact_and_never_guesses():
+    assert pie_service.lookup_record("2001174")["record_id"] == "2001174"
+    # Not a prefix, not a fuzzy neighbour, not an empty string.
+    assert pie_service.lookup_record("200117") is None
+    assert pie_service.lookup_record("XZ-NOTREAL-778") is None
+    assert pie_service.lookup_record("") is None
+    assert pie_service.lookup_record(None) is None

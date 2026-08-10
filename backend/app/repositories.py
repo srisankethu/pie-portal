@@ -845,6 +845,22 @@ class DecisionRepository:
         self.s.add(decision)
         return decision
 
+    def since(self, cutoff: datetime) -> Sequence[models.Decision]:
+        """Decisions opened on or after ``cutoff``.
+
+        On ``created_at``, which is when this card was opened. ``detected_at`` is
+        copied from the signal and rewritten every time the card is refreshed, so
+        a window built on it would move a decision forward in time whenever the
+        detectors ran again — and the outcome report would count the same card in
+        two different windows.
+        """
+        return self.s.scalars(
+            select(models.Decision).where(
+                models.Decision.organization_id == self.org,
+                models.Decision.created_at >= cutoff,
+            )
+        ).all()
+
     def list(
         self,
         *,
@@ -1015,6 +1031,20 @@ class SignalRepository:
         assert signal.organization_id == self.org, "cross-org write blocked"
         self.s.add(signal)
         return signal
+
+    def since(self, cutoff: datetime) -> Sequence[models.Signal]:
+        """Signals written on or after ``cutoff``.
+
+        On ``created_at`` rather than ``detected_at``: this answers "what did the
+        engine emit in this window", and ``detected_at`` is the reference date of
+        the trade behind the signal, which can be older than the run that found it.
+        """
+        return self.s.scalars(
+            select(models.Signal).where(
+                models.Signal.organization_id == self.org,
+                models.Signal.created_at >= cutoff,
+            )
+        ).all()
 
     def get(self, signal_id: str) -> Optional[models.Signal]:
         return self.s.scalar(

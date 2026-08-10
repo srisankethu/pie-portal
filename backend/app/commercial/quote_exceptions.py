@@ -24,6 +24,15 @@ quietly disappears on small lines is a control nobody trusts on large ones.
 **Cost figures do not travel.** Each exception carries a salesperson-safe
 ``detail`` and, separately, a ``manager_detail`` that may name cost and margin.
 The API drops the latter for a sales role — absent, not masked.
+
+**Neither does the boundary a rule fires at.** That is a later and harder
+lesson than the one above. Stripping the reasoning from a rule leaves the fact
+that it fired, and the caller supplies ``proposed_price`` — so walking the price
+finds the exact value at which the rule changes its answer, and for the three
+cost rules that value is computed from cost. Twenty probes recovered the floor
+in the ``filterCounts.MFLOOR`` incident; here two hundred lines fit in one
+request. ``boundary_refs`` records what each rule's boundary is made of, and
+``quote_service.project`` withholds a rule from any role denied one of them.
 """
 from __future__ import annotations
 
@@ -70,6 +79,17 @@ NO_PRICE_SET = "NO_PRICE_SET"
 NEW_RELATIONSHIP = "NEW_RELATIONSHIP"
 THIN_HISTORY = "THIN_HISTORY"
 
+#: Substituted for the cost-derived rules when the recipient may not see cost.
+#: Not a rule anything here evaluates — see ``quote_service.project``.
+APPROVAL_REQUIRED = "APPROVAL_REQUIRED"
+REVIEW_EXPECTED = "REVIEW_EXPECTED"
+
+#: A ``boundary_refs`` member naming purchase cost itself rather than one of the
+#: ``PriceReference`` codes. ``NEGATIVE_MARGIN`` fires at ``price <= unit_cost``
+#: with no policy multiplier in the comparison at all, so there is no reference
+#: code that describes where its boundary sits.
+COST_BASIS = "COST_BASIS"
+
 
 @dataclass(frozen=True)
 class QuoteException:
@@ -90,6 +110,25 @@ class QuoteException:
     # for the reviewer to make, not for the engine to make on their behalf.
     policy: bool = False
     inputs: dict = field(default_factory=dict)   # the exact numbers compared
+    #: The values that decide **where this rule's boundary sits** — not every
+    #: value its condition reads. The distinction is the whole design:
+    #:
+    #: A caller who supplies ``proposed_price`` can walk it until the rule
+    #: changes its answer, and what they learn is the boundary. So a rule
+    #: discloses precisely the numbers that *place* that boundary, and a role
+    #: denied any of them must not receive the rule.
+    #:
+    #: A condition that only *arms* a rule from history contributes nothing:
+    #: ``COST_INCREASE_NOT_PASSED`` reads a past cost movement to decide whether
+    #: to look at all, but it fires at this customer's last price — a number the
+    #: salesperson is shown. It lists ``LAST_PRICE_PAID`` and not ``COST_BASIS``,
+    #: and that is not an oversight. Listing every input read would withhold a
+    #: rule the negotiation desk needs while protecting nothing, which is the
+    #: failure mode CLAUDE.md §1 warns against in its first corollary.
+    #:
+    #: A rule with no price in its condition cannot be walked and carries an
+    #: empty set.
+    boundary_refs: frozenset[str] = frozenset()
 
     def to_dict(self) -> dict:
         return {
@@ -102,6 +141,10 @@ class QuoteException:
             "requires_approval": self.requires_approval,
             "policy": self.policy,
             "inputs": self.inputs,
+            # Sorted list rather than a set: this dict is persisted in
+            # ``quote_decisions`` and read back by ``snapshot_to_dict``, so it
+            # has to survive JSON and compare stably.
+            "boundary_refs": sorted(self.boundary_refs),
         }
 
 
@@ -150,6 +193,11 @@ def evaluate(
                     f"prices below are still exactly what was invoiced.")))
 
     if unit_cost is None:
+        # Empty ``boundary_refs`` on purpose. This states that we hold no cost
+        # for the item, which is a fact about our own master rather than a
+        # boundary — it is the same at every price, and ``references_withheld``
+        # tells the same reader the same thing. It stays visible because a
+        # salesperson pricing an item nobody has costed needs to know that.
         found.append(QuoteException(
             code=NO_COST_BASIS, severity=INFO,
             title="No purchase cost on record",
@@ -187,6 +235,11 @@ def evaluate(
                 impact_amount=to_floor, impact_data_class=RESTRICTED,
                 reference_code=MIN_MARGIN_PRICE, requires_approval=True,
                 policy=True,
+                # Cost itself, with no multiplier in the comparison — which is
+                # why this one is the sharpest of the three. Finding where it
+                # switches on is finding the purchase price to the paisa, and
+                # needs no knowledge of any policy parameter to interpret.
+                boundary_refs=frozenset({COST_BASIS}),
                 inputs={"quoted": float(price), "qty": float(qty)}))
         elif margin is not None and margin < th.min_margin:
             found.append(QuoteException(
@@ -201,6 +254,7 @@ def evaluate(
                 impact_amount=to_floor, impact_data_class=RESTRICTED,
                 reference_code=MIN_MARGIN_PRICE, requires_approval=True,
                 policy=True,
+                boundary_refs=frozenset({COST_BASIS, MIN_MARGIN_PRICE}),
                 inputs={"quoted": float(price), "qty": float(qty)}))
         elif margin is not None and margin < th.margin_floor:
             # Measured against the *review* floor, not the approval floor —
@@ -221,6 +275,7 @@ def evaluate(
                                 f"{th.money(to_review)} short."),
                 impact_amount=to_review, impact_data_class=RESTRICTED,
                 reference_code=MARGIN_FLOOR_PRICE, policy=True,
+                boundary_refs=frozenset({COST_BASIS, MARGIN_FLOOR_PRICE}),
                 inputs={"quoted": float(price), "qty": float(qty)}))
 
     # ── this customer's own past prices ─────────────────────────────────────
@@ -237,6 +292,7 @@ def evaluate(
                     f"fine, accidental is not."),
             impact_amount=gap, impact_data_class=OPERATIONAL,
             reference_code=LAST_PRICE_PAID,
+            boundary_refs=frozenset({LAST_PRICE_PAID}),
             inputs={"quoted": float(price), "reference": float(last.value),
                     "qty": float(qty)}))
 
@@ -251,6 +307,7 @@ def evaluate(
                     f"{th.money(gap)} below that on the line."),
             impact_amount=gap, impact_data_class=OPERATIONAL,
             reference_code=BAND_PRICE,
+            boundary_refs=frozenset({BAND_PRICE}),
             inputs={"quoted": float(price), "reference": float(band.value),
                     "qty": float(qty), "band": band.qty_band}))
 
@@ -270,6 +327,13 @@ def evaluate(
                                 f"{th.money(gap)} below it on the line."),
                 impact_amount=gap, impact_data_class=RESTRICTED,
                 reference_code=PEER_MEDIAN_PRICE,
+                # The pair below and above the median bracket it from both
+                # sides, and the tolerance that sets the bracket width is
+                # published to every role by ``/quote-intelligence/thresholds``.
+                # So the two together invert to the median exactly — a value
+                # ``build_references`` classifies RESTRICTED and ``project``
+                # strips by name.
+                boundary_refs=frozenset({PEER_MEDIAN_PRICE}),
                 inputs={"quoted": float(price), "reference": float(peer.value),
                         "qty": float(qty)}))
         elif price > peer.value * (Decimal("1") + tol):
@@ -285,6 +349,7 @@ def evaluate(
                                 f"{th.money(over)} above it on the line."),
                 impact_amount=over, impact_data_class=RESTRICTED,
                 reference_code=PEER_MEDIAN_PRICE,
+                boundary_refs=frozenset({PEER_MEDIAN_PRICE}),
                 inputs={"quoted": float(price), "reference": float(peer.value),
                         "qty": float(qty)}))
 
@@ -306,6 +371,14 @@ def evaluate(
                                 f"{_pct(metrics.price_change_pct)} "
                                 f"({metrics.erosion_kind})."),
                 reference_code=LAST_PRICE_PAID,
+                # ``LAST_PRICE_PAID`` and deliberately not ``COST_BASIS``. The
+                # cost movement decides whether this rule is armed; it does not
+                # place the boundary. What moving the price crosses is this
+                # customer's own last price, which the salesperson is shown.
+                # Listing the cost here would withhold the one warning that
+                # tells a salesperson our buying price moved and theirs did not
+                # — blunting the desk to protect nothing.
+                boundary_refs=frozenset({LAST_PRICE_PAID}),
                 inputs={"cost_change_pct": metrics.cost_change_pct,
                         "price_change_pct": metrics.price_change_pct}))
 
@@ -328,6 +401,11 @@ def evaluate(
                          f"({abs(metrics.margin_change_pp) * 100:.1f} pp)"),
                 impact_amount=metrics.historical_margin_gap,
                 impact_data_class=RESTRICTED,
+                # No ``boundary_refs``, and that is the correct empty set rather
+                # than an omission: this rule's condition contains no price, so
+                # there is nothing for a caller to walk. It says the same thing
+                # at every price. Its rupee ``impact_amount`` is RESTRICTED and
+                # ``project`` already drops that.
                 inputs={"margin_change_pp": metrics.margin_change_pp}))
 
     return _rank(found, th)

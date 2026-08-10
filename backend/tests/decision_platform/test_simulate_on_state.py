@@ -223,6 +223,49 @@ def test_a_band_narrows_to_exactly_what_the_stock_screen_calls_dead(client):
     assert [r["label"] for r in dead["lines"]] == ["Reamer 12H7"]
 
 
+def test_the_break_even_hold_time_is_the_one_figure_needing_no_assumption(client):
+    """Dead-stock liquidation as a decision, not a discount.
+
+    Taking ``d`` off costs ``V·d`` once; keeping the line costs ``V·m`` every
+    month. They meet at ``d / m`` months and the value cancels, so the boundary
+    is a property of the discount and the carrying rate alone — no forecast and
+    no assumption about whether this particular stock would have moved.
+
+    At 12% a year (1% a month) a 25% discount pays for itself if the stock
+    would otherwise have sat 25 months. Asserted as the number a person would
+    reach on paper rather than by re-running the implementation's expression.
+    """
+    out = _run(client, scenario=simulate.INVENTORY_CHANGE,
+               share_moved=1.0, discount=0.25)
+    s = client.Maker()
+    try:
+        monthly_pct = load_for_org(s, ORG).carrying_cost_annual_pct / 12
+    finally:
+        s.close()
+    assert out["break_even_idle_months"] == pytest.approx(0.25 / monthly_pct,
+                                                          rel=1e-6)
+    # Clearing at no discount costs nothing, so there is nothing to earn back.
+    assert _run(client, scenario=simulate.INVENTORY_CHANGE,
+                discount=0.0)["break_even_idle_months"] == 0.0
+    # And the response says whose judgement the remaining half is.
+    assert "your call" in out["break_even_note"]
+
+
+def test_the_break_even_boundary_errs_toward_clearing_and_says_so():
+    """It is the linear form, and that is disclosed rather than implied.
+
+    Discounting the cash flows properly lengthens the boundary, so the figure
+    shown is shorter than the true one — it makes clearing look worth it sooner
+    than it is. For a number whose failure mode is selling good stock cheaply
+    that is the direction to be wrong in only while it is *stated*.
+    """
+    assert simulate.break_even_idle_months(0.25, 0.01) == pytest.approx(25.0)
+    assert simulate.break_even_idle_months(0.40, 0.01) == pytest.approx(40.0)
+    # Stock that costs nothing to keep never has to be cleared, so there is no
+    # boundary at all rather than a boundary of zero.
+    assert simulate.break_even_idle_months(0.25, 0.0) is None
+
+
 def test_nothing_in_the_result_predicts_whether_it_will_sell(client):
     """The refusal that makes the rest trustworthy."""
     out = _run(client, scenario=simulate.INVENTORY_CHANGE)

@@ -188,7 +188,7 @@ def test_every_editable_field_carries_a_label_and_an_explanation(client):
     r = client.get("/api/v1/admin/policy", headers=_hdr(client, OWNER)).json()
     for f in r["margin_policy"]["fields"]:
         assert f["label"] and f["help"], f["field"]
-        assert f["kind"] in ("ratio", "money", "days", "flag",
+        assert f["kind"] in ("ratio", "optional_ratio", "money", "days", "flag",
                              "family_margins", "band_edges")
 
 

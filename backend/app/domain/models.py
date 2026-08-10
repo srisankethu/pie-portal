@@ -1310,7 +1310,11 @@ class QuoteOutcome(Base):
     # "unknown", so they are left NULL and read as "not recorded" — which is
     # the true statement. New losses cannot be NULL: ``set_outcome`` refuses a
     # LOST transition without a reason rather than defaulting to a benign one.
-    loss_reason: Mapped[Optional[str]] = mapped_column(String(24), index=True)
+    # 32 rather than the 24 the longest member needs: it is the width
+    # `claude/quote-win-loss` chose for this same column, and matching it means
+    # whichever branch lands second deletes a migration instead of altering a
+    # type on a live table.
+    loss_reason: Mapped[Optional[str]] = mapped_column(String(32), index=True)
     #: Who won it, where that is known. Free text on purpose — a competitor is
     #: not an entity this platform holds, and a lookup table of them would be a
     #: second customer master maintained by nobody. Never required: a reason is

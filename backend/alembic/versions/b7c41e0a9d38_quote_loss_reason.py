@@ -26,8 +26,19 @@ historical rows this migration is careful to leave alone.
 ``loss_reason`` is indexed: every consumer of this column filters on it before
 aggregating, which is the whole reason it is a column rather than a note.
 
+**Overlaps `claude/quote-win-loss` (PR #42), deliberately and compatibly.** That
+branch adds the same column, with the same name, the same index name and the same
+`String(32)` width, under revision `c7e41b90d3aa`. The vocabulary in
+`QuoteLossReason` is that branch's, adopted verbatim here rather than competing
+with it — it carries ~1,100 lines of analysis and UI keyed to those exact values,
+and a second set of names would have made whichever landed second a rename across
+all of it. Whichever of the two merges second should **delete its own migration
+file** and keep everything else: the resulting schema is identical either way.
+Do not attempt to run both — the second will die on a duplicate column, which is
+the loud failure and the one worth having.
+
 Revision ID: b7c41e0a9d38
-Revises: 0e8d9299b0c7
+Revises: d55f6ff18460
 Create Date: 2026-08-09
 """
 from alembic import op
@@ -35,14 +46,14 @@ import sqlalchemy as sa
 
 
 revision = 'b7c41e0a9d38'
-down_revision = '0e8d9299b0c7'
+down_revision = 'd55f6ff18460'
 branch_labels = None
 depends_on = None
 
 
 def upgrade() -> None:
     with op.batch_alter_table('quote_outcomes', schema=None) as batch_op:
-        batch_op.add_column(sa.Column('loss_reason', sa.String(24), nullable=True))
+        batch_op.add_column(sa.Column('loss_reason', sa.String(32), nullable=True))
         batch_op.add_column(sa.Column('lost_to', sa.String(255), nullable=True))
         batch_op.create_index('ix_quote_outcomes_loss_reason', ['loss_reason'])
 

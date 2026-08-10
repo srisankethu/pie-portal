@@ -357,67 +357,74 @@ QUOTE_OUTCOME_TRANSITIONS: dict[QuoteOutcomeStatus, frozenset] = {
 
 
 class QuoteLossReason(str, Enum):
-    """Why a quote was lost — and specifically, whether the money went anywhere.
+    """Why a quote was lost, from a list short enough that people use it.
 
-    The distinction this exists to draw is not a CRM nicety. "They bought it
-    from somebody else" and "nobody bought it at all" look identical in a
-    `LOST` row and mean opposite things about the customer's spending: the
-    first is a directly observed piece of a competitor's share of that
-    customer, the second is not evidence of any purchase. Anything that
-    reasons about what a customer buys elsewhere has to be able to tell them
-    apart, and a free-text note cannot be aggregated.
+    Five entries, because the owner's question has four answers and one of them
+    is "they never came back": *losing at 8% below my quote is a pricing
+    problem; losing on delivery is a stock problem*. A free-text field alone
+    could not separate those two — every loss would be a sentence, and nobody
+    counts sentences. The note beside this is what stops the list from lying
+    when reality does not fit one of the five.
 
-    ``went_elsewhere`` is the property that carries that, rather than callers
-    re-deciding which members count — one definition, extended here when a
-    member is added, instead of a set literal copied into every consumer.
+    Deliberately about *the customer's reason*, not ours. "Priced too high" and
+    "cost too high" are the same loss to the person recording it and two
+    different problems to the person fixing it, so this records only what was
+    heard and leaves the diagnosis to the modules that read it.
 
-    ``UNKNOWN`` exists because a quote lost before this field did still has to
-    be representable. It is never a default a *new* row may take: recording a
-    loss requires naming which of these it was, and `set_outcome` refuses
-    otherwise. An unknown reason is excluded from every denominator rather
-    than assumed benign — a lost quote silently counted as "not bought" would
-    understate what a customer spends elsewhere, which is the direction that
-    makes a share estimate flattering.
+    **This vocabulary is deliberately not mine.** It is `claude/quote-win-loss`'s
+    (PR #42), adopted here verbatim rather than shipped alongside a second set of
+    names for the same fact. That branch carries ~1,100 lines of analysis and UI
+    reading these exact values; a competing enum would have made whichever landed
+    second a rename across all of it, for no gain. What is added below is the one
+    question that branch does not answer and `insight/wallet.py` needs. If both
+    land, the reconciliation is deleting one migration file — not a vocabulary
+    argument.
     """
 
-    #: Beaten on price by another supplier.
-    LOST_ON_PRICE = "LOST_ON_PRICE"
-    #: Another supplier could deliver and we could not, or not in time.
-    LOST_ON_DELIVERY = "LOST_ON_DELIVERY"
-    #: Our brand or grade was not approved for the application; theirs was.
-    LOST_ON_APPROVAL = "LOST_ON_APPROVAL"
-    #: The requirement went away — project shelved, part cancelled, budget
-    #: pulled. Nobody supplied it, so nobody gained the spend.
-    NOT_BOUGHT = "NOT_BOUGHT"
-    #: Still nobody's, and not obviously coming back. Distinct from
-    #: ``NOT_BOUGHT``: the requirement may be live and simply stalled, so it
-    #: cannot be counted as a competitor's and cannot be counted as dead.
+    PRICE = "PRICE"
+    DELIVERY = "DELIVERY"
+    COMPETITOR = "COMPETITOR"
+    CUSTOMER_CANCELLED = "CUSTOMER_CANCELLED"
     NO_DECISION = "NO_DECISION"
-    #: Recorded before a reason was asked for, or genuinely not known.
-    UNKNOWN = "UNKNOWN"
 
     @property
     def went_elsewhere(self) -> Optional[bool]:
         """Whether this loss is evidence somebody else supplied the line.
 
-        Three-valued on purpose. ``True`` means a competitor took it, ``False``
-        means the requirement died, and ``None`` means the record does not say
-        — which is not the same as "no", and must not be folded into it.
+        Three-valued on purpose, and the third value is the point. ``True`` a
+        competitor took it, ``False`` the requirement died, ``None`` the record
+        cannot say. ``None`` is **not** "no" and must never be folded into it:
+        anything reasoning about what a customer buys elsewhere has to exclude
+        the unknowns from both sides, because counting them as "nobody bought
+        it" shrinks the competitor's side and overstates our own share.
+
+        A property on the enum rather than a set literal in each consumer, so
+        adding a sixth reason forces the question to be answered once, here,
+        instead of being silently defaulted in three places.
+
+        ``NO_DECISION`` is ``None`` rather than ``False`` deliberately: a stalled
+        requirement may still land with somebody, so it is neither ours nor
+        theirs yet.
         """
-        if self in (QuoteLossReason.LOST_ON_PRICE,
-                    QuoteLossReason.LOST_ON_DELIVERY,
-                    QuoteLossReason.LOST_ON_APPROVAL):
+        if self in (QuoteLossReason.PRICE, QuoteLossReason.DELIVERY,
+                    QuoteLossReason.COMPETITOR):
             return True
-        if self is QuoteLossReason.NOT_BOUGHT:
+        if self is QuoteLossReason.CUSTOMER_CANCELLED:
             return False
         return None
 
 
-#: Reasons a person may choose when recording a loss. ``UNKNOWN`` is absent
-#: deliberately: it is a state history can be in, never a state a new record
-#: may be created in.
-SELECTABLE_LOSS_REASONS: tuple[QuoteLossReason, ...] = tuple(
-    r for r in QuoteLossReason if r is not QuoteLossReason.UNKNOWN)
+#: Losses recorded before the vocabulary existed. Not a member of the enum —
+#: nothing may ever be *written* with it — but a reader has to be able to name
+#: the bucket rather than quietly dropping those quotes out of a denominator.
+#: Distinct from a recorded ``NO_DECISION``: one is "nobody asked", the other is
+#: "we asked and the customer has not decided".
+LOSS_REASON_NOT_RECORDED = "NOT_RECORDED"
+
+#: Reasons a person may choose when recording a loss — every member, since the
+#: not-recorded sentinel is deliberately outside the enum and so cannot be
+#: offered by construction.
+SELECTABLE_LOSS_REASONS: tuple[QuoteLossReason, ...] = tuple(QuoteLossReason)
 
 
 # Data classes for permission redaction (§14). RESTRICTED fields are visible to

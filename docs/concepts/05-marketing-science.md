@@ -277,3 +277,38 @@ figure computed over a third of the lines is the §1 trap wearing a rupee sign.
   window.** A cosmetic inconsistency found while reading, deliberately left alone
   — out of scope for this change, and noted here so the next reader does not have
   to re-find it.
+
+---
+
+## 7. The loss-reason vocabulary is not mine
+
+`claude/quote-win-loss` (PR #42) models the same fact: the same column, the same
+index name, the same width. Two branches arriving independently at "a lost quote
+must say why" is a good sign about the question and a bad situation for the
+schema.
+
+**Its vocabulary is adopted here verbatim** — `PRICE`, `DELIVERY`, `COMPETITOR`,
+`CUSTOMER_CANCELLED`, `NO_DECISION`, with `NOT_RECORDED` as a sentinel outside
+the enum so nothing can ever be written with it. Mine had different names for
+the same five ideas plus a cutting-tool-specific `LOST_ON_APPROVAL`, which lands
+in `COMPETITOR` and is a cheap loss.
+
+The reasoning is asymmetric on purpose. That branch carries ~1,100 lines of
+analysis and UI keyed to those exact values; this one needs the column and one
+question about it. Had I kept my names and landed first, its `insight/outcomes.py`
+and `QuoteOutcomes.tsx` would have needed a rename throughout. Adopting its names
+costs this branch a find-and-replace across a few tests and two label maps.
+Whichever merges second now deletes one migration file and keeps everything else,
+because the resulting schema is identical.
+
+What this branch adds is the one question that branch does not answer:
+`QuoteLossReason.went_elsewhere`, three-valued — a competitor took it, the
+requirement died, or the record cannot say. It is a property on the enum rather
+than a set literal in each consumer, so a sixth reason forces the question to be
+answered once instead of being silently defaulted in three places. `wallet.py`'s
+`BOUNDED_ASKS` rung is built entirely on it, and the third value is the one that
+matters: `None` is excluded from both sides of the ratio, never folded into
+"nobody bought it", because folding it would shrink the competitor's side and
+overstate our own share.
+
+`lost_to` — who won it — is additive and has no counterpart on that branch.

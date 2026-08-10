@@ -216,27 +216,30 @@ export interface LineIntelligence {
 
 export type QuoteOutcomeStatus = "DRAFT" | "SENT" | "WON" | "LOST";
 
-/** Why a quote was lost — specifically, whether the money went anywhere.
+/** Why a quote was lost — the customer's reason, as heard.
  *
- *  The first three mean another supplier took the order, so it is evidence
- *  about what this customer buys elsewhere. NOT_BOUGHT means nobody supplied
- *  it. NO_DECISION means it is still nobody's and may yet move. UNKNOWN is
- *  only ever read, never sent: it marks a loss recorded before the reason was
- *  asked for, which is not the same as somebody answering "unknown". */
+ *  PRICE, DELIVERY and COMPETITOR all mean somebody else supplied it, so the
+ *  spend is evidence about what this customer buys elsewhere.
+ *  CUSTOMER_CANCELLED means nobody supplied it. NO_DECISION means it is still
+ *  nobody's and may yet move.
+ *
+ *  NOT_RECORDED is only ever read, never sent: it marks a loss decided before
+ *  the vocabulary existed, which is not the same as somebody answering
+ *  "no decision". The server's `loss_reasons` list cannot contain it. */
 export type QuoteLossReason =
-  | "LOST_ON_PRICE"
-  | "LOST_ON_DELIVERY"
-  | "LOST_ON_APPROVAL"
-  | "NOT_BOUGHT"
-  | "NO_DECISION"
-  | "UNKNOWN";
+  | "PRICE"
+  | "DELIVERY"
+  | "COMPETITOR"
+  | "CUSTOMER_CANCELLED"
+  | "NO_DECISION";
 
 export interface QuoteOutcome {
   quote_id: string;
   status: QuoteOutcomeStatus;
   note: string | null;
-  /** Null means the loss predates the field, not that somebody answered
-   *  "unknown". A screen should render the two differently. */
+  /** Null is the NOT_RECORDED bucket: a loss decided before the vocabulary
+   *  existed. Not the same as a recorded NO_DECISION, and a screen should
+   *  render the two differently. */
   loss_reason: QuoteLossReason | null;
   lost_to: string | null;
   sent_at: string | null;

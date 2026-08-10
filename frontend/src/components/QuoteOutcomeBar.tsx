@@ -43,23 +43,21 @@ import { StatusChip, TOUCH, type Tone } from "../platform/kit";
  */
 
 const REASON_LABELS: Record<QuoteLossReason, string> = {
-  LOST_ON_PRICE: "Another supplier was cheaper",
-  LOST_ON_DELIVERY: "Another supplier could deliver, we could not",
-  LOST_ON_APPROVAL: "Our brand or grade was not approved",
-  NOT_BOUGHT: "The requirement went away — nobody supplied it",
+  PRICE: "Price — somebody quoted lower",
+  DELIVERY: "Delivery — somebody could supply and we could not",
+  COMPETITOR: "Went to a competitor, for another reason",
+  CUSTOMER_CANCELLED: "The requirement went away — nobody supplied it",
   NO_DECISION: "Still undecided, and gone quiet",
-  UNKNOWN: "Not recorded",
 };
 
 /** What each answer means for everything downstream, said where it is chosen.
  *  A reason picked to close a dialog is a reason nobody can rely on later. */
 const REASON_HELP: Record<QuoteLossReason, string> = {
-  LOST_ON_PRICE: "Counts as spend that went to a competitor.",
-  LOST_ON_DELIVERY: "Counts as spend that went to a competitor.",
-  LOST_ON_APPROVAL: "Counts as spend that went to a competitor.",
-  NOT_BOUGHT: "Counts as nobody's — no supplier gained this.",
+  PRICE: "Counts as spend that went to a competitor.",
+  DELIVERY: "Counts as spend that went to a competitor.",
+  COMPETITOR: "Counts as spend that went to a competitor.",
+  CUSTOMER_CANCELLED: "Counts as nobody's — no supplier gained this.",
   NO_DECISION: "Counted neither way; it may still move.",
-  UNKNOWN: "",
 };
 
 const STATUS_TONE: Record<QuoteOutcomeStatus, Tone> = {

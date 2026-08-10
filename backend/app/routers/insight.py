@@ -1534,15 +1534,17 @@ def _lost_asks(session: Session, org: str,
             # would say the competitor won nothing, which shrinks their side
             # and overstates ours.
             continue
-        # Classification stays in the enum. A NULL reason predates the field
-        # and is genuinely unknown, which is not the same as NOT_BOUGHT — the
-        # three-valued answer keeps them apart all the way to the arithmetic.
-        reason = (QuoteLossReason(row.loss_reason) if row.loss_reason
-                  else QuoteLossReason.UNKNOWN)
+        # Classification stays in the enum — one definition of what counts as a
+        # competitor's rupee. A NULL reason predates the vocabulary and is
+        # genuinely unknown, which is not the same as CUSTOMER_CANCELLED: it
+        # maps to None and is excluded from both sides, never folded into
+        # "nobody bought it".
+        went_elsewhere = (QuoteLossReason(row.loss_reason).went_elsewhere
+                          if row.loss_reason else None)
         out.append(wallet.LostAsk(
             quote_id=row.quote_id, value=Decimal(str(value)),
             decided_on=row.decided_at.date() if row.decided_at else None,
-            went_elsewhere=reason.went_elsewhere))
+            went_elsewhere=went_elsewhere))
     return out
 
 

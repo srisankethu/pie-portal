@@ -150,9 +150,9 @@ def test_a_salesperson_may_read_this(client):
 def test_lost_quotes_are_valued_from_the_snapshot_that_was_quoted(client):
     _add_quotes(client, [
         ("qw", "55600", "WON", None),
-        ("q1", "50000", "LOST", "LOST_ON_PRICE"),
-        ("q2", "50000", "LOST", "LOST_ON_DELIVERY"),
-        ("q3", "50000", "LOST", "LOST_ON_APPROVAL"),
+        ("q1", "50000", "LOST", "PRICE"),
+        ("q2", "50000", "LOST", "DELIVERY"),
+        ("q3", "50000", "LOST", "COMPETITOR"),
     ])
     data = _wallet(client)
     assert data["basis"] == "BOUNDED_ASKS"
@@ -170,8 +170,8 @@ def test_a_loss_recorded_before_the_reason_existed_stays_unknown(client):
     """
     _add_quotes(client, [
         ("qw", "55600", "WON", None),
-        ("q1", "50000", "LOST", "LOST_ON_PRICE"),
-        ("q2", "50000", "LOST", "LOST_ON_PRICE"),
+        ("q1", "50000", "LOST", "PRICE"),
+        ("q2", "50000", "LOST", "PRICE"),
         ("qold", "900000", "LOST", None),      # predates the field
     ])
     data = _wallet(client)
@@ -185,11 +185,11 @@ def test_a_lost_quote_with_no_priced_snapshot_is_skipped_not_counted_at_zero(cli
     s = client.Maker()
     _quote(s, "qw", "55600", "WON", None)
     for i in range(3):
-        _quote(s, f"q{i}", "50000", "LOST", "LOST_ON_PRICE")
+        _quote(s, f"q{i}", "50000", "LOST", "PRICE")
     # An outcome with no QuoteDecision behind it — nothing says what it was worth.
     s.add(models.QuoteOutcome(organization_id=ORG, quote_id="qghost",
                               customer_id="c1", status="LOST",
-                              loss_reason="LOST_ON_PRICE"))
+                              loss_reason="PRICE"))
     s.commit()
     s.close()
     data = _wallet(client)

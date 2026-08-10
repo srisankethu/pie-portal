@@ -724,8 +724,11 @@ def set_outcome(session: Session, org: str, *, quote_id: str,
     the moment it is cheapest to close: the person recording the loss is the
     one person who knows.
 
-    ``UNKNOWN`` is rejected as an explicit choice for the same reason. It is a
-    state history can be in, not one a new record may be created in.
+    "Not recorded" is unreachable rather than rejected: it lives outside
+    ``QuoteLossReason`` as a plain sentinel, so there is no value a caller could
+    pass to mean it. A state history can be in, but not one a new record can be
+    created in — enforced by construction rather than by a guard that has to be
+    remembered.
     """
     if status is QuoteOutcomeStatus.LOST:
         if loss_reason is None:
@@ -736,12 +739,6 @@ def set_outcome(session: Session, org: str, *, quote_id: str,
                   "requirement went away are opposite facts about this "
                   "customer, and a lost quote with neither recorded cannot be "
                   "counted as either.")
-        if loss_reason is QuoteLossReason.UNKNOWN:
-            raise MissingLossReason(
-                "UNKNOWN is not a reason a new loss may be recorded with — it "
-                "exists only for quotes decided before the reason was asked "
-                "for. Choose one of: "
-                + ", ".join(r.value for r in SELECTABLE_LOSS_REASONS))
 
     row = session.scalar(
         select(models.QuoteOutcome).where(

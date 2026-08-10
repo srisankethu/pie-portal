@@ -29,6 +29,7 @@ from ..domain.enums import (
     SubjectEntityType,
 )
 from ..ai.telemetry import CallTelemetry
+from ..commercial import ownership
 from ..repositories import AiTelemetryRepository, DecisionRepository
 from ..signals.config import SignalThresholds, load_thresholds
 
@@ -77,7 +78,12 @@ class DecisionService:
     def _assigned_user(self, signal: models.Signal, role: Role) -> Optional[str]:
         if role is Role.SALESPERSON and signal.subject_entity_type == SubjectEntityType.CUSTOMER.value:
             cust = self.s.get(models.Customer, signal.subject_entity_id)
-            return cust.assigned_user_id if cust else None
+            if cust is None:
+                return None
+            # The effective owner, so a decision lands with whoever the account
+            # was actually given to rather than with Zoho's last salesperson.
+            owner = ownership.owner_of(self.s, cust)
+            return owner.user_id if owner else None
         return None  # restricted/team decisions are not owned by a salesperson
 
     def generate(self) -> dict:

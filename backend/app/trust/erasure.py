@@ -82,6 +82,14 @@ EXPORTED: tuple[tuple[str, Any], ...] = (
     ("vendor_payment_terms", models.VendorPaymentTerm),
     ("vendor_msme_statuses", models.VendorMsmeStatus),
     ("item_category_overrides", models.ItemCategoryOverride),
+    # The customer side of the same rule. Zoho holds no credit limit on a
+    # contact, and its salesperson field is derived — the sync rewrites it from
+    # whoever was on the last invoice. Both of these are the typed decision
+    # beside that: the line somebody set, and the book somebody was given. A
+    # departing customer whose export omitted them would get back every invoice
+    # and no record of the terms they were actually traded on.
+    ("customer_credit_limits", models.CustomerCreditLimit),
+    ("customer_account_owners", models.CustomerAccountOwner),
     # Read off a published tender portal by hand and typed in. Nothing syncs
     # it, so an export without it hands back a book whose measured share of
     # wallet cannot be reconstructed — and the source URLs on these rows are

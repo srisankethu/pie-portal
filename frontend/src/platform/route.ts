@@ -50,6 +50,9 @@ export type Screen =
   /** The negotiation desk: the one screen a salesperson uses to decide rather
    *  than to read. */
   | "negotiate"
+  /** Which quotes were won, which were lost, and why — the outcome half of the
+   *  quoting loop, which the platform recorded and never read. */
+  | "quoteOutcomes"
   /** The approval queue, and organization settings (owner is super admin). */
   | "approvals" | "settings"
   /** Which connector records describe the same customer or item. */
@@ -100,6 +103,7 @@ export const PATH: Record<Screen, string> = {
   targets: "/targets",
   catalogue: "/item-lines",
   negotiate: "/negotiate",
+  quoteOutcomes: "/quote-outcomes",
 };
 
 /** The three screens whose URL carries an id, as route patterns.
@@ -190,6 +194,7 @@ export function vizPath(route: string): string {
     stock: "stock",
     supply: "supply",
     negotiate: "negotiate",
+    "quote-outcomes": "quoteOutcomes",
     // Bare `customer` — no id — is the Customers screen with its own picker.
     // It routes here now that Customers is a nav destination in its own right
     // rather than only ever a link carrying an account.

@@ -5,8 +5,15 @@ What you need to create in Zoho, and how to connect it. Written for the
 platform supports any number of organizations, each with its own Zoho Books
 connection (see [Multiple organizations](#multiple-organizations) below).
 
-The connection is **read-only**. The platform never creates, updates or deletes
-anything in Zoho — every call it makes is a GET.
+The **analysis** connection is read-only: the sync that feeds every metric,
+signal and decision on this platform only ever issues GETs, and nothing on that
+path writes back.
+
+The **Quote Builder** is the one part that can write, and only when it is
+switched on deliberately — see [Letting the Quote Builder write to
+Zoho](#letting-the-quote-builder-write-to-zoho) at the end. Everything in steps
+1–7 below is the read-only setup, and a connection configured only that far
+cannot create anything in your books.
 
 ---
 
@@ -440,3 +447,94 @@ This re-detects signals from the corrected cost and re-evaluates any decision
 whose underlying facts changed — decisions already resolved in an earlier week
 are not reopened by design and should be reviewed manually if they touched an
 affected product.
+
+---
+
+## Letting the Quote Builder write to Zoho
+
+Everything above is read-only. This section is the only thing that lets the
+platform create anything in your books, and it is off by default: with no
+setting changed, the Quote Builder prices from a deterministic offline stand-in
+and creates nothing anywhere.
+
+Turn it on only when you are ready for somebody pressing **Send** to put a real
+estimate in a real ledger.
+
+### 1. Add the write scopes
+
+The read scopes in step 2 are not enough — a token without these authenticates,
+reads prices, and then fails at the moment of the write. Regenerate the grant
+code with the read scopes **plus**:
+
+```
+ZohoBooks.estimates.CREATE,ZohoBooks.estimates.READ,ZohoBooks.settings.CREATE
+```
+
+| Scope | Used for |
+|---|---|
+| `ZohoBooks.estimates.CREATE` | `POST /estimates` — creating the quote |
+| `ZohoBooks.estimates.READ` | `GET /estimates?reference_number=…` — the duplicate check, and finding out what happened when a write's reply is lost. **Not optional**: without it every send refuses, because an estimate that cannot be looked up cannot be created safely. |
+| `ZohoBooks.settings.CREATE` | `POST /items` — the **Create in books** action on a NOT IN BOOKS line. Leave it out if you would rather items were only ever created by a person in Zoho; everything else still works. |
+
+Then redo steps 3–5 with the new refresh token, or rotate the credential in
+**Data & connection**.
+
+### 2. Turn it on
+
+```bash
+ZOHO_QUOTE_SERVICE=live      # default is "mock" — the offline stand-in
+```
+
+Deliberately separate from `ZOHO_SOURCE`. That one decides where *analysis reads
+history from*; this one decides whether the *quoting screen may write*. Being
+connected for analysis grants no ability to write.
+
+### 3. Which company an estimate goes to
+
+With three legal entities under one Zoho login, "create the estimate" is not a
+complete instruction on its own. The company comes from the customer: every
+imported record stores the triple `domain/origin.py` defines — connector,
+connected company, and that system's own id — so the estimate is written to the
+company the customer was imported *from*, addressed by that book's own contact
+id. It is a lookup, not a name match, which matters because "ABC Industries" can
+exist in all three books and be three different customers.
+
+Where that cannot be answered, the platform **refuses** rather than picking one:
+
+- the connection the customer came from is disabled or gone
+- the customer came from a different connector (a Tally ledger has no Zoho
+  contact to write against)
+- the customer predates provenance being recorded (`connection_id` is null) *and*
+  more than one company is connected
+
+The line reads **BOOKS OFFLINE** and the send fails with the reason. The fix is
+to re-sync the company that customer belongs to — not to retry. An organization
+with a single connected company has nothing to choose between and resolves
+directly.
+
+### 4. Verify, in this order
+
+Do these against a **test Zoho organization** first. An estimate is outward
+facing and Zoho has no API to delete one.
+
+1. **Credentials and scopes reach the right company.** `POST /api/v1/data/status`
+   → `connection.organization_found` must be `true`. This is the same call the
+   Quote Builder's reachability probe makes, so if it fails, every quote line
+   will read BOOKS OFFLINE.
+2. **A real item resolves.** Paste one real MM# into a quote and confirm the
+   list price and stock match what Zoho shows for that item. A wrong price here
+   means the code matched a different item, and no later step will catch it.
+3. **The duplicate guard works before you rely on it.** Send a one-line quote,
+   note the estimate number, then press **Send** again on the *same* quote. It
+   must report *"This quote was already sent"* and Zoho must still hold exactly
+   one estimate under that reference. If a second appears, stop and do not use
+   live mode.
+4. **A refusal is honest.** Add a line for a code that is not in these books and
+   send. It must fail, name that code, and create nothing.
+
+### If a send fails and you cannot tell whether it worked
+
+The message carries the quote's **reference** — search Zoho's estimates for it.
+That reference is written onto every estimate this platform creates precisely so
+that question always has an answer, and so that re-sending the same quote
+returns the existing estimate rather than a second one.

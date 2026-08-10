@@ -201,6 +201,20 @@ export const papi = {
   payables: (t: string) =>
     req<Record<string, unknown>>("/api/v1/insight/payables", {}, t),
 
+  // Which quotes were won and which were lost. No cost anywhere in it, so
+  // every role reads it — a salesperson sees their own accounts, scoped by the
+  // server exactly as `/api/v1/accounts` is.
+  quoteOutcomes: (t: string, months = 12) =>
+    req<Record<string, unknown>>(
+      `/api/v1/insight/quote-outcomes?months=${months}`, {}, t),
+
+  // Where a losing price sat, against what wins and against what that customer
+  // has paid — and the margin behind both. Manager and above, scoped like
+  // `payables`: a win rate is a fact about a relationship, where the margin
+  // sits on the ones we lose is a commercial position.
+  quotePricing: (t: string) =>
+    req<Record<string, unknown>>("/api/v1/insight/quote-pricing", {}, t),
+
   // What we actually agreed to pay a supplier in, which Zoho's fixed dropdown
   // often cannot express. Zoho's own value is never overwritten — both travel
   // together, because the gap between them is the thing worth seeing.
@@ -223,6 +237,43 @@ export const papi = {
       `/api/v1/insight/vendor-terms/${encodeURIComponent(vendorId)}`,
       { method: "DELETE" }, t),
 
+  // What each account owes against the limit it was given, and whose book it
+  // is in. Every role: a limit and a balance are money already billed, not
+  // cost, and chasing your own overdue accounts is the salesperson's job. The
+  // response is scoped to that person's book; a manager gets the organization.
+  credit: (t: string) =>
+    req<Record<string, unknown>>("/api/v1/insight/credit", {}, t),
+
+  /** Record how much credit an account has. Manager and above — reading a
+   *  limit is everyone's business, deciding one is a commercial position. */
+  setCreditLimit: (t: string, customerId: string, amount: number,
+                   note?: string | null) =>
+    req<Record<string, unknown>>("/api/v1/insight/credit-limits", {
+      method: "PUT",
+      body: JSON.stringify({ customer_id: customerId, amount,
+                             note: note ?? null }),
+    }, t),
+
+  /** Withdraw the limit. Deliberately not "set it to zero": a withdrawn limit
+   *  means nobody has decided, and a zero one is a standing hold. */
+  clearCreditLimit: (t: string, customerId: string) =>
+    req<Record<string, unknown>>(
+      `/api/v1/insight/credit-limits/${encodeURIComponent(customerId)}`,
+      { method: "DELETE" }, t),
+
+  /** Put an account in somebody's book. Zoho's own salesperson is never
+   *  overwritten — both travel together. */
+  setAccountOwner: (t: string, customerId: string, userId: string) =>
+    req<Record<string, unknown>>("/api/v1/insight/account-owners", {
+      method: "PUT",
+      body: JSON.stringify({ customer_id: customerId, user_id: userId }),
+    }, t),
+
+  /** Withdraw the assignment and fall back to Zoho's salesperson. */
+  clearAccountOwner: (t: string, customerId: string) =>
+    req<Record<string, unknown>>(
+      `/api/v1/insight/account-owners/${encodeURIComponent(customerId)}`,
+      { method: "DELETE" }, t),
   // Statutory payment timing. Manager and above, scoped like `payables` for the
   // same reason: every row is a supplier balance, and the watchlist additionally
   // carries a cost estimate derived from the organization's tax rate.

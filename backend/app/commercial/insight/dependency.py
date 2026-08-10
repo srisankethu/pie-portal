@@ -21,6 +21,16 @@ two suppliers is attributed wholly to the larger, and the response reports how
 much of revenue could be attributed at all so a reader is never given a share
 computed over a fraction of the book without knowing it.
 
+**There is a third side, and it is the same shape again.** A customer's weight
+in revenue and their weight in the *outstanding* book are two different facts,
+and they come apart exactly where it matters: a large customer who pays on the
+day is a big share of what we sell and a small share of what we are waiting on.
+``receivables`` measures that half against the same ``concentration``, so "the
+largest five" means one set of names on both figures and a screen can put them
+beside each other. Neither is a proxy for the other and neither may be printed
+as the other — ``state/opportunities/receivables.py`` makes the same point about
+its per-customer card.
+
 **Sole source is a different question from concentration**, and the state layer
 already draws that line — see ``state/opportunities/supplier.py``. Nothing here
 re-derives it; the count travels through so the two screens agree.
@@ -50,15 +60,22 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date
+from decimal import Decimal
 from typing import Iterable, Optional
 
 from ..categories import LABELS, UNCATEGORISED
 from ..config import CommercialThresholds
 from . import absence
+from .payments import MIN_SETTLEMENTS, Lag
 
 #: Which end of the book a row describes.
 VENDOR = "vendor"
 CUSTOMER = "customer"
+#: The same customers, weighed by what they still owe rather than by what they
+#: bought. A third side rather than a variant of ``CUSTOMER``, because the two
+#: are different facts about one name and a screen must never read one as the
+#: other — see ``receivables``.
+RECEIVABLE = "receivable"
 
 #: What a target is measured against.
 ON_PURCHASE = "PURCHASE"
@@ -99,6 +116,22 @@ class Spend:
     product_id: str
     date: date
     amount: float
+
+
+@dataclass(frozen=True)
+class Owing:
+    """What one customer still owes, at the grain the receivables fold holds.
+
+    ``Decimal``, unlike ``Flow.revenue`` and ``Spend.amount`` beside it. Those
+    predate the money rule in the working agreement — ``schemes.py`` says the
+    same of ``Target`` — and this is new money, so it arrives as ``Decimal`` and
+    is narrowed to ``float`` exactly once, where it feeds the ``float``
+    arithmetic ``concentration`` already does for the other two sides. Widening
+    the whole module is a change to revenue and spend, which this is not.
+    """
+
+    customer_id: str
+    outstanding: Decimal
 
 
 @dataclass(frozen=True)
@@ -192,12 +225,12 @@ def build(flows: Iterable[Flow], spends: Iterable[Spend], as_of: date, *,
         "customers": {
             "rows": [s.to_dict() for s in customers],
             "total": round(revenue_total, 2),
-            "concentration": _concentration(customers),
+            "concentration": concentration(customers),
         },
         "vendors": (None if vendors is None else {
             "rows": [s.to_dict() for s in vendors],
             "total": round(sum(s.money for s in vendors), 2),
-            "concentration": _concentration(vendors),
+            "concentration": concentration(vendors),
         }),
         "attribution": {
             "revenue_attributed": round(attributed, 2),
@@ -355,7 +388,7 @@ def progress_of(vendor_id: str, targets: list[Target], as_of: date, *,
     }
 
 
-def _concentration(rows: list[Standing]) -> dict:
+def concentration(rows: list[Standing]) -> dict:
     """How much of this side sits with the largest few.
 
     Shares of a *total*, so they are only ever true of the exact set of rows
@@ -365,17 +398,140 @@ def _concentration(rows: list[Standing]) -> dict:
     rows beneath three companies' arithmetic. ``CompanyFilter`` — which hides
     rows and deliberately never restates a total — is the right control for a
     directory and the wrong one here, for exactly this reason.
+
+    Public because three folds now ask it: revenue, purchase spend and the
+    outstanding receivables book. The arithmetic is the same on all three — rank
+    by money, share of the total, combined share of the largest ``TOP_N`` — and
+    a second copy of it would be how two screens start disagreeing about who the
+    largest five are.
+
+    ``top_n_ids`` names those five. Any figure a caller computes *about* the top
+    five has to be computed over the same set the share describes, and handing
+    back the ids is what makes that impossible to get wrong — a caller that
+    re-ranked the rows itself would be one tie-break away from a second answer.
     """
     total = sum(r.money for r in rows)
     if not rows or not total:
         return {"top_share": None, "top_label": None, "top_n_share": None,
-                "count": len(rows)}
+                "count": len(rows), "top_n_ids": []}
     ranked = sorted(rows, key=lambda r: -r.money)
     return {
         "top_share": round(ranked[0].money / total, 4),
         "top_label": ranked[0].label,
         "top_n_share": round(sum(r.money for r in ranked[:TOP_N]) / total, 4),
         "count": len(rows),
+        "top_n_ids": [r.entity_id for r in ranked[:TOP_N]],
+    }
+
+
+# ── the third side: what is still owed ──────────────────────────────────────
+#
+# The two lists above weigh a customer by what they bought. This one weighs the
+# same names by what they have not yet paid for, and **the two diverge** — a
+# large customer who settles promptly is a big share of revenue and a small
+# share of the outstanding book, and a smaller one who sits on every invoice is
+# the reverse. ``state/opportunities/receivables.py`` says the same thing in
+# prose about its per-customer card; this is the stated top-five figure that
+# card was never meant to be, and neither is a proxy for the other. They are
+# returned together so a screen can put them side by side, because the *gap*
+# between them is the finding — the same reason the vendor row draws spend and
+# downstream revenue on one track.
+#
+# What is deliberately not here is a days-sales-outstanding ratio. See
+# ``unavailable`` and the reducer's own docstring.
+
+
+def receivables(owings: Iterable[Owing], *, names: dict[str, str],
+                lags: dict[str, Lag]) -> dict:
+    """The outstanding book, concentrated, and how long that money has been out.
+
+    Two figures, and the second one is only ever true of the accounts it could
+    be measured over.
+
+    **The concentration** is ``concentration`` — the same function the revenue
+    and spend halves use, given rows whose ``money`` is what the customer still
+    owes. Not a second implementation, so "the largest five" cannot mean one set
+    of names on this figure and another set on the one beside it.
+
+    **The weighted-average days-to-pay** is over exactly the customers
+    ``concentration`` named, weighted by what each of them owes. Weighted rather
+    than averaged because the question is how long *the money* has been out, and
+    an account owing ₹40 lakh at 70 days and one owing ₹2 lakh at 20 days do not
+    each contribute half of it.
+
+    It is **not** days sales outstanding and must not be printed as one. DSO is
+    a ratio against a revenue window, this is an average of measured settlement
+    durations, and the two answer to different denominators.
+
+    **Where the evidence runs out.** A customer's figure comes from
+    ``payments.lag``, which refuses below its settlement floor — so an account
+    that has settled once contributes nothing rather than contributing a number
+    read out of one invoice. What is *not* done is quietly averaging the rest
+    and calling the answer "the top five": ``covers_share`` says how much of the
+    top five's money the figure actually spans and ``unmeasured`` names the
+    accounts it does not, so the number can never be read as covering more than
+    it does. With nothing measurable at all the figure is ``None`` — UNKNOWN,
+    not a benign default.
+
+    There is deliberately no minimum coverage below which the figure is
+    suppressed. That would be a band edge, and a band edge is policy that has to
+    carry a version (working agreement §1); stating the coverage beside the
+    number is the same protection without inventing an unversioned threshold.
+    """
+    # Only customers who owe something. A zero balance is not a small share of
+    # the book, it is not part of the book at all, and counting it would make
+    # "the largest five of 340 customers" out of 40 who actually owe money.
+    rows = [
+        Standing(
+            entity_id=o.customer_id,
+            label=names.get(o.customer_id) or f"Unnamed customer (id {o.customer_id})",
+            side=RECEIVABLE,
+            money=float(o.outstanding),
+            share=None,
+        )
+        for o in owings if o.outstanding > 0
+    ]
+    book = sum(r.money for r in rows)
+    for r in rows:
+        r.share = (r.money / book) if book else None
+    rows.sort(key=lambda r: -r.money)
+
+    conc = concentration(rows)
+    by_id = {r.entity_id: r for r in rows}
+    top = [by_id[i] for i in conc["top_n_ids"]]
+
+    measured = [(r, lags[r.entity_id]) for r in top if r.entity_id in lags]
+    weight = sum(r.money for r, _ in measured)
+    unmeasured = [r for r in top if r.entity_id not in lags]
+    top_money = sum(r.money for r in top)
+
+    return {
+        "rows": [{**r.to_dict(),
+                  # The component figures, so a reader can see which accounts
+                  # the weighted number is made of rather than taking it on
+                  # trust. ``None`` is "below the settlement floor", which is
+                  # the same claim ``unmeasured`` makes about the same row.
+                  "days_to_pay": (lags[r.entity_id].expected_days_to_pay
+                                  if r.entity_id in lags else None),
+                  "settlements": (lags[r.entity_id].settlements
+                                  if r.entity_id in lags else 0)}
+                 for r in rows],
+        "total": round(book, 2),
+        "concentration": conc,
+        "days_to_pay": {
+            "weighted_days": (round(sum(r.money * lg.expected_days_to_pay
+                                        for r, lg in measured) / weight, 1)
+                              if weight else None),
+            "measured": len(measured),
+            "of": len(top),
+            # Of the top five's money, how much the figure above spans. The
+            # number is meaningless without this and travels with it.
+            "covers_share": (round(weight / top_money, 4) if top_money else None),
+            "unmeasured": [{"entity_id": r.entity_id, "label": r.label,
+                            "outstanding": round(r.money, 2)}
+                           for r in unmeasured],
+            "min_settlements": MIN_SETTLEMENTS,
+        },
     }
 
 
@@ -500,8 +656,24 @@ def sankey(flows: Iterable[Flow], *, vendor_names: dict[str, str],
 
 
 def unavailable() -> list[dict]:
-    """The two claims this view is not entitled to make."""
+    """The claims this view is not entitled to make."""
     return [
+        {
+            "what": "Days sales outstanding",
+            # Not epistemic: the platform holds sales and it holds balances.
+            # What it does not hold is the two of them reconciled into one
+            # ratio, and pretending the weighted average beside it is that
+            # ratio would be the cheapest way to get this wrong.
+            "kind": absence.BUILDABLE,
+            "why": ("The receivables fold is keyed by customer and carries no "
+                    "revenue window, so the denominator DSO needs is not in it "
+                    "— the reducer says so at length. What is shown instead is "
+                    "the weighted-average days-to-pay of the largest five "
+                    "accounts: an average of settlement durations actually "
+                    "observed, not a ratio against sales. The two are close "
+                    "enough in spirit to be confused and are not "
+                    "interchangeable."),
+        },
         {
             "what": "How much they depend on us",
             # Epistemic, not a gap: the platform will never see what a customer

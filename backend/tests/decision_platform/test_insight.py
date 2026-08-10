@@ -1441,6 +1441,34 @@ def test_a_lag_is_the_same_three_numbers_whichever_side_it_came_from():
             <= measured["v1"].late_days)
 
 
+def test_a_lag_carries_days_to_pay_beside_days_late():
+    """Two different questions on one record. The three percentiles are
+    measured against the due date — "were the terms honoured" — and
+    ``expected_days_to_pay`` against the invoice date — "how long is the cash
+    tied up". Bills raised on the 1st, due on the 31st, settled on 20 February
+    are 20 days late and 50 days of tied-up cash."""
+    from app.commercial.insight import payments
+
+    rows = [_pay("v1", date(2026, 1, 1), date(2026, 2, 20),
+                 due=date(2026, 1, 31), ref=f"bill-{i}") for i in range(3)]
+    measured = payments.lags(rows)["v1"]
+
+    assert measured.expected_days == 20
+    assert measured.expected_days_to_pay == 50
+
+
+def test_days_to_pay_is_withheld_when_the_days_late_floor_is_not_met():
+    """Deliberately stricter than days-to-pay needs. Three invoices with no
+    terms on record have a perfectly measurable days-to-pay, and ``lag``
+    refuses anyway — the error it makes is withholding a figure that exists,
+    which a reader can see, rather than stating one the evidence lacks."""
+    from app.commercial.insight import payments
+
+    rows = [_pay("v1", date(2026, 1, 1), date(2026, 2, 20), ref=f"bill-{i}")
+            for i in range(3)]
+    assert payments.lags(rows) == {}
+
+
 # ── the term we actually agreed, against the one Zoho could express ─────────
 #
 # Zoho's payment terms are a fixed dropdown, so a real agreement of "net 37" is

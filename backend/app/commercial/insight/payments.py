@@ -277,12 +277,26 @@ class Lag:
     good news in. A customer at ``late_days`` is money arriving later; this
     business at ``late_days`` is money leaving later, which is the opposite for
     the week that has to fund it.
+
+    ``expected_days_to_pay`` is the fourth number and it answers a different
+    question from the other three. They are measured against the **due date** —
+    "were the terms honoured". It is measured against the **document date** —
+    "how long is the cash tied up" — which is the distinction this module's
+    docstring draws, and it is what a concentration reader needs: how long the
+    money sitting with the largest accounts has been out, not whether those
+    accounts were punctual about it. Carried on ``Lag`` rather than as a sibling
+    function so the evidence floor stays in one place; the cost of that is
+    stated in ``lag``.
     """
     party_id: str
     early_days: int
     expected_days: int
     late_days: int
     settlements: int
+    #: Median days from document date to settlement. Nearest-rank like the
+    #: three above, for the same reason: an interpolated 17.4 days is not an
+    #: observation anybody made.
+    expected_days_to_pay: int
 
 
 def _percentile(values: list[int], fraction: float) -> int:
@@ -315,6 +329,17 @@ def lag(settled: list[Settlement]) -> Optional[Lag]:
     thin-evidence party silently treated as punctual would tighten a cash band
     that the evidence does not tighten, which is the one outcome worse than a
     wide one.
+
+    ``expected_days_to_pay`` rides on the same three refusals, and that is
+    stricter than it strictly needs to be. Days-to-pay is measured from the
+    document date and needs no due date at all, so a party with six settled
+    invoices and terms recorded on none of them has a perfectly measurable
+    days-to-pay and gets ``None`` here anyway. That is deliberate: the error it
+    makes is *withholding a figure that exists*, which a reader can see, rather
+    than *stating one the evidence does not carry*, which they cannot. Splitting
+    the two floors would mean a ``Lag`` whose days-late fields are absent, and
+    every consumer of the cash projection would have to learn that shape to gain
+    a number none of them reads.
     """
     datable = [s.days_late for s in settled if s.days_late is not None]
     if len(datable) < MIN_SETTLEMENTS:
@@ -328,6 +353,11 @@ def lag(settled: list[Settlement]) -> Optional[Lag]:
         expected_days=_percentile(datable, 0.50),
         late_days=_percentile(datable, 0.90),
         settlements=len(datable),
+        # Over every settlement, not only the datable ones — an invoice with no
+        # terms on record still has a date it was raised on and a date it was
+        # paid on. len(settled) >= len(datable) >= MIN_SETTLEMENTS, so the floor
+        # above already covers this figure.
+        expected_days_to_pay=_percentile([s.days_to_pay for s in settled], 0.50),
     )
 
 

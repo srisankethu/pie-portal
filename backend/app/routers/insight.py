@@ -2230,8 +2230,16 @@ def book_dependency(connection_id: Optional[str] = Query(None),
         flows, vendor_names=vendors,
         customer_names=snapshot.customer_names) if with_suppliers else None
 
+    # The receivables half, beside the revenue half rather than on a screen of
+    # its own. Every role: a balance is money already billed, so it carries no
+    # cost and no margin — the same reason `/payments` is open and `/payables`
+    # is not.
+    result["receivables"] = _receivables_dependency(session, org, scope)
+
     companies = Companies(session, org)
     companies.stamp(result["customers"]["rows"],
+                    index_of(session, org, models.Customer), by="entity_id")
+    companies.stamp(result["receivables"]["rows"],
                     index_of(session, org, models.Customer), by="entity_id")
     if result["vendors"] is not None:
         companies.stamp(result["vendors"]["rows"],
@@ -2248,6 +2256,47 @@ def book_dependency(connection_id: Optional[str] = Query(None),
                                               _revenue_by_product(snapshot)),
         companies=_companies(session, org),
         scoped_to=connection_id)
+
+
+def _receivables_dependency(session: Session, org: str,
+                            scope: Optional[list[str]]) -> dict:
+    """The outstanding book, concentrated, beside the revenue half.
+
+    Named from the ``Customer`` table rather than from the sales snapshot: the
+    fold is keyed by customer whether or not they traded inside the snapshot's
+    window, and a customer who bought nothing this year but still owes for last
+    year is precisely a row this figure must not drop or leave unnamed.
+
+    Lags are computed over every settlement in the book, not only those of the
+    customers in scope. They are read by id for the five names the concentration
+    returns, so narrowing them first would cost a query and change nothing.
+
+    **A fold that has never run is not a book with nothing outstanding.** Both
+    produce no rows, and rendered the same way the first would read as "nobody
+    owes us anything", which is the benign default the working agreement names.
+    ``folded_on`` separates them: absent means the question has not been asked
+    yet, and ``empty_reason`` says so instead of a zero.
+    """
+    on = latest_as_of(session, org, RECEIVABLES)
+    folded = _balances(session, org, scope)
+    names = {c.customer_id: c.name for c in session.scalars(
+        select(models.Customer).where(
+            models.Customer.organization_id == org)).all()}
+    result = dependency.receivables(
+        [dependency.Owing(customer_id=customer_id,
+                          outstanding=_money(value, "outstanding"))
+         for customer_id, value in folded.items()],
+        names=names,
+        lags=payments.lags(_settlements(session, org)))
+    result["folded_on"] = on.isoformat() if on else None
+    result["empty_reason"] = (
+        "Invoices have not been folded into the receivables state yet, so what "
+        "is outstanding is unknown rather than nothing. Run a sync."
+        if on is None else
+        None if result["rows"] else
+        "Every invoice in this book is settled, so there is no outstanding "
+        "position to concentrate.")
+    return result
 
 
 class VendorTermIn(BaseModel):
@@ -2412,7 +2461,7 @@ def _credit_limits(session: Session,
 
 
 def _balances(session: Session, org: str,
-              customer_ids: list[str]) -> dict[str, dict[str, Any]]:
+              customer_ids: Optional[list[str]]) -> dict[str, dict[str, Any]]:
     """What each customer owes, from the receivables fold.
 
     Read, never recomputed. ``RECEIVABLES`` already folds ``InvoiceDoc.balance``
@@ -2422,14 +2471,20 @@ def _balances(session: Session, org: str,
     Empty when this database has never been folded, and that is left as empty
     rather than defaulted: a customer whose balance is unknown is not a customer
     who owes nothing.
+
+    ``customer_ids`` of ``None`` means every customer the fold holds, which is
+    what the dependency screen asks for when no company is chosen. ``None``
+    rather than an empty list for the reason ``_customers_of_connection`` gives:
+    an empty list is a real bound meaning "no customers at all".
     """
     on = latest_as_of(session, org, RECEIVABLES)
     if on is None:
         return {}
-    wanted = set(customer_ids)
+    wanted = None if customer_ids is None else set(customer_ids)
     return {key: value
             for key, value in state_engine.load(session, org, RECEIVABLES, on).items()
-            if key in wanted and value.get("direction") == "customer"}
+            if (wanted is None or key in wanted)
+            and value.get("direction") == "customer"}
 
 
 def _money(value: dict[str, Any], field: str) -> Decimal:

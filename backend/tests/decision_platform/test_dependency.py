@@ -434,3 +434,210 @@ def test_a_target_for_a_scoped_out_supplier_does_not_follow(client):
 
     four_u = _dep(client, head, "c_4u")["vendors"]["rows"]
     assert all(r["target"] is None for r in four_u)
+
+
+# ── the receivables side ─────────────────────────────────────────────────────
+#
+# Revenue concentration and receivables concentration are different facts about
+# the same names, and the whole reason both are computed is that they come
+# apart. The tests below pin the divergence, the weighting, and the refusal —
+# a weighted figure over accounts with no settlement history is not a number.
+
+def _owing(customer: str, outstanding: str):
+    from decimal import Decimal
+    return dep.Owing(customer_id=customer, outstanding=Decimal(outstanding))
+
+
+def _settled(party: str, days_to_pay: int, count: int = 3,
+             terms: int | None = 30):
+    """``count`` invoices for one party, each settled ``days_to_pay`` after it
+    was raised. ``terms`` of ``None`` records no due date at all."""
+    from datetime import timedelta
+
+    from app.commercial.insight.payments import Settlement
+    raised = date(2026, 1, 1)
+    return [
+        Settlement(party_id=party, document_ref=f"{party}-{i}",
+                   document_number=None,
+                   document_date=raised + timedelta(days=i),
+                   due_date=(raised + timedelta(days=i + terms)
+                             if terms is not None else None),
+                   paid_on=raised + timedelta(days=i + days_to_pay),
+                   amount=1.0)
+        for i in range(count)
+    ]
+
+
+def _lags(*groups):
+    from app.commercial.insight.payments import lags
+    return lags([s for group in groups for s in group])
+
+
+def _receivables(owings, lags=None, names=None):
+    return dep.receivables(owings, names=names or {}, lags=lags or {})
+
+
+def test_receivables_concentration_diverges_from_revenue_concentration():
+    """The reason both are computed. The customer who buys the most is not the
+    customer we are waiting on the most, and one is not a proxy for the other:
+    ``big`` is 90% of revenue and pays on the day, ``slow`` is a tenth of
+    revenue and holds four fifths of what is owed."""
+    names = {"big": "big", "slow": "slow"}
+    revenue = _build([_flow("big", "v1", 900.0), _flow("slow", "v1", 100.0)],
+                     customer_names=names)
+    assert revenue["customers"]["concentration"]["top_label"] == "big"
+    assert revenue["customers"]["concentration"]["top_share"] == pytest.approx(0.9)
+
+    owed = _receivables([_owing("big", "50"), _owing("slow", "200")],
+                        names=names)
+    assert owed["concentration"]["top_label"] == "slow"
+    assert owed["concentration"]["top_share"] == pytest.approx(0.8)
+
+
+def test_the_top_five_receivables_share_is_the_shared_concentration():
+    """Same function as the revenue and spend halves, so "the largest five"
+    cannot mean one set of names here and another set beside it."""
+    owings = [_owing(f"c{i}", str(10 - i)) for i in range(10)]
+    conc = _receivables(owings)["concentration"]
+    assert conc["count"] == 10
+    # 10 of 55, then 10+9+8+7+6 of 55 — the arithmetic the revenue half is
+    # pinned to in `test_concentration_reports_the_largest_and_the_top_five_together`.
+    assert conc["top_share"] == pytest.approx(10 / 55, abs=1e-4)
+    assert conc["top_n_share"] == pytest.approx(40 / 55, abs=1e-4)
+    assert conc["top_n_ids"] == ["c0", "c1", "c2", "c3", "c4"]
+
+
+def test_a_customer_who_owes_nothing_is_not_part_of_the_book():
+    """A settled account is not a small share of what is outstanding; it is not
+    in it at all. Counting it would make "the largest five of 300 customers"
+    out of the handful who actually owe money."""
+    got = _receivables([_owing("owes", "100"), _owing("settled", "0")])
+    assert [r["entity_id"] for r in got["rows"]] == ["owes"]
+    assert got["concentration"]["count"] == 1
+    assert got["total"] == 100.0
+
+
+def test_days_to_pay_is_weighted_by_what_is_owed_not_averaged_flat():
+    """The question is how long *the money* has been out. A flat mean of the
+    two accounts below is 60 days; ninety percent of the money sits with the
+    one that settles in ten."""
+    got = _receivables(
+        [_owing("prompt", "900"), _owing("slow", "100")],
+        _lags(_settled("prompt", 10), _settled("slow", 110)))
+    assert got["days_to_pay"]["weighted_days"] == pytest.approx(20.0)
+    assert got["days_to_pay"]["measured"] == 2
+    assert got["days_to_pay"]["covers_share"] == 1.0
+
+
+def test_days_to_pay_is_measured_from_the_invoice_not_the_due_date():
+    """Days-to-pay and days-late answer different questions. An account on
+    net-30 settling forty days after the invoice is ten days late and forty
+    days of tied-up cash, and this figure is the second one."""
+    got = _receivables([_owing("c1", "100")], _lags(_settled("c1", 40)))
+    assert got["days_to_pay"]["weighted_days"] == pytest.approx(40.0)
+
+
+def test_an_account_below_the_settlement_floor_is_named_not_averaged_in():
+    """Two settled invoices is not a payment rhythm. The account is left out of
+    the figure and named, and the share of the top five's money the figure does
+    span travels beside it — so the number can never be read as covering more
+    than it does."""
+    from app.commercial.insight.payments import MIN_SETTLEMENTS
+    got = _receivables(
+        [_owing("known", "250"), _owing("thin", "750")],
+        _lags(_settled("known", 20), _settled("thin", 90, count=2)))
+    figure = got["days_to_pay"]
+    assert figure["weighted_days"] == pytest.approx(20.0)
+    assert figure["measured"] == 1 and figure["of"] == 2
+    assert figure["covers_share"] == pytest.approx(0.25)
+    assert [u["entity_id"] for u in figure["unmeasured"]] == ["thin"]
+    assert figure["min_settlements"] == MIN_SETTLEMENTS
+
+
+def test_the_weighted_figure_is_unknown_when_nothing_in_the_set_is_measurable():
+    """UNKNOWN rather than the benign default. A zero here would read as "the
+    largest accounts pay on the day", which is the opposite of "we cannot
+    say"."""
+    got = _receivables([_owing("c1", "100"), _owing("c2", "50")])
+    figure = got["days_to_pay"]
+    assert figure["weighted_days"] is None
+    assert figure["measured"] == 0 and figure["of"] == 2
+    assert figure["covers_share"] == 0.0
+    assert len(figure["unmeasured"]) == 2
+
+
+def test_the_weighted_figure_spans_only_the_five_the_share_names():
+    """It is a figure *about the top five*, so a sixth account cannot move it —
+    however slowly they pay."""
+    owings = [_owing(f"c{i}", str(100 - i)) for i in range(6)]
+    lags = _lags(*[_settled(f"c{i}", 10) for i in range(5)],
+                 _settled("c5", 400))
+    figure = _receivables(owings, lags)["days_to_pay"]
+    assert figure["of"] == dep.TOP_N == 5
+    assert figure["weighted_days"] == pytest.approx(10.0)
+
+
+def test_each_row_carries_the_days_that_made_the_weighted_figure():
+    """So a reader can see which accounts it is made of rather than taking it
+    on trust. ``None`` on a row is the same claim ``unmeasured`` makes."""
+    got = _receivables(
+        [_owing("known", "100"), _owing("thin", "50")],
+        _lags(_settled("known", 25), _settled("thin", 90, count=1)))
+    rows = {r["entity_id"]: r for r in got["rows"]}
+    assert rows["known"]["days_to_pay"] == 25
+    assert rows["known"]["settlements"] == 3
+    assert rows["thin"]["days_to_pay"] is None
+    assert rows["thin"]["settlements"] == 0
+
+
+def test_the_receivables_rows_carry_no_cost_and_no_margin():
+    """Receivables are money already billed and reach every role. Nothing on
+    the row may answer a margin question."""
+    got = _receivables([_owing("c1", "100")], _lags(_settled("c1", 20)))
+    banned = ("cost", "margin", "gross_profit", "unit_cost")
+    for row in got["rows"]:
+        assert not any(b in key for key in row for b in banned), row
+
+
+def test_the_view_refuses_days_sales_outstanding_by_name():
+    """The weighted average is an average of observed durations, not a ratio
+    against a revenue window — close enough in spirit to be confused, and named
+    so nobody prints one as the other."""
+    what = [u["what"] for u in dep.unavailable()]
+    assert "Days sales outstanding" in what
+
+
+# ── the receivables half, through the API ───────────────────────────────────
+def test_the_receivables_half_travels_with_the_revenue_half(client):
+    """Side by side on one response, so a screen never has to fetch one of the
+    two facts from a second endpoint and imply the other."""
+    body = _dep(client, _head(client))
+    owed = body["receivables"]
+    assert set(owed) == {"rows", "total", "concentration", "days_to_pay",
+                         "folded_on", "empty_reason"}
+    assert owed["concentration"]["count"] == len(owed["rows"])
+    # Nothing has been folded in this fixture, so the honest answer is an empty
+    # book and an unknown figure — not a zero-day average over nobody.
+    assert owed["days_to_pay"]["weighted_days"] is None
+
+
+def test_an_unfolded_receivables_state_is_unknown_not_nothing_outstanding(client):
+    """Both produce no rows, and read the same way the first says "nobody owes
+    us anything" — the benign default the working agreement names. The reason
+    separates them."""
+    owed = _dep(client, _head(client))["receivables"]
+    assert owed["folded_on"] is None
+    assert "unknown rather than nothing" in owed["empty_reason"]
+
+
+def test_a_salesperson_is_shown_the_receivables_half(client):
+    """A balance is money already billed. `/payments` is open to every role for
+    the same reason and `/payables` is not: one is a call list, the other is
+    purchase cost by another name."""
+    from app.seed import SEED_PASSWORD
+    r = client.post("/api/v1/auth/login",
+                    json={"email": "r.nair@sanketh.in", "password": SEED_PASSWORD})
+    assert r.status_code == 200, r.text
+    body = _dep(client, {"Authorization": f"Bearer {r.json()['token']}"})
+    assert body["vendors"] is None          # purchase spend, withheld
+    assert body["receivables"] is not None  # receivables, not withheld

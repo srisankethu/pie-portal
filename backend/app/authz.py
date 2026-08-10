@@ -29,6 +29,7 @@ from fastapi import Depends, Header, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
 from . import clock
+from .commercial import ownership
 from .config import settings
 from .db import get_session
 from .domain import models
@@ -211,7 +212,8 @@ def decision_queue_scope(principal: Principal,
 
 
 def can_view_customer(principal: Principal,
-                      customer: Optional[models.Customer]) -> bool:
+                      customer: Optional[models.Customer],
+                      session: Session) -> bool:
     """Whether this principal may see this account at all.
 
     The same rule `/api/v1/accounts` applies to a list, applied to one row: a
@@ -233,11 +235,20 @@ def can_view_customer(principal: Principal,
     that breaks, and the timeline answers 404 because a screen that draws itself
     empty claims the account exists. Both are indistinguishable from the
     not-found case, which is the property this rule is for.
+
+    Resolved through `commercial/ownership` rather than by comparing
+    ``assigned_user_id`` directly. The column is Zoho's — the sync rewrites it
+    from whoever was on the last invoice — while an account handed to somebody
+    by hand lives in the typed table. Reading the column here would hide a
+    reassigned account from the person it was given to and leave it visible to
+    the person it was taken from, which is the failure this rule exists to
+    prevent. That is also why the session is a parameter: the answer is a row,
+    not a field.
     """
     if customer is None or customer.organization_id != principal.organization_id:
         return False
     if principal.is_salesperson:
-        return customer.assigned_user_id == principal.user_id
+        return ownership.owned_by(session, customer, principal.user_id)
     return True
 
 

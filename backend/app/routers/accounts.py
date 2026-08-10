@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 
 from .. import approvals, clock
 from ..authz import Principal, can_view_customer, current_principal
+from ..commercial import ownership
 from ..db import get_session
 from ..domain import models
 from ..domain.origin import Companies
@@ -54,10 +55,17 @@ def list_accounts(
     """
     stmt = select(models.Customer).where(
         models.Customer.organization_id == principal.organization_id)
+    rows = list(session.scalars(stmt.order_by(models.Customer.name)).all())
+    # Same scope rule as decisions: a salesperson's own accounts. Resolved
+    # through `ownership` rather than filtered on `assigned_user_id` in SQL,
+    # because an account handed over by hand lives in the typed table and the
+    # column still says whatever Zoho's last invoice implied. One rule, one
+    # place — see `commercial/ownership`.
+    owners = ownership.owners(session, principal.organization_id, rows)
     if principal.is_salesperson:
-        # Same scope rule as decisions: a salesperson's own assigned accounts.
-        stmt = stmt.where(models.Customer.assigned_user_id == principal.user_id)
-    rows = session.scalars(stmt.order_by(models.Customer.name)).all()
+        rows = [c for c in rows
+                if (owner := owners.get(c.customer_id)) is not None
+                and owner.user_id == principal.user_id]
 
     if status != "all":
         want_active = status == "active"
@@ -84,14 +92,22 @@ def list_accounts(
     # cannot read, and it is one indexed query for the whole list.
     assignees = approvals.user_names(
         session, principal.organization_id,
-        [c.assigned_user_id for c in rows if c.assigned_user_id])
+        [owners[c.customer_id].user_id for c in rows if c.customer_id in owners])
     return [
         {
             "customer_id": c.customer_id,
             "name": c.name,
             "status": c.status,
-            "assigned_user_id": c.assigned_user_id,
-            "assigned_to": assignees.get(c.assigned_user_id),
+            # The owner to act on — the assignment where there is one, Zoho's
+            # salesperson otherwise. `owner_source` says which, because "given
+            # to this person" and "whoever was on the last invoice" are
+            # different claims and only one is somebody's decision.
+            "assigned_user_id": (owners[c.customer_id].user_id
+                                 if c.customer_id in owners else None),
+            "assigned_to": (assignees.get(owners[c.customer_id].user_id)
+                            if c.customer_id in owners else None),
+            "owner_source": (owners[c.customer_id].source
+                             if c.customer_id in owners else None),
             "origin": companies.of(c).to_dict(),
             # One connected company means every badge says the same thing, and a
             # column of identical badges is width spent on decoration.
@@ -176,7 +192,8 @@ def list_account_items(
     # rule itself is `authz.can_view_customer`, shared with the timeline endpoint,
     # which answers 404 instead: a dropdown that errors is a field that breaks,
     # while a screen that draws itself empty claims the account exists.
-    if not can_view_customer(principal, session.get(models.Customer, customer_id)):
+    if not can_view_customer(principal, session.get(models.Customer, customer_id),
+                             session):
         return []
 
     rows = session.execute(

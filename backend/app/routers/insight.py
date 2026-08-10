@@ -17,6 +17,7 @@ honest 403.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Optional
@@ -30,20 +31,23 @@ from ..authz import (Principal, can_view_customer, current_principal,
                      decision_queue_scope, require_manager_or_owner)
 from ..repositories import DecisionRepository
 from .. import approvals, clock
-from ..commercial import (floor, incentive, policy, portfolio, principals,
-                          quote_service)
+from ..commercial import (floor, incentive, ownership, policy, portfolio,
+                          principals, quote_service)
 from ..commercial import categories as cat
 from ..commercial.insight import (absence, bonds, cadence, cashflow, cohorts,
-                                  composition,
+                                  composition, credit,
                                   daily as daily_view,
-                                  dependency, flow, landscape, mix, msme, payments,
-                                  periods, radar, schemes, simulate, stock, story,
-                                  supply, terms as vendor_terms, wallet,
+                                  dependency, flow, landscape, mix, msme,
+                                  outcomes as outcomes_view, payments,
+                                  periods, radar, schemes, simulate, stock,
+                                  story, supply, terms as vendor_terms, wallet,
                                   weather, withholding)
 from ..db import get_session
 from ..domain import models
-from ..domain.enums import (DecisionStatus, EnterpriseActivity,
-                            MsmeClassification, MsmeEvidence, QuoteLossReason,
+from ..domain.enums import (LOSS_REASON_NOT_RECORDED,
+                            QUOTE_OUTCOME_TRANSITIONS, DecisionStatus,
+                            EnterpriseActivity, MsmeClassification,
+                            MsmeEvidence, QuoteLossReason,
                             QuoteOutcomeStatus, Role)
 from ..domain.origin import Companies, index_of
 from ..signals.aggregates import label_for, load_snapshot
@@ -415,7 +419,7 @@ def _require_visible_customer(session: Session, customer_id: str,
     # `can_view_customer` checks the tenant itself — a second comparison would
     # only suggest the two can differ.
     customer = session.get(models.Customer, customer_id)
-    if not can_view_customer(principal, customer):
+    if not can_view_customer(principal, customer, session):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Customer not found")
     return customer
 
@@ -653,6 +657,33 @@ def _settlements(session: Session, org: str,
     ]
 
 
+def _annotate_with_credit(session: Session, org: str, rows: list[dict]) -> None:
+    """Put each account's standing against its limit onto its payment row.
+
+    In place, because the caller has already built the rows and the alternative
+    is rebuilding them. Every field is ``None`` for an account with no limit
+    recorded — the flag says which, so a screen never reads a blank as a
+    decision somebody made.
+    """
+    if not rows:
+        return
+    ids = [str(r.get("customer_id")) for r in rows]
+    customers = session.scalars(
+        select(models.Customer).where(
+            models.Customer.organization_id == org,
+            models.Customer.customer_id.in_(ids))).all()
+    exposures = _exposures(session, org, list(customers))
+    for row in rows:
+        e = exposures.get(str(row.get("customer_id")))
+        row["credit_status"] = e.status if e else credit.NO_LIMIT
+        row["has_limit"] = bool(e and e.has_limit)
+        row["credit_limit"] = (float(e.limit) if e and e.limit is not None
+                               else None)
+        row["over_by"] = (float(e.over_by) if e and e.over_by is not None
+                          else None)
+        row["outstanding"] = float(e.outstanding) if e else None
+
+
 def _agreed_terms(session: Session, org: str) -> dict[str, vendor_terms.Term]:
     """Every supplier term somebody typed, keyed by vendor id.
 
@@ -751,6 +782,13 @@ def payment_behaviour(principal: Principal = Depends(current_principal),
         settled, snapshot.customer_names, as_of,
         advances=sum(1 for r in receipts if r.is_advance),
         unapplied_total=float(sum(r.unapplied_amount or 0 for r in receipts)))
+    # How slowly they pay, beside how far past their line they are. Two facts
+    # about one account that used to live on two screens: "69 days typical" is
+    # an observation, and "₹8 lakh over the limit we gave them" is what makes it
+    # a decision. Joined onto the row rather than listed again — the full list,
+    # including accounts that have never settled anything, is `/credit`, and a
+    # second copy of it here would be a second answer to one question.
+    _annotate_with_credit(session, org, result.get("customers") or [])
     # Who pays slowly is a list of names to act on, and two accounts sharing a
     # name across two books are two different conversations with two different
     # people. Same projection as every other list.
@@ -758,6 +796,9 @@ def payment_behaviour(principal: Principal = Depends(current_principal),
     companies.stamp(result.get("customers") or [],
                     index_of(session, org, models.Customer), by="customer_id")
     result["sources_differ"] = companies.count > 1
+    # What each credit status means, so the row can be read without the reader
+    # inferring a rule nobody stated.
+    result["credit_statuses"] = credit.STATUSES
     return _envelope(
         result, th=th,
         empty_reason=(None if result["customers"] else
@@ -828,6 +869,329 @@ def payable_behaviour(principal: Principal = Depends(require_manager_or_owner),
                       "a bill yet — so there is no bill date to measure from. "
                       "A sync run before bill breakdowns were read will fill "
                       "this in on its next pass."))
+
+
+# ── quotes: what was won, what was lost, and whether price is the reason ────
+#
+# Two endpoints, split exactly the way ``/payments`` and ``/payables`` are, and
+# for the same reason rather than a new one. A win rate carries no cost — how
+# often this customer says yes is a fact about a relationship a salesperson
+# owns, and they see their own. Where a losing price sat against the price that
+# wins, and what margin the two carry, is commercial position: it compares one
+# customer's price with another's, which is the thing a salesperson is not
+# given anywhere else in this router either.
+
+
+#: Answered, and still in flight. Named rather than written inline twice: the
+#: screen shows both lists and they must not disagree about which is which.
+_DECIDED = ("WON", "LOST")
+_AWAITING = ("DRAFT", "SENT")
+
+
+def _scoped_outcomes(session: Session, org: str, principal: Principal,
+                     statuses: tuple[str, ...]) -> list[models.QuoteOutcome]:
+    """Every quote in these states this principal may see, and nothing else.
+
+    A salesperson is narrowed to their own accounts, the same rule
+    ``/api/v1/accounts`` and ``_require_visible_customer`` apply — a win rate is
+    theirs to see, but the book's is not, and an unscoped list here would be a
+    way around the account scoping everywhere else. The scope is applied here
+    rather than at each caller for the same reason: a count taken outside it
+    leaks the size of the book a salesperson cannot see.
+
+    Quotes whose customer never resolved are included when *they* recorded the
+    outcome. Those are usually a walk-in or a name typed slightly differently,
+    and dropping them would quietly remove a salesperson's own losses from
+    their own denominator.
+    """
+    stmt = select(models.QuoteOutcome).where(
+        models.QuoteOutcome.organization_id == org,
+        models.QuoteOutcome.status.in_(statuses))
+    if principal.is_salesperson:
+        mine = [c for (c,) in session.execute(
+            select(models.Customer.customer_id).where(
+                models.Customer.organization_id == org,
+                models.Customer.assigned_user_id == principal.user_id)).all()]
+        stmt = stmt.where(
+            models.QuoteOutcome.customer_id.in_(mine)
+            | (models.QuoteOutcome.customer_id.is_(None)
+               & (models.QuoteOutcome.updated_by_user_id == principal.user_id)))
+    return list(session.scalars(stmt).all())
+
+
+def _latest_lines(session: Session, org: str,
+                  quote_ids: list[str]) -> dict[str, list[models.QuoteDecision]]:
+    """The last snapshot of each line, per quote.
+
+    ``quote_decisions`` is append-only, so a line re-priced three times has
+    three rows and the customer answered the third. Taking the latest is not
+    discarding the earlier ones — they stay in the audit trail, where the
+    negotiation is the point; they are simply not the price that was accepted
+    or refused, and summing all three would triple that line's value.
+    """
+    if not quote_ids:
+        return {}
+    rows = session.scalars(
+        select(models.QuoteDecision)
+        .where(models.QuoteDecision.organization_id == org,
+               models.QuoteDecision.quote_id.in_(quote_ids))
+        .order_by(models.QuoteDecision.created_at)).all()
+    latest: dict[tuple[str, str], models.QuoteDecision] = {}
+    for row in rows:
+        latest[(row.quote_id, row.quote_line_id)] = row
+    out: dict[str, list[models.QuoteDecision]] = {}
+    for (quote_id, _line), row in latest.items():
+        out.setdefault(quote_id, []).append(row)
+    return out
+
+
+def _line_value(row: models.QuoteDecision) -> Decimal:
+    """What this line was quoted at, in money.
+
+    ``line_revenue`` where the engine computed one; quantity × price otherwise.
+    A line with neither is worth zero to this sum and is counted nowhere else,
+    which is correct: it is a line nobody put a price on.
+    """
+    if row.line_revenue is not None:
+        return Decimal(row.line_revenue)
+    if row.quoted_unit_price is None:
+        return Decimal("0")
+    return Decimal(row.quantity or 0) * Decimal(row.quoted_unit_price)
+
+
+def _decided_quotes(outcomes: list[models.QuoteOutcome],
+                    lines_by_quote: dict[str, list[models.QuoteDecision]],
+                    customer_names: dict[str, str],
+                    principal_of: dict[str, str],
+                    line_of: dict[str, str]) -> list[outcomes_view.DecidedQuote]:
+    """Outcome rows and their priced lines, as the grain the view computes on.
+
+    A quote with no snapshot behind it is skipped rather than counted at zero.
+    That is a quote somebody marked won or lost without ever recording what it
+    was priced at — real, and it belongs in a data-quality note rather than in a
+    denominator where it would drag every value figure down.
+    """
+    out = []
+    for row in outcomes:
+        lines = lines_by_quote.get(row.quote_id) or []
+        if not lines or row.decided_at is None:
+            continue
+        value = sum((_line_value(ln) for ln in lines), Decimal("0"))
+        # Only a fully-costed quote carries a profit. See ``DecidedQuote``.
+        profits = [ln.gross_profit for ln in lines]
+        gross_profit = (sum((Decimal(p) for p in profits), Decimal("0"))
+                        if all(p is not None for p in profits) else None)
+        won = row.status == "WON"
+        out.append(outcomes_view.DecidedQuote(
+            quote_id=row.quote_id,
+            customer_id=row.customer_id or "",
+            customer_label=(customer_names.get(row.customer_id or "")
+                            or row.customer_ref or "Unattributed"),
+            won=won,
+            loss_reason=("" if won
+                         else (row.loss_reason or LOSS_REASON_NOT_RECORDED)),
+            decided_on=clock.aware(row.decided_at).date(),
+            lines=len(lines),
+            value=value,
+            gross_profit=gross_profit,
+            principals=tuple(sorted({principal_of[ln.product_id]
+                                     for ln in lines
+                                     if ln.product_id in principal_of})),
+            product_lines=tuple(sorted({line_of[ln.product_id]
+                                        for ln in lines
+                                        if ln.product_id in line_of})),
+        ))
+    return out
+
+
+def _priced_lines(outcomes: list[models.QuoteOutcome],
+                  lines_by_quote: dict[str, list[models.QuoteDecision]],
+                  product_names: dict[str, str],
+                  paid_before: dict[tuple[str, str], Decimal],
+                  ) -> list[outcomes_view.PricedLine]:
+    """The per-line grain the price comparison needs, and nothing else.
+
+    Separate from ``_decided_quotes`` because it is a different question at a
+    different grain: how often we win is counted per quote, what we quoted is
+    observed per line. Folding both into one loader would put the line grain in
+    front of the win rate, which is the mistake the module docstring exists to
+    prevent.
+    """
+    out = []
+    for row in outcomes:
+        won = row.status == "WON"
+        for line in lines_by_quote.get(row.quote_id) or []:
+            if not line.product_id or line.quoted_unit_price is None:
+                continue
+            out.append(outcomes_view.PricedLine(
+                quote_id=row.quote_id,
+                product_id=line.product_id,
+                product_label=product_names.get(line.product_id,
+                                                line.product_ref or line.product_id),
+                quantity_band=line.quantity_band or "",
+                unit_price=Decimal(line.quoted_unit_price),
+                won=won,
+                customer_id=row.customer_id or "",
+                customer_paid=paid_before.get(
+                    (row.customer_id or "", line.product_id)),
+            ))
+    return out
+
+
+def _quote_facets(session: Session, org: str, th):
+    """product_id → principal, and product_id → line of the business.
+
+    Both resolved through the one place each already lives, so this screen and
+    the mix grid cannot disagree about whose product an item is or what kind of
+    thing it is.
+    """
+    principal_of = _principal_of_product(session, org)
+    vendor_of = _principal_ids(principal_of)
+    lines_of = _category_of(session, org, th, vendor_of)
+    return (principals.names_of(principal_of, _vendor_names(session, org)),
+            vendor_of,
+            {pid: r.category for pid, r in lines_of.items() if r.known})
+
+
+@dataclass
+class _QuoteEvidence:
+    """What both quote endpoints load before they diverge.
+
+    Extracted after a duplicate scan flagged the six-line preamble in both:
+    the scoping rule, which snapshot each line belongs to, and which of them are
+    the latest — three things that must be identical on the two screens or the
+    win rate and the price analysis will disagree about the same quote.
+    """
+
+    org: str
+    snapshot: Any
+    th: Any
+    as_of: date
+    decided: list[models.QuoteOutcome]
+    awaiting: list[models.QuoteOutcome]
+    lines_by_quote: dict[str, list[models.QuoteDecision]]
+    principal_names: dict[str, str]
+    quotes: list[outcomes_view.DecidedQuote]
+
+
+def _quote_evidence(session: Session, principal: Principal) -> _QuoteEvidence:
+    org, snapshot, th = _labels_only(session, principal)
+    decided = _scoped_outcomes(session, org, principal, _DECIDED)
+    awaiting = _scoped_outcomes(session, org, principal, _AWAITING)
+    lines_by_quote = _latest_lines(
+        session, org, [o.quote_id for o in decided + awaiting])
+    principal_names, principal_of, line_of = _quote_facets(session, org, th)
+    return _QuoteEvidence(
+        org=org, snapshot=snapshot, th=th, as_of=clock.today(th.timezone),
+        decided=decided, awaiting=awaiting, lines_by_quote=lines_by_quote,
+        principal_names=principal_names,
+        quotes=_decided_quotes(decided, lines_by_quote, snapshot.customer_names,
+                               principal_of, line_of))
+
+
+@router.get("/quote-outcomes")
+def quote_outcomes(months: int = Query(12, ge=1, le=36),
+                   principal: Principal = Depends(current_principal),
+                   session: Session = Depends(get_session)) -> dict:
+    """How often quotes are won, sliced the ways this business asks.
+
+    Every role. Nothing in the response is derived from cost: counts, rates,
+    quoted values and the loss mix. The margin behind those losses is the other
+    endpoint.
+    """
+    ev = _quote_evidence(session, principal)
+    org, snapshot, th, as_of = ev.org, ev.snapshot, ev.th, ev.as_of
+    awaiting, lines_by_quote, quotes = ev.awaiting, ev.lines_by_quote, ev.quotes
+
+    result = outcomes_view.build(
+        quotes, as_of=as_of,
+        customer_names=snapshot.customer_names,
+        principal_names=ev.principal_names,
+        product_line_names={c: cat.LABELS[c] for c in cat.ORDER},
+        months=months, open_quotes=len(awaiting))
+    # The quotes still waiting for an answer, so the screen that reads the win
+    # rate is also the screen an outcome is recorded on. Kept out of every
+    # figure above — a quote nobody has answered is not a loss.
+    result["awaiting"] = [
+        {
+            "quote_id": row.quote_id,
+            "customer_id": row.customer_id,
+            "customer_label": (snapshot.customer_names.get(row.customer_id or "")
+                               or row.customer_ref or "Unattributed"),
+            "status": row.status,
+            "sent_at": row.sent_at.isoformat() if row.sent_at else None,
+            "lines": len(lines_by_quote.get(row.quote_id) or []),
+            "value": float(sum((_line_value(ln) for ln
+                                in lines_by_quote.get(row.quote_id) or []),
+                               Decimal("0"))),
+            "allowed_next": sorted(
+                s.value for s in
+                QUOTE_OUTCOME_TRANSITIONS[QuoteOutcomeStatus(row.status)]),
+        }
+        for row in sorted(awaiting, key=lambda r: r.updated_at, reverse=True)
+    ]
+    # Two books can hold a customer of the same name, and two quotes to "the
+    # same" account are then two different conversations. Same projection as
+    # every other list in this router.
+    companies = Companies(session, org)
+    companies.stamp(result["customers"],
+                    index_of(session, org, models.Customer), by="key")
+    result["sources_differ"] = companies.count > 1
+    #: Quotes decided without a priced snapshot behind them — real, and named
+    #: rather than silently absent from the counts above.
+    result["unpriced_quotes"] = len(ev.decided) - len(quotes)
+    return _envelope(
+        result, th=th,
+        empty_reason=(None if quotes else
+                      "No quote has been marked won or lost yet. Record an "
+                      "outcome on a quote and its result appears here — a win "
+                      "rate is not computed until "
+                      f"{outcomes_view.MIN_DECIDED_QUOTES} quotes have been "
+                      "decided."))
+
+
+@router.get("/quote-pricing")
+def quote_pricing(principal: Principal = Depends(require_manager_or_owner),
+                  session: Session = Depends(get_session)) -> dict:
+    """Where a losing price sat, against what wins and against what they paid.
+
+    Manager and above, and scoped that way for the reason ``/payables`` is:
+    this compares one customer's price against another's and reads the margin
+    behind both. A win rate is a fact about a relationship; where the margin
+    sits on the ones we lose is a commercial position.
+
+    Empty is a legitimate answer here and a common one. Most products will not
+    have been quoted often enough on both sides to compare, and a book with a
+    thin quote history produces nothing at all — which is the honest reply to
+    "are we losing on price" when the evidence cannot say.
+    """
+    ev = _quote_evidence(session, principal)
+
+    # What each customer has historically paid, from the metrics layer that
+    # already computes it. Recomputing a price history here would be a second
+    # answer to a question ``commercial/metrics`` has one answer to.
+    paid_before = {
+        (row.customer_id, row.product_id): Decimal(row.current_sell_price)
+        for row in session.scalars(
+            select(models.CustomerItemMetric).where(
+                models.CustomerItemMetric.organization_id == ev.org)).all()
+        if row.current_sell_price is not None
+    }
+
+    lines = _priced_lines(ev.decided, ev.lines_by_quote,
+                          ev.snapshot.product_names, paid_before)
+
+    result = outcomes_view.pricing(ev.quotes, lines, as_of=ev.as_of)
+    return _envelope(
+        result, th=ev.th,
+        empty_reason=(None if result["comparisons"] else
+                      "No product has been quoted often enough on both sides to "
+                      "compare: a comparison needs "
+                      f"{outcomes_view.MIN_PRICE_OBSERVATIONS} won and "
+                      f"{outcomes_view.MIN_PRICE_OBSERVATIONS} lost quotes of "
+                      "the same item at the same quantity band. The margin "
+                      "figures above are computed over every fully-costed "
+                      "quote and do not need that."))
 
 
 @router.get("/cashflow")
@@ -2021,6 +2385,356 @@ def list_vendor_terms(principal: Principal = Depends(require_manager_or_owner),
                       "No suppliers have synced yet, so there is nothing to "
                       "record a term against."),
         sources_differ=companies.count > 1)
+
+
+# ── the credit line, and whose book the account is in ───────────────────────
+#
+# Receivables, so every role. A credit limit and an outstanding balance are
+# money already billed — not cost, not margin — and chasing your own overdue
+# accounts is the salesperson's job. The contrast is ``/payables``, which is
+# manager-and-above because what we owe a supplier is purchase cost by another
+# name. Writing a limit is manager-and-above: how much credit an account gets
+# is a commercial position, the same as a payment term.
+def _credit_limits(session: Session,
+                   org: str) -> dict[str, models.CustomerCreditLimit]:
+    """Every limit somebody recorded, keyed by customer id.
+
+    Absent means "no limit recorded", which is neither zero nor unlimited — see
+    ``insight/credit``. The row itself rather than the amount, because the
+    screen shows who set it and what they wrote beside the number.
+    """
+    return {
+        row.customer_id: row
+        for row in session.scalars(
+            select(models.CustomerCreditLimit).where(
+                models.CustomerCreditLimit.organization_id == org)).all()
+    }
+
+
+def _balances(session: Session, org: str,
+              customer_ids: list[str]) -> dict[str, dict[str, Any]]:
+    """What each customer owes, from the receivables fold.
+
+    Read, never recomputed. ``RECEIVABLES`` already folds ``InvoiceDoc.balance``
+    — what Zoho says is still owed — and a second sum over invoices here would
+    be a second answer to one question, wrong the moment a credit note lands.
+
+    Empty when this database has never been folded, and that is left as empty
+    rather than defaulted: a customer whose balance is unknown is not a customer
+    who owes nothing.
+    """
+    on = latest_as_of(session, org, RECEIVABLES)
+    if on is None:
+        return {}
+    wanted = set(customer_ids)
+    return {key: value
+            for key, value in state_engine.load(session, org, RECEIVABLES, on).items()
+            if key in wanted and value.get("direction") == "customer"}
+
+
+def _money(value: dict[str, Any], field: str) -> Decimal:
+    """A folded money field back to ``Decimal``. Missing reads as zero here —
+    the fold only writes a balance it was told about, and a customer with no
+    open invoices has none rather than an unknown one."""
+    raw = value.get(field)
+    return Decimal(str(raw)) if raw not in (None, "") else Decimal(0)
+
+
+def _exposures(session: Session, org: str,
+               customers: list[models.Customer]) -> dict[str, credit.Exposure]:
+    """Every one of these accounts' balance against its limit.
+
+    One place, because both the credit screen and the collections screen ask
+    it and two copies would be two ways for the same account to be over by two
+    different amounts.
+    """
+    folded = _balances(session, org, [c.customer_id for c in customers])
+    limits = {cid: Decimal(str(row.amount))
+              for cid, row in _credit_limits(session, org).items()}
+    return credit.exposures(
+        [credit.Balance(customer_id=c.customer_id,
+                        outstanding=_money(folded.get(c.customer_id, {}),
+                                           "outstanding"),
+                        overdue=_money(folded.get(c.customer_id, {}),
+                                       "overdue_balance"))
+         for c in customers],
+        limits)
+
+
+def _customers_in_scope(session: Session,
+                        principal: Principal) -> tuple[list[models.Customer],
+                                                       dict[str, ownership.Owner]]:
+    """The accounts this person may act on, and who owns each of them.
+
+    A salesperson sees their own book and no further — the same scope the
+    account directory applies, and the reason ownership had to exist before a
+    per-person collections list could. A manager or owner sees the whole
+    organization and filters it to a person on the screen.
+
+    Scoped through ``ownership.owners`` rather than by reading
+    ``assigned_user_id``: an account handed over by hand lives in the typed
+    table, and a filter on the column would leave it in the wrong person's book.
+    """
+    org = principal.organization_id
+    rows = session.scalars(
+        select(models.Customer).where(
+            models.Customer.organization_id == org)).all()
+    owners = ownership.owners(session, org, rows)
+    if principal.is_salesperson:
+        rows = [c for c in rows
+                if (owner := owners.get(c.customer_id)) is not None
+                and owner.user_id == principal.user_id]
+    return list(rows), owners
+
+
+@router.get("/credit")
+def credit_exposure(principal: Principal = Depends(current_principal),
+                    session: Session = Depends(get_session)) -> dict:
+    """What every account owes against the limit it was given, and whose it is.
+
+    Every customer, not only those over their limit and not only those with a
+    limit at all — this is the screen somebody comes *to* in order to record
+    one, and a list of the accounts already assessed is not the list somebody
+    with work to do needs. Same reasoning as ``/vendor-terms``.
+
+    Over the limit first, then by what is owed. The question this screen answers
+    is "who do I stop shipping to, and who calls them", and that is a rank.
+    """
+    org, _snapshot, th = _labels_only(session, principal)
+    customers, owners = _customers_in_scope(session, principal)
+    if not customers:
+        return _envelope(
+            {"accounts": [], "statuses": credit.STATUSES,
+             "near_limit_share": float(credit.NEAR_LIMIT_SHARE),
+             "max_limit": float(credit.MAX_LIMIT),
+             "owner_sources": ownership.SOURCE_LABELS,
+             "may_set": principal.is_manager_or_owner, "people": []},
+            th=th,
+            empty_reason=(
+                "No customers are in your book yet, so there is nothing to hold "
+                "a balance against."
+                if principal.is_salesperson else
+                "No customers have synced yet, so there is nothing to hold a "
+                "balance against. Connect a Zoho company and run a sync."))
+
+    exposures = _exposures(session, org, customers)
+    limits = _credit_limits(session, org)
+    folded = _balances(session, org, [c.customer_id for c in customers])
+    people = {u.user_id: u for u in session.scalars(
+        select(models.User).where(models.User.organization_id == org)).all()}
+
+    rows = []
+    for c in customers:
+        e = exposures[c.customer_id]
+        owner = owners.get(c.customer_id)
+        limit_row = limits.get(c.customer_id)
+        state = folded.get(c.customer_id, {})
+        setter = people.get(limit_row.set_by_user_id or "") if limit_row else None
+        rows.append({
+            "customer_id": c.customer_id, "label": c.name,
+            # Absent is not zero and not unlimited. The flag travels beside the
+            # number so a screen never has to read `null` as a decision.
+            "has_limit": e.has_limit,
+            "limit": float(e.limit) if e.limit is not None else None,
+            "outstanding": float(e.outstanding),
+            "overdue": float(e.overdue),
+            "headroom": float(e.headroom) if e.headroom is not None else None,
+            "over_by": float(e.over_by) if e.over_by is not None else None,
+            "utilisation": (float(e.utilisation)
+                            if e.utilisation is not None else None),
+            "status": e.status,
+            "note": limit_row.note if limit_row else None,
+            "set_by": setter.name if setter else None,
+            # Whose book it is, and why it is theirs. Both, because "assigned
+            # here" and "whoever Zoho had on the last invoice" are different
+            # claims and only one of them is somebody's decision.
+            "owner_user_id": owner.user_id if owner else None,
+            "owner_name": (people[owner.user_id].name
+                           if owner and owner.user_id in people else None),
+            "owner_source": owner.source if owner else None,
+            # What the call is actually about. Free — the fold already holds it.
+            "open_invoices": int(state.get("open_invoices") or 0),
+            "overdue_invoices": int(state.get("overdue_invoices") or 0),
+            "oldest_overdue_due_on": state.get("oldest_overdue_due_on"),
+        })
+    rows.sort(key=lambda r: (0 if r["status"] == credit.OVER else 1,
+                             -(r["over_by"] or 0), -r["outstanding"],
+                             r["label"]))
+
+    companies = Companies(session, org)
+    companies.stamp(rows, index_of(session, org, models.Customer), by="customer_id")
+    over = [r for r in rows if r["status"] == credit.OVER]
+    return _envelope(
+        {"accounts": rows,
+         "statuses": credit.STATUSES,
+         "near_limit_share": float(credit.NEAR_LIMIT_SHARE),
+         "max_limit": float(credit.MAX_LIMIT),
+         "owner_sources": ownership.SOURCE_LABELS,
+         "over_limit_count": len(over),
+         "over_limit_total": round(sum(r["over_by"] or 0 for r in over), 2),
+         "limits_recorded": sum(1 for r in rows if r["has_limit"]),
+         # The server answering about this exact request, rather than the
+         # browser reconstructing the rule — see `platform/ability.ts`.
+         "may_set": principal.is_manager_or_owner,
+         "people": ([{"user_id": u.user_id, "name": u.name, "role": u.role}
+                     for u in people.values() if u.active]
+                    if principal.is_manager_or_owner else [])},
+        th=th,
+        sources_differ=companies.count > 1,
+        empty_reason=None)
+
+
+class CreditLimitIn(BaseModel):
+    """The credit extended to one account."""
+
+    customer_id: str = Field(min_length=1)
+    #: Zero is a real limit — this account ships against cash. Withdrawing one
+    #: is a DELETE, never a zero.
+    amount: Decimal = Field(ge=0, le=credit.MAX_LIMIT)
+    note: Optional[str] = Field(default=None, max_length=512)
+
+
+@router.put("/credit-limits", status_code=status.HTTP_200_OK)
+def set_credit_limit(body: CreditLimitIn,
+                     principal: Principal = Depends(require_manager_or_owner),
+                     session: Session = Depends(get_session)) -> dict:
+    """Record how much credit this account has.
+
+    Manager and above. Reading a limit is everyone's business — a salesperson
+    chasing their own overdue accounts needs it — but deciding one is a
+    commercial position, scoped exactly like an agreed payment term.
+
+    An upsert on the customer rather than an insert. A limit gets revised, and a
+    second row for the same account would make "the limit" a question about
+    which row won; an order cannot be held or released on an ambiguous answer.
+    """
+    org = principal.organization_id
+    try:
+        amount = credit.validate(body.amount)
+    except credit.InvalidLimit as e:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e)) from e
+    customer = session.get(models.Customer, body.customer_id)
+    if customer is None or customer.organization_id != org:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such customer")
+
+    row = session.scalar(
+        select(models.CustomerCreditLimit).where(
+            models.CustomerCreditLimit.organization_id == org,
+            models.CustomerCreditLimit.customer_id == body.customer_id))
+    if row is None:
+        row = models.CustomerCreditLimit(organization_id=org,
+                                         customer_id=body.customer_id)
+        session.add(row)
+    row.amount = amount
+    row.note = body.note
+    row.set_by_user_id = principal.user_id
+    session.flush()
+    return {"customer_id": row.customer_id, "limit": float(amount),
+            "has_limit": True, "note": row.note}
+
+
+@router.delete("/credit-limits/{customer_id}", status_code=status.HTTP_200_OK)
+def clear_credit_limit(customer_id: str,
+                       principal: Principal = Depends(require_manager_or_owner),
+                       session: Session = Depends(get_session)) -> dict:
+    """Withdraw the limit. Not the same as setting it to zero.
+
+    A withdrawn limit means nobody has decided what this account may owe, which
+    is where most of the book sits. A zero limit means somebody decided it ships
+    against cash. Those are different instructions to the person holding the
+    order, so they are different states — and the second one would be a standing
+    hold on an account nobody meant to stop.
+    """
+    org = principal.organization_id
+    row = session.scalar(
+        select(models.CustomerCreditLimit).where(
+            models.CustomerCreditLimit.organization_id == org,
+            models.CustomerCreditLimit.customer_id == customer_id))
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND,
+                            "No credit limit on record for that customer")
+    session.delete(row)
+    session.flush()
+    return {"customer_id": customer_id, "cleared": True, "has_limit": False}
+
+
+class AccountOwnerIn(BaseModel):
+    """Who owns one account."""
+
+    customer_id: str = Field(min_length=1)
+    user_id: str = Field(min_length=1)
+    note: Optional[str] = Field(default=None, max_length=512)
+
+
+@router.put("/account-owners", status_code=status.HTTP_200_OK)
+def set_account_owner(body: AccountOwnerIn,
+                      principal: Principal = Depends(require_manager_or_owner),
+                      session: Session = Depends(get_session)) -> dict:
+    """Put an account in somebody's book.
+
+    Manager and above: handing an account to a person decides what they see and
+    what they are paid on, and a salesperson assigning accounts to themselves is
+    not an assignment.
+
+    Zoho's own salesperson is left exactly as it is on ``assigned_user_id``.
+    Both are shown, because "assigned here" and "whoever Zoho had on the last
+    invoice" are different claims — and because the sync will keep rewriting its
+    half, which is the whole reason this is a separate table.
+    """
+    org = principal.organization_id
+    customer = session.get(models.Customer, body.customer_id)
+    if customer is None or customer.organization_id != org:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such customer")
+    user = session.get(models.User, body.user_id)
+    if user is None or user.organization_id != org or not user.active:
+        # An account filed under somebody who cannot sign in is invisible to
+        # whoever should be acting on it — the same failure the sync refuses.
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such active user")
+
+    row = session.scalar(
+        select(models.CustomerAccountOwner).where(
+            models.CustomerAccountOwner.organization_id == org,
+            models.CustomerAccountOwner.customer_id == body.customer_id))
+    if row is None:
+        row = models.CustomerAccountOwner(organization_id=org,
+                                          customer_id=body.customer_id)
+        session.add(row)
+    row.user_id = user.user_id
+    row.note = body.note
+    row.set_by_user_id = principal.user_id
+    session.flush()
+    return {"customer_id": row.customer_id, "owner_user_id": row.user_id,
+            "owner_name": user.name, "owner_source": ownership.TYPED,
+            "synced_user_id": customer.assigned_user_id}
+
+
+@router.delete("/account-owners/{customer_id}", status_code=status.HTTP_200_OK)
+def clear_account_owner(customer_id: str,
+                        principal: Principal = Depends(require_manager_or_owner),
+                        session: Session = Depends(get_session)) -> dict:
+    """Withdraw the assignment and fall back to Zoho's salesperson.
+
+    A real operation rather than "assign it to whoever Zoho currently names":
+    those are different states. Typing today's synced answer would freeze it
+    against a book that keeps moving, and the next invoice would leave the
+    account with somebody who no longer sells to them.
+    """
+    org = principal.organization_id
+    row = session.scalar(
+        select(models.CustomerAccountOwner).where(
+            models.CustomerAccountOwner.organization_id == org,
+            models.CustomerAccountOwner.customer_id == customer_id))
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND,
+                            "That account has no assignment on record")
+    session.delete(row)
+    session.flush()
+    customer = session.get(models.Customer, customer_id)
+    fell_back = ownership.effective(None,
+                                    customer.assigned_user_id if customer else None)
+    return {"customer_id": customer_id, "cleared": True,
+            "owner_user_id": fell_back.user_id if fell_back else None,
+            "owner_source": fell_back.source if fell_back else None}
 
 
 class SlabIn(BaseModel):

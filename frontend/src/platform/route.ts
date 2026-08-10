@@ -42,6 +42,9 @@ export type Screen =
    *  whose window is set by how long the platform has been writing stock
    *  readings down rather than by what the reader asks for. */
   | "gmroi"
+  /** How long a rupee is tied up, per legal entity — the composite Zoho
+   *  reports one period of, for one company, and never as a trend. */
+  | "cashCycle"
   /** Deadlines the tax code sets: the MSME payment cliff, whose status is still
    *  unknown, and the 194Q threshold. Dates and amounts, never advice. */
   | "statutory"
@@ -103,6 +106,7 @@ export const PATH: Record<Screen, string> = {
   payments: "/payments",
   payables: "/payables",
   orderToCash: "/order-to-cash",
+  cashCycle: "/cash-cycle",
   statutory: "/statutory",
   stock: "/stock",
   gmroi: "/gmroi",
@@ -201,6 +205,7 @@ export function vizPath(route: string): string {
     payments: "payments",
     payables: "payables",
     "order-to-cash": "orderToCash",
+    "cash-cycle": "cashCycle",
     statutory: "statutory",
     stock: "stock",
     gmroi: "gmroi",

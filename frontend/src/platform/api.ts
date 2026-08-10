@@ -321,6 +321,13 @@ export const papi = {
   // hidden for everyone else rather than 403'd, the same way `supply` is.
   selfFunding: (t: string) =>
     req<Record<string, unknown>>("/api/v1/insight/self-funding", {}, t),
+  // Manager and above, and scoped like `cashflow` for a stronger reason: two of
+  // the three legs are denominated in what stock cost. Removing them would
+  // leave a composite that answers nothing, so the panel is hidden rather than
+  // 403'd — the same treatment `supply` gets.
+  cashCycle: (t: string, months: number) =>
+    req<Record<string, unknown>>(
+      `/api/v1/insight/cash-cycle?months=${months}`, {}, t),
 
   stock: (t: string) =>
     req<Record<string, unknown>>("/api/v1/insight/stock", {}, t),

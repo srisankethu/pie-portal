@@ -32,11 +32,11 @@ from ..authz import (Principal, can_view_customer, current_principal,
                      require_owner)
 from ..repositories import DecisionRepository
 from .. import approvals, clock
-from ..commercial import (floor, incentive, ownership, policy, portfolio,
-                          principals, quote_service)
+from ..commercial import (economics, floor, incentive, ownership, policy,
+                          portfolio, principals, quote_service)
 from ..commercial import categories as cat
 from ..commercial.insight import (absence, bonds, cadence, cashflow, cohorts,
-                                  composition, credit,
+                                  composition, credit, cycle,
                                   daily as daily_view,
                                   dependency, flow, landscape, mix, msme,
                                   order_to_cash,
@@ -55,6 +55,7 @@ from ..domain.enums import (LOSS_REASON_NOT_RECORDED,
                             QuoteOutcomeStatus, Role)
 from ..domain.origin import Companies, index_of
 from ..signals.aggregates import label_for, load_snapshot
+from ..signals.base import group_by as agg_group
 from ..commercial.insight import series
 from ..state.engine import latest_as_of, load as load_state
 from ..state.reducers.trade import CUSTOMER_MONTH
@@ -62,6 +63,7 @@ from ..state import engine as state_engine
 from ..state.reducers.cash import CASH_SCHEDULE
 from ..state.reducers.commitments import COMMITMENTS
 from ..state.reducers.inventory import INVENTORY
+from ..state.reducers import receivables as receivables_reducer
 from ..state.reducers.receivables import RECEIVABLES
 from ..signals.config import load_thresholds as load_signal_thresholds
 
@@ -1399,6 +1401,212 @@ def cash_projection(weeks: int = Query(cashflow.WEEKS, ge=1, le=26),
             # this only says how far each supplier's week moves.
             term_shifts=vendor_terms.shifts(_open_bills(session, org), agreed)),
         th=th)
+
+
+# ── the cash conversion cycle ───────────────────────────────────────────────
+#
+# One endpoint, five reads, and every one of them bounded by what the series can
+# actually use. The arithmetic is in ``insight/cycle``; what lives here is the
+# resolution the module deliberately does not do — turning a customer, a vendor
+# and an item into the connected company whose balance sheet they belong to.
+#
+# **Which master decides the book, and why it differs per leg.** A document is
+# filed in the book of the party it names: an invoice in its customer's, a bill
+# in its vendor's. Stock and cost of sales are both facts about the shelf, so
+# both are filed by the *item's* book — that keeps DIO's numerator and
+# denominator on one side of the same wall, which is the pair a ratio has to
+# agree about. On a real book these coincide; where a master carries no
+# connection at all the row is counted out and reported, never filed under a
+# fourth heading that belongs to no company.
+
+#: How far back the cycle can be asked for. The upper bound is not shyness about
+#: the arithmetic — it is that the stock leg cannot predate the platform, so a
+#: longer request buys a longer row of refusals rather than a longer trend.
+CYCLE_MIN_MONTHS = 3
+CYCLE_MAX_MONTHS = 24
+
+
+def _book_of(index: dict[str, Any], entity_id: Optional[str]) -> str:
+    """The connected company one master record belongs to.
+
+    An empty string for anything unresolvable, which is not a book id and so
+    matches no entity — the row is counted as unattributed rather than landing
+    in whichever series happens to be first.
+    """
+    record = index.get(str(entity_id or "")) if entity_id else None
+    return getattr(record, "connection_id", None) or "" if record else ""
+
+
+def _stock_days(session: Session, org: str, since: date,
+                until: date) -> list[date]:
+    """The last day stock was observed in each month, **per connected company**.
+
+    Two queries rather than one, and the split is what keeps this endpoint
+    affordable: ``stock_snapshots`` holds a row per item per day, so a year of
+    daily observation over a three-thousand-item master is over a million rows
+    and the series needs a couple of dozen of those days. The dates come back
+    from an index; only the chosen days' rows are then read.
+
+    Deliberately the *last* day inside each month and never the nearest day
+    before it — ``insight/cycle`` refuses a month it has no observation for, and
+    handing it a neighbouring month's shelf here would defeat that refusal from
+    outside the module.
+
+    **Per company, and that is not a refinement.** Taking the last day per month
+    across the organization discards a book's own observation whenever another
+    book happened to be observed later in the same month, and the symptom is a
+    month reported as unobserved that was observed — a refusal manufactured by
+    the query rather than by the data. Two books syncing on the same schedule
+    hide it completely; one book syncing a day later exposes it.
+    """
+    rows = session.execute(
+        select(models.StockSnapshot.as_of, models.Product.connection_id)
+        .join(models.Product,
+              models.Product.product_id == models.StockSnapshot.product_id)
+        .where(models.StockSnapshot.organization_id == org,
+               models.StockSnapshot.as_of >= since,
+               models.StockSnapshot.as_of <= until)
+        .distinct()).all()
+    last: dict[tuple[str, int, int], date] = {}
+    for day, connection_id in rows:
+        key = (connection_id or "", day.year, day.month)
+        if key not in last or day > last[key]:
+            last[key] = day
+    # The union. Each book then takes the latest of *its own* rows inside a
+    # month, which `insight/cycle._inventory` already does — so a day chosen for
+    # one company is simply invisible to a company with nothing on it.
+    return sorted(set(last.values()))
+
+
+def _sold_lines(snapshot, products: dict[str, Any]) -> list[cycle.Sold]:
+    """Every sale line with what it cost, or honestly without.
+
+    ``economics.line_economics`` is the one definition of what a sold line cost
+    and it is reused rather than re-derived — a cycle that costed its lines by a
+    second rule would disagree with every margin figure in the product about the
+    same invoice.
+    """
+    costs = agg_group(snapshot.costs, lambda c: c.product_id)
+    for rows in costs.values():
+        rows.sort(key=lambda c: c.date)
+    return [
+        cycle.Sold(
+            book=_book_of(products, row.product_id),
+            date=row.date,
+            revenue=Decimal(row.line_revenue),
+            cogs=economics.line_economics(row, costs.get(row.product_id, [])).cogs,
+        )
+        for row in snapshot.sales
+    ]
+
+
+@router.get("/cash-cycle")
+def cash_conversion_cycle(
+        months: int = Query(cycle.DEFAULT_MONTHS,
+                            ge=CYCLE_MIN_MONTHS, le=CYCLE_MAX_MONTHS),
+        principal: Principal = Depends(require_manager_or_owner),
+        session: Session = Depends(get_session)) -> dict:
+    """DIO + DSO − DPO per legal entity, at every month end.
+
+    Manager and above, and scoped for the same reason ``/supply`` and
+    ``/cashflow`` are: two of the three legs are denominated in what stock cost
+    — the payable side is purchase cost by another name, and the inventory leg
+    is the shelf valued at what was paid for it. Removing them would leave a
+    composite that is not the answer to any question, so the endpoint is scoped
+    rather than half of it stripped.
+
+    Reads the line grain rather than a fold. The month-end positions are
+    replayed from dated documents and their applications, which is the whole
+    reason ``state/reducers/receivables`` can go on refusing to hold them.
+    """
+    org, snapshot, th = _context(session, principal)
+    as_of = _as_of(snapshot) or clock.today(th.timezone)
+    books = {c["connection_id"]: c["label"] for c in _companies(session, org)}
+
+    customers = index_of(session, org, models.Customer)
+    vendors = index_of(session, org, models.Vendor)
+    products = index_of(session, org, models.Product)
+
+    invoices = [
+        cycle.Document(book=_book_of(customers, row.customer_id), date=row.date,
+                       ref=row.external_ref, total=Decimal(row.total or 0))
+        for row in session.scalars(
+            select(models.InvoiceDoc).where(
+                models.InvoiceDoc.organization_id == org)).all()
+        # A draft or voided invoice was never a receivable. The same set the
+        # receivables fold refuses, applied to the reconstruction so the two
+        # cannot disagree about what a customer owed.
+        if str(row.status or "").lower() not in receivables_reducer.NOT_OWED
+    ]
+    receipts = [
+        cycle.Applied(book=_book_of(customers, row.customer_id), on=row.paid_on,
+                      document_ref=row.invoice_external_ref,
+                      amount=Decimal(row.amount_applied or 0))
+        for row in session.scalars(
+            select(models.PaymentApplication).where(
+                models.PaymentApplication.organization_id == org)).all()
+    ]
+    # The third term, and the reason ``CreditNoteApplication`` exists. Left out,
+    # the reconstructed receivable is overstated by exactly the credit issued —
+    # in the direction that flatters collection performance.
+    credits = [
+        cycle.Applied(book=_book_of(customers, row.customer_id),
+                      on=row.applied_on,
+                      document_ref=row.invoice_external_ref,
+                      amount=Decimal(row.amount_applied or 0))
+        for row in session.scalars(
+            select(models.CreditNoteApplication).where(
+                models.CreditNoteApplication.organization_id == org)).all()
+    ]
+    bills = [
+        cycle.Document(book=_book_of(vendors, row.vendor_id), date=row.date,
+                       ref=row.external_ref, total=Decimal(row.total or 0))
+        for row in session.scalars(
+            select(models.BillDoc).where(
+                models.BillDoc.organization_id == org)).all()
+    ]
+    bill_payments = [
+        cycle.Applied(book=_book_of(vendors, row.vendor_id), on=row.paid_on,
+                      document_ref=row.bill_external_ref,
+                      amount=Decimal(row.amount_applied or 0))
+        for row in session.scalars(
+            select(models.BillPaymentApplication).where(
+                models.BillPaymentApplication.organization_id == org)).all()
+    ]
+
+    span = periods.months_back(as_of, months + cycle.WINDOW_MONTHS - 1)
+    days = _stock_days(session, org, span[0].start, span[-1].end)
+    held = [
+        cycle.Held(book=_book_of(products, row.product_id), on=row.as_of,
+                   units=Decimal(row.on_hand or 0),
+                   unit_cost=(Decimal(row.purchase_rate)
+                              if row.purchase_rate is not None else None))
+        for row in (session.scalars(
+            select(models.StockSnapshot).where(
+                models.StockSnapshot.organization_id == org,
+                models.StockSnapshot.as_of.in_(days))).all() if days else [])
+        # A service or non-inventory line has no shelf to sit on, and counting
+        # it as nothing on hand would drag the valuation down with rows that
+        # were never stock.
+        if row.tracked
+    ]
+
+    result = cycle.build(
+        invoices=invoices, receipts=receipts, credits=credits, bills=bills,
+        bill_payments=bill_payments, sold=_sold_lines(snapshot, products),
+        held=held, books=books, as_of=as_of, thresholds=th, months=months)
+
+    empty = None
+    if not books:
+        empty = ("No Zoho company is connected, so there is no entity to "
+                 "compute a cycle for. Connect one from Data & connection.")
+    elif not invoices and not bills:
+        empty = ("No invoice or bill has been synced yet, so there is nothing "
+                 "to reconstruct a receivable or a payable from. Run a sync "
+                 "from Data & connection.")
+    return _envelope(result, th=th, empty_reason=empty,
+                     as_of=as_of.isoformat(),
+                     sources_differ=len(books) > 1)
 
 
 #: How many names a dead-stock row can usefully carry. Beyond this the column

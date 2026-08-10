@@ -66,6 +66,12 @@ EXPORTED: tuple[tuple[str, Any], ...] = (
     ("invoices", models.InvoiceDoc),
     ("purchase_orders", models.PurchaseOrderDoc),
     ("sales_orders", models.SalesOrderDoc),
+    # Which orders each invoice billed against. Exported rather than excluded:
+    # it is this customer's own trading record, and an export holding the orders
+    # and the invoices but not the joins between them would hand back two lists
+    # nobody can put back together — the many-to-many is precisely the part a
+    # re-sync from a different system cannot rebuild.
+    ("invoice_sales_orders", models.InvoiceSalesOrderLink),
     ("payment_receipts", models.PaymentReceipt),
     ("payment_applications", models.PaymentApplication),
     ("vendor_payments", models.VendorPaymentDoc),

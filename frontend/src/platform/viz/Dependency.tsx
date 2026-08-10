@@ -17,17 +17,28 @@
 // number with 80% of the quarter gone is behind, and an achievement figure on
 // its own hides that until the last week. Both are drawn on one track.
 //
+// **There is a third end, and it is the same names weighed differently.** What
+// a customer is worth and what they still owe are two facts, and they come
+// apart exactly where it matters: the customer who buys the most and pays on
+// the day is a big share of revenue and a small share of what we are waiting
+// on. The two top-five shares are therefore drawn beside each other at the top
+// of the screen, because the *gap* is the finding — the same reason the vendor
+// row draws spend and downstream revenue on one track. Neither is a proxy for
+// the other and the screen never prints one as the other.
+//
 // The screen never says a customer depends on us — see the server's own
 // `unavailable`, rendered at the bottom. We see what they buy here and nothing
 // of what they buy elsewhere.
 
 import Button from "@mui/material/Button";
-import { useState } from "react";
+import Stack from "@mui/material/Stack";
+import Typography from "@mui/material/Typography";
+import { useState, type ReactNode } from "react";
 import { money } from "../../money";
 import { formatDate } from "../../when";
 import { papi } from "../api";
 import { EntityName } from "../EntityName";
-import { InlineLink, StatusChip, Unavailable } from "../kit";
+import { EmptyState, InlineLink, MetricCard, StatusChip, Unavailable } from "../kit";
 import { CompanyScope } from "../CompanyFilter";
 import type { CompanyScopeOption } from "../CompanyFilter";
 import { DataGrid, numeric } from "../DataGrid";
@@ -53,6 +64,7 @@ export function DependencyScreen({
     [session.token, scope]);
 
   const customers = (data?.customers as Row | undefined) ?? {};
+  const receivables = (data?.receivables as Row | undefined) ?? {};
   const vendors = (data?.vendors as Row | null | undefined) ?? null;
   const supplierSide = Boolean(data?.supplier_side_visible) && vendors !== null;
   const attribution = (data?.attribution as Row | undefined) ?? {};
@@ -61,6 +73,7 @@ export function DependencyScreen({
   const [editing, setEditing] = useState(false);
 
   const customerRows = rows(customers.rows);
+  const receivableRows = rows(receivables.rows);
   const vendorRows = rows(vendors?.rows);
   const companies = rows(data?.companies);
 
@@ -95,6 +108,12 @@ export function DependencyScreen({
         </p>
       )}
 
+      {/* The two top-five shares, adjacent, because the gap between them is
+          the finding and neither may be read as the other. */}
+      <TopFive customers={(customers.concentration as Row) ?? {}}
+               receivables={(receivables.concentration as Row) ?? {}}
+               daysToPay={(receivables.days_to_pay as Row) ?? {}} />
+
       {/* The picture first. The two lists below answer "how exposed are we to
           this name"; this answers "what does the business look like", which is
           the question somebody opens the screen with. */}
@@ -123,6 +142,21 @@ export function DependencyScreen({
           side="customer"
           onOpen={(id) => onNavigate(`customer/${id}`)}
         />
+        <Side
+          title="Customers we are waiting on"
+          question="What is still owed, and how long that money has been out"
+          rows={receivableRows}
+          concentration={(receivables.concentration as Row) ?? {}}
+          sourcesDiffer={sourcesDiffer}
+          side="receivable"
+          onOpen={(id) => onNavigate(`customer/${id}`)}
+          // An unfolded state and a fully-collected book both have no rows.
+          // The server says which, because rendered the same way the first
+          // would read as "nobody owes us anything".
+          emptyReason={receivables.empty_reason as string | undefined}
+        >
+          <DaysToPay figure={(receivables.days_to_pay as Row) ?? {}} />
+        </Side>
       </div>
 
       <Unavailable items={rows(data?.unavailable)} verb="not claimed" />
@@ -135,18 +169,115 @@ export function DependencyScreen({
   );
 }
 
+/** The two top-five shares, side by side.
+ *
+ *  They answer different questions about the same names and they diverge — a
+ *  large customer who settles on the day is most of what we sell and little of
+ *  what we are waiting on. Drawn adjacent so a reader compares them rather than
+ *  carrying one figure to the other end of the screen; the caption says they
+ *  are two facts, because the failure mode here is reading one as a stand-in
+ *  for the other. */
+function TopFive({
+  customers, receivables, daysToPay,
+}: { customers: Row; receivables: Row; daysToPay: Row }) {
+  if (customers.top_n_share == null && receivables.top_n_share == null) return null;
+  const weighted = daysToPay.weighted_days as number | null | undefined;
+  return (
+    <>
+      <Stack direction={{ xs: "column", sm: "row" }} spacing={2} sx={{ mt: 2 }}>
+        {/* The count only appears beside a share that exists. A "0 customers"
+            caption under a "—" would read as a measured emptiness, and for the
+            receivables half the far more likely cause is a fold that has never
+            run — which is not the same claim at all. */}
+        <MetricCard
+          label="Largest five, by revenue"
+          value={pct(customers.top_n_share as number | null, 0)}
+          sub={customers.top_n_share != null
+            ? `of ${num(customers.count)} customers who bought`
+            : undefined}
+          tip="Their combined share of what this book sold over the window."
+        />
+        <MetricCard
+          label="Largest five, by what is owed"
+          value={pct(receivables.top_n_share as number | null, 0)}
+          sub={receivables.top_n_share != null
+            ? `of ${num(receivables.count)} customers who owe anything`
+            : undefined}
+          tip="Their combined share of the outstanding book — every invoice still unpaid, due or not."
+        />
+        <MetricCard
+          label="Those five take"
+          // Never a bare number: "—" is what an unmeasured set renders as, and
+          // the sentence under it says which.
+          value={weighted == null ? "—" : `${weighted} days`}
+          sub="weighted by what each of them owes"
+          tip="Average days from invoice to settlement, weighted by outstanding balance. Not days sales outstanding — that is a ratio against a revenue window this fold does not carry."
+        />
+      </Stack>
+      <Typography variant="caption" color="text.secondary"
+                  component="p" sx={{ mt: 1 }}>
+        Two different facts about the same names, not one measured twice. They
+        come apart when a large customer pays promptly, and neither stands in
+        for the other.
+      </Typography>
+    </>
+  );
+}
+
+/** The weighted figure, and how much of the top five it actually spans.
+ *
+ *  The coverage never leaves the number's side. A weighted average over one of
+ *  five accounts is true of that account and says nothing about the other four,
+ *  and a bare "18 days" would be read as saying something about all of them. */
+function DaysToPay({ figure }: { figure: Row }) {
+  const weighted = figure.weighted_days as number | null | undefined;
+  const covers = figure.covers_share as number | null | undefined;
+  const unmeasured = rows(figure.unmeasured);
+  const floor = num(figure.min_settlements);
+
+  if (weighted == null) {
+    return (
+      <p className="viz-muted">
+        How long that money has been out is not measured: none of the largest
+        five has {floor} settled invoices with terms on record. Fewer than that
+        is one payment wearing a suit, so no figure is stated.
+      </p>
+    );
+  }
+  return (
+    <p className="viz-muted">
+      <strong>{weighted} days</strong> from invoice to settlement, weighted by
+      what each of them owes.
+      {covers != null && covers < 1 && (
+        <>
+          {" "}
+          <StatusChip label={`covers ${pct(covers, 0)} of their balance`}
+                      tone="warn" dense
+                      tip="The rest of the top five have too few settled invoices to measure, so the figure says nothing about them." />
+          {" "}Not measured: {unmeasured.map((u) => String(u.label)).join(", ")}.
+        </>
+      )}
+    </p>
+  );
+}
+
 function Side({
   title, question, rows: list, concentration, sourcesDiffer, side, onOpen,
+  children, emptyReason,
 }: {
   title: string;
   question: string;
   rows: Row[];
   concentration: Row;
   sourcesDiffer: boolean;
-  side: "vendor" | "customer";
+  side: "vendor" | "customer" | "receivable";
   onOpen: (id: string) => void;
+  children?: ReactNode;
+  /** Why this half has no rows, when that is a claim rather than a blank. */
+  emptyReason?: string;
 }) {
   const isVendor = side === "vendor";
+  const isOwed = side === "receivable";
   // Bars are drawn against the largest row *in view*, which is a comparison
   // between the rows on screen and not a claim about the book. The share
   // figures beside them are the server's, computed over the whole total — the
@@ -168,6 +299,10 @@ function Side({
           {num(concentration.count)}.
         </p>
       )}
+
+      {list.length === 0 && emptyReason
+        ? <EmptyState title="Nothing to measure" reason={emptyReason} />
+        : children}
 
       <ul className="dep-rows">
         {list.slice(0, 12).map((r) => {
@@ -203,7 +338,15 @@ function Side({
                 <span className="viz-muted">
                   {isVendor
                     ? `${pct(r.downstream_share as number, 0)} of revenue · ${pct(r.share as number, 0)} of spend`
-                    : `${pct(r.share as number, 0)} of revenue · ${num(r.counterparties)} principal${num(r.counterparties) === 1 ? "" : "s"}`}
+                    : isOwed
+                      // "not measured" rather than a dash on its own: a blank
+                      // beside a number reads as zero days, which is the one
+                      // thing this row must not say.
+                      ? `${pct(r.share as number, 0)} of what is owed · ${
+                          r.days_to_pay == null
+                            ? "days-to-pay not measured"
+                            : `${num(r.days_to_pay)} days to pay`}`
+                      : `${pct(r.share as number, 0)} of revenue · ${num(r.counterparties)} principal${num(r.counterparties) === 1 ? "" : "s"}`}
                 </span>
               </span>
 
@@ -244,11 +387,16 @@ function Side({
                                 (v) => money(v), { width: 170, flex: 0 }),
                    numeric<Row>("money", "Spend", (v) => money(v),
                                 { width: 140, flex: 0 })]
-                : [numeric<Row>("money", "Revenue", (v) => money(v),
-                                { width: 150, flex: 0 })]),
-              numeric<Row>("counterparties",
-                           isVendor ? "Customers" : "Principals",
-                           (v) => String(v), { width: 130, flex: 0 }),
+                : [numeric<Row>("money", isOwed ? "Outstanding" : "Revenue",
+                                (v) => money(v), { width: 150, flex: 0 })]),
+              // Null below the settlement floor, which `numeric` renders as
+              // "—" rather than as a zero-day payer.
+              ...(isOwed
+                ? [numeric<Row>("days_to_pay", "Days to pay",
+                                (v) => String(v), { width: 140, flex: 0 })]
+                : [numeric<Row>("counterparties",
+                                isVendor ? "Customers" : "Principals",
+                                (v) => String(v), { width: 130, flex: 0 })]),
             ]}
             empty={<p className="viz-muted">Nothing here yet.</p>}
           />

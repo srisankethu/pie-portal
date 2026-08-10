@@ -112,14 +112,20 @@ const CustomerHealthTimeline = lazy(() =>
   import("./viz/History").then((m) => ({ default: m.CustomerHealthTimeline })));
 const MigrationMatrix = lazy(() =>
   import("./viz/History").then((m) => ({ default: m.MigrationMatrix })));
+const CashCycleScreen = lazy(() =>
+  import("./viz/CashCycle").then((m) => ({ default: m.CashCycleScreen })));
 const PayablesScreen = lazy(() =>
   import("./viz/TheBook").then((m) => ({ default: m.PayablesScreen })));
 const PaymentsScreen = lazy(() =>
   import("./viz/TheBook").then((m) => ({ default: m.PaymentsScreen })));
+const OrderToCashScreen = lazy(() =>
+  import("./viz/OrderToCash").then((m) => ({ default: m.OrderToCashScreen })));
 const StatutoryScreen = lazy(() =>
   import("./viz/Statutory").then((m) => ({ default: m.StatutoryScreen })));
 const StockScreen = lazy(() =>
   import("./viz/TheBook").then((m) => ({ default: m.StockScreen })));
+const GmroiScreen = lazy(() =>
+  import("./viz/Gmroi").then((m) => ({ default: m.GmroiScreen })));
 const SupplyScreen = lazy(() =>
   import("./viz/TheBook").then((m) => ({ default: m.SupplyScreen })));
 const NegotiateScreen = lazy(() =>
@@ -580,16 +586,34 @@ export default function PlatformApp() {
     // Neither carries cost: receivables are money in, and stock structure is
     // counts. The purchase rate is dropped from a salesperson's stock copy.
     { key: "stock", label: "Stock", group: "book" },
+    ...(ability.can("read", "economics")
+      // Gross profit ÷ what the stock cost, end to end — there is no version of
+      // this screen with the economics taken out, so `require_manager_or_owner`
+      // guards the endpoint and the nav item follows it rather than offering a
+      // door that always 403s. A salesperson is not left wondering: `/stock`
+      // carries the withholding notice in its own `unavailable` list.
+      ? ([{ key: "gmroi", label: "Return on stock", group: "book" }] as NavItem[])
+      : []),
     ...(ability.can("read", "supply")
       // Supplier spend is purchase cost by another name, so the endpoint is
       // manager-scoped and the nav item follows it rather than 403-ing.
       ? ([{ key: "supply", label: "Suppliers", group: "book" }] as NavItem[])
       : []),
     { key: "payments", label: "Cash", group: "book" },
+    // Beside Cash and scoped with it: dates and day counts carry no commercial
+    // position, and the half of the cycle this screen exists to surface is the
+    // half a salesperson can chase.
+    { key: "orderToCash", label: "Order to cash", group: "book" },
     ...(ability.can("read", "supply")
       // How long we string a supplier along is a commercial position, not a
       // call list, so it is scoped like Suppliers rather than like Cash.
       ? ([{ key: "payables", label: "How we pay", group: "book" }] as NavItem[])
+      : []),
+    ...(ability.can("read", "supply")
+      // Two of its three legs are denominated in what stock cost — the shelf
+      // valued at purchase rate, and what we owe suppliers. Scoped with the
+      // rest of the payable side rather than shown and then refused.
+      ? ([{ key: "cashCycle", label: "Cash cycle", group: "book" }] as NavItem[])
       : []),
     ...(ability.can("read", "supply")
       // Every row is a supplier balance against a date, so it is scoped with
@@ -758,8 +782,11 @@ export default function PlatformApp() {
             <Route path={PATH.cadence} element={<CadenceScreen session={session} onNavigate={goViz} />} />
             <Route path={PATH.payments} element={<PaymentsScreen session={session} onNavigate={goViz} />} />
             <Route path={PATH.payables} element={<PayablesScreen session={session} onNavigate={goViz} />} />
+            <Route path={PATH.orderToCash} element={<OrderToCashScreen session={session} />} />
+            <Route path={PATH.cashCycle} element={<CashCycleScreen session={session} />} />
             <Route path={PATH.statutory} element={<StatutoryScreen session={session} />} />
             <Route path={PATH.stock} element={<StockScreen session={session} />} />
+            <Route path={PATH.gmroi} element={<GmroiScreen session={session} />} />
             <Route path={PATH.supply} element={<SupplyScreen session={session} />} />
             <Route path={PATH.bonds} element={<BondsScreen session={session} onNavigate={goViz} />} />
             <Route path={PATH.mix} element={<MixScreen session={session} onNavigate={goViz} />} />

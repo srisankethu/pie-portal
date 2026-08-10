@@ -26,14 +26,15 @@ import { formatDate } from "../../when";
 import { papi } from "../api";
 import { abilityFor } from "../ability";
 import { EntityName } from "../EntityName";
-import { ChartTip, InlineLink, StatusChip, VarianceIndicator } from "../kit";
+import { ChartTip, InlineLink, MetricCard, StatusChip, VarianceIndicator } from "../kit";
+import type { Tone } from "../kit";
 import { CompanyFilter, useCompanyFilter } from "../CompanyFilter";
 import { DataGrid, numeric } from "../DataGrid";
 import type { ColDef } from "../DataGrid";
 import type { EntityOrigin, PlatformSession, Sourced } from "../types";
 import { Figure, Panel, ValueAxis, stateOf } from "./Panel";
 import { Seg } from "./Seg";
-import { pct, useInsight } from "./useInsight";
+import { pct, pp, useInsight } from "./useInsight";
 import { compactMoney, useMeasure } from "./useMeasure";
 
 type Row = Record<string, unknown>;
@@ -74,6 +75,123 @@ function Unavailable({ items }: { items: Row[] }) {
 // horizon, undated, and open orders. Each is real money that cannot honestly be
 // drawn as a bar in a particular week, and a projection whose parts do not add
 // up to the book is a projection people stop trusting.
+
+// ── Self-funding: what we kept, against what the growth had to be paid for ──
+//
+// Owner only, and silent until confirmed. Half of this reading is retained
+// profit after tax, which is not in this platform and is not derived from
+// anything in it: PIE reads invoices and bills, not a ledger, so the nearest
+// figure available is gross profit and gross profit is a different and much
+// larger number. Substituting it would overstate what was kept by the entire
+// cost of running the business, silently, in the direction that reads as good
+// news — so the owner confirms each entity's figure in Settings and this panel
+// says what is missing until they have.
+//
+// The verdict is deliberately one-sided and the panel says so out loud. Growth
+// consumes working capital, a fraction of the revenue increase, and that
+// fraction is not measured here — so retained profit above the whole increase
+// is "covered", and below it is "undetermined", never "unfunded".
+
+const VERDICT: Record<string, [string, Tone, string]> = {
+  COVERED: ["Covered", "good",
+            "Retained profit exceeds the whole revenue increase, so it covers "
+            + "the growth whatever share of it turned into working capital."],
+  UNDETERMINED: ["Undetermined", "neutral",
+                 "Retained profit is smaller than the revenue increase. That is "
+                 + "not a finding that growth was funded from outside — growth "
+                 + "consumes working capital, a fraction of the increase, and "
+                 + "that fraction is not measured here."],
+  NOT_GROWING: ["Not growing", "info",
+                "Revenue did not grow against the previous year, so there was "
+                + "no growth to fund."],
+  UNKNOWN: ["Unknown", "warn", "Not enough is confirmed to read this."],
+};
+
+function SelfFunding({ session }: { session: PlatformSession }) {
+  const { data, loading, error, reload } = useInsight(
+    "self-funding", () => papi.selfFunding(session.token), [session.token]);
+
+  const confirmed = Boolean(data?.confirmed);
+  const missing = (data?.missing_entities as string[] | undefined) ?? [];
+  // The server's reason, with the entities it is waiting on named. One string
+  // so the shared empty state carries the whole answer, rather than a generic
+  // sentence in the panel and the useful half somewhere else.
+  const reason = confirmed || !data
+    ? (data?.empty_reason as string | null | undefined)
+    : [data.blocked_by as string,
+       missing.length ? `Still to confirm: ${missing.join(", ")}.` : ""]
+      .filter(Boolean).join(" ");
+
+  const [verdictLabel, tone, verdictHelp] =
+    VERDICT[String(data?.verdict ?? "UNKNOWN")] ?? VERDICT.UNKNOWN;
+  const entities = rows(data?.entities);
+
+  return (
+    <Panel
+      title="Self-funding growth"
+      question="Is the book outgrowing the profit it keeps"
+      state={stateOf(loading, error, reason)}
+      error={error} emptyReason={reason} onRetry={reload}
+    >
+      <Stack spacing={2}>
+        <Box sx={{
+          display: "grid", gap: 2,
+          gridTemplateColumns: { xs: "1fr", sm: "repeat(2, 1fr)",
+                                 md: "repeat(4, 1fr)" },
+        }}>
+          <MetricCard
+            label="Retained after tax"
+            value={money(num(data?.retained_pat))}
+            sub={`${String(data?.financial_year ?? "")}, confirmed from each entity's accounts`}
+            variance={<StatusChip label={verdictLabel} tone={tone} tip={verdictHelp} />}
+          />
+          <MetricCard
+            label="Revenue growth"
+            value={money(num(data?.revenue_growth))}
+            sub={`${money(num(data?.previous_revenue))} → ${money(num(data?.revenue))}`}
+          />
+          <MetricCard
+            label="Grew by"
+            value={pct(num(data?.growth_ratio))}
+            sub="Of the revenue the year started from."
+          />
+          <MetricCard
+            label="Kept"
+            value={pct(num(data?.retention_ratio))}
+            // Both rates are over the revenue the year started from, which is
+            // the only thing that makes their difference meaningful — and a
+            // difference of two ratios is percentage points, never a percent.
+            sub={`Same base as growth. Gap ${pp(num(data?.funding_gap_pp))}.`}
+          />
+        </Box>
+
+        {/* A fact panel: one row per legal entity, a count set by the shape of
+            the business rather than by its size. ui-standards §3's named
+            exception, not a grid. */}
+        <table className="facttable">
+          <caption className="viz-muted">
+            Retained profit after tax, {String(data?.financial_year ?? "")}
+          </caption>
+          <tbody>
+            {entities.map((e) => (
+              <tr key={String(e.entity)}>
+                <td>{String(e.label)}</td>
+                <td className="fv">{money(num(e.retained_pat))}</td>
+              </tr>
+            ))}
+            <tr>
+              <td><b>Together</b></td>
+              <td className="fv">{money(num(data?.retained_pat))}</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p className="viz-muted viz-footnote">{String(data?.basis_note ?? "")}</p>
+        <p className="viz-muted viz-footnote">{String(data?.limit_note ?? "")}</p>
+      </Stack>
+    </Panel>
+  );
+}
 
 const HORIZONS: [string, string][] = [["13", "13 weeks"], ["26", "26 weeks"]];
 
@@ -656,6 +774,188 @@ const PAYABLE_SIDE: LedgerSide = {
   href: null,
 };
 
+// ── The same settlements, one level up: whose book the slow money is in ────
+//
+// The panel above ranks accounts, which answers "who do I call". This one ranks
+// books, which answers "whose terms are not holding" — a different conversation
+// with a different person, and the reason it is a second panel rather than
+// another column on the first.
+//
+// **It says days to pay, never DSO.** The acronym is already in circulation and
+// it means something this platform cannot compute: days sales outstanding is a
+// ratio over a revenue window, and `state/reducers/receivables` records that the
+// denominator does not exist here. Labelling a days-to-pay figure DSO would
+// invite somebody to compare it against a benchmark computed the other way.
+//
+// **The figure is weighted by settled value.** The wording on the footnote says
+// so, because "typical" without the weighting reads as an average of accounts —
+// and an average of accounts is the number this deliberately is not.
+//
+// A grid, because the row count is the number of salespeople, which is set by
+// the size of the business — the rule in `platform/DataGrid.tsx`. Sorting by
+// whose money comes back slowest is the whole point of the panel.
+
+type OwnerBookRow = {
+  owner_user_id: string | null;
+  label: string;
+  accounts: number;
+  settlements: number;
+  total_settled: number;
+  datable_count: number;
+  late_count: number;
+  weighted_days_to_pay: number | null;
+  late_share: number | null;
+  trend: string;
+  estimable: boolean;
+};
+
+function OwnerBooksPanel({
+  data, loading, error, reload,
+}: {
+  data: Record<string, unknown> | null;
+  loading: boolean; error: string | null; reload: () => void;
+}) {
+  const books = useMemo(
+    () => (data?.by_owner as OwnerBookRow[] | undefined) ?? [], [data]);
+  const minSettlements = num(data?.min_settlements);
+  const trends = (data?.trends as Record<string, string>) ?? {};
+
+  const columns = useMemo<ColDef<OwnerBookRow>[]>(() => [
+    {
+      field: "label", headerName: "Salesperson", flex: 1.2, minWidth: 180,
+      cellRenderer: (p: { data?: OwnerBookRow }) => (p.data ? (
+        p.data.owner_user_id === null
+          // Not a person, and it must not read as one. An unowned account is
+          // one nobody is chasing, which is why the bucket is shown at all.
+          ? <Box component="span" className="viz-muted">{p.data.label}</Box>
+          : <Box component="span">{p.data.label}</Box>
+      ) : null),
+    },
+    {
+      headerName: "Typical days to pay", flex: 1, minWidth: 210,
+      // Below the floor there is no figure, and the row sorts last rather than
+      // as zero — unknown is not fast.
+      valueGetter: (p) => (p.data?.estimable
+        ? (p.data?.weighted_days_to_pay ?? null) : null),
+      headerTooltip: "The day by which half this book's settled value had "
+        + "arrived, weighted by value rather than averaged across accounts. "
+        + "Days to pay, not DSO — the ratio needs a revenue window the "
+        + "platform does not hold.",
+      cellRenderer: (p: { data?: OwnerBookRow }) => {
+        const row = p.data;
+        if (!row) return null;
+        if (!row.estimable) {
+          return (
+            <StatusChip
+              label={`only ${row.settlements} settled`} tone="neutral" dense
+              tip={`Fewer than ${minSettlements} settled invoices in this `
+                + "book, so no figure is asserted rather than one being read "
+                + "out of a couple of invoices."} />
+          );
+        }
+        return (
+          <Stack direction="row" spacing={0.75} sx={{ alignItems: "center" }}>
+            <Box component="span">{row.weighted_days_to_pay} days</Box>
+            {row.trend !== "STEADY" && row.trend !== "UNKNOWN" && (
+              <StatusChip
+                label={row.trend === "IMPROVING" ? "improving" : "slower"}
+                tone={row.trend === "IMPROVING" ? "good" : "warn"} dense
+                tip={trends[row.trend]} />
+            )}
+          </Stack>
+        );
+      },
+    },
+    {
+      headerName: "Paid late", width: 150, flex: 0,
+      valueGetter: (p) => p.data?.late_share ?? null,
+      headerTooltip: "Of the invoices in this book with terms on record. "
+        + "Invoices that could never be late are out of the denominator.",
+      cellRenderer: (p: { data?: OwnerBookRow }) => {
+        const row = p.data;
+        if (!row) return null;
+        // The denominator travels with the share, for the reason the panel
+        // above gives: "100% late" over one invoice is true and useless.
+        if (row.late_share === null) {
+          return <Box component="span" className="viz-muted">—</Box>;
+        }
+        return (
+          <Box component="span">
+            {pct(row.late_share)}
+            <Box component="span" className="viz-muted">
+              {" "}· {row.late_count} of {row.datable_count}
+            </Box>
+          </Box>
+        );
+      },
+    },
+    numeric<OwnerBookRow>("total_settled", "Value settled", (v) => money(v), {
+      width: 150, flex: 0,
+      headerTooltip: "What has actually come back through this book. It is the "
+        + "weight behind the days figure beside it.",
+    }),
+    numeric<OwnerBookRow>("accounts", "Accounts", (v) => String(v),
+                          { width: 116, flex: 0 }),
+    numeric<OwnerBookRow>("settlements", "Invoices settled", (v) => String(v), {
+      width: 160, flex: 0,
+      headerTooltip: "One transfer clearing ten invoices is ten observations — "
+        + "the grain is the invoice, not the payment.",
+    }),
+  ], [minSettlements, trends]);
+
+  const measured = books.filter((b) => b.estimable);
+
+  return (
+    <Panel
+      title="Collection by salesperson"
+      question="Whose book does the money come back slowest from"
+      state={stateOf(loading, error, data?.empty_reason as string)}
+      error={error} emptyReason={data?.empty_reason as string} onRetry={reload} wide
+    >
+      <p className="viz-headline">
+        {measured.length > 0 ? (
+          <>
+            Money comes back slowest from{" "}
+            <strong>{measured[0].label}</strong>'s book, at{" "}
+            <strong>{measured[0].weighted_days_to_pay} days</strong> against{" "}
+            {money(measured[0].total_settled)} settled.
+          </>
+        ) : (
+          <>
+            No book has {minSettlements} settled invoices yet, so no figure is
+            asserted for anybody.
+          </>
+        )}{" "}
+        <span className="viz-muted">
+          Weighted by settled value, not averaged across accounts — one large
+          slow account is what the week has to be funded around, and an average
+          of accounts would hide it behind nine small quick ones.
+        </span>
+      </p>
+      <DataGrid<OwnerBookRow>
+        ariaLabel="Days to pay by salesperson"
+        rows={books}
+        columns={columns}
+        pageSize={20}
+        rowHeight={48}
+        getRowId={(r) => r.owner_user_id ?? "__unassigned__"}
+      />
+      <p className="viz-muted viz-footnote">
+        Days to pay, not days sales outstanding: DSO is a ratio over a revenue
+        window this platform does not hold, and a figure named after it would
+        invite comparison against a benchmark computed a different way. An
+        account is in the book it was assigned to here, falling back to the
+        salesperson on its latest Zoho invoice — the same rule the credit list
+        below applies, resolved in one place so an account handed over by hand
+        cannot sit in two books at once. Accounts nobody owns are shown as a
+        book of their own rather than left out, because an unowned overdue
+        account is the one nobody is chasing.
+      </p>
+      <Unavailable items={rows(data?.unavailable)} />
+    </Panel>
+  );
+}
+
 // ── The line we gave them, and whose book the account is in ────────────────
 //
 // "Rane Madras takes 69 days to pay" is an observation. "Rane Madras is ₹8 lakh
@@ -967,7 +1267,14 @@ export function PaymentsScreen({
   // The projection is manager-and-above because half of it is what we owe
   // suppliers. Omitted rather than rendered and then 403'd — a panel that
   // always fails teaches people the product is broken.
-  const mayReadCommitments = abilityFor(session).can("read", "supply");
+  const ability = abilityFor(session);
+  const mayReadCommitments = ability.can("read", "supply");
+  // Owner only, mirroring `require_owner` on `/insight/self-funding`. Gated on
+  // the manage-policy rule rather than a new subject: an owner is exactly the
+  // person who confirms the retained figure this panel reads, and this
+  // vocabulary is meant to stay small enough to hold in your head. Omitted
+  // rather than rendered and 403'd, for the reason above.
+  const mayReadEntityEconomics = ability.can("manage", "policy");
 
   return (
     <div className="screen-stack">
@@ -976,9 +1283,19 @@ export function PaymentsScreen({
           about whether that date is honoured, which is the right order to
           read them in. */}
       {mayReadCommitments && <CashProjection session={session} />}
+      {/* Thirteen weeks of committed movement, then the year behind it. The
+          projection says what the book does next; this says whether last
+          year's growth was paid for out of what the book kept. */}
+      {mayReadEntityEconomics && <SelfFunding session={session} />}
       <SettlementPanel data={data} loading={loading} error={error}
                        reload={reload} side={RECEIVABLE_SIDE}
                        onNavigate={onNavigate} />
+      {/* The same settlements one level up. It reads the response the panel
+          above already fetched — a second request for a second grouping of
+          rows the browser is holding would be a second answer waiting to
+          disagree with the first. */}
+      <OwnerBooksPanel data={data} loading={loading} error={error}
+                       reload={reload} />
       {/* Who is past their line, and whose account it is. Below the measured
           behaviour rather than above it, for the same reason the supplier terms
           sit below the payables panel: somebody arrives asking "how do they
@@ -1447,6 +1764,25 @@ export function StockScreen({ session }: { session: PlatformSession }) {
               + "never sold at all, which sorts as the oldest.",
             valueFormatter: (p) =>
               p.value == null ? "never sold" : `${p.value} d`,
+          },
+          {
+            // Quantity only, so it is on every role's grid — there is no cost
+            // term in it to pair with the drain beside it. The server decides
+            // that, as always; this renders what arrives.
+            field: "days_of_cover", headerName: "Cover", width: 140, flex: 0,
+            type: "numericColumn", cellClass: "ag-num",
+            filter: "agNumberColumnFilter",
+            // The wording is the whole point of the column. "At the rate it has
+            // moved" is a measurement over the past; "will last" would be a
+            // forecast, which this data cannot support and the response still
+            // refuses by name.
+            headerTooltip: "How much you hold, in days, at the rate this item "
+              + "has actually moved since it first sold. A measurement, not a "
+              + "forecast — it does not say how long the stock will last. Blank "
+              + "means the item has never sold, so there is no rate to divide by.",
+            valueFormatter: (p) =>
+              p.value == null ? "never sold"
+                : `${Number(p.value).toLocaleString("en-IN")} d`,
           },
           {
             field: "monthly_holding_cost",

@@ -201,6 +201,13 @@ export const papi = {
   payables: (t: string) =>
     req<Record<string, unknown>>("/api/v1/insight/payables", {}, t),
 
+  // The whole cycle the two above sit inside: order → invoice → payment. Dates
+  // and day counts only, so it is scoped like `payments` rather than like
+  // `payables` — how long we take to bill is not a commercial position, it is
+  // the half of the wait this business controls.
+  orderToCash: (t: string) =>
+    req<Record<string, unknown>>("/api/v1/insight/order-to-cash", {}, t),
+
   // Which quotes were won and which were lost. No cost anywhere in it, so
   // every role reads it — a salesperson sees their own accounts, scoped by the
   // server exactly as `/api/v1/accounts` is.
@@ -309,11 +316,33 @@ export const papi = {
     req<Record<string, unknown>>(
       `/api/v1/insight/cashflow?weeks=${weeks}`, {}, t),
 
+  // Owner only, and not merely manager: what three legal entities kept after
+  // tax is entity economics rather than a commercial figure. The panel is
+  // hidden for everyone else rather than 403'd, the same way `supply` is.
+  selfFunding: (t: string) =>
+    req<Record<string, unknown>>("/api/v1/insight/self-funding", {}, t),
+  // Manager and above, and scoped like `cashflow` for a stronger reason: two of
+  // the three legs are denominated in what stock cost. Removing them would
+  // leave a composite that answers nothing, so the panel is hidden rather than
+  // 403'd — the same treatment `supply` gets.
+  cashCycle: (t: string, months: number) =>
+    req<Record<string, unknown>>(
+      `/api/v1/insight/cash-cycle?months=${months}`, {}, t),
+
   stock: (t: string) =>
     req<Record<string, unknown>>("/api/v1/insight/stock", {}, t),
 
   supply: (t: string) =>
     req<Record<string, unknown>>("/api/v1/insight/supply", {}, t),
+
+  // What each line returns on the cash it ties up. Manager and above, and
+  // permanently: GMROI is gross profit ÷ purchase cost with nothing else in it,
+  // so there is no version of the screen with the economics removed. The nav
+  // item follows the endpoint rather than 403-ing, and `/stock` carries the
+  // withholding notice for the roles that cannot open this.
+  gmroi: (t: string, months: number) =>
+    req<Record<string, unknown>>(
+      `/api/v1/insight/gmroi?months=${months}`, {}, t),
 
   // Relationship bonds — the one view that reads both sides of the book.
   //

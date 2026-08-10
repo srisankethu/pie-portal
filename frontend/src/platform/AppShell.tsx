@@ -53,6 +53,7 @@ import DonutSmallOutlined from "@mui/icons-material/DonutSmallOutlined";
 import ScheduleOutlined from "@mui/icons-material/ScheduleOutlined";
 import GroupsOutlined from "@mui/icons-material/GroupsOutlined";
 import Inventory2Outlined from "@mui/icons-material/Inventory2Outlined";
+import SavingsOutlined from "@mui/icons-material/SavingsOutlined";
 import LocalShippingOutlined from "@mui/icons-material/LocalShippingOutlined";
 import HubOutlined from "@mui/icons-material/HubOutlined";
 import GridViewOutlined from "@mui/icons-material/GridViewOutlined";
@@ -61,6 +62,7 @@ import TrackChangesOutlined from "@mui/icons-material/TrackChangesOutlined";
 import CategoryOutlined from "@mui/icons-material/CategoryOutlined";
 import PaymentsOutlined from "@mui/icons-material/PaymentsOutlined";
 import ReceiptLongOutlined from "@mui/icons-material/ReceiptLongOutlined";
+import TimelineOutlined from "@mui/icons-material/TimelineOutlined";
 import StorageOutlined from "@mui/icons-material/StorageOutlined";
 import FingerprintOutlined from "@mui/icons-material/FingerprintOutlined";
 import PsychologyOutlined from "@mui/icons-material/PsychologyOutlined";
@@ -101,6 +103,7 @@ const ICON: Partial<Record<Screen, typeof MenuIcon>> = {
 
   customer: GroupsOutlined,
   stock: Inventory2Outlined,
+  gmroi: SavingsOutlined,
   supply: LocalShippingOutlined,
   bonds: HubOutlined,
   mix: GridViewOutlined,
@@ -109,6 +112,7 @@ const ICON: Partial<Record<Screen, typeof MenuIcon>> = {
   catalogue: CategoryOutlined,
   payments: PaymentsOutlined,
   payables: ReceiptLongOutlined,
+  orderToCash: TimelineOutlined,
 
   data: StorageOutlined,
   identity: FingerprintOutlined,

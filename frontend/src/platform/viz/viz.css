@@ -509,6 +509,25 @@
   stroke-linejoin: round; stroke-linecap: round;
 }
 
+/* ── the cash conversion cycle ───────────────────────────────────────────── */
+/* Two hues, not three. Stock days and collection days are the same thing — days
+   money is tied up — so they share the loss hue and are separated by lightness,
+   the way `BUCKET_SHADE` separates states inside a direction. Supplier days are
+   the one leg where longer is better for cash, so they take the gain hue and
+   sit on the other side of the zero rule. Three hues would say these are three
+   unrelated categories and lose the sign, which is the whole message; the side
+   of the rule is what survives greyscale and forced colours. */
+.cycle-bar-stock { fill: var(--viz-loss); }
+.cycle-bar-collect { fill: var(--viz-loss); fill-opacity: .55; }
+.cycle-bar-supplier { fill: var(--viz-gain); }
+.cycle-line {
+  fill: none; stroke: var(--viz-ink); stroke-width: 1.75px;
+  stroke-linejoin: round; stroke-linecap: round;
+}
+/* Drawn on every stated month, so a reading with a gap either side is visibly
+   a reading rather than a stray dot the line failed to reach. */
+.cycle-dot { fill: var(--viz-ink); }
+
 /* What could not honestly be drawn as a bar, with the reason on the same row.
    A figure whose exclusion is explained beside it is one nobody has to come
    and ask about. */
@@ -1206,7 +1225,13 @@
    and what we spend with them. The gap between them is the finding, and two
    bars show it where two columns of numbers make somebody do the subtraction. */
 .dep-halves { display: grid; gap: 28px; margin-top: 14px; }
-@media (min-width: 1100px) { .dep-halves { grid-template-columns: 1fr 1fr; } }
+@media (min-width: 1100px) {
+  .dep-halves { grid-template-columns: 1fr 1fr; }
+  /* A third half — the receivables one — lands alone on the second row for a
+     reader who can see suppliers. Let it take the width rather than leaving a
+     column of nothing beside it; with only two sides the rule does not fire. */
+  .dep-side:last-child:nth-child(odd) { grid-column: 1 / -1; }
+}
 
 .dep-side h4 { margin: 0 0 2px; }
 .dep-rows { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 10px; }

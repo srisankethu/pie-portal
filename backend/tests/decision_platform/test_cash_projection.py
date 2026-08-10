@@ -277,8 +277,13 @@ def test_the_projection_is_manager_and_above(session):
 
 def _lag(party_id: str, early: int, expected: int, late: int):
     from app.commercial.insight.payments import Lag
+    # `expected_days_to_pay` is measured from the document date rather than the
+    # due date and the projection never reads it — it shifts money by lateness.
+    # 30 + the expected lateness is what a net-30 book would produce, so the
+    # fixture stays a plausible party rather than an impossible one.
     return Lag(party_id=party_id, early_days=early, expected_days=expected,
-               late_days=late, settlements=5)
+               late_days=late, settlements=5,
+               expected_days_to_pay=30 + expected)
 
 
 def _party_of(session, external_id: str) -> str:

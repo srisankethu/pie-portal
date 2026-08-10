@@ -652,14 +652,24 @@ export interface ThresholdView {
  * why `days` and `flag` are named rather than left to it. A 365-day threshold
  * rendered as a ratio reads "36500 %". */
 export type PolicyKind =
-  | "ratio" | "money" | "days" | "flag" | "band_edges" | "family_margins";
+  | "ratio" | "money" | "days" | "flag" | "band_edges" | "family_margins"
+  /** Owner-confirmed retained profit: (entity, financial year, amount) rows.
+   *  Its own editor, like `family_margins` — a row is three values and one of
+   *  them names a company, which no scalar control can express. */
+  | "retained_pat";
+
+/** A retained-profit row as it crosses the wire: entity id, financial year,
+ *  amount. The amount is a **string**, and deliberately: it is money, so a JSON
+ *  number would already have been through a float before anything here read it.
+ *  Mirrors `admin._PATCH_TYPE["retained_pat"]`. */
+export type RetainedPatRow = [entity: string, financialYear: string, amount: string];
 
 export interface PolicyField {
   field: string;
   label: string;
   help: string;
-  value: number | boolean | number[] | Record<string, number>;
-  default: number | boolean | number[] | Record<string, number>;
+  value: number | boolean | number[] | Record<string, number> | RetainedPatRow[];
+  default: number | boolean | number[] | Record<string, number> | RetainedPatRow[];
   overridden: boolean;
   kind: PolicyKind;
 }
@@ -697,6 +707,7 @@ export interface MarginPolicyPatch {
   min_quote_exception_impact?: number;
   min_material_gap?: number;
   min_margin_deterioration_pp?: number;
+  retained_pat?: RetainedPatRow[];
   clear?: string[];
 }
 

@@ -34,6 +34,17 @@ export type Screen =
   /** The book itself: the shelf, the suppliers and the cash — the three things the book
    *  always knew and the platform did not read until it ingested them. */
   | "payments" | "payables" | "stock" | "supply"
+  /** The cycle the two payment screens sit inside: order → invoice → payment,
+   *  reported by stage so a delay can be attributed rather than argued about. */
+  | "orderToCash"
+  /** What each line on that shelf returns on the cash it ties up. Its own
+   *  screen rather than a column on Stock, because it is the only view here
+   *  whose window is set by how long the platform has been writing stock
+   *  readings down rather than by what the reader asks for. */
+  | "gmroi"
+  /** How long a rupee is tied up, per legal entity — the composite Zoho
+   *  reports one period of, for one company, and never as a trend. */
+  | "cashCycle"
   /** Deadlines the tax code sets: the MSME payment cliff, whose status is still
    *  unknown, and the 194Q threshold. Dates and amounts, never advice. */
   | "statutory"
@@ -94,8 +105,11 @@ export const PATH: Record<Screen, string> = {
   cadence: "/cadence",
   payments: "/payments",
   payables: "/payables",
+  orderToCash: "/order-to-cash",
+  cashCycle: "/cash-cycle",
   statutory: "/statutory",
   stock: "/stock",
+  gmroi: "/gmroi",
   supply: "/supply",
   bonds: "/bonds",
   mix: "/mix",
@@ -190,8 +204,11 @@ export function vizPath(route: string): string {
     cadence: "cadence",
     payments: "payments",
     payables: "payables",
+    "order-to-cash": "orderToCash",
+    "cash-cycle": "cashCycle",
     statutory: "statutory",
     stock: "stock",
+    gmroi: "gmroi",
     supply: "supply",
     negotiate: "negotiate",
     "quote-outcomes": "quoteOutcomes",

@@ -184,12 +184,53 @@ def test_quantity_bands_are_editable_and_normalised(client):
 
 
 def test_every_editable_field_carries_a_label_and_an_explanation(client):
-    """A settings screen full of raw field names is a screen nobody touches."""
+    """A settings screen full of raw field names is a screen nobody touches.
+
+    The kind is checked against ``admin._PATCH_TYPE`` rather than a list written
+    out here. This test used to carry its own copy of the seven kinds, which
+    made it the third place the set was written down — and the copy that goes
+    stale is never the one anybody looks at. Keyed off the registry, a new kind
+    fails this test only when it has no wire type, which is the actual defect.
+    """
+    from app.routers.admin import _PATCH_TYPE
+
     r = client.get("/api/v1/admin/policy", headers=_hdr(client, OWNER)).json()
     for f in r["margin_policy"]["fields"]:
         assert f["label"] and f["help"], f["field"]
-        assert f["kind"] in ("ratio", "optional_ratio", "money", "days", "flag",
-                             "family_margins", "band_edges")
+        assert f["kind"] in _PATCH_TYPE, f["field"]
+
+
+def test_a_retained_profit_figure_round_trips_through_the_patch_body(client):
+    """End to end, because the PATCH body is generated from ``EDITABLE`` and a
+    field with no wire type is dropped silently — the exact failure
+    ``_update_margin_policy_model`` was written to make impossible."""
+    r = _patch(client, OWNER, {"retained_pat": [
+        ["cx-sls", "FY2024-25", "1,25,00,000"], ["cx-4u", "FY2024-25", "-400000"]]})
+    assert r.status_code == 200, r.text
+
+    fields = {f["field"]: f for f in r.json()["margin_policy"]["fields"]}
+    # Sorted, grouping separators gone, and a loss preserved as a loss.
+    assert fields["retained_pat"]["value"] == [
+        ["cx-4u", "FY2024-25", "-400000"], ["cx-sls", "FY2024-25", "12500000"]]
+    assert fields["retained_pat"]["overridden"] is True
+
+
+def test_nothing_is_confirmed_by_default(client):
+    """The field exists on the settings screen and is empty — which is what the
+    self-funding reading reads as "nobody has answered yet"."""
+    r = client.get("/api/v1/admin/policy", headers=_hdr(client, OWNER)).json()
+    fields = {f["field"]: f for f in r["margin_policy"]["fields"]}
+
+    assert fields["retained_pat"]["value"] == []
+    assert fields["retained_pat"]["overridden"] is False
+
+
+def test_a_retained_profit_figure_is_refused_when_it_names_no_year(client):
+    r = _patch(client, OWNER,
+               {"retained_pat": [["cx-sls", "last year", "900000"]]})
+
+    assert r.status_code == 400, r.text
+    assert "financial year" in r.text
 
 
 def test_a_flag_round_trips_as_a_boolean(client):

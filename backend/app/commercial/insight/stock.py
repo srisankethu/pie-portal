@@ -1,6 +1,8 @@
 """What is on the shelf, and which of it is a problem.
 
-Four questions, and the platform can now answer three of them honestly:
+Four questions. Three were always answerable from recorded facts, and the fourth
+splits in two — the measurement is answerable and the projection is not, which is
+the distinction the last section draws:
 
 **Committed beyond what exists.** Zoho reports ``available`` (what can still be
 sold) and ``actual_available`` (that, net of what open orders have already
@@ -19,10 +21,23 @@ policy somebody chooses with lead time and service level in mind, and inventing
 one here would be the platform making a commercial decision in a module whose
 whole purpose is not to.
 
-**Cover in weeks.** Deliberately absent. It needs a demand forecast, and the
-honest forecast from this data is "what sold in the last N days", which turns
-into a weeks-of-cover number that reads like a projection and is not one. Named
-in the response so the screen can say what it does not know.
+**Cover, as a measurement rather than a projection.** ``days_of_cover`` is on
+every row: what is on the shelf divided by the rate this item has actually moved
+at since it first sold. A ratio of two recorded facts, and quantity only — no
+cost term, so it is safe on the one screen where the purchase rate is withheld.
+
+What stays refused is *projected* cover — how long the stock will last. That
+needs a demand forecast, and the honest forecast from this data is "what sold
+recently, repeated", which reads like a projection without being one. The
+distinction is the whole of it: "you hold 240 days at the rate this has moved"
+is arithmetic over the past; "this will last 240 days" is a claim about the
+future. The refusal is still named in the response, restated to say which of the
+two it refuses — see ``_unavailable``.
+
+This paragraph used to say cover was absent altogether, which was true when the
+only reading on offer was a trailing window. The excess-cover decision card had
+already been dividing on the honest reading for as long as it has existed, so
+the screen was refusing a number the queue was printing.
 """
 from __future__ import annotations
 
@@ -30,6 +45,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any, Iterable, Optional
 
+from .. import offtake
 from . import absence
 
 #: Health bands, worst last. The screen colours on these and nothing else, so
@@ -121,6 +137,41 @@ class StockLine:
     #: be established, which is itself a reason to withhold the verdict rather
     #: than to fall through to the worst one.
     first_seen: Optional[date] = None
+    #: The first sale on record. The *other* end of the offtake window, and a
+    #: different fact from ``first_seen``: how long the platform has watched the
+    #: line says whether "never sold" is a finding, while how long it has been
+    #: *selling* is the only honest denominator for a rate.
+    #:
+    #: Quantity-side and never gated on cost — it is a date on which a sale
+    #: happened, the same class of fact as ``last_sold``.
+    first_sold: Optional[date] = None
+
+    # ── how fast it moves, and how long the shelf covers that ────────────────
+    #
+    # Quantity only. Both figures below go to every role, including the one that
+    # cannot see ``purchase_rate`` — see ``commercial/offtake.py`` for why that
+    # is safe and ``to_dict`` for the boundary it sits beside.
+
+    def daily_offtake(self, as_of: date) -> Optional[float]:
+        """Units leaving the shelf per day, at the rate actually recorded."""
+        rate = offtake.daily_offtake(self.sold_qty_window, self.first_sold, as_of)
+        return None if rate is None else float(rate)
+
+    def days_of_cover(self, as_of: date) -> Optional[float]:
+        """How many days of measured offtake the current shelf amounts to.
+
+        ``None`` for a line that has never sold: no rate, therefore no cover.
+        Not zero (which would read as "we are out of this") and not an infinity
+        (which would sort a never-sold line to the top of a "most cover" list) —
+        ``CLAUDE.md`` §1, absence of evidence is not a pass in either direction.
+
+        Whole days. A cover figure carrying two decimals would imply a precision
+        that "units sold since this first moved" does not have, which is the same
+        reason ``offtake.DAYS_PER_MONTH`` is 30 rather than 30.4.
+        """
+        days = offtake.days_of_cover(self.on_hand, self.sold_qty_window,
+                                     self.first_sold, as_of)
+        return None if days is None else float(round(days))
 
     # ── the money on the shelf ───────────────────────────────────────────────
     #
@@ -309,6 +360,18 @@ class StockLine:
         The alternative was to withhold the drain from a salesperson always,
         and that number is the entire point of the screen — so the coupling is
         enforced rather than the feature removed.
+
+        ``days_of_cover`` sits beside that boundary and does **not** move it,
+        which is worth stating because the paragraph above is the reason to check
+        rather than to assume. Cover is ``on_hand x observed_days /
+        units_sold`` — three quantities and a pair of dates, with no cost term
+        anywhere in it. There is nothing in it to combine with the drain that
+        was not already on the row: ``on_hand`` and ``sold_qty_window`` are both
+        published fields today, and ``first_sold`` is the date of a sale, which
+        is the same class of fact as ``last_sold`` beside it. So cover is an
+        operations number that answers a quantity question, not a new figure
+        whose purpose is economics — the test ``CLAUDE.md`` §1 sets for a field
+        like this.
         """
         band = self.health(as_of, c)
         out = {
@@ -324,6 +387,12 @@ class StockLine:
             "first_seen": self.first_seen.isoformat() if self.first_seen else None,
             "opportunity_days": self.opportunity_days(as_of),
             "sold_qty_window": round(self.sold_qty_window, 2),
+            # How long the shelf lasts at the rate this has actually moved, and
+            # the date the window measuring that rate opens on. Quantity and
+            # dates only, so both go to every role — the reasoning is in the
+            # boundary note above and in ``commercial/offtake.py``.
+            "first_sold": self.first_sold.isoformat() if self.first_sold else None,
+            "days_of_cover": self.days_of_cover(as_of),
             "oversold": self.oversold,
             "below_reorder": self.below_reorder,
             "idle": self.idle(as_of, c),
@@ -411,6 +480,12 @@ def lines_from_state(states: dict[str, dict[str, Any]], *,
             # that this function's docstring already records.
             first_seen=_earliest(_day(value.get("first_observed_on")),
                                  _day(value.get("first_purchased_on"))),
+            # The offtake window's opening date, MINed by the same fold that
+            # MAXes ``last_sold_on``. Read from state rather than derived here:
+            # the excess-cover detector divides by a rate measured over exactly
+            # this window, and re-deriving the denominator on this side is how
+            # the screen and the decision queue would come to disagree.
+            first_sold=_day(value.get("first_sold_on")),
         ))
     return rows
 
@@ -537,7 +612,13 @@ def build(lines: Iterable[StockLine], as_of: date, c: Carrying, *,
         "unavailable": _unavailable(
             len(no_policy), len(rows),
             drain_withheld=not c.drain_visible_to(with_cost=with_cost),
-            too_new=len(unknown), dead_days=c.dead_days),
+            too_new=len(unknown),
+            # Counted over the shelf rather than the whole book: a line with no
+            # stock has no cover to report either way, and including it would
+            # inflate a number whose only job is to explain the blanks a reader
+            # can actually see in the grid.
+            no_offtake=sum(1 for r in on_shelf if r.days_of_cover(as_of) is None),
+            dead_days=c.dead_days),
     }
 
 
@@ -647,7 +728,7 @@ def _kpis(rows: list[StockLine], as_of: date, c: Carrying, *,
 
 def _unavailable(no_policy: int = 0, total: int = 0, *,
                  drain_withheld: bool = False, too_new: int = 0,
-                 dead_days: int = 365) -> list[dict]:
+                 no_offtake: int = 0, dead_days: int = 365) -> list[dict]:
     out: list[dict] = []
     if too_new:
         out.append({
@@ -683,14 +764,45 @@ def _unavailable(no_policy: int = 0, total: int = 0, *,
                        "for roles that cannot already see cost. An owner can "
                        "still see it."),
         })
+    # Restated, not deleted, and narrowed to the half that is still true — the
+    # same treatment ``supplier_and_brand`` below got, for the same reason. What
+    # this entry refused was cover *as a projection*: how long the stock will
+    # last, which needs a demand forecast this data cannot support. It read as a
+    # refusal of the whole idea of cover, and on that reading the screen was
+    # refusing a figure the excess-cover decision card had been printing all
+    # along from the same two fold fields. A screen and a queue that disagree
+    # about whether a number is knowable teach a reader to trust neither.
+    #
+    # PERMANENT still: no amount of extra data makes a forecast honest here. It
+    # is the *series* that narrowed, not the kind.
     out.append({
         "series": "weeks_of_cover",
         "kind": absence.PERMANENT,
-        "reason": ("Cover needs a demand forecast. The only forecast this data "
-                   "supports is 'what sold recently, repeated', which would "
-                   "print as a projection without being one. Recent sold "
-                   "quantity is shown instead, unprojected."),
+        "reason": ("Projected cover — how long this stock will last — needs a "
+                   "demand forecast, and the only one this data supports is "
+                   "'what sold recently, repeated', which would print as a "
+                   "projection without being one. What is shown instead is "
+                   "measured, on every row: days of cover at the rate the item "
+                   "has actually moved at since it first sold. That is a ratio "
+                   "of two recorded facts and it is not a prediction — it says "
+                   "how much you hold, not how long it will take to go."),
     })
+    if no_offtake:
+        out.append({
+            "series": "days_of_cover_for_lines_that_have_never_sold",
+            # TRANSIENT rather than PERMANENT: a sale makes the rate computable,
+            # so data would fix it — and rather than COLLECTABLE, because there
+            # is nothing for anyone to go and record. Nobody should act on the
+            # missing figure; the line's own health band and action are the
+            # actionable part, and they are already on the row.
+            "kind": absence.TRANSIENT,
+            "reason": (f"{no_offtake} line(s) on the shelf have never sold, so "
+                       "they have no offtake rate and no days of cover. Left "
+                       "blank rather than filled in: zero would read as 'we are "
+                       "out of this' and an infinity would sort them to the top "
+                       "of the most-covered list. What to do about them is the "
+                       "health band's question, not cover's."),
+        })
     # Asked for, and refused, with the reason. Each of these is either a
     # forecast this data cannot support or a field Zoho does not give us —
     # and inventing either would put a number on the screen that looks like

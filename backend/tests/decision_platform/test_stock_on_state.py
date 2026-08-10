@@ -20,7 +20,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.commercial.insight import stock
+from app.commercial.insight import absence, stock
 from app import clock
 from app.commercial.policy import load_for_org
 from app.db import Base, get_session
@@ -469,3 +469,29 @@ def test_the_screen_no_longer_refuses_the_number_it_now_prints(client):
     assert entry["kind"] == "PERMANENT"
     assert "projected cover" in entry["reason"].lower()
     assert any(r["days_of_cover"] is not None for r in body["items"])
+# ── GMROI, which this screen refuses rather than shows ──────────────────────
+#
+# `/insight/gmroi` is manager-or-owner only and 403s below that, so the notice a
+# salesperson actually reads has to be here — this is the screen they open about
+# the same shelf, and the endpoint that refuses them is one they never reach.
+# Asserted here rather than in `test_gmroi.py` because these assertions need a
+# folded book, and the harness for that is in this file.
+
+
+def test_a_salesperson_is_told_gmroi_exists_and_is_withheld(client):
+    """The figure is computed and a manager sees it. Left off with nothing said,
+    the gap reads as a defect — and the next person to notice files one."""
+    _build_state(client)
+    body = _stock_body(client, SALESPERSON)
+    assert body["items"]
+    entry = next(u for u in body["unavailable"] if u["series"] == "gmroi")
+    # WITHHELD rather than PERMANENT: filing a working permission rule under
+    # "not answerable" is how it gets "fixed".
+    assert entry["kind"] == absence.WITHHELD
+    assert "ties up" in entry["reason"]
+
+
+def test_a_manager_is_not_told_a_figure_they_can_open_is_withheld(client):
+    _build_state(client)
+    body = _stock_body(client, OWNER)
+    assert not [u for u in body["unavailable"] if u["series"] == "gmroi"]

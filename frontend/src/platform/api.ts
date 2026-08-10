@@ -328,6 +328,15 @@ export const papi = {
   supply: (t: string) =>
     req<Record<string, unknown>>("/api/v1/insight/supply", {}, t),
 
+  // What each line returns on the cash it ties up. Manager and above, and
+  // permanently: GMROI is gross profit ÷ purchase cost with nothing else in it,
+  // so there is no version of the screen with the economics removed. The nav
+  // item follows the endpoint rather than 403-ing, and `/stock` carries the
+  // withholding notice for the roles that cannot open this.
+  gmroi: (t: string, months: number) =>
+    req<Record<string, unknown>>(
+      `/api/v1/insight/gmroi?months=${months}`, {}, t),
+
   // Relationship bonds — the one view that reads both sides of the book.
   //
   // Not scoped like `supply` even though it carries a supplier half: the

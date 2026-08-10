@@ -37,6 +37,11 @@ export type Screen =
   /** The cycle the two payment screens sit inside: order → invoice → payment,
    *  reported by stage so a delay can be attributed rather than argued about. */
   | "orderToCash"
+  /** What each line on that shelf returns on the cash it ties up. Its own
+   *  screen rather than a column on Stock, because it is the only view here
+   *  whose window is set by how long the platform has been writing stock
+   *  readings down rather than by what the reader asks for. */
+  | "gmroi"
   /** Deadlines the tax code sets: the MSME payment cliff, whose status is still
    *  unknown, and the 194Q threshold. Dates and amounts, never advice. */
   | "statutory"
@@ -100,6 +105,7 @@ export const PATH: Record<Screen, string> = {
   orderToCash: "/order-to-cash",
   statutory: "/statutory",
   stock: "/stock",
+  gmroi: "/gmroi",
   supply: "/supply",
   bonds: "/bonds",
   mix: "/mix",
@@ -197,6 +203,7 @@ export function vizPath(route: string): string {
     "order-to-cash": "orderToCash",
     statutory: "statutory",
     stock: "stock",
+    gmroi: "gmroi",
     supply: "supply",
     negotiate: "negotiate",
     "quote-outcomes": "quoteOutcomes",

@@ -56,7 +56,7 @@ from typing import Iterable, Optional
 
 from ..categories import UNCATEGORISED
 from ..config import CommercialThresholds
-from . import periods
+from . import absence, periods
 
 #: What a cell says.
 BUYS = "BUYS"
@@ -333,6 +333,9 @@ def unavailable() -> list[dict]:
     """What this grid refuses to tell you, said where it would be read."""
     return [{
         "what": "Whether a gap is an opportunity",
+        # A need the platform cannot observe. No amount of our own data makes
+        # a blank cell mean anything more than "not from us".
+        "kind": absence.PERMANENT,
         "why": ("An empty cell means they do not buy that line from us. It "
                 "cannot mean they do not buy it, or that they need it — a shop "
                 "with no measuring room has no metrology gap. The affinity "

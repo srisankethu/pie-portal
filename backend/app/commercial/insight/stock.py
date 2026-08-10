@@ -30,6 +30,8 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any, Iterable, Optional
 
+from . import absence
+
 #: Health bands, worst last. The screen colours on these and nothing else, so
 #: "amber" means one thing across every surface rather than one thing per chart.
 #:
@@ -650,6 +652,10 @@ def _unavailable(no_policy: int = 0, total: int = 0, *,
     if too_new:
         out.append({
             "series": "health_band_for_new_stock",
+            # TRANSIENT: nobody can do anything about this and nobody should
+            # try. Each of these lines either sells or crosses `dead_days`, and
+            # the answer arrives on its own either way.
+            "kind": absence.TRANSIENT,
             "reason": (f"{too_new} line(s) on the shelf have never sold and "
                        f"have been on the books less than {dead_days} days. "
                        "Whether they are dead stock is not yet knowable, so "
@@ -665,6 +671,10 @@ def _unavailable(no_policy: int = 0, total: int = 0, *,
         # one — or worse, put it back.
         out.append({
             "series": "monthly_cash_drain",
+            # WITHHELD, not PERMANENT: the figure is computed and correct, and
+            # an owner sees it. Filing it under "not answerable" is how a
+            # working permission rule gets "fixed".
+            "kind": absence.WITHHELD,
             "reason": ("What a line costs to keep is quantity x cost x the "
                        "carrying rate / 12. The quantity is on every row, so "
                        "once the carrying rate is public the drain gives away "
@@ -675,6 +685,7 @@ def _unavailable(no_policy: int = 0, total: int = 0, *,
         })
     out.append({
         "series": "weeks_of_cover",
+        "kind": absence.PERMANENT,
         "reason": ("Cover needs a demand forecast. The only forecast this data "
                    "supports is 'what sold recently, repeated', which would "
                    "print as a projection without being one. Recent sold "
@@ -687,6 +698,7 @@ def _unavailable(no_policy: int = 0, total: int = 0, *,
     out.extend([
         {
             "series": "recovery_probability",
+            "kind": absence.PERMANENT,
             "reason": ("How likely a dead line is to sell needs a model of "
                        "future demand. The only one this data supports is "
                        "'what sold before, repeated', which would print as a "
@@ -697,6 +709,7 @@ def _unavailable(no_policy: int = 0, total: int = 0, *,
         },
         {
             "series": "expected_recovery_value",
+            "kind": absence.PERMANENT,
             "reason": ("A probability times a price. Both halves are guesses "
                        "here: the probability is not computable (above) and "
                        "the clearing price is whatever the discount turns out "
@@ -705,6 +718,9 @@ def _unavailable(no_policy: int = 0, total: int = 0, *,
         },
         {
             "series": "branch",
+            # BUILDABLE, not PERMANENT: the endpoint exists and is on a plan.
+            # This one is a purchase and a puller, not a limit.
+            "kind": absence.BUILDABLE,
             "reason": ("Stock is read per Zoho company, not per warehouse. "
                        "Zoho reports location-level stock only on the "
                        "Inventory plan's warehouse endpoints, which this pull "
@@ -713,6 +729,11 @@ def _unavailable(no_policy: int = 0, total: int = 0, *,
         },
         {
             "series": "supplier_and_brand",
+            # PERMANENT on the surviving reason, which is a grain mismatch
+            # rather than a gap: more data does not give a stock level one
+            # supplier. Note it was *not* permanent for the reason it used to
+            # give — see the comment below.
+            "kind": absence.PERMANENT,
             # Narrowed, not deleted. This used to say the item master carries no
             # maker field at all, which stopped being true when the item pull
             # started reading ``manufacturer`` — and a screen that refuses on a
@@ -733,6 +754,9 @@ def _unavailable(no_policy: int = 0, total: int = 0, *,
     if no_policy:
         out.append({
             "series": "reorder_point",
+            # The clearest COLLECTABLE in the package: a named count of rows,
+            # each fixable by one person typing one number.
+            "kind": absence.COLLECTABLE,
             "reason": (f"{no_policy} of {total} items have no reorder level set "
                        "in Zoho. They cannot be below a point that does not "
                        "exist, so they are excluded from that group rather "

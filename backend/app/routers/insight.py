@@ -32,7 +32,8 @@ from ..repositories import DecisionRepository
 from .. import approvals, clock
 from ..commercial import floor, incentive, policy, portfolio, principals
 from ..commercial import categories as cat
-from ..commercial.insight import (bonds, cadence, cashflow, cohorts, composition,
+from ..commercial.insight import (absence, bonds, cadence, cashflow, cohorts,
+                                  composition,
                                   daily as daily_view,
                                   dependency, flow, landscape, mix, payments,
                                   periods, radar, schemes, simulate, stock, story,
@@ -460,7 +461,8 @@ def customer_timeline(customer_id: str,
             point.pop("margin", None)
             point.pop("cost_coverage", None)
         result["unavailable"].append(
-            {"series": "margin", "reason": "Margin is management information."})
+            {"series": "margin", "kind": absence.WITHHELD,
+             "reason": "Margin is management information."})
     return _envelope(result, th=th,
                      customer_id=customer_id,
                      customer_label=label_for(snapshot.customer_names, customer_id,
@@ -502,9 +504,20 @@ def opportunities(limit: int = Query(100, ge=1, le=300),
                "leave it: ")
             + "below this, a gap is real and not worth an afternoon.")
     else:
-        reason = ("No relationship shows a named gap. Either margins are holding, "
-                  "or there is not enough cost coverage yet to tell — check "
-                  "evidence quality on the weather view.")
+        # The other way a radar empties, and until now the one it could not
+        # describe: every row was examined and none could be given a cause. That
+        # is a different message from "your floor is too high", and answering it
+        # with the floor sentence sent an owner to a setting that would not have
+        # helped.
+        unnamed = excluded["unnamed_cause_count"]
+        reason = (
+            (f"{unnamed} of {excluded['relationships_examined']} relationships "
+             f"have no nameable cause — no margin move, no peer gap and no "
+             f"volume fall the rows can point at, so there is nothing to open a "
+             f"conversation about. " if unnamed else "")
+            + "No relationship shows a named gap. Either margins are holding, "
+              "or there is not enough cost coverage yet to tell — check "
+              "evidence quality on the weather view.")
 
     return _envelope(
         {"opportunities": [o.to_dict() for o in rows],
@@ -946,6 +959,7 @@ def stock_position(principal: Principal = Depends(current_principal),
     if not with_cost:
         result["unavailable"].append({
             "series": "inventory_value_and_carrying_rate",
+            "kind": absence.WITHHELD,
             "reason": ("What the stock cost and what rate it is carried at are "
                        "management information. What it costs you to keep it "
                        "each month is not — that is the number this screen is "
@@ -2376,6 +2390,7 @@ def negotiate(body: NegotiationRequest,
     else:
         payload["unavailable"] = [{
             "series": "cost_and_margin",
+            "kind": absence.WITHHELD,
             "reason": ("What the item costs is management information. You do "
                        "not need it: the floor already carries it, and "
                        "everything above is arithmetic you can check yourself "

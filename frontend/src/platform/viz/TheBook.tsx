@@ -26,14 +26,15 @@ import { formatDate } from "../../when";
 import { papi } from "../api";
 import { abilityFor } from "../ability";
 import { EntityName } from "../EntityName";
-import { ChartTip, InlineLink, StatusChip, VarianceIndicator } from "../kit";
+import { ChartTip, InlineLink, MetricCard, StatusChip, VarianceIndicator } from "../kit";
+import type { Tone } from "../kit";
 import { CompanyFilter, useCompanyFilter } from "../CompanyFilter";
 import { DataGrid, numeric } from "../DataGrid";
 import type { ColDef } from "../DataGrid";
 import type { EntityOrigin, PlatformSession, Sourced } from "../types";
 import { Figure, Panel, ValueAxis, stateOf } from "./Panel";
 import { Seg } from "./Seg";
-import { pct, useInsight } from "./useInsight";
+import { pct, pp, useInsight } from "./useInsight";
 import { compactMoney, useMeasure } from "./useMeasure";
 
 type Row = Record<string, unknown>;
@@ -74,6 +75,123 @@ function Unavailable({ items }: { items: Row[] }) {
 // horizon, undated, and open orders. Each is real money that cannot honestly be
 // drawn as a bar in a particular week, and a projection whose parts do not add
 // up to the book is a projection people stop trusting.
+
+// ── Self-funding: what we kept, against what the growth had to be paid for ──
+//
+// Owner only, and silent until confirmed. Half of this reading is retained
+// profit after tax, which is not in this platform and is not derived from
+// anything in it: PIE reads invoices and bills, not a ledger, so the nearest
+// figure available is gross profit and gross profit is a different and much
+// larger number. Substituting it would overstate what was kept by the entire
+// cost of running the business, silently, in the direction that reads as good
+// news — so the owner confirms each entity's figure in Settings and this panel
+// says what is missing until they have.
+//
+// The verdict is deliberately one-sided and the panel says so out loud. Growth
+// consumes working capital, a fraction of the revenue increase, and that
+// fraction is not measured here — so retained profit above the whole increase
+// is "covered", and below it is "undetermined", never "unfunded".
+
+const VERDICT: Record<string, [string, Tone, string]> = {
+  COVERED: ["Covered", "good",
+            "Retained profit exceeds the whole revenue increase, so it covers "
+            + "the growth whatever share of it turned into working capital."],
+  UNDETERMINED: ["Undetermined", "neutral",
+                 "Retained profit is smaller than the revenue increase. That is "
+                 + "not a finding that growth was funded from outside — growth "
+                 + "consumes working capital, a fraction of the increase, and "
+                 + "that fraction is not measured here."],
+  NOT_GROWING: ["Not growing", "info",
+                "Revenue did not grow against the previous year, so there was "
+                + "no growth to fund."],
+  UNKNOWN: ["Unknown", "warn", "Not enough is confirmed to read this."],
+};
+
+function SelfFunding({ session }: { session: PlatformSession }) {
+  const { data, loading, error, reload } = useInsight(
+    "self-funding", () => papi.selfFunding(session.token), [session.token]);
+
+  const confirmed = Boolean(data?.confirmed);
+  const missing = (data?.missing_entities as string[] | undefined) ?? [];
+  // The server's reason, with the entities it is waiting on named. One string
+  // so the shared empty state carries the whole answer, rather than a generic
+  // sentence in the panel and the useful half somewhere else.
+  const reason = confirmed || !data
+    ? (data?.empty_reason as string | null | undefined)
+    : [data.blocked_by as string,
+       missing.length ? `Still to confirm: ${missing.join(", ")}.` : ""]
+      .filter(Boolean).join(" ");
+
+  const [verdictLabel, tone, verdictHelp] =
+    VERDICT[String(data?.verdict ?? "UNKNOWN")] ?? VERDICT.UNKNOWN;
+  const entities = rows(data?.entities);
+
+  return (
+    <Panel
+      title="Self-funding growth"
+      question="Is the book outgrowing the profit it keeps"
+      state={stateOf(loading, error, reason)}
+      error={error} emptyReason={reason} onRetry={reload}
+    >
+      <Stack spacing={2}>
+        <Box sx={{
+          display: "grid", gap: 2,
+          gridTemplateColumns: { xs: "1fr", sm: "repeat(2, 1fr)",
+                                 md: "repeat(4, 1fr)" },
+        }}>
+          <MetricCard
+            label="Retained after tax"
+            value={money(num(data?.retained_pat))}
+            sub={`${String(data?.financial_year ?? "")}, confirmed from each entity's accounts`}
+            variance={<StatusChip label={verdictLabel} tone={tone} tip={verdictHelp} />}
+          />
+          <MetricCard
+            label="Revenue growth"
+            value={money(num(data?.revenue_growth))}
+            sub={`${money(num(data?.previous_revenue))} → ${money(num(data?.revenue))}`}
+          />
+          <MetricCard
+            label="Grew by"
+            value={pct(num(data?.growth_ratio))}
+            sub="Of the revenue the year started from."
+          />
+          <MetricCard
+            label="Kept"
+            value={pct(num(data?.retention_ratio))}
+            // Both rates are over the revenue the year started from, which is
+            // the only thing that makes their difference meaningful — and a
+            // difference of two ratios is percentage points, never a percent.
+            sub={`Same base as growth. Gap ${pp(num(data?.funding_gap_pp))}.`}
+          />
+        </Box>
+
+        {/* A fact panel: one row per legal entity, a count set by the shape of
+            the business rather than by its size. ui-standards §3's named
+            exception, not a grid. */}
+        <table className="facttable">
+          <caption className="viz-muted">
+            Retained profit after tax, {String(data?.financial_year ?? "")}
+          </caption>
+          <tbody>
+            {entities.map((e) => (
+              <tr key={String(e.entity)}>
+                <td>{String(e.label)}</td>
+                <td className="fv">{money(num(e.retained_pat))}</td>
+              </tr>
+            ))}
+            <tr>
+              <td><b>Together</b></td>
+              <td className="fv">{money(num(data?.retained_pat))}</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p className="viz-muted viz-footnote">{String(data?.basis_note ?? "")}</p>
+        <p className="viz-muted viz-footnote">{String(data?.limit_note ?? "")}</p>
+      </Stack>
+    </Panel>
+  );
+}
 
 const HORIZONS: [string, string][] = [["13", "13 weeks"], ["26", "26 weeks"]];
 
@@ -967,7 +1085,14 @@ export function PaymentsScreen({
   // The projection is manager-and-above because half of it is what we owe
   // suppliers. Omitted rather than rendered and then 403'd — a panel that
   // always fails teaches people the product is broken.
-  const mayReadCommitments = abilityFor(session).can("read", "supply");
+  const ability = abilityFor(session);
+  const mayReadCommitments = ability.can("read", "supply");
+  // Owner only, mirroring `require_owner` on `/insight/self-funding`. Gated on
+  // the manage-policy rule rather than a new subject: an owner is exactly the
+  // person who confirms the retained figure this panel reads, and this
+  // vocabulary is meant to stay small enough to hold in your head. Omitted
+  // rather than rendered and 403'd, for the reason above.
+  const mayReadEntityEconomics = ability.can("manage", "policy");
 
   return (
     <div className="screen-stack">
@@ -976,6 +1101,10 @@ export function PaymentsScreen({
           about whether that date is honoured, which is the right order to
           read them in. */}
       {mayReadCommitments && <CashProjection session={session} />}
+      {/* Thirteen weeks of committed movement, then the year behind it. The
+          projection says what the book does next; this says whether last
+          year's growth was paid for out of what the book kept. */}
+      {mayReadEntityEconomics && <SelfFunding session={session} />}
       <SettlementPanel data={data} loading={loading} error={error}
                        reload={reload} side={RECEIVABLE_SIDE}
                        onNavigate={onNavigate} />

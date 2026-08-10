@@ -317,6 +317,13 @@ _PATCH_TYPE: dict[str, type] = {
     "flag": bool,
     "band_edges": list[int],
     "family_margins": dict[str, float],
+    # (entity, financial year, amount) rows. Strings all the way across,
+    # including the amount, and that is the point rather than an oversight: it
+    # is money, so a JSON number would already have been through a float before
+    # this line ever saw it. Requiring a string means the figure an owner read
+    # off an audited account is the figure that gets stored. See
+    # ``CommercialThresholds.retained_pat``.
+    "retained_pat": list[list[str]],
 }
 
 

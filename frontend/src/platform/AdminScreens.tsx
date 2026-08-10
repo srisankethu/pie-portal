@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import type { ReactNode } from "react";
 import { ROLE_LABEL } from "./format";
 import { formatDateTime } from "../when";
 import { papi } from "./api";
@@ -13,7 +14,9 @@ import type {
   PlatformSession,
   PlatformUser,
   PolicyField,
-  Role } from "./types";
+  RetainedPatRow,
+  Role,
+  ZohoConnection } from "./types";
 import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
@@ -333,6 +336,64 @@ const PP_FIELDS = new Set(["min_margin_deterioration_pp"]);
 
 type Draft = Record<string, string>;
 type Families = [string, string][];
+/** Retained-profit rows as the editor holds them: exactly the wire shape, so
+ *  there is no conversion to get wrong. The amount stays text the whole way —
+ *  it is money, and routing it through a `number` is how the last paise of a
+ *  figure read off an audited account go missing. */
+type Retained = RetainedPatRow[];
+
+/** Kinds that are rows rather than a scalar, so they sit outside the generic
+ *  number grid and carry their own editor. A field that landed in the grid by
+ *  accident would be rendered as a box with `""` in it and saved as nothing. */
+const ROW_KINDS = new Set(["family_margins", "retained_pat"]);
+
+/** One row of a row-kind editor, with the control that removes it.
+ *
+ * The row *bodies* have nothing in common — family margins are two boxes,
+ * retained profit is a company picker and two more — but the chrome around them
+ * carries the one piece of logic that must not diverge: a reader who cannot
+ * manage the policy gets no remove button. Written twice, that is two places
+ * for the gate to be dropped, and the one that gets dropped is never the one
+ * anybody re-reads. `ui-standards` §10, at its smallest honest size. */
+function EditableRow({
+  index, canManage, removeLabel, onRemove, children,
+}: {
+  index: number;
+  canManage: boolean;
+  removeLabel: string;
+  onRemove: (index: number) => void;
+  children: ReactNode;
+}) {
+  return (
+    <span className="mp-family">
+      {children}
+      {canManage && (
+        <button type="button" aria-label={`Remove ${removeLabel}`}
+                onClick={() => onRemove(index)}>
+          ×
+        </button>
+      )}
+    </span>
+  );
+}
+
+/** The control that appends a row. Same gate, same reason. */
+function AddRow({ canManage, label, onAdd }: {
+  canManage: boolean; label: string; onAdd: () => void;
+}) {
+  if (!canManage) return null;
+  return (
+    <Button type="button" variant="text" size="small" onClick={onAdd}>
+      {label}
+    </Button>
+  );
+}
+
+function toRetained(f: PolicyField | undefined): Retained {
+  if (!f) return [];
+  return ((f.value as RetainedPatRow[]) || []).map(
+    ([entity, year, amount]) => [entity, year, amount] as RetainedPatRow);
+}
 
 function num(v: unknown): number {
   return typeof v === "number" ? v : Number(v);
@@ -397,25 +458,40 @@ function MarginPolicySection({
 
   const [draft, setDraft] = useState<Draft>({});
   const [families, setFamilies] = useState<Families>([]);
+  const [retained, setRetained] = useState<Retained>([]);
+  const [companies, setCompanies] = useState<ZohoConnection[]>([]);
   const [cleared, setCleared] = useState<string[]>([]);
   const [msg, setMsg] = useState<{ text: string; bad: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
+
+  // The connected companies, so a retained-profit row names "SLS Engineers"
+  // rather than a connection id. Fetched here rather than threaded down: it is
+  // the only field on this screen that needs them, and a failure degrades to a
+  // plain text box rather than taking the section with it.
+  useEffect(() => {
+    let live = true;
+    papi.listConnections(token)
+      .then((v) => live && setCompanies(v.connections))
+      .catch(() => undefined);
+    return () => { live = false; };
+  }, [token]);
 
   // Re-seed whenever the server's version of the policy changes, so a save (or
   // a reset) leaves the boxes showing what is actually in force.
   const reseed = useCallback(() => {
     const d: Draft = {};
     policy.fields.forEach((f) => {
-      if (f.kind !== "family_margins") d[f.field] = toInput(f);
+      if (!ROW_KINDS.has(f.kind)) d[f.field] = toInput(f);
     });
     setDraft(d);
     setFamilies(toFamilies(byName.target_margin_by_family));
+    setRetained(toRetained(byName.retained_pat));
     setCleared([]);
   }, [policy, byName]);
 
   useEffect(reseed, [reseed]);
 
-  const scalars = policy.fields.filter((f) => f.kind !== "family_margins");
+  const scalars = policy.fields.filter((f) => !ROW_KINDS.has(f.kind));
 
   /** What the boxes currently say, as ratios — used for the live ladder. */
   const live = useMemo(() => {
@@ -439,13 +515,16 @@ function MarginPolicySection({
   const dirty =
     cleared.length > 0 ||
     scalars.some((f) => draft[f.field] !== undefined && draft[f.field] !== toInput(f)) ||
-    JSON.stringify(families) !== JSON.stringify(toFamilies(byName.target_margin_by_family));
+    JSON.stringify(families) !== JSON.stringify(toFamilies(byName.target_margin_by_family)) ||
+    JSON.stringify(retained) !== JSON.stringify(toRetained(byName.retained_pat));
 
   function reset(field: string) {
     const f = byName[field];
     if (!f) return;
     setCleared((c) => (c.includes(field) ? c : [...c, field]));
-    if (f.kind === "family_margins") {
+    if (f.kind === "retained_pat") {
+      setRetained([]);   // the default is "nothing confirmed", and that is empty
+    } else if (f.kind === "family_margins") {
       setFamilies(
         Object.entries((f.default as Record<string, number>) || {}).map(
           ([k, v]) => [k, String(Math.round(v * 10000) / 100)],
@@ -506,6 +585,31 @@ function MarginPolicySection({
           out[key] = n / 100;
         }
         patch.target_margin_by_family = out;
+      }
+
+      const patField = byName.retained_pat;
+      if (
+        patField &&
+        !clear.includes("retained_pat") &&
+        JSON.stringify(retained) !== JSON.stringify(toRetained(patField))
+      ) {
+        // Half-typed rows are dropped rather than sent. A row with no company
+        // or no year is somebody mid-edit; the server would refuse it and the
+        // message would land on the section rather than on the row.
+        const rows = retained.filter(
+          ([entity, year, amount]) =>
+            entity.trim() && year.trim() && amount.trim());
+        for (const [, year] of rows) {
+          if (!/^FY\d{4}-\d{2}$/.test(year.trim())) {
+            throw new Error(`"${year}" is not a financial year — write it as FY2025-26.`);
+          }
+        }
+        // The amount is passed through as typed, commas and all: the server
+        // normalises it in one place, and a second parser here is a second
+        // answer to what "1,25,00,000" means.
+        patch.retained_pat = rows.map(
+          ([entity, year, amount]) =>
+            [entity.trim(), year.trim(), amount.trim()] as RetainedPatRow);
       }
 
       if (clear.length) patch.clear = clear;
@@ -650,7 +754,11 @@ function MarginPolicySection({
           </label>
           <div className="mp-families">
             {families.map(([name, pctText], i) => (
-              <span className="mp-family" key={i}>
+              <EditableRow
+                key={i} index={i} canManage={canManage}
+                removeLabel={name || "family"}
+                onRemove={(j) => setFamilies((fs) => fs.filter((_, k) => k !== j))}
+              >
                 <input
                   className="input"
                   style={{ width: 130 }}
@@ -675,28 +783,90 @@ function MarginPolicySection({
                   }
                 />
                 <span className="unit">%</span>
-                {canManage && (
-                  <button
-                    type="button"
-                    aria-label={`Remove ${name || "family"}`}
-                    onClick={() => setFamilies((fs) => fs.filter((_, j) => j !== i))}
-                  >
-                    ×
-                  </button>
-                )}
-              </span>
+              </EditableRow>
             ))}
-            {canManage && (
-              <Button
-                type="button"
-                variant="text" size="small"
-                onClick={() => setFamilies((fs) => [...fs, ["", ""]])}
-              >
-                Add a family
-              </Button>
-            )}
+            <AddRow canManage={canManage} label="Add a family"
+                    onAdd={() => setFamilies((fs) => [...fs, ["", ""]])} />
             {families.length === 0 && !canManage && (
               <span className="st-help">No family overrides — the default applies to everything.</span>
+            )}
+          </div>
+        </div>
+      )}
+
+      {byName.retained_pat && (
+        <div className="mp-field mp-wide">
+          <label>
+            <Labelled tip={byName.retained_pat.help}>
+              {byName.retained_pat.label}
+            </Labelled>
+          </label>
+          {/* Not a grid. The row count here is the number of legal entities
+              times the years anybody has closed — set by the shape of the
+              business, not by its size — so this is the fact-panel case
+              ui-standards §3 names, and a DataGrid would be a filter bar over
+              six rows. */}
+          <div className="mp-families">
+            {retained.map(([entity, year, amount], i) => (
+              <EditableRow
+                key={i} index={i} canManage={canManage}
+                removeLabel={`row ${i + 1}`}
+                onRemove={(j) => setRetained((rs) => rs.filter((_, k) => k !== j))}
+              >
+                {companies.length ? (
+                  <TextField
+                    select size="small" value={entity} disabled={!canManage}
+                    sx={{ minWidth: 180 }}
+                    label="Entity"
+                    onChange={(e) =>
+                      setRetained((rs) => rs.map((row, j) =>
+                        j === i ? [e.target.value, row[1], row[2]] : row))}
+                  >
+                    {companies.map((c) => (
+                      <MenuItem key={c.connection_id} value={c.connection_id}>
+                        {c.label}
+                      </MenuItem>
+                    ))}
+                  </TextField>
+                ) : (
+                  // The connections never loaded. A text box keeps the field
+                  // usable rather than making the whole section depend on a
+                  // second request having succeeded.
+                  <input
+                    className="input" style={{ width: 180 }} value={entity}
+                    disabled={!canManage} aria-label={`Entity for row ${i + 1}`}
+                    onChange={(e) =>
+                      setRetained((rs) => rs.map((row, j) =>
+                        j === i ? [e.target.value, row[1], row[2]] : row))}
+                  />
+                )}
+                <input
+                  className="input" style={{ width: 120 }} value={year}
+                  placeholder="FY2025-26" disabled={!canManage}
+                  aria-label={`Financial year for row ${i + 1}`}
+                  onChange={(e) =>
+                    setRetained((rs) => rs.map((row, j) =>
+                      j === i ? [row[0], e.target.value, row[2]] : row))}
+                />
+                <span className="unit">{moneySymbol()}</span>
+                <input
+                  className="input" value={amount} inputMode="decimal"
+                  disabled={!canManage}
+                  aria-label={`Retained profit for row ${i + 1}`}
+                  onChange={(e) =>
+                    setRetained((rs) => rs.map((row, j) =>
+                      j === i ? [row[0], row[1], e.target.value] : row))}
+                />
+              </EditableRow>
+            ))}
+            <AddRow canManage={canManage} label="Add a year"
+                    onAdd={() => setRetained((rs) => [...rs, ["", "", ""]])} />
+            {retained.length === 0 && (
+              <span className="st-help">
+                Nothing confirmed. The self-funding reading stays empty until
+                every trading entity has a figure for a year — it will not stand
+                in gross profit, which is a different and much larger number.
+              </span>
             )}
           </div>
         </div>

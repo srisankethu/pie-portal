@@ -309,6 +309,12 @@ export const papi = {
     req<Record<string, unknown>>(
       `/api/v1/insight/cashflow?weeks=${weeks}`, {}, t),
 
+  // Owner only, and not merely manager: what three legal entities kept after
+  // tax is entity economics rather than a commercial figure. The panel is
+  // hidden for everyone else rather than 403'd, the same way `supply` is.
+  selfFunding: (t: string) =>
+    req<Record<string, unknown>>("/api/v1/insight/self-funding", {}, t),
+
   stock: (t: string) =>
     req<Record<string, unknown>>("/api/v1/insight/stock", {}, t),
 

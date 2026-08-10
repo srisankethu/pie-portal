@@ -26,6 +26,7 @@ from ..ai.provider import AIProvider, select_provider
 from ..trust import disclosure, rehydrate
 from ..ai.telemetry import CallTelemetry
 from ..authz import Principal
+from ..commercial import ownership
 from ..context.quote_bundle import _label, build_quote_bundle
 from ..domain import models
 from ..domain.enums import DecisionStatus, PriorityBand, Role, SubjectEntityType
@@ -320,9 +321,12 @@ def _persist(session: Session, principal: Principal, customer: models.Customer,
     d.subject_entity_type = SubjectEntityType.CUSTOMER.value
     d.subject_entity_id = customer.customer_id
     # route to the requesting salesperson (so it lands in their scope), or the
-    # customer's assigned salesperson when a manager/owner previews it.
+    # account's effective owner when a manager/owner previews it — the person
+    # it was assigned to where somebody assigned one, Zoho's salesperson
+    # otherwise. See `commercial/ownership`.
+    owner = ownership.owner_of(session, customer)
     d.assigned_user_id = (principal.user_id if principal.role is Role.SALESPERSON
-                          else customer.assigned_user_id)
+                          else (owner.user_id if owner else None))
     d.assigned_role = Role.SALESPERSON.value
     d.detected_at = datetime.now(timezone.utc)
     d.signal_ids = [signal.signal_id]

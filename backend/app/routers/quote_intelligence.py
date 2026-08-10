@@ -139,7 +139,7 @@ def _visible_customer_ref(session: Session, principal: Principal, ref: str) -> s
     confirm the account exists, which is most of what an enumeration is after.
     """
     customer = resolve_customer(session, principal.organization_id, ref)
-    if customer is not None and not can_view_customer(principal, customer):
+    if customer is not None and not can_view_customer(principal, customer, session):
         return ""
     return ref
 

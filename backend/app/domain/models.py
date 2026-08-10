@@ -542,6 +542,110 @@ class VendorPaymentTerm(Base):
                                                  onupdate=_now)
 
 
+class CustomerCreditLimit(Base):
+    """How much credit this customer was given. The line the balance is read
+    against.
+
+    The platform could already say that an account takes 69 days to pay and
+    that another is late but predictable. It could not say that either of them
+    is past the limit somebody gave them, because no limit existed anywhere —
+    which is the difference between an observation ("this customer is slow")
+    and a decision ("do not ship this order").
+
+    A separate table rather than a column on ``Customer``, for exactly the
+    reason ``VendorPaymentTerm`` is separate from ``Vendor``: customers are
+    *derived*. ``upsert_customer`` rewrites the synced fields from the payload
+    on every pull and a complete re-sync rebuilds every row from nothing (§4),
+    so a limit stored there would survive until the next sync and no longer.
+    This is typed, it is the only copy, and it must survive a re-sync. There is
+    a test that runs a second sync and checks it is still here.
+
+    **Absent is not zero, and it is certainly not unlimited.** No row means "no
+    limit recorded", which is the state most of this book is in; a row holding
+    ``0`` means somebody decided this account ships against cash. Those are
+    different instructions to a person, so they are different states — and a
+    withdrawal deletes the row rather than writing a zero. Same distinction the
+    payment terms make between an agreed term and the ERP's guess.
+
+    Zoho holds no credit limit on a contact in this book, so unlike a payment
+    term there is no ERP value beside this one to disagree with. If a connector
+    ever supplies one it belongs on ``Customer`` as a synced field, and this
+    stays the agreement.
+    """
+
+    __tablename__ = "customer_credit_limits"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "customer_id",
+                         name="uq_customer_credit_limit_customer"),
+    )
+
+    credit_limit_id: Mapped[str] = mapped_column(String(64), primary_key=True,
+                                                 default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    customer_id: Mapped[str] = mapped_column(String(64),
+                                             ForeignKey("customers.customer_id"),
+                                             index=True)
+    #: Money, so ``Numeric`` — never a float. The currency is the
+    #: organization's, the same one every other figure on the screen is in.
+    amount: Mapped[Any] = mapped_column(Numeric(18, 4))
+    #: Who set it, and what they were told. A limit nobody can source is one
+    #: nobody can defend when a salesperson asks why an order is being held.
+    set_by_user_id: Mapped[Optional[str]] = mapped_column(String(64))
+    note: Mapped[Optional[str]] = mapped_column(String(512))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
+                                                 onupdate=_now)
+
+
+class CustomerAccountOwner(Base):
+    """Who owns this account — as a person decided, not as Zoho happened to file it.
+
+    ``Customer.assigned_user_id`` already exists and is *derived*:
+    ``_sync_assignments`` sets it from the salesperson on the account's most
+    recent invoice, and only when that person's Zoho email matches a platform
+    user exactly. That covers accounts Zoho already knows about and nothing
+    else — a new account nobody has invoiced yet, an account whose salesperson
+    has no Zoho login, or a book handed over to somebody else last week are all
+    unowned or owned by the wrong person, and the next sync would put back
+    whatever was typed over it.
+
+    So this table is the assignment somebody made, and the synced field keeps
+    saying what the ERP implies. Same discipline as ``VendorPaymentTerm``:
+    **the derived value is never overwritten**, both are available, and
+    ``commercial/ownership.effective`` is the one place that says which wins.
+    Withdrawing an assignment deletes the row and falls back to Zoho's, rather
+    than freezing today's answer against a book that keeps moving.
+
+    Ownership is what makes a per-person collections list possible at all —
+    "Rahul's overdue accounts" is not a query anything could answer while every
+    account belonged to nobody.
+    """
+
+    __tablename__ = "customer_account_owners"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "customer_id",
+                         name="uq_customer_account_owner_customer"),
+    )
+
+    account_owner_id: Mapped[str] = mapped_column(String(64), primary_key=True,
+                                                  default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    customer_id: Mapped[str] = mapped_column(String(64),
+                                             ForeignKey("customers.customer_id"),
+                                             index=True)
+    #: The platform user who owns the relationship. Indexed because "everything
+    #: in my book" is the query this table exists to make answerable.
+    user_id: Mapped[str] = mapped_column(String(64), ForeignKey("users.user_id"),
+                                         index=True)
+    #: Who assigned it, and why. A handover nobody can source is one nobody can
+    #: argue with when a commission is calculated from it.
+    set_by_user_id: Mapped[Optional[str]] = mapped_column(String(64))
+    note: Mapped[Optional[str]] = mapped_column(String(512))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
+                                                 onupdate=_now)
+
+
 class VendorMsmeStatus(Base):
     """Whether a supplier is protected by the MSME 45-day rule, and on what evidence.
 

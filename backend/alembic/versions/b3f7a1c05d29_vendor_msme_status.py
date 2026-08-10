@@ -14,14 +14,19 @@ evidence or left UNKNOWN, and a migration that guessed at 400 suppliers would
 be the exact inference the model docstring forbids.
 
 Revision ID: b3f7a1c05d29
-Revises: 0e8d9299b0c7
+Revises: d55f6ff18460
 Create Date: 2026-08-09
 """
 from alembic import op
 import sqlalchemy as sa
 
 revision = "b3f7a1c05d29"
-down_revision = "0e8d9299b0c7"
+# Re-pointed from 0e8d9299b0c7 during a rebase: the pie-catalogue link landed on
+# main off the same parent, which left two heads. Editing this revision is safe
+# precisely because it has never been released — CLAUDE.md's rule is about
+# revisions that have run somewhere, and a merge revision for two independent
+# additive tables would be ceremony over a chain that can simply be linear.
+down_revision = "d55f6ff18460"
 branch_labels = None
 depends_on = None
 

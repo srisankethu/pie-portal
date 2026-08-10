@@ -434,7 +434,13 @@ def acceptance_by_volume(rows: Sequence[models.Decision]) -> dict[str, Any]:
 
     Approximate, and the report says so rather than implying precision it lacks.
     """
-    ruled = [(d, at) for d in rows if (at := _ruled_at(d)) is not None]
+    # Same denominator as `_tally`: a verdict on the recommendation, so
+    # escalations are excluded here too. They still count toward *depth* below —
+    # an escalated card was in the queue somebody was looking at — but a bucket
+    # that divided accepts by rulings-plus-handoffs would report a different
+    # acceptance rate from the one three keys above it, in the same payload.
+    ruled = [(d, at) for d in rows
+             if d.status in RULED_STATUSES and (at := _ruled_at(d)) is not None]
     if not ruled:
         return {"buckets": {}, "note": "No ruling carried a usable timestamp."}
     if len(rows) > DEPTH_MAX_ROWS:

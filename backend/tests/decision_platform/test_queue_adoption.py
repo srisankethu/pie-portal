@@ -292,3 +292,20 @@ def test_every_rupee_raised_lands_in_exactly_one_outcome_bucket():
     parts = ("accepted", "modified", "dismissed", "escalated",
              "untouched", "closed_without_a_human")
     assert sum(Decimal(out[k]) for k in parts) == Decimal(out["raised"]) == Decimal(210)
+
+
+def test_the_volume_buckets_use_the_same_denominator_as_the_headline_rate():
+    """Two acceptance rates in one payload, over different denominators, is a
+    payload that argues with itself. Escalation is a handoff, not a verdict —
+    excluded from both, while still counting toward the depth somebody faced."""
+    accepted = _d(DecisionStatus.ACTIONED.value,
+                  trail=_trail((HumanAction.ACT.value, NOW)))
+    escalated = _d(DecisionStatus.ESCALATED.value,
+                   trail=_trail((HumanAction.ESCALATE.value, NOW)))
+
+    out = adoption.acceptance_by_volume([accepted, escalated])
+    bucket = next(iter(out["buckets"].values()))
+
+    assert bucket["ruled"] == 1                      # not 2
+    assert bucket["acceptance_rate"] == 1.0          # not 0.5
+    assert adoption._tally([accepted, escalated])["ruled"] == 1

@@ -694,16 +694,6 @@ def _unavailable(window: Window, *, partial_cost_skus: int,
                        "shelf cannot be valued. They carry no GMROI rather than "
                        "a large one computed against a free shelf."),
         })
-    out.append({
-        "series": "branch",
-        # BUILDABLE, and it is the same limit `stock.py` records: the endpoint
-        # exists on a Zoho plan this pull does not read.
-        "kind": absence.BUILDABLE,
-        "reason": ("GMROI by branch needs stock per warehouse. Zoho reports "
-                   "location-level stock only on the Inventory plan's warehouse "
-                   "endpoints, which this pull does not read, so every "
-                   "connected company is effectively one location."),
-    })
     return out
 
 

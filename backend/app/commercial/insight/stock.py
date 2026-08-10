@@ -831,13 +831,18 @@ def _unavailable(no_policy: int = 0, total: int = 0, *,
         {
             "series": "branch",
             # BUILDABLE, not PERMANENT: the endpoint exists and is on a plan.
-            # This one is a purchase and a puller, not a limit.
+            # Still BUILDABLE, but for a much smaller reason than the one this
+            # entry used to give. It claimed location-level stock lived only on
+            # the Inventory plan's warehouse endpoints — that was wrong. Zoho
+            # Books returns `locations` on the item detail payload, with a
+            # holding *and* a valuation per place, and `stock_location_snapshots`
+            # now records it. What is missing is only the reading of it here:
+            # this screen still folds to the organization total.
             "kind": absence.BUILDABLE,
-            "reason": ("Stock is read per Zoho company, not per warehouse. "
-                       "Zoho reports location-level stock only on the "
-                       "Inventory plan's warehouse endpoints, which this pull "
-                       "does not read. Each connected company is effectively "
-                       "one branch until it does."),
+            "reason": ("This screen totals stock across the whole company. "
+                       "Per-branch holdings are recorded — see "
+                       "`stock_location_snapshots` — but the shelf below is not "
+                       "split by them yet."),
         },
         {
             "series": "supplier_and_brand",

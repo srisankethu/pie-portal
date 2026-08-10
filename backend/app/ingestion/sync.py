@@ -43,6 +43,8 @@ from .normalize import (
     normalize_bill_terms,
     normalize_invoice_terms,
     normalize_credit_note,
+    normalize_item_location,
+    normalize_location,
     normalize_customer,
     normalize_invoice,
     normalize_payment,
@@ -74,6 +76,8 @@ class SyncReport:
     sales_orders: int = 0
     vendor_payments: int = 0
     credit_notes: int = 0
+    locations: int = 0
+    stock_locations: int = 0
     documents_fetched: int = 0
     documents_resumed: int = 0
     #: Calendar windows this run listed in full because they had never been
@@ -185,7 +189,8 @@ class SyncReport:
                     or self.cost_records or self.assignments or self.vendors
                     or self.stock_snapshots or self.payments
                     or self.purchase_orders or self.sales_orders
-                    or self.vendor_payments or self.credit_notes)
+                    or self.vendor_payments or self.credit_notes
+                    or self.locations or self.stock_locations)
 
     def merge(self, other: "SyncReport") -> "SyncReport":
         """Fold another connected company's pull into this one.
@@ -224,6 +229,8 @@ class SyncReport:
             "sales_orders": self.sales_orders,
             "vendor_payments": self.vendor_payments,
             "credit_notes": self.credit_notes,
+            "locations": self.locations,
+            "stock_locations": self.stock_locations,
             "documents_fetched": self.documents_fetched,
             "documents_resumed": self.documents_resumed,
             "skipped_count": len(self.skipped), "skipped": self.skipped,
@@ -436,6 +443,16 @@ class SyncService:
         if hasattr(self.source, "list_credit_notes"):
             self._supply_phase("Reading credit notes", "credit_note",
                                self._sync_credit_notes)
+        # Where the business trades from, and what sits at each place. Probed
+        # like the rest: a source written before locations existed simply does
+        # not offer them, and the branch views say so rather than reporting one
+        # undivided book as though the division had been checked.
+        if hasattr(self.source, "list_locations"):
+            self._supply_phase("Reading locations", "location",
+                               self._sync_locations)
+        if hasattr(self.source, "list_item_locations"):
+            self._supply_phase("Reading stock by location", "stock_location",
+                               self._sync_stock_locations)
         self.s.flush()
 
     def _supply_phase(self, label: str, kind: str,
@@ -584,6 +601,53 @@ class SyncService:
             self.log.record(ev.SALES_ORDER_PLACED, so.date,
                        Source("sales_order", so.external_ref), so)
             self.report.sales_orders += 1
+
+    def _sync_locations(self) -> None:
+        """The branch list. Small, and read once per company."""
+        for raw in self.source.list_locations():
+            ref = str(raw.get("location_id", "?"))
+            try:
+                loc = normalize_location(raw)
+            except NormalizationError as e:
+                self.report.skip("location", ref, e.code, e.detail)
+                continue
+            self.repo.upsert_location(loc)
+            self.report.locations += 1
+
+    def _sync_stock_locations(self) -> None:
+        """Per-location stock for every tracked item the master pull persisted.
+
+        The ids come from what is already in the read model rather than from a
+        second listing: the item pull has just run, so this asks about exactly
+        the items this platform knows, and an item Zoho added mid-sync is picked
+        up on the next pass instead of arriving here without a product row to
+        hang on.
+
+        Dated with the same ``as_of`` discipline as ``StockSnapshot``: Zoho
+        reports a current number with no history, so history exists only because
+        something writes it down once a day.
+        """
+        by_external = self.repo.product_ids_by_external()
+        if not by_external:
+            return
+        # The business's day, not the server's — the same reason
+        # ``_sync_products`` stamps its stock reading this way.
+        as_of = _clock_today(self.timezone())
+        for raw in self.source.list_item_locations(sorted(by_external)):
+            product_id = by_external.get(str(raw.get("item_id") or ""))
+            if product_id is None:
+                # Stock against an item this pull did not persist. Skipped
+                # rather than invented — there is nothing to attach it to, and a
+                # placeholder product would accumulate a shelf nobody ordered.
+                continue
+            try:
+                snap = normalize_item_location(raw, as_of)
+            except NormalizationError as e:
+                self.report.skip("stock_location", str(raw.get("item_id", "?")),
+                                 e.code, e.detail)
+                continue
+            self.repo.upsert_stock_location_snapshot(product_id, snap)
+            self.report.stock_locations += 1
 
     def _sync_credit_notes(self) -> None:
         """Credit notes and the invoices they were applied to.

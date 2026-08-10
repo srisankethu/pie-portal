@@ -122,6 +122,43 @@ def test_cost_is_resolved_as_of_the_sale_date_not_today():
     assert june.effective_unit_cost == Decimal("90")
 
 
+def test_a_cost_recorded_on_the_sale_date_itself_is_the_applicable_one():
+    """"As of" includes the day. A bill booked the same day the line was sold is
+    the cost that line was made at, and the alternative — skipping back to the
+    previous purchase price — misprices exactly the lines where cost just moved,
+    which are the ones anybody is looking at.
+    """
+    costs = [_cost("2026-01-01", 60), _cost("2026-06-01", 90, bill="BILL2")]
+    same_day = line_economics(_sale("2026-06-01", qty=1, net_price=100), costs)
+    assert same_day.effective_unit_cost == Decimal("90")
+    assert same_day.cost_source_ref["record_id"] == "BILL2"
+
+    # One day earlier still resolves to the older basis — the half of the
+    # boundary that says this is a date comparison and not an off-by-one.
+    day_before = line_economics(_sale("2026-05-31", qty=1, net_price=100), costs)
+    assert day_before.effective_unit_cost == Decimal("60")
+
+
+def test_both_cost_basis_implementations_answer_identically():
+    """`commercial.economics` and `signals.aggregates` each define "the applicable
+    cost at a date", and economics' docstring says that is deliberate: there must
+    be exactly one answer to what an item cost us then, or two screens disagree.
+
+    Nothing asserted that until this test. Both were free to drift — including at
+    the same-day boundary above, which neither pinned.
+    """
+    from app.commercial.economics import cost_basis_asof as commercial_basis
+    from app.signals.aggregates import cost_basis_asof as signals_basis
+
+    costs = [_cost("2026-01-01", 60), _cost("2026-06-01", 90, bill="BILL2")]
+    for d in ("2025-12-31", "2026-01-01", "2026-05-31", "2026-06-01", "2026-06-02"):
+        as_of = date.fromisoformat(d)
+        a, b = commercial_basis(costs, as_of), signals_basis(costs, as_of)
+        assert a == b, f"the two cost bases disagree at {d}"
+    assert commercial_basis(costs, date(2026, 6, 1)).unit_cost == Decimal("90")
+    assert commercial_basis(costs, date(2025, 12, 31)) is None
+
+
 def test_a_sale_before_any_cost_record_has_no_cost():
     e = line_economics(_sale("2025-01-01"), [_cost("2026-01-01", 60)])
     assert e.effective_unit_cost is None

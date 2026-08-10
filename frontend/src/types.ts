@@ -109,6 +109,17 @@ export interface QuoteEstimate {
   current: boolean;
 }
 
+/** How the lines in this response were produced. Sent only by `/intake`, so it
+ *  is optional on `Quote` — the screen uses it to say "read from your message,
+ *  check each line" rather than presenting a model's reading as though somebody
+ *  had typed it. Declared because the server sends it: an undeclared field and
+ *  a renamed one look identical from here, which is what
+ *  `backend/tests/test_frontend_contract.py` exists to tell apart. */
+export interface QuoteIntake {
+  read_by: "ai" | "pattern";
+  detail: string;
+}
+
 export interface MarginFloor {
   count: number;
   worst: number;
@@ -144,6 +155,8 @@ export interface Quote {
    *  The line already reads CREATE FAILED; this is the reason, so the screen
    *  does not have to say "something went wrong". */
   createItemError?: string;
+  /** Only on an intake response. */
+  intake?: QuoteIntake;
 }
 
 /* ── Quote intelligence (deterministic; app/commercial) ──────────────────────

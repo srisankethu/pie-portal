@@ -304,12 +304,16 @@ class Lag:
     expected_days_to_pay: int
 
 
-def _percentile(values: list[int], fraction: float) -> int:
+def percentile(values: list[int], fraction: float) -> int:
     """The nearest-rank percentile, rounded to a whole day.
 
     Nearest-rank rather than interpolated: these are days, an interpolated
     17.4 days is not an observation anybody made, and the projection is going
     to floor it to a week anyway.
+
+    Public because ``insight/order_to_cash`` needs exactly this and a second
+    percentile in the same package is how two screens start disagreeing about
+    what "the slow tenth" means. The name is the only thing that changed.
     """
     ordered = sorted(values)
     if not ordered:
@@ -354,9 +358,9 @@ def lag(settled: list[Settlement]) -> Optional[Lag]:
         return None
     return Lag(
         party_id=party_id,
-        early_days=_percentile(datable, 0.10),
-        expected_days=_percentile(datable, 0.50),
-        late_days=_percentile(datable, 0.90),
+        early_days=percentile(datable, 0.10),
+        expected_days=percentile(datable, 0.50),
+        late_days=percentile(datable, 0.90),
         settlements=len(datable),
         # Over every settlement, not only the datable ones — an invoice with no
         # terms on record still has a date it was raised on and a date it was

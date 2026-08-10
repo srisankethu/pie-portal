@@ -753,7 +753,50 @@ class ReadModelRepository:
         row.total = inv.total
         row.balance = inv.balance
         row.source_ref = inv.source_ref.model_dump()
+        self._replace_invoice_sales_orders(inv)
         return row
+
+    def _replace_invoice_sales_orders(self, inv: InvoiceIn) -> None:
+        """Write this invoice's order links, wholesale.
+
+        Replaced rather than merged, for the same reason ``_replace_applications``
+        gives about payments: an invoice re-linked in Zoho can drop an order, and
+        a merge would leave the old link behind as an order this invoice no
+        longer bills against — a phantom in exactly the series that decides how
+        long an order takes to be invoiced.
+
+        Not folded into ``_replace_applications`` despite the shared rule. That
+        helper is generic over the two *application* tables, which share a parent
+        id, an ``external_ref``, a ``paid_on`` and an ``amount_applied``; a link
+        row has none of those four. Parameterising it far enough to cover both
+        would leave a helper whose every column is a callback, which is the
+        abstraction redundancy in ``CLAUDE.md`` §2 rather than a fix for it.
+        """
+        existing = {
+            row.sales_order_external_ref: row
+            for row in self.s.scalars(
+                select(models.InvoiceSalesOrderLink).where(
+                    models.InvoiceSalesOrderLink.organization_id == self.org,
+                    models.InvoiceSalesOrderLink.invoice_external_ref
+                    == inv.external_ref)).all()
+        }
+        source_ref = inv.source_ref.model_dump()
+        seen: set[str] = set()
+        for ref in inv.sales_orders:
+            seen.add(ref.external_ref)
+            link = existing.get(ref.external_ref)
+            if link is None:
+                link = models.InvoiceSalesOrderLink(
+                    organization_id=self.org,
+                    invoice_external_ref=inv.external_ref,
+                    sales_order_external_ref=ref.external_ref)
+                self.s.add(link)
+            link.sales_order_number = ref.number
+            link.is_primary = ref.is_primary
+            link.source_ref = source_ref
+        for ref_id, stale in existing.items():
+            if ref_id not in seen:
+                self.s.delete(stale)
 
     def upsert_credit_note(self, customer_id: Optional[str],
                            note: CreditNoteIn) -> models.CreditNoteDoc:

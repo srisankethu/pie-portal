@@ -2164,6 +2164,69 @@ class InvoiceDoc(Base):
                                                  onupdate=_now)
 
 
+class InvoiceSalesOrderLink(Base):
+    """Which customer orders one invoice bills against.
+
+    The invoice header carried no order reference at all, so the platform could
+    say how long a customer took to pay and nothing about how long *we* took to
+    turn their order into an invoice — which is the half of the order-to-cash
+    cycle this business can actually do something about.
+
+    **A link table because the relationship is genuinely many-to-many, and both
+    directions occur in this book.** Partial invoicing is normal here, so one
+    order produces several invoices (``HYD/FY27/SO-399`` appears on both
+    ``INV-696`` and ``INV-663``); and one invoice can bill against several
+    orders, which is why Zoho's invoice payload carries a ``salesorders``
+    *array* beside the scalar ``salesorder_id``. A nullable column on
+    ``invoices`` would hold the scalar and silently drop the rest, and the rows
+    it dropped would be exactly the consolidated invoices whose cycle time is
+    most worth looking at.
+
+    ``is_primary`` records which one Zoho's scalar named. Kept so the array can
+    be the truth without the scalar becoming unrecoverable — a reader who wants
+    Zoho's own primary can still have it, and nobody has to guess whether the
+    scalar was read at all.
+
+    Keyed on ``external_ref`` at both ends rather than on ``invoice_id`` and
+    ``sales_order_id``, exactly as ``PaymentApplication`` and
+    ``CreditNoteApplication`` are: an invoice can name an order raised before
+    the sync window opens, and a foreign key would drop that link rather than
+    record it as an order whose date this platform does not hold. The two are
+    different facts and only one of them is a defect.
+
+    The order's *date* is deliberately not copied here. It lives on
+    ``sales_orders`` and is joined; a second copy would be a second answer to
+    "when was this ordered", and a link whose order is outside the window is
+    reported as an unknown lag rather than a zero one.
+    """
+
+    __tablename__ = "invoice_sales_orders"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "invoice_external_ref",
+                         "sales_order_external_ref",
+                         name="uq_invoice_sales_order_org_pair"),
+        Index("ix_invoice_so_org_invoice",
+              "organization_id", "invoice_external_ref"),
+        Index("ix_invoice_so_org_order",
+              "organization_id", "sales_order_external_ref"),
+    )
+
+    invoice_sales_order_id: Mapped[str] = mapped_column(String(64),
+                                                        primary_key=True,
+                                                        default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    invoice_external_ref: Mapped[str] = mapped_column(String(128), index=True)
+    sales_order_external_ref: Mapped[str] = mapped_column(String(128), index=True)
+    #: The order number as the invoice stated it, so a row is readable without
+    #: the order itself having been synced.
+    sales_order_number: Mapped[Optional[str]] = mapped_column(String(128))
+    #: Zoho's scalar ``salesorder_id`` named this one. Never used to *choose* an
+    #: order for the measurement — see ``commercial/insight/order_to_cash``.
+    is_primary: Mapped[bool] = mapped_column(Boolean, default=False)
+    source_ref: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
 class CreditNoteDoc(Base):
     """A credit note at header grain — what was given back, and to whom.
 

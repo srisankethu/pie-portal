@@ -15,8 +15,8 @@ from typing import Any, Optional
 from ..domain.enums import CustomerStatus
 from ..domain.schemas import (BillIn, CostRecordIn, CreditNoteApplicationIn,
                              CreditNoteIn, CustomerIn, DocumentApplicationIn,
-                             InvoiceIn, PaymentReceiptIn, ProductIn,
-                             PurchaseOrderIn, SalesOrderIn, SalesTxnIn,
+                             InvoiceIn, InvoiceSalesOrderRef, PaymentReceiptIn,
+                             ProductIn, PurchaseOrderIn, SalesOrderIn, SalesTxnIn,
                              SourceRef, StockSnapshotIn, VendorIn, VendorPaymentIn)
 
 #: The system every record in this module came from. Stated once, and stated
@@ -382,6 +382,45 @@ def normalize_bill_terms(raw: dict[str, Any]) -> BillIn:
     )
 
 
+def _invoice_sales_orders(raw: dict[str, Any]) -> list[InvoiceSalesOrderRef]:
+    """Every order this invoice bills against, from both places Zoho states it.
+
+    The ``salesorders`` array is the truth: partial invoicing is normal here, so
+    one order produces several invoices, and one invoice can consolidate several
+    orders. The scalar ``salesorder_id`` is Zoho's own "primary" and is a strict
+    subset of the array in every payload observed — but it is *unioned* rather
+    than assumed to be, because the failure modes are not symmetric. A scalar
+    that names an order the array omits is a link this platform would otherwise
+    lose; a scalar already in the array simply gets flagged.
+
+    Order is preserved and duplicates are dropped on the id, so an array that
+    repeats an order does not produce two links to it. Nothing is inferred: an
+    invoice naming no order at all returns an empty list, which is how a
+    counter sale reaches ``order_to_cash`` as an unknown lag rather than a
+    same-day one.
+    """
+    primary = str(raw["salesorder_id"]) if raw.get("salesorder_id") else None
+    out: list[InvoiceSalesOrderRef] = []
+    seen: set[str] = set()
+    listed = list(raw.get("salesorders") or [])
+    if primary and not any(str(so.get("salesorder_id") or "") == primary
+                           for so in listed):
+        listed.append({"salesorder_id": primary,
+                       "salesorder_number": raw.get("salesorder_number")})
+    for so in listed:
+        ref = str(so.get("salesorder_id") or "")
+        if not ref or ref in seen:
+            continue
+        seen.add(ref)
+        number = so.get("salesorder_number")
+        out.append(InvoiceSalesOrderRef(
+            external_ref=ref,
+            number=(str(number) if number else None),
+            is_primary=(ref == primary),
+        ))
+    return out
+
+
 def normalize_invoice_terms(raw: dict[str, Any]) -> InvoiceIn:
     """The receivable header of an invoice, from the payload
     ``normalize_invoice`` already receives.
@@ -413,6 +452,7 @@ def normalize_invoice_terms(raw: dict[str, Any]) -> InvoiceIn:
         status=str(raw.get("status") or ""),
         total=raw.get("total"),
         balance=raw.get("balance"),
+        sales_orders=_invoice_sales_orders(raw),
         source_ref=SourceRef(system=ZOHO, record_type="invoice", record_id=invoice_id),
     )
 

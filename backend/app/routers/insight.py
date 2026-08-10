@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Optional
 
@@ -37,7 +37,7 @@ from ..commercial import categories as cat
 from ..commercial.insight import (absence, bonds, cadence, cashflow, cohorts,
                                   composition, credit,
                                   daily as daily_view,
-                                  dependency, flow, landscape, mix, msme,
+                                  dependency, flow, gmroi, landscape, mix, msme,
                                   outcomes as outcomes_view, payments,
                                   periods, radar, schemes, simulate, stock,
                                   story, supply, terms as vendor_terms, wallet,
@@ -1333,6 +1333,11 @@ def stock_position(principal: Principal = Depends(current_principal),
                        "each month is not — that is the number this screen is "
                        "for, and it is on every row."),
         })
+        # And what each line *returns* on that cash, which is the other question
+        # about the same shelf. Named here rather than only on the endpoint that
+        # refuses, because this is the screen a salesperson actually opens: a
+        # missing column with no explanation beside it reads as a defect.
+        result["unavailable"].append(gmroi.withheld())
     # Which connected company each item belongs to. An item master is per
     # company — the same part number is a different row in each book — so a
     # shelf pooled across three companies needs to say which shelf.
@@ -1347,6 +1352,105 @@ def stock_position(principal: Principal = Depends(current_principal),
         empty_reason=(None if lines else
                       "Nothing in the item master is stock-tracked, so there is "
                       "no shelf to report on."))
+
+
+# ── GMROI: what each line returns on the cash it ties up ────────────────────
+#
+# Manager and owner only, and permanently. GMROI is gross profit ÷ purchase cost
+# with nothing else in it, so there is no version of this screen with the
+# economics removed — the role split therefore runs around it rather than through
+# it, which is the same reason `/supply` is scoped this way. A salesperson is not
+# left with a blank column: `/stock` carries `gmroi.withheld()` in its
+# `unavailable` list, which is the screen they do open about the same shelf.
+
+
+def _stock_observations(session: Session, org: str, *, since: date,
+                        until: date) -> list[gmroi.Observation]:
+    """Every stock reading in the window, as the GMROI denominator reads them.
+
+    Bounded by date on both sides, which is safe here in the way `CLAUDE.md`
+    means it: the readings outside the window cannot enter an average taken over
+    the window, and `window_for` derives the effective span from the rows it is
+    given. The bound is the same one the ratio itself applies.
+
+    ``ix_stock_org_asof`` is the index this runs on.
+    """
+    return [
+        gmroi.Observation(
+            product_id=product_id, as_of=as_of,
+            on_hand=(Decimal(on_hand) if on_hand is not None else None),
+            purchase_rate=(Decimal(purchase_rate)
+                           if purchase_rate is not None else None),
+            # A service has no shelf, and the module names that as undefined
+            # rather than as a zero holding — the same reading
+            # ``stock.lines_from_state`` takes of the flag.
+            tracked=bool(tracked))
+        for product_id, as_of, on_hand, purchase_rate, tracked
+        in session.execute(
+            select(models.StockSnapshot.product_id, models.StockSnapshot.as_of,
+                   models.StockSnapshot.on_hand,
+                   models.StockSnapshot.purchase_rate,
+                   models.StockSnapshot.tracked)
+            .where(models.StockSnapshot.organization_id == org,
+                   models.StockSnapshot.as_of >= since,
+                   models.StockSnapshot.as_of <= until)).all()
+    ]
+
+
+@router.get("/gmroi")
+def gmroi_position(months: int = Query(12, ge=1, le=36),
+                   principal: Principal = Depends(require_manager_or_owner),
+                   session: Session = Depends(get_session)) -> dict:
+    """Gross margin return on inventory investment, by item and by principal.
+
+    Two grains, one request: a brand's figure is Σ gross profit ÷ Σ average
+    inventory over its own items, so the items have to be computed anyway and
+    returning them separately would mean two round trips that could disagree
+    about the window.
+
+    **The window is derived, not asserted.** ``months`` is a request; what comes
+    back is the span the stock snapshots actually cover, with gross profit summed
+    over exactly that span. Below ``gmroi.MIN_OBSERVED_DAYS`` days of readings the
+    response carries no figures at all and says why — a GMROI computed from four
+    stock readings is not a GMROI.
+
+    Anchored on today rather than on the last trade date, unlike ``/stock``. The
+    two dates answer different questions and here it is the shelf that is being
+    measured: readings continue while the book is quiet, and anchoring on the
+    last sale would clip the most recent of them out of the average.
+    """
+    org, snapshot, th = _context(session, principal)
+    today = clock.today(th.timezone)
+    requested_days = months * 30
+
+    observations = _stock_observations(
+        session, org, since=today - timedelta(days=requested_days), until=today)
+    if not observations:
+        return _no_data(
+            th, "GMROI", missing="stock reading",
+            synced=_books_have_sales(session, org))
+
+    result = gmroi.build(
+        sales=snapshot.sales, costs=snapshot.costs,
+        observations=observations,
+        labels=snapshot.product_names,
+        # The documented cascade — bill vendor first, item manufacturer second —
+        # rather than ``Product.manufacturer`` read here. A third of this master
+        # is untagged and the bill side has a horizon; either alone leaves far
+        # more unattributed, and ``principals.py`` owns which is which.
+        attribution=_principal_of_product(session, org),
+        as_of=today, requested_days=requested_days, thresholds=th)
+
+    # An item master is per connected company, so the same part number is a
+    # different row with its own shelf in each book.
+    companies = Companies(session, org)
+    items = index_of(session, org, models.Product)
+    companies.stamp(result.get("skus") or [], items, by="product_id")
+    result["sources_differ"] = companies.count > 1
+    return _envelope(
+        result, th=th,
+        empty_reason=(None if result["measurable"] else
+                      result["window"]["shortfall"]))
 
 
 @router.get("/supply")

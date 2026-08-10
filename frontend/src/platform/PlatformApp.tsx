@@ -120,6 +120,8 @@ const StatutoryScreen = lazy(() =>
   import("./viz/Statutory").then((m) => ({ default: m.StatutoryScreen })));
 const StockScreen = lazy(() =>
   import("./viz/TheBook").then((m) => ({ default: m.StockScreen })));
+const GmroiScreen = lazy(() =>
+  import("./viz/Gmroi").then((m) => ({ default: m.GmroiScreen })));
 const SupplyScreen = lazy(() =>
   import("./viz/TheBook").then((m) => ({ default: m.SupplyScreen })));
 const NegotiateScreen = lazy(() =>
@@ -580,6 +582,14 @@ export default function PlatformApp() {
     // Neither carries cost: receivables are money in, and stock structure is
     // counts. The purchase rate is dropped from a salesperson's stock copy.
     { key: "stock", label: "Stock", group: "book" },
+    ...(ability.can("read", "economics")
+      // Gross profit ÷ what the stock cost, end to end — there is no version of
+      // this screen with the economics taken out, so `require_manager_or_owner`
+      // guards the endpoint and the nav item follows it rather than offering a
+      // door that always 403s. A salesperson is not left wondering: `/stock`
+      // carries the withholding notice in its own `unavailable` list.
+      ? ([{ key: "gmroi", label: "Return on stock", group: "book" }] as NavItem[])
+      : []),
     ...(ability.can("read", "supply")
       // Supplier spend is purchase cost by another name, so the endpoint is
       // manager-scoped and the nav item follows it rather than 403-ing.
@@ -760,6 +770,7 @@ export default function PlatformApp() {
             <Route path={PATH.payables} element={<PayablesScreen session={session} onNavigate={goViz} />} />
             <Route path={PATH.statutory} element={<StatutoryScreen session={session} />} />
             <Route path={PATH.stock} element={<StockScreen session={session} />} />
+            <Route path={PATH.gmroi} element={<GmroiScreen session={session} />} />
             <Route path={PATH.supply} element={<SupplyScreen session={session} />} />
             <Route path={PATH.bonds} element={<BondsScreen session={session} onNavigate={goViz} />} />
             <Route path={PATH.mix} element={<MixScreen session={session} onNavigate={goViz} />} />

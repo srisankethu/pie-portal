@@ -366,7 +366,7 @@ def lag(settled: list[Settlement]) -> Optional[Lag]:
         # terms on record still has a date it was raised on and a date it was
         # paid on. len(settled) >= len(datable) >= MIN_SETTLEMENTS, so the floor
         # above already covers this figure.
-        expected_days_to_pay=_percentile([s.days_to_pay for s in settled], 0.50),
+        expected_days_to_pay=percentile([s.days_to_pay for s in settled], 0.50),
     )
 
 

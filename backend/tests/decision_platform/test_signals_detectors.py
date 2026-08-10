@@ -1,6 +1,7 @@
 """Deterministic detector behaviour across realistic scenarios and edge cases."""
 from __future__ import annotations
 
+from dataclasses import replace
 from decimal import Decimal
 
 from app.signals import cost_pass_through, decline, dormancy, margin
@@ -121,6 +122,52 @@ def test_margin_placeholder_prior_cost_withholds():
              + [sale("cA", "p_ph", d, 10, 80, invoice=f"i-r{i}")
                 for i, d in enumerate(["2026-05-05", "2026-06-01"])])
     assert margin.detect(snap(sales=sales, costs=costs), TH, AS_OF) == []
+
+
+def _margin_drop_of_one_sixteenth():
+    """Price flat at 128, cost 64 → 72: margins 0.5 and 0.4375, a drop of exactly
+    0.0625.
+
+    Powers of two throughout, so every division is exact in binary and the
+    comparison genuinely lands *on* the threshold rather than a hair either side
+    of it. Round decimal numbers cannot do this — 0.40 − 0.35 is
+    0.050000000000000044, which would silently test the wrong side.
+    """
+    costs = [cost("p_edge", "2025-06-01", 100, 64, bill="b-edge-lo"),
+             cost("p_edge", "2026-05-01", 100, 72, bill="b-edge-hi")]
+    sales = ([sale("cE", "p_edge", d, 10, 128, invoice=f"i-e-b{i}")
+              for i, d in enumerate(["2026-02-01", "2026-03-01"])]
+             + [sale("cE", "p_edge", d, 10, 128, invoice=f"i-e-r{i}")
+                for i, d in enumerate(["2026-05-05", "2026-06-01"])])
+    return sales, costs
+
+
+def test_a_margin_drop_exactly_on_the_threshold_is_not_a_deterioration():
+    """The threshold is the point at which a drop becomes worth routing to a
+    human, and the rule is "more than", not "at least" — a drop of exactly the
+    threshold is the largest movement the platform still considers normal.
+
+    The second half matters as much as the first: the same data one notch under
+    the threshold *does* fire, so what the first assertion pins is the boundary
+    and not a fixture that was never going to produce a signal.
+    """
+    sales, costs = _margin_drop_of_one_sixteenth()
+    at_the_line = replace(TH, margin_drop_points=0.0625)
+    assert margin.detect(snap(sales=sales, costs=costs), at_the_line, AS_OF) == []
+
+    just_under = replace(TH, margin_drop_points=0.06)
+    out = margin.detect(snap(sales=sales, costs=costs), just_under, AS_OF)
+    assert len(out) == 1
+    assert out[0].metrics["margin_drop_points"] == 0.0625
+
+
+def test_a_non_positive_price_withholds_a_margin_rather_than_dividing():
+    """Zero is the case that matters: it is a real value a sales line can carry
+    (a free replacement, a sample), and it is the one that divides. Withheld, not
+    computed and not crashed."""
+    assert margin._margin(Decimal("0"), Decimal("70")) is None
+    assert margin._margin(Decimal("-5"), Decimal("70")) is None
+    assert margin._margin(None, Decimal("70")) is None
 
 
 def test_cost_anomaly_helpers():

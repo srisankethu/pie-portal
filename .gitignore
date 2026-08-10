@@ -22,6 +22,14 @@ node_modules/
 frontend/dist/
 frontend/.vite/
 
+# Playwright's per-run output: traces, screenshots and the HTML report. Written
+# on every `npm run e2e`, and a trace.zip is a few megabytes of one machine's
+# failure — useful to open, never useful to commit.
+frontend/test-results/
+frontend/playwright-report/
+frontend/blob-report/
+frontend/.playwright/
+
 # Env / editor
 .env
 .env.local

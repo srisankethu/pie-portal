@@ -268,3 +268,31 @@ def test_the_name_checker_does_not_cry_wolf(seeded):
     clean = ('{"subject": "Customer C-KQNVXB", "facts": '
              '[{"label": "margin_recent", "value": 0.19}]}')
     assert disclosure.check_names(seeded, ORG, clean) == []
+
+
+def test_a_name_exactly_at_the_minimum_length_is_still_checked(seeded):
+    """Names shorter than the floor are skipped because they appear inside
+    ordinary words, but a name *of* the floor length is checked — and the two
+    sides of that line are what decide whether a real customer name leaving the
+    process is reported or passed over in silence.
+
+    The floor is a false-positive control. Tightening it by one character costs a
+    genuine finding, and a leak checker that misses is worse than one that is
+    merely noisy.
+    """
+    from app.trust import disclosure
+
+    at_floor = "A" * disclosure._MIN_NAME          # exactly the minimum
+    below_floor = "B" * (disclosure._MIN_NAME - 1)  # one short
+    seeded.add(models.Customer(customer_id="c_min", organization_id=ORG,
+                               external_id="z_min", name=at_floor))
+    seeded.add(models.Customer(customer_id="c_short", organization_id=ORG,
+                               external_id="z_short", name=below_floor))
+    seeded.flush()
+
+    findings = disclosure.check_names(seeded, ORG, f'{{"value": "{at_floor}"}}')
+    assert findings and at_floor in findings[0], (
+        "a name of exactly the minimum length must still be reported")
+
+    assert disclosure.check_names(
+        seeded, ORG, f'{{"value": "{below_floor}"}}') == []

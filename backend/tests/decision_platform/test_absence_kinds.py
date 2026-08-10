@@ -69,6 +69,7 @@ def _every_produced_entry() -> list[tuple[str, dict]]:
     add("stock", _stock._unavailable())
     add("stock(no reorder policy)", _stock._unavailable(3, 10))
     add("stock(drain withheld)", _stock._unavailable(drain_withheld=True))
+    add("stock(too new to band)", _stock._unavailable(too_new=4, dead_days=365))
     # Both branches of supply's: none promised, and some promised.
     add("supply(none promised)", _supply._unavailable(0, 5))
     add("supply(some promised)", _supply._unavailable(2, 5))

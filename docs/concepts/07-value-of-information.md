@@ -371,14 +371,61 @@ outside the observed band**: fitted on 21–27% margin, it says nothing about 30
 
 ---
 
-## 6. Existing work: `claude/quote-win-loss`
+## 6. Existing work — and a collision between two open PRs
 
-**Win/loss capture is already largely built. It should be revived, not
-rebuilt.** Verified by fetching and running the branch, not by reading its
-report.
+**Loss-reason capture is not unbuilt. It has been built twice, incompatibly,
+and neither has merged.** Nothing in this section is proposed as new work.
 
-One commit on top of current `main` (merge-base is `main` HEAD, so no rebase
-needed), +2,129 lines. Measured here, today:
+### The collision, first, because it blocks both
+
+| | PR #42 `claude/quote-win-loss` | PR #66 `claude/concepts-05-marketing-science` |
+|---|---|---|
+| Migration | `c7e41b90d3aa_quote_loss_reason.py` | `b7c41e0a9d38_quote_loss_reason.py` |
+| `down_revision` | `0e8d9299b0c7` | `0e8d9299b0c7` |
+| Column | `quote_outcomes.loss_reason` `String(32)` | `quote_outcomes.loss_reason` `String(24)`, plus `lost_to` `String(255)` |
+| Vocabulary | `PRICE`, `DELIVERY`, `COMPETITOR`, `CUSTOMER_CANCELLED`, `NO_DECISION` | `LOST_ON_PRICE`, `LOST_ON_DELIVERY`, `LOST_ON_APPROVAL`, `NOT_BOUGHT`, `NO_DECISION`, `UNKNOWN` |
+
+Both define `QuoteLossReason` in `domain/enums.py`. Both branch from the same
+revision. **Whichever merges second produces two alembic heads and a duplicate
+`loss_reason` column**, so `verify.sh` step 5 fails on an empty database rather
+than in production — the system working, but only after two sessions have both
+finished.
+
+This needs one human decision before either merges, and it is not a conflict
+anybody can resolve mechanically: the two vocabularies mean different things.
+
+**They are complementary rather than redundant.** #66 is the capture side, #42
+the analysis side; they collide only on the enum and the migration.
+
+- **#66 has the better vocabulary.** `LOST_ON_APPROVAL` names a loss caused by
+  our own approval latency — an internal-process failure neither #42 nor this
+  document had thought of, and the only one on either list the business can fix
+  without touching price. `lost_to` records who won it, which is the nearest
+  safe thing to the competitor signal ranked 4th above: a name invites no
+  fabricated number the way a price does.
+- **#42 has the better analysis.** `insight/outcomes.py` (534 lines) carries the
+  evidence floors, the per-quote counting, the product-and-band price comparison
+  and the `NOT_RECORDED` denominator discipline. #66 has no equivalent.
+
+**Recommendation: #66's enum and migration, #42's `outcomes.py`.** Whichever
+goes second drops its migration and adapts to the column already there.
+
+One caution that applies to both, and more sharply to #66: both make the reason
+**mandatory** on a loss, and #66 additionally excludes `UNKNOWN` from
+`SELECTABLE_LOSS_REASONS`, so a person recording a loss must choose a
+substantive reason and cannot say "don't know". That is the §4 failure exactly.
+A forced choice among five substantive reasons does not produce truth, it
+produces `LOST_ON_PRICE`, and a wrong reason is worse than a missing one because
+nothing downstream can tell it from a real one. Make `UNKNOWN` selectable.
+
+### On PR #42, assessed on its own terms
+
+Verified by fetching and running the branch, not by reading its report.
+
+One commit (`4afc788`), +2,129 lines. Measured against `main` at `46ada72`,
+where it was a clean fast-forward with no rebase needed. `main` has since moved
+to `6bf0a08`, so these numbers describe the branch as it stood and it needs a
+rebase and a re-run before it lands:
 
 - **1599 passed, 30 skipped** (the skips are `requires_pie`).
 - Empty-database migration to a **single head** `c7e41b90d3aa`, **25/25**
@@ -436,8 +483,10 @@ are ranked above in §3.
    `TRANSIENT` / `WITHHELD`. **Done in this change.** It converts a well-built
    refusal set into the worklist it was already shaped like, and makes the
    collectable entries visible as jobs rather than as apologies.
-2. **Revive `claude/quote-win-loss`** with the three fixes in §6. It is green
-   on today's `main` and it is the item this category ranks on.
+2. **Resolve the #42 / #66 collision** (§6) — one decision about one column,
+   and it blocks both PRs. Recommended: #66's enum and migration, #42's
+   `outcomes.py`, and make `UNKNOWN` selectable. This is the item the category
+   ranks on, and no part of it needs writing from scratch.
 3. **Fill in the collectable list**, which is now readable off the screens:
    reorder levels, promised delivery dates, the payment sync.
 4. **MSME flag on the vendor master**, backfilled once against top vendors by

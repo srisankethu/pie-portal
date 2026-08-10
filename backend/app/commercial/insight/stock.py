@@ -652,6 +652,10 @@ def _unavailable(no_policy: int = 0, total: int = 0, *,
     if too_new:
         out.append({
             "series": "health_band_for_new_stock",
+            # TRANSIENT: nobody can do anything about this and nobody should
+            # try. Each of these lines either sells or crosses `dead_days`, and
+            # the answer arrives on its own either way.
+            "kind": absence.TRANSIENT,
             "reason": (f"{too_new} line(s) on the shelf have never sold and "
                        f"have been on the books less than {dead_days} days. "
                        "Whether they are dead stock is not yet knowable, so "

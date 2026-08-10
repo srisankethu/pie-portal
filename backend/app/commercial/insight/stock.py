@@ -30,14 +30,15 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any, Iterable, Optional
 
-#: On hand, and nothing sold in this many days. Long, deliberately: a
-#: distributor's slow-moving tooling line is not dead in month two. The
-#: organization's own dead/slow thresholds override this — see ``Carrying``.
-IDLE_AFTER_DAYS = 180
+from . import absence
 
 #: Health bands, worst last. The screen colours on these and nothing else, so
 #: "amber" means one thing across every surface rather than one thing per chart.
-HEALTHY, SLOW, DEAD = "HEALTHY", "SLOW", "DEAD"
+#:
+#: ``UNKNOWN`` is not a fourth severity — it sits outside the ordering. It means
+#: the line has never sold *and the platform cannot show it has had time to*.
+#: See ``StockLine.health`` for why that is a band rather than a shade of DEAD.
+HEALTHY, SLOW, DEAD, UNKNOWN = "HEALTHY", "SLOW", "DEAD", "UNKNOWN"
 
 #: What to do about a line. Deterministic — a band, not a recommendation
 #: somebody wrote. Ordered by how much of a decision each one is.
@@ -110,6 +111,16 @@ class StockLine:
     #: names only — operational, and the single most useful thing on a dead
     #: stock row, because "who do I call about this" is the actual question.
     buyers: tuple[str, ...] = ()
+    #: The earliest date the platform has any evidence this line existed —
+    #: first stock observation or first purchase, whichever came first.
+    #:
+    #: This is the denominator "it has never sold" needs. Measured on the live
+    #: book: every item record in the SLS master was created inside the last
+    #: six months, and 81% of the value the DEAD band would have claimed was
+    #: stock bought in the previous ten weeks. ``None`` where even this cannot
+    #: be established, which is itself a reason to withhold the verdict rather
+    #: than to fall through to the worst one.
+    first_seen: Optional[date] = None
 
     # ── the money on the shelf ───────────────────────────────────────────────
     #
@@ -131,15 +142,50 @@ class StockLine:
         return None if value is None else round(value * c.annual_pct, 2)
 
     def health(self, as_of: date, c: Carrying) -> str:
-        """Healthy, slow or dead. Age alone — value does not make stock fresh."""
+        """Healthy, slow, dead — or unknown. Age alone; value does not make
+        stock fresh.
+
+        The one subtlety, and it was a real defect rather than a refinement:
+        **a line that has never sold is not thereby dead.** It is dead only if
+        it has never sold *and* has been on the books long enough that never
+        selling is a finding. Those are different claims and the fold now
+        carries the fact that separates them (``first_seen``).
+
+        This used to read ``if days is None or days >= c.dead_days: return
+        DEAD``, which turned a missing sale date into the worst verdict on the
+        screen. On the live SLS book that banded ₹10.6 lakh of stock bought in
+        the previous ten weeks as DEAD and proposed writing it off — a 5.3x
+        overstatement of the dead-stock figure, every rupee of it in the
+        direction of telling the owner to discard stock they had just paid for.
+
+        It is the ``CLAUDE.md`` §1 rule with the sign flipped: absence of
+        evidence became evidence of a problem instead of a pass. Either way the
+        honest answer is UNKNOWN, and the tell is the same one §1 names — a
+        ``None`` folded into the same branch as a real measurement.
+        """
         if self.on_hand <= 0:
             return HEALTHY
         days = self.idle_days(as_of)
-        if days is None or days >= c.dead_days:
-            # Never sold at all, and on the shelf, is the strongest version of
-            # dead — not a reason to exclude the row.
-            return DEAD
-        return SLOW if days >= c.slow_days else HEALTHY
+        if days is not None:
+            if days >= c.dead_days:
+                return DEAD
+            return SLOW if days >= c.slow_days else HEALTHY
+        # Never sold. Whether that is a finding depends entirely on how long
+        # there has been to sell it.
+        opportunity = self.opportunity_days(as_of)
+        if opportunity is None or opportunity < c.dead_days:
+            return UNKNOWN
+        return DEAD
+
+    def opportunity_days(self, as_of: date) -> Optional[int]:
+        """How long this line has had the chance to sell.
+
+        Days since the platform first saw the item — its first stock reading or
+        its first purchase, whichever is earlier. ``None`` when neither is on
+        record, which means the question "has it had time to sell?" is not
+        answerable and the band must say so.
+        """
+        return (as_of - self.first_seen).days if self.first_seen else None
 
     def priority(self, as_of: date, c: Carrying) -> Optional[float]:
         """What this line costs the business each month it is not sold.
@@ -170,14 +216,20 @@ class StockLine:
         if self.on_hand <= 0:
             return "HOLD"
         band = self.health(as_of, c)
-        if band == HEALTHY:
+        if band in (HEALTHY, UNKNOWN):
+            # UNKNOWN is stock we cannot yet say anything about. "Do nothing"
+            # is the only honest instruction, and it is emphatically not a
+            # write-off: this is the branch that was proposing the owner
+            # discard stock bought the month before.
             return "HOLD"
         if band == SLOW:
             return "PUSH"
         days = self.idle_days(as_of)
         if days is None:
-            # On the shelf and never sold once. Nothing about a discount is
-            # evidenced here; it is a question for whoever bought it.
+            # Never sold, and on the books longer than the dead threshold —
+            # ``health`` has already established the second half. Nothing about
+            # a discount is evidenced here; it is a question for whoever
+            # bought it.
             return "WRITE_OFF"
         if days >= c.dead_days * 2:
             return "RETURN"
@@ -200,14 +252,30 @@ class StockLine:
     def idle_days(self, as_of: date) -> Optional[int]:
         return (as_of - self.last_sold).days if self.last_sold else None
 
-    def idle(self, as_of: date) -> bool:
+    def idle(self, as_of: date, c: Carrying) -> bool:
+        """On the shelf and not moving, by this organization's own threshold.
+
+        Takes ``Carrying`` rather than reading a module constant. It used to do
+        the latter while ``health`` read ``c.slow_days``, so one idea had two
+        owners and they agreed only because the defaults happened to match — an
+        owner who set ``CI_SLOW_STOCK_DAYS=90`` got a screen whose IDLE group,
+        SLOW band and group heading disagreed, and the heading still said 180.
+        That is the responsibility duplication ``CLAUDE.md`` §2 names.
+
+        A line whose band is UNKNOWN is not idle. It is unmeasured, and putting
+        it in a group headed "nothing sold in N days" would assert exactly the
+        thing the band exists to withhold.
+        """
         if self.on_hand <= 0:
             return False
+        band = self.health(as_of, c)
+        if band == UNKNOWN:
+            return False
         days = self.idle_days(as_of)
-        # Never sold at all, but sitting on the shelf, counts as idle: the
-        # absence of a sale date is the strongest version of the finding, not
-        # a reason to exclude the row.
-        return days is None or days >= IDLE_AFTER_DAYS
+        # Never sold, with the opportunity window already established by
+        # ``health``, is the strongest version of the finding — not a reason to
+        # exclude the row.
+        return days is None or days >= c.slow_days
 
     def to_dict(self, as_of: date, c: "Carrying", *, with_cost: bool) -> dict:
         """One row, projected for the reader.
@@ -250,10 +318,15 @@ class StockLine:
             "reorder_level": self.reorder_level,
             "last_sold": self.last_sold.isoformat() if self.last_sold else None,
             "idle_days": self.idle_days(as_of),
+            # How long the line has had to sell. On a row banded UNKNOWN this
+            # is the number that explains the band, so it is never withheld —
+            # it is a date arithmetic, not economics.
+            "first_seen": self.first_seen.isoformat() if self.first_seen else None,
+            "opportunity_days": self.opportunity_days(as_of),
             "sold_qty_window": round(self.sold_qty_window, 2),
             "oversold": self.oversold,
             "below_reorder": self.below_reorder,
-            "idle": self.idle(as_of),
+            "idle": self.idle(as_of, c),
             # Age, health and what it costs to keep — operational, and the
             # three things a decision about clearing stock is made from.
             "health": band,
@@ -330,8 +403,22 @@ def lines_from_state(states: dict[str, dict[str, Any]], *,
             # price on a date, so it is not even read for other roles.
             last_purchased=(_day(value.get("last_purchased_on")) if with_cost else None),
             buyers=buyers.get(product_id, ()),
+            # Earliest evidence the item existed, from either side of the
+            # fold. Not gated on ``with_cost``: the health band is computed
+            # from it and every role sees the band, so withholding it here
+            # would silently move a salesperson's rows into a different
+            # bucket from an owner's — the same shape of bug as the drain
+            # that this function's docstring already records.
+            first_seen=_earliest(_day(value.get("first_observed_on")),
+                                 _day(value.get("first_purchased_on"))),
         ))
     return rows
+
+
+def _earliest(*days: Optional[date]) -> Optional[date]:
+    """The earliest of the dates that are actually present, or None."""
+    known = [d for d in days if d is not None]
+    return min(known) if known else None
 
 
 def _number(raw: Any) -> Optional[float]:
@@ -358,8 +445,10 @@ def build(lines: Iterable[StockLine], as_of: date, c: Carrying, *,
 
     oversold = [r for r in rows if r.oversold]
     below = [r for r in rows if r.below_reorder and not r.oversold]
-    idle = [r for r in rows if r.idle(as_of) and not r.oversold]
+    idle = [r for r in rows if r.idle(as_of, c) and not r.oversold]
     no_policy = [r for r in rows if r.reorder_level is None]
+    unknown = [r for r in rows if r.on_hand > 0
+               and r.health(as_of, c) == UNKNOWN]
 
     # Worst first inside each group, by the thing that makes it worst.
     oversold.sort(key=lambda r: r.actual_available or 0)
@@ -389,12 +478,25 @@ def build(lines: Iterable[StockLine], as_of: date, c: Carrying, *,
         },
         {
             "key": "IDLE",
-            "label": f"On the shelf, nothing sold in {IDLE_AFTER_DAYS} days",
+            "label": f"On the shelf, nothing sold in {c.slow_days} days",
             "meaning": ("Measured, not judged. The last sale date is attached so "
                         "the call about whether it is dead stock stays with a "
                         "person who knows the line."),
             "items": [r.to_dict(as_of, c, with_cost=with_cost) for r in idle[:40]],
             "count": len(idle),
+        },
+        {
+            "key": "UNKNOWN",
+            "label": "Too new to judge",
+            "meaning": ("On the shelf, never sold, and not on the books long "
+                        f"enough for that to mean anything — under {c.dead_days} "
+                        "days since the platform first saw it. Not dead stock: "
+                        "there has not yet been time for it to be. Shown as its "
+                        "own group rather than folded into the dead list, "
+                        "because that is where it used to sit and it was the "
+                        "largest thing in it."),
+            "items": [r.to_dict(as_of, c, with_cost=with_cost) for r in unknown[:40]],
+            "count": len(unknown),
         },
     ]
 
@@ -405,6 +507,7 @@ def build(lines: Iterable[StockLine], as_of: date, c: Carrying, *,
         "idle": len(idle),
         "no_reorder_point": len(no_policy),
         "on_hand_items": sum(1 for r in rows if r.on_hand > 0),
+        "too_new_to_judge": len(unknown),
     }
     if with_cost:
         counts["stock_value"] = round(
@@ -428,12 +531,13 @@ def build(lines: Iterable[StockLine], as_of: date, c: Carrying, *,
         "items": items,
         "kpis": _kpis(on_shelf, as_of, c, with_cost=with_cost),
         "filters": FILTERS,
-        "idle_after_days": IDLE_AFTER_DAYS,
+        "idle_after_days": c.slow_days,
         "dead_after_days": c.dead_days,
         "slow_after_days": c.slow_days,
         "unavailable": _unavailable(
             len(no_policy), len(rows),
-            drain_withheld=not c.drain_visible_to(with_cost=with_cost)),
+            drain_withheld=not c.drain_visible_to(with_cost=with_cost),
+            too_new=len(unknown), dead_days=c.dead_days),
     }
 
 
@@ -451,6 +555,8 @@ FILTERS: list[dict] = [
      "op": "gte_or_null", "value": 365},
     {"key": "NEVER_SOLD", "label": "Never sold", "field": "last_sold",
      "op": "is_null", "value": None},
+    {"key": "UNKNOWN", "label": "Too new to judge", "field": "health",
+     "op": "eq", "value": UNKNOWN},
     {"key": "OVERSOLD", "label": "Committed beyond stock", "field": "oversold",
      "op": "is_true", "value": None},
     # Cutoffs are the top decile of this book rather than a fixed rupee amount:
@@ -510,6 +616,17 @@ def _kpis(rows: list[StockLine], as_of: date, c: Carrying, *,
         {"key": "DEAD_COUNT", "label": "Lines gone quiet",
          "value": len(dead), "unit": "count", "filter": "DEAD",
          "note": f"On the shelf with no sale in {c.dead_days} days."})
+    # Counted and shown rather than left out. These rows used to be inside the
+    # DEAD figures above, so a reader comparing this screen against last
+    # quarter's needs to see where they went — a total that quietly shrinks is
+    # the kind of change that gets reported as a bug.
+    too_new = [r for r in rows if r.health(as_of, c) == UNKNOWN]
+    if too_new:
+        cards.append(
+            {"key": "TOO_NEW", "label": "Too new to judge",
+             "value": len(too_new), "unit": "count", "filter": "UNKNOWN",
+             "note": ("On the shelf, never sold, and not here long enough for "
+                      "that to be a finding.")})
     if with_cost:
         share = (dead_value / total_value) if total_value else None
         cards.extend([
@@ -529,14 +646,35 @@ def _kpis(rows: list[StockLine], as_of: date, c: Carrying, *,
 
 
 def _unavailable(no_policy: int = 0, total: int = 0, *,
-                 drain_withheld: bool = False) -> list[dict]:
+                 drain_withheld: bool = False, too_new: int = 0,
+                 dead_days: int = 365) -> list[dict]:
     out: list[dict] = []
+    if too_new:
+        out.append({
+            "series": "health_band_for_new_stock",
+            # TRANSIENT: nobody can do anything about this and nobody should
+            # try. Each of these lines either sells or crosses `dead_days`, and
+            # the answer arrives on its own either way.
+            "kind": absence.TRANSIENT,
+            "reason": (f"{too_new} line(s) on the shelf have never sold and "
+                       f"have been on the books less than {dead_days} days. "
+                       "Whether they are dead stock is not yet knowable, so "
+                       "they are banded UNKNOWN rather than DEAD. They were "
+                       "previously counted as dead — on this book that was "
+                       "the majority of the dead-stock figure, and it "
+                       "proposed writing off stock that had just been "
+                       "bought."),
+        })
     if drain_withheld:
         # Named rather than left blank. A column that vanishes with no
         # explanation reads as a bug, and the next person to notice will file
         # one — or worse, put it back.
         out.append({
             "series": "monthly_cash_drain",
+            # WITHHELD, not PERMANENT: the figure is computed and correct, and
+            # an owner sees it. Filing it under "not answerable" is how a
+            # working permission rule gets "fixed".
+            "kind": absence.WITHHELD,
             "reason": ("What a line costs to keep is quantity x cost x the "
                        "carrying rate / 12. The quantity is on every row, so "
                        "once the carrying rate is public the drain gives away "
@@ -547,6 +685,7 @@ def _unavailable(no_policy: int = 0, total: int = 0, *,
         })
     out.append({
         "series": "weeks_of_cover",
+        "kind": absence.PERMANENT,
         "reason": ("Cover needs a demand forecast. The only forecast this data "
                    "supports is 'what sold recently, repeated', which would "
                    "print as a projection without being one. Recent sold "
@@ -559,6 +698,7 @@ def _unavailable(no_policy: int = 0, total: int = 0, *,
     out.extend([
         {
             "series": "recovery_probability",
+            "kind": absence.PERMANENT,
             "reason": ("How likely a dead line is to sell needs a model of "
                        "future demand. The only one this data supports is "
                        "'what sold before, repeated', which would print as a "
@@ -569,6 +709,7 @@ def _unavailable(no_policy: int = 0, total: int = 0, *,
         },
         {
             "series": "expected_recovery_value",
+            "kind": absence.PERMANENT,
             "reason": ("A probability times a price. Both halves are guesses "
                        "here: the probability is not computable (above) and "
                        "the clearing price is whatever the discount turns out "
@@ -577,6 +718,9 @@ def _unavailable(no_policy: int = 0, total: int = 0, *,
         },
         {
             "series": "branch",
+            # BUILDABLE, not PERMANENT: the endpoint exists and is on a plan.
+            # This one is a purchase and a puller, not a limit.
+            "kind": absence.BUILDABLE,
             "reason": ("Stock is read per Zoho company, not per warehouse. "
                        "Zoho reports location-level stock only on the "
                        "Inventory plan's warehouse endpoints, which this pull "
@@ -585,6 +729,11 @@ def _unavailable(no_policy: int = 0, total: int = 0, *,
         },
         {
             "series": "supplier_and_brand",
+            # PERMANENT on the surviving reason, which is a grain mismatch
+            # rather than a gap: more data does not give a stock level one
+            # supplier. Note it was *not* permanent for the reason it used to
+            # give — see the comment below.
+            "kind": absence.PERMANENT,
             # Narrowed, not deleted. This used to say the item master carries no
             # maker field at all, which stopped being true when the item pull
             # started reading ``manufacturer`` — and a screen that refuses on a
@@ -605,6 +754,9 @@ def _unavailable(no_policy: int = 0, total: int = 0, *,
     if no_policy:
         out.append({
             "series": "reorder_point",
+            # The clearest COLLECTABLE in the package: a named count of rows,
+            # each fixable by one person typing one number.
+            "kind": absence.COLLECTABLE,
             "reason": (f"{no_policy} of {total} items have no reorder level set "
                        "in Zoho. They cannot be below a point that does not "
                        "exist, so they are excluded from that group rather "

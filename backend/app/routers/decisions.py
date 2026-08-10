@@ -16,14 +16,14 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import approvals
-from ..authz import Principal, can_view_decision, current_principal, decision_list_scope
+from ..authz import (Principal, can_view_decision, current_principal,
+                     decision_queue_scope)
 from ..commercial import subject
 from ..context.assembler import _flatten, _is_restricted
 from ..db import get_session
 from ..domain import models
 from ..domain.origin import Companies, index_of
-from ..domain.enums import (ApprovalKind, DecisionType, HumanAction, Role,
-                            SubjectEntityType)
+from ..domain.enums import ApprovalKind, HumanAction, Role, SubjectEntityType
 from .. import clock
 from ..domain.schemas import ActionRequest, DecisionRead
 from ..repositories import DecisionRepository
@@ -233,12 +233,10 @@ def list_decisions(
     session: Session = Depends(get_session),
 ) -> list[DecisionRead]:
     repo = DecisionRepository(session, principal.organization_id)
-    scope = decision_list_scope(principal)
-    # QUOTE_CONTEXT is on-demand quote support, not a proactive attention item —
-    # keep it out of the queue unless explicitly requested by type.
-    if type != DecisionType.QUOTE_CONTEXT.value:
-        existing = tuple(scope.get("exclude_types", ()))
-        scope["exclude_types"] = existing + (DecisionType.QUOTE_CONTEXT.value,)
+    # Scope and the QUOTE_CONTEXT exclusion together, from `authz`, because the
+    # landing page's queue tile has to count exactly this list — see
+    # `decision_queue_scope`.
+    scope = decision_queue_scope(principal, type)
     rows = repo.list(decision_type=type, status=status_filter, **scope)
     # Which company each decision is about. A queue pooled across three
     # connected books lists "ABC Industries" three times otherwise, and the

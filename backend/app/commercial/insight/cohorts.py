@@ -25,6 +25,7 @@ from typing import Iterable, Optional
 
 from ...signals import aggregates as agg
 from ...signals.base import SaleRow
+from . import absence
 from .flow import LOST, classify
 from .periods import Comparison, Period, months_back, revenue_in
 
@@ -322,6 +323,9 @@ def health_timeline(sales: Iterable[SaleRow], costs_by_product: dict,
         "series": series,
         "unavailable": ([] if payment_series is not None else [
             {"series": "payment_behaviour",
+             # It names its own remedy — "run a sync" — which is what
+             # COLLECTABLE means.
+             "kind": absence.COLLECTABLE,
              "reason": "No customer payments have synced yet, so days-to-pay "
                        "cannot be computed without inventing it. Run a sync — "
                        "the platform reads receipts now."}

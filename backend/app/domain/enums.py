@@ -7,6 +7,7 @@ portable across the DB (stored as strings) and JSON APIs.
 from __future__ import annotations
 
 from enum import Enum
+from typing import Optional
 
 
 class Role(str, Enum):
@@ -368,7 +369,16 @@ class QuoteLossReason(str, Enum):
     Deliberately about *the customer's reason*, not ours. "Priced too high" and
     "cost too high" are the same loss to the person recording it and two
     different problems to the person fixing it, so this records only what was
-    heard and leaves the diagnosis to ``commercial/insight/outcomes``.
+    heard and leaves the diagnosis to the modules that read it.
+
+    **This vocabulary is deliberately not mine.** It is `claude/quote-win-loss`'s
+    (PR #42), adopted here verbatim rather than shipped alongside a second set of
+    names for the same fact. That branch carries ~1,100 lines of analysis and UI
+    reading these exact values; a competing enum would have made whichever landed
+    second a rename across all of it, for no gain. What is added below is the one
+    question that branch does not answer and `insight/wallet.py` needs. If both
+    land, the reconciliation is deleting one migration file — not a vocabulary
+    argument.
     """
 
     PRICE = "PRICE"
@@ -377,12 +387,105 @@ class QuoteLossReason(str, Enum):
     CUSTOMER_CANCELLED = "CUSTOMER_CANCELLED"
     NO_DECISION = "NO_DECISION"
 
+    @property
+    def went_elsewhere(self) -> Optional[bool]:
+        """Whether this loss is evidence somebody else supplied the line.
+
+        Three-valued on purpose, and the third value is the point. ``True`` a
+        competitor took it, ``False`` the requirement died, ``None`` the record
+        cannot say. ``None`` is **not** "no" and must never be folded into it:
+        anything reasoning about what a customer buys elsewhere has to exclude
+        the unknowns from both sides, because counting them as "nobody bought
+        it" shrinks the competitor's side and overstates our own share.
+
+        A property on the enum rather than a set literal in each consumer, so
+        adding a sixth reason forces the question to be answered once, here,
+        instead of being silently defaulted in three places.
+
+        ``NO_DECISION`` is ``None`` rather than ``False`` deliberately: a stalled
+        requirement may still land with somebody, so it is neither ours nor
+        theirs yet.
+        """
+        if self in (QuoteLossReason.PRICE, QuoteLossReason.DELIVERY,
+                    QuoteLossReason.COMPETITOR):
+            return True
+        if self is QuoteLossReason.CUSTOMER_CANCELLED:
+            return False
+        return None
+
 
 #: Losses recorded before the vocabulary existed. Not a member of the enum —
-#: nothing may ever be *written* with it — but the analysis has to name the
-#: bucket rather than quietly dropping those quotes out of the denominator.
+#: nothing may ever be *written* with it — but a reader has to be able to name
+#: the bucket rather than quietly dropping those quotes out of a denominator.
+#: Distinct from a recorded ``NO_DECISION``: one is "nobody asked", the other is
+#: "we asked and the customer has not decided".
 LOSS_REASON_NOT_RECORDED = "NOT_RECORDED"
 
+#: Reasons a person may choose when recording a loss — every member, since the
+#: not-recorded sentinel is deliberately outside the enum and so cannot be
+#: offered by construction.
+SELECTABLE_LOSS_REASONS: tuple[QuoteLossReason, ...] = tuple(QuoteLossReason)
+
+class MsmeClassification(str, Enum):
+    """A supplier's registered size under the MSMED Act, as somebody saw it.
+
+    ``UNKNOWN`` is the default and is not a synonym for ``NOT_REGISTERED``.
+    Section 43B(h) bites on micro and small suppliers only, so the difference
+    between "we checked and they are not registered" and "nobody has checked"
+    decides whether a bill is safe or merely unexamined — and only one of those
+    is a fact. Nothing infers this from turnover, bill size or a supplier's
+    name; see ``Customer.incentive_eligibility`` for the same rule applied to
+    the same temptation.
+    """
+
+    MICRO = "MICRO"
+    SMALL = "SMALL"
+    # Outside 43B(h) entirely. Recorded rather than filed under NOT_REGISTERED
+    # because "registered, and out of scope" is a checked answer.
+    MEDIUM = "MEDIUM"
+    NOT_REGISTERED = "NOT_REGISTERED"
+    UNKNOWN = "UNKNOWN"
+
+
+#: The classifications section 43B(h) actually reaches.
+MSME_PROTECTED_CLASSES = frozenset({MsmeClassification.MICRO,
+                                    MsmeClassification.SMALL})
+
+
+class EnterpriseActivity(str, Enum):
+    """What the supplier does, which decides whether registration means anything.
+
+    Not decoration, and the most load-bearing field on the record for a
+    distributor. Wholesale and retail traders hold Udyam registration for
+    priority-sector lending, and that registration does not carry the section
+    15 payment protection 43B(h) enforces. A cutting-tool distributor buys a
+    large share of its stock from dealers, so a watchlist that ignored this
+    would raise most of its rows against suppliers who are not in scope — and a
+    list that is usually wrong is a list people learn to scroll past.
+    """
+
+    MANUFACTURER = "MANUFACTURER"
+    SERVICE = "SERVICE"
+    TRADER = "TRADER"
+    UNKNOWN = "UNKNOWN"
+
+
+#: Activities for which registration carries the section 15 benefit.
+MSME_PROTECTED_ACTIVITIES = frozenset({EnterpriseActivity.MANUFACTURER,
+                                       EnterpriseActivity.SERVICE})
+
+
+class MsmeEvidence(str, Enum):
+    """What was actually seen. A status nobody can source is one nobody can
+    defend when somebody asks where the 45 days came from."""
+
+    UDYAM_CERT = "UDYAM_CERT"
+    # Most registered suppliers print their Udyam number on the tax invoice.
+    # The cheapest evidence available, and already in the document set.
+    INVOICE_DECLARATION = "INVOICE_DECLARATION"
+    VENDOR_EMAIL = "VENDOR_EMAIL"
+    PORTAL_LOOKUP = "PORTAL_LOOKUP"
+    NONE = "NONE"
 
 # Data classes for permission redaction (§14). RESTRICTED fields are visible to
 # SALES_MANAGER and OWNER only. Enforced downstream (context assembly / API);

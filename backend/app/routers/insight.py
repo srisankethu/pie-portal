@@ -28,20 +28,26 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..authz import (Principal, can_view_customer, current_principal,
-                     require_manager_or_owner)
+                     decision_queue_scope, require_manager_or_owner)
+from ..repositories import DecisionRepository
 from .. import approvals, clock
-from ..commercial import floor, incentive, policy, portfolio, principals
+from ..commercial import (floor, incentive, policy, portfolio, principals,
+                          quote_service)
 from ..commercial import categories as cat
-from ..commercial.insight import (bonds, cadence, cashflow, cohorts, composition,
+from ..commercial.insight import (absence, bonds, cadence, cashflow, cohorts,
+                                  composition,
                                   daily as daily_view,
-                                  dependency, flow, landscape, mix,
+                                  dependency, flow, landscape, mix, msme,
                                   outcomes as outcomes_view, payments,
                                   periods, radar, schemes, simulate, stock,
-                                  story, supply, terms as vendor_terms, weather)
+                                  story, supply, terms as vendor_terms, wallet,
+                                  weather, withholding)
 from ..db import get_session
 from ..domain import models
 from ..domain.enums import (LOSS_REASON_NOT_RECORDED,
                             QUOTE_OUTCOME_TRANSITIONS, DecisionStatus,
+                            EnterpriseActivity, MsmeClassification,
+                            MsmeEvidence, QuoteLossReason,
                             QuoteOutcomeStatus, Role)
 from ..domain.origin import Companies, index_of
 from ..signals.aggregates import label_for, load_snapshot
@@ -463,7 +469,8 @@ def customer_timeline(customer_id: str,
             point.pop("margin", None)
             point.pop("cost_coverage", None)
         result["unavailable"].append(
-            {"series": "margin", "reason": "Margin is management information."})
+            {"series": "margin", "kind": absence.WITHHELD,
+             "reason": "Margin is management information."})
     return _envelope(result, th=th,
                      customer_id=customer_id,
                      customer_label=label_for(snapshot.customer_names, customer_id,
@@ -505,9 +512,20 @@ def opportunities(limit: int = Query(100, ge=1, le=300),
                "leave it: ")
             + "below this, a gap is real and not worth an afternoon.")
     else:
-        reason = ("No relationship shows a named gap. Either margins are holding, "
-                  "or there is not enough cost coverage yet to tell — check "
-                  "evidence quality on the weather view.")
+        # The other way a radar empties, and until now the one it could not
+        # describe: every row was examined and none could be given a cause. That
+        # is a different message from "your floor is too high", and answering it
+        # with the floor sentence sent an owner to a setting that would not have
+        # helped.
+        unnamed = excluded["unnamed_cause_count"]
+        reason = (
+            (f"{unnamed} of {excluded['relationships_examined']} relationships "
+             f"have no nameable cause — no margin move, no peer gap and no "
+             f"volume fall the rows can point at, so there is nothing to open a "
+             f"conversation about. " if unnamed else "")
+            + "No relationship shows a named gap. Either margins are holding, "
+              "or there is not enough cost coverage yet to tell — check "
+              "evidence quality on the weather view.")
 
     return _envelope(
         {"opportunities": [o.to_dict() for o in rows],
@@ -1272,6 +1290,7 @@ def stock_position(principal: Principal = Depends(current_principal),
     if not with_cost:
         result["unavailable"].append({
             "series": "inventory_value_and_carrying_rate",
+            "kind": absence.WITHHELD,
             "reason": ("What the stock cost and what rate it is carried at are "
                        "management information. What it costs you to keep it "
                        "each month is not — that is the number this screen is "
@@ -1810,6 +1829,246 @@ def product_mix(months: int = Query(12, ge=3, le=36),
         companies=_companies(session, org),
         scoped_to=connection_id,
         unavailable=mix.unavailable())
+
+
+# ── share of wallet: how much of their spend comes here ─────────────────────
+#
+# The counterpart to `/dependency`, and deliberately shaped nothing like it.
+# Dependency measures *our* exposure to a customer and is a fact. This measures
+# *their* reliance on us, which the platform cannot see directly — so the answer
+# is a band with its basis named, or a refusal saying what would produce one.
+#
+# Revenue, quoted values and published tender figures only. No cost and no
+# margin are read, so this is visible to every role.
+
+
+def _lost_asks(session: Session, org: str,
+               customer_id: str) -> list[wallet.LostAsk]:
+    """Quotes this customer did not give us, valued from their own snapshots.
+
+    The value comes from the `QuoteDecision` rows the quote carried, summed per
+    quote — that is what was actually put in front of the customer, and it is
+    already frozen against the day it was priced. Re-pricing today's catalogue
+    to value a quote lost in March would be valuing a thing that never happened.
+
+    ``line_revenue`` only. The snapshot also holds cost, COGS and margin, and
+    none of the three is touched here — which is what keeps this endpoint
+    readable by a salesperson.
+    """
+    values = dict(session.execute(
+        select(models.QuoteDecision.quote_id,
+               func.sum(models.QuoteDecision.line_revenue))
+        .where(models.QuoteDecision.organization_id == org,
+               models.QuoteDecision.customer_id == customer_id)
+        .group_by(models.QuoteDecision.quote_id)).all())
+
+    rows = session.scalars(
+        select(models.QuoteOutcome).where(
+            models.QuoteOutcome.organization_id == org,
+            models.QuoteOutcome.customer_id == customer_id,
+            models.QuoteOutcome.status == QuoteOutcomeStatus.LOST.value)).all()
+
+    out: list[wallet.LostAsk] = []
+    for row in rows:
+        value = values.get(row.quote_id)
+        if value is None:
+            # A lost quote with no priced snapshot behind it has no value to
+            # put in a denominator. Skipped rather than counted at zero: zero
+            # would say the competitor won nothing, which shrinks their side
+            # and overstates ours.
+            continue
+        # Classification stays in the enum — one definition of what counts as a
+        # competitor's rupee. A NULL reason predates the vocabulary and is
+        # genuinely unknown, which is not the same as CUSTOMER_CANCELLED: it
+        # maps to None and is excluded from both sides, never folded into
+        # "nobody bought it".
+        went_elsewhere = (QuoteLossReason(row.loss_reason).went_elsewhere
+                          if row.loss_reason else None)
+        out.append(wallet.LostAsk(
+            quote_id=row.quote_id, value=Decimal(str(value)),
+            decided_on=row.decided_at.date() if row.decided_at else None,
+            went_elsewhere=went_elsewhere))
+    return out
+
+
+def _quoted_revenue(session: Session, org: str, customer_id: str) -> Decimal:
+    """Value of this customer's quotes that were recorded as won.
+
+    The numerator of quote coverage. Won quotes rather than all quotes: what is
+    being measured is how much of the revenue on the book passed through the
+    quote screen, and a lost quote produced no revenue to have covered.
+    """
+    won = session.scalars(
+        select(models.QuoteOutcome.quote_id).where(
+            models.QuoteOutcome.organization_id == org,
+            models.QuoteOutcome.customer_id == customer_id,
+            models.QuoteOutcome.status == QuoteOutcomeStatus.WON.value)).all()
+    if not won:
+        return Decimal("0")
+    total = session.scalar(
+        select(func.sum(models.QuoteDecision.line_revenue))
+        .where(models.QuoteDecision.organization_id == org,
+               models.QuoteDecision.quote_id.in_(won)))
+    return Decimal(str(total)) if total is not None else Decimal("0")
+
+
+def _tender_observations(session: Session, org: str,
+                         customer_id: str) -> list[wallet.TenderObservation]:
+    rows = session.scalars(
+        select(models.TenderResult).where(
+            models.TenderResult.organization_id == org,
+            models.TenderResult.customer_id == customer_id)).all()
+    return [wallet.TenderObservation(
+        tender_ref=r.tender_ref, tendered=Decimal(str(r.tendered_value)),
+        won=Decimal(str(r.won_value)) if r.won_value is not None else None,
+        closed_on=r.closed_on, source=r.source) for r in rows]
+
+
+@router.get("/wallet/{customer_id}")
+def share_of_wallet(customer_id: str,
+                    principal: Principal = Depends(current_principal),
+                    session: Session = Depends(get_session)) -> dict:
+    """What share of this customer's tooling spend comes here, and on what basis.
+
+    Most customers will come back UNKNOWN, and that is the correct answer rather
+    than a gap to be filled. `insight/dependency.py` says why: the platform sees
+    what a customer buys here and nothing of what they buy elsewhere. What this
+    endpoint adds is the cases where evidence *does* exist — published tender
+    quantities, or enquiries recorded as lost to a named competitor — and a
+    refusal that names the specific missing thing for the rest.
+    """
+    org, snapshot, th = _labels_only(session, principal)
+    customer = _require_visible_customer(session, customer_id, principal)
+    as_of = clock.today(th.timezone)
+
+    revenue = session.scalar(
+        select(func.sum(models.SalesTxn.line_revenue))
+        .where(models.SalesTxn.organization_id == org,
+               models.SalesTxn.customer_id == customer_id)) or 0
+
+    estimate = wallet.estimate(
+        customer_id, as_of, thresholds=th,
+        revenue=Decimal(str(revenue)),
+        quoted_revenue=_quoted_revenue(session, org, customer_id),
+        lost_asks=_lost_asks(session, org, customer_id),
+        tenders=_tender_observations(session, org, customer_id),
+        # No declaration source is wired yet. The field that held one fed the
+        # incentive engine's RSI, was supplied by the salesperson it paid, and
+        # was weighted to zero for that reason — so `DECLARED` stays reachable
+        # in the ladder and unreachable from here until there is a place to
+        # record a declaration that is not inside a pay formula.
+        declaration=None)
+
+    return _envelope(
+        estimate.to_dict(), th=th,
+        customer={"customer_id": customer_id, "label": customer.name},
+        ladder=[{"basis": b, "meaning": wallet.BASIS_MEANING[b]}
+                for b in wallet.LADDER],
+        unavailable=wallet.unavailable())
+
+
+class TenderResultRequest(BaseModel):
+    """One published tender, as somebody read it off the portal."""
+
+    tender_ref: str
+    customer: str = ""
+    tendered_value: Decimal
+    won_value: Optional[Decimal] = None
+    closed_on: date
+    awarded_on: Optional[date] = None
+    categories: list[str] = Field(default_factory=list)
+    source: str = ""
+    note: Optional[str] = None
+
+
+@router.post("/tenders", status_code=status.HTTP_201_CREATED)
+def record_tender(body: TenderResultRequest,
+                  principal: Principal = Depends(require_manager_or_owner),
+                  session: Session = Depends(get_session)) -> dict:
+    """Record what a tender asked for and what we took of it.
+
+    Manager-and-above: this is the denominator of a measured share, and a
+    denominator anybody can type is a share anybody can move.
+
+    ``source`` is required. The whole claim of this rung is that both figures
+    come from a document that can be looked up, and a row nobody can trace back
+    is a guess with a bid number on it — which is worse than an honest UNKNOWN,
+    because it looks measured.
+    """
+    org, _, th = _labels_only(session, principal)
+    ref = body.tender_ref.strip()
+    if not ref:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            "A tender needs its published reference")
+    if not body.source.strip():
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "A tender needs a source — the portal URL or the document it was "
+            "read from. A measured share whose measurement cannot be looked up "
+            "is not measured.")
+    if body.tendered_value <= 0:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            "The tendered value must be what the document "
+                            "published, and it cannot be zero or negative")
+    if body.won_value is not None and body.won_value > body.tendered_value:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "More was won than was tendered, which cannot be right and would "
+            "put this customer above 100% share")
+    unknown = [c for c in body.categories if c not in cat.LABELS]
+    if unknown:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            f"Not a line of the business: {', '.join(unknown)}")
+
+    # The Quote Builder's own tolerant matcher, reached through the one
+    # delegating entry point (CLAUDE.md §2). A second matcher here would make a
+    # customer resolvable on the quote screen and not in this one, which is a
+    # bug nobody can reproduce.
+    customer = (quote_service.resolve_customer(session, org, body.customer.strip())
+                if body.customer.strip() else None)
+
+    row = session.scalar(
+        select(models.TenderResult).where(
+            models.TenderResult.organization_id == org,
+            models.TenderResult.tender_ref == ref))
+    if row is None:
+        row = models.TenderResult(organization_id=org, tender_ref=ref,
+                                  tendered_value=body.tendered_value,
+                                  closed_on=body.closed_on)
+        session.add(row)
+    else:
+        # The published value is evidence and is not edited to reconcile a
+        # share. Everything an award teaches later is; the document is not.
+        if body.tendered_value != row.tendered_value:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                f"{ref} is already recorded with a tendered value of "
+                f"{row.tendered_value}. That figure is what the published "
+                "document said, so it is not editable — correct it by "
+                "deleting the row if it was mistyped.")
+
+    row.customer_id = customer.customer_id if customer else None
+    row.customer_ref = body.customer.strip()[:255]
+    row.won_value = body.won_value
+    row.awarded_on = body.awarded_on
+    row.categories = list(body.categories)
+    row.source = body.source.strip()[:512]
+    row.note = body.note
+    row.recorded_by_user_id = principal.user_id
+    session.commit()
+
+    return _envelope({
+        "tender_ref": row.tender_ref,
+        "customer_id": row.customer_id,
+        "customer_ref": row.customer_ref,
+        "tendered_value": float(row.tendered_value),
+        "won_value": float(row.won_value) if row.won_value is not None else None,
+        "closed_on": row.closed_on.isoformat(),
+        "awarded_on": row.awarded_on.isoformat() if row.awarded_on else None,
+        "categories": row.categories,
+        "source": row.source,
+        "resolved": customer is not None,
+    }, th=th)
 
 
 # ── dependency: what this book leans on, at both ends ───────────────────────
@@ -2582,7 +2841,13 @@ class NegotiationRequest(BaseModel):
     #: How late the money is expected. CAF is banked on invoice and earned on
     #: receipt, so this is a lever the salesperson holds, not a KPI.
     expected_days_late: int = Field(0, ge=-365, le=730)
-    #: Which floor table applies. Absent means the default multiplier.
+    #: Agreed credit days on this deal — the term conceded, not the days this
+    #: customer usually takes. The two are priced separately and deliberately:
+    #: lateness by ``expected_days_late`` above, the term itself through the
+    #: floor. Absent means none was stated and the published standard term
+    #: applies, which is not the same as zero.
+    credit_days: Optional[int] = Field(None, ge=0, le=365)
+    #: Which floor table applies. Absent means it is resolved from the item.
     family: Optional[str] = None
     #: "What price leaves this line contributing X?" — solved, not searched.
     target_caf: Optional[float] = None
@@ -2620,6 +2885,13 @@ def negotiate(body: NegotiationRequest,
     try:
         resolved = floor.resolve(session, org, body.product_id,
                                  family=body.family, as_of=as_of)
+    except floor.UnknownFamily as e:
+        # 400, and deliberately not the empty envelope below. "This item has no
+        # floor" is a calm answer a screen renders; "there is no such family" is
+        # a malformed request. Answering both the same way is what let the
+        # family name be swept — every unknown name returned the default
+        # multiplier's floor, so the table could be read off the floors.
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from e
     except floor.FloorUnavailable as e:
         return _envelope({"negotiable": False}, th=th,
                          empty_reason=e.reason)
@@ -2632,7 +2904,8 @@ def negotiate(body: NegotiationRequest,
         third_party_incentive=Decimal(str(body.third_party_incentive)),
         toolkit_spend=Decimal(str(body.toolkit_spend)),
         # The vendor ask is quoted per unit in the room and charged as a total.
-        vendor_yield=Decimal(str(body.vendor_concession)) * Decimal(str(body.qty)))
+        vendor_yield=Decimal(str(body.vendor_concession)) * Decimal(str(body.qty)),
+        credit_days=body.credit_days)
 
     # I2. Checked before anything is computed, because the answer to "what
     # would it be worth?" on a government account is not a number.
@@ -2688,6 +2961,7 @@ def negotiate(body: NegotiationRequest,
     else:
         payload["unavailable"] = [{
             "series": "cost_and_margin",
+            "kind": absence.WITHHELD,
             "reason": ("What the item costs is management information. You do "
                        "not need it: the floor already carries it, and "
                        "everything above is arithmetic you can check yourself "
@@ -2713,9 +2987,11 @@ class SimulationRequest(BaseModel):
     #: user's assumptions; neither is guessed at.
     share_moved: float = Field(1.0, ge=0.0, le=1.0)
     discount: float = Field(0.0, ge=0.0, le=1.0)
-    #: Restrict to one band of the shelf — DEAD, SLOW or HEALTHY. Absent means
-    #: the whole shelf.
-    band: Optional[str] = Field(None, pattern="^(DEAD|SLOW|HEALTHY)$")
+    #: Restrict to one band of the shelf — DEAD, SLOW, HEALTHY or UNKNOWN.
+    #: Absent means the whole shelf. UNKNOWN is accepted so a scenario can be
+    #: run over "too new to judge" deliberately; it is never folded into DEAD,
+    #: which is the whole point of the band existing.
+    band: Optional[str] = Field(None, pattern="^(DEAD|SLOW|HEALTHY|UNKNOWN)$")
     # ── supplier delay ──────────────────────────────────────────────────────
     delay_days: int = Field(30, ge=1, le=365)
     price_change_pct: Optional[float] = Field(None, ge=-0.9, le=2.0)
@@ -3047,12 +3323,29 @@ def daily(moved_from: Optional[date] = Query(None),
     # did not exist and could not be made to appear. One number, from one place.
     approvals_pending = approvals.pending_count(session, principal)
 
-    band_rows = session.execute(
-        select(models.Decision.priority_band, func.count())
-        .where(models.Decision.organization_id == org,
-               models.Decision.status == DecisionStatus.OPEN.value)
-        .group_by(models.Decision.priority_band)).all()
-    decisions_by_band = {str(b): int(n) for b, n in band_rows}
+    # The same scope the queue itself applies, for the same reason the approvals
+    # count above was fixed: this was an org-wide `count(*)` over every OPEN row,
+    # and the screen its "Work through these →" opens is not org-wide.
+    #
+    # The gap today is QUOTE_CONTEXT, which the queue excludes as on-demand quote
+    # support rather than an attention item, and which the count included. This
+    # endpoint is manager-or-owner only, so the RESTRICTED types are *not* part
+    # of the discrepancy — a salesperson never loads this page. That makes the
+    # bug smaller than the approvals one it mirrors, and the fix the same shape:
+    # a count and the list it promises to count come from one place.
+    #
+    # It also stops the gap widening on its own. `decision_list_scope` is where
+    # role scoping is decided, so a future role that can open this page inherits
+    # its scope here rather than needing somebody to remember this line.
+    #
+    # Counted from the repository's own list rather than by a parallel aggregate
+    # query, so the tile cannot drift from the queue: one scope, one reader. The
+    # queue is a worklist a person is expected to finish, so its length is
+    # bounded by what it is for.
+    decisions_by_band: dict[str, int] = {}
+    for row in DecisionRepository(session, org).list(
+            status=DecisionStatus.OPEN.value, **decision_queue_scope(principal)):
+        decisions_by_band[row.priority_band] = decisions_by_band.get(row.priority_band, 0) + 1
 
     since, until = daily_view.window_since(last_sync, previous_sync,
                                            now=clock.now(),
@@ -3067,6 +3360,265 @@ def daily(moved_from: Optional[date] = Query(None),
             decisions_by_band=decisions_by_band, stock=stock_result,
             supply=supply_result, cadence=cadence_result, cash=cash,
             moved=moved, moved_window=(moved_from, moved_to),
-            committed_weeks=committed_weeks,
-            th=th),
+            committed_weeks=committed_weeks),
         th=th)
+
+
+# ── statutory payment timing ────────────────────────────────────────────────
+#
+# Two screens over the same book, both manager-or-owner and both scoped that
+# way for the reason ``/payables`` is: what we owe a supplier is purchase cost
+# by another name, and this platform does not put cost in front of a
+# salesperson. The MSME view additionally carries a cost estimate derived from
+# the organization's tax rate, which is RESTRICTED in its own right.
+#
+# Neither endpoint interprets anything. They assemble rows, hand them to a pure
+# module in ``commercial/insight`` and map the result — there is no arithmetic
+# here, and the figures that come back are dates and amounts rather than a
+# position anybody should file a return on.
+
+
+def _msme_statuses(session: Session, org: str) -> dict[str, msme.Status]:
+    """Every MSME status somebody recorded, keyed by vendor id.
+
+    Absent means UNKNOWN, which ``msme.NO_STATUS`` supplies at the point of
+    use. Deliberately not defaulted here: a dict that answered for every vendor
+    would hide the difference between a supplier nobody has assessed and one
+    that is not in the book at all.
+    """
+    return {
+        row.vendor_id: msme.Status(
+            classification=row.classification,
+            activity=row.enterprise_activity,
+            written_agreement=row.written_agreement,
+            agreed_days=row.agreed_days,
+            evidence=row.evidence,
+            captured_at=(row.captured_at.date() if row.captured_at else None),
+        )
+        for row in session.scalars(
+            select(models.VendorMsmeStatus).where(
+                models.VendorMsmeStatus.organization_id == org)).all()
+    }
+
+
+def _unpaid_bills(session: Session, org: str) -> list[msme.OpenBill]:
+    """Bills with something still owed on them, whether or not they resolved.
+
+    ``vendor_id`` is not required, unlike ``_open_bills``. A bill from a
+    supplier the contact pull never returned is still money owed on a date, and
+    dropping it here would take exactly the least visible bills off a list
+    whose whole job is to be complete about a deadline.
+    """
+    rows = session.scalars(
+        select(models.BillDoc).where(models.BillDoc.organization_id == org)).all()
+    return [
+        msme.OpenBill(vendor_id=b.vendor_id, external_ref=b.external_ref,
+                      number=b.number, bill_date=b.date, due_date=b.due_date,
+                      balance=float(b.balance or 0))
+        for b in rows if (b.balance or 0) > 0
+    ]
+
+
+def _vendor_names(session: Session, org: str) -> dict[str, str]:
+    return {v.vendor_id: v.name for v in session.scalars(
+        select(models.Vendor).where(models.Vendor.organization_id == org)).all()}
+
+
+@router.get("/msme-watchlist")
+def msme_watchlist(principal: Principal = Depends(require_manager_or_owner),
+                   session: Session = Depends(get_session)) -> dict:
+    """Open bills approaching or past the MSME 45-day deadline.
+
+    Section 43B(h) disallows the deduction for anything still owed to a
+    registered micro or small supplier past the section 15 limit, for that
+    year. Every input but one was already here; the missing one is the
+    supplier's status, which is captured through ``PUT /msme-status`` and is
+    never inferred.
+
+    A supplier with no status on record produces a row in the ``gaps`` band
+    rather than being quietly dropped, and the amount beside it is what *would*
+    be at risk — reported separately and never added to the confirmed total.
+    """
+    org, _snapshot, th = _labels_only(session, principal)
+    as_of = clock.today(th.timezone)
+
+    bills = _unpaid_bills(session, org)
+    if not bills:
+        return _no_data(th, "supplier payment deadlines", missing="supplier bill",
+                        synced=_books_have_sales(session, org))
+
+    # No ``po_receipts``, and deliberately not a stub that returns nothing.
+    # Section 15 counts from acceptance, for which a recorded goods receipt is
+    # the better proxy — but ``BillDoc`` carries no link to a purchase order,
+    # so there is nothing to join on. ``msme.deadline_for`` accepts receipts
+    # for when there is, and until then every row reports its
+    # ``deadline_start_basis`` as BILL_DATE, which is the true statement about
+    # what the date rests on. An always-empty resolver here would look like the
+    # feature exists.
+    built = msme.watchlist(bills, _msme_statuses(session, org),
+                           _vendor_names(session, org), as_of=as_of, th=th)
+    Companies(session, org).stamp(built["rows"],
+                                  index_of(session, org, models.Vendor),
+                                  by="vendor_id")
+    return _envelope(
+        built, th=th,
+        empty_reason=(None if built["rows"] else
+                      "No open bill is inside the watch horizon, and none has "
+                      "passed its deadline. Suppliers confirmed as outside the "
+                      "rule are not listed at all."))
+
+
+class MsmeStatusIn(BaseModel):
+    """What was established about one supplier, and on what evidence."""
+
+    vendor_id: str = Field(min_length=1)
+    classification: str = Field(default=MsmeClassification.UNKNOWN.value)
+    enterprise_activity: str = Field(default=EnterpriseActivity.UNKNOWN.value)
+    # Tri-state on the wire as well as in the column. A client that omits this
+    # is saying "not established", which is not the same as sending false.
+    written_agreement: Optional[bool] = Field(default=None)
+    agreed_days: Optional[int] = Field(default=None, ge=0, le=365)
+    evidence: str = Field(default=MsmeEvidence.NONE.value)
+    udyam_number: Optional[str] = Field(default=None, max_length=32)
+    effective_from: Optional[date] = Field(default=None)
+    note: Optional[str] = Field(default=None, max_length=512)
+
+
+@router.put("/msme-status", status_code=status.HTTP_200_OK)
+def set_msme_status(body: MsmeStatusIn,
+                    principal: Principal = Depends(require_manager_or_owner),
+                    session: Session = Depends(get_session)) -> dict:
+    """Record what was established about a supplier's MSME position.
+
+    An upsert on the supplier: a status gets corrected and re-confirmed, and a
+    second row would make "their classification" a question about which row
+    won.
+
+    Zoho's ``payment_terms`` is untouched and unconsulted. Whether a *written*
+    agreement exists is a separate fact from what the ERP's dropdown holds, and
+    conflating them is what would push a supplier with no contract from the
+    fifteen-day limit to the forty-five-day one.
+    """
+    org = principal.organization_id
+    vendor = session.get(models.Vendor, body.vendor_id)
+    if vendor is None or vendor.organization_id != org:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such supplier")
+    try:
+        checked = msme.validate_status(
+            classification=body.classification, activity=body.enterprise_activity,
+            written_agreement=body.written_agreement, agreed_days=body.agreed_days,
+            evidence=body.evidence)
+    except msme.InvalidStatus as e:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e)) from e
+
+    row = session.scalar(
+        select(models.VendorMsmeStatus).where(
+            models.VendorMsmeStatus.organization_id == org,
+            models.VendorMsmeStatus.vendor_id == body.vendor_id))
+    if row is None:
+        row = models.VendorMsmeStatus(organization_id=org, vendor_id=body.vendor_id)
+        session.add(row)
+    row.classification = checked.classification
+    row.enterprise_activity = checked.activity
+    row.written_agreement = checked.written_agreement
+    row.agreed_days = checked.agreed_days
+    row.evidence = checked.evidence
+    row.udyam_number = body.udyam_number
+    row.effective_from = body.effective_from
+    row.note = body.note
+    row.captured_at = clock.now()
+    row.set_by_user_id = principal.user_id
+    session.flush()
+
+    return {"vendor_id": row.vendor_id, "classification": row.classification,
+            "enterprise_activity": row.enterprise_activity,
+            "written_agreement": row.written_agreement,
+            "agreed_days": row.agreed_days, "evidence": row.evidence,
+            "udyam_number": row.udyam_number, "scope": checked.scope,
+            "scope_label": msme.SCOPE_LABELS[checked.scope],
+            "zoho_terms_days": vendor.payment_terms_days}
+
+
+@router.get("/msme-capture-backlog")
+def msme_capture_backlog(principal: Principal = Depends(require_manager_or_owner),
+                         session: Session = Depends(get_session)) -> dict:
+    """Which suppliers are worth establishing an MSME status for, in order.
+
+    The watchlist is only as good as its coverage, and coverage is collected by
+    a person one supplier at a time. "Go and check four hundred vendors" is
+    advice nobody takes, so this ranks the question by what knowing the answer
+    is worth: spend, weighted by how often that supplier is already paid past
+    the limit.
+    """
+    org, _snapshot, th = _labels_only(session, principal)
+    as_of = clock.today(th.timezone)
+    limit_days = int(th.msme_default_days)
+
+    spend: dict[str, list[float]] = {}
+    for bill in session.scalars(
+            select(models.BillDoc).where(
+                models.BillDoc.organization_id == org,
+                models.BillDoc.vendor_id.is_not(None))).all():
+        bucket = spend.setdefault(bill.vendor_id, [0.0, 0.0])
+        bucket[0] += float(bill.total or 0)
+        bucket[1] += 1
+
+    settled: dict[str, list[int]] = {}
+    for row in session.scalars(
+            select(models.BillPaymentApplication).where(
+                models.BillPaymentApplication.organization_id == org,
+                models.BillPaymentApplication.vendor_id.is_not(None))).all():
+        counts = settled.setdefault(row.vendor_id, [0, 0])
+        counts[1] += 1
+        if (row.paid_on - row.bill_date).days > limit_days:
+            counts[0] += 1
+
+    spends = [
+        msme.VendorSpend(vendor_id=vendor_id, spend=totals[0], bills=int(totals[1]),
+                         settled_past_limit=settled.get(vendor_id, [0, 0])[0],
+                         settled_total=settled.get(vendor_id, [0, 0])[1])
+        for vendor_id, totals in spend.items()
+    ]
+    built = msme.capture_backlog(spends, _msme_statuses(session, org),
+                                 _vendor_names(session, org))
+    Companies(session, org).stamp(built["suppliers"],
+                                  index_of(session, org, models.Vendor),
+                                  by="vendor_id")
+    return _envelope(
+        {"as_of": as_of.isoformat(), "limit_days": limit_days, **built},
+        th=th,
+        empty_reason=(None if built["suppliers"] else
+                      "Every supplier with purchase history already has an MSME "
+                      "status on record."))
+
+
+@router.get("/withholding-crossings")
+def withholding_crossings(principal: Principal = Depends(require_manager_or_owner),
+                          session: Session = Depends(get_session)) -> dict:
+    """Suppliers crossing the section 194Q threshold this financial year.
+
+    Silent until the organization's own turnover gate is confirmed in Settings
+    — that figure spans three legal entities and is not derivable from a
+    two-year window of synced documents, and an alert built on an unverified
+    gate asserts a duty nobody established applies.
+    """
+    org, _snapshot, th = _labels_only(session, principal)
+    as_of = clock.today(th.timezone)
+
+    purchases = [
+        withholding.Purchase(vendor_id=b.vendor_id, date=b.date,
+                             amount=float(b.total or 0))
+        for b in session.scalars(
+            select(models.BillDoc).where(
+                models.BillDoc.organization_id == org,
+                models.BillDoc.vendor_id.is_not(None))).all()
+    ]
+    built = withholding.crossings(purchases, _vendor_names(session, org),
+                                  as_of=as_of, th=th)
+    return _envelope(
+        built, th=th,
+        empty_reason=(None if built["crossings"] else
+                      ("Confirm this entity's prior-year turnover in Settings to "
+                       "enable this check."
+                       if not built["gate_confirmed"] else
+                       "No supplier is near the threshold this financial year.")))

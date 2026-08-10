@@ -312,3 +312,39 @@ def test_an_empty_committed_book_still_names_the_horizon_that_was_asked_for():
     assert got["tile"]["label"] == "Cash due in 8 weeks"
     assert got["band"]["question"] == "What lands in the next 8 weeks"
     assert got["tile"]["settled"] is True
+
+
+# ── the wiring, not the builder ──────────────────────────────────────────────
+def test_the_morning_read_is_reachable_over_http(api_client):
+    """`GET /insight/daily` returns a page rather than a 500.
+
+    Everything above this line tests `assemble` directly, and `assemble` was
+    fine. The router called it with a `th=` keyword it does not accept and has
+    never accepted — `_envelope` takes the thresholds object, the builder does
+    not — so every request to the morning read raised `TypeError` and the
+    landing page of the product was a 500 for both roles that can open it.
+
+    It survived because the unit was covered and the wiring was not: a builder
+    tested through its own function signature cannot fail the way a call site
+    fails. This test is deliberately the shallowest possible assertion on that
+    call site, because depth is not what was missing.
+    """
+    token = api_client.post("/api/v1/auth/login", json={
+        "email": "s.menon@sanketh.in", "password": "change-me-now"}).json()["token"]
+
+    r = api_client.get("/api/v1/insight/daily",
+                       headers={"Authorization": f"Bearer {token}"})
+
+    assert r.status_code == 200, r.text
+    body = r.json()
+    # Freshness is its own key rather than a band — the page's claim about its
+    # own age, which is the first thing the module's docstring insists on.
+    assert body["freshness"]
+    assert body["bands"][0]["key"] == daily.NEEDS_YOU
+    # `_envelope` exists to stamp this on every manager-facing payload, and a
+    # response that 500s stamps nothing.
+    assert body["thresholds_version"]
+    # The tile the queue's own scope now feeds. Present and countable on an
+    # empty book, rather than absent because nothing had been detected yet.
+    tiles = {t["key"]: t for b in body["bands"] for t in b["tiles"]}
+    assert tiles["decisions"]["count"] == 0

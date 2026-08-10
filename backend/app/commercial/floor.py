@@ -22,6 +22,15 @@ families does not help either, because the two multipliers differ and they know
 neither. What they get is a number they can subtract from their own agreed price
 to compute exactly what the line contributes. F is disclosable; cost is not.
 
+That argument holds only while the family is a property of the *item*. It is
+supplied on the request, and the floor table used to fall back to ``default``
+for a name it did not recognise — so pricing one item under two families
+returned two floors whose ratio is the ratio of their multipliers, and sweeping
+the name enumerated the table. ``_m_floor`` therefore resolves **strictly** and
+``UnknownFamily`` reaches the caller as a bad request. The reconciliation report
+stays lenient, because there the family comes off a recorded line rather than a
+request; see ``incentive_engine.floor.m_floor_for_family``.
+
 **The markup convention here is deliberate and differs from the rest of this
 package.** ``references.price_at_margin`` computes ``cost / (1 - m)`` because
 every margin in the commercial layer is margin-on-selling-price. ``m_floor`` is
@@ -49,6 +58,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..domain import models
+from . import categories, floor_families
+from .config import CommercialThresholds
 from .economics import CostRow, cost_basis_asof
 
 _ZERO = Decimal("0")
@@ -87,6 +98,12 @@ class FloorReconciliation:
     unit_cost: Decimal
     m_floor: Decimal
     family: Optional[str]
+    #: How the family was decided — ``floor_families.BY_HSN`` and friends. An
+    #: owner checking that a floor is sane needs to know whether the multiplier
+    #: came from somebody's answer, the catalogue, the tariff code, or nothing
+    #: at all, because "priced at default" and "priced as metrology" are
+    #: different conversations about the same number.
+    family_source: str
     as_of: date
     config_version: str
 
@@ -107,6 +124,14 @@ class FloorUnavailable(Exception):
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
         self.reason = reason
+
+
+class UnknownFamily(ValueError):
+    """A family the floor table does not hold. Distinct from ``FloorUnavailable``
+    on purpose: that one means "this item has no floor", which a screen reports
+    calmly, and this one means the request named something that does not exist,
+    which is a 400. Collapsing them would let a probe read "no such family" as
+    "no floor for this item" and keep going."""
 
 
 @lru_cache(maxsize=8)
@@ -156,17 +181,87 @@ def _unit_cost(session: Session, org: str, product_id: str,
 
 
 def _m_floor(family: Optional[str], on: date) -> Decimal:
+    """The multiplier for a family, refusing a name the table does not hold.
+
+    An absent family is not an unknown one — "no family given" means the default
+    multiplier and always has. A *named* family that is not in the table is a
+    caller asking a question about a parameter block they cannot read, and it is
+    answered rather than absorbed.
+    """
+    from incentive_engine.floor import UnknownFamily as _UnknownFamily
     from incentive_engine.floor import m_floor_for_family
-    return m_floor_for_family(parameters(on), family or "default")
+    try:
+        return m_floor_for_family(parameters(on), family or "default", strict=True)
+    except _UnknownFamily as e:
+        raise UnknownFamily(
+            f"{e.family!r} is not a product family this business prices against. "
+            f"Leave it unset for the standard floor.") from e
+
+
+def _resolve_family(session: Session, org: str, product_id: str,
+                    th: Optional[CommercialThresholds]
+                    ) -> floor_families.FamilyResolution:
+    """Which floor family this item prices in, from the item itself.
+
+    Every caller used to pass ``family=None`` and every line in the catalogue
+    priced at the default multiplier — see ``floor_families`` for why that was
+    both a wrong floor and a weakened disclosure defence.
+
+    An item the platform has no product row for resolves nothing rather than
+    raising: it still has a cost record and therefore still has a floor, and
+    refusing to price it because the master is incomplete would take a working
+    number away over a data-quality problem the salesperson cannot fix.
+    """
+    from .policy import load_for_org
+
+    product = session.scalars(
+        select(models.Product).where(
+            models.Product.organization_id == org,
+            models.Product.product_id == product_id)).first()
+    if product is None:
+        return floor_families.FamilyResolution(None, floor_families.BY_NOTHING)
+    th = th if th is not None else load_for_org(session, org)
+    # The per-item line, which is all this needs: only the vendor pass in
+    # ``categories.resolve_all`` requires the whole catalogue, and the three
+    # lines that determine a family are all decided from the item itself.
+    line = categories.resolve(product, th).category
+    return floor_families.resolve(product, th, line=line)
 
 
 def resolve(session: Session, org: str, product_id: str, *,
-            family: Optional[str], as_of: date) -> ResolvedFloor:
+            family: Optional[str], as_of: date,
+            th: Optional[CommercialThresholds] = None) -> ResolvedFloor:
     """The floor a salesperson may be shown. Raises rather than guessing.
 
     ``FloorUnavailable`` carries the reason, because "no floor" on a
     negotiation screen with no explanation reads as a bug and gets worked
     around; with the reason it gets fixed.
+
+    ``family`` is an override, not the source of truth. ``None`` — which is what
+    every caller passes — means "work it out from the item", and an explicit
+    value means the caller knows something this module does not.
+
+    **One step short of closing the family sweep, deliberately.**
+    ``_m_floor`` refuses a family the table does not hold, which stops a caller
+    enumerating names. It does not stop a caller pricing one item under two
+    *valid* names — ``inserts`` then ``metrology`` — and reading the ratio of
+    the two multipliers off the two floors. Resolving the family from the item
+    is what removes that, and it now happens whenever the caller supplies
+    nothing; but the parameter is still honoured when they do, so the sweep
+    survives for anyone who sends one.
+
+    Left that way on purpose rather than fixed here: the strictness above
+    arrived with the disclosure-control work and the contract is not this
+    change's to alter. The item-side resolution makes the request parameter
+    removable, and removing it is the fix — see ``docs/concepts/06-disclosure-
+    control.md`` and ``docs/concepts/04-mechanism-design.md``.
+
+    **The family it resolved is deliberately not returned.** ``ResolvedFloor``
+    is the operations type and has no field for it: telling a salesperson that
+    two items share a family tells them the two share a multiplier, and one
+    leaked cost would then invert both. That is exactly the inference the
+    family variation exists to block, so the family reaches ``reconcile`` and
+    stops there.
     """
     cfg = parameters(as_of)
     cost = _unit_cost(session, org, product_id, as_of)
@@ -177,7 +272,9 @@ def resolve(session: Session, org: str, product_id: str, *,
             "with whoever masters the item — pricing it without a floor is a "
             "guess, and the desk will not pretend otherwise.")
 
-    m = _m_floor(family, as_of)
+    key = (family if family is not None
+           else _resolve_family(session, org, product_id, th).key)
+    m = _m_floor(key, as_of)
     floor = (cost * (Decimal("1") + m)).quantize(_PAISE)
     return ResolvedFloor(
         floor_price=floor,
@@ -188,15 +285,26 @@ def resolve(session: Session, org: str, product_id: str, *,
 
 
 def reconcile(session: Session, org: str, product_id: str, *,
-              family: Optional[str], as_of: date) -> FloorReconciliation:
-    """The same floor with cost and ``m_floor`` shown. Manager and owner only."""
+              family: Optional[str], as_of: date,
+              th: Optional[CommercialThresholds] = None) -> FloorReconciliation:
+    """The same floor with cost and ``m_floor`` shown. Manager and owner only.
+
+    Resolves the family the same way ``resolve`` does, and by the same call, so
+    the two cannot report different floors for the same item on the same day —
+    which is the failure a reconciliation view exists to catch rather than
+    commit.
+    """
     cfg = parameters(as_of)
     cost = _unit_cost(session, org, product_id, as_of)
     if cost is None:
         raise FloorUnavailable(
             "No purchase record for this item on or before this date.")
-    m = _m_floor(family, as_of)
+    resolved = (floor_families.FamilyResolution(family, floor_families.BY_OVERRIDE)
+                if family is not None
+                else _resolve_family(session, org, product_id, th))
+    m = _m_floor(resolved.key, as_of)
     return FloorReconciliation(
         floor_price=(cost * (Decimal("1") + m)).quantize(_PAISE),
-        unit_cost=cost, m_floor=m, family=family, as_of=as_of,
+        unit_cost=cost, m_floor=m, family=resolved.family,
+        family_source=resolved.source, as_of=as_of,
         config_version=cfg.version)

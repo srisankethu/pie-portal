@@ -66,6 +66,31 @@ correctly withheld `marginFloor`, and hidden in the component by `{mgmt && …}`
 Twenty bisection probes turned it into the exact floor price, and the floor is
 cost × (1 + margin floor).
 
+**And no rule whose boundary is cost.** MFLOOR was a count; the same defect
+returned as a *rule code*. `quote-intelligence/assess` takes `proposed_price`
+from the caller and answers which exceptions fired, so walking the price finds
+the value where the answer changes — and for `NEGATIVE_MARGIN` that value is the
+purchase price itself, with no policy multiplier in the comparison to obscure
+it. Two hundred lines fit in one request, so it was two round trips, not twenty
+probes. Withholding the *reasoning* from a rule is not enough: **the fact that a
+named rule fired is a predicate, and a predicate a caller can walk is the number
+it tests against.**
+
+So a rule carries `boundary_refs` — the values that place its boundary, not
+every value it reads — and `quote_service.project` withholds any rule naming
+something the recipient may not see, substituting one fixed
+`APPROVAL_REQUIRED`. The control survives; the boundary does not.
+`test_a_salesperson_cannot_walk_the_price_to_recover_cost` sweeps the price and
+asserts the response does not change at cost, which is the shape of test this
+class needs — every field-level assertion in that file passed while the endpoint
+gave up cost.
+
+Two residual boundaries remain by design, and that is the accepted line: a
+control that says "this needs approval" must move somewhere. What is left is
+`cost/(1 - min_margin)` and `cost/(1 - margin_floor)` — two equations in three
+unknowns, so cost does not come out. **One boundary per distinct action the
+recipient can take is the budget; anything past it is a leak.**
+
 The boundary of this rule, stated because it is real rather than because it is
 comfortable. A line's negotiation floor and its `recommended` price are both
 cost × a policy multiplier, and a salesperson needs both to do the job; anyone
@@ -118,6 +143,31 @@ never the benign default. The tells are worth knowing by sight: `sum(… or 0)`
 over rows that may hold `None`, `if not rows: return None` in something whose job
 is to refuse, and a `is not None` guard wrapped around the objection rather than
 around the arithmetic.
+
+**An equivalence score is policy, never an identity.** `pie_service._rel_from_score`
+turns a score into TECH / COMPAT / POSSIBLE using this organization's
+`equivalence_tech_band` and `equivalence_compat_band` — commercial policy, read
+per request, versioned, and two orgs may legitimately disagree about the same
+pair. So a `rel` is true of *this quote under this policy*, not of the products.
+Never persist one as a relationship between products, and never feed a derived
+`rel` or `supplyCode` back in as the input to another resolution.
+
+The reason is that technical equivalence does not compose. `A ≈ B` within
+tolerance and `B ≈ C` within tolerance is not `A ≈ C`, and pie-parser's engine is
+built so it cannot compose them — every comparison's left operand is the request.
+The one path that would smuggle a second hop past that is storage: a confirmed
+mapping is *asserted* identity, and the engine will derive a requirement from an
+asserted record and rank equivalents off it. So a scored suggestion promoted to a
+confirmed mapping becomes an exact reference it never was, and the next "same as
+their 7781 but 12 mm" composes two bands into a wrong part with a defensible
+explanation attached.
+
+Two narrow conditions hold that line: `store._identity_candidate` offers a
+confirmable code only for the engine's own single-candidate `NEEDS_REVIEW`
+proposal — an exact catalogue hit downgraded for namespace safety, never a scored
+suggestion — and `routers.quote._confirm_identity` refuses anything else.
+Picking a different product is a substitution on one quote and must stay one.
+`tests/test_identity_confirmation_gate.py` pins both.
 
 ---
 

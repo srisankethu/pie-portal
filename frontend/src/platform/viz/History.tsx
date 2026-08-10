@@ -12,7 +12,7 @@
 import { MonthPicker } from "./Seg";
 import { useState } from "react";
 import { money } from "../../money";
-import { InlineLink, VarianceIndicator } from "../kit";
+import { InlineLink, Unavailable, VarianceIndicator } from "../kit";
 import { Tip } from "../../Tip";
 import { papi } from "../api";
 import type { PlatformSession } from "../types";
@@ -217,16 +217,7 @@ export function CustomerHealthTimeline({
       {/* What this screen cannot show, named. The specification asked for a
           payment series; the platform holds invoice lines, not receipts. Saying
           so is the difference between a gap and a lie by omission. */}
-      {unavailable.length > 0 && (
-        <ul className="tl-unavailable">
-          {unavailable.map((u, i) => (
-            <li key={i}>
-              <strong>{u.series.replace(/_/g, " ")}</strong> — not shown.{" "}
-              <span className="viz-muted">{u.reason}</span>
-            </li>
-          ))}
-        </ul>
-      )}
+      <Unavailable items={unavailable} />
     </Panel>
   );
 }

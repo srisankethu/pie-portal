@@ -12,8 +12,9 @@
  * organisation on it. There is one session now, and the caller passes its token
  * in like every other client in this codebase does.
  */
-import type { LineIntelligence, QuoteIntelligence, QuoteLossReason, QuoteOutcome,
-              QuoteOutcomeStatus } from "./types";
+import type {
+  LineIntelligence, QuoteIntelligence, QuoteLossReason, QuoteOutcome, QuoteOutcomeStatus,
+} from "./types";
 
 export interface AssessLine {
   line_id: string;
@@ -59,14 +60,24 @@ export const intelligence = {
       token,
     ),
 
-  /** Move a quote along the lifecycle. A LOST quote needs `lossReason` — the
-   *  server refuses it otherwise, deliberately, because a loss nobody explained
-   *  is a row that can be counted and never learned from. */
-  outcome: (token: string, quoteId: string, status: QuoteOutcomeStatus, customer: string,
-            note?: string, lossReason?: QuoteLossReason) =>
-    post<QuoteOutcome>("/api/v1/quote-intelligence/outcome",
-                       { quote_id: quoteId, status, customer, note,
-                         loss_reason: lossReason ?? null }, token),
+  /** Move a quote along DRAFT -> SENT -> WON/LOST.
+   *
+   *  A LOST call without `lossReason` is refused with a 422 by design, and the
+   *  server owns that rule rather than this client: a competitor taking the
+   *  order and the requirement going away are opposite facts about what the
+   *  customer buys elsewhere, and only the person recording the loss knows
+   *  which it was. Take `loss_reasons` off the outcome rather than listing the
+   *  choices here — a second copy of that list is one that drifts. */
+  outcome: (
+    token: string, quoteId: string, status: QuoteOutcomeStatus, customer: string,
+    note?: string, lossReason?: QuoteLossReason, lostTo?: string,
+  ) =>
+    post<QuoteOutcome>(
+      "/api/v1/quote-intelligence/outcome",
+      { quote_id: quoteId, status, customer, note,
+        loss_reason: lossReason, lost_to: lostTo },
+      token,
+    ),
 
   /** Ask a manager or owner to sign off this line at the price on it now.
    *  Recording a reason is not the same as being allowed — this is the ask. */

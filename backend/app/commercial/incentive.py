@@ -109,6 +109,10 @@ class Deal:
     #: Y — what the vendor is being asked to give back, as a total. A request
     #: until somebody with buy-side scope agrees it and a document exists.
     vendor_yield: Decimal = _ZERO
+    #: Agreed credit days. OPERATIONAL — it is a term the salesperson negotiates
+    #: and can read off their own quote. ``None`` means none was stated, and the
+    #: published fallback applies rather than zero.
+    credit_days: Optional[int] = None
 
     @property
     def net_price(self) -> Decimal:
@@ -123,6 +127,16 @@ class Assessment:
     third_party: Decimal
     toolkit_charged: Decimal
     vendor_yield: Decimal
+    #: What the credit period costs this line. Zero while the term charge is
+    #: off, which is the shipped default.
+    term_charge: Decimal
+    #: The floor once the credit period is paid for — ``F/(1-k)``. Equal to the
+    #: published floor when the charge is off, so the desk shows one number
+    #: either way and it always means the same thing: the price at which this
+    #: line stops contributing.
+    floor_after_terms: Decimal
+    credit_days: Optional[int]
+    credit_days_assumed: bool
     caf: Decimal
     #: CAF x c(d) at the payment timing being assumed. CAF is banked on invoice
     #: and earned on receipt; this is what it is worth if the money arrives when
@@ -145,6 +159,10 @@ class Assessment:
             "third_party_charged": float(self.third_party),
             "toolkit_charged": float(self.toolkit_charged),
             "vendor_yield_credited": float(self.vendor_yield),
+            "term_charge": float(self.term_charge),
+            "floor_after_terms": float(self.floor_after_terms),
+            "credit_days": self.credit_days,
+            "credit_days_assumed": self.credit_days_assumed,
             "caf": float(self.caf),
             "collected_caf": float(self.collected_caf),
             "collection_factor": float(self.collection_factor),
@@ -177,6 +195,7 @@ def _line(deal: Deal, *, as_of: date, customer_id: str, product_id: str,
         unit_price_net=deal.net_price,
         floor_price=deal.floor_price,
         salesperson_id=salesperson_id,
+        credit_days=deal.credit_days,
     )
 
 
@@ -238,13 +257,26 @@ def assess(deal: Deal, *, as_of: date, customer_id: str, product_id: str,
     factor = collection.factor(cfg, expected_days_late)
     label = _collection_label(cfg, expected_days_late)
 
+    floor_after = _floor_after_terms(deal, as_of)
+
     warnings: list[str] = []
-    below = deal.net_price < deal.floor_price
+    below = deal.net_price < floor_after
     if below:
         warnings.append(
             "The net price is below the floor. This line takes contribution "
             "away rather than adding it — that is the price discipline "
             "working, not an error.")
+    if computed.term_charge > _ZERO and not below:
+        warnings.append(
+            f"The credit period on this line costs {_money(computed.term_charge)}. "
+            "Money you are owed is money you have lent them, and the floor "
+            "above already has that in it — shortening the terms is worth as "
+            "much to you as holding the price.")
+    if computed.credit_days_assumed:
+        warnings.append(
+            "No credit period was stated, so this is priced at the standard "
+            "term. If you have agreed something longer, put it in — it is "
+            "cheaper to say so now than to have it charged at settlement.")
     if computed.caf < _ZERO and not below:
         warnings.append(
             "What is being given away costs more than the line contributes, "
@@ -263,6 +295,10 @@ def assess(deal: Deal, *, as_of: date, customer_id: str, product_id: str,
         third_party=_money(computed.third_party),
         toolkit_charged=_money(computed.toolkit_charged),
         vendor_yield=_money(computed.vendor_yield),
+        term_charge=_money(computed.term_charge),
+        floor_after_terms=_money(floor_after),
+        credit_days=computed.credit_days,
+        credit_days_assumed=computed.credit_days_assumed,
         caf=_money(computed.caf),
         collected_caf=_money(computed.caf * factor),
         collection_factor=factor,
@@ -286,14 +322,32 @@ def _net_charges(deal: Deal, as_of: date) -> Decimal:
             - deal.vendor_yield * cfg.dec("caf", "vendor_yield_credit"))
 
 
+def _k(deal: Deal, as_of: date) -> Decimal:
+    """The term-charge rate for this deal. Zero while the charge is off."""
+    from incentive_engine.caf import term_charge_rate
+    rate, _days, _assumed = term_charge_rate(_cfg(as_of), deal.credit_days)
+    return rate
+
+
+def _floor_after_terms(deal: Deal, as_of: date) -> Decimal:
+    """``F/(1-k)`` — the floor with the credit period paid for."""
+    from incentive_engine.floor import terms_adjusted
+    return terms_adjusted(deal.floor_price, _k(deal, as_of))
+
+
 def discount_to_floor(deal: Deal, *, as_of: date) -> Optional[Decimal]:
     """The largest per-unit discount this line can carry and still contribute.
 
     The number actually wanted in a negotiation: "how much can I give away
     before this stops being worth doing?". Solving ``CAF = 0`` for the discount:
 
-        q x (P - d - F) - K - 0.5T + Y = 0
-        d = (P - F) + (Y - K - 0.5T) / q
+        q(P - d - F) - K - 0.5T + Y - q(P - d)k = 0
+        d = P - F/(1-k) - (K + 0.5T - Y) / (q(1-k))
+
+    Still one subtraction against a floor, which is the whole point: the term
+    charge changes *which* floor, not the shape of the arithmetic, so the
+    answer a salesperson works out on the phone is the same calculation it was
+    (I5). With ``k = 0`` this reduces exactly to the previous expression.
 
     Rounded *down* to the paise, because a break-even rounded up is not one.
     Returns ``None`` when there is nothing to give — an honest answer, not zero
@@ -301,8 +355,10 @@ def discount_to_floor(deal: Deal, *, as_of: date) -> Optional[Decimal]:
     """
     if deal.qty <= _ZERO:
         return None
+    k = _k(deal, as_of)
     charges = _net_charges(deal, as_of)
-    raw = (deal.agreed_price - deal.floor_price) - (charges / deal.qty)
+    raw = ((deal.agreed_price - _floor_after_terms(deal, as_of))
+           - charges / (deal.qty * (Decimal("1") - k)))
     if raw <= _ZERO:
         return None
     return raw.quantize(_PAISE, rounding=ROUND_DOWN)
@@ -316,13 +372,17 @@ def price_for_target(deal: Deal, target_caf: Decimal, *,
     have to hold the price at?". Solved rather than searched, so the answer is
     exact and the same every time.
 
-        P = F + d + (target + K + 0.5T - Y) / q
+        P = F/(1-k) + d + (target + K + 0.5T - Y) / (q(1-k))
+
+    which is the previous expression with the floor grossed up for the credit
+    period, and identical to it at ``k = 0``.
     """
     if deal.qty <= _ZERO:
         return None
+    k = _k(deal, as_of)
     charges = _net_charges(deal, as_of)
-    return _money(deal.floor_price + deal.customer_discount
-                  + (target_caf + charges) / deal.qty)
+    return _money(_floor_after_terms(deal, as_of) + deal.customer_discount
+                  + (target_caf + charges) / (deal.qty * (Decimal("1") - k)))
 
 
 def _cfg(as_of: date):

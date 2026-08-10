@@ -459,10 +459,20 @@ def test_the_recorded_reason_reaches_the_analysis(client):
 
 
 def test_a_won_quote_cannot_carry_a_loss_reason(client):
-    """It would be a fact about nothing, and it would be counted."""
+    """It would be a fact about nothing, and it would be counted.
+
+    The column is written only on the LOST edge, so a reason arriving with a
+    WON is dropped rather than refused. This branch originally refused it with
+    a 422; main had already landed the drop, and its
+    ``test_a_won_quote_carries_no_loss_reason`` pins that. The two mechanisms
+    protect the same invariant — nothing but a real loss reaches the loss mix —
+    and refusing would break the case main wrote it for: a form that still
+    holds a reason from an earlier attempt, switched to WON before sending.
+    """
     _outcome(client, MANAGER, "new3", "SENT")
     r = _outcome(client, MANAGER, "new3", "WON", loss_reason="PRICE")
-    assert r.status_code == 422
+    assert r.status_code == 200
+    assert r.json()["loss_reason"] is None
 
 
 def test_a_mistyped_reason_can_be_corrected_without_touching_the_snapshot(client):

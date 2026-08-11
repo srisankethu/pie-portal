@@ -860,8 +860,8 @@ class SalesTxn(Base):
     # deletes, and the only symptom would have been the portfolio and
     # customer-item screens quietly getting slower.
     __table_args__ = (
-        UniqueConstraint("organization_id", "external_ref",
-                         name="uq_salestxn_org_ref"),
+        UniqueConstraint("organization_id", "connector", "connection_id", "external_ref",
+                         name="uq_salestxn_source"),
         Index("ix_sales_txns_org_customer_product",
               "organization_id", "customer_id", "product_id"),
         Index("ix_sales_txns_org_product_date",
@@ -870,6 +870,14 @@ class SalesTxn(Base):
 
     sales_txn_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
     organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    # Which system this document came from, and which connected company's
+    # book. The same triple the master tables carry: an external reference is
+    # unique only inside the system that issued it, and only inside one company
+    # of that system. Nullable because a row written before this existed cannot
+    # be attributed after the fact — see the migration for why nothing is
+    # backfilled.
+    connector: Mapped[Optional[str]] = mapped_column(String(32), index=True)
+    connection_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
     external_ref: Mapped[str] = mapped_column(String(160), index=True)  # invoice_id:line_id
     customer_id: Mapped[str] = mapped_column(String(64), index=True)
     product_id: Mapped[str] = mapped_column(String(64), index=True)
@@ -893,8 +901,8 @@ class CostRecord(Base):
 
     __tablename__ = "cost_records"
     __table_args__ = (
-        UniqueConstraint("organization_id", "external_ref",
-                         name="uq_costrecord_org_ref"),
+        UniqueConstraint("organization_id", "connector", "connection_id", "external_ref",
+                         name="uq_costrecord_source"),
         # Declared for the same reason as the sales_txns pair above: it is what
         # makes the effective-cost lookup for a customer-item pair cheap.
         Index("ix_cost_records_org_product_date",
@@ -908,6 +916,14 @@ class CostRecord(Base):
 
     cost_record_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
     organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    # Which system this document came from, and which connected company's
+    # book. The same triple the master tables carry: an external reference is
+    # unique only inside the system that issued it, and only inside one company
+    # of that system. Nullable because a row written before this existed cannot
+    # be attributed after the fact — see the migration for why nothing is
+    # backfilled.
+    connector: Mapped[Optional[str]] = mapped_column(String(32), index=True)
+    connection_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
     external_ref: Mapped[str] = mapped_column(String(160), index=True)  # bill_id:line_id
     product_id: Mapped[str] = mapped_column(String(64), index=True)
     #: Who this was bought from, copied down from the bill header.
@@ -1974,14 +1990,22 @@ class PaymentReceipt(Base):
 
     __tablename__ = "payment_receipts"
     __table_args__ = (
-        UniqueConstraint("organization_id", "external_ref",
-                         name="uq_payment_org_external"),
+        UniqueConstraint("organization_id", "connector", "connection_id", "external_ref",
+                         name="uq_payment_source"),
         Index("ix_payment_org_date", "organization_id", "date"),
     )
 
     payment_receipt_id: Mapped[str] = mapped_column(String(64), primary_key=True,
                                                     default=_uuid)
     organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    # Which system this document came from, and which connected company's
+    # book. The same triple the master tables carry: an external reference is
+    # unique only inside the system that issued it, and only inside one company
+    # of that system. Nullable because a row written before this existed cannot
+    # be attributed after the fact — see the migration for why nothing is
+    # backfilled.
+    connector: Mapped[Optional[str]] = mapped_column(String(32), index=True)
+    connection_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
     external_ref: Mapped[str] = mapped_column(String(128), index=True)  # Zoho payment_id
     customer_id: Mapped[str] = mapped_column(String(64),
                                              ForeignKey("customers.customer_id"),
@@ -2012,14 +2036,22 @@ class PaymentApplication(Base):
 
     __tablename__ = "payment_applications"
     __table_args__ = (
-        UniqueConstraint("organization_id", "external_ref",
-                         name="uq_payment_application_org_external"),
+        UniqueConstraint("organization_id", "connector", "connection_id", "external_ref",
+                         name="uq_payment_application_source"),
         Index("ix_payment_app_org_invoice", "organization_id", "invoice_external_ref"),
     )
 
     payment_application_id: Mapped[str] = mapped_column(String(64), primary_key=True,
                                                         default=_uuid)
     organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    # Which system this document came from, and which connected company's
+    # book. The same triple the master tables carry: an external reference is
+    # unique only inside the system that issued it, and only inside one company
+    # of that system. Nullable because a row written before this existed cannot
+    # be attributed after the fact — see the migration for why nothing is
+    # backfilled.
+    connector: Mapped[Optional[str]] = mapped_column(String(32), index=True)
+    connection_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
     external_ref: Mapped[str] = mapped_column(String(128), index=True)
     payment_receipt_id: Mapped[str] = mapped_column(
         String(64), ForeignKey("payment_receipts.payment_receipt_id"), index=True)
@@ -2053,13 +2085,21 @@ class SalesOrderDoc(Base):
 
     __tablename__ = "sales_orders"
     __table_args__ = (
-        UniqueConstraint("organization_id", "external_ref",
-                         name="uq_sales_order_org_ref"),
+        UniqueConstraint("organization_id", "connector", "connection_id", "external_ref",
+                         name="uq_sales_order_source"),
     )
 
     sales_order_id: Mapped[str] = mapped_column(String(64), primary_key=True,
                                                 default=_uuid)
     organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    # Which system this document came from, and which connected company's
+    # book. The same triple the master tables carry: an external reference is
+    # unique only inside the system that issued it, and only inside one company
+    # of that system. Nullable because a row written before this existed cannot
+    # be attributed after the fact — see the migration for why nothing is
+    # backfilled.
+    connector: Mapped[Optional[str]] = mapped_column(String(32), index=True)
+    connection_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
     external_ref: Mapped[str] = mapped_column(String(128), index=True)
     number: Mapped[Optional[str]] = mapped_column(String(128))
     customer_id: Mapped[Optional[str]] = mapped_column(String(64),
@@ -2107,13 +2147,21 @@ class BillDoc(Base):
 
     __tablename__ = "bills"
     __table_args__ = (
-        UniqueConstraint("organization_id", "external_ref",
-                         name="uq_bill_org_ref"),
+        UniqueConstraint("organization_id", "connector", "connection_id", "external_ref",
+                         name="uq_bill_source"),
         Index("ix_bill_org_due", "organization_id", "due_date"),
     )
 
     bill_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
     organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    # Which system this document came from, and which connected company's
+    # book. The same triple the master tables carry: an external reference is
+    # unique only inside the system that issued it, and only inside one company
+    # of that system. Nullable because a row written before this existed cannot
+    # be attributed after the fact — see the migration for why nothing is
+    # backfilled.
+    connector: Mapped[Optional[str]] = mapped_column(String(32), index=True)
+    connection_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
     external_ref: Mapped[str] = mapped_column(String(128), index=True)
     number: Mapped[Optional[str]] = mapped_column(String(128))
     vendor_id: Mapped[Optional[str]] = mapped_column(String(64),
@@ -2155,13 +2203,21 @@ class InvoiceDoc(Base):
 
     __tablename__ = "invoices"
     __table_args__ = (
-        UniqueConstraint("organization_id", "external_ref",
-                         name="uq_invoice_org_ref"),
+        UniqueConstraint("organization_id", "connector", "connection_id", "external_ref",
+                         name="uq_invoice_source"),
         Index("ix_invoice_org_due", "organization_id", "due_date"),
     )
 
     invoice_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
     organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    # Which system this document came from, and which connected company's
+    # book. The same triple the master tables carry: an external reference is
+    # unique only inside the system that issued it, and only inside one company
+    # of that system. Nullable because a row written before this existed cannot
+    # be attributed after the fact — see the migration for why nothing is
+    # backfilled.
+    connector: Mapped[Optional[str]] = mapped_column(String(32), index=True)
+    connection_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
     external_ref: Mapped[str] = mapped_column(String(128), index=True)
     number: Mapped[Optional[str]] = mapped_column(String(128))
     customer_id: Mapped[Optional[str]] = mapped_column(
@@ -2217,9 +2273,8 @@ class InvoiceSalesOrderLink(Base):
 
     __tablename__ = "invoice_sales_orders"
     __table_args__ = (
-        UniqueConstraint("organization_id", "invoice_external_ref",
-                         "sales_order_external_ref",
-                         name="uq_invoice_sales_order_org_pair"),
+        UniqueConstraint("organization_id", "connector", "connection_id", "invoice_external_ref", "sales_order_external_ref",
+                         name="uq_invoice_sales_order_source"),
         Index("ix_invoice_so_org_invoice",
               "organization_id", "invoice_external_ref"),
         Index("ix_invoice_so_org_order",
@@ -2230,6 +2285,14 @@ class InvoiceSalesOrderLink(Base):
                                                         primary_key=True,
                                                         default=_uuid)
     organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    # Which system this document came from, and which connected company's
+    # book. The same triple the master tables carry: an external reference is
+    # unique only inside the system that issued it, and only inside one company
+    # of that system. Nullable because a row written before this existed cannot
+    # be attributed after the fact — see the migration for why nothing is
+    # backfilled.
+    connector: Mapped[Optional[str]] = mapped_column(String(32), index=True)
+    connection_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
     invoice_external_ref: Mapped[str] = mapped_column(String(128), index=True)
     sales_order_external_ref: Mapped[str] = mapped_column(String(128), index=True)
     #: The order number as the invoice stated it, so a row is readable without
@@ -2259,13 +2322,21 @@ class Location(Base):
 
     __tablename__ = "locations"
     __table_args__ = (
-        UniqueConstraint("organization_id", "external_ref",
-                         name="uq_location_org_ref"),
+        UniqueConstraint("organization_id", "connector", "connection_id", "external_ref",
+                         name="uq_location_source"),
     )
 
     location_id: Mapped[str] = mapped_column(String(64), primary_key=True,
                                              default=_uuid)
     organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    # Which system this document came from, and which connected company's
+    # book. The same triple the master tables carry: an external reference is
+    # unique only inside the system that issued it, and only inside one company
+    # of that system. Nullable because a row written before this existed cannot
+    # be attributed after the fact — see the migration for why nothing is
+    # backfilled.
+    connector: Mapped[Optional[str]] = mapped_column(String(32), index=True)
+    connection_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
     external_ref: Mapped[str] = mapped_column(String(128), index=True)
     name: Mapped[str] = mapped_column(String(255))
     #: Zoho's own kind — ``general`` trades, ``line_item_only`` is a store that
@@ -2308,8 +2379,8 @@ class StockLocationSnapshot(Base):
 
     __tablename__ = "stock_location_snapshots"
     __table_args__ = (
-        UniqueConstraint("organization_id", "product_id", "location_external_ref",
-                         "as_of", name="uq_stock_loc_org_product_location_day"),
+        UniqueConstraint("organization_id", "connector", "connection_id", "product_id", "location_external_ref", "as_of",
+                         name="uq_stock_loc_source"),
         Index("ix_stock_loc_org_asof", "organization_id", "as_of"),
     )
 
@@ -2317,6 +2388,14 @@ class StockLocationSnapshot(Base):
                                                             primary_key=True,
                                                             default=_uuid)
     organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    # Which system this document came from, and which connected company's
+    # book. The same triple the master tables carry: an external reference is
+    # unique only inside the system that issued it, and only inside one company
+    # of that system. Nullable because a row written before this existed cannot
+    # be attributed after the fact — see the migration for why nothing is
+    # backfilled.
+    connector: Mapped[Optional[str]] = mapped_column(String(32), index=True)
+    connection_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
     product_id: Mapped[str] = mapped_column(String(64),
                                             ForeignKey("products.product_id"),
                                             index=True)
@@ -2357,14 +2436,22 @@ class CreditNoteDoc(Base):
 
     __tablename__ = "credit_notes"
     __table_args__ = (
-        UniqueConstraint("organization_id", "external_ref",
-                         name="uq_credit_note_org_ref"),
+        UniqueConstraint("organization_id", "connector", "connection_id", "external_ref",
+                         name="uq_credit_note_source"),
         Index("ix_credit_note_org_date", "organization_id", "date"),
     )
 
     credit_note_id: Mapped[str] = mapped_column(String(64), primary_key=True,
                                                 default=_uuid)
     organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    # Which system this document came from, and which connected company's
+    # book. The same triple the master tables carry: an external reference is
+    # unique only inside the system that issued it, and only inside one company
+    # of that system. Nullable because a row written before this existed cannot
+    # be attributed after the fact — see the migration for why nothing is
+    # backfilled.
+    connector: Mapped[Optional[str]] = mapped_column(String(32), index=True)
+    connection_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
     external_ref: Mapped[str] = mapped_column(String(128), index=True)
     number: Mapped[Optional[str]] = mapped_column(String(128))
     customer_id: Mapped[Optional[str]] = mapped_column(
@@ -2396,8 +2483,8 @@ class CreditNoteApplication(Base):
 
     __tablename__ = "credit_note_applications"
     __table_args__ = (
-        UniqueConstraint("organization_id", "external_ref",
-                         name="uq_credit_note_application_org_external"),
+        UniqueConstraint("organization_id", "connector", "connection_id", "external_ref",
+                         name="uq_credit_note_application_source"),
         Index("ix_credit_note_app_org_invoice",
               "organization_id", "invoice_external_ref"),
     )
@@ -2406,6 +2493,14 @@ class CreditNoteApplication(Base):
                                                             primary_key=True,
                                                             default=_uuid)
     organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    # Which system this document came from, and which connected company's
+    # book. The same triple the master tables carry: an external reference is
+    # unique only inside the system that issued it, and only inside one company
+    # of that system. Nullable because a row written before this existed cannot
+    # be attributed after the fact — see the migration for why nothing is
+    # backfilled.
+    connector: Mapped[Optional[str]] = mapped_column(String(32), index=True)
+    connection_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
     external_ref: Mapped[str] = mapped_column(String(128), index=True)
     credit_note_id: Mapped[str] = mapped_column(
         String(64), ForeignKey("credit_notes.credit_note_id"), index=True)
@@ -2439,13 +2534,21 @@ class VendorPaymentDoc(Base):
 
     __tablename__ = "vendor_payments"
     __table_args__ = (
-        UniqueConstraint("organization_id", "external_ref",
-                         name="uq_vendor_payment_org_ref"),
+        UniqueConstraint("organization_id", "connector", "connection_id", "external_ref",
+                         name="uq_vendor_payment_source"),
     )
 
     vendor_payment_id: Mapped[str] = mapped_column(String(64), primary_key=True,
                                                    default=_uuid)
     organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    # Which system this document came from, and which connected company's
+    # book. The same triple the master tables carry: an external reference is
+    # unique only inside the system that issued it, and only inside one company
+    # of that system. Nullable because a row written before this existed cannot
+    # be attributed after the fact — see the migration for why nothing is
+    # backfilled.
+    connector: Mapped[Optional[str]] = mapped_column(String(32), index=True)
+    connection_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
     external_ref: Mapped[str] = mapped_column(String(128), index=True)
     vendor_id: Mapped[Optional[str]] = mapped_column(String(64),
                                                      ForeignKey("vendors.vendor_id"),
@@ -2482,8 +2585,8 @@ class BillPaymentApplication(Base):
 
     __tablename__ = "bill_payment_applications"
     __table_args__ = (
-        UniqueConstraint("organization_id", "external_ref",
-                         name="uq_bill_payment_application_org_external"),
+        UniqueConstraint("organization_id", "connector", "connection_id", "external_ref",
+                         name="uq_bill_payment_application_source"),
         Index("ix_bill_payment_app_org_bill", "organization_id", "bill_external_ref"),
     )
 
@@ -2491,6 +2594,14 @@ class BillPaymentApplication(Base):
                                                              primary_key=True,
                                                              default=_uuid)
     organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    # Which system this document came from, and which connected company's
+    # book. The same triple the master tables carry: an external reference is
+    # unique only inside the system that issued it, and only inside one company
+    # of that system. Nullable because a row written before this existed cannot
+    # be attributed after the fact — see the migration for why nothing is
+    # backfilled.
+    connector: Mapped[Optional[str]] = mapped_column(String(32), index=True)
+    connection_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
     external_ref: Mapped[str] = mapped_column(String(128), index=True)
     vendor_payment_id: Mapped[str] = mapped_column(
         String(64), ForeignKey("vendor_payments.vendor_payment_id"), index=True)
@@ -2519,14 +2630,22 @@ class PurchaseOrderDoc(Base):
 
     __tablename__ = "purchase_orders"
     __table_args__ = (
-        UniqueConstraint("organization_id", "external_ref",
-                         name="uq_purchase_order_org_external"),
+        UniqueConstraint("organization_id", "connector", "connection_id", "external_ref",
+                         name="uq_purchase_order_source"),
         Index("ix_po_org_date", "organization_id", "date"),
     )
 
     purchase_order_id: Mapped[str] = mapped_column(String(64), primary_key=True,
                                                    default=_uuid)
     organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    # Which system this document came from, and which connected company's
+    # book. The same triple the master tables carry: an external reference is
+    # unique only inside the system that issued it, and only inside one company
+    # of that system. Nullable because a row written before this existed cannot
+    # be attributed after the fact — see the migration for why nothing is
+    # backfilled.
+    connector: Mapped[Optional[str]] = mapped_column(String(32), index=True)
+    connection_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
     external_ref: Mapped[str] = mapped_column(String(128), index=True)
     number: Mapped[Optional[str]] = mapped_column(String(128))
     vendor_id: Mapped[Optional[str]] = mapped_column(String(64),

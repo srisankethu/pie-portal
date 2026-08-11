@@ -56,14 +56,20 @@ export function SummaryBar({
            nobody had looked at. */
         note={caveat(quote)}
       />
-      {quote.summary.taxRate > 0 && (
+      {quote.summary.tax > 0 && (
         /* Label and rate both come from the server. They used to be a literal
            "GST 18%" here beside a number computed from a literal 0.18 in
-           store.py — the same fact stated twice, in two languages. */
+           store.py — the same fact stated twice, in two languages.
+
+           Shown on the *amount*, not on the rate. The rate is null whenever the
+           priced lines do not share one, and keying the whole Stat off the rate
+           meant a mixed-rate quote dropped the tax line off the screen while
+           still carrying it in the Quotation total below — money in the total
+           with nothing on screen accounting for it. */
         <Stat
-          label={`${quote.summary.taxLabel} ${(quote.summary.taxRate * 100).toFixed(
-            Number.isInteger(quote.summary.taxRate * 100) ? 0 : 1)}%`}
+          label={taxLabel(quote.summary)}
           value={quote.summary.tax}
+          note={taxNote(quote.summary)}
         />
       )}
       <Stat label="Quotation total" value={quote.summary.grand} strong />
@@ -189,4 +195,28 @@ function caveat(quote: Quote): string | null {
   if (unpriced > 0) parts.push(`${unpriced} line(s) not priced`);
   if (atListPrice > 0) parts.push(`${atListPrice} still at list`);
   return parts.length ? parts.join(" · ") : null;
+}
+
+/** The tax heading: the rate where the priced lines share one, and the tax's
+ *  name alone where they do not.
+ *
+ *  "GST" over a quote holding an 18% line and a 12% one is the honest heading.
+ *  "GST 18%" over the same quote is a statement about a document the customer
+ *  will receive, and it is false. */
+function taxLabel(s: Quote["summary"]): string {
+  if (s.taxRate === null) return `${s.taxLabel} (mixed rates)`;
+  const pct = s.taxRate * 100;
+  return `${s.taxLabel} ${pct.toFixed(Number.isInteger(pct) ? 0 : 1)}%`;
+}
+
+/** What the tax figure rests on, in the same place `caveat` says what the
+ *  subtotal leaves out — and for the same reason. A total assembled from rates
+ *  the books stated and one assembled from a configured default read
+ *  identically until somebody says which this is. */
+function taxNote(s: Quote["summary"]): string | null {
+  const { assumed, defaultRate } = s.taxBasis;
+  if (assumed === 0) return null;
+  const pct = defaultRate * 100;
+  const rate = pct.toFixed(Number.isInteger(pct) ? 0 : 1);
+  return `${rate}% assumed on ${assumed} line(s) — no rate in the books`;
 }

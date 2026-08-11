@@ -155,6 +155,11 @@ class ZohoBooksService(ZohoTransport):
             stock=_stock(raw, ctx),
             cost=_money(raw.get("purchase_rate"), ctx, "purchase_rate"),
             item_id=(str(raw["item_id"]) if raw.get("item_id") else None),
+            # Read through `_money` for the reason every other number here is:
+            # Zoho sends numbers as strings often enough that a bare float()
+            # would raise on a live book, and a tax rate that cannot be parsed
+            # must read as "not stated" rather than take the screen down.
+            tax_percentage=_money(raw.get("tax_percentage"), ctx, "tax_percentage"),
         )
 
     def get_item(self, code: str) -> Optional[ZohoItem]:

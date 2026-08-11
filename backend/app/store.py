@@ -61,9 +61,22 @@ def sales_tax_rate() -> float:
     the previous literal ``0.18`` made this quote screen an Indian screen in a
     way no amount of currency plumbing would have fixed.
 
-    Line-level tax from the ERP supersedes this wherever it is available; this
-    is the fallback for a quote built from a pasted RFQ, before any ERP has
-    seen it.
+    Line-level tax from the ERP supersedes this wherever it is available: a
+    line resolved to an item whose books state a rate is taxed at that rate,
+    and this is the fallback for a line that has none — a pasted RFQ before any
+    ERP has seen it, or an item nobody has set a rate against.
+
+    That sentence was false when it was first written, and is kept in the
+    present tense now that it is true. There was no line-level tax anywhere in
+    the backend: no ``tax_amount``, no ``tax_percentage``, no ``item_tax``. The
+    whole tax system was this constant times the subtotal, while
+    ``zoho_books_service`` sent no tax field on the estimate and let Zoho price
+    each line from its own item settings — so the screen and the document the
+    customer received disagreed on any item off the default rate, and the
+    docstring claiming otherwise is what stopped anybody looking.
+
+    ``Quote.to_dict`` reports how many lines this fallback was applied to. A
+    docstring is not a control; the count is.
     """
     from .config import settings
     return settings.SALES_TAX_RATE
@@ -262,6 +275,10 @@ class Line:
     listPrice: Optional[float] = None
     cost: Optional[float] = None
     family: Optional[str] = None
+    #: The tax rate the books hold against this line's item, as a percentage.
+    #: ``None`` means the books did not state one — which is why the summary
+    #: counts assumed lines rather than quietly applying the default to them.
+    taxPercent: Optional[float] = None
     # commercial
     quoted: Optional[float] = None
     #: Where ``quoted`` came from. ``LIST`` is the catalogue rate this line
@@ -410,8 +427,54 @@ class Quote:
         subtotal = sum(
             (ln.quoted * ln.reqQty) for ln in self.lines if ln.quoted is not None
         )
-        rate = sales_tax_rate()
-        tax = subtotal * rate
+        # Tax per line, from the rate the books hold against that line's item,
+        # and the configured rate only where they hold none.
+        #
+        # This used to be `subtotal * sales_tax_rate()` — one blended rate over
+        # the whole quote — while `zoho_books_service` sends no tax field at
+        # all, so Zoho priced each line from its own item settings. Two tax
+        # authorities, disagreeing on any item off the default rate, and the one
+        # the customer receives was the one this screen did not compute.
+        #
+        # The default is still applied where nothing is on record, because a
+        # quote desk needs a number and a pasted RFQ line has no item behind it
+        # to ask. What changed is that the assumption is now *counted* and
+        # reported rather than folded invisibly into one figure — a total
+        # assembled from four known rates reads differently from the same total
+        # assembled from four guesses, and only one of them is worth sending.
+        default_rate = sales_tax_rate()
+        tax = 0.0
+        taxed_known = taxed_assumed = 0
+        applied: set[float] = set()
+        for ln in self.lines:
+            if ln.quoted is None:
+                continue
+            line_total = ln.quoted * ln.reqQty
+            if ln.taxPercent is None:
+                line_rate = default_rate
+                taxed_assumed += 1
+            else:
+                line_rate = ln.taxPercent / 100.0
+                taxed_known += 1
+            tax += line_total * line_rate
+            applied.add(line_rate)
+
+        # One rate to print only when every priced line was actually taxed at
+        # it. Naming a single rate over a mixed quote is the same misstatement
+        # in a smaller font.
+        #
+        # Keyed on the rates *applied* rather than on the ones the books stated,
+        # so a quote where the known rate and the configured default coincide
+        # still prints the number they agree on — and an empty quote, which has
+        # no line to disagree, reports the rate that would be used rather than
+        # refusing to name one. `taxBasis` below is what says how much of this
+        # rested on the default; the rate itself is not the place to carry that.
+        if not applied:
+            rate: Optional[float] = default_rate
+        elif len(applied) == 1:
+            rate = next(iter(applied))
+        else:
+            rate = None
         counts = self._filter_counts(mgmt)
         return {
             "id": self.id, "customer": self.customer,
@@ -429,7 +492,17 @@ class Quote:
                 # in different languages, either of which could be edited alone.
                 "tax": round(tax, 2),
                 "taxLabel": sales_tax_label(),
+                # null where the priced lines do not share one rate. A screen
+                # that prints "GST 18%" over a quote holding 18% and 12% lines
+                # is stating something false about a document a customer will
+                # receive, so there is deliberately no single number to print.
                 "taxRate": rate,
+                # How the tax above was arrived at. `assumed` is the count of
+                # priced lines the books held no rate for, which took the
+                # configured default — the honest version of what used to be
+                # applied to every line without saying so.
+                "taxBasis": {"known": taxed_known, "assumed": taxed_assumed,
+                             "defaultRate": default_rate},
                 "grand": round(subtotal + tax, 2),
                 "total": len(self.lines),
                 # What the total does and does not yet contain. A quote of four
@@ -635,6 +708,7 @@ class QuoteStore:
         ln.avail = item.stock
         ln.listPrice = item.list_price
         ln.cost = item.cost
+        ln.taxPercent = item.tax_percentage
         ln.family = self._family_of(ln)
         if item.in_books and item.list_price is not None:
             # Auto-quote at list so a long tender is not a column of typing —

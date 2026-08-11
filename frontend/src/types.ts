@@ -89,8 +89,16 @@ export interface QuoteSummary {
   /** What the jurisdiction calls it — "GST", "VAT", "Sales Tax". */
   taxLabel: string;
   /** The rate it was computed at, as a ratio (0.18), so the screen can state
-   *  the rate it actually used rather than a rate it assumes. */
-  taxRate: number;
+   *  the rate it actually used rather than a rate it assumes.
+   *
+   *  `null` when the priced lines do not share one rate. The tax amount above
+   *  is still exact — it is the sum of each line at its own rate — but there is
+   *  no single rate to print, and printing one would state something false
+   *  about a document the customer receives. */
+  taxRate: number | null;
+  /** How that tax was arrived at: how many priced lines carried a rate from the
+   *  books, and how many fell back to the configured default. */
+  taxBasis: { known: number; assumed: number; defaultRate: number };
   grand: number;
   total: number;
   /** Lines with no rate at all — they contribute nothing to the total above. */

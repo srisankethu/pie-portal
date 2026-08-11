@@ -12,8 +12,6 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
-import pytest
-
 from app.domain import models
 from app.ingestion.sync import SyncService
 from app.state.events import EventLog
@@ -263,19 +261,42 @@ def test_superseding_one_connections_document_leaves_anothers_events_live(sessio
     assert live_b, "conn_b's events were superseded by conn_a's sweep"
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "retire_document matches on (organization_id, external_ref) only, because "
-    "the fact tables carry no connection. Scoping the sweep keeps another "
-    "company's document out of the retire list; it cannot stop the delete "
-    "itself from reaching a colliding ref. The provenance migration is what "
-    "fixes this, and this test is the tripwire that says when it has."))
 def test_retiring_a_colliding_ref_does_not_delete_the_other_companys_rows(session):
+    """The case the connection-scoped sweep alone could not reach.
+
+    Kept in its original form rather than rewritten now that it passes. It was
+    written as `xfail(strict=True)` against `retire_document` matching on
+    `(organization_id, external_ref)` — scoping the sweep kept another company's
+    document out of the *retire list*, but nothing stopped the *delete* from
+    reaching a colliding reference, because the fact tables carried no
+    connection to filter on. The provenance migration gave them one, the strict
+    xfail turned into a failure the moment it started passing, and the marker
+    came off in the same change. That is the whole point of an armed tripwire:
+    nobody had to remember it existed.
+    """
     _sync_as(session, _Source([_invoice("1", 10)]), "conn_a")
     _sync_as(session, _Source([_invoice("1", 10)]), "conn_b")
 
     _sync_as(session, _Source([]), "conn_a")      # A's "1" is genuinely gone
 
     assert _refs(session, models.InvoiceDoc) == {"1"}   # B's survives
+
+
+def test_two_connections_can_hold_the_same_reference_at_all(session):
+    """The widened key, from the other side.
+
+    Every test above asks whether one company's sweep spares another's rows.
+    This asks the prior question: can the two rows coexist? Under
+    `(organization_id, external_ref)` the second write did not raise — it
+    upserted onto the first company's row, and one document quietly became the
+    other. Both surviving as distinct rows is the thing the migration bought.
+    """
+    _sync_as(session, _Source([_invoice("1", 10)]), "conn_a")
+    _sync_as(session, _Source([_invoice("1", 10)]), "conn_b")
+
+    rows = session.query(models.InvoiceDoc).filter_by(
+        organization_id=ORG, external_ref="1").all()
+    assert {r.connection_id for r in rows} == {"conn_a", "conn_b"}
 
 
 def test_a_document_with_no_recorded_connection_is_not_retired(session):

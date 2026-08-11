@@ -62,8 +62,17 @@ class ReadModelRepository:
         return [model.connector == self.connector,
                 model.connection_id == self.connection_id]
 
-    def _for_upsert(self, model, external_id: str):
+    def _for_upsert(self, model, external_id: str, *, ref_col: str = "external_id"):
         """The row this pull should write to, adopting an unclaimed one.
+
+        ``ref_col`` is the column holding the source system's reference, and it
+        is the only thing that differs between a master and a document: masters
+        key on ``external_id``, the fifteen document tables on ``external_ref``.
+        Parameterized rather than copied, because the *rule* below — exact
+        source first, then two graded kinds of unclaimed, never another
+        connection's row — is the thing that must not drift between them. Two
+        implementations would be two chances for one side to start adopting
+        rows the other would refuse.
 
         The exact-source match comes first and is unchanged. What is new is the
         second look: a row with the same external id that carries *no*
@@ -93,10 +102,11 @@ class ReadModelRepository:
         setting. That is another company's record even when the external id
         matches.
         """
+        col = getattr(model, ref_col)
         row = self.s.scalar(
             select(model).where(
                 model.organization_id == self.org,
-                model.external_id == external_id,
+                col == external_id,
                 *self._source(model),
             )
         )
@@ -109,7 +119,7 @@ class ReadModelRepository:
         unclaimed = self.s.scalar(
             select(model).where(
                 model.organization_id == self.org,
-                model.external_id == external_id,
+                col == external_id,
                 model.connection_id.is_(None),
                 or_(*claimable),
             )
@@ -288,14 +298,12 @@ class ReadModelRepository:
 
     # ── sales / cost ─────────────────────────────────────────────────────────
     def upsert_sales_txn(self, t: SalesTxnIn, customer_id: str, product_id: str) -> models.SalesTxn:
-        row = self.s.scalar(
-            select(models.SalesTxn).where(
-                models.SalesTxn.organization_id == self.org,
-                models.SalesTxn.external_ref == t.external_ref,
-            )
-        )
+        row = self._for_upsert(models.SalesTxn, t.external_ref,
+                               ref_col="external_ref")
         if row is None:
-            row = models.SalesTxn(organization_id=self.org, external_ref=t.external_ref)
+            row = models.SalesTxn(organization_id=self.org, external_ref=t.external_ref,
+                                 connector=self.connector,
+                                 connection_id=self.connection_id)
             self.s.add(row)
         row.customer_id = customer_id
         row.product_id = product_id
@@ -310,14 +318,12 @@ class ReadModelRepository:
 
     def upsert_cost_record(self, r: CostRecordIn, product_id: str,
                            vendor_id: Optional[str] = None) -> models.CostRecord:
-        row = self.s.scalar(
-            select(models.CostRecord).where(
-                models.CostRecord.organization_id == self.org,
-                models.CostRecord.external_ref == r.external_ref,
-            )
-        )
+        row = self._for_upsert(models.CostRecord, r.external_ref,
+                               ref_col="external_ref")
         if row is None:
-            row = models.CostRecord(organization_id=self.org, external_ref=r.external_ref)
+            row = models.CostRecord(organization_id=self.org, external_ref=r.external_ref,
+                                 connector=self.connector,
+                                 connection_id=self.connection_id)
             self.s.add(row)
         row.product_id = product_id
         # Resolved by the caller against this repository's own source, the same
@@ -542,8 +548,19 @@ class ReadModelRepository:
             # Line rows are keyed `{doc_id}:{line_id}`; header rows are the id.
             match = (column.startswith(f"{doc_id}:") if prefixed
                      else column == doc_id)
+            # Scoped to this connection, which the fact tables can finally
+            # express. Until they carried provenance this matched on
+            # `(organization_id, external_ref)` alone, so retiring one company's
+            # document deleted another's rows for the same reference — the case
+            # `_mirror`'s docstring claimed to guard and could not.
+            #
+            # A row with no provenance is not swept here for the same reason the
+            # sweep does not select one: it may belong to a company this pull
+            # has never read, and of the two possible mistakes only one is
+            # recoverable.
             rows = self.s.scalars(
-                select(model).where(model.organization_id == self.org, match)).all()
+                select(model).where(model.organization_id == self.org, match,
+                                    *self._source(model))).all()
             for row in rows:
                 self.s.delete(row)
                 removed += 1
@@ -663,15 +680,13 @@ class ReadModelRepository:
 
     def upsert_payment(self, customer_id: str,
                        p: PaymentReceiptIn) -> models.PaymentReceipt:
-        row = self.s.scalar(
-            select(models.PaymentReceipt).where(
-                models.PaymentReceipt.organization_id == self.org,
-                models.PaymentReceipt.external_ref == p.external_ref,
-            )
-        )
+        row = self._for_upsert(models.PaymentReceipt, p.external_ref,
+                               ref_col="external_ref")
         if row is None:
             row = models.PaymentReceipt(organization_id=self.org,
-                                        external_ref=p.external_ref)
+                                        external_ref=p.external_ref,
+                                        connector=self.connector,
+                                        connection_id=self.connection_id)
             self.s.add(row)
         row.customer_id = customer_id
         row.date = p.date
@@ -727,6 +742,8 @@ class ReadModelRepository:
             if app_row is None:
                 app_row = model(organization_id=self.org,
                                 external_ref=a.external_ref,
+                                connector=self.connector,
+                                connection_id=self.connection_id,
                                 **{parent_column.key: parent_id})
                 self.s.add(app_row)
             assign(app_row, a)
@@ -747,15 +764,13 @@ class ReadModelRepository:
         them. The source triple matters for masters (customers, items, vendors),
         where two connected companies genuinely number from one.
         """
-        row = self.s.scalar(
-            select(models.SalesOrderDoc).where(
-                models.SalesOrderDoc.organization_id == self.org,
-                models.SalesOrderDoc.external_ref == so.external_ref,
-            )
-        )
+        row = self._for_upsert(models.SalesOrderDoc, so.external_ref,
+                               ref_col="external_ref")
         if row is None:
             row = models.SalesOrderDoc(organization_id=self.org,
-                                       external_ref=so.external_ref)
+                                       external_ref=so.external_ref,
+                                       connector=self.connector,
+                                       connection_id=self.connection_id)
             self.s.add(row)
         row.number = so.number
         row.customer_id = customer_id
@@ -774,15 +789,13 @@ class ReadModelRepository:
         because ``status`` and ``balance`` change as it is paid — a bill row
         written once and never revisited would report every settled bill as
         still outstanding."""
-        row = self.s.scalar(
-            select(models.BillDoc).where(
-                models.BillDoc.organization_id == self.org,
-                models.BillDoc.external_ref == b.external_ref,
-            )
-        )
+        row = self._for_upsert(models.BillDoc, b.external_ref,
+                               ref_col="external_ref")
         if row is None:
             row = models.BillDoc(organization_id=self.org,
-                                 external_ref=b.external_ref)
+                                 external_ref=b.external_ref,
+                                 connector=self.connector,
+                                 connection_id=self.connection_id)
             self.s.add(row)
         row.number = b.number
         row.vendor_id = vendor_id
@@ -801,15 +814,13 @@ class ReadModelRepository:
         an invoice row written once and never revisited would report every
         settled invoice as still outstanding, which is how a customer who paid
         on time ends up on a collections list."""
-        row = self.s.scalar(
-            select(models.InvoiceDoc).where(
-                models.InvoiceDoc.organization_id == self.org,
-                models.InvoiceDoc.external_ref == inv.external_ref,
-            )
-        )
+        row = self._for_upsert(models.InvoiceDoc, inv.external_ref,
+                               ref_col="external_ref")
         if row is None:
             row = models.InvoiceDoc(organization_id=self.org,
-                                    external_ref=inv.external_ref)
+                                    external_ref=inv.external_ref,
+                                    connector=self.connector,
+                                    connection_id=self.connection_id)
             self.s.add(row)
         row.number = inv.number
         row.customer_id = customer_id
@@ -855,7 +866,9 @@ class ReadModelRepository:
                 link = models.InvoiceSalesOrderLink(
                     organization_id=self.org,
                     invoice_external_ref=inv.external_ref,
-                    sales_order_external_ref=ref.external_ref)
+                    sales_order_external_ref=ref.external_ref,
+                    connector=self.connector,
+                    connection_id=self.connection_id)
                 self.s.add(link)
             link.sales_order_number = ref.number
             link.is_primary = ref.is_primary
@@ -868,15 +881,13 @@ class ReadModelRepository:
         """Where the business trades from. Re-read every pull: a branch can be
         deactivated, renamed or re-parented, and a row written once would keep
         a closed location in every branch total."""
-        row = self.s.scalar(
-            select(models.Location).where(
-                models.Location.organization_id == self.org,
-                models.Location.external_ref == loc.external_ref,
-            )
-        )
+        row = self._for_upsert(models.Location, loc.external_ref,
+                               ref_col="external_ref")
         if row is None:
             row = models.Location(organization_id=self.org,
-                                  external_ref=loc.external_ref)
+                                  external_ref=loc.external_ref,
+                                  connector=self.connector,
+                                  connection_id=self.connection_id)
             self.s.add(row)
         row.name = loc.name
         row.kind = loc.kind
@@ -905,7 +916,8 @@ class ReadModelRepository:
         if row is None:
             row = models.StockLocationSnapshot(
                 organization_id=self.org, product_id=product_id,
-                location_external_ref=snap.location_external_ref, as_of=snap.as_of)
+                location_external_ref=snap.location_external_ref, as_of=snap.as_of,
+                connector=self.connector, connection_id=self.connection_id)
             self.s.add(row)
         row.on_hand = snap.on_hand
         row.available = snap.available
@@ -919,15 +931,13 @@ class ReadModelRepository:
         the same reason as an invoice: ``status`` and ``balance`` move as the
         credit is applied or refunded, and a row written once would keep
         reporting credit as available long after it was spent."""
-        row = self.s.scalar(
-            select(models.CreditNoteDoc).where(
-                models.CreditNoteDoc.organization_id == self.org,
-                models.CreditNoteDoc.external_ref == note.external_ref,
-            )
-        )
+        row = self._for_upsert(models.CreditNoteDoc, note.external_ref,
+                               ref_col="external_ref")
         if row is None:
             row = models.CreditNoteDoc(organization_id=self.org,
-                                       external_ref=note.external_ref)
+                                       external_ref=note.external_ref,
+                                       connector=self.connector,
+                                       connection_id=self.connection_id)
             self.s.add(row)
         row.number = note.number
         row.customer_id = customer_id
@@ -943,15 +953,13 @@ class ReadModelRepository:
         app: CreditNoteApplicationIn,
     ) -> models.CreditNoteApplication:
         """One credit note set against one invoice."""
-        row = self.s.scalar(
-            select(models.CreditNoteApplication).where(
-                models.CreditNoteApplication.organization_id == self.org,
-                models.CreditNoteApplication.external_ref == app.external_ref,
-            )
-        )
+        row = self._for_upsert(models.CreditNoteApplication, app.external_ref,
+                               ref_col="external_ref")
         if row is None:
             row = models.CreditNoteApplication(organization_id=self.org,
-                                               external_ref=app.external_ref)
+                                               external_ref=app.external_ref,
+                                               connector=self.connector,
+                                               connection_id=self.connection_id)
             self.s.add(row)
         row.credit_note_id = credit_note_id
         row.customer_id = customer_id
@@ -965,15 +973,13 @@ class ReadModelRepository:
 
     def upsert_vendor_payment(self, vendor_id: Optional[str],
                               vp: VendorPaymentIn) -> models.VendorPaymentDoc:
-        row = self.s.scalar(
-            select(models.VendorPaymentDoc).where(
-                models.VendorPaymentDoc.organization_id == self.org,
-                models.VendorPaymentDoc.external_ref == vp.external_ref,
-            )
-        )
+        row = self._for_upsert(models.VendorPaymentDoc, vp.external_ref,
+                               ref_col="external_ref")
         if row is None:
             row = models.VendorPaymentDoc(organization_id=self.org,
-                                          external_ref=vp.external_ref)
+                                          external_ref=vp.external_ref,
+                                          connector=self.connector,
+                                          connection_id=self.connection_id)
             self.s.add(row)
         row.vendor_id = vendor_id
         row.date = vp.date
@@ -1002,15 +1008,13 @@ class ReadModelRepository:
 
     def upsert_purchase_order(self, vendor_id: Optional[str],
                               po: PurchaseOrderIn) -> models.PurchaseOrderDoc:
-        row = self.s.scalar(
-            select(models.PurchaseOrderDoc).where(
-                models.PurchaseOrderDoc.organization_id == self.org,
-                models.PurchaseOrderDoc.external_ref == po.external_ref,
-            )
-        )
+        row = self._for_upsert(models.PurchaseOrderDoc, po.external_ref,
+                               ref_col="external_ref")
         if row is None:
             row = models.PurchaseOrderDoc(organization_id=self.org,
-                                          external_ref=po.external_ref)
+                                          external_ref=po.external_ref,
+                                          connector=self.connector,
+                                          connection_id=self.connection_id)
             self.s.add(row)
         row.number = po.number
         row.vendor_id = vendor_id

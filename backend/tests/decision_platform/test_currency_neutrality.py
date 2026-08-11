@@ -17,6 +17,7 @@ already a registered strategy there rather than a hardcoded rule.
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import date, timedelta
 
 import pytest
 
@@ -24,6 +25,7 @@ from app.commercial import policy
 from app.commercial.config import CommercialThresholds
 from app.commercial.money import money
 from app.domain import models
+from app.ingestion.sync import SyncService
 
 
 # ── the version hash has to see the currency ────────────────────────────────
@@ -203,3 +205,145 @@ def test_money_renders_none_as_unknown():
 def test_thresholds_can_spell_their_own_amounts():
     th = CommercialThresholds(currency="USD")
     assert th.money(2500) == "$2,500"
+
+
+# ── a foreign document never becomes a local number ─────────────────────────
+# The gap these close is not cosmetic and was reachable through the ordinary
+# flow. One organization holds several connected companies and rolls revenue and
+# margin up across them; `ping` has always read each company's currency and the
+# screen has always shown it; it was never stored and never compared. No money
+# row in this schema carries a currency, so a EUR bill read into a book that
+# reports in INR is subtracted from INR revenue by `economics.line_economics`
+# and reports a margin near 100% with a clean version hash on it. There is no
+# later point at which that is still visible, which is why the refusal is at the
+# seam rather than in the arithmetic.
+class _CurrencySource:
+    """A source reporting one invoice and one bill, in whatever currency."""
+
+    def __init__(self, currency=None):
+        self._currency = currency
+        self.listed: dict[str, set[str]] = {}
+        self.listing_complete: set[str] = set()
+        self._since = date.today() - timedelta(days=365)
+        self._until = None
+
+    def list_contacts(self):
+        return [{"contact_id": "c1", "contact_name": "Acme", "status": "active"}]
+
+    def list_items(self):
+        return [{"item_id": "i1", "name": "Insert", "unit": "pcs",
+                 "status": "active", "purchase_rate": "100"}]
+
+    def list_vendors(self):
+        return [{"contact_id": "v1", "contact_name": "Supplier", "status": "active"}]
+
+    def list_users(self):
+        return []
+
+    def list_sales_orders(self):
+        return []
+
+    def list_purchase_orders(self):
+        return []
+
+    def _money(self, doc):
+        # Only set the key when a currency was given: the absent case is a
+        # distinct behaviour and a None here would not exercise it.
+        if self._currency is not None:
+            doc["currency_code"] = self._currency
+            doc["exchange_rate"] = "90.0"
+        return doc
+
+    def list_invoices(self, skip=None):
+        day = (date.today() - timedelta(days=10)).isoformat()
+        yield self._money({
+            "invoice_id": "INV1", "invoice_number": "INV-1", "customer_id": "c1",
+            "date": day, "status": "sent", "total": "5000", "balance": "5000",
+            "due_date": day, "last_modified_time": "stamp-1",
+            "line_items": [{"line_item_id": "l1", "item_id": "i1",
+                            "quantity": 10, "rate": "500", "item_total": "5000"}]})
+
+    def list_bills(self, skip=None):
+        day = (date.today() - timedelta(days=10)).isoformat()
+        yield self._money({
+            "bill_id": "BILL1", "bill_number": "B-1", "vendor_id": "v1",
+            "date": day, "status": "open", "total": "1000", "balance": "1000",
+            "due_date": day, "last_modified_time": "stamp-b1",
+            "line_items": [{"line_item_id": "bl1", "item_id": "i1",
+                            "quantity": 10, "rate": "100", "item_total": "1000"}]})
+
+
+def _run(session, org_id, source, connection_id=None):
+    svc = SyncService(session, source, org_id, connector="zoho",
+                      connection_id=connection_id)
+    svc.run()
+    session.commit()
+    return svc
+
+
+def test_a_foreign_currency_invoice_is_refused_rather_than_counted(session):
+    org_id = _org(session, "org_fx", currency="INR")
+    svc = _run(session, org_id, _CurrencySource("EUR"))
+
+    assert session.query(models.SalesTxn).filter_by(
+        organization_id=org_id).count() == 0
+    refused = [s for s in svc.report.skipped if s["code"] == "FOREIGN_CURRENCY"]
+    assert {s["kind"] for s in refused} == {"invoice", "bill"}
+    # The refusal has to be actionable: which currency, against which book, and
+    # enough to find the document in Zoho.
+    ctx = refused[0]["context"]
+    assert ctx["document_currency"] == "EUR" and ctx["book_currency"] == "INR"
+    assert ctx["exchange_rate"] == "90.0"
+
+
+def test_a_document_in_the_books_own_currency_is_read(session):
+    org_id = _org(session, "org_same", currency="EUR")
+    svc = _run(session, org_id, _CurrencySource("EUR"))
+
+    assert session.query(models.SalesTxn).filter_by(
+        organization_id=org_id).count() == 1
+    assert [s for s in svc.report.skipped if s["code"] == "FOREIGN_CURRENCY"] == []
+
+
+def test_a_document_naming_no_currency_is_read_but_counted(session):
+    """Silence is not a statement that a document is foreign.
+
+    Refusing on an absent field would empty the read model against any source
+    that does not report it. The gap is counted instead of passed over, so a
+    number that stays high says the guard is not seeing currencies rather than
+    that it is finding none to object to.
+    """
+    org_id = _org(session, "org_silent", currency="INR")
+    svc = _run(session, org_id, _CurrencySource(None))
+
+    assert session.query(models.SalesTxn).filter_by(
+        organization_id=org_id).count() == 1
+    assert [s for s in svc.report.skipped if s["code"] == "FOREIGN_CURRENCY"] == []
+    assert svc.report.foreign_currency_unknown == 2      # the invoice and the bill
+
+
+def test_a_whole_connection_in_another_currency_is_refused_not_merely_consistent(session):
+    """Per-connection consistency is not the property that matters.
+
+    An AED company under an INR organization keeps internally consistent books,
+    so a guard comparing each document against *its own connection* passes every
+    one of them — and `ZohoConnection` rolls revenue and margin up across
+    connections, so the AED numbers land in the INR totals anyway. The defect
+    arrives one level up and looks like nothing went wrong.
+
+    So the standard is the organization's currency, and `base_currency` is the
+    diagnostic that says which connections will be refused wholesale.
+    """
+    org_id = _org(session, "org_multi", currency="INR")
+    session.add(models.ZohoConnection(
+        connection_id="conn_ae", organization_id=org_id,
+        zoho_organization_id="z-ae", label="Gulf", base_currency="AED"))
+    session.flush()
+
+    svc = _run(session, org_id, _CurrencySource("AED"), connection_id="conn_ae")
+
+    assert session.query(models.SalesTxn).filter_by(
+        organization_id=org_id).count() == 0
+    refused = [s for s in svc.report.skipped if s["code"] == "FOREIGN_CURRENCY"]
+    assert {s["kind"] for s in refused} == {"invoice", "bill"}
+    assert refused[0]["context"]["book_currency"] == "INR"

@@ -67,6 +67,29 @@ class _Applier:
         self.repo = ReadModelRepository(session, org, connector=connector,
                                         connection_id=connection_id)
         self.report = ReplayReport()
+        # What to write when an event does not say where it came from — the
+        # caller's answer, and NULL unless it gave one.
+        self._default_source = (connector, connection_id)
+
+    def _at(self, event: models.BusinessEvent) -> None:
+        """Point the shared repository at the book this event was read from.
+
+        Per event and not per replay, because the log spans every connection
+        the organization has: one pass over it rebuilds all of their rows, and
+        a single provenance for the whole pass would file them all under
+        whichever connection the caller happened to name. The event knows —
+        ``EventLog.record`` has always written ``connector`` and
+        ``connection_id`` onto every row — so replay reads it back rather than
+        being told.
+
+        This is what makes "replaying the log reproduces the read model
+        exactly" true of the provenance columns as well as the money ones, and
+        `test_replaying_the_log_reproduces_the_read_model_exactly` is what
+        noticed it was not.
+        """
+        default_connector, default_connection = self._default_source
+        self.repo.connector = event.connector or default_connector
+        self.repo.connection_id = event.connection_id or default_connection
 
     # Each applier takes the event and returns whether it was applied. They are
     # deliberately tiny: the arithmetic and the validation already happened when
@@ -194,6 +217,7 @@ def replay(session: Session, org: str, *, connector: Optional[str] = None,
         if method is None:
             applier.report._missing(event, "applier", event.event_type)
             continue
+        applier._at(event)
         if method(event):
             applier.report._did(event.event_type)
     session.flush()

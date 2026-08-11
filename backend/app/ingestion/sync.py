@@ -114,6 +114,13 @@ class SyncReport:
     # full re-sync means provenance is not being written, not that the sweep is
     # being cautious.
     unattributable: int = 0
+    # Documents that named no currency at all. Not refused — silence is not a
+    # statement that a document is foreign, and treating it as one would empty
+    # the read model against any source that does not report the field. Counted
+    # for the reason `unattributable` is counted: the guard above can only
+    # compare what it was told, and a number that stays high says the guard is
+    # not seeing currencies rather than that it is finding none to object to.
+    foreign_currency_unknown: int = 0
 
     def skip(self, kind: str, ref: str, code: str, detail: str,
              context: Optional[dict[str, Any]] = None) -> None:
@@ -302,6 +309,12 @@ class SyncService:
         # the sync knows it is Zoho; the resolver must never need to.
         self.connector = connector
         self.connection_id = connection_id
+        # Resolved on first use and held for the run: the connected company's
+        # currency cannot change mid-pull, and the alternative is a query per
+        # document. `_UNSET` rather than None because None is a real answer —
+        # "nothing on record" — and re-resolving it on every document would be
+        # a query per document for the case that has no answer to find.
+        self._book_currency_cached: Any = _UNSET
         # The repository writes on behalf of this connected company, so every
         # row it upserts carries where it came from. Without this the read
         # model keys customers and items on an external id alone, which is
@@ -992,9 +1005,96 @@ class SyncService:
         row.pie_catalog_version = pie_service.catalog_version or None
         self.report.catalog_links += 1
 
+    def _book_currency(self) -> Optional[str]:
+        """The currency every figure this pull contributes will be summed into.
+
+        ``Organization.currency`` and deliberately **not** the connection's own
+        ``base_currency``, which is the tempting answer and the wrong one. A
+        connection keeping its books in AED under an organization reporting in
+        INR is not a company whose documents are safe to read — it is a company
+        whose *entire ledger* is foreign to the roll-up. ``ZohoConnection``'s
+        own docstring is explicit that revenue and margin roll up across
+        connections, so per-connection consistency buys nothing: the AED
+        numbers still land in the INR totals, which is the defect this guard
+        exists to prevent, arriving one level up.
+
+        ``base_currency`` is therefore diagnostic rather than a standard. It is
+        what lets ``_check`` say "this company's books are in AED, so nothing
+        from it will be read" at the moment somebody connects it, instead of
+        leaving them to infer it from a sync report full of refusals.
+
+        Read once per run and cached: it cannot change mid-pull, and the
+        alternative is a query per document.
+        """
+        if self._book_currency_cached is not _UNSET:
+            return self._book_currency_cached
+        org = self.s.get(models.Organization, self.org)
+        currency = (getattr(org, "currency", None) or "").strip().upper()
+        self._book_currency_cached = currency or None
+        return self._book_currency_cached
+
+    def _refuses_currency(self, kind: str, ref: str,
+                          raw: dict[str, Any]) -> bool:
+        """True when this document is denominated in something else.
+
+        **Refused at the seam, deliberately, and this is the whole design.** No
+        money row in this schema carries a currency, so a foreign document that
+        gets past here is indistinguishable from a domestic one forever after:
+        ``economics.line_economics`` computes ``revenue - cogs`` across the two
+        and reports a margin near 100% with a clean ``thresholds_version`` on
+        it. There is no later point at which the mistake is still visible.
+
+        Refusing loses the document, which is a real cost and the smaller one.
+        A missing invoice is an absence somebody can see on the sync report and
+        act on; a wrong margin is a number that looks right.
+
+        **Only a stated mismatch refuses.** A document that names no currency
+        has told us nothing, and treating silence as foreign would empty the
+        read model on any source that does not report the field. That is not
+        the benign default in the other direction — the gap is *counted* into
+        ``report.foreign_currency_unknown`` rather than passed over in silence,
+        the same way an unattributable document is counted rather than swept.
+        """
+        stated = str(raw.get("currency_code") or "").strip().upper()
+        if not stated:
+            self.report.foreign_currency_unknown += 1
+            return False
+
+        book = self._book_currency()
+        if book is None or stated == book:
+            return False
+
+        self.report.skip(
+            kind, ref, "FOREIGN_CURRENCY",
+            f"{stated}, but this book trades in {book}",
+            context={
+                "document_currency": stated,
+                "book_currency": book,
+                "exchange_rate": raw.get("exchange_rate"),
+                "document": str(raw.get("invoice_number")
+                                or raw.get("bill_number") or ref),
+                "document_date": str(raw.get("date") or ""),
+                "party": str(raw.get("customer_name")
+                             or raw.get("vendor_name") or ""),
+                "total": raw.get("total"),
+                "fix": (
+                    f"This document is in {stated} and this connected company "
+                    f"keeps its books in {book}. **It has not been read**, and "
+                    "that is deliberate: no row in this platform records a "
+                    "currency, so reading it would add its numbers to "
+                    f"{book} ones and report a margin nobody could explain. "
+                    "Until per-transaction currency exists, the choices are to "
+                    "record the trade in a connected company that trades in "
+                    f"{stated}, or to accept that it is missing from every "
+                    "figure here."),
+            })
+        return True
+
     def _sync_invoices(self) -> None:
         for raw in self.source.list_invoices(skip=self._skipper("invoice")):
             ref = str(raw.get("invoice_id", "?"))
+            if self._refuses_currency("invoice", ref, raw):
+                continue
             self.log.supersede("invoice", ref)
             # The receivable header first, and before the line check: an invoice
             # with no usable revenue lines is still money owed, and dropping it
@@ -1143,6 +1243,8 @@ class SyncService:
     def _sync_bills(self) -> None:
         for raw in self.source.list_bills(skip=self._skipper("bill")):
             ref = str(raw.get("bill_id", "?"))
+            if self._refuses_currency("bill", ref, raw):
+                continue
             # One supersede per document, before anything is recorded from it.
             # A bill produces two kinds of event — the payable and its cost
             # lines — and superseding inside either emitter would retire the

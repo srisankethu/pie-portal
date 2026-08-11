@@ -1,4 +1,4 @@
-import type { AccessReport, AiMetricsReport, AiReadiness, Account, AccountItem, StatusFilter, ApprovalRequest, DisclosureStatement, EntityKind, ErasureState, Identity, IdentityCoverage, IdentityPolicy, IdentitySuggestion, ConnectionCheck, ConnectionsView, FixedThresholds, MarginPolicy, MarginPolicyPatch, NewConnectionInput, PayloadsReport, ZohoConnection, ZohoCredential, ZohoVisibleOrg, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, DecisionTrace, OrgPolicy, PlatformSession, PlatformUser, QuoteGate, Role, SyncOptions, SyncStartResponse, SyncState, ThresholdView, ZohoConnectionInput } from "./types";
+import type { AccessReport, AiMetricsReport, AiReadiness, Account, AccountItem, StatusFilter, ApprovalRequest, DisclosureStatement, EntityKind, ErasureState, Identity, IdentityCoverage, IdentityPolicy, IdentitySuggestion, ConnectionCheck, ConnectionsView, FixedThresholds, MarginPolicy, MarginPolicyPatch, NewConnectionInput, PayloadsReport, ZohoConnection, ZohoCredential, ZohoVisibleOrg, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, DecisionTrace, OrgPolicy, PlatformSession, PlatformUser, QuoteGate, Role, SkippedRows, SyncOptions, SyncStartResponse, SyncState, ThresholdView, ZohoConnectionInput } from "./types";
 
 import { setMoneyCurrency } from "../money";
 import { setBusinessTimezone } from "../when";
@@ -80,6 +80,39 @@ async function req<T>(path: string, opts: RequestInit = {}, token?: string): Pro
     throw err;
   }
   return (await res.json()) as T;
+}
+
+/** A file endpoint, fetched with the token and handed back as bytes.
+ *
+ *  `req` is not usable here: it parses the body as JSON, and these responses are
+ *  a spreadsheet. The filename comes from the server's `Content-Disposition`
+ *  when it sends one, so the run's date and id are on the saved file rather
+ *  than on a name the client guessed — two exports from two runs must not
+ *  arrive as `skipped-rows.csv` and `skipped-rows (1).csv`.
+ *
+ *  Error handling routes through `req`'s: a failed download is reported by the
+ *  screen the same way a failed fetch is, rather than saving a file containing
+ *  the error message. */
+async function download(path: string, token: string, fallbackName: string):
+    Promise<{ blob: Blob; filename: string }> {
+  const res = await fetch(path, { headers: { Authorization: `Bearer ${token}` } });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    let detail = res.statusText;
+    if (body) {
+      try {
+        detail = JSON.parse(body).detail || body;
+      } catch {
+        detail = body.slice(0, 500);
+      }
+    }
+    const err = new Error(detail) as Error & { status?: number };
+    err.status = res.status;
+    throw err;
+  }
+  const disposition = res.headers.get("Content-Disposition") || "";
+  const match = /filename="?([^";]+)"?/.exec(disposition);
+  return { blob: await res.blob(), filename: match?.[1] || fallbackName };
 }
 
 interface LoginResp {
@@ -437,6 +470,19 @@ export const papi = {
 
   /** The current sync state. Polled while a job is in flight. */
   syncState: (t: string) => req<SyncState>("/api/v1/data/sync", {}, t),
+
+  /** Every row one pull could not fully resolve — the whole list, not the
+   *  twenty the run row carries for the status card. Manager or owner only:
+   *  a skipped bill line's value is a purchase value. */
+  syncSkipped: (t: string, runId: string) =>
+    req<SkippedRows>(
+      `/api/v1/data/sync-runs/${encodeURIComponent(runId)}/skipped`, {}, t),
+
+  /** The same rows as a CSV, built server-side so the file is the whole list
+   *  rather than the page the grid is showing. */
+  syncSkippedCsv: (t: string, runId: string) =>
+    download(`/api/v1/data/sync-runs/${encodeURIComponent(runId)}/skipped.csv`,
+             t, "skipped-rows.csv"),
 
   setZohoConnection: (t: string, body: ZohoConnectionInput) =>
     req<{ connection: DataStatus["connection"] }>(

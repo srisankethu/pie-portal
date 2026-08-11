@@ -118,6 +118,15 @@ EXPORTED: tuple[tuple[str, Any], ...] = (
     ("org_policies", models.OrgPolicy),
     ("identity_policies", models.IdentityPolicy),
     ("confirmed_code_mappings", models.ConfirmedCodeMapping),
+    # Every document line a pull could not fully resolve — the part number as
+    # written on the bill, the document it was on, the supplier and the value.
+    # Exported rather than excluded with its parent `sync_runs`, and the split
+    # is the point: the run row is our own plumbing ("how did the pull go"),
+    # while these rows are the customer's own trading record with a note saying
+    # what the item master was missing. It is also the one table that says which
+    # of their documents are not fully represented in the read model, which is
+    # exactly what somebody taking their data elsewhere needs to know.
+    ("sync_skipped_rows", models.SyncSkip),
     # ── what the platform decided, and what a human did about it ────────────
     ("signals", models.Signal),
     ("decisions", models.Decision),

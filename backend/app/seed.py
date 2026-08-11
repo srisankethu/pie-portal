@@ -85,20 +85,86 @@ def set_password(session: Session, email: str,
     return issued
 
 
+def _org_id_from_name(session: Session, name: str) -> str:
+    """Derive an unused ``org_<slug>`` id from the organization's name."""
+    slug = "".join(c if c.isalnum() else "_" for c in name.strip().lower())
+    slug = "_".join(filter(None, slug.split("_")))[:40] or "tenant"
+    candidate = f"org_{slug}"
+    n = 2
+    while session.get(models.Organization, candidate) is not None:
+        candidate = f"org_{slug}_{n}"
+        n += 1
+    return candidate
+
+
+def provision_organization(session: Session, *, name: str, owner_email: str,
+                           owner_name: str, currency: str = "INR",
+                           org_id: Optional[str] = None,
+                           password: Optional[str] = None) -> tuple[str, str]:
+    """Create a new tenant: an Organization and its first owner account.
+
+    The Tier-1 onboarding path — everything after this is self-serve through
+    the existing screens: the owner signs in, is forced to change the password,
+    adds the Zoho connection (``POST /connections``), and creates their own
+    team (``POST /admin/users``). Deliberately **not** idempotent, unlike
+    ``ensure_org_and_users``: provisioning the same customer twice is a mistake
+    worth hearing about, not a state to converge on.
+
+    Returns ``(organization_id, temporary_password)``. The password is returned
+    here and never again — only its hash is stored, and the account is flagged
+    to change it at first sign-in.
+    """
+    name = name.strip()
+    if not name:
+        raise ValueError("Organization name is required")
+    owner_email = owner_email.strip().lower()
+    if "@" not in owner_email:
+        raise ValueError(f"{owner_email!r} does not look like an email address")
+    if session.scalar(select(models.User).where(models.User.email == owner_email)):
+        raise ValueError(f"An account already exists with email {owner_email!r}")
+    if org_id is not None and session.get(models.Organization, org_id) is not None:
+        raise ValueError(f"Organization {org_id!r} already exists")
+
+    issued = password or generate_password()
+    problem = password_problem(issued)
+    if problem:
+        raise ValueError(problem)
+
+    org_id = org_id or _org_id_from_name(session, name)
+    session.add(models.Organization(
+        organization_id=org_id, name=name, erp="zoho",
+        currency=currency.strip().upper() or "INR", config={}))
+    session.add(models.User(
+        organization_id=org_id, email=owner_email, name=owner_name.strip(),
+        role=Role.OWNER.value, active=True,
+        password_hash=hash_password(issued), must_change_password=True))
+    session.flush()
+    return org_id, issued
+
+
 def main() -> None:
-    """CLI: seed the default org + demo users, or set one user's password.
+    """CLI: seed the default org + demo users, set a password, or provision.
 
     ``python -m app.seed`` — seed (idempotent), run after ``alembic upgrade head``
     ``python -m app.seed --set-password someone@example.com`` — issue a new one
+    ``python -m app.seed --provision "Acme Distributors" --owner-email o@acme.in
+    --owner-name "A. Owner"`` — create a new tenant with its first owner
     """
     import argparse
 
     from .db import SessionLocal
 
-    parser = argparse.ArgumentParser(description="Seed, or recover an account.")
+    parser = argparse.ArgumentParser(description="Seed, recover, or provision.")
     parser.add_argument("--set-password", metavar="EMAIL",
                         help="Issue a new temporary password for this account")
     parser.add_argument("--password", help="Use this instead of a generated one")
+    parser.add_argument("--provision", metavar="ORG_NAME",
+                        help="Create a new organization with its first owner")
+    parser.add_argument("--owner-email", help="Owner's email (with --provision)")
+    parser.add_argument("--owner-name", help="Owner's name (with --provision)")
+    parser.add_argument("--currency", default="INR",
+                        help="Organization currency (default INR)")
+    parser.add_argument("--org-id", help="Explicit organization id (optional)")
     args = parser.parse_args()
 
     session = SessionLocal()
@@ -108,6 +174,19 @@ def main() -> None:
             session.commit()
             print(f"Temporary password for {args.set_password}: {issued}")
             print("Shown once. They are prompted to change it at next sign-in.")
+            return
+        if args.provision:
+            if not args.owner_email or not args.owner_name:
+                parser.error("--provision requires --owner-email and --owner-name")
+            org_id, issued = provision_organization(
+                session, name=args.provision, owner_email=args.owner_email,
+                owner_name=args.owner_name, currency=args.currency,
+                org_id=args.org_id, password=args.password)
+            session.commit()
+            print(f"Provisioned organization {org_id}.")
+            print(f"Owner sign-in: {args.owner_email} / {issued}")
+            print("Password shown once; they must change it at first sign-in.")
+            print("Next: sign in and add the Zoho connection under Settings.")
             return
         org_id = ensure_org_and_users(session)
         session.commit()

@@ -9,6 +9,7 @@ import { since as when, todayISO } from "../when";
 import { papi } from "./api";
 import { ErrorState, LoadingState } from "./kit";
 import { ConnectionsPanel } from "./ConnectionsPanel";
+import { SkippedRowsPanel } from "./SkippedRowsPanel";
 import { SyncStatusCard, useSync } from "./SyncStatus";
 import type { DataStatus, PlatformSession, UnresolvedReference } from "./types";
 import { Bp, Labelled, Tip } from "./ui";
@@ -418,35 +419,11 @@ export function DataScreen({ session, onSynced }: { session: PlatformSession; on
             </>
           )}
 
-          {/* The raw sample is kept below the worklist, not instead of it: the
-              worklist is what to do, this is the evidence it was built from. */}
+          {/* The rows themselves are kept below the worklist, not instead of
+              it: the worklist is what to do, these are the evidence it was
+              built from — and the sheet somebody reconciles against Zoho. */}
           {s && s.skipped_count > 0 && (
-            <>
-              <div className="section-h">
-                Skipped rows
-                {s.skipped_count > s.skipped_sample.length && (
-                  <span className="fsrc">
-                    {" "}first {s.skipped_sample.length} of {s.skipped_count}
-                  </span>
-                )}
-              </div>
-              <Bp style={{ padding: 2 }}>
-                <table className="dp-table">
-                  <thead>
-                    <tr><th>Kind</th><th>Reference</th><th>Reason</th></tr>
-                  </thead>
-                  <tbody>
-                    {s.skipped_sample.map((r, i) => (
-                      <tr key={i}>
-                        <td>{r.kind}</td>
-                        <td>{r.ref}</td>
-                        <td>{r.code} — {r.detail}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </Bp>
-            </>
+            <SkippedRowsPanel token={session.token} run={s} canExport={canSync} />
           )}
         </>
       )}

@@ -1178,6 +1178,66 @@ class SyncRun(Base):
     assignments: Mapped[int] = mapped_column(Integer, default=0)
 
 
+class SyncSkip(Base):
+    """One row a pull could not fully resolve, kept in full.
+
+    ``SyncRun.skipped_sample`` holds the first twenty, and twenty is a preview
+    rather than a record: a run that reported 1,304 skips persisted 20 of them
+    and lost the other 1,284 when the job's process ended. The screen said "first
+    20 of 1304" honestly enough, but there was no way to answer the only
+    question that matters — *which* 1,284, and what do they have in common — so
+    the gap could be seen and never worked. This table is what makes the list
+    exportable and therefore fixable.
+
+    Append-only per run, and **derived**: Zoho is the system of record, so a
+    re-sync of the same window writes a new run with its own rows and the old
+    ones stay as the account of what that run saw. Nothing computes off these —
+    they are the evidence behind ``SyncRun.unresolved``, which is the worklist.
+
+    Every context field is a real column rather than a JSON blob, because the
+    entire point is a spreadsheet: a CSV built by walking a JSON dict has a
+    column set that depends on which rows happened to carry which keys.
+
+    ``line_value`` and ``qty`` are on a *purchase* line for a ``cost_record``
+    skip, which makes them cost. Everything that serves this table is
+    manager-or-owner only for that reason — see ``routers/data_status.py``.
+    """
+
+    __tablename__ = "sync_skipped_rows"
+    __table_args__ = (
+        # The one query this table has: every row of one run, in the order the
+        # pull met them.
+        Index("ix_sync_skips_run_seq", "sync_run_id", "seq"),
+    )
+
+    skip_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    sync_run_id: Mapped[str] = mapped_column(String(64), index=True)
+    #: Which connected company the skip happened in. A three-entity business
+    #: reading three books needs this to answer "is this one company's master or
+    #: all of them" — the merged report cannot say, so rows are written per
+    #: service, before the merge.
+    connection_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    #: Position within the run, so an export sorts back into the order the pull
+    #: met these rather than into whatever order the rows come back in.
+    seq: Mapped[int] = mapped_column(Integer, default=0)
+    kind: Mapped[str] = mapped_column(String(32))
+    ref: Mapped[str] = mapped_column(String(255))
+    code: Mapped[str] = mapped_column(String(64), index=True)
+    detail: Mapped[str] = mapped_column(String(512), default="")
+    # ── the context, flattened: what a person needs to find and fix the row ──
+    missing_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    label: Mapped[Optional[str]] = mapped_column(String(255))
+    sku: Mapped[Optional[str]] = mapped_column(String(128))
+    document: Mapped[Optional[str]] = mapped_column(String(128))
+    document_date: Mapped[Optional[str]] = mapped_column(String(32))
+    party: Mapped[Optional[str]] = mapped_column(String(255))
+    qty: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
+    line_value: Mapped[Optional[Any]] = mapped_column(Numeric(18, 2))
+    fix: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
 class IngestedDocument(Base):
     """One Zoho document already pulled — the resume cursor.
 

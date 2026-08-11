@@ -8,11 +8,13 @@ three calls in the right order.
 """
 from __future__ import annotations
 
+import csv
+import io
 import logging
 from datetime import date
 from typing import Any, Optional
 
-from fastapi import APIRouter, Body, Depends, HTTPException, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Response, status
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -71,9 +73,31 @@ def _coverage(session: Session, org: str) -> list[dict[str, Any]]:
     ]
 
 
-def _run_dict(r: Optional[models.SyncRun]) -> Optional[dict[str, Any]]:
+def _run_dict(r: Optional[models.SyncRun], *,
+              costs_visible: bool = True) -> Optional[dict[str, Any]]:
+    """The run row as the screens read it.
+
+    ``costs_visible=False`` withholds the money on the skip reports. It is not
+    cosmetic: ``line_value`` on a ``cost_record`` skip is a *purchase* line
+    total, and ``unresolved`` sums those per missing item beside the line count
+    — so a salesperson reading this endpoint could divide one by the other and
+    have a unit cost, from a screen about data quality. The count of blocked
+    lines and the name of what is missing are what the reader needs to act;
+    the value only ranks the worklist, and ranking is a manager's job anyway.
+    """
     if r is None:
         return None
+    unresolved = list(r.unresolved or [])
+    skipped_sample = list(r.skipped_sample or [])
+    if not costs_visible:
+        unresolved = [{**g, "value": None,
+                       "examples": [{**e, "value": None, "qty": None}
+                                    for e in (g.get("examples") or [])]}
+                      for g in unresolved]
+        # The context carries `line_value` and `qty` per row, which is the same
+        # number one document at a time.
+        skipped_sample = [{k: v for k, v in row.items() if k != "context"}
+                          for row in skipped_sample]
     return {
         "sync_run_id": r.sync_run_id,
         "status": r.status, "source": r.source,
@@ -95,9 +119,9 @@ def _run_dict(r: Optional[models.SyncRun]) -> Optional[dict[str, Any]]:
         "vendors": r.vendors, "stock_snapshots": r.stock_snapshots,
         "payments": r.payments, "purchase_orders": r.purchase_orders,
         "sales_orders": r.sales_orders, "vendor_payments": r.vendor_payments,
-        "skipped_count": r.skipped_count, "skipped_sample": r.skipped_sample or [],
+        "skipped_count": r.skipped_count, "skipped_sample": skipped_sample,
         # The worklist: one row per thing to fix, not per row skipped.
-        "unresolved": r.unresolved or [],
+        "unresolved": unresolved,
         "signals_emitted": r.signals_emitted, "decisions_created": r.decisions_created,
         "error": r.error,
         "since": r.since.isoformat() if r.since else None,
@@ -207,7 +231,8 @@ def data_status(
     }
     return {
         "connection": _connection(session, org),
-        "last_sync": _run_dict(_last_run(session, org)),
+        "last_sync": _run_dict(_last_run(session, org),
+                               costs_visible=principal.is_manager_or_owner),
         # What history this organization actually holds, per connected company.
         # Distinct from "when did we last sync": a nightly pull that runs for a
         # year still only covers the window the first run asked for, and until
@@ -216,7 +241,8 @@ def data_status(
         "coverage": _coverage(session, org),
         # Carried here as well so a page opened mid-pull renders the running job
         # on its first paint, without a second round trip to discover it.
-        "sync": _sync_state(session, org),
+        "sync": _sync_state(session, org,
+                            costs_visible=principal.is_manager_or_owner),
         "read_model": counts,
         "can_sync": principal.is_manager_or_owner,
         "can_manage_connection": principal.role is Role.OWNER,
@@ -470,7 +496,7 @@ class SyncRequest(BaseModel):
     connection_id: Optional[str] = None
 
 
-def _sync_state(session: Session, org: str) -> dict:
+def _sync_state(session: Session, org: str, *, costs_visible: bool = True) -> dict:
     """Everything the sync card needs, in one shape, from one place.
 
     The screen renders from state rather than from the outcome of whatever
@@ -488,20 +514,21 @@ def _sync_state(session: Session, org: str) -> dict:
         # IDLE is the absence of a job, not a stored value — there is no row to
         # invent for an organization that has never synced.
         "state": active.status if active is not None else (last.status if last else "IDLE"),
-        "active": _run_dict(active),
+        "active": _run_dict(active, costs_visible=costs_visible),
         # Every pull in flight, not just the newest. Two connected Zoho
         # companies are two independent pulls against two different APIs, and
         # reporting one of them is what made the other invisible — the screen
         # could not show a second progress bar because it was never told there
         # was a second job.
-        "active_runs": [_run_dict(r) for r in running],
+        "active_runs": [_run_dict(r, costs_visible=costs_visible)
+                        for r in running],
         # Which connections are *individually* busy. The screen gates each
         # company's button on its own entry here; a single organization-wide
         # flag is what disabled all three buttons the moment any one of them
         # started, and made the concurrency behind it unreachable.
         "busy_connections": [r.connection_id for r in running
                              if r.connection_id is not None],
-        "last": _run_dict(last),
+        "last": _run_dict(last, costs_visible=costs_visible),
         "last_successful_at": (clock.iso(ok.started_at)
                                if ok is not None and ok.started_at else None),
         # Kept, and no longer the gate for a per-connection button. An
@@ -521,7 +548,164 @@ def sync_state(
     Readable by anyone signed in — a salesperson cannot start a sync but is
     entitled to know the figures they are looking at are mid-refresh.
     """
-    return _sync_state(session, principal.organization_id)
+    return _sync_state(session, principal.organization_id,
+                       costs_visible=principal.is_manager_or_owner)
+
+
+# ── the skipped rows of one run, in full ─────────────────────────────────────
+#
+# `SyncRun.skipped_sample` is twenty rows and says so on screen. Twenty is a
+# preview of a problem, not a description of one: "first 20 of 1304" cannot be
+# reconciled against Zoho, cannot be grouped by supplier, and cannot be handed
+# to whoever maintains the item master. These two endpoints serve the whole
+# list — the grid reads the JSON, the export button reads the CSV, and both
+# come off the same query so the file can never disagree with the screen.
+#
+# Manager-or-owner, for the reason `models.SyncSkip` states: `line_value` on a
+# `cost_record` skip is a purchase line total.
+
+#: The export, column by column. One list, used to build the CSV header, to
+#: pull the values out of each row, and to label the grid — three places that
+#: would otherwise drift into three different column sets.
+SKIP_COLUMNS: list[tuple[str, str]] = [
+    ("seq", "Row"),
+    ("company", "Company"),
+    ("kind", "Kind"),
+    ("code", "Reason code"),
+    ("detail", "Reason"),
+    ("ref", "Reference"),
+    ("missing_id", "Missing id"),
+    ("label", "Item on the document"),
+    ("sku", "SKU"),
+    ("document", "Document"),
+    ("document_date", "Document date"),
+    ("party", "Customer / supplier"),
+    ("qty", "Qty"),
+    ("line_value", "Line value"),
+    ("fix", "What to do"),
+]
+
+
+def _skip_rows(session: Session, org: str, sync_run_id: str) -> tuple[models.SyncRun, list[dict[str, Any]]]:
+    """Every skipped row of one run, oldest first, with its company named.
+
+    Scoped to the caller's organization in the query rather than checked after
+    it: each organization is a separate tenant, and a run id from another one
+    must read as "no such run" rather than as a permission error that confirms
+    it exists.
+    """
+    run = session.scalar(
+        select(models.SyncRun)
+        .where(models.SyncRun.sync_run_id == sync_run_id,
+               models.SyncRun.organization_id == org))
+    if run is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND,
+                            "No sync run with that id in this organization.")
+
+    labels = {c.connection_id: (c.label or "")
+              for c in session.scalars(
+                  select(models.ZohoConnection)
+                  .where(models.ZohoConnection.organization_id == org)).all()}
+    rows = session.scalars(
+        select(models.SyncSkip)
+        .where(models.SyncSkip.sync_run_id == sync_run_id,
+               models.SyncSkip.organization_id == org)
+        .order_by(models.SyncSkip.seq)).all()
+    return run, [
+        {
+            "skip_id": s.skip_id,
+            "seq": s.seq,
+            "connection_id": s.connection_id,
+            "company": labels.get(s.connection_id) or "",
+            "kind": s.kind, "code": s.code, "detail": s.detail, "ref": s.ref,
+            "missing_id": s.missing_id, "label": s.label, "sku": s.sku,
+            "document": s.document, "document_date": s.document_date,
+            "party": s.party,
+            "qty": float(s.qty) if s.qty is not None else None,
+            "line_value": float(s.line_value) if s.line_value is not None else None,
+            "fix": s.fix,
+        }
+        for s in rows
+    ]
+
+
+def _skips_are_complete(run: models.SyncRun, held: int) -> Optional[str]:
+    """Whether these rows are the whole story, said out loud when they are not.
+
+    A run from before ``sync_skipped_rows`` existed reports a skip count with no
+    rows behind it, and an export of nothing that calls itself complete is worse
+    than no export: somebody reconciles an empty sheet and concludes the sync is
+    clean. So the response carries what it holds against what the run counted,
+    and says which case an empty file is.
+    """
+    if held == run.skipped_count:
+        return None
+    if held == 0:
+        return ("This run recorded a count but not the rows themselves — it ran "
+                "before the full list was kept. Re-sync to produce an exportable "
+                "list.")
+    return (f"This run reported {run.skipped_count} skipped rows and "
+            f"{held} were kept. The difference was not recorded.")
+
+
+@router.get("/sync-runs/{sync_run_id}/skipped")
+def skipped_rows(
+    sync_run_id: str,
+    principal: Principal = Depends(require_manager_or_owner),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Every row one sync could not fully resolve."""
+    run, rows = _skip_rows(session, principal.organization_id, sync_run_id)
+    return {
+        "sync_run_id": run.sync_run_id,
+        "started_at": clock.iso(run.started_at),
+        # What the run counted, beside what this response holds. Two numbers
+        # rather than one because they can legitimately differ, and a reader
+        # comparing an export against the screen deserves to see why.
+        "skipped_count": run.skipped_count,
+        "held": len(rows),
+        "incomplete": _skips_are_complete(run, len(rows)),
+        "columns": [{"field": f, "header": h} for f, h in SKIP_COLUMNS],
+        "rows": rows,
+    }
+
+
+@router.get("/sync-runs/{sync_run_id}/skipped.csv")
+def skipped_rows_csv(
+    sync_run_id: str,
+    principal: Principal = Depends(require_manager_or_owner),
+    session: Session = Depends(get_session),
+) -> Response:
+    """The same rows as a spreadsheet.
+
+    Built server-side rather than in the browser so the file is the whole list
+    and not the page the grid happens to be showing — the export exists exactly
+    because a truncated view was the problem.
+    """
+    run, rows = _skip_rows(session, principal.organization_id, sync_run_id)
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow([header for _field, header in SKIP_COLUMNS])
+    for row in rows:
+        writer.writerow(["" if row.get(f) is None else row.get(f)
+                         for f, _header in SKIP_COLUMNS])
+    note = _skips_are_complete(run, len(rows))
+    if note:
+        # In the file, not only in the JSON. A sheet that travels away from the
+        # screen it was downloaded from has to carry its own caveat.
+        writer.writerow([])
+        writer.writerow([note])
+
+    started = run.started_at.date().isoformat() if run.started_at else "run"
+    name = f"skipped-rows-{started}-{run.sync_run_id[:8]}.csv"
+    return Response(
+        # BOM, so Excel opens a UTF-8 file as UTF-8. Without it an item named
+        # in anything but ASCII arrives mojibaked, which for a sheet whose job
+        # is matching part names back to Zoho is the whole value gone.
+        content="﻿" + buf.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
 
 @router.post("/sync", status_code=status.HTTP_202_ACCEPTED)

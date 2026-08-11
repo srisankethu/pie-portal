@@ -327,6 +327,54 @@ export interface SyncRun {
   notes: { demo_data_removed?: Record<string, number>; commercial?: Record<string, unknown> };
 }
 
+/** One row a pull could not fully resolve, as it happened.
+ *
+ *  The evidence behind `UnresolvedReference`, which is the worklist: this is
+ *  the individual bill or invoice line, named well enough to be found in Zoho
+ *  and reconciled against it. */
+export interface SkippedRow {
+  skip_id: string;
+  /** Position within the run — the order the pull met these rows. */
+  seq: number;
+  connection_id: string | null;
+  /** The connected company's label, resolved server-side. Blank when the run
+   *  recorded no connection (a pull from before per-company provenance). */
+  company: string;
+  kind: string;
+  code: string;
+  detail: string;
+  ref: string;
+  missing_id: string | null;
+  /** The item as written on the *document*. The master has no such record, so
+   *  the line is the only place its name survives — and the only thing anyone
+   *  can search Zoho by. */
+  label: string | null;
+  sku: string | null;
+  document: string | null;
+  document_date: string | null;
+  party: string | null;
+  qty: number | null;
+  line_value: number | null;
+  fix: string | null;
+}
+
+/** Every skipped row of one run, with the run's own count beside what was kept.
+ *
+ *  Two numbers rather than one because they can legitimately differ — a run
+ *  from before these rows were persisted counted skips it did not keep — and a
+ *  reader comparing an export against the screen deserves to see why. */
+export interface SkippedRows {
+  sync_run_id: string;
+  started_at: string | null;
+  skipped_count: number;
+  held: number;
+  /** Set when `held` and `skipped_count` disagree: what the gap is, in words.
+   *  Null means the list is complete. */
+  incomplete: string | null;
+  columns: { field: string; header: string }[];
+  rows: SkippedRow[];
+}
+
 /** A reference the pull could not resolve, folded across every line it blocked.
  *
  *  `lines` is the point: one discontinued item on four hundred bill lines is

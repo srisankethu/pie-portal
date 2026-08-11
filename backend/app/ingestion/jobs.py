@@ -44,6 +44,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from decimal import Decimal, InvalidOperation
 from typing import Callable, Optional
 
 from sqlalchemy import select
@@ -256,6 +257,97 @@ def plan_windows(since: date, until: Optional[date] = None,
     return windows
 
 
+def _persist_skips(session: Session, run: models.SyncRun,
+                   pulls: list[tuple[Optional[str], list[dict]]]) -> None:
+    """Write every skipped row of this run, not a sample of them.
+
+    ``run.skipped_sample`` keeps the first twenty for the status card to render
+    without a second request. Twenty is a preview: a run reporting 1,304 skips
+    persisted 20 and lost 1,284 when the process ended, so the one question
+    worth asking — *which* rows, and what do they have in common — had no answer
+    anywhere in the system. These rows are what make the list exportable, and an
+    export is what makes it fixable.
+
+    ``pulls`` is per connected company rather than the merged report, because
+    the merge concatenates the lists and drops which book each came from. For a
+    business running three legal entities that is the first thing to know about
+    1,304 skips: one company's item master, or all three.
+
+    Uncapped on purpose. A cap here is the same defect one order of magnitude
+    up — the screen would report a complete export that silently was not one,
+    and a partial reconciliation reads as a clean one. Rows are small and a run
+    that skips enough of them to be a storage problem is a run whose skips are
+    the most valuable thing it produced.
+
+    Best-effort: this is the audit trail of a pull that has already written its
+    rows, and failing the run over it would discard real imported trade to
+    protect a report about what was not imported.
+    """
+    try:
+        # A SAVEPOINT, so a failure here undoes these inserts and *only* these.
+        # A plain rollback would discard the counters the caller has just
+        # written onto the run row and not yet flushed — losing the audit trail
+        # of a successful pull to protect the report about its skips.
+        with session.begin_nested():
+            # Idempotent for a re-run against the same row (a resumed job).
+            session.query(models.SyncSkip).filter_by(
+                sync_run_id=run.sync_run_id).delete(synchronize_session=False)
+            _insert_skips(session, run, pulls)
+        session.flush()
+    except Exception:  # noqa: BLE001 — the pull's own rows matter more
+        log.exception("could not persist the skipped rows for run %s",
+                      run.sync_run_id)
+
+
+def _insert_skips(session: Session, run: models.SyncRun,
+                  pulls: list[tuple[Optional[str], list[dict]]]) -> None:
+    """One ``SyncSkip`` per reported skip, numbered in the order they were met."""
+    seq = 0
+    for connection_id, skipped in pulls:
+        for row in skipped:
+            ctx = row.get("context") or {}
+            session.add(models.SyncSkip(
+                organization_id=run.organization_id,
+                sync_run_id=run.sync_run_id,
+                connection_id=connection_id,
+                seq=seq,
+                kind=str(row.get("kind") or "")[:32],
+                ref=str(row.get("ref") or "")[:255],
+                code=str(row.get("code") or "")[:64],
+                detail=str(row.get("detail") or "")[:512],
+                missing_id=_clip(ctx.get("missing_id"), 64),
+                label=_clip(ctx.get("label"), 255),
+                sku=_clip(ctx.get("sku"), 128),
+                document=_clip(ctx.get("document"), 128),
+                document_date=_clip(ctx.get("document_date"), 32),
+                party=_clip(ctx.get("party"), 255),
+                qty=_decimal(ctx.get("qty")),
+                line_value=_decimal(ctx.get("line_value")),
+                fix=str(ctx.get("fix")) if ctx.get("fix") else None,
+            ))
+            seq += 1
+
+
+def _clip(value: object, length: int) -> Optional[str]:
+    text = str(value).strip() if value not in (None, "") else ""
+    return text[:length] or None
+
+
+def _decimal(value: object) -> Optional[Decimal]:
+    """A quantity or a line value as ``Decimal``, or nothing.
+
+    Nothing rather than zero when the source did not say: a missing quantity and
+    a quantity of zero are different facts, and an export that writes 0 for both
+    invites somebody to reconcile against a number the document never carried.
+    """
+    if value in (None, ""):
+        return None
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+
+
 def _window_label(start: date, end: date) -> str:
     """What the slice is called on screen: 'Mar 2025', or a range if wider."""
     if (start.year, start.month) == (end.year, end.month):
@@ -328,6 +420,9 @@ def execute_sync(session: Session, run: models.SyncRun, *,
     analysis_notes: dict = {}
     svc: Optional[SyncService] = None
     report = SyncReport(organization_id=org)   # placeholder until a source resolves
+    # Declared out here so the `finally` can persist the skips of a run that
+    # died before the loop ever built this list.
+    services: list[SyncService] = []
 
     try:
         ensure_org_and_users(session)
@@ -378,7 +473,6 @@ def execute_sync(session: Session, run: models.SyncRun, *,
         run.windows_total = len(windows) * len(targets)
         run.windows_done = 0
 
-        services: list[SyncService] = []
         for index, target in enumerate(targets):
             # Named in every phase line, so a pull that takes minutes says which
             # company it is on rather than reading the same six phases three
@@ -477,6 +571,16 @@ def execute_sync(session: Session, run: models.SyncRun, *,
                          "windows_listed_in_full": report.windows_listed_in_full}
         run.skipped_count = len(report.skipped)
         run.skipped_sample = report.skipped[:20]
+        # And the whole list, per company, in its own table — the sample above
+        # is what the status card paints, not the record. A run that died still
+        # writes the skips it had already met, for the reason the counters above
+        # come from the report either way: a pull that skipped 300 rows and then
+        # failed skipped 300 rows.
+        pulls: list[tuple[Optional[str], list[dict]]] = [
+            (s.connection_id, s.report.skipped) for s in services]
+        if svc is not None and svc not in services:
+            pulls.append((svc.connection_id, svc.report.skipped))
+        _persist_skips(session, run, pulls)
         # Capped, but on *distinct problems* rather than on rows: forty things
         # to fix is a long afternoon, four hundred identical lines is one.
         run.unresolved = report.unresolved()[:40]

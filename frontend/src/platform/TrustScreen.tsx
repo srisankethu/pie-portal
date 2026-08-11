@@ -41,6 +41,7 @@ import { formatDateTime } from "../when";
 import { abilityFor } from "./ability";
 import { papi } from "./api";
 import { DataGrid, type ColDef } from "./DataGrid";
+import { saveJson } from "./download";
 import {
   EmptyState, ErrorState, LoadingState, SectionHeader, StatusChip, type Tone,
 } from "./kit";
@@ -287,17 +288,11 @@ function ExportPanel({ token }: { token: string }) {
     setBusy(true);
     setError(null);
     try {
-      const data = await papi.trustExport(token);
       // Built in the browser from the response rather than opening the endpoint
       // in a tab: the endpoint needs an Authorization header, and a plain link
-      // to it downloads a 401.
-      const url = URL.createObjectURL(
-        new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }));
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "pie-portal-export.json";
-      a.click();
-      URL.revokeObjectURL(url);
+      // to it downloads a 401. See `download.ts` — the skipped-rows export on
+      // the data screen has the same constraint and shares this.
+      saveJson(await papi.trustExport(token), "pie-portal-export.json");
     } catch (e) {
       setError((e as Error).message);
     } finally {

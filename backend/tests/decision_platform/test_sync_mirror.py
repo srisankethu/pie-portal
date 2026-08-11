@@ -12,9 +12,11 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
+import pytest
 
 from app.domain import models
 from app.ingestion.sync import SyncService
+from app.state.events import EventLog
 
 ORG = "org_mirror"
 TODAY = date.today()
@@ -78,6 +80,15 @@ def _invoice(ref: str, days_ago: int, total="5000"):
 
 def _sync(session, source) -> SyncService:
     svc = SyncService(session, source, ORG)
+    svc.run()
+    session.commit()
+    return svc
+
+
+def _sync_as(session, source, connection_id: str) -> SyncService:
+    """The same pull, on behalf of one connected company."""
+    svc = SyncService(session, source, ORG, connector="zoho",
+                      connection_id=connection_id)
     svc.run()
     session.commit()
     return svc
@@ -210,3 +221,75 @@ def test_an_unchanged_book_retires_nothing(session):
 
     assert svc.report.retired == []
     assert _refs(session, models.InvoiceDoc) == {"A", "B", "C"}
+
+
+# ── the third guard: only this connection's documents ───────────────────────
+# `_mirror`'s docstring has always named three guards and implemented two. The
+# organization above has one connection, so every test to this point exercises
+# the sweep with nothing to confuse it. These are the two-company cases.
+def test_one_connections_sweep_does_not_retire_anothers_documents(session):
+    """The guard `_mirror` documents and, until now, did not implement.
+
+    Three Zoho companies were safe only because Zoho issues globally unique
+    ids, so no listing ever omitted a document another company held *under a
+    ref this one also used*. That is a property of the source, not of this
+    code, and the first connector that numbers per company loses it.
+    """
+    _sync_as(session, _Source([_invoice("A1", 10)]), "conn_a")
+    _sync_as(session, _Source([_invoice("B1", 10)]), "conn_b")
+    assert _refs(session, models.InvoiceDoc) == {"A1", "B1"}
+
+    # A pulls again. Its listing has never mentioned B1 and never will.
+    svc = _sync_as(session, _Source([_invoice("A1", 10)]), "conn_a")
+
+    assert _refs(session, models.InvoiceDoc) == {"A1", "B1"}
+    assert svc.report.retired == []
+
+
+def test_superseding_one_connections_document_leaves_anothers_events_live(session):
+    """The log is what every derived state is replayed from, so an over-broad
+    supersede does not merely hide a document — it rebuilds the states without
+    it."""
+    _sync_as(session, _Source([_invoice("A1", 10)]), "conn_a")
+    _sync_as(session, _Source([_invoice("B1", 10)]), "conn_b")
+
+    EventLog(session, ORG, connector="zoho",
+             connection_id="conn_a").supersede("invoice", "B1")
+    session.commit()
+
+    live_b = [e for e in EventLog(session, ORG, connector="zoho",
+                                  connection_id="conn_b").live()
+              if e.source_doc_id == "B1"]
+    assert live_b, "conn_b's events were superseded by conn_a's sweep"
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "retire_document matches on (organization_id, external_ref) only, because "
+    "the fact tables carry no connection. Scoping the sweep keeps another "
+    "company's document out of the retire list; it cannot stop the delete "
+    "itself from reaching a colliding ref. The provenance migration is what "
+    "fixes this, and this test is the tripwire that says when it has."))
+def test_retiring_a_colliding_ref_does_not_delete_the_other_companys_rows(session):
+    _sync_as(session, _Source([_invoice("1", 10)]), "conn_a")
+    _sync_as(session, _Source([_invoice("1", 10)]), "conn_b")
+
+    _sync_as(session, _Source([]), "conn_a")      # A's "1" is genuinely gone
+
+    assert _refs(session, models.InvoiceDoc) == {"1"}   # B's survives
+
+
+def test_a_document_with_no_recorded_connection_is_not_retired(session):
+    """Unknown provenance is not a licence to delete.
+
+    A row nobody recorded a connection for might belong to this company or to
+    one whose rows predate connections entirely. Sweeping it assumes the
+    friendlier answer, which is the benign default §1 forbids — and the two
+    mistakes are not symmetric: a stale document is recoverable by a re-sync,
+    another company's history is recoverable only from a backup.
+    """
+    _sync(session, _Source([_invoice("L1", 10)]))        # legacy: no connection
+
+    svc = _sync_as(session, _Source([]), "conn_a")       # a real connection sweeps
+
+    assert _refs(session, models.InvoiceDoc) == {"L1"}
+    assert svc.report.unattributable == 1

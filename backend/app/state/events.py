@@ -144,15 +144,25 @@ class EventLog:
         return row
 
     def supersede(self, doc_type: str, doc_id: str) -> int:
-        """Retire every live event read from one document. Returns how many.
+        """Retire every live event read from one document, **as this connection
+        read it**. Returns how many.
 
         Called before re-reading a document, not after: the new events must
         land *after* the retirement in sequence order, or a replay reading in
         seq order would apply the old reading last.
+
+        Scoped to the connection because a document id is unique only inside
+        the system that issued it. Without that clause one company's sweep
+        retires another's events for the same id — and since every folded state
+        is replayed from this log, that does not merely hide the document, it
+        rebuilds the states without it. `record` has always written both
+        columns; only this predicate ignored them.
         """
         result = self.s.execute(
             update(models.BusinessEvent)
             .where(models.BusinessEvent.organization_id == self.org,
+                   models.BusinessEvent.connector == self.connector,
+                   models.BusinessEvent.connection_id == self.connection_id,
                    models.BusinessEvent.source_doc_type == doc_type,
                    models.BusinessEvent.source_doc_id == doc_id,
                    models.BusinessEvent.superseded_at.is_(None))

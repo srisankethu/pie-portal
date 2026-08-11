@@ -392,6 +392,7 @@ def execute_sync(session: Session, run: models.SyncRun, *,
             # and never the book.
             svc = SyncService(session, source_for(since, None, target.connection_id), org,
                               resume=not full, on_phase=phase,
+                              connector=target.connector,
                               connection_id=target.connection_id,
                               incremental=incremental)
             # Once per run, not once per company: it clears the document cursor
@@ -640,6 +641,15 @@ class _Target:
     """One connected company a run will read, and what to call it on screen."""
     connection_id: Optional[str]
     label: str
+    #: Which system this book is read from. Every target below is built from a
+    #: ``ZohoConnection`` row, so "zoho" is not an assumption here — it is what
+    #: the table means. It is carried explicitly all the same, because the
+    #: alternative is a caller that omits it and silently takes a default: a
+    #: pull that labels its rows with the wrong connector has them adopted into
+    #: that connector's id space by ``repositories._for_upsert``, and no test
+    #: in the tree would notice. When connections gain a discriminator this
+    #: field is where it lands, and the call site is already correct.
+    connector: str = "zoho"
 
 
 def _sync_targets(session: Session, organization_id: str,

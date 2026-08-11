@@ -476,8 +476,58 @@ class ReadModelRepository:
                 model.organization_id == self.org,
                 getattr(model, date_col) >= start,
                 getattr(model, date_col) <= end,
+                getattr(model, ref_col).in_(self._cursor_refs(doc_type)),
             ))
         return [str(r) for r in rows]
+
+    def _cursor_refs(self, doc_type: str) -> Any:
+        """This connection's document ids for one kind, as a subquery.
+
+        The third guard `_mirror` names: *only this connection's documents*.
+        The fact tables cannot answer it — they carry a reference and no book —
+        so the cursor table does, and it can: `mark_ingested` writes one row per
+        document per connection, immediately before each `_mirror` call.
+
+        A connection of ``None`` compares ``IS NULL`` and so matches exactly the
+        rows written by a caller that had no connection either, which is what
+        keeps a scripted pull behaving as it always has.
+        """
+        return select(models.IngestedDocument.doc_id).where(
+            models.IngestedDocument.organization_id == self.org,
+            models.IngestedDocument.connection_id == self.connection_id,
+            models.IngestedDocument.doc_type == doc_type,
+        )
+
+    def unattributable_in_window(self, doc_type: str, start: date,
+                                 end: date) -> int:
+        """How many documents in the window record no connection at all.
+
+        Separate from `ingested_in_window` rather than returned beside it: that
+        method has one caller and a contract stated in its docstring, and
+        widening its return type for a diagnostic would make every reader of
+        the sweep learn about a counter to understand the retirement.
+
+        These are not swept. A row whose provenance nobody recorded may belong
+        to this company or to one whose rows predate connections, and deleting
+        it assumes the friendlier answer — §1's benign default, in the one
+        operation here that cannot be undone.
+        """
+        table = _MIRRORED.get(doc_type)
+        if table is None or self.connection_id is None:
+            return 0
+        model, ref_col, date_col = table
+        orphans = select(models.IngestedDocument.doc_id).where(
+            models.IngestedDocument.organization_id == self.org,
+            models.IngestedDocument.connection_id.is_(None),
+            models.IngestedDocument.doc_type == doc_type,
+        )
+        return int(self.s.scalar(
+            select(func.count()).select_from(model).where(
+                model.organization_id == self.org,
+                getattr(model, date_col) >= start,
+                getattr(model, date_col) <= end,
+                getattr(model, ref_col).in_(orphans),
+            )) or 0)
 
     def retire_document(self, doc_type: str, doc_id: str) -> int:
         """Remove a document's read-model rows. Returns how many.

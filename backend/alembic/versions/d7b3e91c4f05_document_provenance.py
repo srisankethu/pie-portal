@@ -50,53 +50,76 @@ down_revision = "c1e4f80b7a92"
 branch_labels = None
 depends_on = None
 
-#: table, old constraint, new constraint, the columns the new key is made of.
+#: table, old constraint, new constraint, and the columns of each key.
+#:
+#: Both column lists are carried, and the old one is not "organization_id plus
+#: external_ref" for every table: ``invoice_sales_orders`` keys on a pair of
+#: references and ``stock_location_snapshots`` on product, location and day, and
+#: neither has an ``external_ref`` column at all. Assuming the common shape here
+#: made ``downgrade`` build a constraint out of columns that do not exist, which
+#: `test_the_newest_migration_is_reversible` caught on the way back up.
+#:
 #: Written out literally rather than derived from the models — this runs against
 #: schemas from months ago and the models describe today.
 _TABLES = (
     ("sales_txns", "uq_salestxn_org_ref", "uq_salestxn_source",
-     ("organization_id", "connector", "connection_id", "external_ref")),
+     ("organization_id", "connector", "connection_id", "external_ref"),
+     ("organization_id", "external_ref")),
     ("cost_records", "uq_costrecord_org_ref", "uq_costrecord_source",
-     ("organization_id", "connector", "connection_id", "external_ref")),
+     ("organization_id", "connector", "connection_id", "external_ref"),
+     ("organization_id", "external_ref")),
     ("payment_receipts", "uq_payment_org_external", "uq_payment_source",
-     ("organization_id", "connector", "connection_id", "external_ref")),
+     ("organization_id", "connector", "connection_id", "external_ref"),
+     ("organization_id", "external_ref")),
     ("payment_applications", "uq_payment_application_org_external",
      "uq_payment_application_source",
-     ("organization_id", "connector", "connection_id", "external_ref")),
+     ("organization_id", "connector", "connection_id", "external_ref"),
+     ("organization_id", "external_ref")),
     ("sales_orders", "uq_sales_order_org_ref", "uq_sales_order_source",
-     ("organization_id", "connector", "connection_id", "external_ref")),
+     ("organization_id", "connector", "connection_id", "external_ref"),
+     ("organization_id", "external_ref")),
     ("bills", "uq_bill_org_ref", "uq_bill_source",
-     ("organization_id", "connector", "connection_id", "external_ref")),
+     ("organization_id", "connector", "connection_id", "external_ref"),
+     ("organization_id", "external_ref")),
     ("invoices", "uq_invoice_org_ref", "uq_invoice_source",
-     ("organization_id", "connector", "connection_id", "external_ref")),
+     ("organization_id", "connector", "connection_id", "external_ref"),
+     ("organization_id", "external_ref")),
     ("invoice_sales_orders", "uq_invoice_sales_order_org_pair",
      "uq_invoice_sales_order_source",
      ("organization_id", "connector", "connection_id",
-      "invoice_external_ref", "sales_order_external_ref")),
+      "invoice_external_ref", "sales_order_external_ref"),
+     ("organization_id", "invoice_external_ref", "sales_order_external_ref")),
     ("locations", "uq_location_org_ref", "uq_location_source",
-     ("organization_id", "connector", "connection_id", "external_ref")),
+     ("organization_id", "connector", "connection_id", "external_ref"),
+     ("organization_id", "external_ref")),
     ("stock_location_snapshots", "uq_stock_loc_org_product_location_day",
      "uq_stock_loc_source",
      ("organization_id", "connector", "connection_id", "product_id",
-      "location_external_ref", "as_of")),
+      "location_external_ref", "as_of"),
+     ("organization_id", "product_id", "location_external_ref", "as_of")),
     ("credit_notes", "uq_credit_note_org_ref", "uq_credit_note_source",
-     ("organization_id", "connector", "connection_id", "external_ref")),
+     ("organization_id", "connector", "connection_id", "external_ref"),
+     ("organization_id", "external_ref")),
     ("credit_note_applications", "uq_credit_note_application_org_external",
      "uq_credit_note_application_source",
-     ("organization_id", "connector", "connection_id", "external_ref")),
+     ("organization_id", "connector", "connection_id", "external_ref"),
+     ("organization_id", "external_ref")),
     ("vendor_payments", "uq_vendor_payment_org_ref", "uq_vendor_payment_source",
-     ("organization_id", "connector", "connection_id", "external_ref")),
+     ("organization_id", "connector", "connection_id", "external_ref"),
+     ("organization_id", "external_ref")),
     ("bill_payment_applications", "uq_bill_payment_application_org_external",
      "uq_bill_payment_application_source",
-     ("organization_id", "connector", "connection_id", "external_ref")),
+     ("organization_id", "connector", "connection_id", "external_ref"),
+     ("organization_id", "external_ref")),
     ("purchase_orders", "uq_purchase_order_org_external",
      "uq_purchase_order_source",
-     ("organization_id", "connector", "connection_id", "external_ref")),
+     ("organization_id", "connector", "connection_id", "external_ref"),
+     ("organization_id", "external_ref")),
 )
 
 
 def upgrade() -> None:
-    for table, old_uq, new_uq, cols in _TABLES:
+    for table, old_uq, new_uq, cols, _old_cols in _TABLES:
         with op.batch_alter_table(table) as batch:
             batch.add_column(sa.Column("connector", sa.String(length=32),
                                        nullable=True))
@@ -109,16 +132,16 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    for table, old_uq, new_uq, _cols in _TABLES:
+    for table, old_uq, new_uq, _cols, old_cols in _TABLES:
         op.drop_index(f"ix_{table}_connection_id", table_name=table)
         op.drop_index(f"ix_{table}_connector", table_name=table)
         with op.batch_alter_table(table) as batch:
             batch.drop_constraint(new_uq, type_="unique")
-            # The narrow key this replaced. Recreating it can fail where two
-            # connections have since written the same reference — which is the
-            # collision this revision exists to permit, so a downgrade after a
-            # second connector has run is not expected to succeed.
-            batch.create_unique_constraint(
-                old_uq, ["organization_id", "external_ref"])
+            # The narrow key this replaced, with *that table's* own columns.
+            # Recreating it can fail where two connections have since written
+            # the same reference — which is the collision this revision exists
+            # to permit, so a downgrade after a second connector has run is not
+            # expected to succeed.
+            batch.create_unique_constraint(old_uq, list(old_cols))
             batch.drop_column("connection_id")
             batch.drop_column("connector")

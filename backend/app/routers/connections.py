@@ -186,6 +186,11 @@ def _dict(session: Session, row: models.ZohoConnection) -> dict:
                                   if cred and cred.rotated_at else None),
         "accounts_base": row.accounts_base,
         "api_base": row.api_base,
+        # What this company trades in, as Zoho reported it at the last check.
+        # null means it has not been checked since this was recorded — which is
+        # not the same as "agrees with the roll-up", and the screen should not
+        # render it as though it were.
+        "base_currency": row.base_currency,
         "last_checked_at": clock.iso(row.last_checked_at),
         "last_check_ok": row.last_check_ok,
         "last_check_detail": row.last_check_detail,
@@ -505,6 +510,35 @@ def _check(session: Session, row: models.ZohoConnection) -> dict:
             org.timezone = zone
             session.flush()
 
+    # The currency this company keeps its books in, recorded on the connection.
+    #
+    # Overwritten on every check, unlike the timezone above, and the difference
+    # is deliberate: the zone is written to the *organization* as a default a
+    # person may then have meant to change, while this is a fact about one
+    # connected company that nothing here is entitled to override. A stale
+    # value would be worse than none, because it is what the sync compares
+    # every document against.
+    currency_note = ""
+    currency = str(info.get("currency") or "").strip().upper()
+    if found and currency:
+        row.base_currency = currency
+        session.flush()
+        org = session.get(models.Organization, row.organization_id)
+        rollup = str(getattr(org, "currency", "") or "").strip().upper()
+        if rollup and currency != rollup:
+            # Named on the connection rather than refused outright. Refusing
+            # would be a judgement this cannot make — the operator may be about
+            # to change the roll-up currency, or may want the company connected
+            # and quiet. What must not happen is the two disagreeing *silently*,
+            # because no money row in this platform records a currency, so a
+            # foreign document read from here would be summed with local ones
+            # and could never be told apart afterwards. The sync refuses those
+            # documents; this is what tells somebody why they are missing.
+            currency_note = (
+                f" This company keeps its books in {currency} and this "
+                f"platform reports in {rollup}, so its documents are not read "
+                f"— see the sync report.")
+
     # Only worth asking once the login is known to reach this company: against
     # the wrong company every answer would describe a grant nobody is going to
     # sync with, at ten calls a time.
@@ -527,7 +561,11 @@ def _check(session: Session, row: models.ZohoConnection) -> dict:
 
     detail = ("Reached this company." if found else
               f"Authenticated, but company {row.zoho_organization_id} is not among "
-              f"the ones this login can see.") + scope_note
+              f"the ones this login can see.") + scope_note + currency_note
+    # A currency mismatch does not flip `ok`, for the reason `_scope_note`
+    # gives about untested scopes: `ok` answers "is this connection usable",
+    # and it is — the credential works and the company is reachable. What is
+    # wrong is what can be *done* with it, which is what the detail says.
     ok = bool(found) and not missing_required
     conn.record_check(session, row, ok=ok, detail=detail)
     return {

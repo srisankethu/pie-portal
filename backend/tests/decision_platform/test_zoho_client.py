@@ -212,6 +212,40 @@ def test_bill_discount_fields_are_passed_through_raw():
     assert line["item_total"] == 1583
 
 
+def test_the_currency_a_document_is_denominated_in_survives_the_projection():
+    """Dropped here, a foreign document is indistinguishable from a local one
+    forever after: no money row in this schema carries a currency, so `sync`
+    can only refuse what the client passed through. This is the whole of the
+    guard's evidence, and the projection is explicit — a field not named here
+    does not reach the platform however faithfully Zoho reports it."""
+    day = _today(5)
+    inv_listing = {"code": 0, "invoices": [{"invoice_id": "I1", "date": day,
+                                            "status": "sent"}],
+                   "page_context": {"has_more_page": False}}
+    inv_detail = {"code": 0, "invoice": {
+        "invoice_id": "I1", "customer_id": "C1", "date": day,
+        "currency_code": "EUR", "exchange_rate": 90.5,
+        "line_items": [{"line_item_id": 1, "item_id": 9, "quantity": 1,
+                        "rate": 100, "item_total": 100}]}}
+    row = list(ZohoApiSource(http=FakeHttp(
+        {"/invoices/I1": inv_detail, "/invoices": inv_listing})).list_invoices())[0]
+    assert row["currency_code"] == "EUR"
+    assert row["exchange_rate"] == 90.5
+
+    bill_listing = {"code": 0, "bills": [{"bill_id": "B1", "date": day,
+                                          "status": "open"}],
+                    "page_context": {"has_more_page": False}}
+    bill_detail = {"code": 0, "bill": {
+        "bill_id": "B1", "date": day, "currency_code": "USD",
+        "exchange_rate": 83.2,
+        "line_items": [{"line_item_id": 1, "item_id": 9, "quantity": 1,
+                        "rate": 100, "item_total": 100}]}}
+    row = list(ZohoApiSource(http=FakeHttp(
+        {"/bills/B1": bill_detail, "/bills": bill_listing})).list_bills())[0]
+    assert row["currency_code"] == "USD"
+    assert row["exchange_rate"] == 83.2
+
+
 def test_live_rows_normalize_without_error():
     """The client's output must feed normalize.py unchanged."""
     from app.ingestion.normalize import normalize_customer, normalize_invoice

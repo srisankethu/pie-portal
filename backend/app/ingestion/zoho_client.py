@@ -818,6 +818,19 @@ class ZohoApiSource(ZohoTransport):
                 "customer_id": str(inv.get("customer_id")),
                 "date": inv.get("date"),
                 "last_modified_time": inv.get("last_modified_time"),
+                # What this document is denominated in. Carried because no
+                # money row in this schema has a currency, so the only place a
+                # foreign-currency document can be *noticed* is here, at the
+                # seam, before its numbers are summed with everything else's.
+                # `sync` refuses a document whose currency is not the book's;
+                # passing it through as a number would make the refusal
+                # impossible further in, where the currency is no longer known.
+                "currency_code": inv.get("currency_code"),
+                # Zoho's own rate for that document. Not used to convert
+                # anything — nothing here converts — but a mismatch reported
+                # without it forces somebody back into Zoho to find out how
+                # much money the refused document was.
+                "exchange_rate": inv.get("exchange_rate"),
                 # The receivable terms, from the document already fetched: no
                 # extra call, no extra scope — the mirror of what `list_bills`
                 # passes through for payables. These were missing when the
@@ -934,6 +947,12 @@ class ZohoApiSource(ZohoTransport):
                 "bill_id": str(bill.get("bill_id")),
                 "date": bill.get("date"),
                 "last_modified_time": bill.get("last_modified_time"),
+                # The mirror of what `list_invoices` carries, and the more
+                # load-bearing half: an import bill is the likeliest foreign
+                # document in a distributor's book, and it is the cost side of
+                # `gross_profit = revenue - cogs`.
+                "currency_code": bill.get("currency_code"),
+                "exchange_rate": bill.get("exchange_rate"),
                 # The payable terms, from the document already fetched: no
                 # extra call, no extra scope. Until these were passed through,
                 # a bill was read purely for what the stock cost and the fact

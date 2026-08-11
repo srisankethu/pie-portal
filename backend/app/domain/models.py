@@ -179,6 +179,21 @@ class ZohoConnection(Base):
     accounts_base: Mapped[str] = mapped_column(String(255), default="https://accounts.zoho.in")
     api_base: Mapped[str] = mapped_column(String(255),
                                           default="https://www.zohoapis.in/books/v3")
+    # The currency this connected company keeps its books in, as Zoho reports
+    # it. Read on every check rather than filled in once: it is a fact about
+    # the company, not a preference somebody set, so a stale value here is
+    # worse than none — every figure this connection contributes is denominated
+    # in it.
+    #
+    # It lives on the *connection* and not on the organization because one
+    # organization deliberately holds several connected companies and rolls
+    # revenue and margin up across them. `Organization.currency` is what those
+    # totals are spelled in; this is what each book actually trades in, and the
+    # two disagreeing is the condition `_check` warns about and the sync
+    # refuses documents on.
+    #
+    # NULL means nobody has checked this connection yet — not that it agrees.
+    base_currency: Mapped[Optional[str]] = mapped_column(String(8))
     # Last time this connection was actually reachable, and what Zoho said.
     # Held per connection because "the org is connected" stops meaning anything
     # once there are three of them and one has a revoked token.

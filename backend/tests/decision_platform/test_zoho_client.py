@@ -924,3 +924,143 @@ def test_a_full_sync_of_one_connection_leaves_the_others_cursor_alone(session):
     session.flush()
     assert a.ingested_index("invoice") == {}
     assert b.ingested_index("invoice") == {"2": "y"}, "B's history is untouched"
+
+
+# ── the projection carries what the diagnostics promised ─────────────────────
+#
+# `sync._missing_item_context` documents that for an item the master lacks,
+# "the line is the only place its name survives" — and the projection here was
+# the one place that promise could be broken before anything downstream ran.
+# On a real export every UNKNOWN_PRODUCT row had the quantity and the value and
+# a blank where the item's name, its SKU and the customer should have been:
+# the detail payload carried all three, and the projection dropped them.
+
+def _one_invoice_routes():
+    listing = {"code": 0, "invoices": [
+        {"invoice_id": "91", "date": _today(1), "status": "sent",
+         "last_modified_time": "T1"}],
+        "page_context": {"has_more_page": False}}
+    detail = {"code": 0, "invoice": {
+        "invoice_id": "91", "customer_id": "5", "date": _today(1),
+        "customer_name": "Sandvik Mining",
+        "invoice_number": "HYD/FY27/INV-751",
+        "line_items": [
+            {"line_item_id": "l1", "item_id": "i1",
+             "name": "REGRIND RECOAT D8.01", "sku": "5183438",
+             "description": "Customer Mat no: 63357650",
+             "quantity": 4, "rate": 3480, "item_total": 13920},
+        ]}}
+    return {"invoices/91": detail, "invoices": listing}
+
+
+def test_the_invoice_projection_keeps_the_names_the_skip_report_reads():
+    src = ZohoApiSource(http=FakeHttp(_one_invoice_routes()))
+    [inv] = list(src.list_invoices())
+
+    assert inv["customer_name"] == "Sandvik Mining"
+    [line] = inv["line_items"]
+    assert line["name"] == "REGRIND RECOAT D8.01"
+    assert line["sku"] == "5183438"
+    assert line["description"] == "Customer Mat no: 63357650"
+
+
+def test_the_bill_projection_keeps_the_names_the_skip_report_reads():
+    listing = {"code": 0, "bills": [
+        {"bill_id": "71", "date": _today(1), "status": "open",
+         "last_modified_time": "T1"}],
+        "page_context": {"has_more_page": False}}
+    detail = {"code": 0, "bill": {
+        "bill_id": "71", "vendor_id": "9", "vendor_name": "Kennametal India",
+        "date": _today(1), "bill_number": "KTI/25-26/0043",
+        "line_items": [
+            {"line_item_id": "l1", "item_id": "i1",
+             "name": "CNMG 120408 KCP25", "sku": "K-1204",
+             "description": "insert", "quantity": 40, "rate": 512}]}}
+    src = ZohoApiSource(http=FakeHttp({"bills/71": detail, "bills": listing}))
+    [bill] = list(src.list_bills())
+
+    [line] = bill["line_items"]
+    assert (line["name"], line["sku"], line["description"]) == (
+        "CNMG 120408 KCP25", "K-1204", "insert")
+
+
+# ── the by-id item fetch, and what it refuses to conclude ────────────────────
+
+def test_get_item_matches_the_listing_shape_exactly():
+    """A product row must look the same whether the master listing carried it
+    or a document forced the fetch — two shapes would mean the racing case
+    writes a subtly thinner record."""
+    item = {"item_id": "i9", "name": "TECTYL COOL 294 - 20LTR",
+            "sku": "294-20LTR", "unit": "LTR", "status": "active",
+            "manufacturer": "TECTYL OIL", "stock_on_hand": 40}
+    routes = {
+        "items/i9": {"code": 0, "item": item},
+        "items": {"code": 0, "items": [item],
+                  "page_context": {"has_more_page": False}},
+    }
+    src = ZohoApiSource(http=FakeHttp(routes))
+
+    assert src.get_item("i9") == list(src.list_items())[0]
+
+
+def test_get_item_answers_none_for_a_dead_id_and_raises_for_a_throttle(waits):
+    src = ZohoApiSource(http=FakeHttp({
+        "items/gone": {"code": 1002, "message": "Resource does not exist"}}))
+    assert src.get_item("gone") is None, "a 404 is an answer, not an error"
+
+    class Throttling:
+        def post(self, url, **kw):
+            return FakeResponse({"access_token": "t", "expires_in": 3600})
+
+        def get(self, url, **kw):
+            return FakeResponse({"message": "rate limited"}, status=429)
+
+    with pytest.raises(ZohoThrottleError):
+        ZohoApiSource(http=Throttling()).get_item("i1")
+
+
+# ── one dead id must not cost the whole stock stage ──────────────────────────
+
+def test_a_dead_id_in_an_itemdetails_batch_is_isolated_not_fatal():
+    """Zoho answers a batch naming any nonexistent item with one 404 for the
+    entire call, without saying which id it means. This failed per-location
+    stock on all three companies identically until the batch was bisected."""
+    live = {
+        "i1": [{"location_id": "L1", "location_stock_on_hand": 5}],
+        "i3": [{"location_id": "L1", "location_stock_on_hand": 7}],
+    }
+
+    def itemdetails(params):
+        ids = params["item_ids"].split(",")
+        if "dead" in ids:
+            return {"code": 1002, "message": "Resource does not exist"}
+        return {"code": 0, "items": [
+            {"item_id": i, "locations": live[i]} for i in ids]}
+
+    src = ZohoApiSource(http=FakeHttp({"itemdetails": itemdetails}))
+    rows = list(src.list_item_locations(["i1", "dead", "i3"]))
+
+    assert {r["item_id"] for r in rows} == {"i1", "i3"}, (
+        "exactly the dead id is dropped; every live item still answers")
+    assert all(r["on_hand"] in (5, 7) for r in rows)
+
+
+def test_a_throttled_itemdetails_batch_is_not_bisected(waits):
+    """A rate limit refuses every call equally; halving the batch would turn
+    one clear signal into a storm of doomed requests."""
+    class Throttling:
+        def __init__(self):
+            self.gets = 0
+
+        def post(self, url, **kw):
+            return FakeResponse({"access_token": "t", "expires_in": 3600})
+
+        def get(self, url, **kw):
+            self.gets += 1
+            return FakeResponse({"message": "rate limited"}, status=429)
+
+    http = Throttling()
+    src = ZohoApiSource(http=http)
+    with pytest.raises(ZohoThrottleError):
+        list(src.list_item_locations(["i1", "i2", "i3", "i4"]))
+    assert http.gets <= settings.ZOHO_MAX_RETRIES, "no bisection storm"

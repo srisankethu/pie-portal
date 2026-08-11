@@ -176,9 +176,22 @@ class ReadModelRepository:
         )
 
     def list_customers(self) -> Sequence[models.Customer]:
-        return self.s.scalars(
-            select(models.Customer).where(models.Customer.organization_id == self.org)
-        ).all()
+        """Customers of this repository's own source — or of the whole
+        organization when the repository has no source to speak of.
+
+        The scope matters to exactly one caller today, and it is the reason it
+        exists: ``_sync_assignments`` maps each customer's Zoho salesperson
+        onto a platform user via *this book's* user list. Unscoped, a
+        three-book organization ran that mapping over every book's customers
+        three times — and a salesperson id from one book, looked up in another
+        book's users, produced an UNMAPPED_SALESPERSON skip naming an id that
+        was never that book's to map. Eight of the ten skips on a real run were
+        this: other companies' salespeople, reported as this company's problem.
+        """
+        clauses = [models.Customer.organization_id == self.org]
+        if self.connector:
+            clauses.extend(self._source(models.Customer))
+        return self.s.scalars(select(models.Customer).where(*clauses)).all()
 
     # ── products ─────────────────────────────────────────────────────────────
     def upsert_product(self, p: ProductIn) -> models.Product:
@@ -252,19 +265,47 @@ class ReadModelRepository:
         return row
 
     def product_ids_by_external(self) -> dict[str, str]:
-        """Every product in this organization, keyed by its Zoho id.
+        """Every product of *this repository's own source*, keyed by its Zoho id.
 
         One query rather than a lookup per row: the per-location stock pull asks
         about the whole master, and ``get_product_by_external`` in a loop would
         be one statement per item on an eight-hundred-line catalogue.
+
+        Scoped to the connection, and the scope is the fix for a bug that
+        failed a stage on every company at once. This map is what the stock
+        pull sends *back to Zoho* as a list of ids to ask about; unscoped, a
+        three-book organization asked each book about the other two books'
+        items, Zoho answered the first batch containing a foreign id with one
+        404 for the whole call, and per-location stock died identically on all
+        three connections. An id is unique inside the book that issued it and
+        meaningless outside it — the same sentence that scoped
+        ``get_product_by_external``, applied to the query that was left behind.
+
+        Placeholder rows are excluded for the same reason in miniature: a
+        provisional product is one the master listing did not return, so asking
+        Zoho about it by id is asking for the 404 the bisect would then spend
+        calls isolating. When the placeholder becomes real, the next master
+        pull overwrites it in place and it enters this map by itself.
+
+        Rows with no recorded source are *not* included. They cannot be told
+        apart from another book's pre-provenance rows, and the master pull that
+        runs before the stock stage adopts this book's own rows anyway — so by
+        the time anything reads this map, everything that belongs here carries
+        the connection.
         """
+        clauses = [
+            models.Product.organization_id == self.org,
+            models.Product.external_id.is_not(None),
+        ]
+        if self.connector:
+            clauses.extend(self._source(models.Product))
         rows = self.s.execute(
-            select(models.Product.external_id, models.Product.product_id).where(
-                models.Product.organization_id == self.org,
-                models.Product.external_id.is_not(None),
-            )
+            select(models.Product.external_id, models.Product.product_id,
+                   models.Product.source_ref).where(*clauses)
         ).all()
-        return {str(external_id): product_id for external_id, product_id in rows}
+        return {str(external_id): product_id
+                for external_id, product_id, source_ref in rows
+                if not (source_ref or {}).get("provisional")}
 
     def get_product_by_external(self, external_id: str) -> Optional[models.Product]:
         """Resolve within this repository's own source.

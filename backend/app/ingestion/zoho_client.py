@@ -638,7 +638,47 @@ class ZohoApiSource(ZohoTransport):
         be resolved against, not that they are treated as live.
         """
         for i in self._paginate("items", "items", filter_by="Status.All"):
-            yield {
+            yield self._item_payload(i)
+
+    def get_item(self, item_id: str) -> Optional[dict[str, Any]]:
+        """One item by id, in exactly the shape ``list_items`` yields.
+
+        The escape hatch for the master-read race. ``run_reference`` reads the
+        item list once, at the start of a pull; the document stages run for
+        minutes after it, against a live book where people are working. An item
+        created between the two — created 12:48, invoiced 13:14, both inside
+        one run, on a real Tuesday — is on the invoice and not in the master,
+        and until this existed the only outcome was a placeholder row and an
+        UNKNOWN_PRODUCT skip for an item that demonstrably exists.
+
+        Answers ``None`` for an item Zoho no longer holds, because for the
+        caller that is not an error: it is the one fact that separates "fetch
+        it and carry on" from "this really was deleted, placeholder it". Auth
+        and throttle failures still raise — a rate limit is a reason to stop
+        the pull, never a reason to conclude an item does not exist.
+        """
+        try:
+            payload = self._get(f"items/{item_id}")
+        except (ZohoAuthError, ZohoThrottleError):
+            raise
+        except ZohoError:
+            return None
+        item = payload.get("item")
+        if not item:
+            return None
+        return self._item_payload(item)
+
+    @staticmethod
+    def _item_payload(i: dict[str, Any]) -> dict[str, Any]:
+        """One master item, as this source reports it.
+
+        Shared by the list pull and the by-id fetch so the two cannot drift: a
+        product row must look the same whether the master listing carried it or
+        a document forced it to be fetched — otherwise the racing case would
+        write a subtly different record and no test comparing either path alone
+        would notice.
+        """
+        return {
                 "item_id": str(i.get("item_id")),
                 "name": i.get("name") or "",
                 # The identity layer's item key. Often blank in Zoho — an item
@@ -686,7 +726,7 @@ class ZohoApiSource(ZohoTransport):
                 "purchase_rate": i.get("purchase_rate"),
                 "track_inventory": i.get("track_inventory"),
                 "item_type": i.get("item_type"),
-            }
+        }
 
     #: How many item ids one ``itemdetails`` call carries. Zoho accepts a list;
     #: batching is the whole reason per-location stock is affordable at all —
@@ -727,31 +767,65 @@ class ZohoApiSource(ZohoTransport):
 
         Yields one row per (item, location) pair, so a caller never has to know
         the batching happened.
+
+        One dead id must not cost the whole stage. Zoho answers a batch that
+        names any nonexistent item with a single 404 — "Resource does not
+        exist" — for the *entire* call, and it does not say which id it means.
+        Before this was contained, one item deleted between the master pull and
+        this stage failed per-location stock for every company, every sync,
+        identically: the same three SUPPLY_STAGE_FAILED rows, until someone
+        found the one id by hand. A failing batch is bisected instead, so the
+        cost of a dead id is O(log batch) extra calls and exactly the dead ids
+        are dropped — logged, never silently.
+
+        Throttle and auth failures are not bisected: a rate limit refuses every
+        call equally, and halving the batch would turn one clear signal into a
+        storm of doomed requests.
         """
         for start in range(0, len(item_ids), self.ITEM_DETAIL_BATCH):
             batch = item_ids[start:start + self.ITEM_DETAIL_BATCH]
             if not batch:
                 continue
+            yield from self._item_locations_batch(list(batch))
+
+    def _item_locations_batch(self, batch: list[str]) -> Iterator[dict[str, Any]]:
+        try:
             payload = self._get("itemdetails", item_ids=",".join(batch))
-            for item in (payload.get("items") or []):
-                item_id = str(item.get("item_id") or "")
-                if not item_id:
+        except (ZohoAuthError, ZohoThrottleError):
+            raise
+        except ZohoError as e:
+            if len(batch) == 1:
+                log.warning("zoho itemdetails: dropping item %s (%s) — it has "
+                            "stock history but no longer answers by id",
+                            batch[0], e)
+                return
+            mid = len(batch) // 2
+            yield from self._item_locations_batch(batch[:mid])
+            yield from self._item_locations_batch(batch[mid:])
+            return
+        yield from self._item_locations_rows(payload)
+
+    @staticmethod
+    def _item_locations_rows(payload: dict[str, Any]) -> Iterator[dict[str, Any]]:
+        for item in (payload.get("items") or []):
+            item_id = str(item.get("item_id") or "")
+            if not item_id:
+                continue
+            for loc in (item.get("locations") or []):
+                location_id = str(loc.get("location_id") or "")
+                if not location_id:
                     continue
-                for loc in (item.get("locations") or []):
-                    location_id = str(loc.get("location_id") or "")
-                    if not location_id:
-                        continue
-                    yield {
-                        "item_id": item_id,
-                        "location_id": location_id,
-                        # Named for what they are rather than for Zoho's
-                        # `location_` prefix, which would read as redundant on a
-                        # row already keyed by location.
-                        "on_hand": loc.get("location_stock_on_hand"),
-                        "available": loc.get("location_available_stock"),
-                        # Zoho's own valuation of this location's holding. Cost.
-                        "asset_value": loc.get("location_asset_value"),
-                    }
+                yield {
+                    "item_id": item_id,
+                    "location_id": location_id,
+                    # Named for what they are rather than for Zoho's
+                    # `location_` prefix, which would read as redundant on a
+                    # row already keyed by location.
+                    "on_hand": loc.get("location_stock_on_hand"),
+                    "available": loc.get("location_available_stock"),
+                    # Zoho's own valuation of this location's holding. Cost.
+                    "asset_value": loc.get("location_asset_value"),
+                }
 
     def _cutoff(self) -> date:
         return self._since or (date.today() - timedelta(days=settings.ZOHO_HISTORY_DAYS))
@@ -872,6 +946,12 @@ class ZohoApiSource(ZohoTransport):
             yield {
                 "invoice_id": str(inv.get("invoice_id")),
                 "customer_id": str(inv.get("customer_id")),
+                # The customer's name as the document states it. Diagnostics
+                # only — resolution goes through customer_id — but the skip
+                # report promises "the document, the date, the party", and it
+                # was keeping that promise with a field this projection
+                # dropped: every UNKNOWN_* row said who bought it in the blank.
+                "customer_name": inv.get("customer_name"),
                 "date": inv.get("date"),
                 "last_modified_time": inv.get("last_modified_time"),
                 # What this document is denominated in. Carried because no
@@ -930,6 +1010,17 @@ class ZohoApiSource(ZohoTransport):
                     {
                         "line_item_id": str(li.get("line_item_id")),
                         "item_id": str(li.get("item_id")),
+                        # The item as written on the document. When the master
+                        # has no such item, this line is the only place its
+                        # name survives — which is precisely the claim
+                        # ``sync._missing_item_context`` makes, and precisely
+                        # the fields this projection used to strip. The skip
+                        # report and the placeholder's display name both read
+                        # from here; without these, every unknown item exported
+                        # as a bare id and rendered as "Unnamed product".
+                        "name": li.get("name"),
+                        "description": li.get("description"),
+                        "sku": li.get("sku"),
                         "quantity": li.get("quantity"),
                         "rate": li.get("rate"),
                         "item_total": li.get("item_total"),
@@ -1025,6 +1116,13 @@ class ZohoApiSource(ZohoTransport):
                     {
                         "line_item_id": str(li.get("line_item_id")),
                         "item_id": str(li.get("item_id")),
+                        # The item as written on the bill — same reasoning as
+                        # the invoice projection: for an item the master lacks,
+                        # the line is the only record of what was bought, and
+                        # the skip report and placeholder hint both read it.
+                        "name": li.get("name"),
+                        "description": li.get("description"),
+                        "sku": li.get("sku"),
                         "quantity": li.get("quantity"),
                         "rate": li.get("rate"),
                         # A line-item discount, and Zoho's own resolved values for

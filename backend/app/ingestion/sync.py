@@ -107,6 +107,13 @@ class SyncReport:
     # same thing. Reported rather than silent: removing data is the one thing a
     # sync does that cannot be inferred from what appeared.
     retired: list[dict[str, str]] = field(default_factory=list)
+    # Documents inside the covered window that record no connection, and so
+    # were left alone rather than swept. Counted for the same reason `retired`
+    # is a list rather than a tally: declining to delete is a decision, and one
+    # that is invisible unless it says so. A number that stays high after a
+    # full re-sync means provenance is not being written, not that the sweep is
+    # being cautious.
+    unattributable: int = 0
 
     def skip(self, kind: str, ref: str, code: str, detail: str,
              context: Optional[dict[str, Any]] = None) -> None:
@@ -244,6 +251,15 @@ def _sole_connection(session: Session, organization_id: str) -> bool:
     without guessing. One connection: it came from there, because there is
     nowhere else. Two: it could be either, and picking one silently merges a
     stranger's customers into a book they never traded with.
+
+    **Counts Zoho connections only, and that is a real limit rather than an
+    oversight to read past.** It is correct while `zoho_connections` is the
+    only connection table, and it fails in the unsafe direction the moment it
+    is not: a second connector's book would not be counted, this would answer
+    "one", and adoption would claim rows belonging to a company it has never
+    read. Whatever restructures the connection tables owns this query too —
+    stated here because the failure is silent and the call site above reads
+    like a settled question.
     """
     from ..domain import models
 
@@ -743,7 +759,20 @@ class SyncService:
 
         **Only this connection's documents.** Another connected company's
         invoice is not missing merely because this company's listing did not
-        mention it.
+        mention it. The fact tables cannot answer which book a row came from —
+        they carry a reference and nothing else — so the cursor table does, via
+        `ingested_in_window`. A document whose provenance was never recorded is
+        counted into `report.unattributable` and left alone: it may belong to a
+        company this pull has never read, and of the two possible mistakes only
+        one is recoverable.
+
+        The guard reaches the retire *list*, not the delete itself.
+        `retire_document` still matches on `(organization_id, external_ref)`,
+        so two companies holding one ref — which Zoho's globally unique ids
+        make impossible and a per-company numbering scheme makes ordinary —
+        still delete together. `test_retiring_a_colliding_ref_does_not_delete_
+        the_other_companys_rows` is xfail against exactly that, and turns into
+        a failure the day the fact tables carry a connection.
 
         Retirement supersedes the document's events rather than deleting them.
         The log is what everything else is derived from, so one supersede
@@ -766,6 +795,8 @@ class SyncService:
             self.log.supersede(doc_type, doc_id)
             self.repo.retire_document(doc_type, doc_id)
             self.report.retired.append({"kind": doc_type, "ref": doc_id})
+        self.report.unattributable += self.repo.unattributable_in_window(
+            doc_type, start, end)
 
     def _covered_window(self) -> Optional[tuple[date, date]]:
         """The date range this pull's listing actually asked Zoho for."""

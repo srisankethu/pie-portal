@@ -48,6 +48,18 @@ class ZohoItem:
     # the code a second time: re-matching at send time is both a call per line
     # against the rate limit and a second chance to pick a different item.
     item_id: Optional[str] = None
+    # The tax rate the books hold against this item, as a percentage (18.0, not
+    # 0.18 — it is Zoho's number in Zoho's units, converted where it is used).
+    #
+    # Carried because the alternative is the quote screen asserting one blended
+    # rate over every line while the estimate Zoho creates prices each line from
+    # *this* value. Two tax authorities, disagreeing on any item that is not on
+    # the default rate, with the customer-facing document being the one the
+    # screen did not compute.
+    #
+    # ``None`` means the books did not state one, which is not the same as zero
+    # and not the same as the default — see ``store.Quote.to_dict``.
+    tax_percentage: Optional[float] = None
 
 
 @dataclass

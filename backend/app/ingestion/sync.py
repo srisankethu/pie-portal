@@ -23,6 +23,7 @@ exactly how far the pull got.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field, fields
 from datetime import date
 from typing import Any, Callable, Optional
@@ -56,6 +57,8 @@ from .normalize import (
     normalize_vendor_payment,
 )
 from .source import ZohoSource
+
+log = logging.getLogger("pie_portal.sync")
 
 #: Distinct from ``None``, which is a legitimate "this org has no zone set".
 _UNSET = object()
@@ -315,6 +318,10 @@ class SyncService:
         # "nothing on record" — and re-resolving it on every document would be
         # a query per document for the case that has no answer to find.
         self._book_currency_cached: Any = _UNSET
+        # Item ids already asked for by id this run, hit or miss — see
+        # `_resolve_product`. Per-service, because an id is only meaningful
+        # inside the book that issued it.
+        self._item_fetch_missed: set[str] = set()
         # The repository writes on behalf of this connected company, so every
         # row it upserts carries where it came from. Without this the read
         # model keys customers and items on an external id alone, which is
@@ -940,8 +947,6 @@ class SyncService:
                 self.report.identity_links += 1
 
     def _sync_products(self) -> None:
-        from ..identity import service as identity
-
         # One pass over the item list, two writes. Stock rides on the same
         # payload, and a second pass to collect it would read the whole master
         # list twice per sync — the exact cost `run_reference` exists to avoid.
@@ -950,30 +955,92 @@ class SyncService:
         stock_as_of = _clock_today(self.timezone())
 
         for raw in self.source.list_items():
-            ref = str(raw.get("item_id", "?"))
-            try:
-                row = self.repo.upsert_product(normalize_product(raw))
-                # Flushed so the row has its id: the connector record points at
-                # the read-model row, and a null pointer here would silently
-                # decouple the two layers for every newly seen record.
-                self.s.flush()
-                self.report.products += 1
-            except NormalizationError as e:
-                self.report.skip("item", ref, e.code, e.detail)
-                continue
-            self._record_stock(row, raw, stock_as_of)
-            self._link_catalog(row, raw)
-            result = identity.ingest_item(
-                self.s, self.org, connector=self.connector,
-                connection_id=self.connection_id, external_id=ref,
-                name=str(raw.get("name") or ""),
-                sku=raw.get("sku"),
-                description=str(raw.get("name") or ""),
-                source_ref={"item_id": ref, "sku": raw.get("sku")},
-                local_id=getattr(row, "product_id", None))
-            self.report.identity_suggestions += len(result.suggestions)
-            if result.linked:
-                self.report.identity_links += 1
+            self._ingest_item(raw, stock_as_of)
+
+    def _resolve_product(self, external_id: str) -> Optional[models.Product]:
+        """The product a document line names — fetched by id when the master
+        read missed it.
+
+        The master is listed once, at the start of a pull, and the document
+        stages run for minutes afterwards against a live book. An item created
+        in that window is on an invoice and not in the master — observed on a
+        real run: item created 12:48, invoiced 13:14, both inside one pull —
+        and the old outcome was a placeholder row, an UNKNOWN_PRODUCT skip, and
+        a line of real revenue reading "Unnamed product" until the next sync.
+        Whatever the *reason* the master lacks the id (the race, a regrouped
+        item, a listing hiccup), the remedy is the same: ask Zoho for that one
+        item before concluding it does not exist.
+
+        One attempt per id per run, remembered either way. A document with
+        forty lines of one unknown item must cost one detail call, not forty —
+        and when Zoho answers "no such item", asking again for line two is
+        spending the rate limit to hear it again. ``None`` means genuinely
+        unresolvable this run; the caller placeholders and reports exactly as
+        before, which keeps this a recovery and never a new failure mode.
+
+        A throttle is deliberately not caught: it means the whole pull should
+        stop and resume, and swallowing it here would turn one clear signal
+        into a placeholder row that misreports a rate limit as a missing item.
+        """
+        row = self.repo.get_product_by_external(external_id)
+        if row is not None and not (row.source_ref or {}).get("provisional"):
+            return row
+        fetch = getattr(self.source, "get_item", None)
+        if fetch is None or external_id in self._item_fetch_missed:
+            return row
+        self._item_fetch_missed.add(external_id)     # one attempt, either way
+        from .zoho_client import ZohoThrottleError
+        try:
+            raw = fetch(external_id)
+        except ZohoThrottleError:
+            raise
+        except Exception as e:  # noqa: BLE001 — a failed rescue is the old status quo
+            log.warning("item %s: by-id fetch failed (%s); keeping the placeholder",
+                        external_id, e)
+            return row
+        if not raw:
+            return row
+        fetched = self._ingest_item(raw, _clock_today(self.timezone()))
+        return fetched or row
+
+    def _ingest_item(self, raw: dict[str, Any],
+                     stock_as_of: date) -> Optional[models.Product]:
+        """One master item into the read model — the write half of the item pull.
+
+        Extracted from the listing loop so the by-id fetch in
+        ``_resolve_product`` produces *exactly* what the listing would have: the
+        product row, its stock reading, its catalogue link and its identity
+        record. An item that arrives late must not arrive different — two write
+        paths for one item is how the racing case would get a subtly thinner
+        record that no test comparing either path alone would catch.
+        """
+        from ..identity import service as identity
+
+        ref = str(raw.get("item_id", "?"))
+        try:
+            row = self.repo.upsert_product(normalize_product(raw))
+            # Flushed so the row has its id: the connector record points at
+            # the read-model row, and a null pointer here would silently
+            # decouple the two layers for every newly seen record.
+            self.s.flush()
+            self.report.products += 1
+        except NormalizationError as e:
+            self.report.skip("item", ref, e.code, e.detail)
+            return None
+        self._record_stock(row, raw, stock_as_of)
+        self._link_catalog(row, raw)
+        result = identity.ingest_item(
+            self.s, self.org, connector=self.connector,
+            connection_id=self.connection_id, external_id=ref,
+            name=str(raw.get("name") or ""),
+            sku=raw.get("sku"),
+            description=str(raw.get("name") or ""),
+            source_ref={"item_id": ref, "sku": raw.get("sku")},
+            local_id=getattr(row, "product_id", None))
+        self.report.identity_suggestions += len(result.suggestions)
+        if result.linked:
+            self.report.identity_links += 1
+        return row
 
     def _link_catalog(self, row, raw: dict[str, Any]) -> None:
         """Point this item at its decoded catalogue record, if it has one.
@@ -1112,7 +1179,7 @@ class SyncService:
             self._read_lines(ev.SALE_LINE_RECORDED, "invoice", ref, raw, lines)
             for t in lines:
                 cust = self.repo.get_customer_by_external(t.customer_external_id)
-                prod = self.repo.get_product_by_external(t.product_external_id)
+                prod = self._resolve_product(t.product_external_id)
                 if cust is None:
                     self.report.skip(
                         "sales_txn", t.external_ref, "UNKNOWN_CUSTOMER",
@@ -1269,7 +1336,7 @@ class SyncService:
             vendor = (self.repo.get_vendor_by_external(lines[0].vendor_external_id)
                       if lines[0].vendor_external_id else None)
             for r in lines:
-                prod = self.repo.get_product_by_external(r.product_external_id)
+                prod = self._resolve_product(r.product_external_id)
                 if prod is None:
                     # Kept, for the same reason as the sales line — and this
                     # side matters more, not less: bills are where cost comes
@@ -1408,6 +1475,7 @@ class SyncService:
 
         email_of = {u["user_id"]: str(u.get("email") or "").strip().lower()
                     for u in zoho_users}
+        name_of = {u["user_id"]: str(u.get("name") or "") for u in zoho_users}
         local = self.repo.users_by_email()
         unmapped: set[str] = set()
 
@@ -1417,10 +1485,30 @@ class SyncService:
             if user is None:
                 if sp_id not in unmapped:
                     unmapped.add(sp_id)
-                    self.report.skip(
-                        "assignment", sp_id, "UNMAPPED_SALESPERSON",
-                        f"Zoho salesperson {sp_id} has no platform user with a matching "
-                        f"email ({email_of.get(sp_id) or 'no email in Zoho'})")
+                    # Two different problems, named apart. An id this book's
+                    # user list knows is a person missing a platform account —
+                    # fixable by inviting them, and the name says who. An id
+                    # the list does not know cannot be mapped from here at all:
+                    # the salesperson exists on the invoices but not among this
+                    # company's users, so the email to match on lives in Zoho's
+                    # salesperson settings, not in a list this pull can read.
+                    who = name_of.get(sp_id)
+                    if who:
+                        detail = (
+                            f"Zoho user {who} ({sp_id}) has no platform user "
+                            f"with a matching email "
+                            f"({email_of.get(sp_id) or 'no email in Zoho'}). "
+                            "Their customers stay unassigned until a platform "
+                            "user with that email exists.")
+                    else:
+                        detail = (
+                            f"Zoho salesperson {sp_id} is named on this "
+                            "company's invoices but is not among its users, so "
+                            "there is no email to match a platform user by. "
+                            "Their customers stay unassigned; they are still "
+                            "visible to managers and owners.")
+                    self.report.skip("assignment", sp_id,
+                                     "UNMAPPED_SALESPERSON", detail)
                 continue
             if customer.assigned_user_id != user.user_id:
                 customer.assigned_user_id = user.user_id

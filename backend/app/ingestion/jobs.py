@@ -513,10 +513,15 @@ def execute_sync(session: Session, run: models.SyncRun, *,
             svc.run_supply()
             services.append(svc)
 
-        # Assignments are decided from the newest invoice found, so they run
-        # once, after every company has been read — not once per company against
-        # a book that is still half-loaded.
-        services[-1].finish()
+        # Assignments run per company, each against its own book. They used to
+        # run once, on the last service, because customers were pooled across
+        # the organization and one pass covered everybody — which also meant
+        # one book's salesperson ids were looked up in another book's user
+        # list, and every miss was reported as that company's problem. Now that
+        # a service's customers are its own, the last service's pass would
+        # cover only the last book; every service closes out its own.
+        for svc_done in services:
+            svc_done.finish()
 
         report = SyncReport(organization_id=org)
         for svc in services:

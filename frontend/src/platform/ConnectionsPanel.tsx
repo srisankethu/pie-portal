@@ -111,7 +111,8 @@ function ConnectionCard({
   onRename: (id: string, label: string) => Promise<void>;
   onToggle: (id: string, enabled: boolean) => Promise<void>;
   onDelete: (id: string) => Promise<void>;
-  onRotate: (id: string, token: string) => Promise<string>;
+  onRotate: (id: string, token: string,
+             client?: { client_id: string; client_secret: string }) => Promise<string>;
   onSync: (id: string, since: string, full: boolean) => Promise<void>;
   /** This card's own company is the one being pulled.
    *
@@ -142,6 +143,15 @@ function ConnectionCard({
   const [rotating, setRotating] = useState(false);
   const [newToken, setNewToken] = useState("");
   const [rotateNote, setRotateNote] = useState<string | null>(null);
+  // The client pair, and whether it is being replaced too. Closed by default
+  // for the reason the token box is: a rotation normally happens under the same
+  // app, and two secret boxes standing open invite somebody to re-type a secret
+  // that was already correct. But it has to be *reachable*, because the one
+  // failure a token-only rotation causes is a token generated under a different
+  // Self Client — Zoho answers that with `invalid_client_secret`, and until
+  // this existed the screen's only remedy was the one that could not fix it.
+  const [newClient, setNewClient] = useState({ client_id: "", client_secret: "" });
+  const [replacingClient, setReplacingClient] = useState(false);
 
   useEffect(() => setLabel(conn.label), [conn.label]);
   useEffect(() => setSince(conn.suggested_since), [conn.suggested_since]);
@@ -252,7 +262,7 @@ function ConnectionCard({
       {rotating && (
         <div className="cx-rotate">
           <label htmlFor={`cx-token-${conn.connection_id}`}>
-            <Labelled tip="Generate a fresh refresh token in the Zoho API console for the same client, then paste it here. The client id and secret are unchanged by a rotation and are not re-entered — re-typing a secret that is already correct is how a working connection gets broken.">
+            <Labelled tip="Generate a fresh refresh token in the Zoho API console for the same client, then paste it here. The client id and secret are left alone by default, because re-typing a secret that is already correct is how a working connection gets broken — but if the token came from a different app, replace them too or Zoho refuses the pair.">
               New refresh token
             </Labelled>
           </label>
@@ -265,6 +275,44 @@ function ConnectionCard({
             placeholder="1000.xxxxxxxx.xxxxxxxx"
             onChange={(e) => setNewToken(e.target.value)}
           />
+          {/* Reachable, not open. A token generated under a *different* Zoho
+              app is the one failure a token-only rotation produces, and Zoho
+              reports it as `invalid_client_secret` — which reads as "your
+              secret is wrong" and sends people to change the data centre, the
+              one setting that was right. */}
+          {replacingClient ? (
+            <>
+              <label htmlFor={`cx-rcid-${conn.connection_id}`} style={{ marginTop: 10 }}>
+                <Labelled tip="Only when the token came from a different app in the Zoho API console. A client keeps one id across data centres but has a separate secret in each, so copy both from the console for this connection's data centre.">
+                  Client ID
+                </Labelled>
+              </label>
+              <input
+                id={`cx-rcid-${conn.connection_id}`}
+                className="input"
+                autoComplete="off"
+                spellCheck={false}
+                value={newClient.client_id}
+                onChange={(e) => setNewClient({ ...newClient, client_id: e.target.value })}
+              />
+              <label htmlFor={`cx-rcs-${conn.connection_id}`} style={{ marginTop: 10 }}>
+                Client secret
+              </label>
+              <input
+                id={`cx-rcs-${conn.connection_id}`}
+                type="password"
+                className="input"
+                autoComplete="off"
+                value={newClient.client_secret}
+                onChange={(e) => setNewClient({ ...newClient, client_secret: e.target.value })}
+              />
+            </>
+          ) : (
+            <Button variant="text" size="small"
+                    onClick={() => setReplacingClient(true)}>
+              The token came from a different app — replace the client id and secret too
+            </Button>
+          )}
           {/* Said before it happens, not after. One Zoho grant usually reaches
               every company its user can see, so rotating from here rotates
               those too — which is the point, and a surprise if unstated. */}
@@ -275,17 +323,33 @@ function ConnectionCard({
           </p>
           <div className="cx-rotate-actions">
             <Button variant="contained" size="small"
-                    disabled={busy || !newToken.trim()}
+                    disabled={busy || !newToken.trim() || (replacingClient
+                      && !(newClient.client_id.trim() && newClient.client_secret.trim()))}
                     onClick={() => run(async () => {
-                      const note = await onRotate(conn.connection_id, newToken.trim());
+                      // Sent only when both are filled in: a half-supplied pair
+                      // would replace one side of a matched credential and
+                      // break a connection that was merely being re-tokened.
+                      const note = await onRotate(
+                        conn.connection_id, newToken.trim(),
+                        replacingClient
+                          ? { client_id: newClient.client_id.trim(),
+                              client_secret: newClient.client_secret.trim() }
+                          : undefined);
                       setNewToken("");
+                      setNewClient({ client_id: "", client_secret: "" });
+                      setReplacingClient(false);
                       setRotating(false);
                       setRotateNote(note);
                     })}>
               {busy ? "Rotating…" : "Rotate"}
             </Button>
             <Button variant="text" size="small"
-                    onClick={() => { setRotating(false); setNewToken(""); }}>
+                    onClick={() => {
+                      setRotating(false);
+                      setNewToken("");
+                      setNewClient({ client_id: "", client_secret: "" });
+                      setReplacingClient(false);
+                    }}>
               Cancel
             </Button>
           </div>
@@ -867,9 +931,12 @@ export function ConnectionsPanel({
    *  One call, on the connection, because that is the thing somebody is
    *  looking at when they decide to rotate. The server names every other
    *  company that changed underneath, and that sentence is what comes back. */
-  async function rotate(id: string, token: string): Promise<string> {
+  async function rotate(
+    id: string, token: string,
+    client?: { client_id: string; client_secret: string },
+  ): Promise<string> {
     setError(null);
-    const r = await papi.rotateConnectionToken(session.token, id, token);
+    const r = await papi.rotateConnectionToken(session.token, id, token, client);
     await load();
     return String(r.note ?? "Rotated.");
   }

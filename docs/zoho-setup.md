@@ -112,7 +112,10 @@ To rotate:
 3. Update the credential **in the app**, under Data & connection — not in a
    `.env`. The app encrypts `client_secret` and `refresh_token` at rest.
 4. If the client *secret* also leaked, regenerate the Self Client itself; the
-   secret is not rotatable on its own.
+   secret is not rotatable on its own. The new token then belongs to a new app,
+   so rotate it **with** its client id and secret — a token-only rotation would
+   pair a new token with the dead app and Zoho would answer
+   `invalid_client_secret`.
 
 `test_no_live_secret_is_committed` fails the build if anything shaped like a
 live Zoho token or client secret appears anywhere in the tree. It scans by
@@ -133,6 +136,36 @@ row consistently:
 | Japan | `https://accounts.zoho.jp` | `https://www.zohoapis.jp/books/v3` | api-console.zoho.jp |
 
 The defaults are India.
+
+**One client id, one secret per data centre.** If the API console offers a
+*multi-DC* option and you leave it off, the client keeps the same id in every
+data centre but is issued a **different secret in each**. A secret copied from
+`api-console.zoho.com` is therefore refused by `accounts.zoho.in` — and the
+refusal names the secret, not the console it came from. Copy the id and the
+secret together, from the console row matching the account.
+
+## What a rejected sign-in is actually telling you
+
+Zoho reports these in the response body, usually with HTTP 200, and the app
+repeats the code verbatim followed by what to change. They are not
+interchangeable — each one has already ruled the others out:
+
+| Zoho says | What it means | What to change |
+|---|---|---|
+| `invalid_client_secret` | The client id was **recognised** and the secret rejected — so the data centre being asked is the right one | The secret does not match the id, or it came from another data centre's console, or the refresh token was issued by a *different app* — see below |
+| `invalid_client` | No such client id at this accounts host | A typo, or the app is registered in another data centre |
+| `invalid_code` | The refresh token itself is revoked, superseded, or from another data centre | Generate a fresh token — this is the one a DC mismatch usually shows as |
+
+**`invalid_client_secret` right after a rotation is almost always the third
+cause.** Replacing the token leaves the client pair alone by design — re-typing
+a correct secret is how a working connection gets broken — so a token generated
+under a **new** Self Client arrives paired with the **old** app, and Zoho
+refuses the pair. Open **Replace the token** again and use *"The token came
+from a different app"* to send the new client id and secret with it.
+
+Do not respond to `invalid_client_secret` by changing the data centre. Zoho
+found the app at that host; switching it makes the refresh token unknown there
+too, and one wrong setting becomes two.
 
 ---
 
@@ -273,7 +306,7 @@ It states in words whether you are looking at your books or sample data:
 | **NOT CONNECTED** | `ZOHO_SOURCE=api`, but this organization has no Zoho connection yet | An owner connects one — see above |
 | **SAMPLE DATA** | `ZOHO_SOURCE` is not `api` — everything on screen is demonstration data | Set `ZOHO_SOURCE=api` and restart |
 | **WRONG ORGANIZATION** | Credentials work, but the login cannot see the connected id | The panel lists the ids it *can* see — copy the right one and reconnect |
-| **REJECTED** | Zoho refused the credentials | Usually the data centre; reconnect with the matching accounts/API base |
+| **REJECTED** | Zoho refused the credentials | The detail line carries Zoho's own code — read it against [the table above](#what-a-rejected-sign-in-is-actually-telling-you) rather than assuming the data centre |
 | **UNREACHABLE** | The network could not reach Zoho | Firewall/proxy on the host |
 
 **Sync now** runs the whole cycle — pull, detect signals, generate decisions —
@@ -316,7 +349,8 @@ pulling any data**. It separates the three failures that look alike:
 |---|---|
 | `"ok": true` + your org name | Ready to sync |
 | `detail` mentions *no Zoho connection* | This organization hasn't connected one yet — see [step 5](#5-turn-on-live-mode-then-connect-the-credentials-in-the-app) |
-| `detail` mentions *data centre* | Token was issued in a different DC |
+| `detail` carries `invalid_code` | The refresh token is revoked or was issued in a different DC |
+| `detail` carries `invalid_client_secret` | The secret does not belong to the client id — **not** the data centre; see [the table above](#what-a-rejected-sign-in-is-actually-telling-you) |
 | `organization_found: false` | Credentials fine, but the connected organization id is wrong — pick from `visible_organizations` and reconnect |
 | `"source": "fixture"` | `ZOHO_SOURCE=api` is not set |
 

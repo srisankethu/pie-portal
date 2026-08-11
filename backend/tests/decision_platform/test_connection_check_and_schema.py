@@ -330,6 +330,20 @@ def _cred_token(client, cid: str) -> str:
         s.close()
 
 
+def _cred_secret(client, cid: str) -> tuple[str, str]:
+    """The client pair a connection signs in with, as (id, secret)."""
+    from app.crypto import decrypt
+    from app.domain import models as m
+
+    s = client.Maker()
+    try:
+        row = s.get(m.ZohoConnection, cid)
+        cred = s.get(m.ZohoCredential, row.credential_id)
+        return cred.client_id, decrypt(cred.client_secret_encrypted)
+    finally:
+        s.close()
+
+
 def test_rotating_a_connection_replaces_the_token_it_signs_in_with(client):
     cid = _add(client).json()["connection_id"]
     assert _cred_token(client, cid) == "r"
@@ -359,6 +373,37 @@ def test_a_rotation_names_every_other_company_it_changed(client):
     assert "1 other company" in body["note"]
     # And it really did change underneath the other one.
     assert _cred_token(client, second["connection_id"]) == "shared-new"
+
+
+def test_a_rotation_can_carry_the_client_pair_the_new_token_belongs_to(client):
+    """The failure a token-only rotation *causes*, and its remedy.
+
+    A refresh token generated under a different Zoho app does not authenticate
+    against the app already on file: Zoho answers ``invalid_client_secret``,
+    which reads as "your secret is wrong" and sends an owner to change the data
+    centre — the one setting that was right. So the client pair travels with
+    the token when it changed, and only when it changed.
+    """
+    cid = _add(client).json()["connection_id"]
+
+    got = client.post(f"/api/v1/connections/{cid}/rotate", headers=_hdr(client),
+                      json={"refresh_token": "1000.new.token",
+                            "client_id": "1000.NEWAPP", "client_secret": "new-secret"})
+    assert got.status_code == 200, got.text
+    assert _cred_secret(client, cid) == ("1000.NEWAPP", "new-secret")
+    assert _cred_token(client, cid) == "1000.new.token"
+
+
+def test_a_rotation_without_a_client_pair_leaves_the_one_on_file_alone(client):
+    """The default, and why it is the default: re-typing a secret that is
+    already correct is how a working connection gets broken, so an omitted pair
+    means "unchanged" rather than "clear it"."""
+    cid = _add(client).json()["connection_id"]
+    before = _cred_secret(client, cid)
+
+    client.post(f"/api/v1/connections/{cid}/rotate", headers=_hdr(client),
+                json={"refresh_token": "1000.new.token"})
+    assert _cred_secret(client, cid) == before
 
 
 def test_an_empty_token_is_refused_rather_than_stored(client):

@@ -5,7 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 import Box from "@mui/material/Box";
 import { DataGrid, numeric } from "./DataGrid";
 import { money } from "../money";
-import { since as when, todayISO } from "../when";
+import { formatDateTime, since as when, todayISO } from "../when";
 import { papi } from "./api";
 import { ErrorState, LoadingState } from "./kit";
 import { ConnectionsPanel } from "./ConnectionsPanel";
@@ -49,6 +49,11 @@ export function DataScreen({ session, onSynced }: { session: PlatformSession; on
   const [error, setError] = useState<string | null>(null);
   const [checking, setChecking] = useState(false);
   const [since, setSince] = useState<string>(defaultSince());
+  // Whether the operator has chosen a date themselves. Until they do, the
+  // field follows the organization's existing coverage once the status
+  // arrives — "sync again" should mean "the window I already have", not
+  // "eighteen months because that is the constant in the code".
+  const [sinceTouched, setSinceTouched] = useState(false);
   const [full, setFull] = useState(false);
 
   const load = useCallback(async () => {
@@ -66,6 +71,11 @@ export function DataScreen({ session, onSynced }: { session: PlatformSession; on
   useEffect(() => {
     load();
   }, [load]);
+
+  const coveredFrom = status?.auto_sync?.covers_from ?? null;
+  useEffect(() => {
+    if (coveredFrom && !sinceTouched) setSince(coveredFrom);
+  }, [coveredFrom, sinceTouched]);
 
   // Starting a sync and watching it are one concern, in one place — see
   // SyncStatus.tsx. The screen renders from that state rather than from the
@@ -151,7 +161,7 @@ export function DataScreen({ session, onSynced }: { session: PlatformSession; on
                 className="input"
                 value={since}
                 max={todayISO()}
-                onChange={(e) => setSince(e.target.value)}
+                onChange={(e) => { setSinceTouched(true); setSince(e.target.value); }}
               />
               <label className="sync-check">
                 <input type="checkbox" checked={full} onChange={(e) => setFull(e.target.checked)} />
@@ -178,6 +188,54 @@ export function DataScreen({ session, onSynced }: { session: PlatformSession; on
                 </span>
               )}
             </div>
+
+            {/* ── the automatic pull ── */}
+            {status?.auto_sync && (
+              <div className="sync-opts" style={{ marginTop: 14 }}>
+                <label htmlFor="auto-sync">
+                  <Labelled tip="Each automatic pull re-reads the organization's existing window — documents already held and unchanged cost nothing, and a bill entered today but dated last week is still caught, which a pull starting 'from the last sync' would silently miss.">
+                    Automatic sync
+                  </Labelled>
+                </label>
+                {!status.auto_sync.available ? (
+                  <span className="st-help">
+                    Applies to a live Zoho connection — this deployment is showing sample data.
+                  </span>
+                ) : (
+                  <>
+                    <select
+                      id="auto-sync"
+                      className="input"
+                      value={String(status.auto_sync.hours)}
+                      onChange={async (e) => {
+                        const hours = Number(e.target.value);
+                        try {
+                          const r = await papi.setAutoSync(session.token, hours);
+                          setStatus((s) => (s ? { ...s, auto_sync: r.auto_sync } : s));
+                        } catch (err) {
+                          setError((err as Error).message);
+                        }
+                      }}
+                    >
+                      <option value="0">Off</option>
+                      {[1, 3, 6, 12, 24].map((h) => (
+                        <option key={h} value={String(h)}>
+                          Every {h === 1 ? "hour" : `${h} hours`}
+                        </option>
+                      ))}
+                    </select>
+                    <span className="st-help">
+                      {status.auto_sync.hours === 0
+                        ? "Off — the books refresh only when somebody syncs."
+                        : `Next around ${formatDateTime(status.auto_sync.next_run_at)}` +
+                          (status.auto_sync.covers_from
+                            ? `, re-reading from ${status.auto_sync.covers_from}.`
+                            : ".")}
+                    </span>
+                  </>
+                )}
+              </div>
+            )}
           </>
         )}
       </Bp>

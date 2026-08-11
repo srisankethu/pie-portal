@@ -231,6 +231,11 @@ def data_status(
     }
     return {
         "connection": _connection(session, org),
+        # The automatic pull's cadence and next expected run. Reported to every
+        # signed-in user — knowing whether the numbers refresh themselves is
+        # the same entitlement as knowing when they last arrived. Changing it
+        # is a manager/owner action (see PUT /auto-sync).
+        "auto_sync": _auto_sync_dict(session, org),
         "last_sync": _run_dict(_last_run(session, org),
                                costs_visible=principal.is_manager_or_owner),
         # What history this organization actually holds, per connected company.
@@ -247,6 +252,59 @@ def data_status(
         "can_sync": principal.is_manager_or_owner,
         "can_manage_connection": principal.role is Role.OWNER,
     }
+
+
+def _auto_sync_dict(session: Session, org_id: str) -> dict[str, Any]:
+    from ..ingestion import scheduler
+
+    org = session.get(models.Organization, org_id)
+    covers_from = scheduler.scheduled_since(session, org_id)
+    return {
+        # 0 means off. `available` separates "off by choice" from "this
+        # deployment reads sample data and has nothing to keep fresh" — the
+        # screen offers the control in the first case and explains in the second.
+        "hours": scheduler.auto_sync_hours(org),
+        "available": settings.ZOHO_SOURCE == "api",
+        "next_run_at": (clock.iso(scheduler.next_run_at(session, org))
+                        if org is not None else None),
+        # What the scheduled pull will ask for, so "automatic" never reads as
+        # "from some date the machine picked". Null until a first sync covers
+        # anything; the run itself then applies the same default a first
+        # manual sync gets.
+        "covers_from": covers_from.isoformat() if covers_from else None,
+    }
+
+
+class AutoSyncRequest(BaseModel):
+    """The cadence, in hours. 0 switches the automatic sync off."""
+
+    hours: int
+
+
+@router.put("/auto-sync")
+def set_auto_sync(
+    body: AutoSyncRequest,
+    principal: Principal = Depends(require_manager_or_owner),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Choose how often this organization's books are pulled automatically.
+
+    Manager-or-owner for the same reason starting a sync is: it spends the
+    Zoho rate limit and decides how fresh everyone's numbers are. Stored on
+    the organization row, so the schedule survives restarts and is one value
+    per tenant rather than one per whoever last edited an environment file.
+    """
+    if not (0 <= body.hours <= 24 * 7):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            "hours must be between 0 (off) and 168 (weekly)")
+    org = session.get(models.Organization, principal.organization_id)
+    if org is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such organization.")
+    # Assigned, not mutated: SQLAlchemy only sees a JSON column change when the
+    # dict identity changes.
+    org.config = {**(org.config or {}), "auto_sync_hours": body.hours}
+    session.flush()
+    return {"auto_sync": _auto_sync_dict(session, principal.organization_id)}
 
 
 class ZohoConnectionRequest(BaseModel):

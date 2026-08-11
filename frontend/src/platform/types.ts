@@ -443,8 +443,24 @@ export interface SyncOptions {
   connection_id?: string;
 }
 
+/** The automatic pull's schedule, as the server reports it.
+ *
+ *  `available` is false on a sample-data deployment — there is nothing to keep
+ *  fresh, so the screen explains rather than offering a dead control. `hours`
+ *  0 means off by choice. */
+export interface AutoSync {
+  hours: number;
+  available: boolean;
+  next_run_at: string | null;
+  /** The window each scheduled run re-reads — the organization's existing
+   *  coverage, so backdated entries are never missed. Null before the first
+   *  completed sync. */
+  covers_from: string | null;
+}
+
 export interface DataStatus {
   connection: ConnectionState;
+  auto_sync: AutoSync;
   last_sync: SyncRun | null;
   read_model: Record<string, number>;
   can_sync: boolean;

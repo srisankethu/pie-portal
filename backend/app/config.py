@@ -166,6 +166,13 @@ class Settings:
     ZOHO_PAGE_SIZE: int = int(os.environ.get("ZOHO_PAGE_SIZE", "200"))
     ZOHO_MAX_PAGES: int = int(os.environ.get("ZOHO_MAX_PAGES", "50"))
     ZOHO_HISTORY_DAYS: int = int(os.environ.get("ZOHO_HISTORY_DAYS", "730"))
+    # How often the automatic sync pulls each organization's books, in hours.
+    # The default for organizations that never chose their own cadence — each
+    # can override (or switch off with 0) from the Data & connection screen,
+    # stored in Organization.config. 0 here disables the default for everyone
+    # who has not opted in. Only live deployments schedule at all; the fixture
+    # source has nothing to keep fresh.
+    SYNC_AUTO_HOURS: int = int(os.environ.get("SYNC_AUTO_HOURS", "6"))
     # An explicit start date (ISO, e.g. 2025-01-01) wins over the rolling window.
     # A manager picks this per run in the UI; this is only the default offered.
     ZOHO_SYNC_FROM: str = os.environ.get("ZOHO_SYNC_FROM", "")

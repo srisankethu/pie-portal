@@ -461,6 +461,12 @@ export const papi = {
 
   dataStatus: (t: string) => req<DataStatus>("/api/v1/data/status", {}, t),
 
+  /** Choose the automatic pull's cadence, in hours; 0 switches it off. */
+  setAutoSync: (t: string, hours: number) =>
+    req<{ auto_sync: DataStatus["auto_sync"] }>(
+      "/api/v1/data/auto-sync",
+      { method: "PUT", body: JSON.stringify({ hours }) }, t),
+
   /** Queue a pull. Returns immediately with a job to watch — 202, not a result.
    *  If one is already running this hands that one back (`started: false`)
    *  rather than erroring, so the screen shows the live job. */

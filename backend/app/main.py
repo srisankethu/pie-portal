@@ -112,6 +112,17 @@ async def lifespan(_app: FastAPI):
             log.info("pie-parser engine warmed and ready.")
         except Exception:  # noqa: BLE001
             log.exception("pie-parser warm-up failed; lines show PIE OFFLINE until fixed.")
+
+    # The automatic sync. Non-fatal like everything above it: a platform that
+    # cannot schedule is degraded, and one that will not start over it is down.
+    # The function itself declines on a fixture source, so this is safe to call
+    # unconditionally.
+    try:
+        from .ingestion.scheduler import start_scheduler
+
+        start_scheduler()
+    except Exception:  # noqa: BLE001
+        log.exception("auto-sync scheduler failed to start; manual sync still works.")
     yield
 
 

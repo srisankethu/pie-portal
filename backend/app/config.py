@@ -214,6 +214,16 @@ class Settings:
     PROMPT_VERSION: str = os.environ.get("PROMPT_VERSION", "p2")
     ANTHROPIC_API_KEY: str = os.environ.get("ANTHROPIC_API_KEY", "")
     ANTHROPIC_API_BASE: str = os.environ.get("ANTHROPIC_API_BASE", "https://api.anthropic.com")
+    # The other two live providers an organization can bring its own key for
+    # (see ai/byok.py). Env values are the deployment-wide fallback, exactly as
+    # ANTHROPIC_API_KEY is; a per-organization key stored from Settings wins.
+    OPENAI_API_KEY: str = os.environ.get("OPENAI_API_KEY", "")
+    OPENAI_API_BASE: str = os.environ.get("OPENAI_API_BASE", "https://api.openai.com")
+    OPENAI_MODEL: str = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+    GEMINI_API_KEY: str = os.environ.get("GEMINI_API_KEY", "")
+    GEMINI_API_BASE: str = os.environ.get(
+        "GEMINI_API_BASE", "https://generativelanguage.googleapis.com")
+    GEMINI_MODEL: str = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
     # Priority banding (deterministic base + bounded AI adjustment).
     PRIORITY_HIGH_AT: int = int(os.environ.get("PRIORITY_HIGH_AT", "70"))
     PRIORITY_MEDIUM_AT: int = int(os.environ.get("PRIORITY_MEDIUM_AT", "40"))

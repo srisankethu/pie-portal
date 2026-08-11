@@ -4,6 +4,8 @@ import { ROLE_LABEL } from "./format";
 import { formatDateTime } from "../when";
 import { papi } from "./api";
 import type {
+  AiByokProvider,
+  AiByokView,
   AiMetricsReport,
   AiReadiness,
   ApprovalRequest,
@@ -1221,21 +1223,26 @@ const BAND_TONE: Record<string, Tone> = {
  * and the figures beside it say what turning the real one on would cost before
  * it is pointed at a real book.
  *
- * Everything here is read-only. Switching providers is a deployment decision
- * (a key, a restart), not a toggle a browser session should own.
+ * The figures are read-only; the provider no longer is. An owner can bring the
+ * organization's own key for Anthropic Claude, OpenAI or Google Gemini in the
+ * panel below and choose which one runs — the environment variables remain the
+ * deployment-wide fallback. The key itself is write-only: the server stores it
+ * encrypted and every response carries at most its last four characters.
  */
 function AiLayerSection({ token }: { token: string }) {
   const [ready, setReady] = useState<AiReadiness | null>(null);
   const [metrics, setMetrics] = useState<AiMetricsReport | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
+  const load = useCallback(() => {
     let live = true;
     Promise.all([papi.aiReadiness(token), papi.aiMetrics(token)])
       .then(([r, m]) => { if (live) { setReady(r); setMetrics(m); setError(null); } })
       .catch((e) => { if (live) setError((e as Error).message); });
     return () => { live = false; };
   }, [token]);
+
+  useEffect(() => load(), [load]);
 
   if (error) return <ErrorState title="The AI layer did not load" error={error} />;
   if (!ready) return <LoadingState rows={2} />;
@@ -1311,7 +1318,177 @@ function AiLayerSection({ token }: { token: string }) {
         {usd(ready.rates.per_mtok_output)} per million output, capped at{" "}
         {ready.rates.max_output_tokens_per_call} output tokens a call. {ready.note}
       </p>
+
+      <ByokPanel token={token} onChanged={load} />
     </Bp>
+  );
+}
+
+/* ── bring your own key ────────────────────────────────────────────────────── */
+
+const PROVIDER_LABEL: Record<string, string> = {
+  anthropic: "Anthropic Claude",
+  openai: "OpenAI",
+  gemini: "Google Gemini",
+};
+
+/**
+ * The AI layer's one writable surface: the organization's own provider keys.
+ *
+ * Server-enforced owner-only (`/api/v1/ai/*` is `require_owner`), and rendered
+ * only inside the owner-gated AI section for the reason `ability.ts` gives —
+ * the gate is the server's. Saving, testing and choosing all round-trip the
+ * same view the GET returns, so the panel never has to guess at state.
+ */
+function ByokPanel({ token, onChanged }: { token: string; onChanged: () => void }) {
+  const [view, setView] = useState<AiByokView | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(() => {
+    papi.aiProviders(token)
+      .then((v) => { setView(v); setError(null); })
+      .catch((e) => setError((e as Error).message));
+  }, [token]);
+  useEffect(() => { load(); }, [load]);
+
+  // Every mutation returns the fresh view; readiness above changes with it.
+  const apply = useCallback((v: AiByokView) => { setView(v); onChanged(); }, [onChanged]);
+
+  if (error) return <ErrorState title="Provider keys did not load" error={error} />;
+  if (!view) return <LoadingState rows={2} />;
+
+  const chooseable = (p: AiByokProvider) => p.key_on_file || p.env_key_present;
+
+  return (
+    <Box sx={{ mt: 3 }}>
+      <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
+        <Labelled tip="A key entered here belongs to this organization and is billed to its own provider account. It is stored encrypted and never sent back to the browser — only its last four characters are shown.">
+          Bring your own key
+        </Labelled>
+      </Typography>
+      <p className="st-help">
+        Run the narrative layer on this organization&apos;s own provider account.
+        Leave the choice on the deployment default to use the server&apos;s
+        configuration ({view.environment_provider}).
+      </p>
+
+      <TextField
+        select size="small" sx={{ minWidth: 280, mb: 2 }}
+        label="Runs the AI layer"
+        value={view.active}
+        onChange={(e) => {
+          papi.setActiveAiProvider(token, e.target.value)
+            .then(apply)
+            .catch((err) => setError((err as Error).message));
+        }}
+      >
+        <MenuItem value="">Deployment default ({view.environment_provider})</MenuItem>
+        {view.providers.map((p) => (
+          <MenuItem key={p.provider} value={p.provider} disabled={!chooseable(p)}>
+            {PROVIDER_LABEL[p.provider] ?? p.provider}
+            {!chooseable(p) ? " — no key" : ""}
+          </MenuItem>
+        ))}
+      </TextField>
+
+      {view.providers.map((p) => (
+        <ByokProviderRow key={p.provider} token={token} row={p}
+                         active={view.active === p.provider} onView={apply} />
+      ))}
+    </Box>
+  );
+}
+
+function ByokProviderRow({ token, row, active, onView }: {
+  token: string;
+  row: AiByokProvider;
+  active: boolean;
+  onView: (v: AiByokView) => void;
+}) {
+  const [key, setKey] = useState("");
+  const [model, setModel] = useState(row.model);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function run(work: () => Promise<void>) {
+    setBusy(true);
+    setMsg(null);
+    try {
+      await work();
+    } catch (e) {
+      setMsg((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const save = () => run(async () => {
+    const v = await papi.saveAiKey(token, row.provider, { api_key: key, model });
+    onView(v);
+    setKey("");
+    setMsg("Key saved.");
+  });
+
+  const test = () => run(async () => {
+    const r = await papi.testAiKey(token, row.provider);
+    setMsg(r.ok ? `Works — ${r.model} answered.` : `Failed: ${r.detail}`);
+  });
+
+  const remove = () => run(async () => {
+    const v = await papi.removeAiKey(token, row.provider);
+    onView(v);
+    setModel("");
+    setMsg("Key removed.");
+  });
+
+  return (
+    <Box sx={{ py: 1.5, borderTop: 1, borderColor: "divider" }}>
+      <Stack direction="row" spacing={1} sx={{ alignItems: "center", flexWrap: "wrap", rowGap: 1 }}>
+        <Typography sx={{ fontWeight: 600, minWidth: 140 }}>
+          {PROVIDER_LABEL[row.provider] ?? row.provider}
+        </Typography>
+        {active && <StatusChip label="runs decisions" tone="good" />}
+        {row.key_on_file
+          ? <StatusChip label={`key on file ····${row.key_hint}`} tone="neutral"
+                        tip={row.rotated_at
+                          ? `Last rotated ${formatDateTime(row.rotated_at)}`
+                          : "Entered once; rotate by saving a new key."} />
+          : row.env_key_present
+            ? <StatusChip label="deployment key" tone="neutral"
+                          tip="The server's environment holds a key for this provider; this organization has not entered its own." />
+            : <StatusChip label="no key" tone="warn" />}
+      </Stack>
+
+      <Stack direction="row" spacing={1} sx={{ mt: 1, alignItems: "center", flexWrap: "wrap", rowGap: 1 }}>
+        <TextField
+          size="small" type="password" label="API key" value={key}
+          autoComplete="off"
+          placeholder={row.key_on_file ? "enter a new key to rotate" : ""}
+          onChange={(e) => setKey(e.target.value)}
+          sx={{ minWidth: 260 }}
+        />
+        <TextField
+          size="small" label="Model" value={model}
+          placeholder={row.default_model}
+          helperText=""
+          onChange={(e) => setModel(e.target.value)}
+          sx={{ minWidth: 200 }}
+        />
+        <Button variant="outlined" size="small" disabled={busy || !key.trim()} onClick={save}>
+          {row.key_on_file ? "Rotate" : "Save"}
+        </Button>
+        <Button variant="text" size="small"
+                disabled={busy || !(row.key_on_file || row.env_key_present)} onClick={test}>
+          Test
+        </Button>
+        {row.key_on_file && (
+          <Button variant="text" size="small" color="error" disabled={busy} onClick={remove}>
+            Remove
+          </Button>
+        )}
+      </Stack>
+      {msg && <p className="st-help">{msg}</p>}
+    </Box>
   );
 }
 

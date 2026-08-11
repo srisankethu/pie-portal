@@ -1007,8 +1007,41 @@ export interface AiProviderStatus {
   model: string;
   api_key_present: boolean;
   live: boolean;
+  /** Which level of configuration won: the organization's own key ("organization")
+   *  or the deployment environment ("environment"). */
+  source?: string;
   /** Why the two differ, in words, or null when they do not. */
   detail: string | null;
+}
+
+/* One provider an organization can bring its own key for. The key itself is
+ * write-only server-side and never appears here — `key_hint` is the stored
+ * last four characters, the most a read path ever sees. */
+export interface AiByokProvider {
+  provider: string;
+  key_on_file: boolean;
+  key_hint: string;
+  /** The organization's model override; "" means `default_model` runs. */
+  model: string;
+  default_model: string;
+  /** Whether the deployment itself also holds a key for this provider. */
+  env_key_present: boolean;
+  rotated_at: string | null;
+}
+
+export interface AiByokView {
+  /** Which provider this organization chose, or "" for the deployment default. */
+  active: string;
+  /** What the deployment would run with no organization choice. */
+  environment_provider: string;
+  providers: AiByokProvider[];
+}
+
+export interface AiKeyTestResult {
+  ok: boolean;
+  provider: string;
+  model?: string;
+  detail: string;
 }
 
 export interface AiReadiness {

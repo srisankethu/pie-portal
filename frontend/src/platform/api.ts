@@ -1,4 +1,4 @@
-import type { AccessReport, AiMetricsReport, AiReadiness, Account, AccountItem, StatusFilter, ApprovalRequest, DisclosureStatement, EntityKind, ErasureState, Identity, IdentityCoverage, IdentityPolicy, IdentitySuggestion, ConnectionCheck, ConnectionsView, FixedThresholds, MarginPolicy, MarginPolicyPatch, NewConnectionInput, PayloadsReport, ZohoConnection, ZohoCredential, ZohoVisibleOrg, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, DecisionTrace, OrgPolicy, PlatformSession, PlatformUser, QuoteGate, Role, SkippedRows, SyncOptions, SyncStartResponse, SyncState, ThresholdView, ZohoConnectionInput } from "./types";
+import type { AccessReport, AiByokView, AiKeyTestResult, AiMetricsReport, AiReadiness, Account, AccountItem, StatusFilter, ApprovalRequest, DisclosureStatement, EntityKind, ErasureState, Identity, IdentityCoverage, IdentityPolicy, IdentitySuggestion, ConnectionCheck, ConnectionsView, FixedThresholds, MarginPolicy, MarginPolicyPatch, NewConnectionInput, PayloadsReport, ZohoConnection, ZohoCredential, ZohoVisibleOrg, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, DecisionTrace, OrgPolicy, PlatformSession, PlatformUser, QuoteGate, Role, SkippedRows, SyncOptions, SyncStartResponse, SyncState, ThresholdView, ZohoConnectionInput } from "./types";
 
 import { setMoneyCurrency } from "../money";
 import { setBusinessTimezone } from "../when";
@@ -686,6 +686,26 @@ export const papi = {
 
   /** What the AI has actually cost and how often it degraded. */
   aiMetrics: (t: string) => req<AiMetricsReport>("/api/v1/internal/ai-metrics", {}, t),
+
+  /** The BYOK card: which providers hold an organization key, and which runs.
+   *  No response from any of these ever contains a key — only the hint. */
+  aiProviders: (t: string) => req<AiByokView>("/api/v1/ai/providers", {}, t),
+
+  saveAiKey: (t: string, provider: string, body: { api_key: string; model: string }) =>
+    req<AiByokView>(`/api/v1/ai/providers/${provider}`,
+                    { method: "PUT", body: JSON.stringify(body) }, t),
+
+  removeAiKey: (t: string, provider: string) =>
+    req<AiByokView>(`/api/v1/ai/providers/${provider}`, { method: "DELETE" }, t),
+
+  /** One live round trip with the stored key — a fixed ping, no business data. */
+  testAiKey: (t: string, provider: string) =>
+    req<AiKeyTestResult>(`/api/v1/ai/providers/${provider}/test`, { method: "POST" }, t),
+
+  /** "" restores the deployment default. */
+  setActiveAiProvider: (t: string, provider: string) =>
+    req<AiByokView>("/api/v1/ai/active",
+                    { method: "PUT", body: JSON.stringify({ provider }) }, t),
 
   // ── the trust surface (owner only) ────────────────────────────────────────
   // Every endpoint under here is `require_owner` server-side. The nav item is

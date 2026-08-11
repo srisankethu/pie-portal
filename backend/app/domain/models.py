@@ -208,6 +208,43 @@ class ZohoConnection(Base):
     credential: Mapped[Optional["ZohoCredential"]] = relationship(lazy="joined")
 
 
+class AIProviderKey(Base):
+    """One organization's own API key for one AI provider (BYOK).
+
+    At most one row per (organization, provider): entering a key again is a
+    rotation of the row on file, never a second copy — the same rule
+    ``ZohoCredential`` learned the hard way. The key is encrypted at rest with
+    ``app/crypto.py`` and is write-only through the API: no endpoint returns it,
+    only a last-four hint an owner can recognise their own key by.
+
+    Which stored key actually runs is a separate fact — the organization's
+    active-provider choice, held in ``Organization.config`` (see ``ai/byok.py``)
+    — so a key can be entered, tested and kept without being switched to yet.
+    """
+
+    __tablename__ = "ai_provider_keys"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "provider",
+                         name="uq_ai_provider_key_org_provider"),
+    )
+
+    key_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    organization_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("organizations.organization_id"), index=True)
+    # "anthropic" | "openai" | "gemini" — validated in ai/byok.py, not here:
+    # the domain layer stores facts, it does not make decisions.
+    provider: Mapped[str] = mapped_column(String(32))
+    api_key_encrypted: Mapped[str] = mapped_column(String(2048))
+    # Last characters of the plaintext key, stored so the hint survives without
+    # ever decrypting on a read path.
+    key_hint: Mapped[str] = mapped_column(String(8), default="")
+    # Empty means the provider's configured default model (config.py).
+    model: Mapped[str] = mapped_column(String(128), default="")
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    rotated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+
 class CommercialPolicy(Base):
     """One organization's overrides to the commercial thresholds.
 

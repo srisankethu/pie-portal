@@ -77,7 +77,7 @@ def estimate(session: Session, organization_id: str,
     total = estimate_cost(input_tokens, output_tokens) or 0.0
 
     return {
-        "provider": provider_status(),
+        "provider": provider_status(session, organization_id),
         "signals_considered": would_call + would_skip + would_suppress,
         "would_call_provider": would_call,
         "would_reuse_cached": would_skip,

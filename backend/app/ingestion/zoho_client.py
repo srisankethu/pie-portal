@@ -64,6 +64,14 @@ class ZohoCredentials:
     refresh_token: str
     accounts_base: str = "https://accounts.zoho.in"
     api_base: str = "https://www.zohoapis.in/books/v3"
+    #: Where these values were configured, in words, for the one message that
+    #: has to send somebody to the right screen. A stored connection and the
+    #: environment fallback fail identically at the token endpoint and are
+    #: fixed in completely different places — an owner told to check
+    #: ``ZOHO_ACCOUNTS_BASE`` about a connection they typed into a form goes
+    #: looking for a variable that has no bearing on it and cannot be edited
+    #: from where they are.
+    configured_in: str = "this connection"
 
     @classmethod
     def from_settings(cls) -> "ZohoCredentials":
@@ -78,7 +86,54 @@ class ZohoCredentials:
             refresh_token=settings.ZOHO_REFRESH_TOKEN,
             accounts_base=settings.ZOHO_ACCOUNTS_BASE,
             api_base=settings.ZOHO_API_BASE,
+            configured_in="the ZOHO_* environment variables",
         )
+
+
+# ── what Zoho's token endpoint is actually telling you ──────────────────────
+#
+# One sentence used to be appended to every refusal here — "check that
+# ZOHO_ACCOUNTS_BASE matches the data centre the account belongs to" — and it is
+# right for exactly one of these codes. For the most common one it is actively
+# harmful: ``invalid_client_secret`` is Zoho saying it recognised the client id
+# and rejected the *secret*, which means the data centre it was asked at is the
+# one setting already known to be right. An owner who follows that advice
+# switches the DC, the refresh token then fails as unknown there too, and one
+# fixable connection has become two broken settings.
+#
+# Keyed by Zoho's own ``error`` string so a code this map does not know falls
+# through to a fallback that names all three parts rather than picking one.
+_TOKEN_ERROR_HELP: dict[str, str] = {
+    "invalid_client_secret": (
+        "Zoho recognised the client id and rejected the secret, so the data "
+        "centre is not what is wrong here. Either the secret does not match the "
+        "client id, or it was copied from another data centre's console — one "
+        "client keeps its id everywhere but has a separate secret per data "
+        "centre — or the refresh token was issued by a different client, which "
+        "is what replacing only the token leaves behind. Rotate again, "
+        "supplying the client id and secret alongside the token."),
+    "invalid_client": (
+        "Zoho does not recognise this client id at {accounts}. Either it is "
+        "mistyped, or the app is registered in a different data centre from the "
+        "one set in {configured_in}."),
+    "invalid_code": (
+        "Zoho rejected the refresh token itself — revoked, already replaced, or "
+        "issued in a different data centre, since a token from one is refused by "
+        "every other. The data centre is set in {configured_in} and is currently "
+        "{accounts}."),
+}
+
+_TOKEN_ERROR_FALLBACK = (
+    "Zoho refused the sign-in without saying which part of it failed. The "
+    "client id, the client secret and the refresh token must all come from one "
+    "app in one data centre; that data centre is set in {configured_in} and is "
+    "currently {accounts}.")
+
+
+def token_error_help(error: Any, *, accounts_base: str, configured_in: str) -> str:
+    """What to actually go and change, for one Zoho token-endpoint refusal."""
+    template = _TOKEN_ERROR_HELP.get(str(error or "").strip(), _TOKEN_ERROR_FALLBACK)
+    return template.format(accounts=accounts_base, configured_in=configured_in)
 
 
 class ZohoError(RuntimeError):
@@ -258,10 +313,11 @@ class ZohoTransport:
         token = body.get("access_token")
         if not token:
             # Zoho reports auth problems in the body, often with HTTP 200.
+            error = body.get("error") or body
             raise ZohoAuthError(
-                f"Could not obtain an access token: {body.get('error') or body}. "
-                f"Check that ZOHO_ACCOUNTS_BASE ({self._accounts}) matches the data "
-                "centre the account belongs to.")
+                f"Could not obtain an access token: {error}. "
+                + token_error_help(error, accounts_base=self._accounts,
+                                   configured_in=self._creds.configured_in))
         self._token = str(token)
         # Refresh a minute early so a call never races the expiry.
         self._token_expires_at = time.time() + max(60, int(body.get("expires_in", 3600))) - 60

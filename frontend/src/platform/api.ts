@@ -463,11 +463,20 @@ export const papi = {
    *
    *  On the connection rather than on a credential of its own: a revocable
    *  refresh token is a Zoho mechanism, not something every connector has. The
-   *  response says which other companies share the grant and changed with it. */
-  rotateConnectionToken: (t: string, connectionId: string, refresh_token: string) =>
+   *  response says which other companies share the grant and changed with it.
+   *
+   *  The client pair is optional and normally omitted — a rotation usually
+   *  replaces the token under the same app. It is accepted because the one
+   *  failure a token-only rotation *causes* is a token issued by a different
+   *  client, and Zoho answers that with `invalid_client_secret`: without this,
+   *  the fix for the most likely rotation failure is off this screen. */
+  rotateConnectionToken: (
+    t: string, connectionId: string, refresh_token: string,
+    client?: { client_id: string; client_secret: string },
+  ) =>
     req<Record<string, unknown>>(
       `/api/v1/connections/${connectionId}/rotate`,
-      { method: "POST", body: JSON.stringify({ refresh_token }) }, t),
+      { method: "POST", body: JSON.stringify({ refresh_token, ...client }) }, t),
 
   shareCredential: (t: string, credentialId: string, organization_ids: string[]) =>
     req<{ credential: ZohoCredential }>(

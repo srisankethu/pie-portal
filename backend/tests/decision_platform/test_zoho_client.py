@@ -86,11 +86,75 @@ def test_missing_credentials_name_what_is_missing(monkeypatch):
     assert "refresh_token" in str(e.value)
 
 
-def test_token_failure_points_at_the_data_centre():
+def test_a_rejected_refresh_token_points_at_the_token_and_the_data_centre():
     http = FakeHttp({}, token_body={"error": "invalid_code"})
     with pytest.raises(ZohoAuthError) as e:
         list(ZohoApiSource(http=http).list_items())
     assert "data centre" in str(e.value)
+    assert "refresh token" in str(e.value)
+
+
+def test_a_rejected_client_secret_does_not_blame_the_data_centre():
+    """The message that cost an afternoon.
+
+    Every token refusal used to end with "check that ZOHO_ACCOUNTS_BASE matches
+    the data centre". For ``invalid_client_secret`` that is the one thing Zoho
+    has just told us is *not* wrong — it recognised the client id, which means
+    it found the app at the host it was asked at, and rejected the secret. An
+    owner who follows the old advice changes the DC, the refresh token then
+    fails as unknown there too, and one wrong setting has become two.
+    """
+    http = FakeHttp({}, token_body={"error": "invalid_client_secret"})
+    with pytest.raises(ZohoAuthError) as e:
+        list(ZohoApiSource(http=http).list_items())
+    message = str(e.value)
+
+    assert "invalid_client_secret" in message, "Zoho's own code stays in the message"
+    assert "not what is wrong" in message
+    # The three things that actually produce it, so the reader can act.
+    assert "does not match the client id" in message
+    assert "separate secret per data centre" in message
+    assert "issued by a different client" in message
+
+
+def test_a_stored_connection_is_not_told_to_check_an_environment_variable():
+    """Whoever sees this typed the data centre into a form on the same screen.
+
+    Naming ``ZOHO_ACCOUNTS_BASE`` at them sends an owner looking for a variable
+    that has no bearing on their connection and that they cannot edit from
+    where they are standing — while the environment fallback, which *is* fixed
+    that way, gets the same sentence and is equally unserved by it.
+    """
+    from app.ingestion.zoho_client import ZohoCredentials
+
+    stored = ZohoCredentials(organization_id="999999", client_id="cid",
+                             client_secret="csec", refresh_token="rtok")
+    http = FakeHttp({}, token_body={"error": "invalid_code"})
+    with pytest.raises(ZohoAuthError) as e:
+        list(ZohoApiSource(http=http, credentials=stored).list_items())
+    assert "ZOHO_ACCOUNTS_BASE" not in str(e.value)
+    assert "this connection" in str(e.value)
+
+    with pytest.raises(ZohoAuthError) as e:
+        list(ZohoApiSource(http=FakeHttp({}, token_body={"error": "invalid_code"})).list_items())
+    assert "ZOHO_* environment variables" in str(e.value)
+
+
+def test_an_unrecognised_token_error_names_all_three_parts_rather_than_guessing():
+    """A code this map does not know must not inherit another code's remedy.
+
+    The fallback names the client id, the secret and the refresh token together
+    — which is honest about having no idea which of them Zoho objected to, and
+    is the reason a new Zoho error string cannot silently acquire a confident,
+    wrong explanation.
+    """
+    http = FakeHttp({}, token_body={"error": "some_new_zoho_code"})
+    with pytest.raises(ZohoAuthError) as e:
+        list(ZohoApiSource(http=http).list_items())
+    message = str(e.value)
+    assert "some_new_zoho_code" in message
+    for part in ("client id", "client secret", "refresh token"):
+        assert part in message
 
 
 def test_access_token_is_reused_across_calls():

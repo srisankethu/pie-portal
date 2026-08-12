@@ -200,6 +200,10 @@ EXCLUDED_REASONS: dict[str, str] = {
     "ingested_documents": (
         "Which document was last read at which timestamp — the bookkeeping "
         "that makes a resumed sync cheap. No business content."),
+    "intelligence_trials": (
+        "Whether your books have used their free month of Commercial "
+        "Intelligence — our licensing bookkeeping, with no fact about your "
+        "business in it beyond the connection date you already have."),
 }
 
 EXCLUDED = tuple(EXCLUDED_REASONS)
@@ -221,6 +225,7 @@ MANIFESTED: tuple[tuple[str, Any], ...] = EXPORTED + (
     ("ingested_documents", models.IngestedDocument),
     ("zoho_connections", models.ZohoConnection),
     ("ai_provider_keys", models.AIProviderKey),
+    ("intelligence_trials", models.IntelligenceTrial),
     ("tenant_keys", models.TenantKey),
     ("users", models.User),
 )

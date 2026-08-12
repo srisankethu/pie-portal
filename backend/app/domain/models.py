@@ -61,6 +61,13 @@ class Organization(Base):
     # distributor and a Gulf one. Zoho reports it on the organization record, so
     # a connected company fills it in rather than being asked.
     timezone: Mapped[Optional[str]] = mapped_column(String(64))
+    # Which plan this organization is licensed on ("free" | "intelligence" |
+    # "platform" — domain.enums.PlanTier). NULL means "not decided here" and
+    # resolves to settings.DEFAULT_PLAN, so an existing deployment keeps its
+    # behaviour without a backfill. Set by the operator (app/entitlements.py
+    # CLI), never by a tenant — an owner who could set their own plan would
+    # not have one.
+    plan: Mapped[Optional[str]] = mapped_column(String(32))
     config: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
@@ -206,6 +213,31 @@ class ZohoConnection(Base):
                                                  onupdate=_now)
 
     credential: Mapped[Optional["ZohoCredential"]] = relationship(lazy="joined")
+
+
+class IntelligenceTrial(Base):
+    """One set of books' free month of Commercial Intelligence — ever.
+
+    Keyed on ``zoho_organization_id``, not on the platform organization,
+    because the platform organization is free to create: a trial tied to it
+    resets with every fresh signup, and "reconnect the same company under a new
+    organization" becomes an indefinitely repeatable free month. The connected
+    books are the one thing a business cannot mint a new copy of, so they are
+    what the trial belongs to. The unique constraint is the enforcement.
+
+    Rows are never deleted — an expired trial is the *record* that these books
+    have had theirs, which is exactly what the next attempt must find.
+    """
+
+    __tablename__ = "intelligence_trials"
+
+    trial_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    # The organization that was connected first and received the trial.
+    organization_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("organizations.organization_id"), index=True)
+    zoho_organization_id: Mapped[str] = mapped_column(String(64), unique=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    ends_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
 class AIProviderKey(Base):

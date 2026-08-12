@@ -30,7 +30,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
-from .. import clock
+from .. import clock, entitlements
 from ..authz import Principal, require_manager_or_owner, require_owner
 from ..config import settings
 from ..db import get_session
@@ -288,6 +288,8 @@ def add_connection(
                 # it happened to connect — it will very likely serve others.
                 credential_label=f"Zoho sign-in {body.client_id.strip()[:14]}")
     except conn.CredentialNotUsable as e:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(e)) from e
+    except entitlements.PlanRefused as e:
         raise HTTPException(status.HTTP_403_FORBIDDEN, str(e)) from e
 
     _check(session, row)

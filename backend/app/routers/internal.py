@@ -22,6 +22,21 @@ from ..signals.engine import run_detectors
 router = APIRouter(prefix="/api/v1/internal", tags=["internal"])
 
 
+def _require_intelligence(session: Session, principal: Principal) -> None:
+    """Plan gate for the two endpoints that run the decision layer.
+
+    Per endpoint rather than on the router: this router mixes health, sync and
+    Zoho checks — all of which every plan needs — with the two triggers that
+    are the paid product.
+    """
+    from .. import entitlements
+
+    try:
+        entitlements.assert_feature(session, principal.organization_id, "intelligence")
+    except entitlements.PlanRefused as e:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(e)) from e
+
+
 @router.get("/health")
 def health(session: Session = Depends(get_session)) -> dict:
     try:
@@ -184,6 +199,7 @@ def detectors_run(
 ) -> dict:
     """Run the deterministic Signal Engine over the org's read model (owner/manager
     only). Emits immutable signals; no AI, no recommendations."""
+    _require_intelligence(session, principal)
     return run_detectors(session, principal.organization_id)
 
 
@@ -195,6 +211,7 @@ def decisions_generate(
     """Turn the org's latest signals into validated, persisted decisions via the
     AI Decision Layer (owner/manager only). Deterministic signals are the floor;
     AI failures degrade to templates, never suppress a real signal."""
+    _require_intelligence(session, principal)
     from ..decisions.service import DecisionService
     return DecisionService(session, principal.organization_id).generate()
 

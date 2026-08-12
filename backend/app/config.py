@@ -120,6 +120,17 @@ class Settings:
     ISSUED_ACCOUNTS_MUST_CHANGE_PASSWORD: bool = (
         os.environ.get("ISSUED_ACCOUNTS_MUST_CHANGE_PASSWORD", "1") != "0")
 
+    # ── Plans / entitlements (app/entitlements.py) ───────────────────────────
+    # The plan an organization is on when its own row does not say ("free" |
+    # "intelligence" | "platform"). Defaults to "platform" so an existing
+    # deployment — including dev and the test suite — keeps every feature it
+    # has today; a hosted multi-tenant deployment sets DEFAULT_PLAN=free and
+    # upgrades organizations explicitly. An unrecognised value resolves to
+    # "free" and logs: a typo must never widen what a tenant may use.
+    DEFAULT_PLAN: str = os.environ.get("DEFAULT_PLAN", "platform")
+    # How long the one-per-books free month of Commercial Intelligence runs.
+    INTELLIGENCE_TRIAL_DAYS: int = int(os.environ.get("INTELLIGENCE_TRIAL_DAYS", "30"))
+
     # The single supported organization for V1 (one org, one ERP). organization_id
     # is carried on every record for future multi-org, but no cross-org logic exists.
     DEFAULT_ORG_ID: str = os.environ.get("DEFAULT_ORG_ID", "org_sanketh")

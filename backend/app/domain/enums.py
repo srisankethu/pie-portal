@@ -18,6 +18,21 @@ class Role(str, Enum):
     OWNER = "OWNER"
 
 
+class PlanTier(str, Enum):
+    """What an organization is licensed to use (see ``app/entitlements.py``).
+
+    FREE is the Quote Desk: quoting, margin floors, approvals. INTELLIGENCE adds
+    the decision layer — signals, decision cards, the insight screens. PLATFORM
+    adds multi-company groups. Stored lowercase because the value travels
+    through config (``DEFAULT_PLAN``) and a CLI, where lowercase is what people
+    type.
+    """
+
+    FREE = "free"
+    INTELLIGENCE = "intelligence"
+    PLATFORM = "platform"
+
+
 class CustomerStatus(str, Enum):
     ACTIVE = "ACTIVE"
     INACTIVE = "INACTIVE"

@@ -374,6 +374,21 @@ def add_connection(session: Session, organization_id: str, *, credential_id: str
     existing = session.scalar(select(models.ZohoConnection).where(
         models.ZohoConnection.organization_id == organization_id,
         models.ZohoConnection.zoho_organization_id == zoho_organization_id))
+
+    # The plan boundary, enforced where the violation would happen. A second
+    # *distinct* company on one organization is what the platform plan is;
+    # below it the licence unit is one company's books, and refusing here —
+    # rather than auditing later — is what makes that a rule instead of a
+    # suggestion. Updating a company already connected is never a new company.
+    if existing is None:
+        from .. import entitlements
+
+        others = session.scalar(select(models.ZohoConnection.connection_id).where(
+            models.ZohoConnection.organization_id == organization_id,
+            models.ZohoConnection.zoho_organization_id != zoho_organization_id))
+        if others is not None:
+            entitlements.assert_feature(session, organization_id, "multi_company")
+
     row = existing or models.ZohoConnection(organization_id=organization_id)
     if existing is None:
         session.add(row)
@@ -391,6 +406,14 @@ def add_connection(session: Session, organization_id: str, *, credential_id: str
     row.accounts_base = cred.accounts_base
     row.api_base = cred.api_base
     session.flush()
+
+    # The free intelligence month starts when books connect for the first time
+    # anywhere — keyed to the books, so reconnecting the same company under a
+    # fresh organization finds the trial already spent (see IntelligenceTrial).
+    if existing is None:
+        from .. import entitlements
+
+        entitlements.begin_trial(session, organization_id, zoho_organization_id)
     return row
 
 

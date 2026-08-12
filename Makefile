@@ -4,7 +4,7 @@
         deploy-runbook deploy-sync
 
 help:
-	@echo "pie-portal — Sanketh Quote Builder + Commercial Decision Platform"
+	@echo "pie-portal — PIE Quote Builder + Commercial Decision Platform"
 	@echo ""
 	@echo "  make setup        one command from a bare clone: pie-parser, pinned"
 	@echo "                    dev tooling, npm deps, database"

@@ -5,7 +5,7 @@ because "the price field is reachable now" is a claim and a screenshot is not.
 
 Everything here was taken against the app running locally — the Vite dev server
 on `:5173` for the screens, the production build served from `frontend/dist` for
-the payload figures — signed in through the sign-in form as `r.nair@sanketh.in`,
+the payload figures — signed in through the sign-in form as `r.nair@pie.example`,
 role `SALESPERSON`, in Chromium at a **412 × 915 Pixel 7 viewport** with
 `isMobile`, touch and a 2× device pixel ratio.
 

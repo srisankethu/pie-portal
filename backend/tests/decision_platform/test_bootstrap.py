@@ -69,7 +69,7 @@ def test_bootstrap_seeds_users_so_login_can_resolve_them(fresh_db):
     try:
         # the exact query platform_auth.login runs
         user = session.scalar(
-            select(models.User).where(models.User.email == "r.nair@sanketh.in"))
+            select(models.User).where(models.User.email == "r.nair@pie.example"))
         assert user is not None and user.active
         assert session.query(models.User).count() == 3      # all three roles
     finally:
@@ -152,7 +152,7 @@ def test_app_startup_bootstraps_so_first_login_succeeds(tmp_path, monkeypatch):
 
     with TestClient(app) as client:            # 'with' runs the startup lifespan
         r = client.post("/api/v1/auth/login",
-                        json={"email": "r.nair@sanketh.in", "password": SEED_PASSWORD})
+                        json={"email": "r.nair@pie.example", "password": SEED_PASSWORD})
     assert r.status_code == 200, r.text
     assert r.json()["role"] == "SALESPERSON"
 

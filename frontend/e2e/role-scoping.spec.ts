@@ -21,8 +21,8 @@
 import { expect, test, type Page, type Response } from "@playwright/test";
 
 const PASSWORD = process.env.SEED_PASSWORD ?? "change-me-now";
-const SALES = "r.nair@sanketh.in";
-const MANAGER = "m.rao@sanketh.in";
+const SALES = "r.nair@pie.example";
+const MANAGER = "m.rao@pie.example";
 
 /** A code the seeded catalogue resolves, so the grid has a real line on it. */
 const RFQ = "2001174, 20";

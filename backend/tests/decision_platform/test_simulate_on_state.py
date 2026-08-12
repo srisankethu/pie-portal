@@ -31,9 +31,9 @@ from app.routers import insight, platform_auth
 from app.seed import SEED_PASSWORD, ensure_org_and_users
 from app.state.engine import build
 
-ORG = "org_sanketh"
-OWNER = "s.menon@sanketh.in"
-SALESPERSON = "r.nair@sanketh.in"
+ORG = "org_pie"
+OWNER = "s.menon@pie.example"
+SALESPERSON = "r.nair@pie.example"
 
 
 class _Source:

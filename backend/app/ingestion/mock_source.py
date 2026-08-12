@@ -77,7 +77,7 @@ _PURCHASE_ORDERS = [
 ]
 
 _USERS = [
-    {"user_id": "zu-1", "email": "r.nair@sanketh.in", "name": "R. Nair", "status": "active"},
+    {"user_id": "zu-1", "email": "r.nair@pie.example", "name": "R. Nair", "status": "active"},
 ]
 
 _INVOICES = [

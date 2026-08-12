@@ -86,7 +86,7 @@ def test_weak_explicit_password_is_refused(session):
 
 
 def test_new_tenant_is_isolated_from_the_default_org(session):
-    """The provisioned org shares nothing with org_sanketh — the property the
+    """The provisioned org shares nothing with org_pie — the property the
     whole multi-tenant claim rests on."""
     from app.seed import ensure_org_and_users
 

@@ -27,7 +27,7 @@ measure the projection rather than the book and always report "clean".
 Requires ``ZOHO_SOURCE=api`` and a connected company. It only ever GETs.
 
 Run:  cd backend && ZOHO_SOURCE=api python3 ../scripts/measure_bill_currency.py
-      cd backend && ZOHO_SOURCE=api python3 ../scripts/measure_bill_currency.py --limit 50 --org org_sanketh
+      cd backend && ZOHO_SOURCE=api python3 ../scripts/measure_bill_currency.py --limit 50 --org org_pie
 """
 from __future__ import annotations
 

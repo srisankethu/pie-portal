@@ -15,7 +15,7 @@ from app.domain import models
 from app.routers import admin, decisions, internal, platform_auth
 from app.seed import SEED_PASSWORD, ensure_org_and_users
 
-ORG = "org_sanketh"
+ORG = "org_pie"
 
 
 @pytest.fixture()
@@ -80,7 +80,7 @@ def test_login_and_roles(client_and_maker):
     client, _ = client_and_maker
     assert client.post("/api/v1/auth/login",
                        json={"email": "nobody@x.com", "password": "x"}).status_code == 401
-    r = client.post("/api/v1/auth/login", json={"email": "r.nair@sanketh.in", "password": SEED_PASSWORD})
+    r = client.post("/api/v1/auth/login", json={"email": "r.nair@pie.example", "password": SEED_PASSWORD})
     assert r.json()["role"] == "SALESPERSON"
 
 
@@ -91,9 +91,9 @@ def test_sign_in_returns_the_address_it_signed_in_with(client_and_maker):
     account they just secured."""
     client, _ = client_and_maker
     body = client.post("/api/v1/auth/login",
-                       json={"email": "r.nair@sanketh.in",
+                       json={"email": "r.nair@pie.example",
                              "password": SEED_PASSWORD}).json()
-    assert body["email"] == "r.nair@sanketh.in"
+    assert body["email"] == "r.nair@pie.example"
 
 
 def test_auth_required(client_and_maker):
@@ -110,7 +110,7 @@ def test_salesperson_scope_and_restricted_gating(client_and_maker):
     margin = _seed_decision(maker, dtype="MARGIN_DETERIORATION", subject_id="prodX",
                             assigned_user_id=None)          # restricted type
 
-    sales = _hdr(_login(client, "r.nair@sanketh.in"))
+    sales = _hdr(_login(client, "r.nair@pie.example"))
     ids = {d["decision_id"] for d in client.get("/api/v1/decisions", headers=sales).json()}
     assert ids == {dormancy}                                # only their own, no restricted, no other's
 
@@ -124,7 +124,7 @@ def test_manager_sees_all_including_restricted(client_and_maker):
                               assigned_user_id="usr_sales")
     margin = _seed_decision(maker, dtype="MARGIN_DETERIORATION", subject_id="prodX",
                             assigned_user_id=None)
-    mgr = _hdr(_login(client, "m.rao@sanketh.in"))
+    mgr = _hdr(_login(client, "m.rao@pie.example"))
     ids = {d["decision_id"] for d in client.get("/api/v1/decisions", headers=mgr).json()}
     assert {dormancy, margin} <= ids
     assert client.get(f"/api/v1/decisions/{margin}", headers=mgr).status_code == 200
@@ -135,7 +135,7 @@ def test_organization_isolation_at_api(client_and_maker):
     # a decision in a different org must never surface to this org's principal
     foreign = _seed_decision(maker, dtype="CUSTOMER_DORMANCY", subject_id="c",
                              assigned_user_id="usr_sales", org="org_other")
-    owner = _hdr(_login(client, "s.menon@sanketh.in"))
+    owner = _hdr(_login(client, "s.menon@pie.example"))
     ids = {d["decision_id"] for d in client.get("/api/v1/decisions", headers=owner).json()}
     assert foreign not in ids
     assert client.get(f"/api/v1/decisions/{foreign}", headers=owner).status_code == 404
@@ -145,7 +145,7 @@ def test_human_action_lifecycle(client_and_maker):
     client, maker = client_and_maker
     did = _seed_decision(maker, dtype="CUSTOMER_DORMANCY", subject_id="cust1",
                          assigned_user_id="usr_sales")
-    sales = _hdr(_login(client, "r.nair@sanketh.in"))
+    sales = _hdr(_login(client, "r.nair@pie.example"))
 
     r = client.post(f"/api/v1/decisions/{did}/action", json={"action": "VIEW"}, headers=sales)
     assert r.json()["status"] == "VIEWED"
@@ -179,7 +179,7 @@ def test_an_account_owing_a_password_change_can_do_nothing_else(client_and_maker
     session.commit()
     session.close()
 
-    sales = _hdr(_login(client, "r.nair@sanketh.in"))
+    sales = _hdr(_login(client, "r.nair@pie.example"))
     assert client.get("/api/v1/decisions", headers=sales).status_code == 403
     blocked = client.get("/api/v1/decisions", headers=sales)
     assert "Change your password" in blocked.json()["detail"]
@@ -203,7 +203,7 @@ def test_changing_a_password_retires_the_sessions_opened_with_the_old_one(client
     believed to be compromised stayed usable by whoever held a session.
     """
     client, maker = client_and_maker
-    stale = _hdr(_login(client, "r.nair@sanketh.in"))
+    stale = _hdr(_login(client, "r.nair@pie.example"))
     assert client.get("/api/v1/decisions", headers=stale).status_code == 200
 
     changed = client.post("/api/v1/admin/me/password",
@@ -219,10 +219,10 @@ def test_changing_a_password_retires_the_sessions_opened_with_the_old_one(client
 
     # The old password is refused, and the new one works.
     assert client.post("/api/v1/auth/login",
-                       json={"email": "r.nair@sanketh.in",
+                       json={"email": "r.nair@pie.example",
                              "password": SEED_PASSWORD}).status_code == 401
     assert client.post("/api/v1/auth/login",
-                       json={"email": "r.nair@sanketh.in",
+                       json={"email": "r.nair@pie.example",
                              "password": "Sales-Review-2026!"}).status_code == 200
 
 
@@ -237,7 +237,7 @@ def test_undo_does_not_destroy_the_reason_that_was_recorded(client_and_maker):
     client, maker = client_and_maker
     did = _seed_decision(maker, dtype="CUSTOMER_DORMANCY", subject_id="cust1",
                          assigned_user_id="usr_sales")
-    sales = _hdr(_login(client, "r.nair@sanketh.in"))
+    sales = _hdr(_login(client, "r.nair@pie.example"))
     reason = ("Owner: holding price for this account; renegotiating the supply "
               "cost with the principal instead.")
 
@@ -273,7 +273,7 @@ def test_a_decision_written_before_the_trail_existed_keeps_its_action(client_and
     did = _seed_decision(maker, dtype="CUSTOMER_DORMANCY", subject_id="cust1",
                          assigned_user_id="usr_sales")
     session = maker()
-    repo = DecisionRepository(session, "org_sanketh")
+    repo = DecisionRepository(session, "org_pie")
     d = repo.get(did)
     # Exactly the shape the old code wrote: no trail key at all.
     d.human_action = {"action": "ACT", "actor_user_id": "usr_owner",
@@ -291,8 +291,8 @@ def test_a_decision_written_before_the_trail_existed_keeps_its_action(client_and
 
 def test_sync_requires_manager_or_owner(client_and_maker):
     client, _ = client_and_maker
-    sales = _hdr(_login(client, "r.nair@sanketh.in"))
-    owner = _hdr(_login(client, "s.menon@sanketh.in"))
+    sales = _hdr(_login(client, "r.nair@pie.example"))
+    owner = _hdr(_login(client, "s.menon@pie.example"))
     assert client.post("/api/v1/internal/sync/zoho", headers=sales).status_code == 403
     r = client.post("/api/v1/internal/sync/zoho", headers=owner)
     assert r.status_code == 200
@@ -311,7 +311,7 @@ def test_demo_seed_disabled_in_production(client_and_maker, monkeypatch):
     production even for an owner (prevents polluting the real read model)."""
     from app.config import settings
     client, _ = client_and_maker
-    owner = _hdr(_login(client, "s.menon@sanketh.in"))
+    owner = _hdr(_login(client, "s.menon@pie.example"))
     monkeypatch.setattr(settings, "APP_ENV", "production")
     assert client.post("/api/v1/internal/demo-seed", headers=owner).status_code == 403
     # allowed outside production

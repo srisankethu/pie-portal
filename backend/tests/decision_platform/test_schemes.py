@@ -384,7 +384,7 @@ def client():
                          future=True)
     s = Maker()
     ensure_org_and_users(s)
-    org = "org_sanketh"
+    org = "org_pie"
     s.add(models.Vendor(vendor_id="v_ken", organization_id=org,
                         external_id="ev_ken", name="Kennametal India"))
     s.add(models.Customer(customer_id="c1", organization_id=org,
@@ -429,7 +429,7 @@ def client():
     return built
 
 
-def _head(client, email: str = "m.rao@sanketh.in"):
+def _head(client, email: str = "m.rao@pie.example"):
     from app.seed import SEED_PASSWORD
     r = client.post("/api/v1/auth/login",
                     json={"email": email, "password": SEED_PASSWORD})
@@ -543,7 +543,7 @@ def test_a_target_whose_period_has_closed_is_not_on_the_wall(client):
 def test_a_salesperson_cannot_read_any_of_it(client):
     """Purchase spend is cost by another name and a rebate is a percentage of
     it. 403, not a stripped payload — there is nothing left once the money goes."""
-    head = _head(client, "r.nair@sanketh.in")
+    head = _head(client, "r.nair@pie.example")
     assert client.get("/api/v1/insight/schemes", headers=head).status_code == 403
     assert client.get("/api/v1/insight/targets", headers=head).status_code == 403
     assert _put(client, head).status_code == 403

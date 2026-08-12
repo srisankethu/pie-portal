@@ -32,9 +32,9 @@ from app.signals.aggregates import label_for, load_snapshot
 from app.state import engine as state_engine
 from app.state.reducers.inventory import INVENTORY
 
-ORG = "org_sanketh"
-OWNER = "s.menon@sanketh.in"
-SALESPERSON = "r.nair@sanketh.in"
+ORG = "org_pie"
+OWNER = "s.menon@pie.example"
+SALESPERSON = "r.nair@pie.example"
 
 
 class _Source:

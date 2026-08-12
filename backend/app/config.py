@@ -133,8 +133,8 @@ class Settings:
 
     # The single supported organization for V1 (one org, one ERP). organization_id
     # is carried on every record for future multi-org, but no cross-org logic exists.
-    DEFAULT_ORG_ID: str = os.environ.get("DEFAULT_ORG_ID", "org_sanketh")
-    DEFAULT_ORG_NAME: str = os.environ.get("DEFAULT_ORG_NAME", "Sanketh")
+    DEFAULT_ORG_ID: str = os.environ.get("DEFAULT_ORG_ID", "org_pie")
+    DEFAULT_ORG_NAME: str = os.environ.get("DEFAULT_ORG_NAME", "PIE")
     DEFAULT_CURRENCY: str = os.environ.get("DEFAULT_CURRENCY", "INR")
     # Headline sales-tax rate and what the jurisdiction calls it, applied to a
     # quote subtotal before any ERP has priced it. Defaults are Indian because

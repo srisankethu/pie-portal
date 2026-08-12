@@ -202,7 +202,7 @@ def test_progress_is_readable_after_the_pull_fails(session):
 def _with_salesperson(**kw):
     src = _good_source()
     src._inv[0].update(salesperson_id="zu-7", salesperson_name="R. Nair")
-    src._u = kw.get("users", [{"user_id": "zu-7", "email": "R.Nair@Sanketh.in",
+    src._u = kw.get("users", [{"user_id": "zu-7", "email": "R.Nair@pie.example",
                                "name": "R. Nair"}])
     return src
 
@@ -217,7 +217,7 @@ def _user(session, org, email):
 def test_zoho_s_salesperson_becomes_the_account_owner(session):
     """44 of 49 live customers had no owner, so every salesperson queue was
     empty regardless of what the detectors found."""
-    user = _user(session, "org_a", "r.nair@sanketh.in")
+    user = _user(session, "org_a", "r.nair@pie.example")
     report = SyncService(session, _with_salesperson(), "org_a").run()
     session.commit()
 
@@ -228,7 +228,7 @@ def test_zoho_s_salesperson_becomes_the_account_owner(session):
 def test_an_unrecognised_salesperson_leaves_the_account_unassigned(session):
     """Assigning the wrong owner hides an account from the person who should act
     on it. Unassigned is visible to managers; wrongly assigned is invisible."""
-    _user(session, "org_a", "someone.else@sanketh.in")
+    _user(session, "org_a", "someone.else@pie.example")
     report = SyncService(session, _with_salesperson(), "org_a").run()
     session.commit()
 
@@ -266,7 +266,7 @@ def test_ownership_survives_a_resumed_pull(session):
     session.commit()
     assert session.query(models.Customer).one().assigned_user_id is None
 
-    user = _user(session, "org_a", "r.nair@sanketh.in")
+    user = _user(session, "org_a", "r.nair@pie.example")
     second = _with_salesperson()                 # scope granted; nothing re-fetched
     report = SyncService(session, second, "org_a").run()
     session.commit()
@@ -691,7 +691,7 @@ def test_one_origin_shape_for_every_imported_entity(session):
     and an item picker cannot describe their source two different ways."""
     from app.domain.origin import Companies
 
-    session.add(models.Organization(organization_id="org_a", name="Sanketh"))
+    session.add(models.Organization(organization_id="org_a", name="PIE"))
     session.add(models.ZohoConnection(
         connection_id="conn-a", organization_id="org_a",
         zoho_organization_id="60036630626", label="4U Precision",
@@ -718,7 +718,7 @@ def test_an_unattributed_row_says_so_rather_than_being_guessed_at(session):
     nobody would re-check."""
     from app.domain.origin import Companies
 
-    session.add(models.Organization(organization_id="org_a", name="Sanketh"))
+    session.add(models.Organization(organization_id="org_a", name="PIE"))
     session.add(models.ZohoConnection(
         connection_id="conn-a", organization_id="org_a",
         zoho_organization_id="60036630626", label="4U Precision",
@@ -738,7 +738,7 @@ def test_source_badges_are_information_only_when_there_is_more_than_one(session)
     column of identical badges is decoration that costs width on every screen."""
     from app.domain.origin import Companies
 
-    session.add(models.Organization(organization_id="org_a", name="Sanketh"))
+    session.add(models.Organization(organization_id="org_a", name="PIE"))
     session.flush()
     assert Companies(session, "org_a").count == 0
 

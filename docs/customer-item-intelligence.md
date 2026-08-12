@@ -192,13 +192,13 @@ Metrics are **derived and disposable**. They are recomputed:
 
 ```bash
 # whole organization, from data already in the database
-python -m app.commercial.backfill --org org_sanketh
+python -m app.commercial.backfill --org org_pie
 
 # one customer
-python -m app.commercial.backfill --org org_sanketh --customer <customer_id>
+python -m app.commercial.backfill --org org_pie --customer <customer_id>
 
 # see what would happen, change nothing
-python -m app.commercial.backfill --org org_sanketh --dry-run
+python -m app.commercial.backfill --org org_pie --dry-run
 ```
 
 Idempotent: running it twice produces the same rows. It never deletes or

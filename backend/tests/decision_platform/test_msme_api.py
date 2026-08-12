@@ -15,9 +15,9 @@ import pytest
 from app.commercial import policy
 from app.domain import models
 
-MANAGER = "m.rao@sanketh.in"
-SALES = "r.nair@sanketh.in"
-OWNER = "s.menon@sanketh.in"
+MANAGER = "m.rao@pie.example"
+SALES = "r.nair@pie.example"
+OWNER = "s.menon@pie.example"
 
 
 def _api(session):

@@ -79,7 +79,7 @@ export function SignInCard({
           background: "linear-gradient(135deg, var(--color-neutral-100), var(--color-bg))",
         }}
       >
-        <Typography variant="h6" color="text.secondary">Sanketh</Typography>
+        <Typography variant="h6" color="text.secondary">PIE</Typography>
         <Typography variant="h2" sx={{ mb: 1 }}>{title}</Typography>
         <Typography color="text.secondary" sx={{ mb: 3, fontSize: 14 }}>
           {blurb}

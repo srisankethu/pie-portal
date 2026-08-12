@@ -22,7 +22,7 @@ from .signal_fixtures import (
     margin_deterioration_product,
 )
 
-ORG = "org_sanketh"
+ORG = "org_pie"
 
 
 def _insert(session, org, sales=(), costs=()):
@@ -169,12 +169,12 @@ def test_detectors_run_endpoint_owner_only(client_and_maker):
 
     # salesperson forbidden
     r = client.post("/api/v1/internal/detectors/run",
-                    headers={"Authorization": f"Bearer {tok('r.nair@sanketh.in')}"})
+                    headers={"Authorization": f"Bearer {tok('r.nair@pie.example')}"})
     assert r.status_code == 403
 
     # owner runs the engine
     r = client.post("/api/v1/internal/detectors/run",
-                    headers={"Authorization": f"Bearer {tok('s.menon@sanketh.in')}"})
+                    headers={"Authorization": f"Bearer {tok('s.menon@pie.example')}"})
     assert r.status_code == 200
     body = r.json()
     assert body["signals_emitted"] >= 4

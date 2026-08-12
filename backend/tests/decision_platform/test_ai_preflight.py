@@ -112,9 +112,9 @@ def test_readiness_endpoint_is_owner_only(api_client):
     from .test_api_authz import _hdr, _login
 
     client = api_client
-    sales = _hdr(_login(client, "r.nair@sanketh.in"))
-    manager = _hdr(_login(client, "m.rao@sanketh.in"))
-    owner = _hdr(_login(client, "s.menon@sanketh.in"))
+    sales = _hdr(_login(client, "r.nair@pie.example"))
+    manager = _hdr(_login(client, "m.rao@pie.example"))
+    owner = _hdr(_login(client, "s.menon@pie.example"))
 
     assert client.get("/api/v1/internal/ai-readiness", headers=sales).status_code == 403
     assert client.get("/api/v1/internal/ai-readiness", headers=manager).status_code == 403

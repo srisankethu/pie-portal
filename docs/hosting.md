@@ -130,7 +130,7 @@ the deploy actually did rather than only that it succeeded:
 INFO  [alembic.runtime.migration] Running upgrade  -> 41730a334a54, phase1 decision platform foundation
 ...
 [release] after: Database is at head (bcf507053964).
-Seeded organization org_sanketh with 3 demo users.
+Seeded organization org_pie with 3 demo users.
 ```
 
 It is idempotent. Re-running it on a current database prints `before:`/`after:`

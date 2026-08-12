@@ -585,9 +585,9 @@ def test_a_salesperson_is_told_why_the_column_is_missing_from_their_shelf():
 # with a book seeded into the same database it reads.
 
 SEED_ORG = settings.DEFAULT_ORG_ID
-LOGINS = {"SALESPERSON": "r.nair@sanketh.in",
-          "SALES_MANAGER": "m.rao@sanketh.in",
-          "OWNER": "s.menon@sanketh.in"}
+LOGINS = {"SALESPERSON": "r.nair@pie.example",
+          "SALES_MANAGER": "m.rao@pie.example",
+          "OWNER": "s.menon@pie.example"}
 
 
 def _seed_book(s, *, org: str = SEED_ORG, today: date) -> None:

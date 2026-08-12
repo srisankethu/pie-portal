@@ -34,7 +34,7 @@ from app.domain import models
 from app.ingestion import jobs
 from app.seed import ensure_org_and_users
 
-ORG = "org_sanketh"
+ORG = "org_pie"
 REPO_BACKEND = pathlib.Path(__file__).resolve().parents[2]
 
 

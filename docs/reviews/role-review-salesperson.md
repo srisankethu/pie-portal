@@ -1,6 +1,6 @@
 # Role review — SALESPERSON
 
-**Account:** `r.nair@sanketh.in` · `usr_sales` · org `org_sanketh`
+**Account:** `r.nair@pie.example` · `usr_sales` · org `org_pie`
 **Password:** changed from the seed default during this review; the value is
 not recorded here and has since been rotated again.
 **Date of review:** 2026-08-08 · demo history anchored at 2026-07-22
@@ -258,7 +258,7 @@ Expected: a below-cost line raises `NEGATIVE_MARGIN` and blocks the quote, as it
 correctly does for `prd_cnmg` where the org *does* hold a cost record.
 
 **F3 · `must_change_password` is never enforced — CONFIRMED**
-`r.nair@sanketh.in` / `change-me-now` signs straight into the dashboard; no
+`r.nair@pie.example` / `change-me-now` signs straight into the dashboard; no
 prompt, no interstitial (`/tmp/shots/02-after-signin.png`). The flag is read in
 exactly two places — the login response and an admin-screen label
 (`grep must_change_password` returns no dependency, no guard, no router check).
@@ -522,7 +522,7 @@ Checked against row counts in `backend/data/platform.db` before judging.
   Reassigning one would have meant editing seed data, which the rules of
   engagement forbid.
 - **One manager login, for arithmetic verification only.** I signed in as
-  `m.rao@sanketh.in` exactly once, to read back `marginFloor` and confirm the
+  `m.rao@pie.example` exactly once, to read back `marginFloor` and confirm the
   ₹494.12 floor I had recovered by bisection was the real one. No manager screen
   was reviewed and no manager behaviour is reported here. Flagging it because the
   brief said salesperson only.

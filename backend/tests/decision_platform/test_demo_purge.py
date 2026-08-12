@@ -23,7 +23,7 @@ def test_purge_removes_every_demo_row(session):
     assert session.query(models.AiCallLog).count() > 0, \
         "the demo seed runs the real AI pipeline, so it does leave telemetry"
 
-    removed = purge_demo_seed(session, "org_sanketh")
+    removed = purge_demo_seed(session, "org_pie")
     session.commit()
 
     assert removed["customers"] == 5
@@ -45,10 +45,10 @@ def test_purge_removes_every_demo_row(session):
 def test_purge_is_idempotent(session):
     seed_demo(session)
     session.commit()
-    purge_demo_seed(session, "org_sanketh")
+    purge_demo_seed(session, "org_pie")
     session.commit()
 
-    again = purge_demo_seed(session, "org_sanketh")
+    again = purge_demo_seed(session, "org_pie")
     assert all(v == 0 for v in again.values()), \
         f"a second purge must find nothing left to remove: {again}"
 
@@ -56,7 +56,7 @@ def test_purge_is_idempotent(session):
 def test_purge_never_touches_a_real_customer_even_with_the_same_name(session):
     """Demo rows are identified by their fixed primary key, not by name — a
     real Zoho customer that happens to be called "Rane Madras" must survive."""
-    real = models.Customer(organization_id="org_sanketh", external_id="60036630626-c-9001",
+    real = models.Customer(organization_id="org_pie", external_id="60036630626-c-9001",
                            name="Rane Madras", status="ACTIVE")
     session.add(real)
     session.commit()
@@ -65,7 +65,7 @@ def test_purge_never_touches_a_real_customer_even_with_the_same_name(session):
     session.commit()
     assert session.query(models.Customer).count() == 6   # 5 demo + 1 real, same name
 
-    purge_demo_seed(session, "org_sanketh")
+    purge_demo_seed(session, "org_pie")
     session.commit()
 
     survivors = session.query(models.Customer).all()
@@ -90,11 +90,11 @@ def test_purge_is_scoped_to_the_organization(session):
 def test_purge_does_not_touch_a_real_cost_record_on_a_shared_product_id_space(session):
     """A defensive check on the id-based matching: only the fixed demo product
     ids are touched, nothing keyed by a real Zoho item id."""
-    real_product = models.Product(organization_id="org_sanketh", external_id="9001",
+    real_product = models.Product(organization_id="org_pie", external_id="9001",
                                   name="Real Insert")
     session.add(real_product)
     session.flush()
-    real_cost = models.CostRecord(organization_id="org_sanketh", external_ref="bill-real:1",
+    real_cost = models.CostRecord(organization_id="org_pie", external_ref="bill-real:1",
                                   product_id=real_product.product_id, date=date(2026, 1, 1),
                                   qty=Decimal("1"), unit_cost=Decimal("100"))
     session.add(real_cost)
@@ -103,7 +103,7 @@ def test_purge_does_not_touch_a_real_cost_record_on_a_shared_product_id_space(se
     seed_demo(session)
     session.commit()
 
-    purge_demo_seed(session, "org_sanketh")
+    purge_demo_seed(session, "org_pie")
     session.commit()
 
     assert session.query(models.CostRecord).count() == 1

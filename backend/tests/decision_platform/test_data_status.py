@@ -77,14 +77,14 @@ def test_sample_data_is_named_as_such(client, monkeypatch):
     """Sample data and live data are indistinguishable by eye — so the product
     has to say which it is, or someone trusts a decision built on fixtures."""
     monkeypatch.setattr(settings, "ZOHO_SOURCE", "fixture")
-    body = client.get("/api/v1/data/status", headers=_hdr(client, "s.menon@sanketh.in")).json()
+    body = client.get("/api/v1/data/status", headers=_hdr(client, "s.menon@pie.example")).json()
     assert body["connection"]["state"] == "SAMPLE_DATA"
     assert "sample data" in body["connection"]["headline"].lower()
 
 
 def test_status_is_readable_by_a_salesperson_but_syncing_is_not(client, monkeypatch):
     monkeypatch.setattr(settings, "ZOHO_SOURCE", "fixture")
-    sales = _hdr(client, "r.nair@sanketh.in")
+    sales = _hdr(client, "r.nair@pie.example")
     body = client.get("/api/v1/data/status", headers=sales).json()
     assert body["can_sync"] is False
     assert client.post("/api/v1/data/sync", headers=sales).status_code == 403
@@ -93,7 +93,7 @@ def test_status_is_readable_by_a_salesperson_but_syncing_is_not(client, monkeypa
 def test_sync_runs_the_whole_cycle_and_is_recorded(client, monkeypatch):
     """One action: pull, detect, decide — and a record that it happened."""
     monkeypatch.setattr(settings, "ZOHO_SOURCE", "fixture")
-    owner = _hdr(client, "s.menon@sanketh.in")
+    owner = _hdr(client, "s.menon@pie.example")
 
     before = client.get("/api/v1/data/status", headers=owner).json()
     assert before["last_sync"] is None
@@ -125,7 +125,7 @@ def test_a_failed_sync_is_recorded_not_swallowed(client, monkeypatch):
         list_bills = list_invoices
 
     monkeypatch.setattr("app.ingestion.sync.get_source", lambda session, org, since=None: Boom())
-    owner = _hdr(client, "s.menon@sanketh.in")
+    owner = _hdr(client, "s.menon@pie.example")
     run = client.post("/api/v1/data/sync", headers=owner).json()["run"]
     assert run["status"] == "FAILED"
     assert "token rejected" in run["error"]
@@ -158,7 +158,7 @@ def test_an_interrupted_pull_reports_what_it_wrote(client, monkeypatch):
             raise RuntimeError("HTTP 429 (rate limited)")
 
     monkeypatch.setattr("app.ingestion.sync.get_source", lambda session, org, since=None: Throttled())
-    owner = _hdr(client, "s.menon@sanketh.in")
+    owner = _hdr(client, "s.menon@pie.example")
     run = client.post("/api/v1/data/sync", headers=owner).json()["run"]
 
     assert run["status"] == "PARTIAL", "rows landed — this is not a total failure"
@@ -185,7 +185,7 @@ def test_the_operator_chooses_the_start_date(client, monkeypatch):
         return mock_source.FixtureZohoSource()
 
     monkeypatch.setattr("app.ingestion.sync.get_source", _capture)
-    owner = _hdr(client, "s.menon@sanketh.in")
+    owner = _hdr(client, "s.menon@pie.example")
     run = client.post("/api/v1/data/sync", headers=owner,
                       json={"since": "2025-01-01"}).json()["run"]
 
@@ -252,7 +252,7 @@ def test_a_live_sync_removes_leftover_demo_data(client, monkeypatch):
         def list_bills(self, skip=None): return []
 
     monkeypatch.setattr("app.ingestion.sync.get_source", lambda session, org, since=None: Empty())
-    owner = _hdr(client, "s.menon@sanketh.in")
+    owner = _hdr(client, "s.menon@pie.example")
     body = client.post("/api/v1/data/sync", headers=owner).json()
 
     # Reported on the run rather than in the response: by the time a real pull
@@ -282,7 +282,7 @@ def test_a_second_live_sync_has_nothing_left_to_remove(client, monkeypatch):
         def list_bills(self, skip=None): return []
 
     monkeypatch.setattr("app.ingestion.sync.get_source", lambda session, org, since=None: Empty())
-    owner = _hdr(client, "s.menon@sanketh.in")
+    owner = _hdr(client, "s.menon@pie.example")
     body = client.post("/api/v1/data/sync", headers=owner).json()
     assert "demo_data_removed" not in body
 
@@ -298,7 +298,7 @@ def test_a_fixture_source_sync_does_not_purge_demo_data(client, monkeypatch):
     s.close()
 
     monkeypatch.setattr(settings, "ZOHO_SOURCE", "fixture")
-    owner = _hdr(client, "s.menon@sanketh.in")
+    owner = _hdr(client, "s.menon@pie.example")
     body = client.post("/api/v1/data/sync", headers=owner).json()
 
     assert "demo_data_removed" not in body
@@ -311,7 +311,7 @@ def test_a_fixture_source_sync_does_not_purge_demo_data(client, monkeypatch):
 def test_not_configured_when_the_org_has_no_connection(client, monkeypatch):
     monkeypatch.setattr(settings, "ZOHO_SOURCE", "api")
     monkeypatch.setattr(settings, "ZOHO_ORGANIZATION_ID", "")
-    body = client.get("/api/v1/data/status", headers=_hdr(client, "s.menon@sanketh.in")).json()
+    body = client.get("/api/v1/data/status", headers=_hdr(client, "s.menon@pie.example")).json()
     assert body["connection"]["state"] == "NOT_CONFIGURED"
 
 
@@ -332,7 +332,7 @@ class _FakePing:
 def test_owner_can_connect_zoho_and_status_reflects_it(client, monkeypatch):
     monkeypatch.setattr(settings, "ZOHO_SOURCE", "api")
     monkeypatch.setattr("app.ingestion.zoho_client.ZohoApiSource", _FakePing)
-    owner = _hdr(client, "s.menon@sanketh.in")
+    owner = _hdr(client, "s.menon@pie.example")
 
     before = client.get("/api/v1/data/status", headers=owner).json()
     assert before["connection"]["state"] == "NOT_CONFIGURED"
@@ -355,7 +355,7 @@ def test_owner_can_connect_zoho_and_status_reflects_it(client, monkeypatch):
 
 def test_a_manager_cannot_manage_the_connection(client, monkeypatch):
     monkeypatch.setattr(settings, "ZOHO_SOURCE", "api")
-    manager = _hdr(client, "m.rao@sanketh.in")
+    manager = _hdr(client, "m.rao@pie.example")
 
     r = client.put("/api/v1/data/connection", headers=manager, json={
         "zoho_organization_id": "1", "client_id": "c", "client_secret": "s",
@@ -370,7 +370,7 @@ def test_a_manager_cannot_manage_the_connection(client, monkeypatch):
 def test_owner_can_disconnect_zoho(client, monkeypatch):
     monkeypatch.setattr(settings, "ZOHO_SOURCE", "api")
     monkeypatch.setattr("app.ingestion.zoho_client.ZohoApiSource", _FakePing)
-    owner = _hdr(client, "s.menon@sanketh.in")
+    owner = _hdr(client, "s.menon@pie.example")
     client.put("/api/v1/data/connection", headers=owner, json={
         "zoho_organization_id": "1", "client_id": "c", "client_secret": "s",
         "refresh_token": "r",
@@ -386,7 +386,7 @@ def test_owner_can_disconnect_zoho(client, monkeypatch):
 
 def test_incomplete_connection_fields_are_rejected(client, monkeypatch):
     monkeypatch.setattr(settings, "ZOHO_SOURCE", "api")
-    owner = _hdr(client, "s.menon@sanketh.in")
+    owner = _hdr(client, "s.menon@pie.example")
     r = client.put("/api/v1/data/connection", headers=owner, json={
         "zoho_organization_id": "1", "client_id": "", "client_secret": "s", "refresh_token": "r",
     })
@@ -427,7 +427,7 @@ def test_two_tenants_sync_from_their_own_zoho_connection_only(client, monkeypatc
 
     monkeypatch.setattr("app.ingestion.zoho_client.ZohoApiSource", RecordingSource)
 
-    default_owner = _hdr(client, "s.menon@sanketh.in")
+    default_owner = _hdr(client, "s.menon@pie.example")
     other_owner = _hdr(client, "owner@4u.example")
 
     client.put("/api/v1/data/connection", headers=default_owner, json={

@@ -29,8 +29,8 @@ from app.zoho import MockZoho, ZohoWriteRefused, ZohoWriteUnknown
 
 from decision_platform.test_zoho_books_service import FakeBooks
 
-OWNER = "s.menon@sanketh.in"
-SALES = "r.nair@sanketh.in"
+OWNER = "s.menon@pie.example"
+SALES = "r.nair@pie.example"
 
 
 @pytest.fixture()

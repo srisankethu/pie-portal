@@ -23,7 +23,7 @@ from app.db import Base, get_session
 from app.routers import platform_auth, trust
 from app.seed import SEED_PASSWORD, ensure_org_and_users
 
-ORG = "org_sanketh"
+ORG = "org_pie"
 
 #: Every read route on the surface, so a new one added without a role check
 #: fails here rather than in production.
@@ -73,14 +73,14 @@ def _hdr(client, email):
 
 
 @pytest.mark.parametrize("path", READ_ROUTES)
-@pytest.mark.parametrize("email", ["m.rao@sanketh.in", "r.nair@sanketh.in"])
+@pytest.mark.parametrize("email", ["m.rao@pie.example", "r.nair@pie.example"])
 def test_only_an_owner_may_read_the_trust_surface(client, path, email):
     assert client.get(path, headers=_hdr(client, email)).status_code == 403
 
 
 @pytest.mark.parametrize("path", READ_ROUTES)
 def test_an_owner_may_read_all_of_it(client, path):
-    r = client.get(path, headers=_hdr(client, "s.menon@sanketh.in"))
+    r = client.get(path, headers=_hdr(client, "s.menon@pie.example"))
     assert r.status_code == 200, r.text
 
 
@@ -92,18 +92,18 @@ def test_the_surface_is_not_readable_without_a_token(client):
 def test_a_manager_cannot_erase_the_organization(client):
     """The one that would be unrecoverable if the check were wrong."""
     r = client.post("/api/v1/trust/erasure",
-                    headers=_hdr(client, "m.rao@sanketh.in"),
+                    headers=_hdr(client, "m.rao@pie.example"),
                     json={"confirm_organization_id": ORG,
                           "reason": "testing the role check"})
     assert r.status_code == 403
     # And it did not half-happen: the state an owner reads is still un-erased.
     state = client.get("/api/v1/trust/erasure",
-                       headers=_hdr(client, "s.menon@sanketh.in")).json()
+                       headers=_hdr(client, "s.menon@pie.example")).json()
     assert state["erased"] is False
 
 
 def test_the_confirmation_must_match_and_nothing_happens_when_it_does_not(client):
-    hdr = _hdr(client, "s.menon@sanketh.in")
+    hdr = _hdr(client, "s.menon@pie.example")
     r = client.post("/api/v1/trust/erasure", headers=hdr,
                     json={"confirm_organization_id": "org_something_else",
                           "reason": "a reason long enough to pass validation"})
@@ -115,7 +115,7 @@ def test_the_confirmation_must_match_and_nothing_happens_when_it_does_not(client
 def test_a_reason_too_short_to_be_a_reason_is_refused(client):
     """Mirrors the ten-character floor the erase form disables its button on."""
     r = client.post("/api/v1/trust/erasure",
-                    headers=_hdr(client, "s.menon@sanketh.in"),
+                    headers=_hdr(client, "s.menon@pie.example"),
                     json={"confirm_organization_id": ORG, "reason": "no"})
     assert r.status_code == 422
 
@@ -125,7 +125,7 @@ def test_the_disclosure_names_the_provider_that_will_actually_run(client):
     `AI_MODEL` whatever the provider is. Asserted so that stays a known
     property of the payload rather than a surprise to the next reader."""
     body = client.get("/api/v1/trust/disclosure",
-                      headers=_hdr(client, "s.menon@sanketh.in")).json()
+                      headers=_hdr(client, "s.menon@pie.example")).json()
     assert body["provider"] == "mock"
     assert body["model"]              # present, and about a provider nothing calls
     assert body["training_on_customer_data"] is False

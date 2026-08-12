@@ -71,7 +71,7 @@ def _hdr(c, email):
     return {"Authorization": f"Bearer {r.json()['token']}"}
 
 
-def _run_with_skips(client, count: int = MANY, *, org: str = "org_sanketh",
+def _run_with_skips(client, count: int = MANY, *, org: str = "org_pie",
                     connection_id: str | None = "conn_a") -> str:
     """A finished run whose report skipped ``count`` rows, persisted as the job
     itself would persist them."""
@@ -110,7 +110,7 @@ def _run_with_skips(client, count: int = MANY, *, org: str = "org_sanketh",
 def test_every_skipped_row_is_kept_not_the_first_twenty(client):
     """The defect itself. 1,304 reported and 20 kept is not a record of 1,304."""
     run_id = _run_with_skips(client)
-    owner = _hdr(client, "s.menon@sanketh.in")
+    owner = _hdr(client, "s.menon@pie.example")
 
     body = client.get(f"/api/v1/data/sync-runs/{run_id}/skipped",
                       headers=owner).json()
@@ -128,7 +128,7 @@ def test_the_export_carries_every_row_and_names_itself(client):
     """A CSV built from the page the grid is showing would reproduce the bug one
     level up, so it is built from the query rather than from the view."""
     run_id = _run_with_skips(client)
-    owner = _hdr(client, "s.menon@sanketh.in")
+    owner = _hdr(client, "s.menon@pie.example")
 
     r = client.get(f"/api/v1/data/sync-runs/{run_id}/skipped.csv", headers=owner)
 
@@ -156,7 +156,7 @@ def test_a_run_that_kept_no_rows_says_so_rather_than_exporting_nothing(client):
     reconciles a blank sheet and concludes the sync is clean."""
     session = client.Maker()
     try:
-        run = models.SyncRun(organization_id="org_sanketh", source="fixture",
+        run = models.SyncRun(organization_id="org_pie", source="fixture",
                              status="OK", skipped_count=1304)
         session.add(run)
         session.commit()
@@ -164,7 +164,7 @@ def test_a_run_that_kept_no_rows_says_so_rather_than_exporting_nothing(client):
     finally:
         session.close()
 
-    owner = _hdr(client, "s.menon@sanketh.in")
+    owner = _hdr(client, "s.menon@pie.example")
     body = client.get(f"/api/v1/data/sync-runs/{run_id}/skipped",
                       headers=owner).json()
 
@@ -182,14 +182,14 @@ def test_the_rows_say_which_company_they_came_from(client):
     session = client.Maker()
     try:
         session.add(models.ZohoConnection(
-            connection_id="conn_a", organization_id="org_sanketh",
+            connection_id="conn_a", organization_id="org_pie",
             zoho_organization_id="z1", label="SLS Engineers"))
         session.commit()
     finally:
         session.close()
 
     run_id = _run_with_skips(client, count=3, connection_id="conn_a")
-    owner = _hdr(client, "s.menon@sanketh.in")
+    owner = _hdr(client, "s.menon@pie.example")
     rows = client.get(f"/api/v1/data/sync-runs/{run_id}/skipped",
                       headers=owner).json()["rows"]
 
@@ -200,7 +200,7 @@ def test_the_order_is_the_order_the_pull_met_them(client):
     """So an export sorts back to the sequence of the run rather than to whatever
     order the rows come out of the table in."""
     run_id = _run_with_skips(client, count=25)
-    owner = _hdr(client, "s.menon@sanketh.in")
+    owner = _hdr(client, "s.menon@pie.example")
     rows = client.get(f"/api/v1/data/sync-runs/{run_id}/skipped",
                       headers=owner).json()["rows"]
 
@@ -211,7 +211,7 @@ def test_another_organizations_run_is_not_found_rather_than_forbidden(client):
     """Each organization is a separate tenant. A 403 would confirm the run
     exists, which is itself a fact about another company's books."""
     run_id = _run_with_skips(client, count=2, org="org_other")
-    owner = _hdr(client, "s.menon@sanketh.in")
+    owner = _hdr(client, "s.menon@pie.example")
 
     assert client.get(f"/api/v1/data/sync-runs/{run_id}/skipped",
                       headers=owner).status_code == 404
@@ -247,7 +247,7 @@ def test_a_real_pull_writes_its_skips_through_the_job(client, monkeypatch):
 
     session = client.Maker()
     try:
-        run = models.SyncRun(organization_id="org_sanketh", source="fixture",
+        run = models.SyncRun(organization_id="org_pie", source="fixture",
                              status="QUEUED")
         session.add(run)
         session.flush()
@@ -259,7 +259,7 @@ def test_a_real_pull_writes_its_skips_through_the_job(client, monkeypatch):
 
     assert counted > 0, "a bill line with no item in the master is a skip"
 
-    owner = _hdr(client, "s.menon@sanketh.in")
+    owner = _hdr(client, "s.menon@pie.example")
     body = client.get(f"/api/v1/data/sync-runs/{run_id}/skipped",
                       headers=owner).json()
 
@@ -280,7 +280,7 @@ def test_a_salesperson_cannot_read_the_skip_export(client):
     rather than blanked field by field, because the row is only worth reading if
     the money is on it."""
     run_id = _run_with_skips(client)
-    sales = _hdr(client, "r.nair@sanketh.in")
+    sales = _hdr(client, "r.nair@pie.example")
 
     assert client.get(f"/api/v1/data/sync-runs/{run_id}/skipped",
                       headers=sales).status_code == 403
@@ -297,7 +297,7 @@ def test_the_status_screen_does_not_hand_a_salesperson_purchase_values(client,
     session = client.Maker()
     try:
         run = models.SyncRun(
-            organization_id="org_sanketh", source="fixture", status="OK",
+            organization_id="org_pie", source="fixture", status="OK",
             skipped_count=2,
             skipped_sample=[{"kind": "cost_record", "ref": "b1:l1",
                              "code": "UNKNOWN_PRODUCT", "detail": "no product 1",
@@ -314,7 +314,7 @@ def test_the_status_screen_does_not_hand_a_salesperson_purchase_values(client,
         session.close()
 
     sales = client.get("/api/v1/data/status",
-                       headers=_hdr(client, "r.nair@sanketh.in")).json()["last_sync"]
+                       headers=_hdr(client, "r.nair@pie.example")).json()["last_sync"]
 
     assert sales["unresolved"][0]["value"] is None
     assert sales["unresolved"][0]["examples"][0]["value"] is None
@@ -327,5 +327,5 @@ def test_the_status_screen_does_not_hand_a_salesperson_purchase_values(client,
     assert sales["skipped_count"] == 2
 
     owner = client.get("/api/v1/data/status",
-                       headers=_hdr(client, "s.menon@sanketh.in")).json()["last_sync"]
+                       headers=_hdr(client, "s.menon@pie.example")).json()["last_sync"]
     assert owner["unresolved"][0]["value"] == 2469.0, "a manager still ranks the worklist"

@@ -249,9 +249,9 @@ def test_the_projection_is_manager_and_above(session):
         return {"Authorization": f"Bearer {r.json()['token']}"}
 
     assert client.get("/api/v1/insight/cashflow",
-                      headers=token("r.nair@sanketh.in")).status_code == 403
+                      headers=token("r.nair@pie.example")).status_code == 403
     ok = client.get("/api/v1/insight/cashflow",
-                    headers=token("m.rao@sanketh.in"))
+                    headers=token("m.rao@pie.example"))
     assert ok.status_code == 200
     body = ok.json()
     assert body["overdue"]["outflow"] == 300000.0
@@ -262,9 +262,9 @@ def test_the_projection_is_manager_and_above(session):
     # commercial position, not a call list — the mirror screen is not scoped
     # like /payments, which a salesperson may read.
     assert client.get("/api/v1/insight/payables",
-                      headers=token("r.nair@sanketh.in")).status_code == 403
+                      headers=token("r.nair@pie.example")).status_code == 403
     assert client.get("/api/v1/insight/payables",
-                      headers=token("m.rao@sanketh.in")).status_code == 200
+                      headers=token("m.rao@pie.example")).status_code == 200
 
 
 # ── the band ────────────────────────────────────────────────────────────────
@@ -655,7 +655,7 @@ def test_an_agreed_term_is_recorded_against_the_supplier_and_survives_a_resync(s
     ok = client.put("/api/v1/insight/vendor-terms",
                     json={"vendor_id": vendor, "days": 37, "basis": "NET",
                           "note": "agreed with Ramesh, Apr 2026"},
-                    headers=token("m.rao@sanketh.in"))
+                    headers=token("m.rao@pie.example"))
     assert ok.status_code == 200
     assert ok.json()["days"] == 37
 
@@ -681,11 +681,11 @@ def test_recording_a_term_is_manager_and_above(session):
 
     body = {"vendor_id": vendor, "days": 30, "basis": "NET"}
     assert client.put("/api/v1/insight/vendor-terms", json=body,
-                      headers=token("r.nair@sanketh.in")).status_code == 403
+                      headers=token("r.nair@pie.example")).status_code == 403
     assert client.get("/api/v1/insight/vendor-terms",
-                      headers=token("r.nair@sanketh.in")).status_code == 403
+                      headers=token("r.nair@pie.example")).status_code == 403
     assert client.put("/api/v1/insight/vendor-terms", json=body,
-                      headers=token("m.rao@sanketh.in")).status_code == 200
+                      headers=token("m.rao@pie.example")).status_code == 200
 
 
 def test_a_term_that_cannot_mean_a_date_is_refused_by_the_api(session):
@@ -693,7 +693,7 @@ def test_a_term_that_cannot_mean_a_date_is_refused_by_the_api(session):
     _fold(session)
     client, token = _api(session)
     vendor = _vendor_of(session, "v1")
-    headers = token("m.rao@sanketh.in")
+    headers = token("m.rao@pie.example")
 
     bad = client.put("/api/v1/insight/vendor-terms",
                      json={"vendor_id": vendor, "days": 30, "basis": "WHENEVER"},
@@ -712,7 +712,7 @@ def test_clearing_a_term_falls_back_to_the_erp_rather_than_freezing_its_value(se
     _fold(session)
     client, token = _api(session)
     vendor = _vendor_of(session, "v1")
-    headers = token("m.rao@sanketh.in")
+    headers = token("m.rao@pie.example")
 
     client.put("/api/v1/insight/vendor-terms",
                json={"vendor_id": vendor, "days": 37, "basis": "NET"},
@@ -754,7 +754,7 @@ def test_lateness_is_measured_against_the_agreed_term_not_the_erps(session):
 
     client.put("/api/v1/insight/vendor-terms",
                json={"vendor_id": vendor, "days": 45, "basis": "NET"},
-               headers=token("m.rao@sanketh.in"))
+               headers=token("m.rao@pie.example"))
 
     # Against the agreement it is five days early — the same payment, judged
     # against the terms actually agreed.

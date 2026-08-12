@@ -31,8 +31,8 @@ always wins over it**. All values have defaults that work for local development.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `DEFAULT_ORG_ID` | `org_sanketh` | The organization seeded automatically at bootstrap. Every other one is provisioned explicitly — see `app/provision_org.py` and [zoho-setup.md](zoho-setup.md#multiple-organizations). Each organization is a fully separate tenant: its own users, its own Zoho connection, its own decisions. |
-| `DEFAULT_ORG_NAME` | `Sanketh` | Display name for the default organization. |
+| `DEFAULT_ORG_ID` | `org_pie` | The organization seeded automatically at bootstrap. Every other one is provisioned explicitly — see `app/provision_org.py` and [zoho-setup.md](zoho-setup.md#multiple-organizations). Each organization is a fully separate tenant: its own users, its own Zoho connection, its own decisions. |
+| `DEFAULT_ORG_NAME` | `PIE` | Display name for the default organization. |
 | `DEFAULT_CURRENCY` | `INR` | Reporting currency. |
 
 ### Zoho

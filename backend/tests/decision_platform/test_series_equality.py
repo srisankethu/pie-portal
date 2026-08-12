@@ -25,7 +25,7 @@ from app.signals.aggregates import load_snapshot
 from app.state.engine import build, load
 from app.state.reducers.trade import CUSTOMER_MONTH
 
-ORG = "org_sanketh"     # the seeded org, so the API fixture can sign in
+ORG = "org_pie"     # the seeded org, so the API fixture can sign in
 
 
 class _Source:
@@ -208,7 +208,7 @@ def client(book):
     app.dependency_overrides[get_session] = lambda: book
     tc = TestClient(app)
     r = tc.post("/api/v1/auth/login",
-                json={"email": "s.menon@sanketh.in", "password": SEED_PASSWORD})
+                json={"email": "s.menon@pie.example", "password": SEED_PASSWORD})
     assert r.status_code == 200, r.text
     tc.headers.update({"Authorization": f"Bearer {r.json()['token']}"})
     return tc

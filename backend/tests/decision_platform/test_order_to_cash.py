@@ -410,8 +410,8 @@ def test_every_stage_says_whose_delay_it_is():
 
 
 # ── the endpoint ────────────────────────────────────────────────────────────
-MANAGER = "m.rao@sanketh.in"
-SALES = "r.nair@sanketh.in"
+MANAGER = "m.rao@pie.example"
+SALES = "r.nair@pie.example"
 
 
 def _api(session):

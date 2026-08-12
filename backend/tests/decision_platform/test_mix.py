@@ -397,7 +397,7 @@ def client():
     s = Maker()
     ensure_org_and_users(s)
     # One item the tariff code places, so an override has something to beat.
-    s.add(models.Product(product_id="p-tool", organization_id="org_sanketh",
+    s.add(models.Product(product_id="p-tool", organization_id="org_pie",
                          external_id="e-tool", name="CNMG 120408",
                          hsn="82071900", active=True, source_ref={}))
     s.commit()
@@ -429,7 +429,7 @@ def _auth(client, email):
 
 def test_a_hand_placed_item_beats_its_tariff_code(client):
     c, Maker = client
-    head = _auth(c, "m.rao@sanketh.in")
+    head = _auth(c, "m.rao@pie.example")
     r = c.put("/api/v1/insight/catalogue/p-tool",
               json={"category": cat.METROLOGY}, headers=head)
     assert r.status_code == 200, r.text
@@ -446,7 +446,7 @@ def test_a_hand_placed_item_beats_its_tariff_code(client):
 
 def test_clearing_an_override_lets_the_automatic_sources_speak_again(client):
     c, _ = client
-    head = _auth(c, "m.rao@sanketh.in")
+    head = _auth(c, "m.rao@pie.example")
     c.put("/api/v1/insight/catalogue/p-tool",
           json={"category": cat.METROLOGY}, headers=head)
     assert c.delete("/api/v1/insight/catalogue/p-tool",
@@ -466,13 +466,13 @@ def test_an_override_survives_the_resync_that_rebuilds_the_product(client):
     from app.domain.schemas import ProductIn, SourceRef
 
     c, Maker = client
-    head = _auth(c, "m.rao@sanketh.in")
+    head = _auth(c, "m.rao@pie.example")
     c.put("/api/v1/insight/catalogue/p-tool",
           json={"category": cat.METROLOGY}, headers=head)
 
     # Re-sync the same item: `upsert_product` rewrites every synced field.
     s = Maker()
-    ReadModelRepository(s, "org_sanketh").upsert_product(ProductIn(
+    ReadModelRepository(s, "org_pie").upsert_product(ProductIn(
         external_id="e-tool", name="CNMG 120408", hsn="82071900",
         category="Cutting Tools", active=True,
         source_ref=SourceRef(system="zoho", record_type="item", record_id="e-tool")))
@@ -489,7 +489,7 @@ def test_an_override_survives_the_resync_that_rebuilds_the_product(client):
 def test_a_salesperson_cannot_place_an_item(client):
     """Placing an item is policy — it moves every mix figure downstream."""
     c, _ = client
-    head = _auth(c, "r.nair@sanketh.in")
+    head = _auth(c, "r.nair@pie.example")
     assert c.put("/api/v1/insight/catalogue/p-tool",
                  json={"category": cat.METROLOGY}, headers=head).status_code == 403
     assert c.get("/api/v1/insight/catalogue", headers=head).status_code == 403
@@ -497,7 +497,7 @@ def test_a_salesperson_cannot_place_an_item(client):
 
 def test_an_unknown_line_is_refused_rather_than_stored(client):
     c, _ = client
-    head = _auth(c, "m.rao@sanketh.in")
+    head = _auth(c, "m.rao@pie.example")
     r = c.put("/api/v1/insight/catalogue/p-tool",
               json={"category": "NONSENSE"}, headers=head)
     assert r.status_code == 422
@@ -513,14 +513,14 @@ def test_the_list_leads_with_the_items_revenue_runs_through(client):
     from decimal import Decimal
 
     c, Maker = client
-    head = _auth(c, "m.rao@sanketh.in")
+    head = _auth(c, "m.rao@pie.example")
     s = Maker()
     for pid, rev in (("p-big", 900), ("p-small", 10)):
-        s.add(models.Product(product_id=pid, organization_id="org_sanketh",
+        s.add(models.Product(product_id=pid, organization_id="org_pie",
                              external_id=pid, name=pid, hsn=None, active=True,
                              source_ref={}))
         s.add(models.SalesTxn(
-            organization_id="org_sanketh", external_ref=f"inv-{pid}",
+            organization_id="org_pie", external_ref=f"inv-{pid}",
             customer_id="c1", product_id=pid, date=date(2026, 6, 1),
             qty=Decimal("1"), unit_price=Decimal(rev),
             line_revenue=Decimal(rev), source_ref={"record_id": f"inv-{pid}"}))
@@ -578,23 +578,23 @@ def _two_company_book(Maker):
     s = Maker()
     for cid, conn, name in (("c-sls", "conn_sls", "Amtek"),
                             ("c-4u", "conn_4u", "Pitti")):
-        s.add(models.Customer(customer_id=cid, organization_id="org_sanketh",
+        s.add(models.Customer(customer_id=cid, organization_id="org_pie",
                               external_id=cid, name=name, connection_id=conn))
     s.add_all([
         models.ZohoConnection(connection_id="conn_sls",
-                              organization_id="org_sanketh",
+                              organization_id="org_pie",
                               label="SLS Engineers", zoho_organization_id="111"),
         models.ZohoConnection(connection_id="conn_4u",
-                              organization_id="org_sanketh",
+                              organization_id="org_pie",
                               label="4U Precision", zoho_organization_id="222"),
     ])
     # Two items in different lines, so the grids genuinely differ per company.
-    s.add(models.Product(product_id="p-cool", organization_id="org_sanketh",
+    s.add(models.Product(product_id="p-cool", organization_id="org_pie",
                          external_id="e-cool", name="Cutting oil",
                          hsn="34031900", active=True, source_ref={}))
     for cid, pid in (("c-sls", "p-tool"), ("c-4u", "p-cool")):
         s.add(models.SalesTxn(
-            organization_id="org_sanketh", external_ref=f"inv-{cid}",
+            organization_id="org_pie", external_ref=f"inv-{cid}",
             customer_id=cid, product_id=pid, date=date(2026, 6, 1),
             qty=Decimal("1"), unit_price=Decimal("100"),
             line_revenue=Decimal("100"), source_ref={"record_id": f"inv-{cid}"}))
@@ -612,7 +612,7 @@ def test_the_grid_offers_every_connected_company_even_with_unstamped_rows(client
     """
     c, Maker = client
     _two_company_book(Maker)
-    head = _auth(c, "m.rao@sanketh.in")
+    head = _auth(c, "m.rao@pie.example")
 
     body = c.get("/api/v1/insight/mix", headers=head).json()
     assert [x["label"] for x in body["companies"]] == ["4U Precision",
@@ -623,7 +623,7 @@ def test_the_grid_offers_every_connected_company_even_with_unstamped_rows(client
 def test_scoping_to_a_company_restates_the_numbers_rather_than_hiding_rows(client):
     c, Maker = client
     _two_company_book(Maker)
-    head = _auth(c, "m.rao@sanketh.in")
+    head = _auth(c, "m.rao@pie.example")
 
     both = c.get("/api/v1/insight/mix", headers=head).json()
     assert both["counts"]["customers"] == 2
@@ -640,7 +640,7 @@ def test_an_unknown_company_scopes_to_nothing_rather_than_to_everything(client):
     company's name, which is worse than an empty screen."""
     c, Maker = client
     _two_company_book(Maker)
-    head = _auth(c, "m.rao@sanketh.in")
+    head = _auth(c, "m.rao@pie.example")
 
     body = c.get("/api/v1/insight/mix?connection_id=nope", headers=head).json()
     assert body.get("empty_reason")
@@ -650,7 +650,7 @@ def test_the_window_accepts_a_quarter(client):
     """3m/6m/1y are the ranges this trade actually plans in."""
     c, Maker = client
     _two_company_book(Maker)
-    head = _auth(c, "m.rao@sanketh.in")
+    head = _auth(c, "m.rao@pie.example")
 
     for months in (3, 6, 12):
         r = c.get(f"/api/v1/insight/mix?months={months}", headers=head)

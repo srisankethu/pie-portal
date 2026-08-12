@@ -1,0 +1,220 @@
+/* The public front door (Landing.tsx) — every colour and face comes from the
+   theme's emitted tokens, so this reads as the same product as the screens
+   behind the sign-in, not a marketing site bolted on. Scoped under
+   .pie-landing: these are document-flow styles and must not leak into the
+   app shell. */
+
+.pie-landing {
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-body);
+  min-height: 100vh;
+}
+.pie-landing .lp-wrap { max-width: 1080px; margin: 0 auto; padding: 0 24px; }
+.pie-landing h1, .pie-landing h2, .pie-landing h3 {
+  font-family: var(--font-heading);
+  font-weight: var(--font-heading-weight);
+  letter-spacing: 0.01em;
+}
+.pie-landing .lp-num {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+}
+.pie-landing .lp-eyebrow {
+  font-size: 12px; font-weight: 700; letter-spacing: 0.16em;
+  text-transform: uppercase; color: var(--color-accent-700); margin: 0 0 12px;
+}
+
+.pie-landing .lp-btn {
+  display: inline-block; text-align: center; font-weight: 600; font-size: 15px;
+  font-family: var(--font-body);
+  cursor: pointer; text-decoration: none;
+  padding: 12px 26px; border: 2px solid var(--color-accent-700);
+  border-radius: var(--radius-md);
+  color: var(--color-accent-800); background: transparent;
+}
+.pie-landing .lp-btn.solid { background: var(--color-accent-700); color: var(--color-bg); }
+.pie-landing .lp-btn:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+
+/* ── nav ── */
+.pie-landing .lp-nav { border-bottom: 1px solid var(--color-divider); }
+.pie-landing .lp-nav-inner { display: flex; align-items: center; gap: 28px; padding: 16px 0; }
+.pie-landing .lp-logo {
+  font-family: var(--font-heading); font-weight: 700; font-size: 22px;
+  text-decoration: none; color: var(--color-text);
+}
+.pie-landing .lp-logo span { color: var(--color-accent-700); }
+.pie-landing .lp-nav-links { display: flex; gap: 22px; margin-left: auto; align-items: center; flex-wrap: wrap; }
+.pie-landing .lp-nav-links a {
+  font-size: 14.5px; font-weight: 600; text-decoration: none;
+  color: var(--color-neutral-700);
+}
+.pie-landing .lp-nav-links a:hover { color: var(--color-text); }
+.pie-landing .lp-nav-links .lp-btn { padding: 8px 18px; font-size: 14px; }
+
+/* ── hero ── */
+.pie-landing .lp-hero { padding: 68px 0 76px; }
+.pie-landing .lp-hero-grid {
+  display: grid; grid-template-columns: 1.05fr 0.95fr; gap: 56px; align-items: center;
+}
+@media (max-width: 880px) { .pie-landing .lp-hero-grid { grid-template-columns: 1fr; } }
+.pie-landing .lp-hero h1 {
+  font-size: clamp(38px, 5.4vw, 58px); line-height: 1.02; margin: 0 0 18px;
+  text-wrap: balance;
+}
+.pie-landing .lp-hero h1 em { font-style: normal; color: var(--color-accent-700); }
+.pie-landing .lp-hero .lp-sub {
+  font-size: 18px; color: var(--color-neutral-700); max-width: 54ch; margin: 0 0 28px;
+}
+.pie-landing .lp-hero .lp-sub b { color: var(--color-text); font-weight: 600; }
+.pie-landing .lp-ctas { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
+.pie-landing .lp-fine { font-size: 13px; color: var(--color-neutral-600); margin: 14px 0 0; }
+
+/* the decision-card mock — a real card from the product, not an illustration */
+.pie-landing .lp-card {
+  background: var(--color-surface); border: 1px solid var(--color-neutral-300);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 18px 44px -24px var(--color-neutral-800);
+  padding: 22px 24px;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .pie-landing .lp-card, .pie-landing .lp-hero-copy { animation: lp-rise 0.7s ease-out both; }
+  .pie-landing .lp-card { animation-delay: 0.12s; }
+}
+@keyframes lp-rise { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+.pie-landing .lp-chip {
+  font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
+  padding: 4px 10px; border-radius: 999px; display: inline-block;
+}
+.pie-landing .lp-chip.alert { background: var(--danger-fg); color: var(--color-bg); }
+.pie-landing .lp-chip.kind { background: var(--color-accent-100); color: var(--color-accent-800); }
+.pie-landing .lp-card-top { display: flex; gap: 10px; flex-wrap: wrap; }
+.pie-landing .lp-card h3 { font-size: 19px; margin: 14px 0 6px; }
+.pie-landing .lp-card .lp-card-body { font-size: 14px; color: var(--color-neutral-700); margin: 0 0 16px; }
+.pie-landing .lp-card .lp-card-body b { color: var(--color-text); font-weight: 600; }
+.pie-landing .lp-facts {
+  display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px;
+  border-top: 1px solid var(--color-divider); padding-top: 14px;
+}
+.pie-landing .lp-fact .k {
+  font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--color-neutral-600);
+}
+.pie-landing .lp-fact .v { font-size: 17px; font-weight: 600; }
+.pie-landing .lp-fact .v.down { color: var(--danger-fg); }
+.pie-landing .lp-actions { display: flex; gap: 10px; margin-top: 14px; }
+.pie-landing .lp-actions span {
+  font-size: 13px; font-weight: 600; color: var(--color-accent-800);
+  border: 1px solid var(--color-neutral-300); border-radius: var(--radius-md);
+  padding: 7px 14px;
+}
+.pie-landing .lp-prov {
+  margin-top: 16px; padding-top: 12px; border-top: 1px dashed var(--color-neutral-300);
+  font-size: 11.5px; color: var(--color-neutral-600);
+}
+
+/* ── proof strip ── */
+.pie-landing .lp-proof {
+  border-top: 1px solid var(--color-divider); border-bottom: 1px solid var(--color-divider);
+  background: var(--color-accent-100);
+}
+.pie-landing .lp-proof-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 8px 28px; padding: 24px 0; text-align: center;
+}
+.pie-landing .lp-proof-grid .v { font-size: 22px; font-weight: 700; font-family: var(--font-heading); }
+.pie-landing .lp-proof-grid .k { font-size: 12.5px; color: var(--color-neutral-700); }
+
+/* ── sections ── */
+.pie-landing section { padding: 76px 0 0; }
+.pie-landing .lp-sec-head { max-width: 62ch; margin-bottom: 36px; }
+.pie-landing .lp-sec-head h2 {
+  font-size: clamp(26px, 3.6vw, 36px); margin: 0 0 12px; line-height: 1.12; text-wrap: balance;
+}
+.pie-landing .lp-sec-head p { font-size: 16px; color: var(--color-neutral-700); margin: 0; }
+.pie-landing .lp-sec-head p b { color: var(--color-text); font-weight: 600; }
+
+.pie-landing .lp-two { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+@media (max-width: 720px) { .pie-landing .lp-two { grid-template-columns: 1fr; } }
+.pie-landing .lp-panel {
+  border: 1px solid var(--color-neutral-300); background: var(--color-surface);
+  border-radius: var(--radius-lg); padding: 26px;
+}
+.pie-landing .lp-panel h3 { font-size: 20px; margin: 0 0 10px; }
+.pie-landing .lp-panel p { font-size: 14.5px; color: var(--color-neutral-700); margin: 0; }
+.pie-landing .lp-panel p b { color: var(--color-text); font-weight: 600; }
+.pie-landing .lp-tag {
+  color: var(--danger-fg); font-weight: 700; font-size: 12px;
+  letter-spacing: 0.12em; text-transform: uppercase; display: block; margin-bottom: 12px;
+}
+
+.pie-landing .lp-grid3 {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(290px, 1fr)); gap: 22px;
+}
+.pie-landing .lp-feat {
+  border-top: 3px solid var(--color-accent-500);
+  border-left: 1px solid var(--color-neutral-300);
+  border-right: 1px solid var(--color-neutral-300);
+  border-bottom: 1px solid var(--color-neutral-300);
+  background: var(--color-surface);
+  border-radius: 0 0 var(--radius-md) var(--radius-md);
+  padding: 22px;
+}
+.pie-landing .lp-feat h3 { font-size: 18px; margin: 0 0 8px; }
+.pie-landing .lp-feat p { font-size: 14.5px; color: var(--color-neutral-700); margin: 0; }
+.pie-landing .lp-feat p b { color: var(--color-text); font-weight: 600; }
+
+.pie-landing .lp-steps { counter-reset: lp-step; }
+.pie-landing .lp-step {
+  background: var(--color-accent-100); border: 1px solid var(--color-neutral-300);
+  border-radius: var(--radius-lg); padding: 24px; counter-increment: lp-step;
+}
+.pie-landing .lp-step::before {
+  content: counter(lp-step);
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 34px; height: 34px; border-radius: 999px;
+  background: var(--color-accent-700); color: var(--color-bg);
+  font-weight: 700; font-size: 16px; margin-bottom: 12px;
+  font-family: var(--font-heading);
+}
+.pie-landing .lp-step h3 { font-size: 18px; margin: 0 0 8px; }
+.pie-landing .lp-step p { font-size: 14.5px; color: var(--color-neutral-700); margin: 0; }
+.pie-landing .lp-step p b { color: var(--color-text); font-weight: 600; }
+
+/* the invariant — the page's one dramatic moment */
+.pie-landing .lp-invariant { background: var(--color-neutral-900); color: var(--color-neutral-100); margin-top: 76px; }
+.pie-landing .lp-invariant .lp-wrap { padding-top: 64px; padding-bottom: 64px; }
+.pie-landing .lp-invariant .lp-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; align-items: start; }
+@media (max-width: 760px) { .pie-landing .lp-invariant .lp-cols { grid-template-columns: 1fr; } }
+.pie-landing .lp-invariant h2 {
+  font-size: clamp(26px, 3.8vw, 40px); line-height: 1.12; margin: 0 0 16px;
+  max-width: 24ch; text-wrap: balance; color: var(--color-neutral-100);
+}
+.pie-landing .lp-invariant h2 em { font-style: normal; color: var(--color-accent-300); }
+.pie-landing .lp-invariant .lp-eyebrow { color: var(--color-accent-300); }
+.pie-landing .lp-invariant p { font-size: 16px; color: var(--color-neutral-300); max-width: 64ch; margin: 0 0 10px; }
+.pie-landing .lp-invariant ul { list-style: none; margin: 8px 0 0; padding: 0; font-size: 15px; }
+.pie-landing .lp-invariant li { padding: 9px 0 9px 26px; position: relative; color: var(--color-neutral-200); }
+.pie-landing .lp-invariant li::before {
+  content: ""; position: absolute; left: 0; top: 17px;
+  width: 12px; height: 4px; background: var(--color-accent-300);
+}
+.pie-landing .lp-invariant li b { color: var(--color-neutral-100); }
+
+/* pricing teaser */
+.pie-landing .lp-plan { text-align: left; }
+.pie-landing .lp-plan.mid { border: 2px solid var(--color-accent-700); }
+.pie-landing .lp-plan .p { font-size: 24px; font-weight: 700; }
+.pie-landing .lp-plan .p small { font-size: 13px; font-weight: 400; color: var(--color-neutral-600); }
+.pie-landing .lp-plan h3 { margin-bottom: 2px; }
+.pie-landing .lp-pricing-note { margin-top: 20px; font-size: 14px; color: var(--color-neutral-600); }
+
+/* final CTA + footer */
+.pie-landing .lp-final { text-align: center; padding: 88px 0; }
+.pie-landing .lp-final h2 { font-size: clamp(28px, 4vw, 42px); margin: 0 0 12px; }
+.pie-landing .lp-final p { color: var(--color-neutral-700); font-size: 17px; margin: 0 0 26px; }
+.pie-landing .lp-footer {
+  border-top: 1px solid var(--color-divider); padding: 28px 0 40px;
+  font-size: 13.5px; color: var(--color-neutral-600);
+}
+.pie-landing .lp-footer .lp-wrap { display: flex; flex-wrap: wrap; gap: 10px 32px; justify-content: space-between; }

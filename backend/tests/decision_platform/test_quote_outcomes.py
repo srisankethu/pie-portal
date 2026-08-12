@@ -32,12 +32,12 @@ from app.domain.enums import LOSS_REASON_NOT_RECORDED, QuoteLossReason
 from app.routers import insight, platform_auth, quote_intelligence
 from app.seed import SEED_PASSWORD, ensure_org_and_users
 
-ORG = "org_sanketh"
+ORG = "org_pie"
 AS_OF = date(2026, 7, 1)
 
-OWNER = "s.menon@sanketh.in"
-MANAGER = "m.rao@sanketh.in"
-SALES = "r.nair@sanketh.in"
+OWNER = "s.menon@pie.example"
+MANAGER = "m.rao@pie.example"
+SALES = "r.nair@pie.example"
 
 
 def _quote(quote_id: str, *, won: bool, days_ago: int = 10,

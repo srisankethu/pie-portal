@@ -199,9 +199,9 @@ Sign in with **any password**:
 
 | Email | Role | What they see |
 |---|---|---|
-| `r.nair@sanketh.in` | Salesperson | Only their assigned customers. **No cost or margin anywhere** — those facts are removed server-side, not hidden in the UI. 2 open decisions. |
-| `m.rao@sanketh.in` | Sales manager | The whole organization, including margin and cost pass-through. 5 open decisions. |
-| `s.menon@sanketh.in` | Owner | Everything the manager sees, plus the AI cost/health metrics endpoint. 5 open decisions. |
+| `r.nair@pie.example` | Salesperson | Only their assigned customers. **No cost or margin anywhere** — those facts are removed server-side, not hidden in the UI. 2 open decisions. |
+| `m.rao@pie.example` | Sales manager | The whole organization, including margin and cost pass-through. 5 open decisions. |
+| `s.menon@pie.example` | Owner | Everything the manager sees, plus the AI cost/health metrics endpoint. 5 open decisions. |
 
 Worth doing on your first run, in this order:
 

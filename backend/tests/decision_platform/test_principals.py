@@ -267,7 +267,7 @@ def client():
                          future=True)
     s = Maker()
     ensure_org_and_users(s)
-    org = "org_sanketh"
+    org = "org_pie"
     s.add(models.Vendor(vendor_id="v_ken", organization_id=org,
                         external_id="ev1", name="Kennametal India Limited"))
     # Three items, one per state the resolver distinguishes.
@@ -319,7 +319,7 @@ def client():
     return TestClient(app)
 
 
-def _auth(client, email="m.rao@sanketh.in"):
+def _auth(client, email="m.rao@pie.example"):
     from app.seed import SEED_PASSWORD
     r = client.post("/api/v1/auth/login",
                     json={"email": email, "password": SEED_PASSWORD})

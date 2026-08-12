@@ -5,17 +5,17 @@ Derived metrics are disposable: they are computed from the ``sales_txns`` and
 requires a Zoho re-sync. This rebuilds them.
 
     # whole organization
-    python -m app.commercial.backfill --org org_sanketh
+    python -m app.commercial.backfill --org org_pie
 
     # one customer
-    python -m app.commercial.backfill --org org_sanketh --customer <customer_id>
+    python -m app.commercial.backfill --org org_pie --customer <customer_id>
 
     # see what would happen, change nothing
-    python -m app.commercial.backfill --org org_sanketh --dry-run
+    python -m app.commercial.backfill --org org_pie --dry-run
 
     # rebuild metrics without emitting signals (e.g. re-deriving after a
     # threshold change, when the decision queue should not move)
-    python -m app.commercial.backfill --org org_sanketh --no-signals
+    python -m app.commercial.backfill --org org_pie --no-signals
 
 Idempotent: metric rows are upserted on (organization, customer, product), so
 running it twice produces the same rows. It never deletes or duplicates a source

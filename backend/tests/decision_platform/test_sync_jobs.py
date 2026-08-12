@@ -27,9 +27,9 @@ from app.ingestion import jobs
 from app.routers import data_status, platform_auth
 from app.seed import SEED_PASSWORD, ensure_org_and_users
 
-ORG = "org_sanketh"
-OWNER = "s.menon@sanketh.in"
-SALES = "r.nair@sanketh.in"
+ORG = "org_pie"
+OWNER = "s.menon@pie.example"
+SALES = "r.nair@pie.example"
 
 
 class Empty:

@@ -31,7 +31,7 @@ from app.routers import connections as cr, data_status, platform_auth
 from app.schema_check import describe, missing_columns
 from app.seed import SEED_PASSWORD, ensure_org_and_users
 
-OWNER = "s.menon@sanketh.in"
+OWNER = "s.menon@pie.example"
 
 
 def _app(engine):

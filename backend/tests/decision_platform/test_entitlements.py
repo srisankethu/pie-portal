@@ -177,7 +177,7 @@ def client():
     return TestClient(app), Maker
 
 
-def _hdr(client, email="s.menon@sanketh.in"):
+def _hdr(client, email="s.menon@pie.example"):
     r = client.post("/api/v1/auth/login",
                     json={"email": email, "password": SEED_PASSWORD})
     assert r.status_code == 200, r.text
@@ -196,7 +196,7 @@ def test_a_free_org_is_refused_in_plan_language_and_a_paid_one_passes(
     assert "Quote Desk" in r.json()["detail"]
 
     s = Maker()
-    entitlements.set_plan(s, "org_sanketh", PlanTier.INTELLIGENCE)
+    entitlements.set_plan(s, "org_pie", PlanTier.INTELLIGENCE)
     s.commit()
     s.close()
     assert tc.get("/api/v1/decisions", headers=hdr).status_code == 200

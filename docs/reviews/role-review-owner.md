@@ -1,17 +1,17 @@
 # Role review — Business Owner
 
-Reviewer: automated end-to-end review, signed in only as `s.menon@sanketh.in`
-(role `OWNER`, `usr_owner`, org `org_sanketh`). Review date **2026-08-08**;
+Reviewer: automated end-to-end review, signed in only as `s.menon@pie.example`
+(role `OWNER`, `usr_owner`, org `org_pie`). Review date **2026-08-08**;
 demo history is anchored at 2026-07-22, so "recent" windows are ~2.5 weeks
 stale by design and that is not reported as a defect anywhere below.
 
-Manager (`m.rao@sanketh.in`) and salesperson (`r.nair@sanketh.in`) tokens were
+Manager (`m.rao@pie.example`) and salesperson (`r.nair@pie.example`) tokens were
 minted **only as setup** — to raise a below-cost request for the owner to sign,
 and to prove that a policy the owner changed is visible to the roles it
 governs. Neither role is the subject of this review.
 
 Password changed through the UI during the review, as the brief asked:
-**`s.menon@sanketh.in`** — password changed from the seed default during this
+**`s.menon@pie.example`** — password changed from the seed default during this
 review; the value is not recorded here and has since been rotated again.
 
 
@@ -368,7 +368,7 @@ at all (finding 3), and `/trust/disclosure` names a model that was never called
 
 **F1 — Nothing forces the seeded default password to be changed. CONFIRMED.**
 `POST /api/v1/auth/login` returns `must_change_password: true` for
-`s.menon@sanketh.in`, and the app signs straight through to the dashboard
+`s.menon@pie.example`, and the app signs straight through to the dashboard
 (`/tmp/shots/02-after-initial-signin.png`). There is no interstitial:
 `PlatformApp.tsx:340` is `if (!session) return <SignIn …>` and nothing else
 consults the flag. The only frontend readers are `AdminScreens.tsx:944`, which
@@ -676,7 +676,7 @@ Row counts checked in `backend/data/platform.db` before calling anything empty.
   records converging on one identity. F16 is what I found instead, and it is a
   narrower point: records with no GSTIN are never eligible for matching at all.
 * **The three legal entities.** SLS Engineers, 4U Precision and UPS do not exist
-  as data — one organization (`org_sanketh`) is seeded and `/connections` is
+  as data — one organization (`org_pie`) is seeded and `/connections` is
   empty. Multi-entity behaviour, and the company filter's real job, are untested.
 * **A real AI provider.** Everything ran on the offline `mock`/`mock-1`. The
   grounding gate's rejection paths (`UNGROUNDED_NUMBER`, `SCALE_VIOLATION`) and

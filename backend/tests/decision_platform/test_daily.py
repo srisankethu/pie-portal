@@ -330,7 +330,7 @@ def test_the_morning_read_is_reachable_over_http(api_client):
     call site, because depth is not what was missing.
     """
     token = api_client.post("/api/v1/auth/login", json={
-        "email": "s.menon@sanketh.in", "password": "change-me-now"}).json()["token"]
+        "email": "s.menon@pie.example", "password": "change-me-now"}).json()["token"]
 
     r = api_client.get("/api/v1/insight/daily",
                        headers={"Authorization": f"Bearer {token}"})

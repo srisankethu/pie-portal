@@ -22,7 +22,7 @@ from app.domain.enums import HumanAction, Role
 from app.repositories import DecisionRepository
 from app.seed import ensure_org_and_users
 
-ORG = "org_sanketh"  # settings.DEFAULT_ORG_ID
+ORG = "org_pie"  # settings.DEFAULT_ORG_ID
 AS_OF = date(2026, 7, 22)
 
 
@@ -79,12 +79,12 @@ def seeded(session):
 
 def _sales(session) -> Principal:
     return Principal(user_id="usr_sales", organization_id=ORG, role=Role.SALESPERSON,
-                     name="R. Nair", email="r.nair@sanketh.in")
+                     name="R. Nair", email="r.nair@pie.example")
 
 
 def _manager(session) -> Principal:
     return Principal(user_id="usr_manager", organization_id=ORG, role=Role.SALES_MANAGER,
-                     name="M. Rao", email="m.rao@sanketh.in")
+                     name="M. Rao", email="m.rao@pie.example")
 
 
 def _all_labels(resp) -> set[str]:

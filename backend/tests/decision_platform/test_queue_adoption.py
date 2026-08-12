@@ -211,9 +211,9 @@ def test_queue_metrics_is_owner_only(api_client):
         return api_client.post("/api/v1/auth/login", json={
             "email": email, "password": "change-me-now"}).json()["token"]
 
-    for email, expected in (("r.nair@sanketh.in", 403),
-                            ("m.rao@sanketh.in", 403),
-                            ("s.menon@sanketh.in", 200)):
+    for email, expected in (("r.nair@pie.example", 403),
+                            ("m.rao@pie.example", 403),
+                            ("s.menon@pie.example", 200)):
         r = api_client.get("/api/v1/internal/queue-adoption",
                            headers={"Authorization": f"Bearer {token(email)}"})
         assert r.status_code == expected, f"{email}: {r.status_code}"
@@ -222,7 +222,7 @@ def test_queue_metrics_is_owner_only(api_client):
 def test_queue_metrics_reports_both_windows_on_an_empty_book(api_client):
     """Empty is a legitimate answer and must not be an error or a zero rate."""
     token = api_client.post("/api/v1/auth/login", json={
-        "email": "s.menon@sanketh.in", "password": "change-me-now"}).json()["token"]
+        "email": "s.menon@pie.example", "password": "change-me-now"}).json()["token"]
 
     body = api_client.get("/api/v1/internal/queue-adoption",
                           headers={"Authorization": f"Bearer {token}"}).json()

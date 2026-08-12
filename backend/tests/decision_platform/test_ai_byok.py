@@ -173,7 +173,7 @@ def _hdr(client, email):
     return {"Authorization": f"Bearer {r.json()['token']}"}
 
 
-@pytest.mark.parametrize("email", ["m.rao@sanketh.in", "r.nair@sanketh.in"])
+@pytest.mark.parametrize("email", ["m.rao@pie.example", "r.nair@pie.example"])
 def test_only_an_owner_touches_ai_keys(client, email):
     hdr = _hdr(client, email)
     assert client.get("/api/v1/ai/providers", headers=hdr).status_code == 403
@@ -186,7 +186,7 @@ def test_the_surface_needs_a_token_at_all(client):
 
 
 def test_a_saved_key_never_appears_in_any_response(client):
-    hdr = _hdr(client, "s.menon@sanketh.in")
+    hdr = _hdr(client, "s.menon@pie.example")
     secret = "sk-live-do-not-echo-Zx9Qw7"
 
     r = client.put("/api/v1/ai/providers/anthropic", headers=hdr,
@@ -205,7 +205,7 @@ def test_the_full_lifecycle_over_http(client, monkeypatch):
 
     monkeypatch.setattr(settings, "AI_PROVIDER", "mock")
     monkeypatch.setattr(settings, "GEMINI_API_KEY", "")
-    hdr = _hdr(client, "s.menon@sanketh.in")
+    hdr = _hdr(client, "s.menon@pie.example")
 
     # Choosing a provider before any key exists anywhere is refused.
     r = client.put("/api/v1/ai/active", headers=hdr, json={"provider": "gemini"})
@@ -230,7 +230,7 @@ def test_the_full_lifecycle_over_http(client, monkeypatch):
 
 
 def test_the_test_button_reports_without_echoing_the_key(client, monkeypatch):
-    hdr = _hdr(client, "s.menon@sanketh.in")
+    hdr = _hdr(client, "s.menon@pie.example")
     client.put("/api/v1/ai/providers/openai", headers=hdr,
                json={"api_key": "sk-test-ping-1"})
 

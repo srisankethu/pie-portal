@@ -58,7 +58,7 @@ def _head(client):
     from app.seed import SEED_PASSWORD
 
     r = client.post("/api/v1/auth/login",
-                    json={"email": "s.menon@sanketh.in", "password": SEED_PASSWORD})
+                    json={"email": "s.menon@pie.example", "password": SEED_PASSWORD})
     assert r.status_code == 200, r.text
     return {"Authorization": f"Bearer {r.json()['token']}"}
 

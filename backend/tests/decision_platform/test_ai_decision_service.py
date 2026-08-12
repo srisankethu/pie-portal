@@ -24,7 +24,7 @@ from .signal_fixtures import (
     margin_deterioration_product,
 )
 
-ORG = "org_sanketh"
+ORG = "org_pie"
 
 
 def _seed_readmodel(session, org=ORG, assign="usr_sales", prefix=""):
@@ -174,8 +174,8 @@ def test_generate_endpoint_rbac(client):
                            json={"email": email, "password": SEED_PASSWORD}).json()["token"]
 
     assert client.post("/api/v1/internal/decisions/generate",
-                       headers={"Authorization": f"Bearer {tok('r.nair@sanketh.in')}"}
+                       headers={"Authorization": f"Bearer {tok('r.nair@pie.example')}"}
                        ).status_code == 403
     r = client.post("/api/v1/internal/decisions/generate",
-                    headers={"Authorization": f"Bearer {tok('s.menon@sanketh.in')}"})
+                    headers={"Authorization": f"Bearer {tok('s.menon@pie.example')}"})
     assert r.status_code == 200 and r.json()["created"] >= 4

@@ -259,7 +259,7 @@ no changes required. Connecting that organization from the app (or via the
 ## Multiple organizations
 
 Each Zoho connection is a **fully separate tenant** — its own users, its own
-decision queue, no data crosses between them. This is how Sanketh's several
+decision queue, no data crosses between them. This is how PIE's several
 legal entities (each its own Zoho Books account) run on one deployment without
 their numbers ever mixing.
 
@@ -337,7 +337,7 @@ the window again from scratch.
 ```bash
 TOKEN=$(curl -s -X POST localhost:8000/api/v1/auth/login \
   -H 'Content-Type: application/json' \
-  -d '{"email":"s.menon@sanketh.in","password":"demo"}' | jq -r .token)
+  -d '{"email":"s.menon@pie.example","password":"demo"}' | jq -r .token)
 
 curl -s localhost:8000/api/v1/internal/zoho/check -H "Authorization: Bearer $TOKEN" | jq
 ```

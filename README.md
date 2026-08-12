@@ -77,9 +77,9 @@ rule.
 
 | Email | Role | Sees |
 |---|---|---|
-| `r.nair@sanketh.in` | Salesperson | Own customers; **no cost or margin** |
-| `m.rao@sanketh.in` | Sales manager | Whole organization + economics |
-| `s.menon@sanketh.in` | Owner | The above + AI cost/health metrics |
+| `r.nair@pie.example` | Salesperson | Own customers; **no cost or margin** |
+| `m.rao@pie.example` | Sales manager | Whole organization + economics |
+| `s.menon@pie.example` | Owner | The above + AI cost/health metrics |
 
 On Windows, or if anything goes wrong, see
 [getting-started.md](docs/getting-started.md).

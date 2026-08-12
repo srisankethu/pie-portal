@@ -24,10 +24,10 @@ from app.ingestion import connections as conn
 from app.routers import admin, connections as connections_router, platform_auth
 from app.seed import SEED_PASSWORD, ensure_org_and_users
 
-ORG = "org_sanketh"
-OWNER = "s.menon@sanketh.in"
-MANAGER = "m.rao@sanketh.in"
-SALES = "r.nair@sanketh.in"
+ORG = "org_pie"
+OWNER = "s.menon@pie.example"
+MANAGER = "m.rao@pie.example"
+SALES = "r.nair@pie.example"
 
 
 @pytest.fixture()

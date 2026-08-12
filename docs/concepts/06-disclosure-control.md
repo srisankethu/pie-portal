@@ -49,7 +49,7 @@ exactly what happened with MFLOOR, and exactly what happened again below.
 
 ## 2. The enumeration
 
-Salesperson role, `org_sanketh`. Each row: what one request gives, what
+Salesperson role, `org_pie`. Each row: what one request gives, what
 repetition turns it into, and what it cost the attacker before the fix.
 
 | # | Channel | One request | Under repetition | Cost | Status |

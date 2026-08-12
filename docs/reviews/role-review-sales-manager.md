@@ -1,6 +1,6 @@
 # Role review — Sales manager
 
-**Role tested:** `SALES_MANAGER` · `m.rao@sanketh.in` · user id `usr_manager`
+**Role tested:** `SALES_MANAGER` · `m.rao@pie.example` · user id `usr_manager`
 **Reviewed:** 2026-08-08 · commit `9f9b7e8`
 **Method:** real browser (Chromium via Playwright) against `localhost:5173`, with the
 API at `localhost:8000` used to probe boundaries and to recompute figures.
@@ -9,7 +9,7 @@ Screenshots under `/tmp/shots/` (not committed) are cited per finding.
 > **Credential note.** `must_change_password` was true on first sign-in. I changed
 > the password through Settings → Your account. The value it was set to is not
 > recorded here and has since been rotated again. The salesperson account
-> `r.nair@sanketh.in` was left on `change-me-now`; it was used only to raise
+> `r.nair@pie.example` was left on `change-me-now`; it was used only to raise
 > approval requests for me to act on.
 
 
@@ -358,7 +358,7 @@ Login returns `must_change_password: true` **and a fully working token in the sa
 response**. I used that token before changing anything:
 
 ```
-POST /api/v1/auth/login {"email":"m.rao@sanketh.in","password":"change-me-now"}
+POST /api/v1/auth/login {"email":"m.rao@pie.example","password":"change-me-now"}
   → 200  must_change_password: true
 GET  /api/v1/decisions  (that token)
   → 200  [full decision list]

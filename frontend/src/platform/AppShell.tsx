@@ -263,7 +263,7 @@ export default function AppShell({
               whiteSpace: "nowrap",
             }}
           >
-            Sanketh · Decisions
+            PIE · Decisions
           </Typography>
           <Box sx={{ flex: 1 }} />
           {/* No role switcher. A user has exactly one role, it comes from their
@@ -336,7 +336,7 @@ export function BrandMark({ tip }: { tip?: string }) {
         fontSize: 15,
       }}
     >
-      Sanketh · Decisions
+      PIE · Decisions
     </Typography>
   );
   return tip ? <Tooltip title={tip}>{mark}</Tooltip> : mark;

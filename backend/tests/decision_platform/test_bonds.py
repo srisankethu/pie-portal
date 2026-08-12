@@ -42,8 +42,8 @@ AS_OF = date(2026, 8, 7)
 
 #: The seeded accounts these role tests sign in as. Named rather than
 #: repeated, so a change to the seed is one edit and not four.
-SALESPERSON = "r.nair@sanketh.in"
-MANAGER = "m.rao@sanketh.in"
+SALESPERSON = "r.nair@pie.example"
+MANAGER = "m.rao@pie.example"
 
 #: The lines of the business, and the one most of these fixtures trade in.
 FIVE_LINES = list(categories.ORDER)

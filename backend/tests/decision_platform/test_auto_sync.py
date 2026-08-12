@@ -206,8 +206,8 @@ def _hdr(c, email):
 def test_the_cadence_is_readable_by_all_and_settable_by_managers(client, monkeypatch):
     monkeypatch.setattr(settings, "ZOHO_SOURCE", "fixture")
     monkeypatch.setattr(settings, "SYNC_AUTO_HOURS", 6)
-    owner = _hdr(client, "s.menon@sanketh.in")
-    sales = _hdr(client, "r.nair@sanketh.in")
+    owner = _hdr(client, "s.menon@pie.example")
+    sales = _hdr(client, "r.nair@pie.example")
 
     body = client.get("/api/v1/data/status", headers=sales).json()
     assert body["auto_sync"]["hours"] == 6

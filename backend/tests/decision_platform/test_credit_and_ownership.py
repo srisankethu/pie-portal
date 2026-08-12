@@ -166,8 +166,8 @@ def _api(session):
     return client, token
 
 
-MANAGER = "m.rao@sanketh.in"
-SALESPERSON = "r.nair@sanketh.in"
+MANAGER = "m.rao@pie.example"
+SALESPERSON = "r.nair@pie.example"
 SALES_USER = "usr_sales"
 
 
@@ -199,7 +199,7 @@ def test_a_credit_limit_survives_a_resync(book):
 
     ok = client.put("/api/v1/insight/credit-limits",
                     json={"customer_id": customer, "amount": "500000",
-                          "note": "agreed with Sanketh, Apr 2026"},
+                          "note": "agreed with PIE, Apr 2026"},
                     headers=token(MANAGER))
     assert ok.status_code == 200, ok.text
     assert ok.json()["limit"] == 500000.0
@@ -209,7 +209,7 @@ def test_a_credit_limit_survives_a_resync(book):
 
     row = book.query(models.CustomerCreditLimit).one()
     assert Decimal(str(row.amount)) == Decimal("500000")
-    assert row.note == "agreed with Sanketh, Apr 2026"
+    assert row.note == "agreed with PIE, Apr 2026"
     assert row.set_by_user_id == "usr_manager"
 
 

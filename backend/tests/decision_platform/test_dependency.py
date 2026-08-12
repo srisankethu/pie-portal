@@ -321,7 +321,7 @@ def client():
                          future=True)
     s = Maker()
     ensure_org_and_users(s)
-    org = "org_sanketh"
+    org = "org_pie"
     for conn, label in (("c_sls", "SLS Engineers"), ("c_4u", "4U Precision")):
         s.add(models.ZohoConnection(connection_id=conn, organization_id=org,
                                     label=label, zoho_organization_id=conn))
@@ -375,7 +375,7 @@ def client():
 def _head(client):
     from app.seed import SEED_PASSWORD
     r = client.post("/api/v1/auth/login",
-                    json={"email": "m.rao@sanketh.in", "password": SEED_PASSWORD})
+                    json={"email": "m.rao@pie.example", "password": SEED_PASSWORD})
     assert r.status_code == 200, r.text
     return {"Authorization": f"Bearer {r.json()['token']}"}
 
@@ -636,7 +636,7 @@ def test_a_salesperson_is_shown_the_receivables_half(client):
     purchase cost by another name."""
     from app.seed import SEED_PASSWORD
     r = client.post("/api/v1/auth/login",
-                    json={"email": "r.nair@sanketh.in", "password": SEED_PASSWORD})
+                    json={"email": "r.nair@pie.example", "password": SEED_PASSWORD})
     assert r.status_code == 200, r.text
     body = _dep(client, {"Authorization": f"Bearer {r.json()['token']}"})
     assert body["vendors"] is None          # purchase spend, withheld

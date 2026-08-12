@@ -35,6 +35,7 @@ import {
 } from "./route";
 import AppShell, { type NavItem } from "./AppShell";
 import { SignInCard } from "../SignInCard";
+import { Landing } from "../landing/Landing";
 import { abilityFor } from "./ability";
 import { Seg } from "./viz/Seg";
 import { money } from "../money";
@@ -286,6 +287,11 @@ function ActionModal({
 export default function PlatformApp() {
   const { enqueueSnackbar, closeSnackbar } = useSnackbar();
   const [session, setSession] = useState<PlatformSession | null>(loadPlatformSession());
+  // Signed out, there are two doors: the public landing page (the default) and
+  // the sign-in card one click behind it. State rather than a route on purpose
+  // — a person deep-linked to any screen should land on the landing page, not
+  // on a bare form, and the URL they wanted is preserved for after sign-in.
+  const [door, setDoor] = useState<"landing" | "signin">("landing");
   // The URL is the screen, so Back, reload and shareable links all work. React
   // Router owns the matching; `screen` is only what the nav highlights, which is
   // a different question — a decision detail has no nav item of its own.
@@ -341,6 +347,8 @@ export default function PlatformApp() {
     setSummaries(null);
     setDetails({});
     setError(null);
+    // Back to the public front, not to a bare form: signing out is leaving.
+    setDoor("landing");
   }, []);
 
   /** A dead session must return the user to sign-in, not strand them inside
@@ -477,7 +485,26 @@ export default function PlatformApp() {
     [summaries],
   );
 
-  if (!session) return <SignIn onIn={signIn} notice={notice} />;
+  if (!session) {
+    // The landing page is the public front; the sign-in card is one click
+    // behind it. An expired session skips the landing — that person was
+    // already inside, and what they need is the door, with the notice saying
+    // why they are looking at it again.
+    if (door !== "signin" && !notice) {
+      return <Landing onEnter={() => setDoor("signin")} />;
+    }
+    return (
+      <>
+        <Button
+          onClick={() => { setDoor("landing"); setNotice(null); }}
+          sx={{ position: "fixed", top: 14, left: 14, color: "text.secondary" }}
+        >
+          ← Back
+        </Button>
+        <SignIn onIn={signIn} notice={notice} />
+      </>
+    );
+  }
 
   // An account still holding the password it was issued reaches nothing else —
   // the server refuses every request but the change, so showing the shell would

@@ -25,7 +25,7 @@ from app.repositories import DecisionRepository, SignalRepository
 from app.routers import internal, platform_auth
 from app.seed import SEED_PASSWORD, ensure_org_and_users
 
-ORG = "org_sanketh"
+ORG = "org_pie"
 DECLINE = "CUSTOMER_DECLINE"
 MARGIN = "MARGIN_DETERIORATION"
 
@@ -227,13 +227,13 @@ def _token(client, email):
 
 def test_endpoint_is_owner_only(client):
     r = client.get("/api/v1/internal/detector-outcomes",
-                   headers={"Authorization": f"Bearer {_token(client, 'r.nair@sanketh.in')}"})
+                   headers={"Authorization": f"Bearer {_token(client, 'r.nair@pie.example')}"})
     assert r.status_code == 403
 
 
 def test_endpoint_returns_both_windows_for_an_owner(client):
     r = client.get("/api/v1/internal/detector-outcomes",
-                   headers={"Authorization": f"Bearer {_token(client, 's.menon@sanketh.in')}"})
+                   headers={"Authorization": f"Bearer {_token(client, 's.menon@pie.example')}"})
     assert r.status_code == 200
     body = r.json()
     assert set(body["windows"]) == {"7d", "30d"}

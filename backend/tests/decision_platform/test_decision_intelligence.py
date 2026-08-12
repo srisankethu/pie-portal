@@ -37,7 +37,7 @@ from app.state.replay import replay
 
 #: The seeded organization, so the API fixture below signs in as a real
 #: user of the same book the detectors ran over.
-ORG = "org_sanketh"
+ORG = "org_pie"
 
 #: The day this book is read on — the *business* date, never the machine's.
 #:
@@ -875,7 +875,7 @@ def api(session):
 
 
 def _card(api, decision_type: str) -> dict:
-    owner = api.hdr("s.menon@sanketh.in")
+    owner = api.hdr("s.menon@pie.example")
     rows = api.get("/api/v1/decisions", headers=owner).json()
     row = next(r for r in rows if r["decision_type"] == decision_type)
     return api.get(f"/api/v1/decisions/{row['decision_id']}/detail",
@@ -932,7 +932,7 @@ def test_a_signal_card_is_unchanged_by_any_of_this(api, session):
         ai={"status": "OK", "title": "T", "explanation": "E"}))
     session.commit()
 
-    owner = api.hdr("s.menon@sanketh.in")
+    owner = api.hdr("s.menon@pie.example")
     rows = api.get("/api/v1/decisions", headers=owner).json()
     row = next(r for r in rows
                if r["decision_type"] == DecisionType.CUSTOMER_DECLINE.value)
@@ -946,7 +946,7 @@ def test_a_signal_card_is_unchanged_by_any_of_this(api, session):
 
 # ── decision → impact → state → transition → event → ERP ────────────────────
 def test_the_drill_down_walks_all_the_way_to_an_erp_record(api):
-    owner = api.hdr("s.menon@sanketh.in")
+    owner = api.hdr("s.menon@pie.example")
     rows = api.get("/api/v1/decisions", headers=owner).json()
     row = next(r for r in rows
                if r["decision_type"] == DecisionType.INV_DEAD_STOCK.value)
@@ -980,7 +980,7 @@ def test_the_drill_down_walks_all_the_way_to_an_erp_record(api):
 def test_the_drill_down_reaches_the_bill_the_purchase_rate_came_from(api):
     """The claim the whole chain exists to support: the ₹5,00,000 on the card
     is 1,000 × 500, and the 500 came from a bill with a number on it."""
-    owner = api.hdr("s.menon@sanketh.in")
+    owner = api.hdr("s.menon@pie.example")
     rows = api.get("/api/v1/decisions", headers=owner).json()
     row = next(r for r in rows
                if r["decision_type"] == DecisionType.INV_DEAD_STOCK.value)
@@ -1004,7 +1004,7 @@ def test_a_signal_decision_says_it_has_no_state_rather_than_showing_a_gap(api, s
         assigned_role="SALES_MANAGER", status=DecisionStatus.OPEN.value))
     session.commit()
 
-    owner = api.hdr("s.menon@sanketh.in")
+    owner = api.hdr("s.menon@pie.example")
     rows = api.get("/api/v1/decisions", headers=owner).json()
     row = next(r for r in rows
                if r["decision_type"] == DecisionType.CUSTOMER_DORMANCY.value)
@@ -1016,8 +1016,8 @@ def test_a_signal_decision_says_it_has_no_state_rather_than_showing_a_gap(api, s
 
 def test_a_salesperson_cannot_reach_a_state_card_or_its_trace(api):
     """404 rather than 403, so scope is not probeable."""
-    owner = api.hdr("s.menon@sanketh.in")
-    sales = api.hdr("r.nair@sanketh.in")
+    owner = api.hdr("s.menon@pie.example")
+    sales = api.hdr("r.nair@pie.example")
     rows = api.get("/api/v1/decisions", headers=owner).json()
     row = next(r for r in rows
                if r["decision_type"] == DecisionType.INV_DEAD_STOCK.value)
@@ -1039,7 +1039,7 @@ def test_a_supplier_card_is_named_after_the_supplier(api):
 def test_the_chain_pages_rather_than_stopping_at_forty(api, session):
     """A chain that stops with no way forward cannot settle an argument about
     the forty-first row."""
-    owner = api.hdr("s.menon@sanketh.in")
+    owner = api.hdr("s.menon@pie.example")
     rows = api.get("/api/v1/decisions", headers=owner).json()
     row = next(r for r in rows
                if r["decision_type"] == DecisionType.INV_DEAD_STOCK.value)
@@ -1067,7 +1067,7 @@ def test_the_chain_pages_rather_than_stopping_at_forty(api, session):
 
 def test_a_request_for_ten_thousand_rows_is_refused(api):
     """Somebody reconciling a year is a real reader; this is not."""
-    owner = api.hdr("s.menon@sanketh.in")
+    owner = api.hdr("s.menon@pie.example")
     rows = api.get("/api/v1/decisions", headers=owner).json()
     row = next(r for r in rows
                if r["decision_type"] == DecisionType.INV_DEAD_STOCK.value)

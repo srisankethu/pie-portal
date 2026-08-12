@@ -529,9 +529,9 @@ def test_the_cycle_is_manager_and_owner_only(api_client):
     than half-served.
     """
     path = "/api/v1/insight/cash-cycle"
-    for email, expected in (("r.nair@sanketh.in", 403),
-                            ("m.rao@sanketh.in", 200),
-                            ("s.menon@sanketh.in", 200)):
+    for email, expected in (("r.nair@pie.example", 403),
+                            ("m.rao@pie.example", 200),
+                            ("s.menon@pie.example", 200)):
         r = api_client.get(path, headers={
             "Authorization": f"Bearer {_token(api_client, email)}"})
         assert r.status_code == expected, (email, r.text)
@@ -544,7 +544,7 @@ def test_the_endpoint_stamps_a_thresholds_version(api_client):
     own signature, and what that cannot catch is a call site that never runs.
     """
     r = api_client.get("/api/v1/insight/cash-cycle", headers={
-        "Authorization": f"Bearer {_token(api_client, 's.menon@sanketh.in')}"})
+        "Authorization": f"Bearer {_token(api_client, 's.menon@pie.example')}"})
 
     assert r.status_code == 200, r.text
     body = r.json()
@@ -674,7 +674,7 @@ def test_the_endpoint_files_each_row_under_its_own_connected_company(two_books):
     entity would carry double and the other nothing — a failure that a fixture
     with different amounts could hide behind a plausible-looking difference.
     """
-    token = _token(two_books, "s.menon@sanketh.in")
+    token = _token(two_books, "s.menon@pie.example")
     r = two_books.get("/api/v1/insight/cash-cycle",
                       headers={"Authorization": f"Bearer {token}"})
 

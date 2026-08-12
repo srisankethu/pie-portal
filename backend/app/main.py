@@ -1,6 +1,6 @@
 """pie-portal backend — FastAPI application.
 
-The Sanketh Quote Builder API: RFQ intake resolved through the pie-parser
+The PIE Quote Builder API: RFQ intake resolved through the pie-parser
 Product Intelligence Engine (in-process), priced against a Zoho Books adapter,
 with role-gated economics.
 """
@@ -128,7 +128,8 @@ async def lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="pie-portal — Sanketh Quote Builder", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="PIE — Commercial Decision Platform", version="0.1.0",
+              lifespan=lifespan)
 
 @app.exception_handler(Exception)
 async def unhandled_error(request: Request, exc: Exception) -> JSONResponse:

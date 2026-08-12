@@ -28,12 +28,12 @@ from app.routers import admin, approvals as approvals_router, decisions, platfor
 from app.routers import quote_intelligence
 from app.seed import SEED_PASSWORD, ensure_org_and_users
 
-ORG = "org_sanketh"
+ORG = "org_pie"
 AS_OF = date(2026, 7, 1)
 
-OWNER = "s.menon@sanketh.in"
-MANAGER = "m.rao@sanketh.in"
-SALES = "r.nair@sanketh.in"
+OWNER = "s.menon@pie.example"
+MANAGER = "m.rao@pie.example"
+SALES = "r.nair@pie.example"
 
 
 def _d(days_ago: int) -> date:
@@ -114,11 +114,11 @@ def test_an_account_with_no_password_cannot_sign_in(client):
     """"No credential set" must fail closed. Failing open here would restore
     exactly the behaviour this replaced."""
     s = client.Maker()
-    s.add(models.User(user_id="usr_new", organization_id=ORG, email="new@sanketh.in",
+    s.add(models.User(user_id="usr_new", organization_id=ORG, email="new@pie.example",
                       name="New", role=Role.OWNER.value, active=True))
     s.commit()
     s.close()
-    assert _login(client, "new@sanketh.in", "anything").status_code == 401
+    assert _login(client, "new@pie.example", "anything").status_code == 401
 
 
 def test_an_inactive_account_cannot_sign_in(client):
@@ -132,7 +132,7 @@ def test_an_inactive_account_cannot_sign_in(client):
 
 def test_failure_does_not_reveal_whether_the_account_exists(client):
     """Different messages tell an attacker which addresses are worth attacking."""
-    unknown = _login(client, "nobody@sanketh.in", "whatever")
+    unknown = _login(client, "nobody@pie.example", "whatever")
     wrong = _login(client, OWNER, "whatever")
     assert unknown.status_code == wrong.status_code == 401
     assert unknown.json()["detail"] == wrong.json()["detail"]
@@ -161,7 +161,7 @@ def test_two_hashes_of_the_same_password_differ(client):
 
 # ── owner as super admin ────────────────────────────────────────────────────
 def test_only_an_owner_may_create_a_user(client):
-    body = {"email": "new@sanketh.in", "name": "New Person", "role": "SALESPERSON"}
+    body = {"email": "new@pie.example", "name": "New Person", "role": "SALESPERSON"}
     assert client.post("/api/v1/admin/users", json=body,
                        headers=_hdr(client, SALES)).status_code == 403
     assert client.post("/api/v1/admin/users", json=body,
@@ -172,12 +172,12 @@ def test_only_an_owner_may_create_a_user(client):
 
 def test_a_created_user_can_sign_in_with_the_password_returned_once(client):
     r = client.post("/api/v1/admin/users",
-                    json={"email": "new@sanketh.in", "name": "New", "role": "SALES_MANAGER"},
+                    json={"email": "new@pie.example", "name": "New", "role": "SALES_MANAGER"},
                     headers=_hdr(client, OWNER)).json()
     temp = r["temporary_password"]
     assert temp and len(temp) >= 10
 
-    login = _login(client, "new@sanketh.in", temp)
+    login = _login(client, "new@pie.example", temp)
     assert login.status_code == 200
     assert login.json()["role"] == "SALES_MANAGER"
     assert login.json()["must_change_password"] is True
@@ -216,7 +216,7 @@ def test_nobody_changes_their_own_role(client):
 def test_the_last_owner_cannot_be_demoted_or_deactivated(client):
     """The alternative is a tenant nobody can administer."""
     owner = client.post("/api/v1/admin/users",
-                        json={"email": "o2@sanketh.in", "name": "Second Owner",
+                        json={"email": "o2@pie.example", "name": "Second Owner",
                               "role": "OWNER"},
                         headers=_hdr(client, OWNER)).json()["user"]
     # two owners now — demoting one is fine
@@ -225,16 +225,16 @@ def test_the_last_owner_cannot_be_demoted_or_deactivated(client):
                         headers=_hdr(client, OWNER)).status_code == 200
     # back to one; the remaining owner cannot be removed by anyone
     s = client.Maker()
-    s.add(models.User(user_id="usr_o3", organization_id=ORG, email="o3@sanketh.in",
+    s.add(models.User(user_id="usr_o3", organization_id=ORG, email="o3@pie.example",
                       name="Third", role=Role.OWNER.value, active=True,
                       password_hash=hash_password(SEED_PASSWORD)))
     s.commit()
     s.close()
     r = client.patch("/api/v1/admin/users/usr_owner", json={"active": False},
-                     headers=_hdr(client, "o3@sanketh.in"))
+                     headers=_hdr(client, "o3@pie.example"))
     assert r.status_code == 200, "two active owners — removing one is allowed"
     r = client.patch("/api/v1/admin/users/usr_o3", json={"active": False},
-                     headers=_hdr(client, "o3@sanketh.in"))
+                     headers=_hdr(client, "o3@pie.example"))
     assert r.status_code == 400, "and never your own account"
 
 

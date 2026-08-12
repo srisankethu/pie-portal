@@ -23,7 +23,7 @@ from app.domain.enums import SignalType
 from app.routers import accounts, commercial, insight, platform_auth
 from app.seed import SEED_PASSWORD, ensure_org_and_users
 
-ORG = "org_sanketh"          # the seeded default org the demo users belong to
+ORG = "org_pie"          # the seeded default org the demo users belong to
 AS_OF = date(2026, 7, 1)
 
 
@@ -164,7 +164,7 @@ def test_targeted_recompute_only_touches_the_named_customer(client):
 # ── portfolio ───────────────────────────────────────────────────────────────
 def test_portfolio_answers_which_items_need_attention(client):
     body = client.get("/api/v1/commercial/customers/c1/portfolio",
-                      headers=_hdr(client, "m.rao@sanketh.in")).json()
+                      headers=_hdr(client, "m.rao@pie.example")).json()
 
     assert body["customer"]["name"] == "Acme Engineering"
     summary = body["summary"]
@@ -184,7 +184,7 @@ def test_portfolio_answers_which_items_need_attention(client):
 
 def test_portfolio_margin_is_profit_over_revenue_across_items(client):
     body = client.get("/api/v1/commercial/customers/c1/portfolio",
-                      headers=_hdr(client, "m.rao@sanketh.in")).json()
+                      headers=_hdr(client, "m.rao@pie.example")).json()
     s = body["summary"]
     expected = s["gross_profit_12m"] / s["revenue_12m"]
     assert abs(s["gross_margin_12m"] - expected) < 1e-3
@@ -192,14 +192,14 @@ def test_portfolio_margin_is_profit_over_revenue_across_items(client):
 
 def test_portfolio_404s_for_an_unknown_customer(client):
     r = client.get("/api/v1/commercial/customers/nope/portfolio",
-                   headers=_hdr(client, "m.rao@sanketh.in"))
+                   headers=_hdr(client, "m.rao@pie.example"))
     assert r.status_code == 404
 
 
 # ── drill-down ──────────────────────────────────────────────────────────────
 def test_drilldown_answers_all_six_questions(client):
     body = client.get("/api/v1/commercial/customers/c1/items/p1",
-                      headers=_hdr(client, "m.rao@sanketh.in")).json()
+                      headers=_hdr(client, "m.rao@pie.example")).json()
 
     h = body["headline"]
     assert abs(h["current_margin"] - 0.1079) < 1e-3          # 1. deteriorating?
@@ -214,7 +214,7 @@ def test_drilldown_answers_all_six_questions(client):
 
 def test_drilldown_diagnosis_is_deterministic_prose_from_real_numbers(client):
     body = client.get("/api/v1/commercial/customers/c1/items/p1",
-                      headers=_hdr(client, "m.rao@sanketh.in")).json()
+                      headers=_hdr(client, "m.rao@pie.example")).json()
     text = " ".join(body["diagnosis"])
 
     assert "25.9%" in text and "10.8%" in text, "the computed margins appear verbatim"
@@ -225,7 +225,7 @@ def test_drilldown_diagnosis_is_deterministic_prose_from_real_numbers(client):
 
 def test_drilldown_peers_exclude_the_subject_and_flag_it_separately(client):
     body = client.get("/api/v1/commercial/customers/c1/items/p1",
-                      headers=_hdr(client, "m.rao@sanketh.in")).json()
+                      headers=_hdr(client, "m.rao@pie.example")).json()
     peers = body["peers"]
 
     assert "c1" not in [p["customer_id"] for p in peers["rows"]]
@@ -237,7 +237,7 @@ def test_drilldown_peers_exclude_the_subject_and_flag_it_separately(client):
 
 def test_drilldown_exposes_the_transactions_behind_every_conclusion(client):
     body = client.get("/api/v1/commercial/customers/c1/items/p1",
-                      headers=_hdr(client, "m.rao@sanketh.in")).json()
+                      headers=_hdr(client, "m.rao@pie.example")).json()
     txns = body["transactions"]
 
     assert len(txns) == 8
@@ -258,7 +258,7 @@ def test_drilldown_404s_for_an_item_this_customer_never_bought(client):
     s.commit()
     s.close()
     r = client.get("/api/v1/commercial/customers/c1/items/p2",
-                   headers=_hdr(client, "m.rao@sanketh.in"))
+                   headers=_hdr(client, "m.rao@pie.example"))
     assert r.status_code == 404
 
 
@@ -266,7 +266,7 @@ def test_drilldown_404s_for_an_item_this_customer_never_bought(client):
 def test_a_salesperson_cannot_reach_any_of_this(client):
     """Every response here is cost and margin throughout. There is no
     salesperson-safe projection of a margin analysis."""
-    sales = _hdr(client, "r.nair@sanketh.in")
+    sales = _hdr(client, "r.nair@pie.example")
     assert client.get("/api/v1/commercial/customers/c1/portfolio",
                       headers=sales).status_code == 403
     assert client.get("/api/v1/commercial/customers/c1/items/p1",
@@ -276,7 +276,7 @@ def test_a_salesperson_cannot_reach_any_of_this(client):
 
 def test_an_owner_can_recompute_from_already_synced_data(client):
     r = client.post("/api/v1/commercial/recompute",
-                    headers=_hdr(client, "s.menon@sanketh.in"),
+                    headers=_hdr(client, "s.menon@pie.example"),
                     json={"customer_id": "c1"})
     assert r.status_code == 200
     body = r.json()
@@ -300,7 +300,7 @@ def test_a_thin_relationship_reports_insufficiency_rather_than_a_conclusion(clie
     s.close()
 
     body = client.get("/api/v1/commercial/customers/c9/items/p1",
-                      headers=_hdr(client, "m.rao@sanketh.in")).json()
+                      headers=_hdr(client, "m.rao@pie.example")).json()
     assert body["data_quality"]["data_sufficiency"] == "INSUFFICIENT"
     assert "Not enough data" in body["diagnosis"][0]
 
@@ -324,7 +324,7 @@ def test_a_salesperson_cannot_read_the_timeline_of_an_account_that_is_not_theirs
     A per-customer route that skips the same check is a way around all of it,
     because the id is then the only thing in the way and ids travel."""
     unassigned = client.get("/api/v1/insight/customers/c2/timeline",
-                            headers=_hdr(client, "r.nair@sanketh.in"))
+                            headers=_hdr(client, "r.nair@pie.example"))
     assert unassigned.status_code == 404
     # 404 rather than 403: a 403 would confirm c2 exists, which is most of what
     # an enumeration wants.
@@ -333,11 +333,11 @@ def test_a_salesperson_cannot_read_the_timeline_of_an_account_that_is_not_theirs
     # The same account is readable by a manager, so this is scope and not a
     # missing customer.
     assert client.get("/api/v1/insight/customers/c2/timeline",
-                      headers=_hdr(client, "m.rao@sanketh.in")).status_code == 200
+                      headers=_hdr(client, "m.rao@pie.example")).status_code == 200
 
     _assign_to_salesperson(client, "c2")
     assert client.get("/api/v1/insight/customers/c2/timeline",
-                      headers=_hdr(client, "r.nair@sanketh.in")).status_code == 200
+                      headers=_hdr(client, "r.nair@pie.example")).status_code == 200
 
 
 def test_every_manager_read_payload_says_which_policy_judged_it(client):
@@ -353,7 +353,7 @@ def test_every_manager_read_payload_says_which_policy_judged_it(client):
     which is what makes the omission unavailable: there is no way to build an
     insight response without also stamping it.
     """
-    hdr = _hdr(client, "m.rao@sanketh.in")
+    hdr = _hdr(client, "m.rao@pie.example")
     paths = [
         "/api/v1/insight/weather",
         "/api/v1/insight/storyboard",
@@ -380,7 +380,7 @@ def test_the_two_commercial_payloads_stamp_the_version_that_judged_them(client):
     reports the stamp those rows carry — claiming the current version for a row
     computed under an older one would be worse than saying nothing.
     """
-    hdr = _hdr(client, "m.rao@sanketh.in")
+    hdr = _hdr(client, "m.rao@pie.example")
 
     drill = client.get("/api/v1/commercial/customers/c1/items/p1", headers=hdr).json()
     assert drill["thresholds_version"].startswith("ci_")
@@ -405,7 +405,7 @@ def test_the_item_picker_applies_the_same_scope_rule_as_the_timeline(client):
     *same* answer for "not yours" as for "not real", which is what makes an id
     useless for enumeration.
     """
-    sales = _hdr(client, "r.nair@sanketh.in")
+    sales = _hdr(client, "r.nair@pie.example")
 
     not_theirs = client.get("/api/v1/accounts/c2/items", headers=sales)
     never_existed = client.get("/api/v1/accounts/c_nope/items", headers=sales)
@@ -435,7 +435,7 @@ def test_a_salesperson_s_timeline_has_no_margin_field_anywhere(client):
     go looking for."""
     _assign_to_salesperson(client, "c1")
     r = client.get("/api/v1/insight/customers/c1/timeline",
-                   headers=_hdr(client, "r.nair@sanketh.in"))
+                   headers=_hdr(client, "r.nair@pie.example"))
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["series"], "expected trading months for c1"
@@ -448,7 +448,7 @@ def test_a_salesperson_s_timeline_has_no_margin_field_anywhere(client):
 
 def test_a_manager_s_timeline_carries_the_margin_and_its_coverage(client):
     r = client.get("/api/v1/insight/customers/c1/timeline",
-                   headers=_hdr(client, "m.rao@sanketh.in"))
+                   headers=_hdr(client, "m.rao@pie.example"))
     assert r.status_code == 200, r.text
     series = r.json()["series"]
     traded = [p for p in series if p["revenue"] > 0]
@@ -462,7 +462,7 @@ def test_the_timeline_names_what_it_cannot_show_for_every_role(client):
     Both roles are told so, rather than one of them seeing three series where
     four were promised and being left to wonder."""
     _assign_to_salesperson(client, "c1")
-    for email in ("r.nair@sanketh.in", "m.rao@sanketh.in"):
+    for email in ("r.nair@pie.example", "m.rao@pie.example"):
         body = client.get("/api/v1/insight/customers/c1/timeline",
                           headers=_hdr(client, email)).json()
         assert any(u["series"] == "payment_behaviour" for u in body["unavailable"])
@@ -500,7 +500,7 @@ def test_a_salespersons_negotiation_carries_no_cost_and_no_margin(client):
     the cost itself is simply not in the payload."""
     _assign_to_salesperson(client, "c1")
 
-    r = _negotiate(client, "r.nair@sanketh.in")
+    r = _negotiate(client, "r.nair@pie.example")
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["negotiable"] is True
@@ -514,7 +514,7 @@ def test_a_salespersons_negotiation_carries_no_cost_and_no_margin(client):
 def test_a_manager_gets_the_reconciliation_behind_the_floor(client):
     """Somebody with cost scope has to be able to check that the floor is sane,
     which is the one thing a salesperson cannot do for themselves."""
-    body = _negotiate(client, "m.rao@sanketh.in").json()
+    body = _negotiate(client, "m.rao@pie.example").json()
     assert body["unit_cost"] == pytest.approx(124.0)
     assert body["margin_at_floor"] == pytest.approx(0.2, abs=0.001)
     assert body["gross_profit"] == pytest.approx((200 - 2 - 124) * 100)
@@ -525,8 +525,8 @@ def test_both_roles_get_the_same_contribution(client):
     contribution two ways is how a screen and a payslip disagree."""
     _assign_to_salesperson(client, "c1")
 
-    theirs = _negotiate(client, "r.nair@sanketh.in").json()
-    managers = _negotiate(client, "m.rao@sanketh.in").json()
+    theirs = _negotiate(client, "r.nair@pie.example").json()
+    managers = _negotiate(client, "m.rao@pie.example").json()
     for field in ("floor_price", "contribution", "caf", "collected_caf",
                   "discount_to_floor_per_unit", "price_to_hold_target"):
         assert theirs[field] == managers[field], field
@@ -544,7 +544,7 @@ def test_an_item_we_have_never_bought_has_no_floor_and_is_refused(client):
     s.commit()
     s.close()
 
-    body = _negotiate(client, "m.rao@sanketh.in", product_id="p-nocost").json()
+    body = _negotiate(client, "m.rao@pie.example", product_id="p-nocost").json()
     assert body["negotiable"] is False
     assert "no purchase record" in body["empty_reason"].lower()
 
@@ -552,7 +552,7 @@ def test_an_item_we_have_never_bought_has_no_floor_and_is_refused(client):
 def test_a_third_party_payment_is_refused_on_an_unclassified_account(client):
     """I2 fails closed: nobody has said this account is private, so it is
     treated exactly like a PSU. The response is a refusal, not a number."""
-    r = _negotiate(client, "m.rao@sanketh.in", third_party_incentive=5000)
+    r = _negotiate(client, "m.rao@pie.example", third_party_incentive=5000)
     assert r.status_code == 422
     assert "blacklisting" in r.json()["detail"]
 
@@ -561,7 +561,7 @@ def test_a_third_party_payment_is_priced_on_a_private_account(client):
     """Classified private, it is charged at 100 paise in the rupee — which is
     what makes the salesperson's decision the owner's decision."""
     _classify(client, "c1", "PRIVATE")
-    body = _negotiate(client, "m.rao@sanketh.in", third_party_incentive=5000).json()
+    body = _negotiate(client, "m.rao@pie.example", third_party_incentive=5000).json()
     assert body["third_party_allowed"] is True
     assert body["third_party_charged"] == pytest.approx(5000.0)
     assert body["caf"] == pytest.approx(300.0)
@@ -571,21 +571,21 @@ def test_the_toolkit_costs_half_of_what_paying_someone_costs(client):
     """The compliant lever is reached for because it is cheaper, not because
     anyone was told to reach for it."""
     _classify(client, "c1", "PRIVATE")
-    paid = _negotiate(client, "m.rao@sanketh.in", third_party_incentive=4000).json()
-    kit = _negotiate(client, "m.rao@sanketh.in", toolkit_spend=4000).json()
+    paid = _negotiate(client, "m.rao@pie.example", third_party_incentive=4000).json()
+    kit = _negotiate(client, "m.rao@pie.example", toolkit_spend=4000).json()
     assert kit["caf"] - paid["caf"] == pytest.approx(2000.0)
 
 
 def test_the_response_records_both_parameter_versions(client):
     """Thresholds and the incentive block are cut on different schedules. A row
     stamped with only one of them cannot be explained later."""
-    body = _negotiate(client, "m.rao@sanketh.in").json()
+    body = _negotiate(client, "m.rao@pie.example").json()
     assert body["thresholds_version"]
     assert body["incentive_config_version"]
 
 
 def test_the_desk_is_scoped_like_every_other_per_customer_route(client):
-    assert _negotiate(client, "r.nair@sanketh.in",
+    assert _negotiate(client, "r.nair@pie.example",
                       customer_id="c2").status_code == 404
 
 
@@ -602,7 +602,7 @@ def test_the_directory_shows_active_accounts_by_default(client):
     That is not a reason to put a dormant account in the list somebody scans
     before a call — so it is one click away, and never more than that."""
     _mark_inactive(client, "c2")
-    hdr = _hdr(client, "m.rao@sanketh.in")
+    hdr = _hdr(client, "m.rao@pie.example")
 
     default = client.get("/api/v1/accounts", headers=hdr).json()
     assert "c2" not in [a["customer_id"] for a in default]
@@ -618,7 +618,7 @@ def test_the_directory_carries_trade_so_it_can_be_chosen_from(client):
     """A list of names can only be searched. What somebody actually wants to
     know before calling is when this account last ordered and whether they are
     still worth the call."""
-    body = client.get("/api/v1/accounts", headers=_hdr(client, "m.rao@sanketh.in")).json()
+    body = client.get("/api/v1/accounts", headers=_hdr(client, "m.rao@pie.example")).json()
     c1 = next(a for a in body if a["customer_id"] == "c1")
     assert c1["last_order"], "c1 has invoices in the fixture"
     assert c1["orders_12m"] >= 1
@@ -634,7 +634,7 @@ def test_an_account_that_has_never_ordered_says_so_rather_than_showing_zero(clie
     s.commit()
     s.close()
 
-    body = client.get("/api/v1/accounts", headers=_hdr(client, "m.rao@sanketh.in")).json()
+    body = client.get("/api/v1/accounts", headers=_hdr(client, "m.rao@pie.example")).json()
     fresh = next(a for a in body if a["customer_id"] == "c-new")
     assert fresh["last_order"] is None
     assert fresh["orders_12m"] == 0
@@ -644,7 +644,7 @@ def test_the_directory_carries_no_cost_and_no_margin(client):
     """Revenue is operational — a salesperson sees it on every other screen.
     Cost and margin are not, and this endpoint is on a salesperson's path."""
     _assign_to_salesperson(client, "c1")
-    body = client.get("/api/v1/accounts", headers=_hdr(client, "r.nair@sanketh.in")).json()
+    body = client.get("/api/v1/accounts", headers=_hdr(client, "r.nair@pie.example")).json()
     for row in body:
         assert not [k for k in row if "cost" in k or "margin" in k or "profit" in k]
 
@@ -657,7 +657,7 @@ def test_a_discontinued_item_is_not_offered_by_default(client):
     s.get(models.Product, "p1").active = False
     s.commit()
     s.close()
-    hdr = _hdr(client, "m.rao@sanketh.in")
+    hdr = _hdr(client, "m.rao@pie.example")
 
     assert client.get("/api/v1/accounts/c1/items", headers=hdr).json() == []
     offered = client.get("/api/v1/accounts/c1/items?status=all", headers=hdr).json()

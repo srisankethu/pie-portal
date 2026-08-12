@@ -27,11 +27,11 @@ SEED_PASSWORD = os.environ.get("SEED_PASSWORD", "change-me-now")
 
 # Demo users for the three roles.
 DEMO_USERS = [
-    {"user_id": "usr_owner", "email": "s.menon@sanketh.in", "name": "S. Menon",
+    {"user_id": "usr_owner", "email": "s.menon@pie.example", "name": "S. Menon",
      "role": Role.OWNER},
-    {"user_id": "usr_manager", "email": "m.rao@sanketh.in", "name": "M. Rao",
+    {"user_id": "usr_manager", "email": "m.rao@pie.example", "name": "M. Rao",
      "role": Role.SALES_MANAGER},
-    {"user_id": "usr_sales", "email": "r.nair@sanketh.in", "name": "R. Nair",
+    {"user_id": "usr_sales", "email": "r.nair@pie.example", "name": "R. Nair",
      "role": Role.SALESPERSON},
 ]
 

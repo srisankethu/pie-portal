@@ -11,15 +11,17 @@ import os
 import uuid
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request, Response, status
+from fastapi import Depends, FastAPI, Request, Response, status
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
+from . import entitlements as plan
 from .config import settings
 from .pie_service import pie_service
 from .routers import (accounts, admin, ai_settings, approvals, commercial,
                       connections, data_status,
-                      decisions, identity, internal, platform_auth, quote,
+                      decisions, entitlements, identity, internal,
+                      platform_auth, quote,
                       insight, quote_intelligence, quote_support, trust)
 
 logging.basicConfig(level=logging.INFO)
@@ -184,7 +186,12 @@ app.include_router(platform_auth.router)
 # platform user every `/api/v1` endpoint does.
 app.include_router(quote.router)
 app.include_router(internal.router)
-app.include_router(decisions.router)
+# The intelligence surfaces — the decision layer and the insight screens — are
+# what the paid plan is. Gated here, at inclusion, so the plan boundary is one
+# visible declaration rather than a check sprinkled through the routers; the
+# routes inside stay role-scoped exactly as before.
+app.include_router(decisions.router,
+                   dependencies=[Depends(plan.require_feature("intelligence"))])
 app.include_router(quote_support.router)
 app.include_router(accounts.router)
 app.include_router(data_status.router)
@@ -195,8 +202,10 @@ app.include_router(admin.router)
 app.include_router(identity.router)
 app.include_router(connections.router)
 app.include_router(trust.router)
-app.include_router(insight.router)
+app.include_router(insight.router,
+                   dependencies=[Depends(plan.require_feature("intelligence"))])
 app.include_router(ai_settings.router)
+app.include_router(entitlements.router)
 
 
 @app.get("/api/health")

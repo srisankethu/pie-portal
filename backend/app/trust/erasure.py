@@ -164,6 +164,10 @@ EXCLUDED_REASONS: dict[str, str] = {
         "them would put live secrets in a file that travels by email."),
     "zoho_connections": (
         "Holds the same credentials, encrypted. Same reason."),
+    "ai_provider_keys": (
+        "Your AI provider API keys, encrypted. Yours to rotate at the "
+        "provider, and exporting them would put live secrets in a file that "
+        "travels by email."),
     "users": (
         "Staff accounts and password hashes. Yours to administer, and not "
         "something a data export should carry."),
@@ -216,6 +220,7 @@ MANIFESTED: tuple[tuple[str, Any], ...] = EXPORTED + (
     ("sync_runs", models.SyncRun),
     ("ingested_documents", models.IngestedDocument),
     ("zoho_connections", models.ZohoConnection),
+    ("ai_provider_keys", models.AIProviderKey),
     ("tenant_keys", models.TenantKey),
     ("users", models.User),
 )

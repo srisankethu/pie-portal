@@ -131,7 +131,7 @@ def quote_support(
 ) -> dict[str, Any]:
     org = principal.organization_id
     th = thresholds or load_thresholds()
-    provider = provider or select_provider()
+    provider = provider or select_provider(session, org)
 
     customer = _resolve_customer(session, org, customer_ref)
     resolved_products = [(_resolve_product(session, org, r), r) for r in product_refs]

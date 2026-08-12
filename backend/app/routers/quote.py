@@ -149,7 +149,7 @@ def intake(quote_id: str, body: IntakeRequest,
     # same catalogue and the same score bands as typed input. A reading that
     # fails for any reason falls through to the regex, so the worst case is the
     # product exactly as it was before.
-    read = reading.read(body.text, select_provider())
+    read = reading.read(body.text, select_provider(session, principal.organization_id))
     lines = store.add_rfq(q, body.text, zoho,
                           _customer_scope(session, principal, q.customer_ref),
                           _bands(session, principal),

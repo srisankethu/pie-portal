@@ -70,7 +70,7 @@ class DecisionService:
                  thresholds: Optional[SignalThresholds] = None) -> None:
         self.s = session
         self.org = organization_id
-        self.provider = provider or select_provider()
+        self.provider = provider or select_provider(session, organization_id)
         self.th = thresholds or load_thresholds()
         self.repo = DecisionRepository(session, organization_id)
         self.telemetry = AiTelemetryRepository(session, organization_id)

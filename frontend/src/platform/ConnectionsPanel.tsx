@@ -545,12 +545,16 @@ function AddConnection({
   onAdded: () => Promise<void>;
 }) {
   const hasCredentials = view.credentials.length > 0;
-  const [mode, setMode] = useState<"existing" | "new">(hasCredentials ? "existing" : "new");
+  const [mode, setMode] = useState<"existing" | "new" | "oauth">(hasCredentials ? "existing" : "new");
   const [form, setForm] = useState(EMPTY_FORM);
   const [credentialId, setCredentialId] = useState(view.credentials[0]?.credential_id ?? "");
   const [orgs, setOrgs] = useState<ZohoVisibleOrg[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // OAuth flow state
+  const [oauthDc, setOauthDc] = useState<string>(DC_PRESETS[0].accounts_base);
+  const [oauthAuthUrl, setOauthAuthUrl] = useState<string | null>(null);
 
   // Adding the *first* company creates the first sign-in, and the second
   // company should then reuse it — that is the whole point of separating the
@@ -576,6 +580,7 @@ function AddConnection({
     }
   }, [hasCredentials, view.credentials, credentialId]);
 
+
   async function listCompanies() {
     setError(null);
     setOrgs(null);
@@ -584,6 +589,23 @@ function AddConnection({
       setOrgs(r.visible_organizations);
     } catch (e) {
       setError((e as Error).message);
+    }
+  }
+
+  async function startOAuth() {
+    setBusy(true);
+    setError(null);
+    try {
+      const resp = await papi.authorizeZoho(token, oauthDc);
+      setOauthAuthUrl(resp.authorization_url);
+      // Store state in sessionStorage for coordination
+      sessionStorage.setItem("oauth_state_token", resp.state_token);
+      // Open authorization URL in new window
+      window.open(resp.authorization_url, '_blank', 'width=800,height=600');
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -627,8 +649,8 @@ function AddConnection({
         </Labelled>
       </h3>
 
-      {hasCredentials && (
-        <div className="cx-tabs">
+      <div className="cx-tabs">
+        {hasCredentials && (
           <button
             type="button"
             className="cx-tab"
@@ -637,19 +659,92 @@ function AddConnection({
           >
             Use a sign-in already on file
           </button>
+        )}
+        <button
+          type="button"
+          className="cx-tab"
+          aria-pressed={mode === "oauth"}
+          onClick={() => setMode("oauth")}
+        >
+          Authorize with Zoho
+        </button>
+        {!hasCredentials && (
           <button
             type="button"
             className="cx-tab"
             aria-pressed={mode === "new"}
             onClick={() => setMode("new")}
           >
-            Enter a different Zoho sign-in
+            Enter credentials manually
           </button>
-        </div>
-      )}
+        )}
+      </div>
 
       <form onSubmit={submit}>
-        {mode === "existing" ? (
+        {mode === "oauth" ? (
+          <>
+            {!oauthAuthUrl ? (
+              <>
+                <p className="st-help">
+                  Authorize PIE to access your Zoho Books account. You'll be guided through
+                  Zoho's authorization flow, and your credentials will never be shared with PIE.
+                </p>
+                <label htmlFor="oauth-dc">
+                  <Labelled tip="Must match the data centre of your Zoho account. A token from accounts.zoho.in is rejected by accounts.zoho.com.">
+                    Data centre
+                  </Labelled>
+                </label>
+                <TextField
+                  id="oauth-dc"
+                  select
+                  fullWidth
+                  size="small"
+                  value={oauthDc}
+                  onChange={(e) => setOauthDc(e.target.value)}
+                  sx={{ mt: 1.5, mb: 1.5 }}
+                >
+                  {DC_PRESETS.map((p) => (
+                    <MenuItem key={p.accounts_base} value={p.accounts_base}>
+                      {p.label}
+                    </MenuItem>
+                  ))}
+                </TextField>
+                <Button
+                  type="button"
+                  variant="contained"
+                  size="small"
+                  disabled={busy}
+                  onClick={startOAuth}
+                >
+                  {busy ? "Starting…" : "Authorize with Zoho"}
+                </Button>
+              </>
+            ) : (
+              <>
+                <p className="st-help">
+                  A browser window opened for Zoho authorization. After you complete the authorization in Zoho,
+                  the browser will show your organizations. Copy the credential ID from that page and paste it below,
+                  or close that window and try again.
+                </p>
+                <p className="st-help" style={{ marginTop: 12, fontStyle: "italic" }}>
+                  Note: The OAuth connection flow will be completed shortly. For now, please use the manual credentials
+                  tab to connect, or refresh this page after authorizing to see your options.
+                </p>
+                <Button
+                  type="button"
+                  variant="outlined"
+                  size="small"
+                  onClick={() => {
+                    setOauthAuthUrl(null);
+                  }}
+                  sx={{ mt: 2 }}
+                >
+                  Start Over
+                </Button>
+              </>
+            )}
+          </>
+        ) : mode === "existing" ? (
           <>
             <p className="st-help">
               The normal path for a second or third company. One Zoho sign-in already
@@ -771,43 +866,45 @@ function AddConnection({
           </>
         )}
 
-        <label htmlFor="cx-zoho-org" style={{ marginTop: 10 }}>
-          <Labelled tip="Settings → Organization Profile in Zoho Books, or the id in its URL. Not the same as this platform's organization.">
-            Zoho Books organization id
-          </Labelled>
-        </label>
-        <input
-          id="cx-zoho-org"
-          className="input"
-          required
-          value={form.zoho_organization_id}
-          onChange={(e) => setForm({ ...form, zoho_organization_id: e.target.value })}
-        />
+        {mode !== "oauth" && (
+          <>
+            <label htmlFor="cx-zoho-org" style={{ marginTop: 10 }}>
+              <Labelled tip="Settings → Organization Profile in Zoho Books, or the id in its URL. Not the same as this platform's organization.">
+                Zoho Books organization id
+              </Labelled>
+            </label>
+            <input
+              id="cx-zoho-org"
+              className="input"
+              required
+              value={form.zoho_organization_id}
+              onChange={(e) => setForm({ ...form, zoho_organization_id: e.target.value })}
+            />
 
-        <label htmlFor="cx-label" style={{ marginTop: 10 }}>
-          Name it
-          <span className="fsrc">
-            What you call this entity — "4U Precision", not "60036630626". A list of three
-            numbers is unreadable at the moment you need it.
-          </span>
-        </label>
-        <input
-          id="cx-label"
-          className="input"
-          value={form.label}
-          onChange={(e) => setForm({ ...form, label: e.target.value })}
-        />
+            <label htmlFor="cx-label" style={{ marginTop: 10 }}>
+              Name it
+              <span className="fsrc">
+                What you call this entity — "4U Precision", not "60036630626". A list of three
+                numbers is unreadable at the moment you need it.
+              </span>
+            </label>
+            <input
+              id="cx-label"
+              className="input"
+              value={form.label}
+              onChange={(e) => setForm({ ...form, label: e.target.value })}
+            />
+          </>
+        )}
 
         {error && <p className="cx-detail bad">{error}</p>}
-        <div style={{ marginTop: 12 }}>
-          {/* `type="submit"` is load-bearing, not decoration: MUI's Button
-              defaults to type="button", where a bare <button> in a form
-              defaults to submit. Without it this renders, enables, depresses
-              and does nothing at all. */}
-          <Button type="submit" variant="contained" size="small" disabled={busy}>
-            {busy ? "Adding…" : "Add company"}
-          </Button>
-        </div>
+        {mode !== "oauth" && (
+          <div style={{ marginTop: 12 }}>
+            <Button type="submit" variant="contained" size="small" disabled={busy}>
+              {busy ? "Adding…" : "Add company"}
+            </Button>
+          </div>
+        )}
       </form>
     </Bp>
   );

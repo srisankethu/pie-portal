@@ -200,6 +200,26 @@ class Settings:
         os.environ.get("ZOHO_THROTTLE_BACKOFF_SECONDS", "15"))
     ZOHO_MAX_BACKOFF_SECONDS: float = float(os.environ.get("ZOHO_MAX_BACKOFF_SECONDS", "90"))
 
+    # ── Zoho OAuth (customer-facing authorization flow) ────────────────────────
+    # PIE's Zoho OAuth application credentials. The client ID and secret are
+    # registered as a "Self Client" in the Zoho Developer Console for PIE, and
+    # the redirect URI points to /api/v1/connections/zoho/callback on this
+    # deployment. The same credentials work across all customers (the OAuth grant
+    # itself belongs to the Zoho user, not to PIE).
+    #
+    # For local development, use "fixture" mode (ZOHO_SOURCE=fixture) which
+    # bypasses OAuth entirely. For production deployments, create a Zoho Self
+    # Client and set these variables securely.
+    ZOHO_OAUTH_CLIENT_ID: str = os.environ.get("ZOHO_OAUTH_CLIENT_ID", "")
+    ZOHO_OAUTH_CLIENT_SECRET: str = os.environ.get("ZOHO_OAUTH_CLIENT_SECRET", "")
+    # Full callback URL, including scheme and host. Must match the redirect URI
+    # registered in the Zoho Developer Console.
+    # Example: "https://pie.example.com/api/v1/connections/zoho/callback"
+    ZOHO_OAUTH_REDIRECT_URI: str = os.environ.get("ZOHO_OAUTH_REDIRECT_URI", "")
+    # OAuth state token lifetime, in seconds. After this, a pending authorization
+    # is considered expired and rejected. 10 minutes is standard for OAuth flows.
+    ZOHO_OAUTH_STATE_TTL_SECONDS: int = int(os.environ.get("ZOHO_OAUTH_STATE_TTL_SECONDS", "600"))
+
     # Version stamped onto deterministic artifacts for provenance/reproducibility.
     # (Threshold-config version is carried by SignalThresholds.version, not here.)
     DETECTOR_VERSION: str = os.environ.get("DETECTOR_VERSION", "v0")

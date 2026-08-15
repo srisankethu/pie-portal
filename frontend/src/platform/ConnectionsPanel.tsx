@@ -13,7 +13,6 @@ import type {
   PlatformSession,
   ZohoConnection,
   ZohoVisibleOrg,
-  ZohoOrganization,
 } from "./types";
 import { Bp, Labelled, Tip } from "./ui";
 
@@ -556,7 +555,6 @@ function AddConnection({
   // OAuth flow state
   const [oauthDc, setOauthDc] = useState<string>(DC_PRESETS[0].accounts_base);
   const [oauthAuthUrl, setOauthAuthUrl] = useState<string | null>(null);
-  const [oauthStateToken, setOauthStateToken] = useState<string | null>(null);
 
   // Adding the *first* company creates the first sign-in, and the second
   // company should then reuse it — that is the whole point of separating the
@@ -599,7 +597,6 @@ function AddConnection({
     setError(null);
     try {
       const resp = await papi.authorizeZoho(token, oauthDc);
-      setOauthStateToken(resp.state_token);
       setOauthAuthUrl(resp.authorization_url);
       // Store state in sessionStorage for coordination
       sessionStorage.setItem("oauth_state_token", resp.state_token);
@@ -607,33 +604,6 @@ function AddConnection({
       window.open(resp.authorization_url, '_blank', 'width=800,height=600');
     } catch (e) {
       setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function submitOAuthOrg(e: React.FormEvent) {
-    e.preventDefault();
-    if (!oauthCredentialId || !form.zoho_organization_id.trim()) {
-      setError("Please select a company");
-      return;
-    }
-    setBusy(true);
-    setError(null);
-    try {
-      await papi.addConnection(token, {
-        credential_id: oauthCredentialId,
-        zoho_organization_id: form.zoho_organization_id.trim(),
-        label: form.label.trim(),
-      });
-      setForm(EMPTY_FORM);
-      setOauthAuthUrl(null);
-      setOauthOrgs(null);
-      setOauthCredentialId(null);
-      setMode("existing");
-      await onAdded();
-    } catch (err) {
-      setError((err as Error).message);
     } finally {
       setBusy(false);
     }
@@ -766,7 +736,6 @@ function AddConnection({
                   size="small"
                   onClick={() => {
                     setOauthAuthUrl(null);
-                    setOauthStateToken(null);
                   }}
                   sx={{ mt: 2 }}
                 >
@@ -929,13 +898,6 @@ function AddConnection({
         )}
 
         {error && <p className="cx-detail bad">{error}</p>}
-        {mode === "oauth" && oauthOrgs && (
-          <div style={{ marginTop: 12 }}>
-            <Button type="submit" variant="contained" size="small" disabled={busy || !form.zoho_organization_id.trim()}>
-              {busy ? "Adding…" : "Add company"}
-            </Button>
-          </div>
-        )}
         {mode !== "oauth" && (
           <div style={{ marginTop: 12 }}>
             <Button type="submit" variant="contained" size="small" disabled={busy}>

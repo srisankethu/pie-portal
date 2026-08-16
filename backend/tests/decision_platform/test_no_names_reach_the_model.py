@@ -51,7 +51,7 @@ class Recorder:
 @pytest.fixture()
 def seeded(session):
     session.add(models.Organization(organization_id=ORG, name="Leak Test",
-                                    erp="zoho", currency="INR", config={}))
+                                    currency="INR", config={}))
     session.add(models.Customer(customer_id="c1", organization_id=ORG,
                                 external_id="z1", name=CUSTOMER_NAME))
     session.add(models.Product(product_id="p1", organization_id=ORG,

@@ -42,7 +42,7 @@ def ensure_org_and_users(session: Session) -> str:
     if org is None:
         org = models.Organization(
             organization_id=settings.DEFAULT_ORG_ID, name=settings.DEFAULT_ORG_NAME,
-            erp="zoho", currency=settings.DEFAULT_CURRENCY, country="IN", config={})
+            currency=settings.DEFAULT_CURRENCY, country="IN", config={})
         session.add(org)
     elif org.country is None:
         # The demo org is the Indian demo distributor, so its country is demo
@@ -156,7 +156,7 @@ def provision_organization(session: Session, *, name: str, owner_email: str,
 
     org_id = org_id or _org_id_from_name(session, name)
     session.add(models.Organization(
-        organization_id=org_id, name=name, erp="zoho",
+        organization_id=org_id, name=name,
         currency=currency.strip().upper() or "INR", plan=plan, config={}))
     session.add(models.User(
         organization_id=org_id, email=owner_email, name=owner_name.strip(),

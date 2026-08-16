@@ -25,7 +25,7 @@ OTHER = "org_other"
 def org(session):
     for oid in (ORG, OTHER):
         session.add(models.Organization(organization_id=oid, name=oid,
-                                        erp="zoho", currency="INR", config={}))
+                                        currency="INR", config={}))
     session.flush()
     return ORG
 

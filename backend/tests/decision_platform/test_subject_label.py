@@ -26,7 +26,7 @@ ORG = "org_subject"
 @pytest.fixture()
 def org(session):
     session.add(models.Organization(organization_id=ORG, name="PIE",
-                                    erp="zoho", currency="INR", config={}))
+                                    currency="INR", config={}))
     session.add(models.Customer(customer_id="cst_pitti", organization_id=ORG,
                                 external_id="z-1", name="Pitti Engineering Ltd"))
     session.add(models.Product(product_id="prd_dnmg", organization_id=ORG,

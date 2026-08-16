@@ -54,7 +54,6 @@ class Organization(Base):
 
     organization_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     name: Mapped[str] = mapped_column(String(255))
-    erp: Mapped[str] = mapped_column(String(32), default="zoho")
     currency: Mapped[str] = mapped_column(String(8), default="INR")
     # The zone the business's *day* is measured in. Storage stays UTC; this is
     # what decides which day a timestamp falls on, and it belongs to the tenant

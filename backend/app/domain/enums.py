@@ -584,5 +584,8 @@ HEADLINE_VALUE_CLASSES = frozenset({ValueClass.ATTRIBUTED})
 # defined here so every layer references one source of truth.
 RESTRICTED_FACT_FIELDS = frozenset(
     {"unit_cost", "cost", "margin", "margin_pct", "cost_delta", "cost_delta_pct",
-     "baseline_margin_pct", "current_margin_pct", "prior_unit_cost", "latest_unit_cost"}
+     "baseline_margin_pct", "current_margin_pct", "prior_unit_cost", "latest_unit_cost",
+     # Profit is cost by subtraction the moment revenue sits beside it, so it
+     # belongs to the same class: no salesperson-visible fact may carry it.
+     "gross_profit", "gross_profit_delta"}
 )

@@ -42,13 +42,23 @@ router = APIRouter(prefix="/api/v1/outcomes", tags=["outcomes"])
 
 
 def _redact(metrics: dict[str, Any]) -> dict[str, Any]:
-    """Restricted keys removed, recursively — omitted, never blanked."""
-    out: dict[str, Any] = {}
-    for key, value in metrics.items():
-        if _is_restricted(key):
-            continue
-        out[key] = _redact(value) if isinstance(value, dict) else value
-    return out
+    """Restricted keys removed, recursively — omitted, never blanked.
+
+    Recurses through lists as well as dicts: ``context/assembler`` flattens a
+    fact list into ``path[i].key`` entries before checking, so a restricted
+    key nested inside a list of dicts is redacted there — this filter must
+    reach the same keys or its parity claim is false. A detector that grows a
+    ``top_…: [{unit_cost: …}]`` breakdown must not become a leak here.
+    """
+    def scrub(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {k: scrub(v) for k, v in value.items()
+                    if not _is_restricted(k)}
+        if isinstance(value, list):
+            return [scrub(v) for v in value]
+        return value
+
+    return scrub(metrics)
 
 
 def _status_filter(raw: Optional[str]) -> Optional[OutcomeStatus]:
@@ -99,10 +109,15 @@ def list_outcomes(
                     models.Decision.assigned_user_id == principal.user_id)))
             snaps = [r for r in snaps if r.decision_id in owned]
 
-    as_of = clock.today()
+    # The business's current date, in the organization's own zone — the same
+    # call every insight route makes. The zone also reaches evaluate(), where
+    # the acceptance *day* and the horizon boundary are computed.
+    tz = getattr(session.get(models.Organization,
+                             principal.organization_id), "timezone", None)
+    as_of = clock.today(tz)
     outcomes = []
     for snap in snaps:
-        ev = outcome_tracker.evaluate(session, snap, as_of=as_of)
+        ev = outcome_tracker.evaluate(session, snap, as_of=as_of, tz=tz)
         if wanted is not None and ev.status is not wanted:
             continue
         evaluation = ev.to_dict()

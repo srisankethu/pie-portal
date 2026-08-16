@@ -425,3 +425,46 @@ def test_an_unknown_status_filter_is_refused_not_empty(api):
     r = client.get("/api/v1/outcomes?status_filter=REALIZED", headers=mgr)
     assert r.status_code == 400
     assert "REALISED" in r.json()["detail"]
+
+
+# ── the review's two hardening findings ──────────────────────────────────────
+def test_redaction_reaches_restricted_keys_nested_in_lists():
+    """``context/assembler`` flattens fact lists into ``path[i].key`` entries
+    before checking, so a restricted key inside a list of dicts is redacted
+    there. The outcomes filter claims parity and must reach the same keys — a
+    detector that grows a ``top_…: [{unit_cost: …}]`` breakdown must not
+    become a leak."""
+    from app.routers.outcomes import _redact
+
+    out = _redact({
+        "revenue_delta_pct": -0.4,
+        "top_declining_products": [
+            {"product": "p-1", "unit_cost": 63.25, "margin_pct": 0.18}],
+        "nested": {"breakdown": [{"gross_profit": 5.0, "orders": 2}]}})
+
+    item = out["top_declining_products"][0]
+    assert item["product"] == "p-1"
+    assert "unit_cost" not in item and "margin_pct" not in item
+    inner = out["nested"]["breakdown"][0]
+    assert inner["orders"] == 2 and "gross_profit" not in inner
+    assert out["revenue_delta_pct"] == -0.4
+
+
+def test_evaluation_days_follow_the_tenants_zone_not_the_servers(session):
+    """Accepted 20:30 UTC is already the *next* business day in Asia/Kolkata
+    (02:00 IST). The acceptance day anchors the window and the horizon
+    boundary, so the tenant's zone — not the deployment's — must decide both,
+    the same argument every insight surface makes by passing ``th.timezone``."""
+    snap = _snapshot(session, category="CUSTOMER_DECLINE",
+                     subject_type="customer", subject_id="c-tz", baseline={},
+                     accepted=datetime(2026, 1, 10, 20, 30, tzinfo=timezone.utc))
+    probe = date(2026, 1, 15)  # inside the horizon in either zone → PENDING
+
+    utc_view = outcome_tracker.evaluate(session, snap, as_of=probe, tz="UTC")
+    ist_view = outcome_tracker.evaluate(session, snap, as_of=probe,
+                                        tz="Asia/Kolkata")
+
+    assert utc_view.window_start == date(2026, 1, 10)
+    assert ist_view.window_start == date(2026, 1, 11)
+    assert utc_view.window_end == date(2026, 4, 10)
+    assert ist_view.window_end == date(2026, 4, 11)

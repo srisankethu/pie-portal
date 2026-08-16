@@ -479,7 +479,8 @@ _EVALUATORS: dict[str, Callable[[Session, models.OutcomeSnapshot, date, date],
 
 
 def evaluate(session: Session, snapshot: models.OutcomeSnapshot, *,
-             as_of: Optional[date] = None) -> OutcomeEvaluation:
+             as_of: Optional[date] = None,
+             tz: Optional[str] = None) -> OutcomeEvaluation:
     """One snapshot's realised outcome, computed from persisted rows.
 
     Deterministic given (rows, ``as_of``): the router passes the business day,
@@ -494,8 +495,13 @@ def evaluate(session: Session, snapshot: models.OutcomeSnapshot, *,
     date reaches the window end does absence of rows become evidence of
     absence.
     """
-    ref = as_of or clock.today()
-    accepted = clock.to_local(clock.aware(snapshot.accepted_at))
+    # The tenant's zone, not the deployment's: which *day* a decision was
+    # accepted on, and whether the horizon has closed, are facts about the
+    # business's calendar — the same argument every insight surface makes by
+    # passing ``th.timezone``. A bare default here flips PENDING a day early
+    # or late for any tenant whose books are not kept in the server's zone.
+    ref = as_of or clock.today(tz)
+    accepted = clock.to_local(clock.aware(snapshot.accepted_at), tz)
     start = accepted.date()
     end = start + timedelta(days=int(snapshot.horizon_days))
 

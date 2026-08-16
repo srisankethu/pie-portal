@@ -6,14 +6,13 @@ for the PIE Operations Dashboard.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
+from datetime import datetime, timezone
+from typing import Any
 
 from sqlalchemy.orm import Session
 
 from .capacity import CapacityCalculator
 from .health import health
-from .instrumentation import get_request_context
 from .metrics import metrics
 from .workload import workload
 

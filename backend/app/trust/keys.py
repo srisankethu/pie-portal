@@ -11,7 +11,16 @@ master key (KEK) and never at rest in the clear. Tenant data is encrypted under
 the tenant's DEK. Destroying the DEK renders every ciphertext written under it
 inert *everywhere it exists* — live tables, replicas, and the backups nobody can
 reach into. That is the difference between "we deleted your rows" and "we can no
-longer read your data, and neither can anyone who takes our backups."
+longer read what was encrypted under your key, and neither can anyone who takes
+our backups."
+
+The scope of that sentence is exactly the ciphertext, and the ciphertext is not
+everything. Two field classes are encrypted under the DEK — the vaulted display
+names and the AI payload log — and the rest of a tenant's rows, plaintext
+display columns included, are untouched by key destruction. The erasure receipt
+enumerates both halves (``trust/erasure.DESTROYED`` and
+``trust/erasure.SURVIVES_PLAINTEXT``); do not describe ``destroy`` as erasing
+"the tenant's data" anywhere a customer might read it.
 
 What this is not: customer-managed keys. The KEK is still ours, so this defends
 against a stolen backup and makes erasure provable; it does not defend against
@@ -145,10 +154,18 @@ def is_destroyed(session: Session, organization_id: str) -> bool:
 
 def destroy(session: Session, organization_id: str, *, reason: str,
             actor_user_id: Optional[str]) -> models.TenantKey:
-    """Crypto-shred this tenant. Irreversible by design.
+    """Destroy this tenant's data key. Irreversible by design.
 
-    The row survives with its key material gone. A deleted row would leave no
-    way to answer "was this erased?", and an erasure nobody can evidence is
+    What that reaches is precisely the ciphertext written under the key — the
+    vaulted display names and the AI payload log — everywhere it exists,
+    backups included. Plaintext columns (``customers.name``, ``products.name``
+    and the rest of ``trust/erasure.SURVIVES_PLAINTEXT``) are not affected;
+    calling this "crypto-shredding the tenant" oversold it, and the signed
+    receipt built on that wording is what a customer security review would
+    have failed.
+
+    The key row survives with its key material gone. A deleted row would leave
+    no way to answer "was this erased?", and an erasure nobody can evidence is
     worth about as much as one that never happened.
     """
     if not (reason or "").strip():

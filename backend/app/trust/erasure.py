@@ -19,6 +19,17 @@ Two operations, in that order, and the order is enforced:
              are not selectively editable — so the proof is the key: the
              ciphertext survives wherever it survives and is inert.
 
+             Key destruction reaches exactly the ciphertext written under the
+             key, and this platform encrypts two field classes that way — the
+             vaulted display names and the AI payload log (``DESTROYED``).
+             Everything else, ``customers.name`` and ``products.name``
+             included, was never encrypted and stays readable
+             (``SURVIVES_PLAINTEXT``). The receipt enumerates both, because a
+             receipt that says "crypto-shredding" and stops is a stronger
+             claim than the mechanism behind it — the first customer security
+             review to open ``vault.py`` would find the plaintext column and
+             then distrust every other line on the trust screen.
+
 The receipt is verifiable with ``verify_receipt`` and, deliberately, is itself
 stored unencrypted. A receipt sealed under the key it certifies the destruction
 of would be unreadable exactly when it is needed.
@@ -240,6 +251,79 @@ MANIFESTED: tuple[tuple[str, Any], ...] = EXPORTED + (
     ("users", models.User),
 )
 
+# ── what the receipt attests ────────────────────────────────────────────────
+#
+# The receipt used to say ``method: "data key destroyed (crypto-shredding)"``
+# and nothing else, which read as "your data is gone" while ``vault.py``
+# conceded in its own docstring that ``customers.name`` and ``products.name``
+# sit in plaintext two tables away. A signed document that overstates what an
+# operation did is worse than no document: the reviewer who finds the plaintext
+# column — minutes of work — then distrusts every honest claim beside it.
+#
+# So the receipt enumerates both halves. ``DESTROYED`` is what key destruction
+# reached; ``SURVIVES_PLAINTEXT`` is what it could not touch and why each item
+# is in the clear. Making these lists shorter is an encryption project
+# (see ``vault.py`` on why the plaintext display columns exist), not a wording
+# choice — do not trim an entry unless the column itself is gone or encrypted.
+#
+# Both lists are stamped onto the receipt row at erase time and covered by its
+# signature, not re-read from these constants at display time: what an erasure
+# did is a fact about that moment, and a receipt rebuilt from today's code
+# would either change its story or stop verifying the day either list is
+# edited.
+
+RECEIPT_METHOD = (
+    "tenant data key (DEK) destroyed; ciphertext written under it is "
+    "permanently unreadable, in live tables, replicas and backups alike — "
+    "plaintext columns are NOT affected and are listed under "
+    "survives_plaintext")
+
+#: The complete set of field classes encrypted under the tenant DEK — which is
+#: exactly what destroying the key unreads. Two entries because exactly two
+#: call sites use ``keys.encrypt_for``: ``vault.put`` and ``disclosure.record``.
+#: A new field class encrypted under the DEK must be added here in the same
+#: change, or every later receipt under-reports what its erasure destroyed.
+DESTROYED: tuple[dict[str, str], ...] = (
+    {"table": "name_vault", "column": "name_ciphertext",
+     "holds": "customer, product and supplier display names — the vault's "
+              "authoritative copy"},
+    {"table": "model_payloads", "column": "payload_ciphertext",
+     "holds": "the exact text of every payload sent to an AI provider about "
+              "this organization"},
+)
+
+#: What key destruction does not reach: columns held in plaintext, each with
+#: the reason it is in the clear. These rows remain readable after erasure and
+#: are removed only by row deletion, which does not reach backups. Honest and
+#: uncomfortable by design — see the block comment above.
+SURVIVES_PLAINTEXT: tuple[dict[str, str], ...] = (
+    {"table": "customers", "column": "name",
+     "why": "plaintext display cache for the many read paths that join it; "
+            "the vault's encrypted copy is destroyed, this one is not"},
+    {"table": "products", "column": "name",
+     "why": "plaintext display cache, same as customers.name"},
+    {"table": "vendors", "column": "name",
+     "why": "plaintext display cache, same as customers.name"},
+    {"table": "vendors", "column": "gstin, pan",
+     "why": "government identifiers, stored plaintext"},
+    {"table": "customer_connector_records", "column": "name, gstin",
+     "why": "identity-matching keys — gstin is plaintext and indexed because "
+            "linking matches on it"},
+    {"table": "item_connector_records", "column": "sku, description",
+     "why": "item text as each source system holds it, used for matching"},
+    {"table": "locations", "column": "name, tax_reg_no",
+     "why": "branch names and their registered GSTINs"},
+    {"table": "organizations", "column": "name",
+     "why": "the tenant's own name, which also heads this receipt"},
+    {"table": "users", "column": "name, email",
+     "why": "staff account identities, needed to keep the audit trail "
+            "attributable"},
+    {"table": "every transactional table", "column":
+     "quantities, prices, dates, document and reference numbers",
+     "why": "the analytical layer computes on plaintext rows by design; only "
+            "identity was split out and encrypted, never the economics"},
+)
+
 
 def _rows(session: Session, model, organization_id: str) -> list[dict[str, Any]]:
     out = []
@@ -311,23 +395,33 @@ def erase(session: Session, organization_id: str, *, reason: str,
           actor_user_id: Optional[str]) -> models.ErasureReceipt:
     """Destroy the tenant's data key and issue a signed receipt.
 
-    Irreversible. The rows stay where they are and become unreadable, which is
-    the only form of deletion that also reaches the backups.
+    Irreversible. Every row encrypted under the key stays where it is and
+    becomes unreadable — the only form of deletion that also reaches the
+    backups. The receipt says exactly that and no more: what the key loss
+    destroyed (``DESTROYED``) and what remains readable in plaintext
+    (``SURVIVES_PLAINTEXT``), both stamped onto the row and covered by the
+    signature.
     """
     manifest = _manifest(session, organization_id)
     keys.destroy(session, organization_id, reason=reason, actor_user_id=actor_user_id)
 
+    attestation = {
+        "method": RECEIPT_METHOD,
+        "destroyed": [dict(entry) for entry in DESTROYED],
+        "survives_plaintext": [dict(entry) for entry in SURVIVES_PLAINTEXT],
+    }
     body = {
         "organization_id": organization_id,
         "erased_at": datetime.now(timezone.utc).isoformat(),
         "reason": reason.strip(),
         "actor_user_id": actor_user_id,
         "manifest": manifest,
-        "method": "data key destroyed (crypto-shredding)",
+        **attestation,
     }
     row = models.ErasureReceipt(
         organization_id=organization_id,
         manifest=manifest,
+        attestation=attestation,
         reason=body["reason"],
         actor_user_id=actor_user_id,
         erased_at=datetime.fromisoformat(body["erased_at"]),
@@ -339,14 +433,23 @@ def erase(session: Session, organization_id: str, *, reason: str,
 
 
 def receipt_body(row: models.ErasureReceipt) -> dict[str, Any]:
-    """The exact structure the signature covers — used to re-verify."""
+    """The exact structure the signature covers — used to re-verify.
+
+    The attestation is read from the row, never rebuilt from the module
+    constants: a receipt is a record of what was claimed when the key was
+    destroyed, and one that re-read today's ``SURVIVES_PLAINTEXT`` would either
+    change its story or fail verification the day that list is edited.
+    """
+    attestation = row.attestation or {}
     return {
         "organization_id": row.organization_id,
         "erased_at": clock.iso(row.erased_at),
         "reason": row.reason,
         "actor_user_id": row.actor_user_id,
         "manifest": row.manifest,
-        "method": "data key destroyed (crypto-shredding)",
+        "method": attestation.get("method", ""),
+        "destroyed": attestation.get("destroyed", []),
+        "survives_plaintext": attestation.get("survives_plaintext", []),
     }
 
 

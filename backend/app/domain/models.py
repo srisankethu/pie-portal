@@ -2153,7 +2153,7 @@ class ModelPayload(Base):
 
 
 class ErasureReceipt(Base):
-    """Proof of what was destroyed, signed, and readable after the fact.
+    """Proof of what was destroyed — and what was not — signed, readable after.
 
     Stored unencrypted on purpose: a receipt sealed under the key whose
     destruction it certifies would be unreadable exactly when it is wanted.
@@ -2164,6 +2164,14 @@ class ErasureReceipt(Base):
     receipt_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
     organization_id: Mapped[str] = mapped_column(String(64), index=True)
     manifest: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    #: What the erasure claimed at the moment it ran: ``method``, ``destroyed``
+    #: (the field classes encrypted under the DEK, which key loss unreads) and
+    #: ``survives_plaintext`` (the columns key destruction cannot touch, each
+    #: with its reason). Stamped by ``trust/erasure.erase`` and covered by the
+    #: signature — kept on the row rather than re-read from code so a later
+    #: edit to those lists neither rewrites an old receipt's story nor breaks
+    #: its verification.
+    attestation: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     reason: Mapped[str] = mapped_column(String(512), default="")
     actor_user_id: Mapped[Optional[str]] = mapped_column(String(64))
     erased_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),

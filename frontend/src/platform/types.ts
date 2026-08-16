@@ -1227,6 +1227,22 @@ export interface AccessReport {
   note: string;
 }
 
+/** One field class the key destruction reached: a column of ciphertext
+ *  written under the tenant's DEK, now permanently unreadable. */
+export interface ErasureDestroyedEntry {
+  table: string;
+  column: string;
+  holds: string;
+}
+
+/** One column key destruction could not touch — held in plaintext, with the
+ *  reason it is in the clear. The honest half of the receipt. */
+export interface ErasureSurvivorEntry {
+  table: string;
+  column: string;
+  why: string;
+}
+
 export interface ErasureReceipt {
   organization_id: string;
   erased_at: string | null;
@@ -1234,6 +1250,10 @@ export interface ErasureReceipt {
   actor_user_id: string | null;
   manifest: Record<string, unknown>;
   method: string;
+  /** Stamped at erase time and covered by the signature, so the receipt keeps
+   *  its story even after the code's own lists move on. */
+  destroyed: ErasureDestroyedEntry[];
+  survives_plaintext: ErasureSurvivorEntry[];
   signature: string;
   /** Re-checked server-side on every read, so a receipt cannot be believed on
    *  the strength of its own presence. */

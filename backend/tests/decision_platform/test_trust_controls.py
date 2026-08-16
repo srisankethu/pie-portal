@@ -381,6 +381,118 @@ def test_status_is_false_before_any_erasure(session, org):
     assert erasure.status(session, ORG) == {"erased": False, "receipt": None}
 
 
+# ── receipt honesty ─────────────────────────────────────────────────────────
+#
+# The receipt once said ``method: "data key destroyed (crypto-shredding)"`` and
+# stopped, while `vault.py` conceded `customers.name` and `products.name` stay
+# plaintext — a signed overstatement, and the finding most likely to fail a
+# customer security review. These tests pin the honest shape: the receipt must
+# enumerate what key destruction reached and what survives in the clear, and
+# removing either enumeration must fail here, not in a procurement call.
+
+def test_the_receipt_no_longer_claims_crypto_shredding(session, org):
+    row = erasure.erase(session, ORG, reason="Customer requested erasure",
+                        actor_user_id="u1")
+    method = erasure.receipt_body(row)["method"]
+    assert "shred" not in method.lower(), (
+        "'crypto-shredding' reads as 'your data is gone'; the method must say "
+        "what was actually destroyed — the key.")
+    assert "data key" in method.lower() or "dek" in method.lower()
+    assert "plaintext" in method.lower(), (
+        "the method line itself must point at the surviving plaintext, because "
+        "it is the one sentence everyone quotes without the rest of the receipt")
+
+
+def test_the_receipt_enumerates_what_key_destruction_reached(session, org):
+    """`destroyed` must be the DEK-encrypted field classes — exactly those.
+
+    Two entries because exactly two call sites use `keys.encrypt_for`
+    (`vault.put`, `disclosure.record`). A third encrypted field class must be
+    added to `erasure.DESTROYED` in the same change, and this assertion is the
+    reminder.
+    """
+    row = erasure.erase(session, ORG, reason="Customer requested erasure",
+                        actor_user_id="u1")
+    destroyed = erasure.receipt_body(row)["destroyed"]
+    assert {(d["table"], d["column"]) for d in destroyed} == {
+        ("name_vault", "name_ciphertext"),
+        ("model_payloads", "payload_ciphertext"),
+    }
+    assert all(d["holds"] for d in destroyed), (
+        "an entry that does not say what the ciphertext held tells the "
+        "customer nothing")
+
+
+def test_the_receipt_enumerates_the_plaintext_that_survives(session, org):
+    """The uncomfortable half, and the one this receipt exists to state.
+
+    If someone trims `SURVIVES_PLAINTEXT` — because it reads badly in a demo —
+    this fails. The enumeration may only shrink when a column is actually
+    encrypted or dropped.
+    """
+    row = erasure.erase(session, ORG, reason="Customer requested erasure",
+                        actor_user_id="u1")
+    survives = erasure.receipt_body(row)["survives_plaintext"]
+
+    assert survives, "the surviving-plaintext enumeration must not be removed"
+    named = {(s["table"], s["column"]) for s in survives}
+    # The two columns vault.py concedes, plus the identifiers the positioning
+    # review found beyond them. Named individually so dropping any one of them
+    # from the receipt is a test failure with that row in the diff.
+    for must_name in (("customers", "name"),
+                      ("products", "name"),
+                      ("vendors", "name"),
+                      ("vendors", "gstin, pan"),
+                      ("customer_connector_records", "name, gstin")):
+        assert must_name in named, f"receipt no longer discloses {must_name}"
+    assert all(s["why"] for s in survives), (
+        "an exclusion nobody can explain is one nobody should trust — same "
+        "rule as EXCLUDED_REASONS")
+
+
+def test_the_enumerations_are_covered_by_the_signature(session, org):
+    """Honesty that is not signed is a webpage, not a receipt."""
+    row = erasure.erase(session, ORG, reason="Customer requested erasure",
+                        actor_user_id="u1")
+    assert erasure.verify_receipt(row)
+    doctored = dict(row.attestation)
+    doctored["survives_plaintext"] = []          # "nothing survives" — the lie
+    row.attestation = doctored
+    assert not erasure.verify_receipt(row), (
+        "stripping the surviving-plaintext disclosure must break the signature")
+
+
+def test_the_receipt_keeps_its_story_when_the_code_moves_on(session, org, monkeypatch):
+    """The attestation is a fact about the moment of erasure, kept on the row.
+
+    A receipt that rebuilt its claims from the module constants would change
+    its story — or stop verifying — the day `SURVIVES_PLAINTEXT` is edited.
+    Simulate that day and require the stored receipt to stand unchanged.
+    """
+    row = erasure.erase(session, ORG, reason="Customer requested erasure",
+                        actor_user_id="u1")
+    original = erasure.receipt_body(row)
+
+    monkeypatch.setattr(erasure, "RECEIPT_METHOD", "a different claim")
+    monkeypatch.setattr(erasure, "SURVIVES_PLAINTEXT",
+                        ({"table": "x", "column": "y", "why": "edited later"},))
+
+    assert erasure.receipt_body(row) == original
+    assert erasure.verify_receipt(row), (
+        "editing the constants must not invalidate receipts already issued")
+
+
+def test_the_status_payload_carries_the_enumerations_to_the_owner(session, org):
+    """`status` is what GET /trust/erasure serves — the enumeration has to
+    reach the screen, not sit in a column nobody renders."""
+    erasure.erase(session, ORG, reason="Customer requested erasure",
+                  actor_user_id="u1")
+    receipt = erasure.status(session, ORG)["receipt"]
+    assert receipt["survives_plaintext"]
+    assert receipt["destroyed"]
+    assert receipt["verified"] is True
+
+
 # ── the bundle contract ─────────────────────────────────────────────────────
 def test_display_names_never_reach_the_prompt():
     bundle = ContextBundle(

@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import entitlements as plan
+from .observability.instrumentation import api_instrumentation_middleware
 from .config import settings
 from .pie_service import pie_service
 from .routers import (accounts, admin, ai_settings, approvals, commercial,
@@ -187,7 +188,6 @@ app.add_middleware(
 )
 
 # Observability instrumentation: metrics, logging, health checks.
-from .observability.instrumentation import api_instrumentation_middleware
 app.add_middleware(api_instrumentation_middleware)
 
 # Commercial Decision Platform (Phase 1 foundation).

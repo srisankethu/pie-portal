@@ -187,3 +187,19 @@ def test_lookup_record_is_exact_and_never_guesses():
     assert pie_service.lookup_record("XZ-NOTREAL-778") is None
     assert pie_service.lookup_record("") is None
     assert pie_service.lookup_record(None) is None
+
+
+def test_a_cross_namespace_ambiguity_is_not_an_exact_record(monkeypatch):
+    """A bare index lookup can return the store's structured ambiguity instead
+    of a row — possible once a second manufacturer pack is indexed and one
+    identifier exists in several namespaces. An ambiguity is short of an exact
+    hit, so ``lookup_record`` must answer None rather than hand a resolution
+    object to callers expecting a decoded catalogue row."""
+    index = pie_service._ensure_index()
+    assert index is not None, "catalogue must be loaded for this test"
+
+    class _Ambiguity:  # duck-shape of the store's resolution — deliberately not a dict
+        outcome = "AMBIGUOUS"
+
+    monkeypatch.setattr(index, "lookup_material", lambda _key: _Ambiguity())
+    assert pie_service.lookup_record("2001174") is None

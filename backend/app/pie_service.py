@@ -296,10 +296,16 @@ class PieService:
         if index is None:
             return None
         try:
-            return index.lookup_material(str(identifier))
+            rec = index.lookup_material(str(identifier))
         except Exception:  # noqa: BLE001 — provenance must not break a sync
             log.exception("PIE index lookup failed for %r", identifier)
             return None
+        # A bare lookup can also return the store's structured ambiguity when
+        # one identifier exists in several namespaces — possible only once a
+        # second manufacturer pack is indexed. That is not the decoded row this
+        # method promises: an ambiguity is short of an exact hit, so per the
+        # contract above the caller records nothing.
+        return rec if isinstance(rec, dict) else None
 
     @property
     def catalog_version(self) -> str:

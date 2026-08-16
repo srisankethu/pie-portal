@@ -1,4 +1,4 @@
-import type { AccessReport, AiByokView, AiKeyTestResult, AiMetricsReport, AiReadiness, Account, AccountItem, StatusFilter, ApprovalRequest, DisclosureStatement, EntityKind, ErasureState, Identity, IdentityCoverage, IdentityPolicy, IdentitySuggestion, ConnectionCheck, ConnectionsView, FixedThresholds, MarginPolicy, MarginPolicyPatch, NewConnectionInput, OnboardingView, PayloadsReport, SignupOffer, ZohoConnection, ZohoCredential, ZohoVisibleOrg, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, DecisionTrace, OrgPolicy, PlatformSession, PlatformUser, QuoteGate, Role, SkippedRows, SyncOptions, SyncStartResponse, SyncState, ThresholdView, ZohoConnectionInput } from "./types";
+import type { AccessReport, AiByokView, AiKeyTestResult, AiMetricsReport, AiReadiness, Account, AccountItem, StatusFilter, ApprovalRequest, DisclosureStatement, EntityKind, ErasureState, Identity, IdentityCoverage, IdentityPolicy, IdentitySuggestion, ConnectionCheck, ConnectionsView, FixedThresholds, MarginPolicy, MarginPolicyPatch, NewConnectionInput, OnboardingView, PayloadsReport, SignupOffer, ZohoConnection, ZohoCredential, ZohoVisibleOrg, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, DecisionTrace, OrgPolicy, PlatformSession, PlatformUser, QuoteGate, Role, SkippedRows, SyncOptions, SyncStartResponse, SyncState, ThresholdView, ZohoConnectionInput, AuthorizeResponse } from "./types";
 
 import { setMoneyCurrency } from "../money";
 import { setBusinessTimezone } from "../when";
@@ -706,6 +706,10 @@ export const papi = {
 
   checkConnection: (t: string, id: string) =>
     req<ConnectionCheck>(`/api/v1/connections/${id}/check`, { method: "POST" }, t),
+
+  // ── OAuth authorization flow ──────────────────────────────────────────────
+  authorizeZoho: (t: string, dc: string) =>
+    req<AuthorizeResponse>(`/api/v1/connections/zoho/authorize?dc=${encodeURIComponent(dc)}`, {}, t),
 
   // ── the AI layer, from the outside (owner only) ───────────────────────────
   /** Which provider will really run, and what the next decision run would

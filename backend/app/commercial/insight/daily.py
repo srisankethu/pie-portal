@@ -224,7 +224,10 @@ def assemble(*, now: datetime, as_of: Optional[date], state_on: Optional[date],
         _tiles(AT_RISK, _at_risk(stock or {}, supply or {}, cadence or {}, cash or {})),
         _tiles(COMMITTED, _committed(supply or {}, cash or {}, committed_weeks),
                committed_question(committed_weeks)),
-        _tiles(MOVED, _moved(moved or {}), moved_question(moved_window)),
+        _tiles(MOVED,
+               _moved(moved or {},
+                      on_document_dates=bool(moved_window and moved_window[0])),
+               moved_question(moved_window)),
     ]
     return {
         "as_of": as_of.isoformat() if as_of else None,
@@ -328,27 +331,40 @@ def _committed(supply: dict, cash: dict, weeks: int = 1) -> list[Tile]:
     ]
 
 
-def _moved(moved: dict) -> list[Tile]:
-    """What the last sync brought in.
+def _moved(moved: dict, *, on_document_dates: bool = False) -> list[Tile]:
+    """What moved — read on one of two calendars, and honest about which.
 
-    Ingest time, not business date: a purchase order dated last week that
-    arrived in this morning's sync counts here. That is the right reading for a
-    morning briefing — it is new *to you* — but it makes this band "what PIE
-    learned", not "what the business did", and the screen says so.
+    The default is ingest time: a purchase order dated last week that arrived
+    in this morning's sync counts, because it is new *to you*. That makes the
+    band "what PIE learned", not "what the business did", and the tiles say so.
+
+    ``on_document_dates`` is the reading for a chosen day, and it exists
+    because the default was wrong for exactly the control that looks most
+    natural: pressing **Today** the morning after a first sync showed the whole
+    book, since every row was "first seen" that day. A person choosing a day
+    means documents *dated* that day. Customers and items have no business
+    date, so they stay on first-seen in both modes — and keep saying so, which
+    is what stops the one band from quietly meaning two things.
     """
+    dated = "The document's own date — not when the platform first saw it."
+    first_seen = ("First seen by the platform in the most recent sync."
+                  if not on_document_dates else
+                  "First seen by the platform in the chosen window — a master "
+                  "record has no business date to be counted by.")
     spec = [
-        ("invoices", "Invoices raised", "customers"),
-        ("payments", "Payments received", "payments"),
-        ("purchase_orders", "Purchase orders placed", "supply"),
-        ("customers", "New customers", "customer"),
-        ("products", "New items", "stock"),
+        ("invoices", "Invoices raised", "customers", dated),
+        ("payments", "Payments received", "payments", dated),
+        ("purchase_orders", "Purchase orders placed", "supply", dated),
+        ("customers", "New customers", "customer", first_seen),
+        ("products", "New items", "stock", first_seen),
     ]
     out = []
-    for key, label, route in spec:
+    for key, label, route, dated_why in spec:
         entry = moved.get(key) or {}
         out.append(Tile(
             key=key, label=label,
-            why="First seen by the platform in the most recent sync.",
+            why=(dated_why if on_document_dates else
+                 "First seen by the platform in the most recent sync."),
             count=int(entry.get("count") or 0),
             amount=(float(entry["amount"]) if entry.get("amount") is not None else None),
             route=route,
@@ -374,23 +390,25 @@ def moved_question(window: Optional[tuple[Optional[date], Optional[date]]]
                    ) -> Optional[str]:
     """What the MOVED band is reporting over, in words, or None for the default.
 
-    Written as "first seen by the platform" rather than a bare date range,
-    because the band counts ``created_at`` — when PIE learned of a row — not the
-    document's own date. A purchase order dated in March that arrived in
-    yesterday's sync belongs to yesterday here, and a subtitle saying only
-    "1–7 August" would invite the other reading.
+    A chosen window is counted on the documents' own dates — the subtitle says
+    "dated", and means it. It used to say "first seen by the platform", which
+    was the truthful description of counting ``created_at`` and the wrong
+    behaviour behind it: the morning after a first sync, **Today** showed the
+    whole book, because every row the platform holds had been first seen that
+    day. Only the *default* view (no window chosen) still reads by ingest —
+    "what the last sync brought in" is genuinely a question about the platform,
+    and its subtitle stays the default band question for that reason.
     """
     if not window or window[0] is None:
         return None
     frm, to = window
     if to == frm:
-        return f"What the platform first saw on {frm.isoformat()}"
+        return f"Documents dated {frm.isoformat()}"
     if to is None:
         # Open at the top — "last 30 days" runs to now, and calling that a day
-        # is how a caught-in-review wording bug reads on a live screen: the
-        # band said "first saw on 2026-07-10" over a month of rows.
-        return f"What the platform first saw since {frm.isoformat()}"
-    return f"What the platform first saw between {frm.isoformat()} and {to.isoformat()}"
+        # is how a caught-in-review wording bug reads on a live screen.
+        return f"Documents dated {frm.isoformat()} or later"
+    return f"Documents dated {frm.isoformat()} to {to.isoformat()}"
 
 
 def window_since(last_sync: Optional[dict], previous_sync: Optional[dict],

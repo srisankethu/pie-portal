@@ -223,16 +223,19 @@ def test_the_band_says_which_window_it_is_reporting_over():
     assert daily.moved_question(None) is None
     assert daily.moved_question((None, None)) is None
 
+    # A chosen window counts on the documents' own dates, and says so — the
+    # "first seen" wording was the truthful label on the behaviour that showed
+    # the entire book under "Today" the morning after a first sync.
     # A range whose ends are the same day reads as a day, not as a range.
     assert daily.moved_question((date(2026, 8, 7), date(2026, 8, 7))) == (
-        "What the platform first saw on 2026-08-07")
+        "Documents dated 2026-08-07")
     # Open at the top is a *range* running to now, and calling it a day is how
-    # a live screen came to say "first saw on 2026-07-10" over a month of rows.
+    # a live screen came to say one day over a month of rows.
     assert daily.moved_question((date(2026, 7, 10), None)) == (
-        "What the platform first saw since 2026-07-10")
+        "Documents dated 2026-07-10 or later")
 
     assert daily.moved_question((date(2026, 8, 1), date(2026, 8, 7))) == (
-        "What the platform first saw between 2026-08-01 and 2026-08-07")
+        "Documents dated 2026-08-01 to 2026-08-07")
 
 
 def test_only_the_moved_band_takes_the_window():
@@ -243,7 +246,7 @@ def test_only_the_moved_band_takes_the_window():
         moved_window=(date(2026, 8, 1), date(2026, 8, 7)))
 
     by_key = {b["key"]: b for b in out["bands"]}
-    assert by_key["MOVED"]["question"].startswith("What the platform first saw")
+    assert by_key["MOVED"]["question"].startswith("Documents dated")
     # Every other band keeps the question it always had — none of them is a
     # period, so none of them may appear to have been re-scoped.
     for key in ("NEEDS_YOU", "AT_RISK", "COMMITTED"):

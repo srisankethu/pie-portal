@@ -4078,28 +4078,43 @@ def _last_two_syncs(session: Session, org: str) -> tuple[Optional[dict], Optiona
 
 def _moved_since(session: Session, org: str, since: datetime,
                  companies: Companies,
-                 until: Optional[datetime] = None) -> dict[str, Any]:
-    """What the platform first saw after ``since``, by kind and by company.
+                 until: Optional[datetime] = None,
+                 on_document_dates: bool = False) -> dict[str, Any]:
+    """What moved in the window, by kind and by company — with two calendars.
 
-    Keyed on ``created_at`` — when PIE first wrote the row — not on the
-    document's own date. A purchase order dated last week that arrived in this
-    morning's sync belongs in this morning's briefing, because it is new to the
-    reader. That makes the band "what the platform learned", which is a
-    different claim from "what the business did", and the screen says so.
+    The default reading is keyed on ``created_at`` — when PIE first wrote the
+    row. A purchase order dated last week that arrived in this morning's sync
+    belongs in this morning's briefing, because it is new to the reader. That
+    makes the band "what the platform learned", a different claim from "what
+    the business did", and the screen says so.
+
+    ``on_document_dates`` switches to the document's own date, and exists
+    because the default reading is wrong for exactly the control that looks
+    most natural: somebody pressing **Today** the morning after a first sync
+    was shown the entire book, because every row the platform holds was
+    "first seen" that day. Technically true, useless, and — worse — it reads
+    as data. A person choosing a day means invoices *dated* that day and
+    payments *received* that day; the ingest calendar is only the right answer
+    when nobody chose one. Customers and items stay on ``created_at`` in both
+    modes — a master record has no business date to be counted by — and their
+    tiles say "first seen" either way.
 
     Counted per company here rather than split out of a builder's list: those
     lists are capped, so a breakdown taken from one would not add up to its own
     headline.
     """
-    spec: list[tuple[str, Any, Optional[str]]] = [
-        ("invoices", models.InvoiceDoc, "total"),
-        ("payments", models.PaymentApplication, "amount"),
-        ("purchase_orders", models.PurchaseOrderDoc, "total"),
-        ("customers", models.Customer, None),
-        ("products", models.Product, None),
+    spec: list[tuple[str, Any, Optional[str], Optional[str]]] = [
+        ("invoices", models.InvoiceDoc, "total", "date"),
+        # `amount_applied`, not `amount` — the column check below silently
+        # dropped the sum for years because the name was guessed wrong, so the
+        # "Payments received" tile counted receipts and never said how much.
+        ("payments", models.PaymentApplication, "amount_applied", "paid_on"),
+        ("purchase_orders", models.PurchaseOrderDoc, "total", "date"),
+        ("customers", models.Customer, None, None),
+        ("products", models.Product, None, None),
     ]
     out: dict[str, Any] = {}
-    for key, model, amount_col in spec:
+    for key, model, amount_col, date_col in spec:
         if not hasattr(model, "created_at"):
             continue
         has_conn = hasattr(model, "connection_id")
@@ -4107,12 +4122,19 @@ def _moved_since(session: Session, org: str, since: datetime,
         if amount_col is not None and hasattr(model, amount_col):
             cols.append(func.sum(getattr(model, amount_col)))
         group = [model.connection_id] if has_conn else []
-        bounds = [model.organization_id == org, model.created_at >= since]
-        # Inclusive at the top: ``until`` already carries end-of-day when the
-        # caller chose a date, so a strict `<` here would drop everything that
-        # arrived on the last day of the range somebody asked for.
-        if until is not None:
-            bounds.append(model.created_at <= until)
+        bounds = [model.organization_id == org]
+        if on_document_dates and date_col is not None:
+            business_date = getattr(model, date_col)
+            bounds.append(business_date >= since.date())
+            if until is not None:
+                bounds.append(business_date <= until.date())
+        else:
+            bounds.append(model.created_at >= since)
+            # Inclusive at the top: ``until`` already carries end-of-day when
+            # the caller chose a date, so a strict `<` here would drop
+            # everything that arrived on the last day of the range asked for.
+            if until is not None:
+                bounds.append(model.created_at <= until)
         rows = session.execute(
             select(*group, *cols).where(*bounds).group_by(*group)).all()
 
@@ -4258,7 +4280,10 @@ def daily(moved_from: Optional[date] = Query(None),
     since, until = daily_view.window_since(last_sync, previous_sync,
                                            now=clock.now(),
                                            frm=moved_from, to=moved_to)
-    moved = (_moved_since(session, org, since, companies, until=until)
+    # A chosen day means business dates; no choice means "since the last
+    # sync", by ingest. See `_moved_since` for why the two calendars exist.
+    moved = (_moved_since(session, org, since, companies, until=until,
+                          on_document_dates=moved_from is not None)
              if since else {})
 
     return _envelope(

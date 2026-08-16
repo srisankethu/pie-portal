@@ -100,7 +100,9 @@ def _org_id_from_name(session: Session, name: str) -> str:
 def provision_organization(session: Session, *, name: str, owner_email: str,
                            owner_name: str, currency: str = "INR",
                            org_id: Optional[str] = None,
-                           password: Optional[str] = None) -> tuple[str, str]:
+                           password: Optional[str] = None,
+                           must_change_password: bool = True,
+                           plan: Optional[str] = None) -> tuple[str, str]:
     """Create a new tenant: an Organization and its first owner account.
 
     The Tier-1 onboarding path — everything after this is self-serve through
@@ -110,9 +112,24 @@ def provision_organization(session: Session, *, name: str, owner_email: str,
     ``ensure_org_and_users``: provisioning the same customer twice is a mistake
     worth hearing about, not a state to converge on.
 
-    Returns ``(organization_id, temporary_password)``. The password is returned
-    here and never again — only its hash is stored, and the account is flagged
-    to change it at first sign-in.
+    Returns ``(organization_id, password)``. It is returned here and never
+    again — only its hash is stored.
+
+    Two parameters exist for the self-serve caller (``app/onboarding.py``) and
+    default to the operator-provisioning behaviour that was here before them:
+
+    ``must_change_password`` — true for a password *this* function invented and
+    an operator will read out, false for one the account holder just chose. The
+    forced change exists because an issued credential has been through a third
+    party; a self-chosen one has not, and forcing a change to a second password
+    thirty seconds after the first teaches people to pick worse ones. Note this
+    is the same distinction ``settings.ISSUED_ACCOUNTS_MUST_CHANGE_PASSWORD``
+    draws, not a way around it — that flag covers issued passwords, and this is
+    the parameter that says whether this one was issued.
+
+    ``plan`` — the licence to stamp on the row. ``None`` leaves it NULL, which
+    resolves to ``settings.DEFAULT_PLAN``; a caller who must not inherit that
+    (sign-up: ``DEFAULT_PLAN`` defaults to *platform*) names one explicitly.
     """
     name = name.strip()
     if not name:
@@ -133,11 +150,12 @@ def provision_organization(session: Session, *, name: str, owner_email: str,
     org_id = org_id or _org_id_from_name(session, name)
     session.add(models.Organization(
         organization_id=org_id, name=name, erp="zoho",
-        currency=currency.strip().upper() or "INR", config={}))
+        currency=currency.strip().upper() or "INR", plan=plan, config={}))
     session.add(models.User(
         organization_id=org_id, email=owner_email, name=owner_name.strip(),
         role=Role.OWNER.value, active=True,
-        password_hash=hash_password(issued), must_change_password=True))
+        password_hash=hash_password(issued),
+        must_change_password=must_change_password))
     session.flush()
     return org_id, issued
 

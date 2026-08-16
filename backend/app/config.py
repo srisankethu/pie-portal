@@ -131,6 +131,24 @@ class Settings:
     # How long the one-per-books free month of Commercial Intelligence runs.
     INTELLIGENCE_TRIAL_DAYS: int = int(os.environ.get("INTELLIGENCE_TRIAL_DAYS", "30"))
 
+    # ── Self-serve sign-up (app/onboarding.py) ───────────────────────────────
+    # Whether anyone who can reach this deployment may create a tenant for
+    # themselves. **Off unless a deployment says otherwise**, and that default
+    # is the whole point rather than caution: this is the one endpoint here that
+    # writes rows without a token, so an existing single-tenant install that
+    # pulls new code must not silently start accepting strangers. A hosted
+    # deployment sets SELF_SERVE_SIGNUP=1 (and, almost certainly, DEFAULT_PLAN=free).
+    #
+    # It does not decide the *plan* a sign-up lands on — `onboarding.SIGNUP_PLAN`
+    # pins that to free explicitly, because DEFAULT_PLAN defaults to "platform"
+    # and inheriting it here would hand every stranger the top tier.
+    SELF_SERVE_SIGNUP: bool = os.environ.get("SELF_SERVE_SIGNUP", "0") == "1"
+    # Sign-ups accepted from one address per hour, across the process. A speed
+    # bump, not a control — see `routers/onboarding.py`, which says plainly what
+    # it does and does not stop.
+    SIGNUP_RATE_LIMIT_PER_HOUR: int = int(
+        os.environ.get("SIGNUP_RATE_LIMIT_PER_HOUR", "5"))
+
     # The single supported organization for V1 (one org, one ERP). organization_id
     # is carried on every record for future multi-org, but no cross-org logic exists.
     DEFAULT_ORG_ID: str = os.environ.get("DEFAULT_ORG_ID", "org_pie")

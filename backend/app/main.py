@@ -21,7 +21,7 @@ from .pie_service import pie_service
 from .routers import (accounts, admin, ai_settings, approvals, commercial,
                       connections, data_status,
                       decisions, entitlements, identity, internal,
-                      platform_auth, quote,
+                      onboarding, platform_auth, quote,
                       insight, quote_intelligence, quote_support, trust)
 
 logging.basicConfig(level=logging.INFO)
@@ -181,6 +181,11 @@ app.add_middleware(
 
 # Commercial Decision Platform (Phase 1 foundation).
 app.include_router(platform_auth.router)
+# The way in for a tenant nobody has provisioned by hand. Beside the sign-in
+# router because it answers the same question — how does a person get a session
+# — and no plan gate for the same reason: a plan is something an organization
+# has, and this runs before there is one.
+app.include_router(onboarding.router)
 
 # The Quote Builder. One surface of the same product, and — since the demo login
 # beside it was removed — one identity: `/api/quotes` authenticates the same

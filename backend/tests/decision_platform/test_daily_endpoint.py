@@ -86,6 +86,7 @@ def test_choosing_today_counts_document_dates_not_the_sync_that_just_ran(client)
     question."""
     from datetime import date, timedelta
 
+    from app.config import settings
     from app.db import get_session
     from app.domain import models
 
@@ -97,9 +98,15 @@ def test_choosing_today_counts_document_dates_not_the_sync_that_just_ran(client)
     try:
         # The whole book arrives in one sync "now": an old invoice and one
         # genuinely dated today. Both have created_at == now.
+        # The org the fixture actually seeded, not a literal. This read
+        # `"org_sanketh"` when the branch was written, and #95 renamed the
+        # default organization to `org_pie` while the branch sat unmerged — so
+        # the rows landed in an organization that no longer exists, the endpoint
+        # correctly found nothing, and the test failed claiming the *feature*
+        # was broken. Reading the setting keeps it true through the next rename.
         for n, d in (("INV-OLD", old_day), ("INV-TODAY", today)):
             session.add(models.InvoiceDoc(
-                organization_id="org_sanketh", external_ref=n, number=n,
+                organization_id=settings.DEFAULT_ORG_ID, external_ref=n, number=n,
                 date=d, total=1000, balance=1000, status="sent"))
         session.commit()
     finally:

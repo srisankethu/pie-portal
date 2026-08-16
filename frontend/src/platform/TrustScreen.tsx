@@ -363,6 +363,30 @@ function ErasurePanel({
             <tr><td>Reason given</td><td>{r.reason}</td></tr>
             <tr><td>Requested by</td><td>{r.actor_user_id || "—"}</td></tr>
             <tr><td>Method</td><td>{r.method}</td></tr>
+            {/* Both halves of the attestation, verbatim from the signed body.
+                The uncomfortable half is the one this panel must not omit:
+                a receipt that lists only what was destroyed is the
+                overstatement the server just stopped making. */}
+            <tr>
+              <td>Destroyed with the key</td>
+              <td>
+                {(r.destroyed ?? []).map((d) => (
+                  <div key={`${d.table}.${d.column}`}>
+                    <span className="mono">{d.table}.{d.column}</span> — {d.holds}
+                  </div>
+                ))}
+              </td>
+            </tr>
+            <tr>
+              <td>Still readable, in plaintext</td>
+              <td>
+                {(r.survives_plaintext ?? []).map((s) => (
+                  <div key={`${s.table}:${s.column}`}>
+                    <span className="mono">{s.table}: {s.column}</span> — {s.why}
+                  </div>
+                ))}
+              </td>
+            </tr>
             <tr>
               <td>Signature</td>
               <td className="mono" style={{ wordBreak: "break-all" }}>{r.signature}</td>
@@ -399,13 +423,15 @@ function ErasurePanel({
         sub="Irreversible, and not undone by a restore from backup." />
 
       <Alert severity="warning" sx={{ mb: 2 }}>
-        <AlertTitle>What this does</AlertTitle>
-        It destroys the encryption key this organization&rsquo;s data is held
-        under. Customer and item names, and every payload ever sent to a model,
-        become permanently unreadable — in this database and in every backup of
-        it, because a backup cannot be selectively edited. Decisions, signals and
-        figures that were computed from those records remain as rows, without the
-        names. Nobody, including the vendor, can reverse this.
+        <AlertTitle>What this does — and what it cannot do</AlertTitle>
+        It destroys this organization&rsquo;s data encryption key. Everything
+        encrypted under that key — the vaulted customer, product and supplier
+        names, and every payload ever sent to a model — becomes permanently
+        unreadable, in this database and in every backup of it, because a backup
+        cannot be selectively edited. What was never encrypted stays readable:
+        plaintext display-name columns, tax identifiers, and every transactional
+        figure. The signed receipt lists both halves exactly. Nobody, including
+        the vendor, can reverse the key destruction.
       </Alert>
 
       {error && <Box sx={{ mb: 2 }}><ErrorState error={error} /></Box>}

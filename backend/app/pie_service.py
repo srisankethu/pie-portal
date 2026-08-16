@@ -152,6 +152,56 @@ def _read_catalog_version(path: Optional[Path]) -> str:
     return ""
 
 
+#: ``pack_families``' memo. A sentinel rather than ``None`` because ``None``
+#: is a real answer ("no pack readable") — and deliberately not a cached one:
+#: a pack fetched after boot must be seen on the next call, or every family
+#: edit stays refused until a restart for a failure that has been fixed.
+_FAMILIES_UNREAD = object()
+_families_memo: Any = _FAMILIES_UNREAD
+
+
+def pack_families() -> Optional[tuple]:
+    """The family vocabulary the configured pack declares, or None without a pack.
+
+    Read from the manifest alone: resolving a code needs the whole engine, but
+    the vocabulary is one YAML list, and a policy save must not pay for grammar
+    compilation to check five key names. Parsed by pie-parser's own
+    ``families_from_config`` rather than a local re-reading of the YAML, so
+    "what counts as a declared family" keeps exactly one definition — the one
+    ``load_pack`` itself uses.
+
+    ``None`` means *no pack is readable here* — a checkout without the private
+    submodule — which is a different answer from an empty vocabulary. The
+    caller must treat it as "there is nothing to validate against", never as
+    "every name is fine"; ``commercial.policy.save_for_org`` refuses a family
+    edit outright in that state rather than waving it through.
+
+    A successful read is cached for the life of the process, like the
+    catalogue: the pack is loaded once and never reloaded, so re-reading the
+    manifest could only ever disagree with the engine already running. A
+    *failed* read is not cached — the pack may be fetched after boot, and a
+    memoized failure would keep refusing family edits until a restart.
+    """
+    global _families_memo
+    if _families_memo is not _FAMILIES_UNREAD:
+        return _families_memo
+    try:
+        root = str(settings.PIE_PARSER_ROOT)
+        if root not in sys.path:
+            sys.path.insert(0, root)
+        import yaml  # noqa: PLC0415 — deferred, like every pie-parser import here
+        from engine.pack import families_from_config  # noqa: PLC0415
+
+        manifest = settings.PIE_PACK / "manifest.yaml"
+        doc = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+        _families_memo = families_from_config(doc, source=str(manifest))
+        return _families_memo
+    except Exception:  # noqa: BLE001 — an absent pack must not 500 a policy save
+        log.warning("PIE pack manifest unreadable; no family vocabulary to "
+                    "validate against", exc_info=True)
+        return None
+
+
 class PieService:
     """Loads pie-parser once and resolves RFQ lines through it."""
 
@@ -258,10 +308,16 @@ class PieService:
         if index is None:
             return None
         try:
-            return index.lookup_material(str(identifier))
+            rec = index.lookup_material(str(identifier))
         except Exception:  # noqa: BLE001 — provenance must not break a sync
             log.exception("PIE index lookup failed for %r", identifier)
             return None
+        # A bare lookup can also return the store's structured ambiguity when
+        # one identifier exists in several namespaces — possible only once a
+        # second manufacturer pack is indexed. That is not the decoded row this
+        # method promises: an ambiguity is short of an exact hit, so per the
+        # contract above the caller records nothing.
+        return rec if isinstance(rec, dict) else None
 
     @property
     def catalog_version(self) -> str:

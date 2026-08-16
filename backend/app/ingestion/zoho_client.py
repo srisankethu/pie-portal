@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any, Callable, Iterable, Iterator, Optional
 
+from ..clock import utc_stamp
 from ..config import settings
 
 log = logging.getLogger("pie_portal.zoho")
@@ -471,6 +472,10 @@ class ZohoTransport:
             # Zoho knows which zone the books are kept in; asking the operator
             # to type it again is asking them to get it wrong.
             "time_zone": (match or {}).get("time_zone"),
+            # And which country they are kept in — the statutory screens gate
+            # on it (commercial/jurisdiction), and Zoho states it on the same
+            # organization profile the zone comes from.
+            "country": (match or {}).get("country"),
             "visible_organizations": [
                 {"organization_id": str(o.get("organization_id")), "name": o.get("name")}
                 for o in orgs
@@ -872,14 +877,25 @@ class ZohoApiSource(ZohoTransport):
         # the periodic full pass, not by this one. See `modified_since`.
         high_water = None if self._full_listing else self.modified_since.get(kind)
         sort_column = "last_modified_time" if high_water else "date"
+        # The mark arrives canonical — `mark_ingested` rewrites every stamp it
+        # can onto the UTC line (`clock.utc_stamp`) and `ingested_high_water`
+        # maxes over only those — so the listed stamps below must be rewritten
+        # the same way before comparing. Zoho lists in the book's own offset
+        # dress; compared raw against a `Z` mark, a truly-newer edit can read
+        # as at-or-below it and the listing stops before fetching it. The
+        # fallback keeps a mark set verbatim (fixtures) comparing as before.
+        high_water = utc_stamp(high_water) or high_water
         stopped_early = False
 
         for row in self._paginate(path, list_key, sort_column=sort_column,
                                   sort_order="D", **self._window()):
             if high_water:
-                stamp = str(row.get("last_modified_time") or "")
+                stamp = utc_stamp(str(row.get("last_modified_time") or ""))
                 # Sorted newest-modified first, so the first row at or below the
-                # high-water mark means every row after it is too.
+                # high-water mark means every row after it is too. A stamp that
+                # cannot be placed on the UTC line cannot be compared and never
+                # stops the listing: listing too much is a cost, stopping on a
+                # guess is a hole.
                 if stamp and stamp <= high_water:
                     stopped_early = True
                     self.listings_short_circuited += 1

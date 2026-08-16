@@ -32,6 +32,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..clock import today as _clock_today
+from ..clock import utc_stamp
 from ..config import settings
 from ..domain import models
 from ..repositories import ReadModelRepository
@@ -914,7 +915,16 @@ class SyncService:
                 return False
             # No stamp on either side means we cannot tell it apart — trust the
             # record we already hold rather than pay for the call again.
-            return not modified_at or modified_at == known[doc_id]
+            if not modified_at:
+                return True
+            # The stored side was rewritten onto the UTC line by
+            # ``mark_ingested`` (where the stamp allowed it), so the listed
+            # side goes through the same rewrite before comparing. Without it
+            # the same instant in a different offset dress reads as an edit,
+            # and every document pays its detail call again on every run. An
+            # unplaceable stamp rewrites to nothing and falls back to the
+            # verbatim comparison this check has always made.
+            return (utc_stamp(modified_at) or modified_at) == known[doc_id]
 
         return already_have
 

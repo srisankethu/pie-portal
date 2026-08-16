@@ -32,8 +32,8 @@ from ..authz import (Principal, can_view_customer, current_principal,
                      require_owner)
 from ..repositories import DecisionRepository
 from .. import approvals, clock
-from ..commercial import (economics, floor, incentive, ownership, policy,
-                          portfolio, principals, quote_service)
+from ..commercial import (economics, floor, incentive, jurisdiction, ownership,
+                          policy, portfolio, principals, quote_service)
 from ..commercial import categories as cat
 from ..commercial.insight import (absence, bonds, cadence, cashflow, cohorts,
                                   composition, credit, cycle,
@@ -4310,6 +4310,36 @@ def daily(moved_from: Optional[date] = Query(None),
 # module in ``commercial/insight`` and map the result — there is no arithmetic
 # here, and the figures that come back are dates and amounts rather than a
 # position anybody should file a return on.
+#
+# All of them are gated on the tenant's jurisdiction before anything else,
+# including the "no bills yet" check: these statutes are Indian law, and for a
+# tenant whose country is not IN — or is not recorded at all — the honest
+# answer is a refusal naming that gap, not Indian deadlines with an
+# explanation attached and not advice to run a sync that would not help.
+
+
+def _statute_refusal(session: Session, org: str, rule) -> Optional[str]:
+    """Why this organization's country blocks a statutory screen, or ``None``.
+
+    ``rule`` is one of the ``commercial/jurisdiction`` refusal functions — the
+    reason text lives there, keyed by country and by statute, so the API and
+    any future caller cannot drift into two wordings of the same refusal.
+    """
+    row = session.get(models.Organization, org)
+    return rule(row.country if row is not None else None)
+
+
+def _statute_refused(reason: str, *, th: Any, empty: dict) -> dict:
+    """The refusal, in the shape the screen already understands.
+
+    The same choice ``selffunding._blocked`` and ``withholding.crossings``
+    make: the envelope of an answer, with the list keys empty, an explicit
+    ``jurisdiction_supported: False``, and ``blocked_by`` naming what is
+    missing — so a caller can never mistake "we are not allowed to say" for
+    "nothing is wrong".
+    """
+    return _envelope({"jurisdiction_supported": False, "blocked_by": reason,
+                      **empty}, th=th, empty_reason=reason)
 
 
 def _msme_statuses(session: Session, org: str) -> dict[str, msme.Status]:
@@ -4374,6 +4404,9 @@ def msme_watchlist(principal: Principal = Depends(require_manager_or_owner),
     be at risk — reported separately and never added to the confirmed total.
     """
     org, _snapshot, th = _labels_only(session, principal)
+    refusal = _statute_refusal(session, org, jurisdiction.msme_refusal)
+    if refusal is not None:
+        return _statute_refused(refusal, th=th, empty={"rows": []})
     as_of = clock.today(th.timezone)
 
     bills = _unpaid_bills(session, org)
@@ -4434,6 +4467,13 @@ def set_msme_status(body: MsmeStatusIn,
     fifteen-day limit to the forty-five-day one.
     """
     org = principal.organization_id
+    # Before the vendor lookup: whether the statute reaches this tenant at all
+    # is prior to which supplier is being classified under it. A 409 rather
+    # than a silent no-op — a captured status that was never stored is exactly
+    # the kind of quiet success §1 forbids.
+    refusal = _statute_refusal(session, org, jurisdiction.msme_refusal)
+    if refusal is not None:
+        raise HTTPException(status.HTTP_409_CONFLICT, refusal)
     vendor = session.get(models.Vendor, body.vendor_id)
     if vendor is None or vendor.organization_id != org:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "No such supplier")
@@ -4485,6 +4525,9 @@ def msme_capture_backlog(principal: Principal = Depends(require_manager_or_owner
     the limit.
     """
     org, _snapshot, th = _labels_only(session, principal)
+    refusal = _statute_refusal(session, org, jurisdiction.msme_refusal)
+    if refusal is not None:
+        return _statute_refused(refusal, th=th, empty={"suppliers": []})
     as_of = clock.today(th.timezone)
     limit_days = int(th.msme_default_days)
 
@@ -4537,6 +4580,12 @@ def withholding_crossings(principal: Principal = Depends(require_manager_or_owne
     gate asserts a duty nobody established applies.
     """
     org, _snapshot, th = _labels_only(session, principal)
+    refusal = _statute_refusal(session, org, jurisdiction.withholding_refusal)
+    if refusal is not None:
+        # Deliberately no ``gate_confirmed`` key here: that flag means "confirm
+        # your turnover in Settings", which is advice that cannot help a tenant
+        # the statute does not reach.
+        return _statute_refused(refusal, th=th, empty={"crossings": []})
     as_of = clock.today(th.timezone)
 
     purchases = [
@@ -4579,9 +4628,20 @@ def self_funding(principal: Principal = Depends(require_owner),
     answers the same question the lines do — the argument `insight/series` makes
     at length, and the reason there is no bucketing in this function.
     """
-    rows, _names, _as_of, _folded = _flow_rows(session, principal)
     org = principal.organization_id
     th = policy.load_for_org(session, org)
+
+    # The reading folds retained profit over *statutory* financial years —
+    # fy_of/fy_bounds, India's April calendar — so it is jurisdictional
+    # exactly like the statute screens above and gates the same way. The
+    # calendar is the dependency here, not the statutes themselves.
+    refusal = _statute_refusal(session, org, jurisdiction.calendar_refusal)
+    if refusal is not None:
+        return _statute_refused(refusal, th=th, empty={
+            "verdict": "UNKNOWN", "confirmed": False, "financial_year": None,
+            "missing_entities": [], "confirmed_years": []})
+
+    rows, _names, _as_of, _folded = _flow_rows(session, principal)
 
     # Only the companies that have actually traded. A connection added this
     # morning has no accounts to close and no revenue in the year, and waiting

@@ -60,7 +60,7 @@ def provision_organization(
     org = session.get(models.Organization, organization_id)
     if org is None:
         org = models.Organization(organization_id=organization_id, name=name,
-                                  erp="zoho", currency=currency, config={})
+                                  currency=currency, config={})
         session.add(org)
 
     if existing_email is None:

@@ -23,7 +23,7 @@ def test_provisions_org_with_a_sign_in_capable_owner(session):
 
     org = session.get(models.Organization, org_id)
     assert org is not None and org.name == "Acme Distributors"
-    assert org.erp == "zoho" and org.currency == "INR"
+    assert org.currency == "INR"
 
     user = session.scalar(select(models.User).where(
         models.User.email == "owner@acme.in"))

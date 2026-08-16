@@ -18,6 +18,12 @@ the AI boundary is already pseudonymous, which is where the leak actually
 mattered. Removing the plaintext columns is a follow-on migration touching every
 read path, and doing it in the same change as introducing the vault would have
 meant one commit that both adds a mechanism and rewrites its callers.
+
+The same limitation is stated where it matters most: the signed erasure receipt
+enumerates these columns (and the other plaintext survivors) under
+``survives_plaintext`` — see ``trust/erasure.SURVIVES_PLAINTEXT``. If a
+plaintext column here is ever encrypted or dropped, that list is where the
+change must also land.
 """
 from __future__ import annotations
 

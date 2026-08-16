@@ -33,7 +33,7 @@ from app.state.reducers.cash import CASH_SCHEDULE, week_key
 from app.state.reducers.commitments import COMMITMENTS
 from app.state.reducers.receivables import RECEIVABLES
 
-from .test_decision_intelligence import ORG, TODAY, _fold, _seed
+from .test_decision_intelligence import DUE_NEXT_WEEK, ORG, TODAY, _fold, _seed
 
 #: The Monday opening the week that contains TODAY. Derived, not written down:
 #: TODAY is the business date now, so a hardcoded Monday would be right for one
@@ -76,9 +76,9 @@ def test_an_obligation_lands_in_the_week_its_own_document_names(book):
     """Not the week it was raised, not an average — the due date's week."""
     rows = _schedule(book)
 
-    # INV-2: ₹16,700 due 2026-02-04. INV-3: ₹85,200 due 2026-08-19.
+    # INV-2: ₹16,700 due 2026-02-04. INV-3: ₹85,200 due next Wednesday.
     assert _amount(rows, f"in:{week_key(date(2026, 2, 4))}:") == Decimal("16700")
-    assert _amount(rows, f"in:{week_key(date(2026, 8, 19))}:") == Decimal("85200")
+    assert _amount(rows, f"in:{week_key(DUE_NEXT_WEEK)}:") == Decimal("85200")
     # BILL-1: ₹3,00,000 due 2026-04-01.
     assert _amount(rows, f"out:{week_key(date(2026, 4, 1))}:") == Decimal("300000")
 

@@ -32,6 +32,7 @@ from sqlalchemy.orm import Session
 
 from .. import clock, entitlements
 from ..authz import Principal, require_manager_or_owner, require_owner
+from ..commercial import jurisdiction
 from ..config import settings
 from ..db import get_session
 from ..domain import models
@@ -510,6 +511,20 @@ def _check(session: Session, row: models.ZohoConnection) -> dict:
         org = session.get(models.Organization, row.organization_id)
         if org is not None and not (org.timezone or "").strip():
             org.timezone = zone
+            session.flush()
+
+    # Same treatment for the country the books are kept in: Zoho states it on
+    # the organization profile, and the statutory screens gate on it
+    # (``commercial/jurisdiction``) — without this fill there is no path in
+    # the product that records it at all, and the gate's refusal would name a
+    # fix nobody can perform. Filled in only when unset, like the zone, and
+    # only when the label places *exactly* — a mis-placed country would turn
+    # the gate's refusal into a confidently wrong answer.
+    code = jurisdiction.alpha2_from_label(info.get("country"))
+    if found and code:
+        org = session.get(models.Organization, row.organization_id)
+        if org is not None and not (org.country or "").strip():
+            org.country = code
             session.flush()
 
     # The currency this company keeps its books in, recorded on the connection.

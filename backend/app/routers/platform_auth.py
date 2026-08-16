@@ -24,7 +24,8 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..authz import issue_token
+from ..authz import (
+    issue_token, is_login_throttled, record_login_failure, reset_login_failures)
 from .. import clock
 from ..config import settings
 from ..db import get_session
@@ -38,6 +39,7 @@ router = APIRouter(prefix="/api/v1/auth", tags=["platform-auth"])
 # One message for every failure. Distinguishing "no such account" from "wrong
 # password" tells an attacker which addresses are worth attacking.
 _REJECTED = "Incorrect email or password"
+_THROTTLED = "Too many login failures. Please try again in {delay} seconds."
 
 
 class LoginRequest(BaseModel):
@@ -77,10 +79,27 @@ def login(body: LoginRequest, session: Session = Depends(get_session)) -> LoginR
     email = (body.email or "").strip().lower()
     user = session.scalar(select(models.User).where(models.User.email == email))
 
+    # Check throttling early to deny early without exposing account existence.
+    if user is not None and user.active:
+        throttle_delay = is_login_throttled(user)
+        if throttle_delay is not None:
+            log.warning("throttled sign-in attempt for %r (%d failures, retry in %ds)",
+                        email, user.login_failures_count, throttle_delay)
+            raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS,
+                               _THROTTLED.format(delay=throttle_delay))
+
     if user is None or not user.active or not verify_password(body.password,
                                                               user.password_hash):
         log.info("failed sign-in for %r", email)
+        # Record the failure if we have a user to update. Failures on non-existent
+        # accounts are not tracked (would require creating them, which would leak).
+        if user is not None and user.active:
+            record_login_failure(user)
+            session.flush()
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, _REJECTED)
+
+    # Password verified; reset the failure counter.
+    reset_login_failures(user)
 
     # Opportunistic upgrade: a hash made at a lower work factor is replaced now
     # that the correct password is in hand, which is the only moment it can be.

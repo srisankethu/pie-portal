@@ -115,6 +115,68 @@ class TestMetricsRegistry:
         assert hist.get_percentile(75) == 30      # rank 3
         assert hist.get_percentile(100) == 40     # the maximum
 
+    def test_the_sample_window_is_bounded(self):
+        """The one that pins the leak shut.
+
+        `_values` was a plain list appended to on every observation and never
+        trimmed. The API middleware observes into this on every request, so on a
+        process that runs for weeks it was a straight line up — 50,000 requests
+        retained about 14 MB in a single histogram.
+        """
+        hist = Histogram("test", "help", capacity=64)
+        for i in range(10_000):
+            hist.observe(i)
+
+        assert len(hist._values) == 64
+        assert hist.export()["sampled"] == 64
+        assert hist.export()["capacity"] == 64
+
+    def test_labels_are_not_retained_per_label(self):
+        """`_by_label` is gone, not bounded — nothing ever read it.
+
+        It was a dict of unbounded lists keyed by label set, and the middleware
+        labels every observation with `request.url.path` — the raw path, so one
+        key per distinct URL. It grew in two dimensions and was write-only:
+        `Counter` and `Gauge` publish theirs in `export`, this never did.
+
+        `observe` still accepts `labels` so the call sites and the sibling
+        signatures are unchanged; it simply aggregates across them.
+        """
+        hist = Histogram("test", "help", capacity=1000)
+        for i in range(500):
+            hist.observe(0.01, labels={"endpoint": f"/api/v1/decisions/{i}/detail"})
+
+        assert not hasattr(hist, "_by_label")
+        assert len(hist._values) == 500        # the aggregate is still recorded
+        assert hist.export()["count"] == 500
+
+    def test_lifetime_figures_survive_eviction(self):
+        """Totals and extremes are lifetime; only the percentiles are windowed.
+
+        Kept that way deliberately. `min`/`max` cost two floats to carry
+        properly, and silently redefining `max` from "worst ever seen" to "worst
+        in the last 2048" would move a number on a dashboard with nobody told.
+        """
+        hist = Histogram("test", "help", capacity=10)
+        hist.observe(1000.0)                   # the extreme, evicted almost at once
+        for _ in range(500):
+            hist.observe(1.0)
+
+        export = hist.export()
+        assert export["count"] == 501          # every observation, not the window
+        assert export["sum"] == 1000.0 + 500
+        assert export["max"] == 1000.0         # survived falling out of the ring
+        assert export["min"] == 1.0
+        assert export["sampled"] == 10         # but the percentiles see only these
+        assert export["p50"] == 1.0
+
+    def test_an_empty_histogram_still_reports_its_capacity(self):
+        """So a reader can tell "nothing observed" from "window not yet full"."""
+        export = Histogram("test", "help", capacity=32).export()
+        assert export["count"] == 0
+        assert export["sampled"] == 0
+        assert export["capacity"] == 32
+
     def test_percentile_of_an_empty_histogram_is_none(self):
         """Not zero. Nothing was observed, so there is no answer to give, and a
         zero here would read as a suspiciously fast p99 on a dashboard."""

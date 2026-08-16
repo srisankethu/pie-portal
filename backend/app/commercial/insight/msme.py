@@ -57,6 +57,7 @@ from ...domain.enums import (
     MsmeClassification,
     MsmeEvidence,
 )
+from ..jurisdiction import INDIA
 
 # ── where the clock starts ──────────────────────────────────────────────────
 #: The bill's own date. The ordinary case, and a proxy — see ``deadline_for``.
@@ -260,11 +261,12 @@ def deadline_for(bill_date: date, status: Status, *, th,
 
 
 # ── the financial year ──────────────────────────────────────────────────────
-#: The Indian financial year starts on 1 April. Hard-coded rather than made a
-#: threshold: it is a property of the jurisdiction the statute belongs to, and
-#: a deployment that needed a different one would need a different statute
-#: module, not a different number here.
-FY_START_MONTH = 4
+# The calendar belongs to the jurisdiction, not to this module — it lives in
+# ``commercial/jurisdiction.py``, keyed by country. This module binds to INDIA
+# by name rather than taking a parameter, because it *is* the Indian statute:
+# a deployment that needed a different calendar would need a different statute
+# module, not a different number here. The routers refuse to run these screens
+# for a tenant whose country is not IN, which is what keeps the binding honest.
 
 
 def fy_of(day: date) -> str:
@@ -275,8 +277,7 @@ def fy_of(day: date) -> str:
     number of days late and a year apart in consequence, and only this tells
     them apart.
     """
-    start = day.year if day.month >= FY_START_MONTH else day.year - 1
-    return f"FY{start}-{str(start + 1)[-2:]}"
+    return INDIA.fy_of(day)
 
 
 def carry_cost(balance: float, tax_rate: Optional[float],

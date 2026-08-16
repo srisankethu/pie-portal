@@ -88,10 +88,11 @@ def _ratio(top: Decimal, bottom: Decimal) -> Optional[float]:
 def fy_period(fy_label: str) -> Period:
     """One financial year as a closed period.
 
-    ``withholding.fy_bounds`` is the single definition of where a financial year
-    starts and stops, and it returns a half-open range; ``Period`` is inclusive
-    at both ends. Converting here rather than restating the months is what keeps
-    one answer to "when does FY2025-26 end" in this package.
+    ``withholding.fy_bounds`` — itself reading the calendar from
+    ``commercial/jurisdiction`` — is the single definition of where a financial
+    year starts and stops, and it returns a half-open range; ``Period`` is
+    inclusive at both ends. Converting here rather than restating the months is
+    what keeps one answer to "when does FY2025-26 end" in this package.
     """
     start, next_start = fy_bounds(fy_label)
     end = date.fromordinal(next_start.toordinal() - 1)

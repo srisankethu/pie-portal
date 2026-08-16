@@ -37,7 +37,8 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Iterable, Optional
 
-from .msme import FY_START_MONTH, fy_of
+from ..jurisdiction import INDIA
+from .msme import fy_of
 
 #: How much of the threshold has to be used up before a supplier is worth
 #: watching. Not a statutory number — the statute has one line and it is the
@@ -84,10 +85,14 @@ class Crossing:
 
 
 def fy_bounds(fy_label: str) -> tuple[date, date]:
-    """The first and last day of ``FY2026-27``."""
-    start_year = int(fy_label[2:6])
-    return (date(start_year, FY_START_MONTH, 1),
-            date(start_year + 1, FY_START_MONTH, 1))
+    """``FY2026-27`` as a half-open date range, on the Indian calendar.
+
+    Read from ``commercial/jurisdiction`` rather than restated: like ``msme``,
+    this module *is* the Indian statute, and the routers refuse it for any
+    other country rather than this function taking a calendar it would never
+    legitimately vary.
+    """
+    return INDIA.fy_bounds(fy_label)
 
 
 def crossings(purchases: Iterable[Purchase], names: dict[str, str], *,

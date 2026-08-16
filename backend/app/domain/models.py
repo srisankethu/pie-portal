@@ -62,6 +62,14 @@ class Organization(Base):
     # distributor and a Gulf one. Zoho reports it on the organization record, so
     # a connected company fills it in rather than being asked.
     timezone: Mapped[Optional[str]] = mapped_column(String(64))
+    # The country whose statutes reach this tenant (ISO 3166-1 alpha-2, e.g.
+    # "IN"). It belongs beside timezone and currency for the same reason they
+    # do — one instance can hold an Indian distributor and a Gulf one — but it
+    # gates rather than formats: ``commercial/jurisdiction.py`` decides from it
+    # whether the statutory screens (MSME payment timing, 194Q withholding) may
+    # answer at all. NULL means "not established", and unknown is not India —
+    # the statutory endpoints refuse rather than assume (CLAUDE.md §1).
+    country: Mapped[Optional[str]] = mapped_column(String(2))
     # Which plan this organization is licensed on ("free" | "intelligence" |
     # "platform" — domain.enums.PlanTier). NULL means "not decided here" and
     # resolves to settings.DEFAULT_PLAN, so an existing deployment keeps its

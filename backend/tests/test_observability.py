@@ -1,6 +1,7 @@
 """Tests for observability infrastructure."""
 from __future__ import annotations
 
+import threading
 
 import pytest
 
@@ -57,6 +58,129 @@ class TestMetricsRegistry:
         assert export["sum"] == 3.5
         assert export["min"] == 0.5
         assert export["max"] == 2.0
+
+    def test_export_does_not_deadlock(self):
+        """`export` must not re-enter its own lock — and must fail *fast* if it does.
+
+        This is a regression test with an unusual shape, for a reason worth
+        stating. `export` used to call `self.get_percentile` from inside
+        `with self.lock`, and `Metric.lock` is a plain `threading.Lock`, not an
+        `RLock` — so the call blocked on a lock the same thread already held and
+        never came back. Nothing raised, nothing timed out, nothing was logged.
+
+        Asserting on the return value alone cannot catch that: the assertion is
+        never reached, the test hangs, and the whole suite hangs with it. That is
+        exactly what happened — the file sat at four tests for over ten minutes
+        and CI reported nothing at all. So the call is made on a separate thread
+        and joined with a deadline, which turns "hangs forever" into one failing
+        test with a sentence attached.
+
+        The production stake, not just the test's: `GET
+        /internal/observability/metrics` calls `MetricRegistry.export`, which
+        calls this for every metric, and the API middleware records latency into
+        a histogram. One request to the metrics endpoint wedged a worker for the
+        life of the process.
+        """
+        hist = Histogram("test", "help")
+        for i in range(1, 21):
+            hist.observe(i)
+
+        result: dict = {}
+        worker = threading.Thread(
+            target=lambda: result.update(hist.export()), daemon=True)
+        worker.start()
+        worker.join(timeout=10)
+
+        assert not worker.is_alive(), (
+            "Histogram.export() did not return within 10s — it is almost "
+            "certainly re-entering self.lock, as it did before this test existed.")
+        assert result["count"] == 20
+        assert result["p50"] == 10
+
+    def test_percentiles_are_nearest_rank(self):
+        """Small-N cases, where an off-by-one is unmissable.
+
+        The bug this pins was `int(N * p / 100)` — a floor, which lands one
+        element too high whenever the product is a whole number. On 1..100 it
+        answered 51 for the median. These are the numbers the capacity dashboard
+        reports latency with, so a wrong p95 is a wrong operational decision.
+        """
+        hist = Histogram("test", "help")
+        for value in (10, 20, 30, 40):
+            hist.observe(value)
+
+        assert hist.get_percentile(0) == 10       # 0 is the minimum by convention
+        assert hist.get_percentile(25) == 10      # rank 1
+        assert hist.get_percentile(50) == 20      # rank 2 — not 30
+        assert hist.get_percentile(75) == 30      # rank 3
+        assert hist.get_percentile(100) == 40     # the maximum
+
+    def test_the_sample_window_is_bounded(self):
+        """The one that pins the leak shut.
+
+        `_values` was a plain list appended to on every observation and never
+        trimmed. The API middleware observes into this on every request, so on a
+        process that runs for weeks it was a straight line up — 50,000 requests
+        retained about 14 MB in a single histogram.
+        """
+        hist = Histogram("test", "help", capacity=64)
+        for i in range(10_000):
+            hist.observe(i)
+
+        assert len(hist._values) == 64
+        assert hist.export()["sampled"] == 64
+        assert hist.export()["capacity"] == 64
+
+    def test_labels_are_not_retained_per_label(self):
+        """`_by_label` is gone, not bounded — nothing ever read it.
+
+        It was a dict of unbounded lists keyed by label set, and the middleware
+        labels every observation with `request.url.path` — the raw path, so one
+        key per distinct URL. It grew in two dimensions and was write-only:
+        `Counter` and `Gauge` publish theirs in `export`, this never did.
+
+        `observe` still accepts `labels` so the call sites and the sibling
+        signatures are unchanged; it simply aggregates across them.
+        """
+        hist = Histogram("test", "help", capacity=1000)
+        for i in range(500):
+            hist.observe(0.01, labels={"endpoint": f"/api/v1/decisions/{i}/detail"})
+
+        assert not hasattr(hist, "_by_label")
+        assert len(hist._values) == 500        # the aggregate is still recorded
+        assert hist.export()["count"] == 500
+
+    def test_lifetime_figures_survive_eviction(self):
+        """Totals and extremes are lifetime; only the percentiles are windowed.
+
+        Kept that way deliberately. `min`/`max` cost two floats to carry
+        properly, and silently redefining `max` from "worst ever seen" to "worst
+        in the last 2048" would move a number on a dashboard with nobody told.
+        """
+        hist = Histogram("test", "help", capacity=10)
+        hist.observe(1000.0)                   # the extreme, evicted almost at once
+        for _ in range(500):
+            hist.observe(1.0)
+
+        export = hist.export()
+        assert export["count"] == 501          # every observation, not the window
+        assert export["sum"] == 1000.0 + 500
+        assert export["max"] == 1000.0         # survived falling out of the ring
+        assert export["min"] == 1.0
+        assert export["sampled"] == 10         # but the percentiles see only these
+        assert export["p50"] == 1.0
+
+    def test_an_empty_histogram_still_reports_its_capacity(self):
+        """So a reader can tell "nothing observed" from "window not yet full"."""
+        export = Histogram("test", "help", capacity=32).export()
+        assert export["count"] == 0
+        assert export["sampled"] == 0
+        assert export["capacity"] == 32
+
+    def test_percentile_of_an_empty_histogram_is_none(self):
+        """Not zero. Nothing was observed, so there is no answer to give, and a
+        zero here would read as a suspiciously fast p99 on a dashboard."""
+        assert Histogram("test", "help").get_percentile(95) is None
 
     def test_registry_export(self):
         registry = MetricRegistry()

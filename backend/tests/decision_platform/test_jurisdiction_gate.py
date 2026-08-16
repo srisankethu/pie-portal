@@ -225,9 +225,9 @@ def test_the_seeder_backfills_a_demo_org_that_predates_the_column(session):
     to be Indian. A real tenant's NULL stays NULL."""
     from app.seed import ensure_org_and_users
     session.add(models.Organization(organization_id=_org(session), name="Demo",
-                                    erp="zoho", currency="INR", config={}))
+                                    currency="INR", config={}))
     session.add(models.Organization(organization_id="org_other", name="Other",
-                                    erp="zoho", currency="INR", config={}))
+                                    currency="INR", config={}))
     session.flush()
 
     ensure_org_and_users(session)

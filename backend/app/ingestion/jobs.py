@@ -692,7 +692,62 @@ def execute_analysis(session: Session, run: models.SyncRun, organization_id: str
     phase("Generating decisions")
     generated = DecisionService(session, org).generate()
     run.decisions_created = generated.get("created", 0)
+
+    phase("Measuring what PIE changed")
+    notes["attribution"] = _run_attribution(session, org)
     return notes
+
+
+def _run_attribution(session: Session, org: str) -> dict:
+    """Turn the quote evidence this run refreshed into ledger rows.
+
+    Last phase on purpose: it reads ``QuoteDecision`` and ``QuoteOutcome``, and
+    an outcome that arrived in this pull should be classified in this run rather
+    than waiting a day for the next one.
+
+    Best-effort, like the demo purge above. A detection problem must not fail a
+    sync that has already written the customers, invoices and metrics — the
+    ledger is derived state and the next run rebuilds it from the same evidence.
+    The failure is logged and named in the notes rather than swallowed, because
+    a report that silently stops being updated is the absence-of-evidence
+    failure this whole module exists to avoid.
+
+    Also recomputes the trial baseline. ``capture_baseline`` runs once at first
+    connect, before any sync has happened, so the 90 days before the trial
+    started held no rows and the "before" half of the comparison was empty —
+    always, not merely usually, which made the central evaluation claim
+    unproducible. Here the history has been pulled, so the same window can
+    finally be measured. It is derived state and rewriting it is what it is for.
+    """
+    from ..attribution import detectors, ledger
+    from ..attribution import evaluator as attribution_evaluator
+    from ..domain.enums import ValueClass
+
+    out: dict = {}
+    try:
+        results = detectors.run_all(session, org)
+        drafts = [d for result in results.values() for d in result.events]
+        _, created = ledger.record_all(session, org, drafts)
+        # A full run over the whole window, so anything POTENTIAL that this run
+        # did not re-find is an opportunity that has closed — most often a quote
+        # the customer declined. Only correct because the run above is unscoped;
+        # doing this after a windowed run would retire live rows outside it.
+        retired = ledger.supersede_closed_opportunities(
+            session, org,
+            [d.event_key for d in drafts
+             if d.value_class is ValueClass.POTENTIAL])
+        out = {"events_recorded": created,
+               "opportunities_closed": retired,
+               "gaps": detectors.skip_summary(results)}
+
+        trial = attribution_evaluator.current_trial(session, org)
+        if trial is not None:
+            attribution_evaluator.capture_baseline(session, org, trial)
+            out["baseline_recomputed"] = True
+    except Exception as exc:  # noqa: BLE001
+        log.exception("attribution failed for %s; the ledger is unchanged", org)
+        out = {"failed": str(exc)}
+    return out
 
 
 # ── dispatch ────────────────────────────────────────────────────────────────

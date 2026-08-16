@@ -1220,8 +1220,9 @@ export interface AttributionSummary {
   potential_events?: number;
   realized_value?: MoneyString | null;
   realized_events?: number;
-  estimated_value?: MoneyString | null;
-  estimated_events?: number;
+  // No estimated_*: the server stopped sending it because no detector produces
+  // ESTIMATED, and an optional field here would invite a tile that renders
+  // "none recorded" as though a measurement had been attempted.
   class_totals_are_not_summable?: string;
   by_event_type?: ValueClassBreakdown[];
   productivity?: AttributionProductivity;
@@ -1269,7 +1270,7 @@ export interface AttributionEvents {
 export interface AttributionWindowMetrics {
   priced_lines: number;
   costed_lines: number;
-  uncosted_lines: number;
+  uncostable_lines: number;
   approval_required_lines: number;
   approval_required_rate: number | null;
   quoted_revenue: MoneyString | null;

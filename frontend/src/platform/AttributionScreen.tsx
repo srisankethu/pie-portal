@@ -5,10 +5,11 @@
  * written to be *unimpressive when the evidence is thin*. Four rules shape
  * every line of it, and each one is a place a screen like this normally lies.
  *
- * **The headline is ATTRIBUTED and nothing else.** POTENTIAL, REALIZED and
- * ESTIMATED are real and are shown — in their own section, under their own
- * labels, with the server's own sentence saying the classes must never be added
- * together. They describe overlapping facts about the same quote line on
+ * **The headline is ATTRIBUTED and nothing else.** POTENTIAL and REALIZED are
+ * real and are shown — in their own section, under their own labels, with the
+ * server's own sentence saying the classes must never be added together.
+ * ESTIMATED is not shown at all: no detector produces it, and a tile reading
+ * "Estimated — none recorded" claims a measurement nobody attempted. They describe overlapping facts about the same quote line on
  * purpose (one as the flag, one as the win that followed it), so a total that
  * summed them would double count the line while looking generous.
  *
@@ -73,8 +74,11 @@ const EVENT_TYPE: Record<string, { label: string; what: string }> = {
   MARGIN_PROTECTED: {
     label: "Margin protected",
     what: "A line was priced below its floor, the platform flagged it, the "
-      + "price that went out cleared the floor, and the quote was not lost. "
-      + "The amount is (floor price − quoted price) × quantity.",
+      + "price then moved up, the price that went out cleared the floor, and "
+      + "the quote was not lost. The amount is the price movement × quantity, "
+      + "capped at the gap to the floor — clearing it by more than it asked "
+      + "for is commercial judgement, not something the guardrail did. A line "
+      + "that shipped below its floor anyway counts nothing.",
   },
   DISCOUNT_LEAKAGE_PREVENTED: {
     label: "Discount recovered",
@@ -121,10 +125,6 @@ const VALUE_CLASS: Record<string, { label: string; tone: Tone; tip: string }> = 
     label: "Potential", tone: "warn",
     tip: "An opportunity was identified. Nothing has happened yet — this is "
       + "not money earned and is never added to the headline.",
-  },
-  ESTIMATED: {
-    label: "Estimated", tone: "neutral",
-    tip: "Modelled rather than observed. Shown separately, never in the headline.",
   },
 };
 
@@ -613,7 +613,7 @@ function ValueLedger({ session }: { session: PlatformSession }) {
                       value={cellOf(breakdown, "MARGIN_PROTECTED", "ATTRIBUTED")?.amount}
                       unknown="Not measured" />
                   }
-                  sub="below-floor lines the platform flagged, repriced and won"
+                  sub="below-floor lines flagged, repriced above the floor, and won"
                   tip={EVENT_TYPE.MARGIN_PROTECTED.what} />
               </Box>
               <Box sx={{ flex: "1 1 240px", minWidth: 240 }}>
@@ -673,13 +673,10 @@ function ValueLedger({ session }: { session: PlatformSession }) {
                   sub={`${counted(data.realized_events ?? 0)} event(s)`}
                   tip={VALUE_CLASS.REALIZED.tip} />
               </Box>
-              <Box sx={{ flex: "1 1 240px", minWidth: 240 }}>
-                <MetricCard
-                  label="Estimated"
-                  value={<Amount value={data.estimated_value} unknown="None recorded" />}
-                  sub={`${counted(data.estimated_events ?? 0)} modelled event(s)`}
-                  tip={VALUE_CLASS.ESTIMATED.tip} />
-              </Box>
+              {/* No "Estimated" tile. Nothing in the evidence produces that
+                  class today, and a card reading "Estimated — None recorded"
+                  states a measurement that was never attempted. The server
+                  stopped sending the field for the same reason. */}
             </Stack>
 
             {types.length > 0 && (
@@ -1046,8 +1043,8 @@ function EvaluationPanel({ session }: { session: PlatformSession }) {
                     </td>
                     <td className="fv">
                       {counted(report.during.costed_lines)}
-                      {report.during.uncosted_lines > 0
-                        && ` · ${counted(report.during.uncosted_lines)} without`}
+                      {report.during.uncostable_lines > 0
+                        && ` · ${counted(report.during.uncostable_lines)} without`}
                     </td>
                   </tr>
                   <tr>

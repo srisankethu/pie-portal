@@ -48,7 +48,7 @@ from ..commercial.references import MARGIN_FLOOR_PRICE, MIN_MARGIN_PRICE
 from ..domain import models
 from ..domain.enums import QuoteOutcomeStatus, ValueClass, ValueEventType
 from .calculator import discount_leakage_prevented, equivalent_saving, margin_protected
-from .ledger import ValueEventDraft, event_key
+from .ledger import FACT_OF, ValueEventDraft, event_key
 
 # ── skip reasons ─────────────────────────────────────────────────────────────
 #
@@ -86,6 +86,14 @@ QUANTITY_CHANGED = "QUANTITY_CHANGED"
 #: An alternative product is referenced but carries no cost, so the saving
 #: cannot be computed. Assuming one would be the fabrication this module bans.
 NO_COST_ON_ALTERNATIVE = "NO_COST_ON_ALTERNATIVE"
+#: Another detector measured the same underlying fact and made a stronger claim
+#: about it. Not a failure — the line *is* counted, under the other type. Named
+#: so the diagnostic explains the absence rather than leaving a silent hole.
+SUPERSEDED_BY_STRONGER_CLAIM = "SUPERSEDED_BY_STRONGER_CLAIM"
+#: The line was flagged below its floor and the price that went out is still
+#: below it. Nothing was protected — the guardrail was overruled — so claiming
+#: the shortfall would book value for selling below policy.
+FLOOR_NOT_CLEARED = "FLOOR_NOT_CLEARED"
 
 #: The three policy exceptions that place a line under a floor, mapped to the
 #: reference whose value *is* that floor. Read from the exception's own
@@ -271,8 +279,9 @@ class _Classification:
     evidence_ref: Optional[dict[str, Any]]
 
 
-def _classify(outcome: Optional[models.QuoteOutcome]) -> Optional[_Classification]:
-    """POTENTIAL, ATTRIBUTED, or ``None`` for "do not record this at all".
+def _classify(outcome: Optional[models.QuoteOutcome],
+              intervened_at: Optional[datetime]) -> Optional[_Classification]:
+    """POTENTIAL, REALIZED, ATTRIBUTED, or ``None`` for "do not record at all".
 
     One implementation shared by every detector, because the mapping from an
     outcome to a value class is the single most consequential rule in this
@@ -281,20 +290,40 @@ def _classify(outcome: Optional[models.QuoteOutcome]) -> Optional[_Classificatio
 
     * No outcome row, DRAFT or SENT — the intervention is on record and nothing
       has happened yet. POTENTIAL.
-    * WON — the money moved *and* the flag preceded the win, which is the whole
-      definition of ATTRIBUTED. The event is dated to the decision, not to the
-      pricing, so a rollup for the month the deal closed contains it.
+    * WON, and the intervention is on record as *preceding* the win —
+      ATTRIBUTED. The event is dated to the decision, not to the pricing, so a
+      rollup for the month the deal closed contains it.
+    * WON, but the ordering cannot be established — REALIZED. The money moved
+      and a flag exists, which is all the evidence supports.
     * LOST — ``None``. Not a zero-amount event and not a POTENTIAL one: the
       opportunity is closed, so recording it would leave a permanent row
       claiming something is still available.
+
+    ``intervened_at`` is what makes ATTRIBUTED honest, and it was missing. The
+    class docstring, this module, the router and the screen all said "the
+    intervention is on record as preceding the outcome" while nothing compared
+    the two timestamps — so a quote won nine days before PIE ever priced the
+    line was booked as attributed, with ``occurred_at`` dating the business fact
+    to before the evidence for it existed. An audit reproduced exactly that.
+
+    The refusal is deliberately one-sided: ordering must be *demonstrated*, not
+    merely un-contradicted. A missing ``decided_at`` or a missing snapshot
+    timestamp yields REALIZED, because "we cannot tell" is not "it preceded".
+    Equal timestamps likewise — a quote priced and decided in the same second
+    tells us nothing about which came first.
     """
     if outcome is None:
         return _Classification(ValueClass.POTENTIAL, None, None)
     status = (outcome.status or "").upper()
     if status == QuoteOutcomeStatus.WON.value:
-        return _Classification(ValueClass.ATTRIBUTED,
-                               clock.aware(outcome.decided_at),
-                               _outcome_ref(outcome))
+        decided_at = clock.aware(outcome.decided_at)
+        preceded = (intervened_at is not None
+                    and decided_at is not None
+                    and intervened_at < decided_at)
+        return _Classification(
+            ValueClass.ATTRIBUTED if preceded else ValueClass.REALIZED,
+            decided_at,
+            _outcome_ref(outcome))
     if status == QuoteOutcomeStatus.LOST.value:
         return None
     return _Classification(ValueClass.POTENTIAL, None, _outcome_ref(outcome))
@@ -328,23 +357,41 @@ def _was_overridden(snapshots: Iterable[models.QuoteDecision]) -> bool:
 
 # ── MARGIN_PROTECTED ─────────────────────────────────────────────────────────
 class MarginProtectedDetector(Detector):
-    """Margin the floor kept on a line that was flagged and not overridden.
+    """Margin the floor actually kept on a line — measured by the price moving.
 
     The evidence chain is: a ``QuoteDecision`` snapshot carrying a below-floor
     policy exception (``NEGATIVE_MARGIN``, ``BELOW_MIN_MARGIN`` or
-    ``BELOW_MARGIN_FLOOR``), no override on any snapshot of that line, and the
-    floor reference the exception fired against recorded on the same row.
+    ``BELOW_MARGIN_FLOOR``), no override on any snapshot of that line, the floor
+    reference the exception fired against recorded on the same row, **and a
+    later snapshot whose price clears that floor**.
 
-    The amount is the shortfall between that floor and the price that was
-    flagged, across the quantity — deliberately the same arithmetic
-    ``quote_exceptions`` already shows the manager as the exception's
-    ``impact_amount``, so the ledger and the quote screen cannot disagree about
-    what one flag was worth.
+    That last condition is the whole detector, and its absence was a defect an
+    audit caught. This valued the full shortfall between the floor and the
+    flagged price without ever looking at the price that went out. Because
+    ``overridden`` is only true when somebody types an override *reason*
+    (``quote_service.record_snapshot``), while the ordinary below-floor path is
+    a manager *approval*, a line that was flagged, approved, sent unchanged and
+    won was indistinguishable from one that was corrected. A line at ₹800
+    against a ₹1,000 cost and a ₹1,100 floor booked ₹3,000 of "margin
+    protected" on a sale that lost ₹2,000. The feature reported value for
+    selling below the floor — the §1 failure this module exists to prevent,
+    inside the module built to prevent it.
 
-    The *earliest* flagged snapshot is used rather than the latest, because that
-    is the moment the intervention happened. A later snapshot on the same line
-    is the response to it, and dating the event to the response would put the
-    intervention after its own outcome.
+    So the amount is the *observed movement*, not the counterfactual shortfall:
+
+        amount = min(final_price - flagged_price, floor - flagged_price) x qty
+
+    capped at the floor gap because moving ₹800 to ₹1,300 against a ₹1,100
+    floor protected ₹300 a unit; the rest is ordinary commercial judgement and
+    the platform cannot claim it. Both operands are persisted snapshots, which
+    is what lets the result be called measured rather than modelled.
+
+    When the final price is still below the floor, nothing was protected — the
+    guardrail was overruled — and the line is skipped with ``FLOOR_NOT_CLEARED``
+    so it surfaces as a named gap rather than as silence.
+
+    The *earliest* flagged snapshot dates the intervention, because that is the
+    moment it happened; a later snapshot is the response to it.
     """
 
     event_type: ClassVar[ValueEventType] = ValueEventType.MARGIN_PROTECTED
@@ -397,37 +444,79 @@ class MarginProtectedDetector(Detector):
                 continue
 
             qty = _dec(flagged.quantity)
-            amount = margin_protected(floor, price, qty)
-            if amount is None:
+            floor_gap = margin_protected(floor, price, qty)
+            if floor_gap is None:
                 skipped.append(SkippedRow(
                     NOTHING_AT_STAKE, ref,
                     "the quoted price is not below the floor it was measured against"))
                 continue
 
+            # What actually went out. Everything above establishes that a flag
+            # fired; this is what establishes that it *worked*.
+            final = snapshots[-1]
+            final_price = _dec(final.quoted_unit_price)
+            final_qty = _dec(final.quantity)
+            if final_price is None:
+                skipped.append(SkippedRow(NO_PRICE_ON_RECORD, ref,
+                                          "the final snapshot records no quoted price"))
+                continue
+            if final_qty != qty:
+                skipped.append(SkippedRow(
+                    QUANTITY_CHANGED, ref,
+                    "the quantity changed after the flag, so the two unit prices "
+                    "are not comparable"))
+                continue
+            if final_price < floor:
+                # The line was flagged and shipped below its floor anyway. There
+                # is no protected margin here; claiming the shortfall would book
+                # value for selling below policy.
+                skipped.append(SkippedRow(
+                    FLOOR_NOT_CLEARED, ref,
+                    f"the price that went out ({final_price}) is still below the "
+                    f"floor ({floor}), so nothing was protected"))
+                continue
+
+            # Capped at the floor gap: clearing the floor by more than it asked
+            # for is commercial judgement, not something the guardrail did.
+            movement = margin_protected(final_price, price, qty)
+            if movement is None:
+                skipped.append(SkippedRow(
+                    NOTHING_AT_STAKE, ref,
+                    "the price did not move up after the flag"))
+                continue
+            amount = min(movement, floor_gap)
+
             outcome = evidence.outcome_for(quote_id)
-            classification = _classify(outcome)
+            classification = _classify(outcome, clock.aware(flagged.created_at))
             if classification is None:
                 skipped.append(SkippedRow(QUOTE_LOST, ref,
                                           "the quote was lost; the money did not move"))
                 continue
 
             refs = [ref]
+            if final.quote_decision_id != flagged.quote_decision_id:
+                refs.append(_line_ref(final))
             if classification.evidence_ref is not None:
                 refs.append(classification.evidence_ref)
 
             events.append(ValueEventDraft(
                 event_type=self.event_type,
                 value_class=classification.value_class,
-                event_key=event_key(flagged.organization_id, self.event_type,
+                event_key=event_key(flagged.organization_id,
+                                    FACT_OF[self.event_type],
                                     classification.value_class,
-                                    (quote_id, line_id, flagged.quote_decision_id)),
+                                    (quote_id, line_id)),
                 amount=amount,
                 basis={
-                    "formula": "(floor_price - quoted_unit_price) x quantity",
+                    "formula": ("min(final_price - flagged_price, "
+                                "floor_price - flagged_price) x quantity"),
                     "exception_code": exception["code"],
                     "floor_reference_code": code,
                     "floor_price": str(floor),
-                    "quoted_unit_price": str(price),
+                    "flagged_unit_price": str(price),
+                    "final_unit_price": str(final_price),
+                    "movement": str(movement),
+                    "floor_gap": str(floor_gap),
                     "quantity": str(qty),
                 },
                 evidence_refs=refs,
@@ -523,7 +612,7 @@ class DiscountLeakagePreventedDetector(Detector):
                 continue
 
             outcome = evidence.outcome_for(quote_id)
-            classification = _classify(outcome)
+            classification = _classify(outcome, clock.aware(opening.created_at))
             if classification is None:
                 skipped.append(SkippedRow(QUOTE_LOST, ref,
                                           "the quote was lost; the money did not move"))
@@ -536,10 +625,10 @@ class DiscountLeakagePreventedDetector(Detector):
             events.append(ValueEventDraft(
                 event_type=self.event_type,
                 value_class=classification.value_class,
-                event_key=event_key(final.organization_id, self.event_type,
+                event_key=event_key(final.organization_id,
+                                    FACT_OF[self.event_type],
                                     classification.value_class,
-                                    (quote_id, line_id, opening.quote_decision_id,
-                                     final.quote_decision_id)),
+                                    (quote_id, line_id)),
                 amount=amount,
                 basis={
                     "formula": "(final_price - opening_price) x quantity",
@@ -630,9 +719,10 @@ class EquivalentSavingDetector(Detector):
             events.append(ValueEventDraft(
                 event_type=self.event_type,
                 value_class=classification.value_class,
-                event_key=event_key(final.organization_id, self.event_type,
+                event_key=event_key(final.organization_id,
+                                    FACT_OF[self.event_type],
                                     classification.value_class,
-                                    (quote_id, line_id, final.quote_decision_id)),
+                                    (quote_id, line_id)),
                 amount=amount,
                 basis={
                     "formula": "(original_unit_cost - alternative_unit_cost) x quantity",
@@ -728,7 +818,66 @@ def run_all(session: Session, org: str, *,
     """
     evidence = load_evidence(session, org, since=since, until=until)
     th = thresholds or load_for_org(session, org)
-    return {d.event_type: d.detect(evidence, th) for d in DETECTORS}
+    return _reconcile({d.event_type: d.detect(evidence, th) for d in DETECTORS})
+
+
+#: Which event type wins when two of them measure one fact. Lower sorts first.
+#: ``MARGIN_PROTECTED`` outranks ``DISCOUNT_LEAKAGE_PREVENTED`` because a floor
+#: is a policy boundary the business set, and "the price came back above the
+#: floor" is a stronger and more specific claim than "the price went up".
+_FACT_PRECEDENCE: dict[ValueEventType, int] = {
+    ValueEventType.MARGIN_PROTECTED: 0,
+    ValueEventType.DISCOUNT_LEAKAGE_PREVENTED: 1,
+    ValueEventType.EQUIVALENT_SAVING: 0,
+}
+
+
+def _reconcile(results: dict[ValueEventType, DetectionResult],
+               ) -> dict[ValueEventType, DetectionResult]:
+    """One event per fact per line, even when two detectors both found it.
+
+    ``MARGIN_PROTECTED`` and ``DISCOUNT_LEAKAGE_PREVENTED`` measure overlapping
+    halves of one line's price movement: the first values the part that brought
+    the price back to its floor, the second values the whole move. Both are
+    correct readings, and both are about **the same rupees**. Recording both and
+    summing them is what booked ₹6,000 against ₹3,000 of real movement on the
+    flagship success path — flag, reprice, win.
+
+    The ledger's key would collapse them anyway, since it is keyed on the fact
+    rather than the type. Doing it here as well is deliberate rather than
+    redundant: relying on the key alone would make the surviving row depend on
+    the order ``DETECTORS`` happens to be declared in, and would leave the
+    discarded draft absent from the skip report — invisible, rather than
+    explained. This makes the choice explicit and names the loser as a skip, so
+    a reader of the diagnostic sees why one of the two is not in the ledger.
+    """
+    keep: dict[tuple[str, str], tuple[int, ValueEventType, ValueEventDraft]] = {}
+    for event_type, result in results.items():
+        for draft in result.events:
+            fact_key = (FACT_OF[event_type].value, draft.event_key)
+            rank = _FACT_PRECEDENCE.get(event_type, 99)
+            current = keep.get(fact_key)
+            if current is None or rank < current[0]:
+                keep[fact_key] = (rank, event_type, draft)
+
+    kept_ids = {id(entry[2]) for entry in keep.values()}
+    out: dict[ValueEventType, DetectionResult] = {}
+    for event_type, result in results.items():
+        events, skipped = [], list(result.skipped)
+        for draft in result.events:
+            if id(draft) in kept_ids:
+                events.append(draft)
+                continue
+            winner = keep[(FACT_OF[event_type].value, draft.event_key)][1]
+            skipped.append(SkippedRow(
+                SUPERSEDED_BY_STRONGER_CLAIM,
+                dict(draft.evidence_refs[0]) if draft.evidence_refs else {},
+                f"the same price movement is recorded as {winner.value}, which is "
+                "the stronger claim about it; counting both would bank the same "
+                "rupees twice"))
+        out[event_type] = DetectionResult(event_type, events, skipped,
+                                          result.considered)
+    return out
 
 
 def skip_summary(results: dict[ValueEventType, DetectionResult]) -> list[dict[str, Any]]:

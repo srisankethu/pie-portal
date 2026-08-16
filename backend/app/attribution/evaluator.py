@@ -7,9 +7,8 @@ being asked to pay against should be a statement the database itself can make.
 
 Three rules run through all of it.
 
-**The headline is ATTRIBUTED and nothing else.** POTENTIAL, REALIZED and
-ESTIMATED come back in their own fields with their own labels and are never
-added into it — see ``ValueClass``. The classes describe overlapping facts on
+**The headline is ATTRIBUTED and nothing else.** POTENTIAL and REALIZED come
+back in their own fields with their own labels and are never added into it — see ``ValueClass``. The classes describe overlapping facts on
 purpose (a line flagged during a live quote and re-detected after the quote is
 won is recorded under both), so summing them would double count the same line
 under the guise of being generous.
@@ -132,7 +131,10 @@ def _by_class(session: Session, org: str,
                func.sum(models.ValueEvent.amount))
         .where(models.ValueEvent.organization_id == org,
                models.ValueEvent.occurred_at >= start,
-               models.ValueEvent.occurred_at <= end)
+               models.ValueEvent.occurred_at <= end,
+               # Superseded rows are history. A re-measured line must count
+               # once, at its current amount, or a reprice inflates the total.
+               models.ValueEvent.superseded_at.is_(None))
         .group_by(models.ValueEvent.value_class)).all()
 
     out: dict[str, dict[str, Any]] = {
@@ -158,7 +160,8 @@ def _by_event_type(session: Session, org: str,
                func.sum(models.ValueEvent.amount))
         .where(models.ValueEvent.organization_id == org,
                models.ValueEvent.occurred_at >= start,
-               models.ValueEvent.occurred_at <= end)
+               models.ValueEvent.occurred_at <= end,
+               models.ValueEvent.superseded_at.is_(None))
         .group_by(models.ValueEvent.event_type, models.ValueEvent.value_class)
         .order_by(models.ValueEvent.event_type,
                   models.ValueEvent.value_class)).all()
@@ -189,7 +192,8 @@ def list_events(session: Session, org: str, *,
     several events can share a timestamp to the second and a paged list whose
     order is not total will show one row twice and skip another.
     """
-    where = [models.ValueEvent.organization_id == org]
+    where = [models.ValueEvent.organization_id == org,
+             models.ValueEvent.superseded_at.is_(None)]
     if event_type is not None:
         where.append(models.ValueEvent.event_type == event_type.value)
     if value_class is not None:
@@ -289,7 +293,11 @@ def _priced_lines(session: Session, org: str,
     return {
         "priced_lines": priced,
         "costed_lines": costed,
-        "uncosted_lines": priced - costed,
+        # Named for what it counts: a line is excluded from the margin figures
+        # if it is missing cost, revenue OR gross profit — not cost alone. The
+        # sentence in the gap has to say the same thing, or a reader chases a
+        # missing purchase cost on a line whose revenue is what is absent.
+        "uncostable_lines": priced - costed,
         "approval_required_lines": approval_required,
         # A rate over the costed lines, because an uncosted line could not have
         # been judged against a floor in the first place.
@@ -393,12 +401,14 @@ def capture_baseline(session: Session, org: str,
                          "baseline and the report compares nothing"))
     elif not priced["costed_lines"]:
         gaps.append(_gap("margin", NO_COSTED_LINES_IN_WINDOW,
-                         "quote lines exist in the window but none carry a purchase "
-                         "cost, so no margin can be stated for them"))
-    elif priced["uncosted_lines"]:
+                         "quote lines exist in the window but none of them carry the "
+                         "cost, revenue and gross profit a margin needs, so no margin "
+                         "can be stated for them"))
+    elif priced["uncostable_lines"]:
         gaps.append(_gap("margin", NO_COSTED_LINES_IN_WINDOW,
-                         f"{priced['uncosted_lines']} of {priced['priced_lines']} "
-                         "priced lines carry no cost and are excluded from the "
+                         f"{priced['uncostable_lines']} of {priced['priced_lines']} "
+                         "priced lines are missing cost, revenue or gross profit and "
+                         "are excluded from the "
                          "margin above"))
 
     outcomes = _quote_outcomes(session, org, start_dt, end_dt)
@@ -412,7 +422,7 @@ def capture_baseline(session: Session, org: str,
         "revenue": str(revenue) if revenue is not None else None,
         "priced_lines": priced["priced_lines"],
         "costed_lines": priced["costed_lines"],
-        "uncosted_lines": priced["uncosted_lines"],
+        "uncostable_lines": priced["uncostable_lines"],
         "quoted_margin": priced["margin"],
         "approval_required_lines": priced["approval_required_lines"],
         "approval_required_rate": priced["approval_required_rate"],
@@ -516,8 +526,11 @@ def trial_progress(session: Session, org: str) -> dict[str, Any]:
         "potential_events": classes[ValueClass.POTENTIAL.value]["events"],
         "realized_value": classes[ValueClass.REALIZED.value]["amount"],
         "realized_events": classes[ValueClass.REALIZED.value]["events"],
-        "estimated_value": classes[ValueClass.ESTIMATED.value]["amount"],
-        "estimated_events": classes[ValueClass.ESTIMATED.value]["events"],
+        # ESTIMATED is deliberately absent. No detector produces it — nothing in
+        # the evidence supports a defensible estimate today — and a tile reading
+        # "Estimated ₹0" is a fabricated zero in the exact sense §1 forbids: it
+        # states a measurement where none was made. The enum member stays for
+        # the day something can produce one; the surface does not.
         "class_totals_are_not_summable": (
             "POTENTIAL and ATTRIBUTED can describe the same quote line — one as "
             "the flag, one as the win that followed it. They are separate "

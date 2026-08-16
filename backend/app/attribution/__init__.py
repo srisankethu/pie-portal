@@ -42,7 +42,16 @@ from .detectors import (
 )
 from .evaluator import (capture_baseline, current_trial, list_events,
                         thirty_day_report, trial_progress)
-from .ledger import LedgerRefusal, ValueEventDraft, event_key, record, record_all
+from .ledger import (
+    FACT_OF,
+    LedgerRefusal,
+    ValueEventDraft,
+    ValueFact,
+    event_key,
+    record,
+    record_all,
+    supersede_closed_opportunities,
+)
 
 __all__ = [
     "DETECTORS",
@@ -58,12 +67,15 @@ __all__ = [
     "current_trial",
     "discount_leakage_prevented",
     "equivalent_saving",
+    "FACT_OF",
+    "ValueFact",
     "event_key",
     "list_events",
     "load_evidence",
     "margin_protected",
     "record",
     "record_all",
+    "supersede_closed_opportunities",
     "roi",
     "run_all",
     "skip_summary",

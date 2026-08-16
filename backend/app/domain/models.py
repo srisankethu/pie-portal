@@ -33,6 +33,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -1730,9 +1731,22 @@ class ValueEvent(Base):
 
     __tablename__ = "value_events"
     __table_args__ = (
-        UniqueConstraint("organization_id", "event_key", name="uq_value_event_key"),
+        # Unique over the *live* rows only. A plain unique constraint was wrong
+        # once supersession existed: correcting a measurement writes a second row
+        # with the same key, and the constraint would refuse the correction. The
+        # partial index keeps the guarantee that matters — one live claim per
+        # fact — while letting the superseded ones stay as history.
+        #
+        # Both backends support partial indexes (SQLite since 3.8, Postgres
+        # always), so this needs no dialect branch beyond naming the predicate
+        # twice.
+        Index("uq_value_event_key_live", "organization_id", "event_key",
+              unique=True,
+              sqlite_where=text("superseded_at IS NULL"),
+              postgresql_where=text("superseded_at IS NULL")),
         Index("ix_value_events_org_occurred", "organization_id", "occurred_at"),
         Index("ix_value_events_org_class", "organization_id", "value_class"),
+        Index("ix_value_events_org_superseded", "organization_id", "superseded_at"),
     )
 
     value_event_id: Mapped[str] = mapped_column(String(64), primary_key=True,
@@ -1760,6 +1774,18 @@ class ValueEvent(Base):
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     thresholds_version: Mapped[str] = mapped_column(String(32), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    #: Set when a later detection run measured this same fact differently — a
+    #: line repriced again, so the earlier amount is now an understatement. The
+    #: superseded row is kept and every rollup filters ``IS NULL``, which is what
+    #: makes a re-run correct the ledger instead of accumulating into it.
+    #:
+    #: This is the one stamp written to an existing row, and it is why the table
+    #: can still be called append-only: the *claim* is immutable, and this only
+    #: records that a newer claim replaced it. Without it, a stable event key
+    #: would freeze the first amount forever, and a changing key — which is what
+    #: shipped first — let three runs over one line bank three overlapping
+    #: amounts for one price movement.
+    superseded_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
 
 class EvaluationBaseline(Base):

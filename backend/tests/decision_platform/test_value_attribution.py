@@ -176,6 +176,33 @@ def _priced_line(s, *, quote_id: str, line_id: str = "L1",
     return row
 
 
+def _protected_line(s, *, quote_id: str, line_id: str = "L1",
+                    flagged_price: str = "800", final_price: str = "1200",
+                    cost: str | None = "600", qty: str = "10",
+                    floor: str | None = "1100",
+                    overridden: bool = False,
+                    created_days_ago: int = 5) -> models.QuoteDecision:
+    """A line that was flagged below its floor **and then actually repriced**.
+
+    The case a ``MARGIN_PROTECTED`` event is allowed to exist for, and the one
+    ``_priced_line`` alone is not. A single below-floor snapshot means the price
+    was flagged; it says nothing about what went out. An audit found the
+    detector claiming the full shortfall on lines that shipped unchanged and
+    lost money, so a fixture that seeds one snapshot and expects an event is
+    encoding the defect rather than testing the feature.
+
+    Returns the *final* snapshot, because that is the one carrying the price
+    that was actually sent.
+    """
+    _priced_line(s, quote_id=quote_id, line_id=line_id, price=flagged_price,
+                 cost=cost, qty=qty, floor=floor, flagged=True,
+                 overridden=overridden, created_days_ago=created_days_ago)
+    return _priced_line(s, quote_id=quote_id, line_id=line_id,
+                        price=final_price, cost=cost, qty=qty, floor=floor,
+                        flagged=False, overridden=overridden,
+                        created_days_ago=max(0, created_days_ago - 1))
+
+
 def _run_and_record(s) -> int:
     """The whole pipeline — detect, then write. Returns events created."""
     results = det.run_all(s, ORG)
@@ -362,9 +389,10 @@ def test_a_line_with_no_cost_on_record_produces_no_event_at_all(session, trial):
     assert margin.skip_counts() == {det.NO_COST_ON_RECORD: 1}, (
         "the uncosted line was dropped without naming why")
 
-    # And the same line, costed, does produce one — so the absence above is
-    # caused by the missing cost and not by seeding the detector cannot read.
-    _priced_line(session, quote_id="q_costed")
+    # And a costed line that was genuinely protected does produce one — so the
+    # absence above is caused by the missing cost and not by seeding the
+    # detector cannot read.
+    _protected_line(session, quote_id="q_costed")
     assert _run_and_record(session) == 1
     [row] = _ledger_rows(session)
     assert row.amount is not None and Decimal(str(row.amount)) > 0
@@ -390,7 +418,7 @@ def test_recording_the_same_fact_twice_yields_exactly_one_row(session, trial):
     assert session.scalar(select(func.count()).select_from(models.ValueEvent)) == 1
 
     # The same through the pipeline: two detection runs over one line, one row.
-    _priced_line(session, quote_id="q_rerun")
+    _protected_line(session, quote_id="q_rerun")
     assert _run_and_record(session) == 1
     assert _run_and_record(session) == 0
     assert len(_ledger_rows(session)) == 2  # the hand-written one, plus this
@@ -419,9 +447,16 @@ def test_the_headline_never_includes_potential_or_estimated(session, trial):
 
     # Reported beside it, under their own names, never inside it.
     assert progress["potential_value"] == POTENTIAL_AMOUNT
-    assert progress["estimated_value"] == ESTIMATED_AMOUNT
     assert progress["realized_value"] == REALIZED_AMOUNT
     assert progress["class_totals_are_not_summable"]
+
+    # ESTIMATED is seeded above and deliberately does *not* surface: no detector
+    # produces that class, so a field carrying it would invite a tile reading
+    # "Estimated — none recorded", which states a measurement nobody attempted.
+    # The row still exists in the ledger and still stays out of the headline,
+    # which is what the `every_class` assertion above is checking.
+    assert "estimated_value" not in progress
+    assert "estimated_events" not in progress
 
 
 def test_the_headline_stays_attributed_only_over_http(client):
@@ -491,8 +526,8 @@ def test_every_persisted_event_names_its_policy_and_its_evidence(session, trial)
     was computed over, is an assertion. The ledger's whole value is that it
     holds none, so this is checked as a property of *every* row rather than of
     the rows this test happened to write."""
-    _priced_line(session, quote_id="q_a")
-    _priced_line(session, quote_id="q_b", line_id="L2")
+    _protected_line(session, quote_id="q_a")
+    _protected_line(session, quote_id="q_b", line_id="L2")
     _seed_ledger(session)
     _run_and_record(session)
 
@@ -578,7 +613,7 @@ def test_every_unmeasurable_event_type_is_a_named_gap_not_a_measured_zero(
     type added without evidence behind it fails here instead of appearing as a
     silent nothing.
     """
-    _priced_line(session, quote_id="q_flag")
+    _protected_line(session, quote_id="q_flag")
     _run_and_record(session)
 
     progress = ev.trial_progress(session, ORG)
@@ -717,3 +752,224 @@ def test_the_guard_above_actually_catches_the_idiom_it_names():
         "total = sum(row.amount for row in rows if row.amount is not None)\n"
         "n = int(events or 0)\n"))
     assert clean == []
+
+
+# ── 10. the detector path, which is where every real defect lived ───────────
+#
+# An independent audit found six confirmed defects in this module, and the
+# 22 tests above it passed throughout — because not one of them ran a detector
+# against a won quote. They seeded `ValueEvent` rows by hand, so every fault in
+# the path from evidence to draft was invisible. The mutation testing that
+# "verified" them could only falsify what they already reached.
+#
+# These are that path. Each one is an audit finding, reproduced as its failing
+# case with the number it used to produce named in the assertion.
+
+
+def _won(s, quote_id: str, *, days_ago: int = 1) -> models.QuoteOutcome:
+    row = models.QuoteOutcome(
+        organization_id=ORG, quote_id=quote_id, status="WON",
+        decided_at=clock.now() - timedelta(days=days_ago))
+    s.add(row)
+    s.flush()
+    return row
+
+
+def _attributed_total(s) -> Decimal:
+    """The headline, read the way the screen reads it.
+
+    Deliberately the evaluator's own rollup rather than a sum over the rows
+    here. A helper that re-implemented the filter would have to remember to
+    exclude superseded rows, and a test that forgets that is a test asserting a
+    total no user ever sees — which is exactly the mistake the first draft of
+    this helper made, quietly turning a corrected ₹3,000 claim into ₹6,000 by
+    adding the two measurements it replaced.
+    """
+    total = ev.trial_progress(s, ORG)["attributed_value"]
+    return Decimal(0) if total is None else Decimal(str(total))
+
+
+def test_a_line_that_shipped_below_its_floor_claims_nothing(session, trial):
+    """F1, the worst of them: value booked for selling below the floor.
+
+    A line flagged at ₹800 against a ₹1,000 cost and a ₹1,100 floor, never
+    repriced, sent as-is and won. The detector claimed the full ₹3,000
+    shortfall as "margin protected" on a sale that lost ₹2,000, because it
+    valued the gap to the floor and never looked at the price that went out.
+
+    ``overridden`` did not save it: that flag is only set when somebody types an
+    override *reason*, while the ordinary below-floor path is a manager
+    approval, so a shipped-anyway line looked identical to a corrected one.
+    """
+    _priced_line(session, quote_id="q_below", price="800", cost="1000",
+                 floor="1100")
+    _won(session, "q_below")
+
+    results = det.run_all(session, ORG)
+    _run_and_record(session)
+
+    assert _ledger_rows(session) == [], (
+        "a line that shipped below its floor produced a ledger row. It used to "
+        "produce ₹3,000 of 'margin protected' on a sale that lost ₹2,000.")
+    margin = results[ValueEventType.MARGIN_PROTECTED]
+    assert margin.skip_counts() == {det.FLOOR_NOT_CLEARED: 1}, (
+        "the line was dropped without naming that the floor was never cleared")
+
+
+def test_a_reprice_that_still_misses_the_floor_claims_only_what_moved(session, trial):
+    """The partial-reprice variant: 800 -> 1050 against a 1100 floor, won.
+
+    This one is a *line*, not a bug, and it is worth stating because the two
+    readings look alike. The line went out below policy, so nothing was
+    protected relative to the floor and ``MARGIN_PROTECTED`` must claim nothing
+    — under the old code it claimed the whole ₹3,000 gap, and the partial
+    reprice made that ₹5,500 across the two detectors.
+
+    But the price genuinely moved ₹250 a unit after PIE flagged it, and the
+    customer bought at the higher price. That ₹2,500 is measured on both ends
+    and is honestly ``DISCOUNT_LEAKAGE_PREVENTED``. Refusing it would understate
+    what the platform did, which is its own kind of dishonesty.
+
+    The invariant that keeps this from resurrecting F1: the credited amount is
+    the **observed movement**, never the gap to the floor. Below-policy selling
+    is a separate fact and the floor claim stays at zero.
+    """
+    _protected_line(session, quote_id="q_partial", flagged_price="800",
+                    final_price="1050", cost="600", floor="1100")
+    _won(session, "q_partial")
+    results = det.run_all(session, ORG)
+    _run_and_record(session)
+
+    assert results[ValueEventType.MARGIN_PROTECTED].skip_counts() == {
+        det.FLOOR_NOT_CLEARED: 1}, "a line below its floor claimed protection"
+
+    moved = (Decimal("1050") - Decimal("800")) * Decimal("10")
+    assert _attributed_total(session) == moved, (
+        f"credited something other than the {moved} the price actually moved; "
+        "it used to claim ₹5,500 by valuing the gap to the floor")
+
+
+def test_one_price_movement_is_never_banked_by_two_event_types(session, trial):
+    """F2: the flagship success path double counted.
+
+    Flagged at ₹800, repriced to ₹1,100, ten units, won. MARGIN_PROTECTED and
+    DISCOUNT_LEAKAGE_PREVENTED each wrote a row and the rollup summed both, so
+    ₹3,000 of real movement was reported as ₹6,000.
+    """
+    _protected_line(session, quote_id="q_two", flagged_price="800",
+                    final_price="1100", cost="600", floor="1100")
+    _won(session, "q_two")
+    _run_and_record(session)
+
+    rows = [r for r in _ledger_rows(session)
+            if r.value_class == ValueClass.ATTRIBUTED.value]
+    assert len(rows) == 1, (
+        f"one price movement produced {len(rows)} rows; it used to produce two "
+        "and sum them to ₹6,000 against ₹3,000 of movement")
+    assert _attributed_total(session) == Decimal("3000.0000")
+
+
+def test_re_running_detection_does_not_inflate_the_total(session, trial):
+    """F3: the ledger's own docstring promised re-runs were safe. They were not.
+
+    Detect at 800->1000, reprice to 1200, detect again. The event key carried
+    the final snapshot's id, so the second run minted a fresh key and left the
+    stale partial claim standing: ₹8,000 booked for ₹4,000 of movement.
+    """
+    _protected_line(session, quote_id="q_rr", flagged_price="800",
+                    final_price="1000", cost="600", floor="1100")
+    _won(session, "q_rr")
+    _run_and_record(session)
+    first = _attributed_total(session)
+
+    _priced_line(session, quote_id="q_rr", price="1200", cost="600",
+                 floor="1100", flagged=False, created_days_ago=0)
+    _run_and_record(session)
+
+    live = [r for r in _ledger_rows(session)
+            if r.value_class == ValueClass.ATTRIBUTED.value
+            and r.superseded_at is None]
+    assert len(live) == 1, "a re-run left two live claims about one line"
+    assert _attributed_total(session) == Decimal("3000.0000"), (
+        f"the total inflated across runs (first run {first}); it used to reach "
+        "₹8,000 for ₹4,000 of real movement")
+
+    superseded = [r for r in _ledger_rows(session) if r.superseded_at is not None]
+    assert superseded, "the corrected claim was mutated rather than superseded"
+
+
+def test_a_flag_recorded_after_the_win_is_never_attributed(session, trial):
+    """F4: ATTRIBUTED proved observation, not influence.
+
+    Nothing compared the timestamps. A quote won nine days before PIE ever
+    priced the line was booked ATTRIBUTED, dating the business fact to before
+    the evidence for it existed. Ordering must be demonstrated, not merely
+    un-contradicted, so this is REALIZED — which is what that class is for.
+    """
+    _protected_line(session, quote_id="q_late", flagged_price="800",
+                    final_price="1200", cost="600", floor="1100",
+                    created_days_ago=1)
+    _won(session, "q_late", days_ago=9)
+    _run_and_record(session)
+
+    rows = _ledger_rows(session)
+    assert rows, "the seeding produced nothing, so this asserts nothing"
+    assert all(r.value_class == ValueClass.REALIZED.value for r in rows), (
+        "a flag recorded after the win was called ATTRIBUTED")
+    assert _attributed_total(session) == 0
+
+
+def test_a_potential_opportunity_does_not_survive_the_quote_being_lost(session, trial):
+    """The stale-POTENTIAL case. Refusing to *create* one was not enough.
+
+    The detector correctly declines a lost quote, but a row written while the
+    quote was still open was never revisited — so a declined quote kept a
+    permanent row on "Opportunities identified" claiming money that is gone.
+    """
+    _protected_line(session, quote_id="q_open", flagged_price="800",
+                    final_price="1200", cost="600", floor="1100")
+    _run_and_record(session)
+    live = [r for r in _ledger_rows(session) if r.superseded_at is None]
+    assert [r.value_class for r in live] == [ValueClass.POTENTIAL.value]
+
+    session.add(models.QuoteOutcome(
+        organization_id=ORG, quote_id="q_open", status="LOST",
+        loss_reason="PRICE", decided_at=clock.now()))
+    session.flush()
+
+    results = det.run_all(session, ORG)
+    drafts = [d for r in results.values() for d in r.events]
+    led.record_all(session, ORG, drafts)
+    led.supersede_closed_opportunities(
+        session, ORG,
+        [d.event_key for d in drafts if d.value_class is ValueClass.POTENTIAL])
+
+    live = [r for r in _ledger_rows(session) if r.superseded_at is None]
+    assert live == [], (
+        "a lost quote left a live POTENTIAL row still claiming the opportunity")
+
+
+def test_the_attributed_total_for_a_line_never_exceeds_its_real_movement(session, trial):
+    """The property the auditor asked for, swept over reprice sequences.
+
+    One line, one price movement: whatever sequence of snapshots and detection
+    runs produced it, the attributed total cannot exceed what the price actually
+    moved. This is the invariant F1, F2 and F3 each broke a different way, so it
+    is asserted directly rather than only through their individual cases.
+    """
+    qty, flagged, floor = Decimal("10"), Decimal("800"), Decimal("1100")
+    _protected_line(session, quote_id="q_prop", flagged_price="800",
+                    final_price="900", cost="600", floor="1100")
+    _won(session, "q_prop")
+
+    for i, price in enumerate(["1000", "1150", "1120", "1300"]):
+        _run_and_record(session)
+        _priced_line(session, quote_id="q_prop", price=price, cost="600",
+                     floor="1100", flagged=False, created_days_ago=0)
+        session.flush()
+        final = Decimal(price)
+        ceiling = (min(final, floor) - flagged) * qty
+        total = _attributed_total(session)
+        assert total <= max(ceiling, Decimal(0)), (
+            f"after reprice {i} to {price}, attributed {total} exceeds the "
+            f"{ceiling} this line's price actually moved within its floor")

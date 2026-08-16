@@ -38,12 +38,14 @@ import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
+from enum import Enum
 from typing import Any, Iterable, Optional, Sequence
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from .. import clock
 from ..domain import models
 from ..domain.enums import ValueClass, ValueEventType
 
@@ -93,19 +95,66 @@ class ValueEventDraft:
     notes: dict[str, Any] = field(default_factory=dict)
 
 
-def event_key(org: str, event_type: ValueEventType, value_class: ValueClass,
-              identity: Sequence[str]) -> str:
-    """A stable key for one fact, in the ``Decision.decision_key`` idiom.
+class ValueFact(str, Enum):
+    """What underlying business fact an event is a measurement *of*.
 
-    ``identity`` is the evidence the event is about — a quote decision id, a
-    quote id and line id — and its *order* is part of the key, so a detector
-    must pass it consistently. Hashed rather than concatenated because the
-    column is 128 characters and a quote line id is not bounded by anything this
-    module controls; a key that silently truncates would collide two facts into
-    one and lose the second amount.
+    The unit the double-count guard operates on. Several event types can measure
+    one fact from different angles — ``MARGIN_PROTECTED`` and
+    ``DISCOUNT_LEAKAGE_PREVENTED`` are both ways of valuing one line's price
+    movement — and those must share an identity or the rollup banks the same
+    rupees twice. Types that measure genuinely *different* facts must not share
+    one, or the guard silently discards a real second amount.
+
+    That second failure is the one worth stating, because collapsing too much is
+    as wrong as collapsing too little and looks tidier: a line whose price moved
+    *and* which was sourced through a cheaper equivalent produced two real,
+    non-overlapping amounts. They are two facts about one line.
+    """
+
+    PRICE_MOVEMENT = "PRICE_MOVEMENT"
+    SUBSTITUTION = "SUBSTITUTION"
+
+
+#: Which fact each event type measures. Every ``ValueEventType`` that a detector
+#: can emit must appear here — ``_validate`` refuses a draft whose type is
+#: missing, rather than inventing a fact for it.
+FACT_OF: dict[ValueEventType, ValueFact] = {
+    ValueEventType.MARGIN_PROTECTED: ValueFact.PRICE_MOVEMENT,
+    ValueEventType.DISCOUNT_LEAKAGE_PREVENTED: ValueFact.PRICE_MOVEMENT,
+    ValueEventType.EQUIVALENT_SAVING: ValueFact.SUBSTITUTION,
+}
+
+
+def event_key(org: str, fact: ValueFact, value_class: ValueClass,
+              identity: Sequence[str]) -> str:
+    """A stable key for one *fact*, in the ``Decision.decision_key`` idiom.
+
+    ``identity`` is the evidence the event is about — a quote id and line id —
+    and its *order* is part of the key, so a detector must pass it
+    consistently. Hashed rather than concatenated because the column is 128
+    characters and a quote line id is not bounded by anything this module
+    controls; a key that silently truncates would collide two facts into one and
+    lose the second amount.
+
+    **The event type is deliberately not part of the key**, and that is a
+    correction rather than an oversight. It used to be, and the consequence was
+    that ``MARGIN_PROTECTED`` and ``DISCOUNT_LEAKAGE_PREVENTED`` — which measure
+    overlapping halves of one line's price movement — each wrote a row and the
+    rollup summed both. One line flagged at ₹800, repriced to ₹1,100 across 10
+    units booked ₹6,000 against ₹3,000 of actual movement, on the flagship
+    success path. The underlying fact is "this line's price moved after PIE
+    flagged it"; it is one fact, so it gets one row, and ``event_type`` records
+    which flag drove it rather than minting a second identity.
+
+    Nor are snapshot ids part of it. Including the final snapshot's id meant a
+    further reprice minted a fresh key and left the stale partial claim standing
+    — three detection runs over one line booked ₹8,000 for ₹3,000 of movement.
+    A re-run now lands on the same key and supersedes rather than accumulates
+    (see ``record``), which is what makes this module's promise that detectors
+    are "free to re-run after every sync" actually true.
     """
     parts = "|".join(str(p) for p in identity)
-    blob = f"{org}|{event_type.value}|{value_class.value}|{parts}".encode()
+    blob = f"{org}|{fact.value}|{value_class.value}|{parts}".encode()
     return "ve_" + hashlib.sha256(blob).hexdigest()[:24]
 
 
@@ -114,6 +163,14 @@ def _validate(draft: ValueEventDraft) -> None:
         raise LedgerRefusal(f"event_type is not a ValueEventType: {draft.event_type!r}")
     if not isinstance(draft.value_class, ValueClass):
         raise LedgerRefusal(f"value_class is not a ValueClass: {draft.value_class!r}")
+    if draft.event_type not in FACT_OF:
+        # A type with no registered fact cannot be de-duplicated against
+        # anything, so a new detector added without a FACT_OF entry would
+        # silently reintroduce the double count this registry exists to stop.
+        # Refuse loudly at the seam instead of guessing a fact for it.
+        raise LedgerRefusal(
+            f"{draft.event_type.value} has no entry in FACT_OF; every event type "
+            "must declare which underlying fact it measures")
     if not (draft.event_key or "").strip():
         raise LedgerRefusal("event_key is empty — the double-count guard needs one")
     if not draft.evidence_refs:
@@ -134,24 +191,48 @@ def _validate(draft: ValueEventDraft) -> None:
 
 
 def _existing(session: Session, org: str, key: str) -> Optional[models.ValueEvent]:
+    """The *live* row for this fact. Superseded rows are history, not answers."""
     return session.scalars(
         select(models.ValueEvent).where(
             models.ValueEvent.organization_id == org,
-            models.ValueEvent.event_key == key)).first()
+            models.ValueEvent.event_key == key,
+            models.ValueEvent.superseded_at.is_(None))).first()
 
 
 def record(session: Session, org: str,
            draft: ValueEventDraft) -> tuple[models.ValueEvent, bool]:
-    """Write one event, or return the one already recording this fact.
+    """Write one event, supersede a stale measurement, or leave things alone.
 
     Returns ``(row, created)``. ``created=False`` is the ordinary case on a
     re-run and is not an error — it is the guard working.
+
+    Three outcomes, because a stable key needs all three:
+
+    * No row for this fact — insert. ``created=True``.
+    * A live row holding the **same** amount — the fact has not changed, so
+      nothing is written. ``created=False``.
+    * A live row holding a **different** amount — a later snapshot measured this
+      same fact differently (the line was repriced again, or a quote's outcome
+      landed). Stamp ``superseded_at`` on the old row and insert the new one.
+      ``created=True``.
+
+    That third case is the one that makes "detectors are free to re-run after
+    every sync" true rather than aspirational. Without it a stable key freezes
+    the first measurement forever; with a key that varied by snapshot — which is
+    what shipped first — each run banked another overlapping amount for the same
+    price movement.
     """
     _validate(draft)
 
     row = _existing(session, org, draft.event_key)
     if row is not None:
-        return row, False
+        if row.amount == draft.amount:
+            return row, False
+        # Superseded, not mutated: the old claim stays readable and every rollup
+        # filters it out. `state/` supersedes rather than mutates for the same
+        # reason — a corrected number whose predecessor is gone cannot be audited.
+        row.superseded_at = clock.now()
+        session.flush()
 
     fresh = models.ValueEvent(
         organization_id=org,
@@ -198,3 +279,42 @@ def record_all(session: Session, org: str,
         rows.append(row)
         created += int(was_created)
     return rows, created
+
+
+def supersede_closed_opportunities(session: Session, org: str,
+                                   live_keys: Iterable[str]) -> int:
+    """Retire POTENTIAL rows whose opportunity is no longer open.
+
+    A POTENTIAL event says "this is still available". The detectors refuse to
+    *create* one for a lost quote — but that only governs new rows, and a row
+    written while the quote was still open is never revisited. So a quote that
+    was flagged, priced, and then declined kept a permanent row on the
+    "Opportunities identified" panel claiming money that is now gone. The
+    detector's own docstring gives the reason this must not happen, and enforced
+    it in exactly the one place that could not be enough.
+
+    ``live_keys`` is every POTENTIAL key a fresh detection run just produced.
+    Anything POTENTIAL in the ledger and *absent* from that set is no longer
+    detectable — the quote was lost, the line was repriced out of scope, the
+    evidence changed — so it is superseded rather than deleted, and the reason
+    it stopped being true stays readable.
+
+    Scoped to POTENTIAL deliberately. An ATTRIBUTED or REALIZED row records that
+    money moved, which stays true whatever happens next; only a claim about the
+    *future* can be invalidated by the future arriving.
+    """
+    keys = set(live_keys)
+    stale = session.scalars(
+        select(models.ValueEvent).where(
+            models.ValueEvent.organization_id == org,
+            models.ValueEvent.value_class == ValueClass.POTENTIAL.value,
+            models.ValueEvent.superseded_at.is_(None))).all()
+    now = clock.now()
+    retired = 0
+    for row in stale:
+        if row.event_key not in keys:
+            row.superseded_at = now
+            retired += 1
+    if retired:
+        session.flush()
+    return retired

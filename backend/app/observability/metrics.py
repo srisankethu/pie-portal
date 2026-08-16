@@ -8,11 +8,12 @@ Thread-safe. Metrics are timestamped and can be queried/exported on demand.
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Callable, Optional
+from typing import Any, Optional
 
 log = logging.getLogger("pie_portal.observability.metrics")
 
@@ -22,6 +23,30 @@ class HistogramBucket:
     """A histogram value with timestamp."""
     value: float
     timestamp: float = field(default_factory=time.time)
+
+
+def _percentile(ordered: list[float], percentile: float) -> float:
+    """The nearest-rank percentile of an already-sorted, non-empty list.
+
+    Pure, and takes no lock — which is the point. It is called both from
+    ``Histogram.get_percentile`` (which acquires the lock) and from
+    ``Histogram.export`` (which already holds it), and the previous arrangement
+    of having the second call the first is what deadlocked.
+
+    Nearest rank: ``ceil(p/100 × N)``, as a 0-based index, clamped into the
+    list. The previous ``int(N × p / 100)`` was a floor, which is off by one
+    everywhere the product lands exactly on an integer — with 100 observations
+    of 1..100 it answered 51 for the median and 100 for p99. Not a rounding
+    quibble: these are the numbers the capacity dashboard reports latency with,
+    so every p95 it showed was one sample pessimistic, and p100 read as the max
+    while p99 already had.
+
+    p=0 is the minimum by convention (rank 0 clamps up to the first element),
+    p=100 the maximum.
+    """
+    n = len(ordered)
+    rank = math.ceil(n * percentile / 100)
+    return ordered[min(max(rank - 1, 0), n - 1)]
 
 
 class Metric:
@@ -132,15 +157,38 @@ class Histogram(Metric):
                 self._by_label[str(key)].append(HistogramBucket(value))
 
     def get_percentile(self, percentile: float) -> Optional[float]:
-        """Get percentile value (0-100)."""
+        """Get percentile value (0-100).
+
+        Takes the lock, so it must not be called from anything that already
+        holds it — see ``export``, and ``_percentile`` for the arithmetic.
+        """
         with self.lock:
             if not self._values:
                 return None
-            sorted_vals = sorted(v.value for v in self._values)
-            idx = int(len(sorted_vals) * percentile / 100)
-            return sorted_vals[min(idx, len(sorted_vals) - 1)]
+            return _percentile(sorted(v.value for v in self._values), percentile)
 
     def export(self) -> dict[str, Any]:
+        """A snapshot of the distribution.
+
+        **Sorts once.** This used to call ``self.get_percentile`` three times
+        from inside ``with self.lock``, and ``self.lock`` is a plain
+        ``threading.Lock`` rather than an ``RLock`` — so the first of those
+        three calls blocked forever waiting for a lock this same thread was
+        already holding. Nothing recovered: the thread was gone for the life of
+        the process.
+
+        That was not only a hung test. ``GET /api/v1/internal/observability/metrics``
+        calls ``MetricRegistry.export``, which calls this for every registered
+        metric, and the API middleware records request latency into a histogram
+        — so on any live deployment the first request to the metrics endpoint
+        wedged a worker permanently, and enough of them would exhaust the pool.
+        The endpoint that reports the platform's health was the one that took it
+        down.
+
+        The fix is to do the work here, under the one lock acquisition, from a
+        single sorted copy. That also removes three redundant sorts and two
+        full scans per export, which for a latency histogram is the hot path.
+        """
         with self.lock:
             if not self._values:
                 return {
@@ -149,17 +197,18 @@ class Histogram(Metric):
                     "count": 0,
                     "sum": 0.0,
                 }
+            ordered = sorted(v.value for v in self._values)
             return {
                 "name": self.name,
                 "type": "histogram",
                 "count": self._count,
                 "sum": self._sum,
                 "mean": self._sum / self._count if self._count else 0.0,
-                "min": min(v.value for v in self._values),
-                "max": max(v.value for v in self._values),
-                "p50": self.get_percentile(50),
-                "p95": self.get_percentile(95),
-                "p99": self.get_percentile(99),
+                "min": ordered[0],
+                "max": ordered[-1],
+                "p50": _percentile(ordered, 50),
+                "p95": _percentile(ordered, 95),
+                "p99": _percentile(ordered, 99),
             }
 
 

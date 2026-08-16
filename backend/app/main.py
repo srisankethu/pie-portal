@@ -17,6 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from . import entitlements as plan
 from .config import settings
+from .observability.instrumentation import api_instrumentation_middleware
 from .pie_service import pie_service
 from .routers import (accounts, admin, ai_settings, approvals, commercial,
                       connections, data_status,
@@ -187,8 +188,19 @@ app.add_middleware(
 )
 
 # Observability instrumentation: metrics, logging, health checks.
-from .observability.instrumentation import api_instrumentation_middleware, instrument_database
-app.add_middleware(api_instrumentation_middleware)
+#
+# `app.middleware("http")`, not `add_middleware`. The latter takes a middleware
+# *class* and instantiates it as `cls(app, **kwargs)`; this is a function of
+# `(request, call_next)`, so registering it that way raised
+# `api_instrumentation_middleware() missing 1 required positional argument:
+# 'call_next'` when Starlette built the middleware stack.
+#
+# That happens on the first request rather than at import, which is why the app
+# still started and why the breakage showed up as nine unrelated-looking test
+# failures — a 500 with an empty body, a health check that returned nothing —
+# rather than as anything naming this line. The instrumentation had never
+# actually run.
+app.middleware("http")(api_instrumentation_middleware)
 
 # Commercial Decision Platform (Phase 1 foundation).
 app.include_router(platform_auth.router)

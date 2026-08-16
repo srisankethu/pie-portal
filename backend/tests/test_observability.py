@@ -1,8 +1,7 @@
 """Tests for observability infrastructure."""
 from __future__ import annotations
 
-import time
-from datetime import datetime, timedelta, timezone
+import threading
 
 import pytest
 
@@ -59,6 +58,67 @@ class TestMetricsRegistry:
         assert export["sum"] == 3.5
         assert export["min"] == 0.5
         assert export["max"] == 2.0
+
+    def test_export_does_not_deadlock(self):
+        """`export` must not re-enter its own lock — and must fail *fast* if it does.
+
+        This is a regression test with an unusual shape, for a reason worth
+        stating. `export` used to call `self.get_percentile` from inside
+        `with self.lock`, and `Metric.lock` is a plain `threading.Lock`, not an
+        `RLock` — so the call blocked on a lock the same thread already held and
+        never came back. Nothing raised, nothing timed out, nothing was logged.
+
+        Asserting on the return value alone cannot catch that: the assertion is
+        never reached, the test hangs, and the whole suite hangs with it. That is
+        exactly what happened — the file sat at four tests for over ten minutes
+        and CI reported nothing at all. So the call is made on a separate thread
+        and joined with a deadline, which turns "hangs forever" into one failing
+        test with a sentence attached.
+
+        The production stake, not just the test's: `GET
+        /internal/observability/metrics` calls `MetricRegistry.export`, which
+        calls this for every metric, and the API middleware records latency into
+        a histogram. One request to the metrics endpoint wedged a worker for the
+        life of the process.
+        """
+        hist = Histogram("test", "help")
+        for i in range(1, 21):
+            hist.observe(i)
+
+        result: dict = {}
+        worker = threading.Thread(
+            target=lambda: result.update(hist.export()), daemon=True)
+        worker.start()
+        worker.join(timeout=10)
+
+        assert not worker.is_alive(), (
+            "Histogram.export() did not return within 10s — it is almost "
+            "certainly re-entering self.lock, as it did before this test existed.")
+        assert result["count"] == 20
+        assert result["p50"] == 10
+
+    def test_percentiles_are_nearest_rank(self):
+        """Small-N cases, where an off-by-one is unmissable.
+
+        The bug this pins was `int(N * p / 100)` — a floor, which lands one
+        element too high whenever the product is a whole number. On 1..100 it
+        answered 51 for the median. These are the numbers the capacity dashboard
+        reports latency with, so a wrong p95 is a wrong operational decision.
+        """
+        hist = Histogram("test", "help")
+        for value in (10, 20, 30, 40):
+            hist.observe(value)
+
+        assert hist.get_percentile(0) == 10       # 0 is the minimum by convention
+        assert hist.get_percentile(25) == 10      # rank 1
+        assert hist.get_percentile(50) == 20      # rank 2 — not 30
+        assert hist.get_percentile(75) == 30      # rank 3
+        assert hist.get_percentile(100) == 40     # the maximum
+
+    def test_percentile_of_an_empty_histogram_is_none(self):
+        """Not zero. Nothing was observed, so there is no answer to give, and a
+        zero here would read as a suspiciously fast p99 on a dashboard."""
+        assert Histogram("test", "help").get_percentile(95) is None
 
     def test_registry_export(self):
         registry = MetricRegistry()

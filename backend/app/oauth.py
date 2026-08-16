@@ -23,7 +23,6 @@ import logging
 import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Optional
 from urllib.parse import urlencode
 
 import httpx
@@ -286,7 +285,6 @@ async def create_credential_from_oauth(
     Raises:
         Various SQLAlchemy exceptions on DB errors
     """
-    from .ingestion.zoho_client import ZohoCredentials
 
     # Extract client_id from Zoho (or use configured one)
     client_id = settings.ZOHO_OAUTH_CLIENT_ID

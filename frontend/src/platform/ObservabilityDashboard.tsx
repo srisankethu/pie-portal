@@ -5,7 +5,6 @@ import Card from "@mui/material/Card";
 import CardContent from "@mui/material/CardContent";
 import CardHeader from "@mui/material/CardHeader";
 import Chip from "@mui/material/Chip";
-import CircularProgress from "@mui/material/CircularProgress";
 import Grid from "@mui/material/Grid";
 import LinearProgress from "@mui/material/LinearProgress";
 import Paper from "@mui/material/Paper";
@@ -20,7 +19,6 @@ import Tabs from "@mui/material/Tabs";
 import Typography from "@mui/material/Typography";
 import { useCallback, useEffect, useState } from "react";
 import type { PlatformSession } from "./types";
-import { papi } from "./api";
 import { ErrorState, LoadingState } from "./kit";
 
 const healthStatusColor: Record<string, string> = {
@@ -141,7 +139,7 @@ export function ObservabilityDashboard({ session }: { session: PlatformSession }
       <TabPanel value={tabValue} index={0}>
         <Grid container spacing={3}>
           {/* System Health */}
-          <Grid item xs={12}>
+          <Grid size={12}>
             <Card>
               <CardHeader
                 title="System Health"
@@ -150,7 +148,7 @@ export function ObservabilityDashboard({ session }: { session: PlatformSession }
               <CardContent>
                 <Grid container spacing={2}>
                   {Object.entries(data.health.components).map(([name, comp]: [string, any]) => (
-                    <Grid item xs={12} md={6} key={name}>
+                    <Grid size={{ xs: 12, md: 6 }} key={name}>
                       <Paper
                         sx={{
                           p: 2,
@@ -183,7 +181,7 @@ export function ObservabilityDashboard({ session }: { session: PlatformSession }
           </Grid>
 
           {/* Capacity */}
-          <Grid item xs={12}>
+          <Grid size={12}>
             <Card>
               <CardHeader title="Resource Capacity" />
               <CardContent>
@@ -196,7 +194,7 @@ export function ObservabilityDashboard({ session }: { session: PlatformSession }
 
                 <Grid container spacing={3}>
                   {data.capacity.components.map((comp: any) => (
-                    <Grid item xs={12} md={6} key={comp.name}>
+                    <Grid size={{ xs: 12, md: 6 }} key={comp.name}>
                       <Box>
                         <Box sx={{ display: "flex", justifyContent: "space-between", mb: 1 }}>
                           <Typography variant="subtitle2">{comp.name}</Typography>
@@ -242,7 +240,7 @@ export function ObservabilityDashboard({ session }: { session: PlatformSession }
       {/* Load & Performance */}
       <TabPanel value={tabValue} index={1}>
         <Grid container spacing={3}>
-          <Grid item xs={12} md={4}>
+          <Grid size={{ xs: 12, md: 4 }}>
             <Card>
               <CardHeader title="API Load" />
               <CardContent>
@@ -251,7 +249,7 @@ export function ObservabilityDashboard({ session }: { session: PlatformSession }
               </CardContent>
             </Card>
           </Grid>
-          <Grid item xs={12} md={4}>
+          <Grid size={{ xs: 12, md: 4 }}>
             <Card>
               <CardHeader title="Database" />
               <CardContent>
@@ -260,7 +258,7 @@ export function ObservabilityDashboard({ session }: { session: PlatformSession }
               </CardContent>
             </Card>
           </Grid>
-          <Grid item xs={12} md={4}>
+          <Grid size={{ xs: 12, md: 4 }}>
             <Card>
               <CardHeader title="Background Load" />
               <CardContent>
@@ -271,24 +269,24 @@ export function ObservabilityDashboard({ session }: { session: PlatformSession }
           </Grid>
 
           {data.api && (
-            <Grid item xs={12}>
+            <Grid size={12}>
               <Card>
                 <CardHeader title="API Performance" />
                 <CardContent>
                   <Grid container spacing={2}>
-                    <Grid item xs={12} md={4}>
+                    <Grid size={{ xs: 12, md: 4 }}>
                       <Typography variant="caption">P50 Latency</Typography>
                       <Typography variant="h6">
                         {data.api.latency_ms?.p50?.toFixed(0) || "N/A"} ms
                       </Typography>
                     </Grid>
-                    <Grid item xs={12} md={4}>
+                    <Grid size={{ xs: 12, md: 4 }}>
                       <Typography variant="caption">P95 Latency</Typography>
                       <Typography variant="h6">
                         {data.api.latency_ms?.p95?.toFixed(0) || "N/A"} ms
                       </Typography>
                     </Grid>
-                    <Grid item xs={12} md={4}>
+                    <Grid size={{ xs: 12, md: 4 }}>
                       <Typography variant="caption">Error Rate</Typography>
                       <Typography variant="h6">{data.api.error_rate?.toFixed(2) || "0"}%</Typography>
                     </Grid>
@@ -303,7 +301,7 @@ export function ObservabilityDashboard({ session }: { session: PlatformSession }
       {/* Background Jobs */}
       <TabPanel value={tabValue} index={2}>
         <Grid container spacing={3}>
-          <Grid item xs={12}>
+          <Grid size={12}>
             <Card>
               <CardHeader title="Active Jobs" />
               <CardContent>
@@ -324,7 +322,7 @@ export function ObservabilityDashboard({ session }: { session: PlatformSession }
           </Grid>
 
           {data.jobs.failures.length > 0 && (
-            <Grid item xs={12}>
+            <Grid size={12}>
               <Card>
                 <CardHeader title="Recent Failures" />
                 <CardContent>
@@ -360,24 +358,24 @@ export function ObservabilityDashboard({ session }: { session: PlatformSession }
       {/* ERP Sync */}
       <TabPanel value={tabValue} index={3}>
         <Grid container spacing={3}>
-          <Grid item xs={12}>
+          <Grid size={12}>
             <Card>
               <CardHeader title="Zoho Sync Status" />
               <CardContent>
                 <Grid container spacing={2}>
-                  <Grid item xs={12} md={3}>
+                  <Grid size={{ xs: 12, md: 3 }}>
                     <Typography variant="caption">Active Syncs</Typography>
                     <Typography variant="h6">{data.syncs.active.count}</Typography>
                   </Grid>
-                  <Grid item xs={12} md={3}>
+                  <Grid size={{ xs: 12, md: 3 }}>
                     <Typography variant="caption">Completed (24h)</Typography>
                     <Typography variant="h6">{data.syncs.recent_24h.completed}</Typography>
                   </Grid>
-                  <Grid item xs={12} md={3}>
+                  <Grid size={{ xs: 12, md: 3 }}>
                     <Typography variant="caption">Failed (24h)</Typography>
                     <Typography variant="h6">{data.syncs.recent_24h.failed}</Typography>
                   </Grid>
-                  <Grid item xs={12} md={3}>
+                  <Grid size={{ xs: 12, md: 3 }}>
                     <Typography variant="caption">Throughput</Typography>
                     <Typography variant="h6">
                       {data.syncs.recent_24h.throughput_records_per_sec?.toFixed(1) || 0} rec/s
@@ -389,7 +387,7 @@ export function ObservabilityDashboard({ session }: { session: PlatformSession }
           </Grid>
 
           {data.syncs.issues.length > 0 && (
-            <Grid item xs={12}>
+            <Grid size={12}>
               <Card>
                 <CardHeader title="Recent Issues" />
                 <CardContent>

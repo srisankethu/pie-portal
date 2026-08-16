@@ -17,13 +17,13 @@ one; that is the honest answer — its signature never covered the claims the
 platform now makes — and no deployed database is known to hold one.
 
 Revision ID: a9c4e71d20f5
-Revises: d5a2e7c31b84
+Revises: a7c3e91b02d8
 """
 from alembic import op
 import sqlalchemy as sa
 
 revision = "a9c4e71d20f5"
-down_revision = "d5a2e7c31b84"
+down_revision = "a7c3e91b02d8"
 branch_labels = None
 depends_on = None
 

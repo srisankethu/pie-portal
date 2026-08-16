@@ -13,14 +13,14 @@ on a populated SQLite database — which is also the only value any row ever
 held.
 
 Revision ID: a7c3e91b02d8
-Revises: d5a2e7c31b84
+Revises: t5jurisdiction
 Create Date: 2026-08-16
 """
 from alembic import op
 import sqlalchemy as sa
 
 revision = "a7c3e91b02d8"
-down_revision = "d5a2e7c31b84"
+down_revision = "t5jurisdiction"
 branch_labels = None
 depends_on = None
 

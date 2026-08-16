@@ -21,7 +21,7 @@ is the only import guaranteed to still mean the same thing.
 Data-only — no schema change, so no batch mode.
 
 Revision ID: t9f2c7a41d0e
-Revises: d5a2e7c31b84
+Revises: a9c4e71d20f5
 Create Date: 2026-08-16
 """
 from datetime import datetime, timezone
@@ -30,7 +30,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = 't9f2c7a41d0e'
-down_revision = 'd5a2e7c31b84'
+down_revision = 'a9c4e71d20f5'
 branch_labels = None
 depends_on = None
 

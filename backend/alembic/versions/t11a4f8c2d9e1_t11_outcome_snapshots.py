@@ -14,13 +14,13 @@ is computed on read from ``sales_txns``/``cost_records`` and is not stored.
 edit cannot move a window an acceptance already anchored.
 
 Revision ID: t11a4f8c2d9e1
-Revises: d5a2e7c31b84
+Revises: t9f2c7a41d0e
 """
 from alembic import op
 import sqlalchemy as sa
 
 revision = "t11a4f8c2d9e1"
-down_revision = "d5a2e7c31b84"
+down_revision = "t9f2c7a41d0e"
 branch_labels = None
 depends_on = None
 

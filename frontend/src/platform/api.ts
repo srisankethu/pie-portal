@@ -1,4 +1,4 @@
-import type { AccessReport, Account, AccountItem, AiByokView, AiKeyTestResult, AiMetricsReport, AiReadiness, ApprovalRequest, AttributionEvaluation, AttributionEvents, AttributionSummary, AuthorizeResponse, ConnectionCheck, ConnectionsView, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, DecisionTrace, DisclosureStatement, EntityKind, ErasureState, FixedThresholds, Identity, IdentityCoverage, IdentityPolicy, IdentitySuggestion, MarginPolicy, MarginPolicyPatch, NewConnectionInput, OnboardingView, OrgPolicy, PayloadsReport, PlatformSession, PlatformUser, QuoteGate, Role, SignupOffer, SkippedRows, StatusFilter, SyncOptions, SyncStartResponse, SyncState, ThresholdView, ZohoConnection, ZohoConnectionInput, ZohoCredential, ZohoVisibleOrg } from "./types";
+import type { AccessReport, Account, AccountItem, AiByokView, AiKeyTestResult, AiMetricsReport, AiReadiness, ApprovalRequest, AttributionEvaluation, AttributionEvents, AttributionSummary, AuthorizeResponse, ConnectionCheck, ConnectionsView, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, DecisionTrace, DisclosureStatement, Entitlements, EntityKind, ErasureState, FixedThresholds, Identity, IdentityCoverage, IdentityPolicy, IdentitySuggestion, MarginPolicy, MarginPolicyPatch, NewConnectionInput, OnboardingView, OrgPolicy, PayloadsReport, PlatformSession, PlatformUser, QuoteGate, Role, SignupOffer, SkippedRows, StatusFilter, SyncOptions, SyncStartResponse, SyncState, ThresholdView, ZohoConnection, ZohoConnectionInput, ZohoCredential, ZohoVisibleOrg } from "./types";
 
 import { setMoneyCurrency } from "../money";
 import { setBusinessTimezone } from "../when";
@@ -160,6 +160,13 @@ export const papi = {
    *  to say. Derived server-side from connections, sync runs, the policy row
    *  and the user list — never a stored "setup complete" flag. */
   onboarding: (t: string) => req<OnboardingView>("/api/v1/onboarding", {}, t),
+
+  /** This organization's plan, and how long any trial has left.
+   *
+   *  Any signed-in role, and the server decides what it says. Read by the
+   *  trial notice in the shell — before this the endpoint had no caller at
+   *  all, so a tenant's free month simply ran out one day with no warning. */
+  entitlements: (t: string) => req<Entitlements>("/api/v1/entitlements", {}, t),
 
   listDecisions: (t: string, q: { type?: string; status_filter?: string } = {}) => {
     const p = new URLSearchParams();

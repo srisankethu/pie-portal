@@ -1,0 +1,135 @@
+// When the trial notice speaks, and what it says when it does.
+//
+// The server side of this is pinned in `test_entitlements.py`: the countdown,
+// the timezone it is measured in, and the list of what expiry costs. What is
+// left here is the part that is genuinely a *product* decision rather than
+// arithmetic — when a banner is worth interrupting somebody for, who is shown
+// it, and whether it promises anything the deployment cannot do.
+//
+// That last one is the reason this file exists rather than being left to
+// judgement. There is no billing in this product: `set_plan` is an operator
+// command with deliberately no API. A notice that grew an "Upgrade" button
+// would be a dead end shipped to the one person most likely to press it, and
+// nothing else in the suite would notice.
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { render, screen, waitFor } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
+
+import { TrialNotice } from "./TrialNotice";
+import type { Entitlements, PlatformSession, Role } from "./types";
+
+const { entitlements } = vi.hoisted(() => ({ entitlements: vi.fn() }));
+vi.mock("./api", () => ({ papi: { entitlements } }));
+
+function session(role: Role = "OWNER"): PlatformSession {
+  return {
+    token: "t", role, name: "O", user_id: "u1", organization_id: "org_x",
+    currency: "INR", timezone: "Asia/Kolkata",
+  };
+}
+
+function view(days: number | null): Entitlements {
+  return {
+    plan: "free",
+    plan_label: "Quote Desk (free)",
+    effective_plan: days === null ? "free" : "intelligence",
+    effective_label: "Commercial Intelligence",
+    trial: days === null
+      ? null
+      : { ends_at: "2026-09-01T00:00:00Z", ends_on: "2026-09-01", days_remaining: days },
+    features: { intelligence: days !== null, multi_company: false },
+    loses_on_expiry: days === null ? [] : ["intelligence"],
+  };
+}
+
+/** Mounted with its own client so one test's cache cannot answer the next. */
+async function show(v: Entitlements, role: Role = "OWNER") {
+  entitlements.mockClear();
+  entitlements.mockResolvedValue(v);
+  // A fresh client per render is the whole isolation story. Deliberately no
+  // `gcTime: 0`: a query whose observers are mid-transition can then be
+  // collected between resolving and rendering, and the component reads
+  // `undefined`.
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(
+    <QueryClientProvider client={client}>
+      <TrialNotice session={session(role)} />
+    </QueryClientProvider>,
+  );
+  // Wait for the *query* to reach success, not for the mock to have been called.
+  // Half these tests assert an absence, and an absence is only meaningful once
+  // the data has arrived and the component has decided to render nothing —
+  // "not there yet" and "deliberately not rendered" are the same empty DOM.
+  //
+  // Two weaker versions of this were flaky before it, in the way that matters:
+  // exactly one test failed per run and a different one each time. Waiting on
+  // `entitlements` having been called returns on the *previous* test's call
+  // unless the mock is cleared, and even cleared it returns before the promise
+  // has propagated into a render.
+  await waitFor(() =>
+    expect(client.getQueryCache().find({ queryKey: ["entitlements", "org_x"] })
+      ?.state.status).toBe("success"));
+}
+
+describe("TrialNotice", () => {
+  it("says nothing while the trial has plenty left", async () => {
+    await show(view(20));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("speaks inside the last ten days", async () => {
+    await show(view(10));
+    expect(screen.getByRole("alert")).toHaveTextContent(/ends in 10 days/i);
+  });
+
+  it("names what is actually lost, from the server's list", async () => {
+    await show(view(5));
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      /decision queue and the insight screens/i);
+  });
+
+  it("promises the quote desk keeps working, because it does", async () => {
+    await show(view(5));
+    expect(screen.getByRole("alert")).toHaveTextContent(/free plan/i);
+    expect(screen.getByRole("alert")).toHaveTextContent(/nothing you have synced is deleted/i);
+  });
+
+  it("offers no upgrade control, because there is nothing behind one", async () => {
+    // The product has no billing. If that changes, this is the test to change
+    // — and until it does, this is what stops a dead button reaching an owner.
+    await show(view(1));
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+    expect(screen.queryByRole("link")).not.toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent(/whoever runs this deployment/i);
+  });
+
+  // Two tests rather than two renders in one: `cleanup` runs between tests, not
+  // between renders, so a second `render` in the same test leaves the first
+  // component mounted and `getByRole` then answers from the wrong one. That is
+  // precisely the failure `src/test/setup.ts` warns about, reached from the
+  // other side.
+  it("reads as merely informative with a week to go", async () => {
+    await show(view(7));
+    expect(screen.getByRole("alert").className).toMatch(/Info/);
+  });
+
+  it("reads as urgent inside the last three days", async () => {
+    await show(view(2));
+    expect(screen.getByRole("alert").className).toMatch(/Warning/);
+  });
+
+  it("counts the last day in words rather than as 0 days", async () => {
+    await show(view(0));
+    expect(screen.getByRole("alert")).toHaveTextContent(/ends today/i);
+  });
+
+  it("stays silent for a salesperson, who has no lever to pull", async () => {
+    await show(view(1), "SALESPERSON");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("disappears once there is no trial", async () => {
+    await show(view(null));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+});

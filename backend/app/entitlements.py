@@ -206,6 +206,34 @@ def require_feature(feature: str):
     return _check
 
 
+def _trial_view(org: Optional[models.Organization],
+                trial: Optional[models.IntelligenceTrial]) -> Optional[dict]:
+    """A running trial, with how long is left, or None.
+
+    ``days_remaining`` is counted **here** rather than in the browser, and that
+    is not fussiness. It is the number of times the business's own date has to
+    turn over before the decision layer switches off, and a browser computing it
+    would use the reader's zone — an owner travelling, or a server in UTC, would
+    see a day more or less than the tenant actually has. ``clock`` exists for
+    exactly this, and says so: "``date.today()`` is the server's idea of the day
+    and is UTC in every container this runs in".
+
+    Zero means it ends today and the tenant still has it; ``trial_for`` only
+    returns trials that have not expired, so this is never negative.
+    """
+    if trial is None:
+        return None
+    tz = getattr(org, "timezone", None)
+    ends_local = clock.to_local(trial.ends_at, tz)
+    days = (ends_local.date() - clock.today(tz)).days if ends_local else 0
+    return {
+        "ends_at": clock.iso(trial.ends_at),
+        # The date a person would write down, in their own zone.
+        "ends_on": ends_local.date().isoformat() if ends_local else None,
+        "days_remaining": max(days, 0),
+    }
+
+
 def describe(session: Session, organization_id: str) -> dict:
     """Everything a screen needs to say what this organization may use."""
     org = session.get(models.Organization, organization_id)
@@ -217,8 +245,16 @@ def describe(session: Session, organization_id: str) -> dict:
         "plan_label": PLAN_LABEL[licensed],
         "effective_plan": effective.value,
         "effective_label": PLAN_LABEL[effective],
-        "trial": ({"ends_at": clock.iso(trial.ends_at)} if trial else None),
+        "trial": _trial_view(org, trial),
         "features": {name: allows(effective, name) for name in FEATURES},
+        # What actually goes away when the trial does. Named rather than left to
+        # the client to hardcode: the client would then hold a second copy of
+        # the plan map, and the two would disagree the first time a feature moved
+        # between tiers.
+        "loses_on_expiry": (
+            sorted(name for name in FEATURES
+                   if allows(effective, name) and not allows(licensed, name))
+            if trial is not None else []),
     }
 
 

@@ -107,6 +107,78 @@ def test_a_trial_lifts_to_intelligence_never_to_platform(session, orgs, monkeypa
         entitlements.assert_feature(session, ORG, "multi_company")
 
 
+# ── what a screen is told about the trial ────────────────────────────────────
+def test_describe_counts_the_days_left_and_names_what_expires(session, orgs,
+                                                              monkeypatch):
+    """The countdown a screen renders, and the list of what it costs.
+
+    `loses_on_expiry` is derived from the plan map rather than hardcoded in the
+    client, so a feature moving between tiers cannot leave the two disagreeing
+    about what a tenant is about to lose.
+    """
+    _free_default(monkeypatch)
+    trial = entitlements.begin_trial(session, ORG, "60005555")
+    trial.ends_at = clock.now() + timedelta(days=6, hours=2)
+    session.flush()
+
+    view = entitlements.describe(session, ORG)
+    assert view["effective_plan"] == "intelligence"
+    assert view["plan"] == "free"                 # the licence underneath
+    assert view["trial"]["days_remaining"] == 6
+    assert view["trial"]["ends_on"]               # a date a person would write
+    assert view["loses_on_expiry"] == ["intelligence"]
+
+
+def test_the_countdown_is_measured_in_the_businesss_own_day(session, orgs,
+                                                            monkeypatch):
+    """Not the server's, and not the reader's browser's.
+
+    This is the reason the number is computed server-side at all. The container
+    runs in UTC; a trial ending just after midnight in Kolkata is still *today*
+    in UTC for five and a half hours, and a browser in yet another zone would
+    give a third answer. `clock` says plainly that `date.today()` is the wrong
+    call here, so the count goes through the organization's timezone.
+    """
+    _free_default(monkeypatch)
+    org = session.get(models.Organization, ORG)
+    org.timezone = "Pacific/Kiritimati"           # UTC+14, the furthest ahead
+    session.flush()
+    trial = entitlements.begin_trial(session, ORG, "60005555")
+    trial.ends_at = clock.now() + timedelta(hours=12)
+    session.flush()
+
+    ahead = entitlements.describe(session, ORG)["trial"]
+
+    org.timezone = "Pacific/Midway"               # UTC-11, the furthest behind
+    session.flush()
+    behind = entitlements.describe(session, ORG)["trial"]
+
+    # Same instant, two zones: the local date it falls on can differ, which is
+    # exactly what a browser-side subtraction would get wrong.
+    assert ahead["ends_on"] != behind["ends_on"]
+    assert ahead["days_remaining"] >= 0 and behind["days_remaining"] >= 0
+
+
+def test_no_trial_means_no_countdown_and_nothing_to_lose(session, orgs, monkeypatch):
+    _free_default(monkeypatch)
+    view = entitlements.describe(session, ORG)
+    assert view["trial"] is None
+    assert view["loses_on_expiry"] == []
+
+
+def test_an_expired_trial_stops_being_counted(session, orgs, monkeypatch):
+    """No negative countdown, and nothing claimed to be at stake."""
+    _free_default(monkeypatch)
+    trial = entitlements.begin_trial(session, ORG, "60005555")
+    trial.ends_at = clock.now() - timedelta(days=3)
+    session.flush()
+
+    view = entitlements.describe(session, ORG)
+    assert view["trial"] is None
+    assert view["effective_plan"] == "free"
+    assert view["loses_on_expiry"] == []
+
+
 # ── the connection gate ──────────────────────────────────────────────────────
 def _connect(session, org, zoho_org):
     return conn.set_zoho_credentials(

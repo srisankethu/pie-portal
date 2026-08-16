@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Optional
 
 from sqlalchemy.orm import Session
 
@@ -17,6 +17,37 @@ from .metrics import metrics
 from .workload import workload
 
 log = logging.getLogger("pie_portal.observability.dashboard")
+
+
+def _latency_ms(histogram: Any) -> Optional[dict[str, Optional[float]]]:
+    """A histogram's p50/p95/p99 in milliseconds, or None if it cannot say.
+
+    Guards on the histogram *holding data*, not merely existing. The six call
+    sites this replaces each read ``hist.get_percentile(50) * 1000`` behind an
+    ``if hist else None`` — but every histogram is created at import, before a
+    single observation, and ``get_percentile`` correctly returns ``None`` when
+    it has nothing to report. ``None * 1000`` is a ``TypeError``, so the guard
+    protected against the one case that could not happen and not against the one
+    that could.
+
+    Latent rather than live: reaching these endpoints means authenticating
+    first, which records a request and a query, so both histograms are usually
+    warm by the time anything asks. The case that bites is
+    ``instrument_database()`` failing — ``lifespan`` catches that and continues
+    — after which ``db_query_duration_seconds`` stays empty for the life of the
+    process and ``/observability/database`` is a permanent 500.
+
+    Returns ``None`` for the whole block when there is no histogram at all, and
+    a dict of ``None`` percentiles when there is one that has seen nothing. The
+    two are different facts: "not instrumented" and "instrumented, no traffic
+    yet", and a screen should be able to tell them apart.
+    """
+    if histogram is None:
+        return None
+    return {
+        f"p{p}": (None if (v := histogram.get_percentile(p)) is None else v * 1000)
+        for p in (50, 95, 99)
+    }
 
 
 class DashboardService:
@@ -70,11 +101,7 @@ class DashboardService:
             "requests_total": total_requests,
             "errors_total": total_errors,
             "error_rate": (total_errors / total_requests * 100) if total_requests > 0 else 0,
-            "latency_ms": {
-                "p50": (duration_hist.get_percentile(50) * 1000) if duration_hist else None,
-                "p95": (duration_hist.get_percentile(95) * 1000) if duration_hist else None,
-                "p99": (duration_hist.get_percentile(99) * 1000) if duration_hist else None,
-            } if duration_hist else None,
+            "latency_ms": _latency_ms(duration_hist),
         }
 
     def get_database_status(self) -> dict[str, Any]:
@@ -93,11 +120,7 @@ class DashboardService:
                 "total": queries.get() if queries else 0,
                 "errors": errors.get() if errors else 0,
             },
-            "latency_ms": {
-                "p50": (query_duration.get_percentile(50) * 1000) if query_duration else None,
-                "p95": (query_duration.get_percentile(95) * 1000) if query_duration else None,
-                "p99": (query_duration.get_percentile(99) * 1000) if query_duration else None,
-            } if query_duration else None,
+            "latency_ms": _latency_ms(query_duration),
         }
 
     def get_background_jobs(self) -> dict[str, Any]:

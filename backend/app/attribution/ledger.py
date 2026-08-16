@@ -294,10 +294,20 @@ def supersede_closed_opportunities(session: Session, org: str,
     it in exactly the one place that could not be enough.
 
     ``live_keys`` is every POTENTIAL key a fresh detection run just produced.
-    Anything POTENTIAL in the ledger and *absent* from that set is no longer
-    detectable — the quote was lost, the line was repriced out of scope, the
-    evidence changed — so it is superseded rather than deleted, and the reason
-    it stopped being true stays readable.
+    Anything POTENTIAL in the ledger and *absent* from that set is no longer an
+    open opportunity, so it is superseded rather than deleted, and the row it
+    stopped being true in stays readable.
+
+    **A win retires it too**, which is worth stating because the obvious reading
+    of "closed opportunity" is the unhappy one. When the quote is won the same
+    line is re-detected as ATTRIBUTED, its POTENTIAL key stops being produced,
+    and the old row retires. That is correct: POTENTIAL means *still available*,
+    and money already earned is not still available. Leaving it live would show
+    one line simultaneously as an open opportunity and as realized value — the
+    reader would either double count it or stop trusting the panel.
+
+    So the two ways out are a loss and a win, and only the loss leaves nothing
+    behind it.
 
     Scoped to POTENTIAL deliberately. An ATTRIBUTED or REALIZED row records that
     money moved, which stays true whatever happens next; only a claim about the

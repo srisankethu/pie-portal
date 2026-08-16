@@ -695,6 +695,12 @@ def execute_analysis(session: Session, run: models.SyncRun, organization_id: str
 
     phase("Measuring what PIE changed")
     notes["attribution"] = _run_attribution(session, org)
+    # `phase` commits on the way *in*, which closes the previous phase rather
+    # than this one — so without this the ledger rows would ride to whichever
+    # commit the caller happens to make, holding a write transaction open past
+    # the end of the work that produced them. §4 asks for a commit at the
+    # boundary, and this is the boundary.
+    session.commit()
     return notes
 
 

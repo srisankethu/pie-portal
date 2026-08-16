@@ -48,6 +48,17 @@ from .detectors import NOT_MEASURABLE_REASONS
 #: define "before", short enough to still describe the business as it is now.
 BASELINE_DAYS = 90
 
+#: The value classes this module will report. ESTIMATED is deliberately absent:
+#: no detector produces one, so every field and every breakdown row carrying it
+#: would state a measurement nobody attempted. Enforced in the queries rather
+#: than by remembering to drop a key, because dropping the top-level fields and
+#: leaving the per-type breakdown alone is exactly how it came back.
+REPORTED_VALUE_CLASSES = (
+    ValueClass.ATTRIBUTED.value,
+    ValueClass.REALIZED.value,
+    ValueClass.POTENTIAL.value,
+)
+
 # ── evidence-gap reasons ─────────────────────────────────────────────────────
 NO_TRIAL_ON_RECORD = "NO_TRIAL_ON_RECORD"
 NO_BASELINE_ON_RECORD = "NO_BASELINE_ON_RECORD"
@@ -152,7 +163,15 @@ def _by_class(session: Session, org: str,
 
 def _by_event_type(session: Session, org: str,
                    start: datetime, end: datetime) -> list[dict[str, Any]]:
-    """The same window broken down by event type *and* class. One query."""
+    """The same window broken down by event type *and* class. One query.
+
+    Restricted to the classes the surface reports. ESTIMATED left this API
+    because nothing can produce a defensible one, and this breakdown was the way
+    back in: it groups over whatever classes it finds, so a seeded ESTIMATED row
+    reached the screen inside ``by_event_type`` with its amount intact, past the
+    top-level fields that had been removed to keep it out. Withdrawing a class
+    from the headline and leaving it in the breakdown is not withdrawing it.
+    """
     rows = session.execute(
         select(models.ValueEvent.event_type,
                models.ValueEvent.value_class,
@@ -161,7 +180,8 @@ def _by_event_type(session: Session, org: str,
         .where(models.ValueEvent.organization_id == org,
                models.ValueEvent.occurred_at >= start,
                models.ValueEvent.occurred_at <= end,
-               models.ValueEvent.superseded_at.is_(None))
+               models.ValueEvent.superseded_at.is_(None),
+               models.ValueEvent.value_class.in_(REPORTED_VALUE_CLASSES))
         .group_by(models.ValueEvent.event_type, models.ValueEvent.value_class)
         .order_by(models.ValueEvent.event_type,
                   models.ValueEvent.value_class)).all()

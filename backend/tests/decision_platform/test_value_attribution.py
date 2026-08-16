@@ -973,3 +973,130 @@ def test_the_attributed_total_for_a_line_never_exceeds_its_real_movement(session
         assert total <= max(ceiling, Decimal(0)), (
             f"after reprice {i} to {price}, attributed {total} exceeds the "
             f"{ceiling} this line's price actually moved within its floor")
+
+
+# ── 11. what the first remediation broke ────────────────────────────────────
+#
+# A second independent audit ran after the six findings above were fixed, and
+# found that the fix itself had introduced two defects and left one of the six
+# only half done. All three are here. The pattern is worth naming: each one
+# lived in a path the suite did not execute, which is the same reason the
+# original six survived a 2248-test gate.
+
+
+def _alternative_line(s, *, quote_id: str, line_id: str = "L1",
+                      original_cost: str = "1000", alternative_cost: str = "600",
+                      price: str = "1500", qty: str = "10",
+                      created_days_ago: int = 5) -> models.QuoteDecision:
+    """A line carrying a substituted equivalent, the shape EquivalentSaving reads.
+
+    Nothing in the application writes this ref today, which is exactly why the
+    detector reading it went unexercised — and why a TypeError in it could sit
+    behind a green gate.
+    """
+    row = _priced_line(s, quote_id=quote_id, line_id=line_id, price=price,
+                       cost=original_cost, qty=qty, floor=None, flagged=False,
+                       created_days_ago=created_days_ago)
+    row.evidence_refs = [{
+        "record_type": det.ALTERNATIVE_RECORD_TYPE,
+        "record_id": "alt1",
+        "original_unit_cost": original_cost,
+        "alternative_unit_cost": alternative_cost,
+    }]
+    s.flush()
+    return row
+
+
+def test_a_line_with_an_alternative_does_not_crash_the_whole_run(session, trial):
+    """R1: the ordering fix added a required argument and missed a caller.
+
+    `_classify` gained `intervened_at`; two of its three call sites were
+    updated. The third, in EquivalentSavingDetector, raised TypeError — and
+    `jobs._run_attribution` catches `Exception`, so one line carrying an
+    alternative would have stopped attribution for the entire organization on
+    every sync, silently, while the screen reported that no detection run was on
+    record. F5's failure mode, re-armed behind an exception handler.
+
+    Ruff does not check call arity and no test exercised this detector, which is
+    the whole reason it reached a green gate.
+    """
+    _alternative_line(session, quote_id="q_alt")
+    _protected_line(session, quote_id="q_other", flagged_price="800",
+                    final_price="1200", cost="600", floor="1100")
+    _won(session, "q_other")
+
+    results = det.run_all(session, ORG)          # must not raise
+    created = _run_and_record(session)
+
+    assert created >= 1, "the unrelated, valid event was lost with the crash"
+    assert any(r.event_type == ValueEventType.MARGIN_PROTECTED.value
+               for r in _ledger_rows(session)), (
+        "one bad line took an unrelated organization-wide detection run with it")
+    assert ValueEventType.EQUIVALENT_SAVING in results
+
+
+def test_a_line_sold_below_cost_claims_nothing_from_any_detector(session, trial):
+    """F1, one detector over. The fix landed on MarginProtected only.
+
+    `_reconcile` suppresses the discount claim only when the margin detector
+    produced a draft — and on exactly these lines it produces none, having
+    skipped FLOOR_NOT_CLEARED. So a line flagged at ₹800 against a ₹1,000 cost,
+    corrected to ₹900 and won, booked ₹1,000 of "discount recovered" on a sale
+    that lost ₹1,000, with the margin detector's honest skip printed beside it.
+
+    The suite blessed the partial-reprice case in
+    `test_a_reprice_that_still_misses_the_floor_claims_only_what_moved`, but
+    that fixture prices a *profitable* line. No test put the final price below
+    cost, which is where the design call stops holding.
+    """
+    _protected_line(session, quote_id="q_loss", flagged_price="800",
+                    final_price="900", cost="1000", floor="1100")
+    _won(session, "q_loss")
+
+    results = det.run_all(session, ORG)
+    _run_and_record(session)
+
+    assert _attributed_total(session) == 0, (
+        "value was booked on a line that lost money on every unit; it used to "
+        "claim ₹1,000 on a sale that lost ₹1,000")
+    assert det.SOLD_BELOW_COST in results[
+        ValueEventType.DISCOUNT_LEAKAGE_PREVENTED].skip_counts()
+    assert det.FLOOR_NOT_CLEARED in results[
+        ValueEventType.MARGIN_PROTECTED].skip_counts()
+
+
+def test_a_class_the_system_cannot_produce_never_reaches_the_breakdown(session, trial):
+    """F7 residual: withdrawing a class from the headline is not withdrawing it.
+
+    `estimated_value` was removed from the top level, but `by_event_type` groups
+    over whatever classes it finds — so a seeded ESTIMATED row travelled to the
+    screen inside the breakdown with its amount intact, past the fields that had
+    been deleted to keep it out.
+    """
+    led.record(session, ORG, _draft(ValueClass.ESTIMATED, ESTIMATED_AMOUNT))
+    progress = ev.trial_progress(session, ORG)
+
+    classes = {row["value_class"] for row in progress["by_event_type"]}
+    assert ValueClass.ESTIMATED.value not in classes, (
+        "a class no detector can produce reached the per-type breakdown")
+    assert str(ESTIMATED_AMOUNT) not in str(progress["by_event_type"])
+
+
+def test_a_flag_after_the_win_is_not_dated_before_its_own_evidence(session, trial):
+    """F4 residual: the class was corrected, the timestamp was not.
+
+    A win-before-flag row is REALIZED, which is honest — but it kept
+    `occurred_at` at the win date, so the row still claimed a business fact on a
+    day when nothing had been observed.
+    """
+    _protected_line(session, quote_id="q_ts", flagged_price="800",
+                    final_price="1200", cost="600", floor="1100",
+                    created_days_ago=1)
+    _won(session, "q_ts", days_ago=9)
+    _run_and_record(session)
+
+    [row] = _ledger_rows(session)
+    assert row.value_class == ValueClass.REALIZED.value
+    flagged_at = clock.now() - timedelta(days=1)
+    assert clock.aware(row.occurred_at) >= flagged_at - timedelta(minutes=1), (
+        "the event is dated before the evidence that produced it existed")

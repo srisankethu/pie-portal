@@ -95,9 +95,9 @@ def summary(principal: Principal = Depends(require_manager_or_owner),
             session: Session = Depends(get_session)) -> dict:
     """The "What PIE Changed" figures for the live trial window.
 
-    The headline is ATTRIBUTED alone. POTENTIAL, REALIZED and ESTIMATED come back
-    in their own fields and the payload carries the evaluator's own note saying
-    they must never be added together — the classes describe overlapping facts
+    The headline is ATTRIBUTED alone. POTENTIAL and REALIZED come back in their
+    own fields and the payload carries the evaluator's own note saying they must
+    never be added together — the classes describe overlapping facts
     about the same line on purpose, so a caller that sums them double counts it.
 
     Passed through unchanged apart from the empty-state sentence. Re-shaping the

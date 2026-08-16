@@ -94,6 +94,10 @@ SUPERSEDED_BY_STRONGER_CLAIM = "SUPERSEDED_BY_STRONGER_CLAIM"
 #: below it. Nothing was protected — the guardrail was overruled — so claiming
 #: the shortfall would book value for selling below policy.
 FLOOR_NOT_CLEARED = "FLOOR_NOT_CLEARED"
+#: The price that went out is below the purchase cost. The line lost money on
+#: every unit, so an upward move on it recovered nothing worth claiming — the
+#: business would have been better off not selling it.
+SOLD_BELOW_COST = "SOLD_BELOW_COST"
 
 #: The three policy exceptions that place a line under a floor, mapped to the
 #: reference whose value *is* that floor. Read from the exception's own
@@ -320,9 +324,19 @@ def _classify(outcome: Optional[models.QuoteOutcome],
         preceded = (intervened_at is not None
                     and decided_at is not None
                     and intervened_at < decided_at)
+        # When the flag came *after* the win, dating the event to the win would
+        # put the business fact before the evidence for it — the row would claim
+        # a thing was observed on a day nothing had been observed. The class is
+        # already honest about the weaker claim; the timestamp has to be too, so
+        # it takes the later of the two. Where ordering holds, the win date is
+        # right and is what a rollup for the closing month needs.
+        occurred_at = decided_at
+        if not preceded and intervened_at is not None:
+            occurred_at = (max(intervened_at, decided_at)
+                           if decided_at is not None else intervened_at)
         return _Classification(
             ValueClass.ATTRIBUTED if preceded else ValueClass.REALIZED,
-            decided_at,
+            occurred_at,
             _outcome_ref(outcome))
     if status == QuoteOutcomeStatus.LOST.value:
         return None
@@ -604,6 +618,32 @@ class DiscountLeakagePreventedDetector(Detector):
                     "is at least partly pass-through"))
                 continue
 
+            # The price that went out must at least cover what the goods cost.
+            #
+            # F1 was fixed in MarginProtectedDetector and this detector inherited
+            # the defect, because _reconcile only suppresses it when the margin
+            # detector produced a draft — and on exactly these lines it produces
+            # none, having skipped FLOOR_NOT_CLEARED. So a line flagged at ₹800
+            # against a ₹1,000 cost, corrected to ₹900 and won, booked ₹1,000 of
+            # "discount recovered" on a sale that lost ₹1,000, with the margin
+            # detector's honest skip printed beside it.
+            #
+            # The line elsewhere in this module — that an upward move on a still
+            # below-floor line is real recovery worth counting — holds only while
+            # the line makes money. Below cost there is no recovery to speak of:
+            # the business sold at a loss, and a headline a renewal is argued
+            # from cannot count that as value created. Above cost but below the
+            # floor stays claimable, and stays MARGIN_PROTECTED's business to
+            # refuse.
+            final_cost = _dec(final.unit_cost)
+            if final_cost is not None and final_price < final_cost:
+                skipped.append(SkippedRow(
+                    SOLD_BELOW_COST, ref,
+                    f"the price that went out ({final_price}) is below the "
+                    f"purchase cost ({final_cost}); the line lost money, so the "
+                    "move recovered nothing to claim"))
+                continue
+
             amount = discount_leakage_prevented(opening_price, final_price, final_qty)
             if amount is None:
                 skipped.append(SkippedRow(
@@ -706,7 +746,16 @@ class EquivalentSavingDetector(Detector):
                 continue
 
             outcome = evidence.outcome_for(quote_id)
-            classification = _classify(outcome)
+            # The substitution is the intervention here, and the snapshot
+            # carrying the alternative is when it was recorded — so that is what
+            # the win has to postdate for this to be ATTRIBUTED rather than
+            # REALIZED. This argument was missed when the ordering check landed,
+            # and the omission raised a TypeError rather than skipping a class:
+            # `run_all` died, `jobs._run_attribution` swallowed it, and one line
+            # with an alternative on record would have stopped attribution for a
+            # whole organization on every sync, silently, with the screen
+            # reporting that no detection run was on record.
+            classification = _classify(outcome, clock.aware(final.created_at))
             if classification is None:
                 skipped.append(SkippedRow(QUOTE_LOST, ref,
                                           "the quote was lost; the money did not move"))

@@ -79,11 +79,13 @@ class UnknownEventType(ValueError):
 class Source:
     """Where an event was read from.
 
-    ``modified_at`` is Zoho's stamp, verbatim — the same value
-    ``IngestedDocument`` resumes on. It is recorded rather than compared here:
-    the decision about whether a document changed is the sync's, made once per
-    document, and duplicating it per event would give two answers to one
-    question.
+    ``modified_at`` is Zoho's stamp, verbatim — the value the resume cursor
+    compared before ``IngestedDocument`` stored its UTC rewrite of it
+    (``clock.utc_stamp``). Verbatim *here* on purpose: the log is the audit
+    record of what the source actually said. It is recorded rather than
+    compared: the decision about whether a document changed is the sync's, made
+    once per document, and duplicating it per event would give two answers to
+    one question.
     """
 
     doc_type: str

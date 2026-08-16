@@ -1346,7 +1346,12 @@ class IngestedDocument(Base):
     connection_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
     doc_type: Mapped[str] = mapped_column(String(16), index=True)   # invoice | bill
     doc_id: Mapped[str] = mapped_column(String(64), index=True)
-    modified_at: Mapped[Optional[str]] = mapped_column(String(64))  # Zoho's stamp, verbatim
+    #: Zoho's ``last_modified_time``, rewritten onto the UTC line
+    #: (``clock.utc_stamp``, ``YYYY-MM-DDTHH:MM:SSZ``) so the resume cursor's
+    #: string ``max()`` is a time max across offset formats — kept verbatim
+    #: only when the stamp cannot be placed there, and then excluded from the
+    #: max by shape. ``ReadModelRepository.mark_ingested`` is the one writer.
+    modified_at: Mapped[Optional[str]] = mapped_column(String(64))
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 

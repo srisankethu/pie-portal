@@ -384,21 +384,13 @@ def validate(th: CommercialThresholds) -> None:
             f"target margin ({th.target_margin_default:.0%}) — every quote at "
             f"target would be flagged.")
 
-    # Keys before values: the keys are the PIE pack's family vocabulary, and a
-    # value check on a family that does not exist would argue about a number no
-    # line will ever read. A vocabulary of None means no pack is readable here,
-    # so there is nothing to check names against — ``save_for_org`` refuses an
-    # *edit* of this map in that state rather than treating "could not look" as
-    # "looked and found nothing wrong" (§1: absence of evidence is not a pass).
-    from ..pie_service import pack_families
-    vocabulary = pack_families()
-    if vocabulary is not None:
-        require_known_families(
-            "target_margin_by_family",
-            (family for family, _ in th.target_margin_by_family),
-            vocabulary,
-            source="the family vocabulary the loaded PIE pack declares")
-
+    # The *keys* of the family map are deliberately not checked here. They are
+    # the PIE pack's vocabulary, and this function runs on the whole merged
+    # policy for every save — checking them here would let one stale stored
+    # key (a pack renamed a family after the override was written) block an
+    # owner's edit of an unrelated field. ``load_for_org`` tolerates the stale
+    # key on the read path for the same reason; the binding fires in
+    # ``save_for_org``, only for an edit that touches the map itself.
     for family, margin in th.target_margin_by_family:
         if not (0 <= margin < 1):
             raise PolicyError(f"Target margin for {family} must be between 0 and 1")
@@ -557,7 +549,8 @@ def save_for_org(session: Session, organization_id: str, updates: dict,
     # must not lock an owner out of the rest of their margin policy.
     if updates.get("target_margin_by_family") is not None:
         from ..pie_service import pack_families
-        if pack_families() is None:
+        vocabulary = pack_families()
+        if vocabulary is None:
             from ..config import settings
             raise PolicyError(
                 "Family targets cannot be edited right now: the PIE pack at "
@@ -565,6 +558,14 @@ def save_for_org(session: Session, organization_id: str, updates: dict,
                 "vocabulary to check these names against. Fetch pie-parser "
                 "(scripts/setup_pie_parser.sh) or point PIE_PACK at a pack, "
                 "then retry.")
+        # The edit replaces the whole map, so the candidate's map *is* the
+        # incoming one — checking it checks exactly what this save asserts,
+        # and a stale key in some *other* field's save never gets here.
+        require_known_families(
+            "target_margin_by_family",
+            (family for family, _ in candidate.target_margin_by_family),
+            vocabulary,
+            source="the family vocabulary the loaded PIE pack declares")
 
     if row is None:
         row = models.CommercialPolicy(organization_id=organization_id)

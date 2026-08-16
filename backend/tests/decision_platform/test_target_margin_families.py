@@ -49,11 +49,57 @@ def test_every_configured_target_margin_family_is_one_the_loaded_pack_declares()
 
 @pytest.mark.requires_pie
 def test_the_default_policy_passes_its_own_write_path_validator():
-    """The same binding, through the same call ``save_for_org`` makes — so the
-    default policy could always be re-saved as-is."""
-    from app.commercial.policy import validate
+    """The same binding ``save_for_org`` runs for an edit that touches the
+    family map — so the default policy could always be re-saved as-is. The
+    binding deliberately does NOT live in ``validate``: there it would run on
+    the whole merged policy for every save, letting one stale stored key block
+    an owner's edit of an unrelated field."""
+    from app.pie_service import pack_families
 
-    validate(CommercialThresholds())
+    vocabulary = pack_families()
+    assert vocabulary, "the pack is present, so its vocabulary must be readable"
+    require_known_families(
+        "target_margin_by_family",
+        (family for family, _ in CommercialThresholds().target_margin_by_family),
+        vocabulary,
+        source="the family vocabulary the loaded PIE pack declares")
+
+
+@pytest.mark.requires_pie
+def test_a_stale_stored_family_key_does_not_block_unrelated_edits(session, monkeypatch):
+    """A pack rename must not lock an owner out of the rest of their margin
+    policy. The stored key was valid under the pack that wrote it; after the
+    rename an edit of an unrelated field still saves — the read path already
+    tolerates the stale key — and only an edit touching the map itself is
+    asked to answer for the current vocabulary."""
+    import app.pie_service as pie_service
+    from app.commercial import policy as policy_mod
+    from app.domain import models
+
+    org = "org_stale_family_key"
+    session.add(models.Organization(organization_id=org, name="Stale",
+                                    currency="INR", config={}))
+    session.flush()
+
+    # History: the override was saved under an older pack that declared the
+    # name — simulated by widening the vocabulary for that one save.
+    real = pie_service.pack_families
+    vocab_then = tuple(real() or ()) + ("family_the_pack_since_renamed",)
+    monkeypatch.setattr(pie_service, "pack_families", lambda: vocab_then)
+    policy_mod.save_for_org(
+        session, org,
+        {"target_margin_by_family": {"family_the_pack_since_renamed": 0.30}})
+    monkeypatch.setattr(pie_service, "pack_families", real)
+
+    # The rename happened. An unrelated edit must still save.
+    policy_mod.save_for_org(session, org, {"effective_tax_rate": 0.25})
+
+    # But an edit touching the map itself answers for the vocabulary.
+    with pytest.raises(PolicyError) as e:
+        policy_mod.save_for_org(
+            session, org,
+            {"target_margin_by_family": {"family_the_pack_since_renamed": 0.30}})
+    assert "family_the_pack_since_renamed" in str(e.value)
 
 
 # ── one validator, both vocabulary-bound maps ────────────────────────────────

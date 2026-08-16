@@ -20,6 +20,7 @@ import logging
 import sys
 import threading
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -150,6 +151,43 @@ def _read_catalog_version(path: Optional[Path]) -> str:
     except (OSError, ValueError):
         log.warning("could not read a ruleset checksum from %s", path)
     return ""
+
+
+@lru_cache(maxsize=1)
+def pack_families() -> Optional[tuple]:
+    """The family vocabulary the configured pack declares, or None without a pack.
+
+    Read from the manifest alone: resolving a code needs the whole engine, but
+    the vocabulary is one YAML list, and a policy save must not pay for grammar
+    compilation to check five key names. Parsed by pie-parser's own
+    ``families_from_config`` rather than a local re-reading of the YAML, so
+    "what counts as a declared family" keeps exactly one definition — the one
+    ``load_pack`` itself uses.
+
+    ``None`` means *no pack is readable here* — a checkout without the private
+    submodule — which is a different answer from an empty vocabulary. The
+    caller must treat it as "there is nothing to validate against", never as
+    "every name is fine"; ``commercial.policy.save_for_org`` refuses a family
+    edit outright in that state rather than waving it through.
+
+    Cached for the life of the process, like the catalogue: the pack is loaded
+    once and never reloaded, so re-reading the manifest could only ever
+    disagree with the engine that is already running.
+    """
+    try:
+        root = str(settings.PIE_PARSER_ROOT)
+        if root not in sys.path:
+            sys.path.insert(0, root)
+        import yaml  # noqa: PLC0415 — deferred, like every pie-parser import here
+        from engine.pack import families_from_config  # noqa: PLC0415
+
+        manifest = settings.PIE_PACK / "manifest.yaml"
+        doc = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+        return families_from_config(doc, source=str(manifest))
+    except Exception:  # noqa: BLE001 — an absent pack must not 500 a policy save
+        log.warning("PIE pack manifest unreadable; no family vocabulary to "
+                    "validate against", exc_info=True)
+        return None
 
 
 class PieService:

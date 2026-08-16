@@ -143,6 +143,42 @@ def test_a_family_target_below_the_approval_floor_is_refused(client):
     assert "reamer" in r.json()["detail"]
 
 
+@pytest.mark.requires_pie
+def test_a_family_the_pack_does_not_declare_is_refused_naming_the_vocabulary(client):
+    """The keys are the PIE pack's family vocabulary and nothing else. A key
+    the pack does not declare never matches a parsed line, so accepting it
+    would leave the map looking set while every line priced at the blended
+    default — and the 400 names the valid vocabulary, because "invalid" on its
+    own is a puzzle, not an error an owner can act on."""
+    r = _patch(client, OWNER, {"target_margin_by_family": {"widgets": 0.30}})
+    assert r.status_code == 400
+    detail = r.json()["detail"]
+    assert "widgets" in detail
+    assert "milling_insert" in detail, "the valid vocabulary is named"
+
+
+@pytest.mark.requires_pie
+def test_a_family_the_pack_does_declare_is_accepted(client):
+    r = _patch(client, OWNER, {"target_margin_by_family": {"milling_insert": 0.32}})
+    assert r.status_code == 200, r.text
+    fields = {f["field"]: f for f in r.json()["margin_policy"]["fields"]}
+    assert fields["target_margin_by_family"]["value"] == {"milling_insert": 0.32}
+
+
+def test_without_a_readable_pack_a_family_edit_is_refused_not_waved_through(
+        client, monkeypatch):
+    """No pack means no vocabulary to check names against, and "could not look"
+    must not read as "looked and found nothing wrong" (CLAUDE.md §1). The rest
+    of the policy stays editable — only the vocabulary-bound map is held."""
+    import app.pie_service as pie_service
+    monkeypatch.setattr(pie_service, "pack_families", lambda: None)
+
+    r = _patch(client, OWNER, {"target_margin_by_family": {"reamer": 0.30}})
+    assert r.status_code == 400
+    assert "vocabulary" in r.json()["detail"]
+    assert _patch(client, OWNER, {"target_margin_default": 0.30}).status_code == 200
+
+
 def test_a_margin_given_as_a_percentage_is_refused(client):
     """24 instead of 0.24 would make every quote wildly profitable on paper."""
     assert _patch(client, OWNER, {"target_margin_default": 24}).status_code == 400

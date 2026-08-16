@@ -1157,3 +1157,155 @@ export interface ErasureState {
   receipt: ErasureReceipt | null;
   key_destroyed?: boolean;
 }
+
+// ── what PIE changed: the value-attribution ledger ──────────────────────────
+//
+// Money on this surface arrives as a **string** ("12500.0000"), because it is
+// `Decimal` on the server and FastAPI serializes it without a float round-trip.
+// `money()` takes either, but the parsing matters for one thing this screen
+// must never get wrong: `null` and `"0"` are different facts. A null amount is
+// "nothing measurable was recorded"; a zero is a measurement. Typed as a named
+// alias so a reader of these interfaces cannot mistake it for a number.
+export type MoneyString = string;
+
+/** One named hole in the evidence. Rendered, never swallowed — a figure with a
+ *  gap behind it has to say so on the screen, not in a tooltip. */
+export interface EvidenceGap {
+  /** What could not be measured: a metric name, or a `ValueEventType`. */
+  subject: string;
+  /** A stable code — `NO_EVENTS_RECORDED`, `NOT_MEASURABLE`, … */
+  reason: string;
+  detail: string;
+}
+
+export interface AttributionTrial {
+  trial_id: string;
+  started_at: string | null;
+  ends_at: string | null;
+  measured_to: string | null;
+  days_elapsed: number;
+  days_remaining: number;
+}
+
+/** One (event type × value class) cell of the window. Never added across
+ *  classes — see `class_totals_are_not_summable`. */
+export interface ValueClassBreakdown {
+  event_type: string;
+  value_class: string;
+  events: number;
+  amount: MoneyString | null;
+}
+
+/** Work the platform did, counted and never valued: this business holds no
+ *  hourly rate, so none of these becomes a rupee. */
+export interface AttributionProductivity {
+  note: string;
+  quotes_priced: number;
+  lines_priced: number;
+  approvals_turned_round: number;
+}
+
+/** `GET /api/attribution/summary`.
+ *
+ *  Everything below `evidence_gaps` is optional because an organization with no
+ *  trial on record gets a three-field payload: the trial, a null headline and
+ *  the gap that says why. */
+export interface AttributionSummary {
+  trial: AttributionTrial | null;
+  /** ATTRIBUTED only. `null` means no detection run is on record — which is
+   *  **not** a measured zero, and the screen must not render it as one. */
+  attributed_value: MoneyString | null;
+  attributed_events?: number;
+  potential_value?: MoneyString | null;
+  potential_events?: number;
+  realized_value?: MoneyString | null;
+  realized_events?: number;
+  estimated_value?: MoneyString | null;
+  estimated_events?: number;
+  class_totals_are_not_summable?: string;
+  by_event_type?: ValueClassBreakdown[];
+  productivity?: AttributionProductivity;
+  currency?: string;
+  evidence_gaps: EvidenceGap[];
+  empty_reason: string | null;
+}
+
+/** One ledger row. `basis` holds the operands the amount was computed from and
+ *  `evidence_refs` names the rows it was computed over, so the drill-down
+ *  re-derives the figure instead of restating it. */
+export interface ValueEventRow {
+  value_event_id: string;
+  event_type: string;
+  value_class: string;
+  /** `null` where the class carries no defensible money. Never coerced to 0. */
+  amount: MoneyString | null;
+  currency: string;
+  basis: Record<string, unknown>;
+  evidence_refs: Record<string, unknown>[];
+  occurred_at: string | null;
+  thresholds_version: string | null;
+  created_at: string | null;
+}
+
+/** `GET /api/attribution/events`. A page of the ledger — never a rollup. */
+export interface AttributionEvents {
+  events: ValueEventRow[];
+  total: number;
+  limit: number;
+  offset: number;
+  has_more: boolean;
+  currency: string;
+  /** The server's own warning that these rows must not be added up. */
+  page_is_not_a_total: string;
+  filters: { event_type: string | null; value_class: string | null };
+  /** The server's vocabulary, so a filter control and a breakdown are built
+   *  from it rather than from a copy in the client that then drifts. */
+  event_types: string[];
+  value_classes: string[];
+  empty_reason: string | null;
+}
+
+/** What the book looked like before the trial, and what it looks like during. */
+export interface AttributionWindowMetrics {
+  priced_lines: number;
+  costed_lines: number;
+  uncosted_lines: number;
+  approval_required_lines: number;
+  approval_required_rate: number | null;
+  quoted_revenue: MoneyString | null;
+  gross_profit: MoneyString | null;
+  /** A ratio (0.24), never a percentage. `null` where it could not be stated. */
+  margin: number | null;
+  quotes_won: number;
+  quotes_lost: number;
+  quotes_decided: number;
+  quote_win_rate: number | null;
+}
+
+export interface AttributionBaseline {
+  baseline_id: string;
+  captured_at: string | null;
+  window_start: string;
+  window_end: string;
+  metrics: Record<string, unknown>;
+  evidence_gaps: EvidenceGap[];
+  thresholds_version: string | null;
+}
+
+/** `GET /api/attribution/evaluation` — owner only. The summary, plus the
+ *  before/during comparison and the return on what the platform costs. */
+export interface AttributionEvaluation extends AttributionSummary {
+  baseline: AttributionBaseline | null;
+  comparison: {
+    quoted_margin_before: number;
+    quoted_margin_after: number;
+    /** Percentage POINTS, per the house convention for a margin move. */
+    quoted_margin_movement_pp: number;
+  } | null;
+  /** Attributed value per rupee of platform cost. `null` with
+   *  `roi_is_unknown` true unless the caller supplied a cost — render that as
+   *  UNKNOWN, never as 0x. */
+  roi: MoneyString | null;
+  roi_is_unknown: boolean;
+  during?: AttributionWindowMetrics;
+}

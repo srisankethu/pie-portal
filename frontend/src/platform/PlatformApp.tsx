@@ -71,6 +71,8 @@ const IdentityScreen = lazy(() =>
   import("./IdentityScreen").then((m) => ({ default: m.IdentityScreen })));
 const TrustScreen = lazy(() =>
   import("./TrustScreen").then((m) => ({ default: m.TrustScreen })));
+const AttributionScreen = lazy(() =>
+  import("./AttributionScreen").then((m) => ({ default: m.AttributionScreen })));
 const DataScreen = lazy(() =>
   import("./DataScreen").then((m) => ({ default: m.DataScreen })));
 const CustomerCommercial = lazy(() =>
@@ -601,6 +603,17 @@ export default function PlatformApp() {
     ...(ability.can("read", "supply")
       ? ([{ key: "targets", label: "Supplier targets", group: "understand" }] as NavItem[])
       : []),
+    // Manager and above, mirroring `require_manager_or_owner` on every
+    // attribution route. Every row of that ledger is gross-profit arithmetic —
+    // a margin-protected event names a line priced below its floor, so the
+    // event type *is* the below-floor flag — and there is no version of the
+    // screen with the economics taken out. The owner-only half of it (the
+    // report against the pre-trial baseline) is a panel gate inside the screen,
+    // not a second nav item.
+    ...(ability.can("read", "economics")
+      ? ([{ key: "attribution", label: "What PIE changed",
+            group: "understand" }] as NavItem[])
+      : []),
 
     // ── The book ──
     // One "Customers" door, not two. The account picker, the month-by-month
@@ -822,6 +835,13 @@ export default function PlatformApp() {
             <Route path={PATH.catalogue} element={<CatalogueScreen session={session} />} />
             <Route path={PATH.negotiate} element={<NegotiateScreen session={session} />} />
             <Route path={PATH.quoteOutcomes} element={<QuoteOutcomesScreen session={session} />} />
+
+            {/* ── WHAT PIE CHANGED ──
+                The value ledger, and what it could not measure. Routed for
+                every role rather than gated here: the screen itself says why
+                a salesperson cannot read it, which is a closed door rather
+                than a broken link for anyone who follows one. */}
+            <Route path={PATH.attribution} element={<AttributionScreen session={session} />} />
 
             {/* ── QUOTES ──
                 The Quote Builder itself, not a door in front of it. It used to

@@ -686,6 +686,32 @@ UNMEASURABLE_EVENT_TYPES: dict[ValueEventType, str] = {
         "which recommendation preceded it."),
 }
 
+#: Why an event type is producing nothing, where the reason is structural and
+#: known — the sentence a report prints instead of leaving the type out.
+#:
+#: A superset of ``UNMEASURABLE_EVENT_TYPES``, because "has no detector" is not
+#: the only way to be unmeasurable. ``EQUIVALENT_SAVING`` has a detector and
+#: tested arithmetic; what it lacks is evidence, since nothing in this codebase
+#: writes the ``alternative`` reference it reads. From a report's point of view
+#: those two are the same fact — no number is available and none should be
+#: shown — and only the explanation differs, which is exactly what a dict of
+#: explanations is for.
+#:
+#: Kept beside the detectors rather than in the evaluator because this is
+#: knowledge about what the detectors can see. A reason registered here goes
+#: stale safely: the evaluator prints it only while the type really has no rows
+#: in the window, so the day the Quote Desk starts recording substitutions the
+#: gap disappears on its own.
+NOT_MEASURABLE_REASONS: dict[ValueEventType, str] = {
+    **UNMEASURABLE_EVENT_TYPES,
+    ValueEventType.EQUIVALENT_SAVING: (
+        "the arithmetic exists and is tested, but nothing in this codebase "
+        "records an accepted substitution carrying both the original and the "
+        "alternative cost, so the detector has no evidence to read. Unsourced, "
+        "not zero — and a scored equivalence suggestion must never be "
+        "substituted for it, because a suggestion is not a purchase."),
+}
+
 
 def run_all(session: Session, org: str, *,
             since: Optional[datetime] = None,

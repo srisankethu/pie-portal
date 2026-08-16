@@ -43,7 +43,7 @@ from ..commercial.policy import load_for_org
 from ..domain import models
 from ..domain.enums import QuoteOutcomeStatus, ValueClass, ValueEventType
 from .calculator import roi
-from .detectors import UNMEASURABLE_EVENT_TYPES
+from .detectors import NOT_MEASURABLE_REASONS
 
 #: How far back a baseline looks. Long enough that one quiet month does not
 #: define "before", short enough to still describe the business as it is now.
@@ -59,6 +59,16 @@ NO_COSTED_LINES_IN_WINDOW = "NO_COSTED_LINES_IN_WINDOW"
 NO_DECIDED_QUOTES_IN_WINDOW = "NO_DECIDED_QUOTES_IN_WINDOW"
 NO_PLATFORM_COST_SUPPLIED = "NO_PLATFORM_COST_SUPPLIED"
 NOT_MEASURABLE = "NOT_MEASURABLE"
+
+#: What is said about an event type that recorded nothing and has no registered
+#: structural reason. Deliberately refuses to guess between the two cases: from
+#: the ledger alone, "the detector ran and found nothing worth valuing" and "no
+#: detection run has happened" are the same silence, and only one of them is
+#: good news.
+UNRECORDED_TYPE = (
+    "no event of this type is recorded in the window. That is not a measured "
+    "zero: either detection found nothing worth valuing or no detection run is "
+    "on record, and the ledger cannot tell the two apart.")
 
 
 def _gap(subject: str, reason: str, detail: str) -> dict[str, str]:
@@ -476,8 +486,20 @@ def trial_progress(session: Session, org: str) -> dict[str, Any]:
                              f"{attributed['amounts_missing']} attributed events "
                              "carry no amount and are not in the total"))
 
-    for event_type, reason in UNMEASURABLE_EVENT_TYPES.items():
-        gaps.append(_gap(event_type.value, NOT_MEASURABLE, reason))
+    # Every event type that produced nothing in this window is *named*. An
+    # event type simply missing from the breakdown is the absence-of-evidence
+    # failure in its quietest form: the reader sees four types and no fifth, and
+    # reads the fifth as ₹0 rather than as unmeasured. Two of the five have no
+    # detector at all and one has a detector nothing writes evidence for, so the
+    # reason is looked up where it is known and falls back to naming the
+    # ambiguity honestly where it is not.
+    by_type = _by_event_type(session, org, started, until)
+    measured = {row["event_type"] for row in by_type}
+    for event_type in ValueEventType:
+        if event_type.value in measured:
+            continue
+        gaps.append(_gap(event_type.value, NOT_MEASURABLE,
+                         NOT_MEASURABLE_REASONS.get(event_type, UNRECORDED_TYPE)))
 
     return {
         "trial": {"trial_id": trial.trial_id,
@@ -500,7 +522,7 @@ def trial_progress(session: Session, org: str) -> dict[str, Any]:
             "POTENTIAL and ATTRIBUTED can describe the same quote line — one as "
             "the flag, one as the win that followed it. They are separate "
             "statements and must never be added together."),
-        "by_event_type": _by_event_type(session, org, started, until),
+        "by_event_type": by_type,
         "productivity": _productivity(session, org, started, until),
         "currency": "INR",
         "evidence_gaps": gaps,

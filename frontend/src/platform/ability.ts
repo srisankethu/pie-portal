@@ -38,6 +38,13 @@ export type Subject =
   | "supply"           // suppliers, purchasing, what we owe
   | "simulation"       // the what-if desk
   | "trust"            // disclosure, the access log, export and erasure
+  | "evaluation"       // the 30-day report: what the platform was worth against
+                       // what it costs. A noun of its own rather than a reuse,
+                       // because it is the one place where the screen and one
+                       // panel inside it have *different* server gates — the
+                       // value ledger is manager-or-owner, the report against
+                       // the baseline is owner-only — and no existing subject
+                       // can say that without lying about one of the two.
   | "all";
 
 export type AppAbility = MongoAbility<[Action, Subject]>;
@@ -78,6 +85,12 @@ export function defineAbilityFor(role: Role | undefined): AppAbility {
     // data key, which is not a decision to offer a manager by accident.
     can("read", "trust");
     can("manage", "trust");
+    // Mirrors `require_owner` on `GET /api/attribution/evaluation`. Whether the
+    // platform earned its price is the renewal conversation, and it sets one
+    // book's performance before the platform against its performance during —
+    // an owner's question, not a desk one. The ledger it is computed from stays
+    // manager-or-owner, so this gates a panel rather than the screen.
+    can("read", "evaluation");
   }
 
   return build();

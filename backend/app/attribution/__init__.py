@@ -30,6 +30,7 @@ from .calculator import (
 )
 from .detectors import (
     DETECTORS,
+    NOT_MEASURABLE_REASONS,
     UNMEASURABLE_EVENT_TYPES,
     DetectionResult,
     Detector,
@@ -48,6 +49,7 @@ __all__ = [
     "DetectionResult",
     "Detector",
     "LedgerRefusal",
+    "NOT_MEASURABLE_REASONS",
     "QuoteEvidence",
     "SkippedRow",
     "UNMEASURABLE_EVENT_TYPES",

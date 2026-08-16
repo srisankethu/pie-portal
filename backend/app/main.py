@@ -96,9 +96,16 @@ async def lifespan(_app: FastAPI):
     # serve the code. A database at head with a hand-edited table fails only the
     # second; a database built by ``create_all`` fails only the first.
     try:
-        from .db import engine
+        from .db import engine, SessionLocal
         from .migration_state import inspect_database
         from .schema_check import check_at_startup
+        from .observability.instrumentation import instrument_database
+        from .observability.health import register_health_checks
+
+        # Initialize observability infrastructure
+        instrument_database(engine)
+        register_health_checks(engine, SessionLocal)
+        log.info("observability infrastructure initialized")
 
         state = inspect_database(engine)
         SCHEMA_GAP["migration"] = state.to_dict()
@@ -178,6 +185,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Observability instrumentation: metrics, logging, health checks.
+from .observability.instrumentation import api_instrumentation_middleware, instrument_database
+app.add_middleware(api_instrumentation_middleware)
 
 # Commercial Decision Platform (Phase 1 foundation).
 app.include_router(platform_auth.router)

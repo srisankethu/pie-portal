@@ -232,3 +232,108 @@ def demo_seed(
                             "Demo seeding is disabled in production.")
     from ..demo import seed_demo
     return seed_demo(session)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Observability Dashboard (owner/manager only)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@router.get("/observability/dashboard")
+def observability_dashboard(
+    principal: Principal = Depends(require_manager_or_owner),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Complete observability dashboard data: health, metrics, capacity (owner/manager only)."""
+    from ..observability.dashboard import DashboardService
+    service = DashboardService(session)
+    return service.get_full_dashboard()
+
+
+@router.get("/observability/health")
+def observability_health(
+    principal: Principal = Depends(require_manager_or_owner),
+    session: Session = Depends(get_session),
+) -> dict:
+    """System health status for all components (owner/manager only)."""
+    from ..observability.dashboard import DashboardService
+    service = DashboardService(session)
+    return service.get_system_health()
+
+
+@router.get("/observability/capacity")
+def observability_capacity(
+    principal: Principal = Depends(require_manager_or_owner),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Capacity analysis and safe headroom calculation (owner/manager only)."""
+    from ..observability.dashboard import DashboardService
+    service = DashboardService(session)
+    return service.get_capacity()
+
+
+@router.get("/observability/metrics")
+def observability_metrics(
+    principal: Principal = Depends(require_manager_or_owner),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Raw metrics export for external monitoring systems (owner/manager only)."""
+    from ..observability.metrics import metrics
+    return metrics.export()
+
+
+@router.get("/observability/api-performance")
+def observability_api_performance(
+    principal: Principal = Depends(require_manager_or_owner),
+    session: Session = Depends(get_session),
+    window_minutes: int = Query(5, ge=1, le=1440),
+) -> dict:
+    """API performance metrics over a time window (owner/manager only)."""
+    from ..observability.dashboard import DashboardService
+    service = DashboardService(session)
+    return service.get_api_performance(window_minutes)
+
+
+@router.get("/observability/database")
+def observability_database(
+    principal: Principal = Depends(require_manager_or_owner),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Database performance and status metrics (owner/manager only)."""
+    from ..observability.dashboard import DashboardService
+    service = DashboardService(session)
+    return service.get_database_status()
+
+
+@router.get("/observability/jobs")
+def observability_jobs(
+    principal: Principal = Depends(require_manager_or_owner),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Background job status and metrics (owner/manager only)."""
+    from ..observability.dashboard import DashboardService
+    service = DashboardService(session)
+    return service.get_background_jobs()
+
+
+@router.get("/observability/syncs")
+def observability_syncs(
+    principal: Principal = Depends(require_manager_or_owner),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Zoho synchronization status and metrics (owner/manager only)."""
+    from ..observability.dashboard import DashboardService
+    service = DashboardService(session)
+    return service.get_zoho_sync_status()
+
+
+@router.get("/observability/tenants")
+def observability_tenants(
+    principal: Principal = Depends(require_manager_or_owner),
+    session: Session = Depends(get_session),
+    limit: int = Query(20, ge=1, le=100),
+) -> dict:
+    """Tenant usage rankings (owner/manager only)."""
+    from ..observability.dashboard import DashboardService
+    service = DashboardService(session)
+    return service.get_tenant_usage(limit)

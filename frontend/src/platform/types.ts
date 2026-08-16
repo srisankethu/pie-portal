@@ -36,6 +36,33 @@ export interface SignupOffer {
   note: string;
 }
 
+/** What this organization's plan lets it use, and what it is about to lose.
+ *
+ *  `GET /api/v1/entitlements` has existed since plans landed and nothing called
+ *  it, so the one thing a tenant most needed to be told — that its free month
+ *  of Commercial Intelligence is running out — was computed correctly on the
+ *  server and never reached a screen. */
+export interface Entitlements {
+  /** The plan licensed underneath any trial. */
+  plan: string;
+  plan_label: string;
+  /** What is actually in force right now — a running trial lifts this. */
+  effective_plan: string;
+  effective_label: string;
+  trial: {
+    ends_at: string;
+    /** The end date in the business's own zone, as a person would write it. */
+    ends_on: string | null;
+    /** Counted server-side, in the business's day. A browser subtracting dates
+     *  would use the reader's zone and be off by one for anyone travelling. */
+    days_remaining: number;
+  } | null;
+  features: Record<string, boolean>;
+  /** Feature keys in force only because of the trial — what expiry costs.
+   *  Derived from the server's plan map so the client holds no second copy. */
+  loses_on_expiry: string[];
+}
+
 /** One thing a new organization has or has not done.
  *
  *  `detail` is always populated, and that is the field worth reading: "not

@@ -35,6 +35,7 @@ import {
 } from "./route";
 import AppShell, { type NavItem } from "./AppShell";
 import { SetupChecklist } from "./SetupChecklist";
+import { TrialNotice } from "./TrialNotice";
 import { SignInCard } from "../SignInCard";
 import { SignUpCard } from "../SignUpCard";
 import { Landing } from "../landing/Landing";
@@ -756,6 +757,11 @@ export default function PlatformApp() {
       onSignOut={signOut}
     >
       <div>
+        {/* In the shell rather than on one screen: a licence about to expire is
+            true wherever the reader happens to be, and the queue it takes away
+            is reached from everywhere. It is silent until the last stretch and
+            silent for a salesperson — see TrialNotice. */}
+        <TrialNotice session={session} />
         {/* An unreachable API must never be dressed as "nothing to do". The
             error REPLACES the queue rather than sitting above a reassuring
             empty state — the previous behaviour told a salesperson everything

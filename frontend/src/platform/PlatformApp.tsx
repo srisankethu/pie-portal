@@ -34,7 +34,9 @@ import {
   LEGACY_ACCOUNTS, PATH, PATTERN, pathFor, screenAt, vizPath, type Screen,
 } from "./route";
 import AppShell, { type NavItem } from "./AppShell";
+import { SetupChecklist } from "./SetupChecklist";
 import { SignInCard } from "../SignInCard";
+import { SignUpCard } from "../SignUpCard";
 import { Landing } from "../landing/Landing";
 import { abilityFor } from "./ability";
 import { Seg } from "./viz/Seg";
@@ -181,6 +183,50 @@ function SignIn({ onIn, notice }: { onIn: (s: PlatformSession) => void; notice?:
   );
 }
 
+/** The other door: sign up for an organization that does not exist yet.
+ *
+ *  Reached only where the deployment offers it — see `useSignupOffer`. The
+ *  response is the login response, so this hands the session on through exactly
+ *  the same `onIn` the sign-in card uses; a second way to become signed in is a
+ *  second place to forget the currency. */
+function SignUp({ onIn, onSignIn }: {
+  onIn: (s: PlatformSession) => void;
+  onSignIn: () => void;
+}) {
+  return (
+    <SignUpCard
+      onSignIn={onSignIn}
+      onSubmit={async (d) => {
+        const r = await papi.signUp(d);
+        onIn({ token: r.token, role: r.role, name: r.name, email: r.email,
+               user_id: r.user_id,
+               organization_id: r.organization_id, currency: r.currency,
+               timezone: r.timezone,
+               must_change_password: r.must_change_password });
+      }}
+    />
+  );
+}
+
+/** Whether this deployment accepts sign-ups.
+ *
+ *  Asked once, before the door is drawn, and answered `false` on any failure —
+ *  an older backend has no such endpoint and 404s, and the right reading of
+ *  "this deployment did not answer" is that it does not offer sign-up, not that
+ *  it does. Never fetched while signed in: the answer changes nothing then. */
+function useSignupOffer(signedOut: boolean): boolean {
+  const [offered, setOffered] = useState(false);
+  useEffect(() => {
+    if (!signedOut) return;
+    let live = true;
+    papi.signupOffer()
+      .then((o) => { if (live) setOffered(!!o.enabled); })
+      .catch(() => { if (live) setOffered(false); });
+    return () => { live = false; };
+  }, [signedOut]);
+  return offered;
+}
+
 // ── action modal ─────────────────────────────────────────────────────────────
 //
 // Four intents, four distinct server actions. They used to be three, and both
@@ -289,11 +335,12 @@ function ActionModal({
 export default function PlatformApp() {
   const { enqueueSnackbar, closeSnackbar } = useSnackbar();
   const [session, setSession] = useState<PlatformSession | null>(loadPlatformSession());
-  // Signed out, there are two doors: the public landing page (the default) and
-  // the sign-in card one click behind it. State rather than a route on purpose
-  // — a person deep-linked to any screen should land on the landing page, not
-  // on a bare form, and the URL they wanted is preserved for after sign-in.
-  const [door, setDoor] = useState<"landing" | "signin">("landing");
+  // Signed out, there are three doors: the public landing page (the default),
+  // the sign-in card one click behind it, and — where the deployment offers it
+  // — the sign-up card. State rather than a route on purpose: a person
+  // deep-linked to any screen should land on the landing page, not on a bare
+  // form, and the URL they wanted is preserved for after sign-in.
+  const [door, setDoor] = useState<"landing" | "signin" | "signup">("landing");
   // The URL is the screen, so Back, reload and shareable links all work. React
   // Router owns the matching; `screen` is only what the nav highlights, which is
   // a different question — a decision detail has no nav item of its own.
@@ -487,22 +534,46 @@ export default function PlatformApp() {
     [summaries],
   );
 
+  // Before the early returns below: hooks run in the same order every render.
+  const signupOffered = useSignupOffer(!session);
+
   if (!session) {
-    // The landing page is the public front; the sign-in card is one click
-    // behind it. An expired session skips the landing — that person was
-    // already inside, and what they need is the door, with the notice saying
-    // why they are looking at it again.
-    if (door !== "signin" && !notice) {
-      return <Landing onEnter={() => setDoor("signin")} />;
+    // The landing page is the public front; the two cards are one click behind
+    // it. An expired session skips the landing and goes straight to sign-in —
+    // that person was already inside, and what they need is the door, with the
+    // notice saying why they are looking at it again.
+    if (door === "landing" && !notice) {
+      return (
+        <Landing
+          onEnter={() => setDoor("signin")}
+          // Absent unless the deployment accepts sign-ups, so "Get started
+          // free" is never a button that leads to a form that always refuses.
+          // That was the state of it until now: the landing page has always
+          // offered it, and the only account anybody could have was one an
+          // operator made with a shell on the box.
+          onSignUp={signupOffered ? () => setDoor("signup") : undefined}
+        />
+      );
+    }
+    const back = (
+      <Button
+        onClick={() => { setDoor("landing"); setNotice(null); }}
+        sx={{ position: "fixed", top: 14, left: 14, color: "text.secondary" }}
+      >
+        ← Back
+      </Button>
+    );
+    if (door === "signup" && signupOffered) {
+      return (
+        <>
+          {back}
+          <SignUp onIn={signIn} onSignIn={() => setDoor("signin")} />
+        </>
+      );
     }
     return (
       <>
-        <Button
-          onClick={() => { setDoor("landing"); setNotice(null); }}
-          sx={{ position: "fixed", top: 14, left: 14, color: "text.secondary" }}
-        >
-          ← Back
-        </Button>
+        {back}
         <SignIn onIn={signIn} notice={notice} />
       </>
     );
@@ -1041,6 +1112,13 @@ function HomeScreen({
         <h1>{title}</h1>
         <p>{sub}</p>
       </div>
+
+      {/* Above everything, and only until the required steps are done. A tenant
+          with no connection has no morning read and no queue, so the panels
+          below are all correct empty states — and a stack of correct empty
+          states does not tell a new owner that the fix is four minutes of
+          setup. It removes itself; there is no dismiss and no stored flag. */}
+      <SetupChecklist session={session} />
 
       {/* The morning read. Above the queue because the first question is "can I
           trust this and what is going on", and the queue is one tile inside the

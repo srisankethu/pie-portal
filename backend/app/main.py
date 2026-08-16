@@ -21,7 +21,7 @@ from .pie_service import pie_service
 from .routers import (accounts, admin, ai_settings, approvals, attribution,
                       commercial, connections, data_status,
                       decisions, entitlements, identity, internal,
-                      platform_auth, quote,
+                      onboarding, platform_auth, quote,
                       insight, quote_intelligence, quote_support, trust)
 
 logging.basicConfig(level=logging.INFO)
@@ -96,9 +96,16 @@ async def lifespan(_app: FastAPI):
     # serve the code. A database at head with a hand-edited table fails only the
     # second; a database built by ``create_all`` fails only the first.
     try:
-        from .db import engine
+        from .db import engine, SessionLocal
         from .migration_state import inspect_database
         from .schema_check import check_at_startup
+        from .observability.instrumentation import instrument_database
+        from .observability.health import register_health_checks
+
+        # Initialize observability infrastructure
+        instrument_database(engine)
+        register_health_checks(engine, SessionLocal)
+        log.info("observability infrastructure initialized")
 
         state = inspect_database(engine)
         SCHEMA_GAP["migration"] = state.to_dict()
@@ -179,8 +186,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Observability instrumentation: metrics, logging, health checks.
+from .observability.instrumentation import api_instrumentation_middleware, instrument_database
+app.add_middleware(api_instrumentation_middleware)
+
 # Commercial Decision Platform (Phase 1 foundation).
 app.include_router(platform_auth.router)
+# The way in for a tenant nobody has provisioned by hand. Beside the sign-in
+# router because it answers the same question — how does a person get a session
+# — and no plan gate for the same reason: a plan is something an organization
+# has, and this runs before there is one.
+app.include_router(onboarding.router)
 
 # The Quote Builder. One surface of the same product, and — since the demo login
 # beside it was removed — one identity: `/api/quotes` authenticates the same

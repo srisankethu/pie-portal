@@ -131,6 +131,24 @@ class Settings:
     # How long the one-per-books free month of Commercial Intelligence runs.
     INTELLIGENCE_TRIAL_DAYS: int = int(os.environ.get("INTELLIGENCE_TRIAL_DAYS", "30"))
 
+    # ── Self-serve sign-up (app/onboarding.py) ───────────────────────────────
+    # Whether anyone who can reach this deployment may create a tenant for
+    # themselves. **Off unless a deployment says otherwise**, and that default
+    # is the whole point rather than caution: this is the one endpoint here that
+    # writes rows without a token, so an existing single-tenant install that
+    # pulls new code must not silently start accepting strangers. A hosted
+    # deployment sets SELF_SERVE_SIGNUP=1 (and, almost certainly, DEFAULT_PLAN=free).
+    #
+    # It does not decide the *plan* a sign-up lands on — `onboarding.SIGNUP_PLAN`
+    # pins that to free explicitly, because DEFAULT_PLAN defaults to "platform"
+    # and inheriting it here would hand every stranger the top tier.
+    SELF_SERVE_SIGNUP: bool = os.environ.get("SELF_SERVE_SIGNUP", "0") == "1"
+    # Sign-ups accepted from one address per hour, across the process. A speed
+    # bump, not a control — see `routers/onboarding.py`, which says plainly what
+    # it does and does not stop.
+    SIGNUP_RATE_LIMIT_PER_HOUR: int = int(
+        os.environ.get("SIGNUP_RATE_LIMIT_PER_HOUR", "5"))
+
     # The single supported organization for V1 (one org, one ERP). organization_id
     # is carried on every record for future multi-org, but no cross-org logic exists.
     DEFAULT_ORG_ID: str = os.environ.get("DEFAULT_ORG_ID", "org_pie")
@@ -199,6 +217,26 @@ class Settings:
     ZOHO_THROTTLE_BACKOFF_SECONDS: float = float(
         os.environ.get("ZOHO_THROTTLE_BACKOFF_SECONDS", "15"))
     ZOHO_MAX_BACKOFF_SECONDS: float = float(os.environ.get("ZOHO_MAX_BACKOFF_SECONDS", "90"))
+
+    # ── Zoho OAuth (customer-facing authorization flow) ────────────────────────
+    # PIE's Zoho OAuth application credentials. The client ID and secret are
+    # registered as a "Self Client" in the Zoho Developer Console for PIE, and
+    # the redirect URI points to /api/v1/connections/zoho/callback on this
+    # deployment. The same credentials work across all customers (the OAuth grant
+    # itself belongs to the Zoho user, not to PIE).
+    #
+    # For local development, use "fixture" mode (ZOHO_SOURCE=fixture) which
+    # bypasses OAuth entirely. For production deployments, create a Zoho Self
+    # Client and set these variables securely.
+    ZOHO_OAUTH_CLIENT_ID: str = os.environ.get("ZOHO_OAUTH_CLIENT_ID", "")
+    ZOHO_OAUTH_CLIENT_SECRET: str = os.environ.get("ZOHO_OAUTH_CLIENT_SECRET", "")
+    # Full callback URL, including scheme and host. Must match the redirect URI
+    # registered in the Zoho Developer Console.
+    # Example: "https://pie.example.com/api/v1/connections/zoho/callback"
+    ZOHO_OAUTH_REDIRECT_URI: str = os.environ.get("ZOHO_OAUTH_REDIRECT_URI", "")
+    # OAuth state token lifetime, in seconds. After this, a pending authorization
+    # is considered expired and rejected. 10 minutes is standard for OAuth flows.
+    ZOHO_OAUTH_STATE_TTL_SECONDS: int = int(os.environ.get("ZOHO_OAUTH_STATE_TTL_SECONDS", "600"))
 
     # Version stamped onto deterministic artifacts for provenance/reproducibility.
     # (Threshold-config version is carried by SignalThresholds.version, not here.)

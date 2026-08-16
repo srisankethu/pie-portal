@@ -24,6 +24,43 @@ export interface PlatformSession {
   must_change_password?: boolean;
 }
 
+/** What `GET /api/v1/signup` answers: whether this deployment has a front door.
+ *
+ *  A single-tenant install leaves `enabled` false — the default — and the
+ *  landing page offers sign-in only. */
+export interface SignupOffer {
+  enabled: boolean;
+  /** The plan a sign-up lands on. Free, and pinned server-side. */
+  plan: string;
+  trial_days: number;
+  note: string;
+}
+
+/** One thing a new organization has or has not done.
+ *
+ *  `detail` is always populated, and that is the field worth reading: "not
+ *  done" without a reason is what sends somebody to the wrong screen. `route`
+ *  is a path from `route.ts`, so a step links to the screen that completes it. */
+export interface OnboardingStep {
+  key: "connect" | "history" | "policy" | "team";
+  title: string;
+  detail: string;
+  done: boolean;
+  /** False for the two steps a working platform does not need — a team, and a
+   *  margin policy of one's own. They are worth doing and must not make the
+   *  setup panel permanent. */
+  required: boolean;
+  route: string;
+}
+
+export interface OnboardingView {
+  steps: OnboardingStep[];
+  /** Every *required* step is done. What the panel keys off. */
+  complete: boolean;
+  remaining: number;
+  remaining_required: number;
+}
+
 /** One entry in a decision's human trail.
  *
  *  `actor_name` is recorded at the moment of the action rather than resolved on
@@ -911,6 +948,30 @@ export interface NewConnectionInput {
   refresh_token?: string;
   accounts_base?: string;
   api_base?: string;
+}
+
+/* ── OAuth authorization flow ───────────────────────────────────────────────── */
+export interface AuthorizeResponse {
+  authorization_url: string;
+  state_token: string;
+  expires_in_seconds: number;
+}
+
+export interface ZohoOrganization {
+  organization_id: string;
+  name: string;
+  currency: string;
+}
+
+export interface OAuthCallbackResponse {
+  organizations: ZohoOrganization[];
+  credential_id: string;
+}
+
+export interface SelectOrgRequest {
+  credential_id: string;
+  zoho_organization_id: string;
+  label?: string;
 }
 
 

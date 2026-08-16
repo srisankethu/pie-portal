@@ -35,6 +35,20 @@ always wins over it**. All values have defaults that work for local development.
 | `DEFAULT_ORG_NAME` | `PIE` | Display name for the default organization. |
 | `DEFAULT_CURRENCY` | `INR` | Reporting currency. |
 
+### Plans and sign-up
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `DEFAULT_PLAN` | `platform` | The plan an organization is on when its own row does not say. Defaults to the widest so an existing single-tenant deployment keeps every feature it has; a hosted deployment sets `free` and upgrades explicitly with `python -m app.entitlements set-plan`. An unrecognised value resolves to `free` and logs. |
+| `INTELLIGENCE_TRIAL_DAYS` | `30` | Length of the free Commercial Intelligence month. Keyed to the **connected Zoho books**, not to the platform organization, so a second sign-up with a second address does not buy a second trial. |
+| `SELF_SERVE_SIGNUP` | `0` | Whether anyone who can reach this deployment may create a tenant for themselves (`POST /api/v1/signup`). **Off by default, deliberately** — it is the only unauthenticated endpoint here that writes, so an existing install that pulls new code must not silently start accepting strangers. Turning it on also makes the landing page's "Get started free" lead to a sign-up form instead of the sign-in card. |
+| `SIGNUP_RATE_LIMIT_PER_HOUR` | `5` | Sign-ups accepted per client address per hour. A speed bump, not a control: the counter is in one process's memory, does not survive a restart, is not shared between workers, and behind the reverse proxy in `deploy/` it sees the proxy rather than the client — so it limits globally there. What it buys is that hashing a password (240,000 PBKDF2 rounds, by design) cannot be used as a CPU amplifier. `0` disables it. Put a real limiter in front of the app if you expect real abuse. |
+
+A self-serve sign-up lands on **free**, whatever `DEFAULT_PLAN` says — pinned in
+`onboarding.SIGNUP_PLAN`, because `DEFAULT_PLAN` defaults to `platform` and
+inheriting it would hand the top tier to anyone who can reach the form. There
+is deliberately no API that changes a plan; that stays an operator command.
+
 ### Zoho
 
 Only `ZOHO_SOURCE` and the pull-behaviour settings below are process-wide. Every

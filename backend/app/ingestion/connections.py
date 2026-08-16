@@ -22,6 +22,7 @@ keeps working with no migration step required of it.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
@@ -33,6 +34,8 @@ from .. import crypto
 from ..config import settings
 from ..domain import models
 from .zoho_client import ZohoCredentials
+
+log = logging.getLogger("pie_portal.connections")
 
 #: The connector name every Zoho pull records itself under (``sync.SyncService``).
 ZOHO_CONNECTOR = "zoho"
@@ -412,8 +415,35 @@ def add_connection(session: Session, organization_id: str, *, credential_id: str
     # fresh organization finds the trial already spent (see IntelligenceTrial).
     if existing is None:
         from .. import entitlements
+        from ..attribution import capture_baseline
 
-        entitlements.begin_trial(session, organization_id, zoho_organization_id)
+        trial = entitlements.begin_trial(session, organization_id,
+                                         zoho_organization_id)
+        # "Better" needs a "before", and the only moment the before-window is
+        # unambiguous is the moment the trial starts. Captured in the caller's
+        # transaction — no commit here — so a connection is one atomic act.
+        #
+        # It will usually be captured *empty*, because nothing has synced yet at
+        # first connect. That is the intended behaviour rather than a gap in it:
+        # the baseline names its own missing evidence, the report then says the
+        # comparison is unavailable instead of drawing one against a thin window,
+        # and a later recompute rewrites the row in place. The trial row it
+        # points at is the entitlement fact and is never rewritten, which is why
+        # the two are separate tables.
+        if trial is not None:
+            try:
+                # A savepoint, for the same reason ``begin_trial`` is documented
+                # as never raising: connecting a company must not fail because a
+                # measurement over it could not be taken. Without one, a rolled
+                # back statement would poison the caller's transaction and take
+                # the connection down with it.
+                with session.begin_nested():
+                    capture_baseline(session, organization_id, trial)
+            except Exception:  # noqa: BLE001 - a baseline is never worth a 500
+                log.exception(
+                    "baseline capture failed org=%s trial=%s — the trial stands "
+                    "and the report will name the missing baseline",
+                    organization_id, trial.trial_id)
     return row
 
 

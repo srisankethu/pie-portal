@@ -135,6 +135,16 @@ EXPORTED: tuple[tuple[str, Any], ...] = (
     ("quote_decisions", models.QuoteDecision),
     ("quote_outcomes", models.QuoteOutcome),
     ("outcomes", models.Outcome),
+    # What the platform was measured to be worth, and what the business looked
+    # like before it. Exported alongside the quote decisions they are computed
+    # from, and deliberately not excluded as "derived": a value event carries
+    # the operands and the evidence refs behind each amount, so it is the only
+    # record of *why* a figure was claimed — and a departing customer arguing
+    # about what they were charged for wants exactly that. The baseline is the
+    # same rows read once, and an export holding the outcome without the
+    # starting point hands back a comparison with one side missing.
+    ("value_events", models.ValueEvent),
+    ("evaluation_baselines", models.EvaluationBaseline),
     # ── the identity graph ──────────────────────────────────────────────────
     ("customer_identities", models.CustomerIdentity),
     ("customer_connector_records", models.CustomerConnectorRecord),

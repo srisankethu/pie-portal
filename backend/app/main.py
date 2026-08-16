@@ -187,7 +187,7 @@ app.add_middleware(
 )
 
 # Observability instrumentation: metrics, logging, health checks.
-from .observability.instrumentation import api_instrumentation_middleware, instrument_database
+from .observability.instrumentation import api_instrumentation_middleware
 app.add_middleware(api_instrumentation_middleware)
 
 # Commercial Decision Platform (Phase 1 foundation).

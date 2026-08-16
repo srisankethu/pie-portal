@@ -203,3 +203,19 @@ def test_a_cross_namespace_ambiguity_is_not_an_exact_record(monkeypatch):
 
     monkeypatch.setattr(index, "lookup_material", lambda _key: _Ambiguity())
     assert pie_service.lookup_record("2001174") is None
+
+
+def test_a_failed_pack_read_is_not_memoized(monkeypatch, tmp_path):
+    """A pack fetched after boot must be seen on the next call: a memoized
+    failure would keep refusing family edits until a restart, for a problem
+    that has already been fixed. Only a successful read is cached."""
+    import app.pie_service as ps
+
+    real_pack = ps.settings.PIE_PACK
+    monkeypatch.setattr(ps, "_families_memo", ps._FAMILIES_UNREAD)
+    monkeypatch.setattr(ps.settings, "PIE_PACK", tmp_path / "nowhere")
+    assert ps.pack_families() is None          # unreadable → the honest answer…
+
+    monkeypatch.setattr(ps.settings, "PIE_PACK", real_pack)
+    families = ps.pack_families()              # …and not a remembered one
+    assert families, "the pack became readable and the next call must see it"

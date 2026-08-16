@@ -20,7 +20,6 @@ import logging
 import sys
 import threading
 from dataclasses import dataclass, field
-from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -153,7 +152,14 @@ def _read_catalog_version(path: Optional[Path]) -> str:
     return ""
 
 
-@lru_cache(maxsize=1)
+#: ``pack_families``' memo. A sentinel rather than ``None`` because ``None``
+#: is a real answer ("no pack readable") — and deliberately not a cached one:
+#: a pack fetched after boot must be seen on the next call, or every family
+#: edit stays refused until a restart for a failure that has been fixed.
+_FAMILIES_UNREAD = object()
+_families_memo: Any = _FAMILIES_UNREAD
+
+
 def pack_families() -> Optional[tuple]:
     """The family vocabulary the configured pack declares, or None without a pack.
 
@@ -170,10 +176,15 @@ def pack_families() -> Optional[tuple]:
     "every name is fine"; ``commercial.policy.save_for_org`` refuses a family
     edit outright in that state rather than waving it through.
 
-    Cached for the life of the process, like the catalogue: the pack is loaded
-    once and never reloaded, so re-reading the manifest could only ever
-    disagree with the engine that is already running.
+    A successful read is cached for the life of the process, like the
+    catalogue: the pack is loaded once and never reloaded, so re-reading the
+    manifest could only ever disagree with the engine already running. A
+    *failed* read is not cached — the pack may be fetched after boot, and a
+    memoized failure would keep refusing family edits until a restart.
     """
+    global _families_memo
+    if _families_memo is not _FAMILIES_UNREAD:
+        return _families_memo
     try:
         root = str(settings.PIE_PARSER_ROOT)
         if root not in sys.path:
@@ -183,7 +194,8 @@ def pack_families() -> Optional[tuple]:
 
         manifest = settings.PIE_PACK / "manifest.yaml"
         doc = yaml.safe_load(manifest.read_text(encoding="utf-8"))
-        return families_from_config(doc, source=str(manifest))
+        _families_memo = families_from_config(doc, source=str(manifest))
+        return _families_memo
     except Exception:  # noqa: BLE001 — an absent pack must not 500 a policy save
         log.warning("PIE pack manifest unreadable; no family vocabulary to "
                     "validate against", exc_info=True)

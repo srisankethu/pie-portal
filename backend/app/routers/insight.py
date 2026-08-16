@@ -4628,9 +4628,20 @@ def self_funding(principal: Principal = Depends(require_owner),
     answers the same question the lines do — the argument `insight/series` makes
     at length, and the reason there is no bucketing in this function.
     """
-    rows, _names, _as_of, _folded = _flow_rows(session, principal)
     org = principal.organization_id
     th = policy.load_for_org(session, org)
+
+    # The reading folds retained profit over *statutory* financial years —
+    # fy_of/fy_bounds, India's April calendar — so it is jurisdictional
+    # exactly like the statute screens above and gates the same way. The
+    # calendar is the dependency here, not the statutes themselves.
+    refusal = _statute_refusal(session, org, jurisdiction.calendar_refusal)
+    if refusal is not None:
+        return _statute_refused(refusal, th=th, empty={
+            "verdict": "UNKNOWN", "confirmed": False, "financial_year": None,
+            "missing_entities": [], "confirmed_years": []})
+
+    rows, _names, _as_of, _folded = _flow_rows(session, principal)
 
     # Only the companies that have actually traded. A connection added this
     # morning has no accounts to close and no revenue in the year, and waiting

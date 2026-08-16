@@ -428,3 +428,68 @@ def test_rotation_no_longer_has_a_second_home(client):
     gone = client.post(f"/api/v1/data/credentials/{credential_id}/rotate",
                        headers=_hdr(client), json={"refresh_token": "x"})
     assert gone.status_code == 404
+
+
+# ── the check records the country the statutory screens gate on ─────────────
+def _reached_with_country(monkeypatch, country):
+    _reached(monkeypatch)
+    monkeypatch.setattr(cr.ZohoApiSource, "ping", lambda self: {
+        "organization_found": True, "organization_name": "4U PRECISION",
+        "currency": "INR", "time_zone": "Asia/Kolkata", "country": country,
+        "visible_organizations": [
+            {"organization_id": "60036630626", "name": "4U PRECISION"}]})
+
+
+def _org_country(client):
+    from app.config import settings
+    from app.domain import models
+    s = client.Maker()
+    try:
+        return s.get(models.Organization, settings.DEFAULT_ORG_ID).country
+    finally:
+        s.close()
+
+
+def _set_org_country(client, value):
+    from app.config import settings
+    from app.domain import models
+    s = client.Maker()
+    s.get(models.Organization, settings.DEFAULT_ORG_ID).country = value
+    s.commit()
+    s.close()
+
+
+def test_a_check_fills_an_unset_country_from_zohos_profile(client, monkeypatch):
+    """The statutory screens gate on ``Organization.country`` and this fill is
+    the product's one writer for it — without it, the gate's refusal names a
+    fix nobody can perform anywhere in the product."""
+    _set_org_country(client, None)  # a real tenant that predates the column
+    cid = _add(client).json()["connection_id"]
+    _reached_with_country(monkeypatch, "India")
+
+    assert client.post(f"/api/v1/connections/{cid}/check",
+                       headers=_hdr(client)).json()["ok"] is True
+    assert _org_country(client) == "IN"
+
+
+def test_a_recorded_country_is_never_overwritten_by_a_check(client, monkeypatch):
+    """Filled in, never overwritten — the same contract as the timezone above
+    it: an owner who set it meant it."""
+    _set_org_country(client, "AE")
+    cid = _add(client).json()["connection_id"]
+    _reached_with_country(monkeypatch, "India")
+
+    client.post(f"/api/v1/connections/{cid}/check", headers=_hdr(client))
+    assert _org_country(client) == "AE"
+
+
+def test_an_unplaceable_country_label_leaves_the_column_alone(client, monkeypatch):
+    """Only an exact placement writes: a mis-placed country would turn the
+    jurisdiction gate's refusal into a confidently wrong answer, which is the
+    one trade §1 forbids."""
+    _set_org_country(client, None)
+    cid = _add(client).json()["connection_id"]
+    _reached_with_country(monkeypatch, "Republic of Somewhere")
+
+    client.post(f"/api/v1/connections/{cid}/check", headers=_hdr(client))
+    assert _org_country(client) is None

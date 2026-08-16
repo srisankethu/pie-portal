@@ -472,6 +472,10 @@ class ZohoTransport:
             # Zoho knows which zone the books are kept in; asking the operator
             # to type it again is asking them to get it wrong.
             "time_zone": (match or {}).get("time_zone"),
+            # And which country they are kept in — the statutory screens gate
+            # on it (commercial/jurisdiction), and Zoho states it on the same
+            # organization profile the zone comes from.
+            "country": (match or {}).get("country"),
             "visible_organizations": [
                 {"organization_id": str(o.get("organization_id")), "name": o.get("name")}
                 for o in orgs

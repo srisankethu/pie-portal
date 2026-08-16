@@ -82,6 +82,34 @@ def normalize(country: Optional[str]) -> Optional[str]:
     return code or None
 
 
+#: Country labels a connected ERP reports, mapped to alpha-2. Zoho states the
+#: organization's country as a display name ("India"), not a code, and this
+#: table places only labels it can place *exactly* — an unknown label maps to
+#: nothing, the column stays NULL, and the gate keeps refusing. Guessing here
+#: would turn a refusal into a wrong answer, which is the trade §1 forbids.
+_LABELS: dict[str, str] = {
+    "IN": "IN", "INDIA": "IN",
+    "AE": "AE", "UAE": "AE", "UNITED ARAB EMIRATES": "AE",
+    "US": "US", "USA": "US", "UNITED STATES": "US",
+    "UNITED STATES OF AMERICA": "US",
+    "GB": "GB", "UK": "GB", "UNITED KINGDOM": "GB",
+    "SG": "SG", "SINGAPORE": "SG",
+    "SA": "SA", "SAUDI ARABIA": "SA",
+    "DE": "DE", "GERMANY": "DE",
+}
+
+
+def alpha2_from_label(label: Optional[str]) -> Optional[str]:
+    """The alpha-2 code a reported country label places to, or ``None``.
+
+    Exact matches only, after trimming, upper-casing and dropping dots
+    ("U.A.E." places; "Republic of India" does not). ``None`` means "could not
+    place", never "no country" — the caller leaves the column alone.
+    """
+    key = (label or "").strip().upper().replace(".", "")
+    return _LABELS.get(key)
+
+
 def for_country(country: Optional[str]) -> Optional[Jurisdiction]:
     """The jurisdiction on file for a country code.
 
@@ -108,7 +136,8 @@ def _refusal(country: Optional[str], statute: str,
         return (f"This organization's country is not set, so {statute} cannot "
                 f"be applied — a statute is the law of one country, and an "
                 f"unknown country is not India. Record the organization's "
-                f"country (ISO 3166-1 alpha-2, e.g. IN) to enable this screen.")
+                f"country to enable this screen: running a check on a Zoho "
+                f"connection fills it from that organization's own profile.")
     jurisdiction = SUPPORTED.get(code)
     if jurisdiction is None:
         return (f"Statutory rules for {code} are not supported — India (IN) is "
@@ -130,3 +159,17 @@ def withholding_refusal(country: Optional[str]) -> Optional[str]:
     """Why the 194Q withholding screen cannot answer, or ``None``."""
     return _refusal(country, "the purchase-withholding rules",
                     lambda j: j.withholding_applies)
+
+
+def calendar_refusal(country: Optional[str]) -> Optional[str]:
+    """Why a screen folded over the statutory financial year cannot answer.
+
+    The FY calendar is jurisdictional the same way the statutes are: April to
+    March is India's year, not a universal one. A screen that buckets money
+    into ``FY2026-27`` periods for a tenant those periods do not govern is the
+    same confidently-wrong output the statute screens refused — so anything
+    reading ``fy_of``/``fy_bounds`` gates here first. Every supported
+    jurisdiction has a calendar, so only "not set" and "not supported" refuse.
+    """
+    return _refusal(country, "the statutory financial-year calendar",
+                    lambda j: True)

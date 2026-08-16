@@ -278,3 +278,49 @@ def test_the_country_migration_applies_to_an_empty_database(tmp_path):
                for c in inspect(create_engine(f"sqlite:///{db}"))
                .get_columns("organizations")}
     assert "country" in columns
+
+
+# ── the calendar route the first gate pass missed ───────────────────────────
+OWNER = "s.menon@pie.example"
+
+
+def test_self_funding_is_gated_on_the_statutory_calendar(session):
+    """``/self-funding`` folds retained profit over ``fy_of``/``fy_bounds`` —
+    India's April year — so it is jurisdictional exactly like the statute
+    screens, and refuses the same way. The calendar is the dependency here,
+    not the statutes; the review that added the gate found this route still
+    bucketing any tenant's money into Indian FY periods."""
+    client, token = _api(session)
+    _set_country(session, "US")
+
+    body = client.get("/api/v1/insight/self-funding", headers=token(OWNER)).json()
+
+    assert body["jurisdiction_supported"] is False
+    assert body["confirmed"] is False
+    assert body["verdict"] == "UNKNOWN"
+    assert "US" in body["blocked_by"] and "not supported" in body["blocked_by"]
+    assert body["empty_reason"] == body["blocked_by"]
+
+
+def test_self_funding_refuses_with_no_country_too(session):
+    client, token = _api(session)
+    _set_country(session, None)
+
+    body = client.get("/api/v1/insight/self-funding", headers=token(OWNER)).json()
+
+    assert body["jurisdiction_supported"] is False
+    assert "country is not set" in body["blocked_by"]
+
+
+def test_an_indian_tenant_still_sees_self_funding(session):
+    """The gate must cost an Indian tenant nothing: the ordinary envelope —
+    here the module's own "confirm retained profit" refusal, since no figures
+    are confirmed — comes back exactly as before, with no jurisdiction key."""
+    client, token = _api(session)
+    _set_country(session, "IN")
+
+    body = client.get("/api/v1/insight/self-funding", headers=token(OWNER)).json()
+
+    assert "jurisdiction_supported" not in body
+    assert body["verdict"] == "UNKNOWN" and body["confirmed"] is False
+    assert "country" not in (body.get("blocked_by") or "")

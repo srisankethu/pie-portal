@@ -22,7 +22,7 @@ from .pie_service import pie_service
 from .routers import (accounts, admin, ai_settings, approvals, attribution,
                       commercial, connections, data_status,
                       decisions, entitlements, identity, internal,
-                      onboarding, platform_auth, quote,
+                      onboarding, outcomes, platform_auth, quote,
                       insight, quote_intelligence, quote_support, trust)
 
 logging.basicConfig(level=logging.INFO)
@@ -220,6 +220,11 @@ app.include_router(internal.router)
 # visible declaration rather than a check sprinkled through the routers; the
 # routes inside stay role-scoped exactly as before.
 app.include_router(decisions.router,
+                   dependencies=[Depends(plan.require_feature("intelligence"))])
+# The afterlife of an accepted decision card — realised outcomes. Gated with
+# the queue it measures: an outcome is derived from a decision, so it cannot be
+# the one intelligence surface a free plan can read.
+app.include_router(outcomes.router,
                    dependencies=[Depends(plan.require_feature("intelligence"))])
 app.include_router(quote_support.router)
 app.include_router(accounts.router)

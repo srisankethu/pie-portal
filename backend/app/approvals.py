@@ -304,6 +304,15 @@ def _settle_escalated_decision(session: Session, request: models.ApprovalRequest
         return
     if status is ApprovalStatus.APPROVED:
         decision.status = DecisionStatus.ACTIONED.value
+        # The second acceptance path. An escalated decision approved by
+        # management is accepted just as surely as one actioned directly, and
+        # the Outcome Tracker must not depend on which door it came through.
+        # Same capture function as `DecisionRepository.record_human_action`;
+        # the approver is the accepting human here.
+        from .commercial.outcome_tracker import capture_on_accept
+
+        capture_on_accept(session, decision,
+                          accepted_by_user_id=request.decided_by_user_id)
     elif status is ApprovalStatus.REJECTED:
         decision.status = DecisionStatus.DISMISSED.value
         decision.override_reason = request.decision_note

@@ -289,9 +289,29 @@ GATE_REJECTION_REASONS = frozenset({
 
 
 class OutcomeStatus(str, Enum):
+    """How the evaluation of an accepted decision's realised impact stands.
+
+    The Outcome Tracker's vocabulary (``commercial/outcome_tracker.py``).
+    Three states, and the third is the load-bearing one:
+
+    - ``PENDING`` — the evaluation horizon has not elapsed. Nothing is
+      asserted, in either direction.
+    - ``REALISED`` — the horizon has passed and the same metrics the signal
+      carried were recomputed from persisted rows over the post-decision
+      window; the delta is a measurement.
+    - ``UNKNOWN`` — the horizon has passed but the evidence needed is missing,
+      and the evaluation names exactly what is missing. Never a benign default
+      (§1): a snapshot with no cost record behind it yields UNKNOWN, not a
+      margin fabricated from partial rows.
+
+    This enum predates the tracker (spec §8 reserved it, nothing ever read or
+    wrote it); its unused MEASURED/NOT_MEASURABLE members were renamed to the
+    tracker's vocabulary rather than shipping a second enum for the same fact.
+    """
+
     PENDING = "PENDING"
-    MEASURED = "MEASURED"
-    NOT_MEASURABLE = "NOT_MEASURABLE"
+    REALISED = "REALISED"
+    UNKNOWN = "UNKNOWN"
 
 
 class ApprovalKind(str, Enum):

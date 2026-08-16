@@ -1235,6 +1235,18 @@ class DecisionRepository:
                 decision.status = DecisionStatus.VIEWED.value
         elif action is HumanAction.ACT:
             decision.status = DecisionStatus.ACTIONED.value
+            # Snapshot-on-accept: freeze the signal's own evidence as the
+            # baseline the Outcome Tracker will later measure against. Here
+            # rather than in the router because this method *is* the decision
+            # lifecycle — every acceptance path flows through it or through
+            # `approvals._settle_escalated_decision`, and both call the one
+            # capture function. Function-level import: this module is imported
+            # before `commercial/` in several chains, and capture is only
+            # needed on the one transition.
+            from .commercial.outcome_tracker import capture_on_accept
+
+            capture_on_accept(self.s, decision,
+                              accepted_by_user_id=actor_user_id)
         elif action is HumanAction.DISMISS:
             decision.status = DecisionStatus.DISMISSED.value
             decision.override_reason = reason

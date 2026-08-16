@@ -146,6 +146,11 @@ EXPORTED: tuple[tuple[str, Any], ...] = (
     ("quote_decisions", models.QuoteDecision),
     ("quote_outcomes", models.QuoteOutcome),
     ("outcomes", models.Outcome),
+    # The baseline frozen when a recommendation was accepted. Exported rather
+    # than excluded as "derived": the whole point of the capture is that a
+    # re-sync *cannot* rebuild what the evidence looked like at the moment of
+    # acceptance, so this table is the only record of what a human said yes to.
+    ("outcome_snapshots", models.OutcomeSnapshot),
     # What the platform was measured to be worth, and what the business looked
     # like before it. Exported alongside the quote decisions they are computed
     # from, and deliberately not excluded as "derived": a value event carries

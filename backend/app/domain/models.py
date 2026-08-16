@@ -1695,6 +1695,78 @@ class Outcome(Base):
     decision: Mapped["Decision"] = relationship()
 
 
+class OutcomeSnapshot(Base):
+    """What was true at the moment a recommendation was accepted — frozen.
+
+    Written once by ``commercial.outcome_tracker.capture_on_accept`` when a
+    signal-derived decision is accepted, and never updated: the baseline a
+    realised delta is measured against must be the one that was in force when
+    the human said yes, not whatever a later re-sync recomputed. Evaluation is
+    *derived* — ``commercial.outcome_tracker.evaluate`` recomputes the realised
+    position from ``SalesTxn``/``CostRecord`` rows on read — so nothing here
+    ever needs correcting in place.
+
+    Not a widening of ``Outcome`` above, deliberately. That table models a
+    recorded *measurement* (``measured_metrics``, ``impact``, a mutable
+    ``status``) and has never been written; this one models the *baseline* the
+    measurement will one day be made against. One table holding both would hold
+    two lifecycles — the same reason ``EvaluationBaseline`` is not columns on
+    ``IntelligenceTrial``.
+
+    ``thresholds_version`` is copied **verbatim** from the signal's own
+    ``threshold_config_version`` — ``th_…`` for engine signals, ``ci_…`` for
+    Customer × Item signals. The two stamps are different hashes over different
+    policies; this column records whichever one actually judged the signal and
+    must never be read as the other.
+
+    ``horizon_days`` stores the literal number of days, not a pointer into the
+    horizon config: the value in force at acceptance is what the evaluation
+    window is built from, and a later config edit must not move a window that
+    somebody's acceptance already anchored.
+
+    ``baseline_metrics`` for the restricted categories embeds cost and margin
+    figures. The router omits those fields server-side for a salesperson —
+    absent from the response, not hidden in the browser (§1).
+    """
+
+    __tablename__ = "outcome_snapshots"
+    __table_args__ = (
+        # One snapshot per decision. Accept → reopen → accept again keeps the
+        # first baseline: the horizon is anchored at the first acceptance, and
+        # a second row would be a second claim about one recommendation.
+        UniqueConstraint("decision_id", name="uq_outcome_snapshot_decision"),
+        Index("ix_outcome_snapshots_org_category", "organization_id", "category"),
+        Index("ix_outcome_snapshots_org_accepted", "organization_id", "accepted_at"),
+    )
+
+    outcome_snapshot_id: Mapped[str] = mapped_column(String(64), primary_key=True,
+                                                     default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    decision_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("decisions.decision_id"))
+    #: The signal whose evidence the baseline was read from. Non-null by
+    #: construction: v1 captures only signal-derived decisions (a STATE
+    #: decision has no signal baseline to freeze, and quantifies impact through
+    #: different machinery).
+    signal_id: Mapped[str] = mapped_column(String(64), index=True)
+    #: The signal's type — CUSTOMER_DECLINE, MARGIN_DETERIORATION, … — which is
+    #: what selects the evaluator and the default horizon.
+    category: Mapped[str] = mapped_column(String(48), index=True)
+    subject_entity_type: Mapped[str] = mapped_column(String(32))
+    subject_entity_id: Mapped[str] = mapped_column(String(64), index=True)
+    #: The signal's ``metrics``, copied whole. This is the baseline later
+    #: evaluation compares against, kept even if the signal row is ever erased.
+    baseline_metrics: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    #: The signal's ``window`` — which periods the baseline was measured over,
+    #: so a realised figure can say whether its window is comparable.
+    baseline_window: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    thresholds_version: Mapped[str] = mapped_column(String(32), default="")
+    horizon_days: Mapped[int] = mapped_column(Integer)
+    accepted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    accepted_by_user_id: Mapped[Optional[str]] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
 # ── Value attribution ────────────────────────────────────────────────────────
 #
 # What the platform is worth to the business, measured rather than asserted.

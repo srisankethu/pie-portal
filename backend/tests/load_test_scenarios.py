@@ -23,7 +23,6 @@ import random
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta
 from typing import Callable, Optional
 
 import pytest
@@ -119,14 +118,15 @@ class LoadTestRunner:
                 self.metrics.record_request(latency, success=True)
                 request_count += 1
             except Exception as e:
-                log.warning(f"User {user_id} request failed: {e}")
+                log.warning("User %s request failed: %s", user_id, e)
                 self.metrics.record_request(0, success=False)
 
-        log.info(f"User {user_id} completed {request_count} requests")
+        log.info("User %s completed %s requests", user_id, request_count)
 
     def run(self, operation: Callable[[str, int], None]) -> dict:
         """Run load test with multiple concurrent users."""
-        log.info(f"Starting load test: {self.config.num_users} users for {self.config.duration_seconds}s")
+        log.info("Starting load test: %s users for %ss",
+                 self.config.num_users, self.config.duration_seconds)
 
         with ThreadPoolExecutor(max_workers=self.config.num_users) as executor:
             futures = []
@@ -139,7 +139,7 @@ class LoadTestRunner:
                 try:
                     future.result()
                 except Exception as e:
-                    log.error(f"User thread failed: {e}")
+                    log.error("User thread failed: %s", e)
 
         self.metrics.finish()
         return self.metrics.summary()
@@ -167,25 +167,21 @@ class NormalUsageScenario:
         # This would be an actual API call in a real test
         query = random.choice(["drill", "insert", "holder", "tool"])
         # GET /api/v1/search/products?q={query}
-        pass
 
     @staticmethod
     def view_customer(org_id: str, user_id: int) -> None:
         """Simulate viewing customer details."""
         # GET /api/v1/commercial/customers/{id}
-        pass
 
     @staticmethod
     def view_decision(org_id: str, user_id: int) -> None:
         """Simulate viewing decision detail."""
         # GET /api/v1/decisions/{id}/detail
-        pass
 
     @staticmethod
     def list_decisions(org_id: str, user_id: int) -> None:
         """Simulate listing decisions."""
         # GET /api/v1/decisions?limit=20
-        pass
 
 
 class HeavyQuoteWorkloadScenario:
@@ -202,19 +198,16 @@ class HeavyQuoteWorkloadScenario:
     def create_quote(org_id: str, user_id: int) -> None:
         """Create a new quote."""
         # POST /api/quotes
-        pass
 
     @staticmethod
     def parse_intake(org_id: str, user_id: int) -> None:
         """Parse RFQ text."""
         # POST /api/quotes/{id}/intake
-        pass
 
     @staticmethod
     def resolve_supply(org_id: str, user_id: int) -> None:
         """Resolve product via pie-parser."""
         # POST /api/quotes/{id}/set-supply
-        pass
 
 
 class HeavyAnalyticsScenario:
@@ -231,19 +224,16 @@ class HeavyAnalyticsScenario:
     def insight_revenue_flow(org_id: str, user_id: int) -> None:
         """Load revenue flow analytics."""
         # GET /api/v1/insight/revenue-flow
-        pass
 
     @staticmethod
     def insight_opportunities(org_id: str, user_id: int) -> None:
         """Load opportunities analytics."""
         # GET /api/v1/insight/opportunities
-        pass
 
     @staticmethod
     def insight_weather(org_id: str, user_id: int) -> None:
         """Load weather analytics."""
         # GET /api/v1/insight/weather
-        pass
 
 
 class DataSyncScenario:
@@ -255,7 +245,6 @@ class DataSyncScenario:
     def sync_data(org_id: str, user_id: int) -> None:
         """Trigger Zoho sync."""
         # POST /api/v1/data/sync
-        pass
 
 
 class MixedWorkloadScenario:
@@ -298,7 +287,7 @@ class TestLoadScenarios:
             op(org_id, user_id)
 
         summary = runner.run(operation)
-        log.info(f"Normal Usage Results: {json.dumps(summary, indent=2)}")
+        log.info("Normal Usage Results: %s", json.dumps(summary, indent=2))
 
         # Assertions based on expected performance
         assert summary["error_rate"] < 5, "Error rate should be < 5%"
@@ -319,7 +308,7 @@ class TestLoadScenarios:
             op(org_id, user_id)
 
         summary = runner.run(operation)
-        log.info(f"Heavy Quote Results: {json.dumps(summary, indent=2)}")
+        log.info("Heavy Quote Results: %s", json.dumps(summary, indent=2))
 
         assert summary["error_rate"] < 10, "Error rate should be < 10%"
 
@@ -337,7 +326,7 @@ class TestLoadScenarios:
             op(org_id, user_id)
 
         summary = runner.run(operation)
-        log.info(f"Heavy Analytics Results: {json.dumps(summary, indent=2)}")
+        log.info("Heavy Analytics Results: %s", json.dumps(summary, indent=2))
 
         assert summary["error_rate"] < 15, "Error rate should be < 15%"
         # Analytics queries can be slow
@@ -350,13 +339,13 @@ class TestLoadScenarios:
         runner = LoadTestRunner(config)
 
         summary = runner.run(MixedWorkloadScenario.random_operation)
-        log.info(f"Mixed Workload Results: {json.dumps(summary, indent=2)}")
+        log.info("Mixed Workload Results: %s", json.dumps(summary, indent=2))
 
         assert summary["error_rate"] < 10, "Error rate should be < 10%"
         assert summary["requests_per_second"] > 0, "Should have requests/sec"
 
         # Print metrics for manual inspection
-        print(f"\nMixed Workload Summary:")
+        print("\nMixed Workload Summary:")
         print(f"  Duration: {summary['duration_seconds']:.1f}s")
         print(f"  Requests: {summary['total_requests']}")
         print(f"  Errors: {summary['failed_requests']}")

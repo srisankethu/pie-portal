@@ -11,7 +11,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from enum import Enum
-from typing import Any, Optional
+from typing import Optional
 
 from .metrics import metrics
 
@@ -77,7 +77,13 @@ jobs_failed = metrics.counter("jobs_failed_total", "Total jobs failed")
 jobs_duration = metrics.histogram("job_duration_seconds", "Job execution duration")
 jobs_active = metrics.gauge("jobs_active", "Active jobs")
 jobs_retried = metrics.counter("jobs_retried_total", "Total job retries")
-records_processed = metrics.counter("records_processed_total", "Total records processed")
+# Suffixed to match its metric name, and *not* called `records_processed`: that
+# is also the name of `update_job`'s parameter, and the parameter shadowed the
+# counter for the whole function body — so the one line that recorded it raised
+# `'int' object has no attribute 'inc'` and took the job update down with it.
+# The exported metric name is unchanged; only the module-level binding moved.
+records_processed_total = metrics.counter("records_processed_total",
+                                          "Total records processed")
 
 syncs_started = metrics.counter("syncs_started_total", "Total syncs started")
 syncs_completed = metrics.counter("syncs_completed_total", "Total syncs completed")
@@ -155,7 +161,8 @@ class WorkloadTracker:
         if status == JobStatus.COMPLETED:
             jobs_completed.inc(labels={"job_type": metric.job_type})
             jobs_duration.observe(metric.duration_seconds or 0, labels={"job_type": metric.job_type})
-            records_processed.inc(metric.records_processed, labels={"job_type": metric.job_type})
+            records_processed_total.inc(metric.records_processed,
+                                        labels={"job_type": metric.job_type})
             jobs_active.dec()
         elif status == JobStatus.FAILED:
             jobs_failed.inc(labels={"job_type": metric.job_type})

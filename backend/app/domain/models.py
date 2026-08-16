@@ -33,6 +33,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -1680,6 +1681,149 @@ class Outcome(Base):
     recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
     decision: Mapped["Decision"] = relationship()
+
+
+# ── Value attribution ────────────────────────────────────────────────────────
+#
+# What the platform is worth to the business, measured rather than asserted.
+# ``Outcome`` above cannot carry this: its ``decision_id`` is non-nullable, so
+# it can only ever describe value that arrived through a decision card — and
+# most of the money this platform touches moves on the Quote Desk, which writes
+# ``QuoteDecision`` rows and no decision at all. Widening ``Outcome`` to make
+# that FK optional would leave one table with two meanings and a nullable join
+# that no query could safely assume either way.
+
+
+class ValueEvent(Base):
+    """One measured rupee outcome, tied to the evidence that establishes it.
+
+    Append-only, like ``QuoteDecision`` and for the same reason: this is the
+    ledger a renewal conversation is argued from, and a row that can be edited
+    afterwards proves nothing. A superseded event is superseded by a *new* row,
+    never by an update.
+
+    ``event_key`` is unique per organization because double counting is the
+    failure mode this table exists to survive. A rollup that runs twice, a
+    detector re-run after a re-sync, a quote whose outcome is recorded again —
+    each is an ordinary occurrence, and each would otherwise inflate the total
+    the business is being asked to pay against. The key is derived from
+    (event_type, evidence identity), so recording the same fact twice is a no-op
+    at the *database* level rather than a code path that has to remember. This
+    is the ``Decision.decision_key`` idiom (``uq_decision_key``) applied to
+    money, where getting it wrong is not a duplicate card but a false claim.
+
+    ``amount`` is nullable and that is not laxity. Some classes carry no money —
+    a counted intervention with no defensible rupee value must be recordable as
+    itself rather than as a zero, because zero is an *amount* and would sum. A
+    line whose ``unit_cost`` is missing produces no event here at all; absence of
+    evidence is UNKNOWN, never a benign zero (§1).
+
+    ``basis`` holds the operands the amount was computed from — the floor price,
+    the final price, the quantity — so the drill-down can re-derive the number
+    instead of restating it. An event nobody can re-derive is an assertion, and
+    ``evidence_refs`` is the other half of that: it is never empty, because an
+    event that cannot name what it was computed from has nothing to defend.
+
+    All economics here are RESTRICTED. Attributed value on a quote line *is*
+    ``gross_profit`` arithmetic, so this surface never reaches a salesperson —
+    absent from the response, not hidden in the browser.
+    """
+
+    __tablename__ = "value_events"
+    __table_args__ = (
+        # Unique over the *live* rows only. A plain unique constraint was wrong
+        # once supersession existed: correcting a measurement writes a second row
+        # with the same key, and the constraint would refuse the correction. The
+        # partial index keeps the guarantee that matters — one live claim per
+        # fact — while letting the superseded ones stay as history.
+        #
+        # Both backends support partial indexes (SQLite since 3.8, Postgres
+        # always), so this needs no dialect branch beyond naming the predicate
+        # twice.
+        Index("uq_value_event_key_live", "organization_id", "event_key",
+              unique=True,
+              sqlite_where=text("superseded_at IS NULL"),
+              postgresql_where=text("superseded_at IS NULL")),
+        Index("ix_value_events_org_occurred", "organization_id", "occurred_at"),
+        Index("ix_value_events_org_class", "organization_id", "value_class"),
+        Index("ix_value_events_org_superseded", "organization_id", "superseded_at"),
+    )
+
+    value_event_id: Mapped[str] = mapped_column(String(64), primary_key=True,
+                                                default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+
+    # A ``ValueEventType``. What happened.
+    event_type: Mapped[str] = mapped_column(String(48), index=True)
+    # A ``ValueClass``. How strong the evidence is — and therefore which total
+    # this row is allowed to be added into. The classes never sum together.
+    value_class: Mapped[str] = mapped_column(String(16))
+    event_key: Mapped[str] = mapped_column(String(128))
+
+    amount: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
+    # Stored per row rather than assumed: the books are INR today, and a total
+    # that silently mixes currencies is worse than one that refuses to.
+    currency: Mapped[str] = mapped_column(String(8), default="INR")
+
+    basis: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    evidence_refs: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+
+    # When the *business fact* happened, which is not when this row was written.
+    # A rollup for last month must include an event detected today about a quote
+    # won three weeks ago, so every window query reads this column.
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    thresholds_version: Mapped[str] = mapped_column(String(32), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    #: Set when a later detection run measured this same fact differently — a
+    #: line repriced again, so the earlier amount is now an understatement. The
+    #: superseded row is kept and every rollup filters ``IS NULL``, which is what
+    #: makes a re-run correct the ledger instead of accumulating into it.
+    #:
+    #: This is the one stamp written to an existing row, and it is why the table
+    #: can still be called append-only: the *claim* is immutable, and this only
+    #: records that a newer claim replaced it. Without it, a stable event key
+    #: would freeze the first amount forever, and a changing key — which is what
+    #: shipped first — let three runs over one line bank three overlapping
+    #: amounts for one price movement.
+    superseded_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+
+class EvaluationBaseline(Base):
+    """What the numbers looked like before the trial, so "better" means something.
+
+    Its own table rather than columns on ``IntelligenceTrial``, and the reason is
+    lifecycle rather than tidiness. A trial row is an **entitlement fact**: it
+    records that one set of books has had its free month, it must survive
+    everything, and it is never rebuilt. A baseline is **derived state** — a
+    measurement over rows a complete re-sync re-derives from Zoho, and therefore
+    something a recompute is entitled to rewrite. Putting them in one table would
+    put those two lifecycles in one row, where a routine baseline recompute could
+    destroy the record that stops a free month being minted twice.
+
+    ``evidence_gaps`` names what could not be measured. If there is not enough
+    history behind ``window_start``, the baseline says so and the report says the
+    comparison is not available — it does not quietly compare against a thin
+    window and call the difference improvement.
+    """
+
+    __tablename__ = "evaluation_baselines"
+    __table_args__ = (
+        Index("ix_evaluation_baselines_org_captured", "organization_id", "captured_at"),
+    )
+
+    baseline_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    trial_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("intelligence_trials.trial_id"), index=True)
+
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    # The period measured — the days *before* the trial began, not the trial.
+    window_start: Mapped[date] = mapped_column(Date)
+    window_end: Mapped[date] = mapped_column(Date)
+
+    metrics: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    evidence_gaps: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    thresholds_version: Mapped[str] = mapped_column(String(32), default="")
 
 
 # ── Identity layer ───────────────────────────────────────────────────────────

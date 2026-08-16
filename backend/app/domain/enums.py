@@ -502,6 +502,63 @@ class MsmeEvidence(str, Enum):
     PORTAL_LOOKUP = "PORTAL_LOOKUP"
     NONE = "NONE"
 
+class ValueEventType(str, Enum):
+    """What kind of business fact a ``ValueEvent`` records.
+
+    Every member names something that already leaves evidence in this schema —
+    a priced line, a quote outcome, a resolved equivalent — because an event
+    type with no evidence behind it is a number the platform would be inventing
+    rather than measuring. Adding a member therefore means naming the rows it is
+    computed from first; if there are none, the answer is that the value is not
+    measurable yet, not that it is zero.
+
+    Deliberately absent: anything that values *time*. Approvals turned round and
+    lines priced are real and worth reporting, but this business holds no hourly
+    rate, so converting them to rupees would be a fabricated number that happens
+    to be computed deterministically. Productivity is counted, never valued.
+    """
+
+    MARGIN_PROTECTED = "MARGIN_PROTECTED"
+    DISCOUNT_LEAKAGE_PREVENTED = "DISCOUNT_LEAKAGE_PREVENTED"
+    EQUIVALENT_SAVING = "EQUIVALENT_SAVING"
+    LOST_SALE_RECOVERED = "LOST_SALE_RECOVERED"
+    PROCUREMENT_OPPORTUNITY = "PROCUREMENT_OPPORTUNITY"
+
+
+class ValueClass(str, Enum):
+    """How strong the evidence behind an event's amount is.
+
+    The whole reason this is a separate axis from ``ValueEventType``: the same
+    kind of fact can be an opportunity nobody acted on or money that demonstrably
+    moved, and a total that adds those together is a claim the evidence does not
+    support. **These classes never sum with each other.** The headline attributed
+    figure is the sum of ``ATTRIBUTED`` alone; the others are reported on their
+    own rows under their own labels, and an honest zero stays zero rather than
+    being topped up from a weaker class.
+
+    ``ATTRIBUTED`` is the narrowest and the only one that may be called what PIE
+    is worth: it requires the money to have moved *and* an intervention that
+    precedes the outcome. ``REALIZED`` without that ordering is money the
+    business would have made anyway as far as anyone can prove.
+    """
+
+    #: An opportunity that was identified. Nothing has happened yet.
+    POTENTIAL = "POTENTIAL"
+    #: The money moved and the evidence says so — a won quote, an order, an
+    #: invoice. Says nothing about who caused it.
+    REALIZED = "REALIZED"
+    #: REALIZED, and the intervention is on record as preceding the outcome.
+    ATTRIBUTED = "ATTRIBUTED"
+    #: Modelled rather than observed. Shown separately, never in the headline.
+    ESTIMATED = "ESTIMATED"
+
+
+#: The one class that may be summed into a headline "value delivered" figure.
+#: A constant rather than a literal at each call site, so a sixth class cannot
+#: be quietly folded into the total by whichever module adds it.
+HEADLINE_VALUE_CLASSES = frozenset({ValueClass.ATTRIBUTED})
+
+
 # Data classes for permission redaction (§14). RESTRICTED fields are visible to
 # SALES_MANAGER and OWNER only. Enforced downstream (context assembly / API);
 # defined here so every layer references one source of truth.

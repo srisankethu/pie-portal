@@ -1,4 +1,4 @@
-import type { AccessReport, AiByokView, AiKeyTestResult, AiMetricsReport, AiReadiness, Account, AccountItem, StatusFilter, ApprovalRequest, DisclosureStatement, EntityKind, ErasureState, Identity, IdentityCoverage, IdentityPolicy, IdentitySuggestion, ConnectionCheck, ConnectionsView, FixedThresholds, MarginPolicy, MarginPolicyPatch, NewConnectionInput, PayloadsReport, ZohoConnection, ZohoCredential, ZohoVisibleOrg, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, DecisionTrace, OrgPolicy, PlatformSession, PlatformUser, QuoteGate, Role, SkippedRows, SyncOptions, SyncStartResponse, SyncState, ThresholdView, ZohoConnectionInput, AuthorizeResponse } from "./types";
+import type { AccessReport, AiByokView, AiKeyTestResult, AiMetricsReport, AiReadiness, Account, AccountItem, StatusFilter, ApprovalRequest, DisclosureStatement, EntityKind, ErasureState, Identity, IdentityCoverage, IdentityPolicy, IdentitySuggestion, ConnectionCheck, ConnectionsView, FixedThresholds, MarginPolicy, MarginPolicyPatch, NewConnectionInput, OnboardingView, PayloadsReport, SignupOffer, ZohoConnection, ZohoCredential, ZohoVisibleOrg, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, DecisionTrace, OrgPolicy, PlatformSession, PlatformUser, QuoteGate, Role, SkippedRows, SyncOptions, SyncStartResponse, SyncState, ThresholdView, ZohoConnectionInput, AuthorizeResponse } from "./types";
 
 import { setMoneyCurrency } from "../money";
 import { setBusinessTimezone } from "../when";
@@ -115,6 +115,13 @@ async function download(path: string, token: string, fallbackName: string):
   return { blob: await res.blob(), filename: match?.[1] || fallbackName };
 }
 
+interface SignUpBody {
+  company: string;
+  name: string;
+  email: string;
+  password: string;
+}
+
 interface LoginResp {
   token: string;
   role: PlatformSession["role"];
@@ -132,6 +139,27 @@ interface LoginResp {
 export const papi = {
   login: (email: string, password: string) =>
     req<LoginResp>("/api/v1/auth/login", { method: "POST", body: JSON.stringify({ email, password }) }),
+
+  /** Whether this deployment lets a company create its own tenant.
+   *
+   *  Asked before the landing page offers the button, so a single-tenant
+   *  install — where sign-up is off, which is the default — never shows a "Get
+   *  started free" that leads to a form that always refuses. Public: no token.
+   */
+  signupOffer: () => req<SignupOffer>("/api/v1/signup"),
+
+  /** Create an organization and its owner, and come back signed in.
+   *
+   *  Types as `LoginResp` because the server returns exactly the login shape —
+   *  deliberately, so `signIn` stores a sign-up with the same code that stores
+   *  a sign-in rather than a second path that forgets the currency. */
+  signUp: (body: SignUpBody) =>
+    req<LoginResp>("/api/v1/signup", { method: "POST", body: JSON.stringify(body) }),
+
+  /** What this organization still has to do before the screens have anything
+   *  to say. Derived server-side from connections, sync runs, the policy row
+   *  and the user list — never a stored "setup complete" flag. */
+  onboarding: (t: string) => req<OnboardingView>("/api/v1/onboarding", {}, t),
 
   listDecisions: (t: string, q: { type?: string; status_filter?: string } = {}) => {
     const p = new URLSearchParams();

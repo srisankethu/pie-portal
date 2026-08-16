@@ -6,16 +6,31 @@ import "./landing.css";
  * from the theme's emitted tokens so it reads as the same product as the
  * screens behind it.
  *
- * Two honesty rules this page keeps on purpose. Every figure on it is a real,
+ * The honesty rule this page keeps on purpose: every figure on it is a real,
  * checkable property of the product (the corpus numbers, the determinism
  * claims, the plan prices) — no invented customers, no testimonials, no logos.
- * And both CTAs lead to sign-in rather than a signup form, because accounts
- * are created by an organization's owner; the sign-in card's footer says so.
+ *
+ * That rule used to be broken by the page's own buttons. Both CTAs said "Get
+ * started free" and led to a *sign-in* form, because the only way to get an
+ * account was an operator running `python -m app.provision_org` — so the one
+ * promise the page made twice, in its largest type, was the one thing a visitor
+ * could not do. `onSignUp` is that path. It is optional because sign-up is a
+ * deployment's choice (`SELF_SERVE_SIGNUP`, off by default): where it is absent
+ * the CTAs fall back to sign-in, which is honest for a single-tenant install
+ * and was the whole behaviour before.
  */
-export function Landing({ onEnter }: { onEnter: () => void }) {
+export function Landing({ onEnter, onSignUp }: {
+  onEnter: () => void;
+  onSignUp?: () => void;
+}) {
   const enter = (e: React.MouseEvent) => {
     e.preventDefault();
     onEnter();
+  };
+  /** The two big CTAs: sign up where it is offered, sign in where it is not. */
+  const start = (e: React.MouseEvent) => {
+    e.preventDefault();
+    (onSignUp ?? onEnter)();
   };
 
   return (
@@ -46,7 +61,7 @@ export function Landing({ onEnter }: { onEnter: () => void }) {
               prices</b>.
             </p>
             <div className="lp-ctas">
-              <a className="lp-btn solid" href="#signin" onClick={enter}>Get started free</a>
+              <a className="lp-btn solid" href="#signin" onClick={start}>Get started free</a>
               <a className="lp-btn" href="#pricing">See pricing</a>
             </div>
             <p className="lp-fine">
@@ -362,7 +377,7 @@ export function Landing({ onEnter }: { onEnter: () => void }) {
         <div className="lp-wrap">
           <h2>Your books already know where the margin went.</h2>
           <p>Connect them, and let PIE show you — the first month of intelligence is included.</p>
-          <a className="lp-btn solid" href="#signin" onClick={enter}>Get started free</a>
+          <a className="lp-btn solid" href="#signin" onClick={start}>Get started free</a>
         </div>
       </div>
 

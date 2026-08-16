@@ -53,6 +53,14 @@ ORG = "org_pie"
 #: The dated documents below are written relative to this, so they move with it.
 TODAY = clock.today(CommercialThresholds().timezone)
 
+#: INV-3's due date: Wednesday of the week AFTER the one TODAY falls in —
+#: never overdue, never in the current-week bucket, always beyond a one-week
+#: horizon, wherever the live TODAY lands. It used to be the literal
+#: 2026-08-19, which was all of those things only until the calendar reached
+#: that week; the cash-projection tests failed the day it did. A fixture date
+#: whose *relationship* to today is the claim must be derived from today.
+DUE_NEXT_WEEK = TODAY + timedelta(days=(7 - TODAY.isoweekday()) + 3)
+
 
 class _Source:
     """A book with one of each situation the detectors can find."""
@@ -131,8 +139,8 @@ class _Source:
             # but not yet due — it belongs in the exposure and not in the
             # collection.
             {"invoice_id": "inv3", "invoice_number": "INV-3", "customer_id": "c1",
-             "date": "2026-07-20", "due_date": "2026-08-19", "status": "sent",
-             "total": "85200", "balance": "85200",
+             "date": "2026-07-20", "due_date": DUE_NEXT_WEEK.isoformat(),
+             "status": "sent", "total": "85200", "balance": "85200",
              "line_items": [{"line_item_id": "l1", "item_id": "short",
                              "quantity": 100, "rate": "600", "item_total": "60000"},
                             {"line_item_id": "l2", "item_id": "low",

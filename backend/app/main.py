@@ -19,8 +19,8 @@ from . import entitlements as plan
 from .config import settings
 from .observability.instrumentation import api_instrumentation_middleware
 from .pie_service import pie_service
-from .routers import (accounts, admin, ai_settings, approvals, commercial,
-                      connections, data_status,
+from .routers import (accounts, admin, ai_settings, approvals, attribution,
+                      commercial, connections, data_status,
                       decisions, entitlements, identity, internal,
                       onboarding, platform_auth, quote,
                       insight, quote_intelligence, quote_support, trust)
@@ -232,6 +232,11 @@ app.include_router(identity.router)
 app.include_router(connections.router)
 app.include_router(trust.router)
 app.include_router(insight.router,
+                   dependencies=[Depends(plan.require_feature("intelligence"))])
+# What the intelligence layer was worth, measured. Gated with the surfaces it
+# measures rather than left open: the ledger is gross-profit arithmetic over the
+# same rows, so it cannot be the one intelligence screen a free plan can read.
+app.include_router(attribution.router,
                    dependencies=[Depends(plan.require_feature("intelligence"))])
 app.include_router(ai_settings.router)
 app.include_router(entitlements.router)

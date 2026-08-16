@@ -1,4 +1,4 @@
-import type { AccessReport, AiByokView, AiKeyTestResult, AiMetricsReport, AiReadiness, Account, AccountItem, StatusFilter, ApprovalRequest, DisclosureStatement, EntityKind, ErasureState, Identity, IdentityCoverage, IdentityPolicy, IdentitySuggestion, ConnectionCheck, ConnectionsView, Entitlements, FixedThresholds, MarginPolicy, MarginPolicyPatch, NewConnectionInput, OnboardingView, PayloadsReport, SignupOffer, ZohoConnection, ZohoCredential, ZohoVisibleOrg, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, DecisionTrace, OrgPolicy, PlatformSession, PlatformUser, QuoteGate, Role, SkippedRows, SyncOptions, SyncStartResponse, SyncState, ThresholdView, ZohoConnectionInput, AuthorizeResponse } from "./types";
+import type { AccessReport, Account, AccountItem, AiByokView, AiKeyTestResult, AiMetricsReport, AiReadiness, ApprovalRequest, AttributionEvaluation, AttributionEvents, AttributionSummary, AuthorizeResponse, ConnectionCheck, ConnectionsView, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, DecisionTrace, DisclosureStatement, Entitlements, EntityKind, ErasureState, FixedThresholds, Identity, IdentityCoverage, IdentityPolicy, IdentitySuggestion, MarginPolicy, MarginPolicyPatch, NewConnectionInput, OnboardingView, OrgPolicy, PayloadsReport, PlatformSession, PlatformUser, QuoteGate, Role, SignupOffer, SkippedRows, StatusFilter, SyncOptions, SyncStartResponse, SyncState, ThresholdView, ZohoConnection, ZohoConnectionInput, ZohoCredential, ZohoVisibleOrg } from "./types";
 
 import { setMoneyCurrency } from "../money";
 import { setBusinessTimezone } from "../when";
@@ -493,6 +493,44 @@ export const papi = {
   simulate: (t: string, body: Record<string, unknown>) =>
     req<Record<string, unknown>>("/api/v1/insight/simulate",
       { method: "POST", body: JSON.stringify(body) }, t),
+
+  // ── what PIE changed: the value-attribution ledger ────────────────────────
+  // Manager and above for the first two, owner only for the report, and all
+  // three behind the `intelligence` plan — the same gate the insight surface
+  // sits behind, because every row of this ledger is gross-profit arithmetic
+  // over the rows those screens read.
+  //
+  // Not under `/api/v1/`: `routers/attribution.py` mounts at `/api/attribution`.
+  attributionSummary: (t: string) =>
+    req<AttributionSummary>("/api/attribution/summary", {}, t),
+
+  /** One page of the ledger. Rows, never a rollup — `page_is_not_a_total`
+   *  travels with them, and the headline comes from the summary. */
+  attributionEvents: (t: string, q: {
+    eventType?: string | null; valueClass?: string | null;
+    limit?: number; offset?: number;
+  } = {}) => {
+    const p = new URLSearchParams();
+    if (q.eventType) p.set("event_type", q.eventType);
+    if (q.valueClass) p.set("value_class", q.valueClass);
+    if (q.limit) p.set("limit", String(q.limit));
+    if (q.offset) p.set("offset", String(q.offset));
+    const qs = p.toString();
+    return req<AttributionEvents>(
+      `/api/attribution/events${qs ? "?" + qs : ""}`, {}, t);
+  },
+
+  /** The 30-day report. Owner only.
+   *
+   *  `pieCost` is passed because the platform holds no price for its own
+   *  plans — it is the owner's own figure. Omitted, `roi` comes back `null`
+   *  with `roi_is_unknown` true, which is UNKNOWN and never 0x. A default
+   *  here would put a return figure nobody entered on a screen somebody
+   *  signs against. */
+  attributionEvaluation: (t: string, pieCost?: string | null) =>
+    req<AttributionEvaluation>(
+      "/api/attribution/evaluation"
+      + (pieCost ? `?pie_cost=${encodeURIComponent(pieCost)}` : ""), {}, t),
 
   dataStatus: (t: string) => req<DataStatus>("/api/v1/data/status", {}, t),
 

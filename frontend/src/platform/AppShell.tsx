@@ -67,6 +67,7 @@ import StorageOutlined from "@mui/icons-material/StorageOutlined";
 import FingerprintOutlined from "@mui/icons-material/FingerprintOutlined";
 import PsychologyOutlined from "@mui/icons-material/PsychologyOutlined";
 import TuneOutlined from "@mui/icons-material/TuneOutlined";
+import InsightsOutlined from "@mui/icons-material/InsightsOutlined";
 
 import { Link as RouterLink } from "react-router-dom";
 
@@ -113,6 +114,8 @@ const ICON: Partial<Record<Screen, typeof MenuIcon>> = {
   payments: PaymentsOutlined,
   payables: ReceiptLongOutlined,
   orderToCash: TimelineOutlined,
+
+  attribution: InsightsOutlined,
 
   data: StorageOutlined,
   identity: FingerprintOutlined,

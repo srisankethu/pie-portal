@@ -64,6 +64,9 @@ export type Screen =
   /** Which quotes were won, which were lost, and why — the outcome half of the
    *  quoting loop, which the platform recorded and never read. */
   | "quoteOutcomes"
+  /** What the platform itself changed: the value ledger, its evidence gaps and
+   *  — for the owner — the 30-day report against the pre-trial baseline. */
+  | "attribution"
   /** The approval queue, and organization settings (owner is super admin). */
   | "approvals" | "settings"
   /** Which connector records describe the same customer or item. */
@@ -118,6 +121,7 @@ export const PATH: Record<Screen, string> = {
   catalogue: "/item-lines",
   negotiate: "/negotiate",
   quoteOutcomes: "/quote-outcomes",
+  attribution: "/what-pie-changed",
 };
 
 /** The three screens whose URL carries an id, as route patterns.

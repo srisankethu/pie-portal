@@ -95,6 +95,15 @@ describe("the owner's table — mirrors require_owner", () => {
   it("holds the signature that a manager does not", () => {
     expect(owner.can("approve", "all")).toBe(true);
   });
+
+  it("reads the evaluation report a manager cannot", () => {
+    // Mirrors `require_owner` on `GET /api/attribution/evaluation`. The value
+    // ledger the report is computed from is manager-or-owner, so this is the
+    // one rule where a manager holds the screen and not one panel on it.
+    expect(owner.can("read", "evaluation")).toBe(true);
+    expect(defineAbilityFor("SALES_MANAGER").can("read", "evaluation")).toBe(false);
+    expect(defineAbilityFor("SALESPERSON").can("read", "evaluation")).toBe(false);
+  });
 });
 
 describe("the table as a whole", () => {
@@ -104,6 +113,7 @@ describe("the table as a whole", () => {
     // than shipping as a screen someone should not have been offered.
     const subjects = [
       "economics", "team", "users", "policy", "approvals", "supply", "simulation",
+      "trust", "evaluation",
     ] as const;
 
     const sales = defineAbilityFor("SALESPERSON");

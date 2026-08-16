@@ -20,7 +20,14 @@ _APP = pathlib.Path(__file__).resolve().parents[2] / "app"
 #: Packages that compute or persist facts. None of them may import ``ai/`` —
 #: a number that an interpretation layer could reach is a number nobody can
 #: reproduce.
-DETERMINISTIC = ("commercial", "signals", "ingestion", "state")
+DETERMINISTIC = ("attribution", "commercial", "signals", "ingestion", "state")
+
+#: Packages ``ai/`` must not import, which is the same rule read from the other
+#: side. ``attribution`` is here as well as in ``DETERMINISTIC`` because it is
+#: the ledger a renewal is argued from: a model that could reach it could compute
+#: what the platform claims to be worth, which is the one number on this surface
+#: that must be arithmetic over rows and nothing else.
+COMPUTING = ("commercial", "attribution")
 
 
 def _imported_top_levels(path: pathlib.Path) -> set[str]:
@@ -63,15 +70,16 @@ def test_a_deterministic_layer_never_imports_the_interpreted_one(package):
         "here and only read there; move the interpretation into decisions/.")
 
 
-def test_the_interpreted_layer_never_imports_the_computing_one():
+@pytest.mark.parametrize("package", COMPUTING)
+def test_the_interpreted_layer_never_imports_the_computing_one(package):
     offenders = [f"{p.relative_to(_APP)}" for p in _modules("ai")
-                 if "commercial" in _imported_top_levels(p)]
+                 if package in _imported_top_levels(p)]
     assert offenders == [], (
-        "ai/ imports commercial/. It receives facts; it must never be able to "
+        f"ai/ imports {package}/. It receives facts; it must never be able to "
         "compute one.")
 
 
 def test_the_deterministic_packages_listed_here_all_exist():
     """A typo in the list above would silently check nothing."""
-    for package in (*DETERMINISTIC, "ai", "decisions"):
+    for package in (*DETERMINISTIC, *COMPUTING, "ai", "decisions"):
         assert (_APP / package).is_dir(), package

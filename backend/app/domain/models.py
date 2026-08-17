@@ -339,6 +339,10 @@ class User(Base):
     created_by_user_id: Mapped[Optional[str]] = mapped_column(String(64))
     role_changed_by_user_id: Mapped[Optional[str]] = mapped_column(String(64))
     role_changed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    # Login failure throttling: count resets on successful auth, locks account
+    # after 5 consecutive failures with exponential backoff (30s, 60s, 120s, 240s…).
+    login_failures_count: Mapped[int] = mapped_column(Integer, default=0)
+    login_failures_last_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 

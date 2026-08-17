@@ -23,6 +23,7 @@ import hmac
 import json
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 from fastapi import Depends, Header, HTTPException, Request, status
@@ -99,6 +100,10 @@ def verify_token(token: str) -> Optional[tuple[str, str, float]]:
 
 
 # ── principal resolution ─────────────────────────────────────────────────────
+#: Maximum session age in seconds (30 days). Tokens older than this are rejected.
+MAX_SESSION_AGE_SECONDS = 30 * 24 * 60 * 60
+
+
 def load_principal(session: Session, token: str) -> Optional[Principal]:
     parsed = verify_token(token)
     if parsed is None:
@@ -106,6 +111,12 @@ def load_principal(session: Session, token: str) -> Optional[Principal]:
     user_id, org_id, issued_at = parsed
     user = session.get(models.User, user_id)
     if user is None or not user.active or user.organization_id != org_id:
+        return None
+    # Reject tokens older than MAX_SESSION_AGE_SECONDS. This ensures that even
+    # if a password change is not made, a stolen token eventually expires rather
+    # than lasting forever.
+    now = time.time()
+    if issued_at < (now - MAX_SESSION_AGE_SECONDS):
         return None
     # A token minted before the password changed is no longer a valid session.
     # Without this, changing a password left every session opened with the old one
@@ -262,3 +273,48 @@ def can_view_decision(principal: Principal, decision: models.Decision) -> bool:
     if decision.decision_type in {t.value for t in RESTRICTED_DECISION_TYPES}:
         return False
     return decision.assigned_user_id == principal.user_id
+
+
+# ── login throttling ─────────────────────────────────────────────────────────
+#: Number of consecutive failures before throttling activates.
+LOGIN_THROTTLE_THRESHOLD = 5
+#: Base backoff delay in seconds (doubles for each failure past threshold).
+LOGIN_THROTTLE_BASE_DELAY_SECONDS = 30
+
+
+def is_login_throttled(user: models.User) -> Optional[int]:
+    """Returns the remaining backoff delay in seconds if login is throttled.
+
+    Throttling activates after LOGIN_THROTTLE_THRESHOLD consecutive failures.
+    The delay is 30s * 2^(failures - threshold), so:
+    - 5 failures: 30s
+    - 6 failures: 60s
+    - 7 failures: 120s, etc.
+
+    Returns None if the account is not throttled.
+    """
+    if user.login_failures_count < LOGIN_THROTTLE_THRESHOLD:
+        return None
+    if user.login_failures_last_at is None:
+        return None
+
+    now = datetime.now(timezone.utc)
+    failures_since_threshold = user.login_failures_count - LOGIN_THROTTLE_THRESHOLD
+    delay_seconds = LOGIN_THROTTLE_BASE_DELAY_SECONDS * (2 ** failures_since_threshold)
+    next_allowed = user.login_failures_last_at + timedelta(seconds=delay_seconds)
+
+    if now < next_allowed:
+        return int((next_allowed - now).total_seconds()) + 1
+    return None
+
+
+def record_login_failure(user: models.User) -> None:
+    """Record a failed login attempt. Updates the user row in-place."""
+    user.login_failures_count += 1
+    user.login_failures_last_at = datetime.now(timezone.utc)
+
+
+def reset_login_failures(user: models.User) -> None:
+    """Clear failure count on successful login."""
+    user.login_failures_count = 0
+    user.login_failures_last_at = None

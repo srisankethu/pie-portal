@@ -20,6 +20,12 @@ import "./landing.css";
  * invented customers, no testimonials, no logos. The connectors are named in
  * plain type for the same reason.
  *
+ * The decision card's figures are illustrative but formula-consistent:
+ * floor = cost / (1 − margin floor), so cost ₹381 at a 15% floor gives ₹448.
+ * And the card shows cost because it depicts the *approver's* view — a
+ * manager sees cost, a salesperson never does. Keep both properties when
+ * editing the numbers.
+ *
  * That rule used to be broken by the page's own buttons. Both CTAs said "Get
  * started free" and led to a *sign-in* form, because the only way to get an
  * account was an operator running `python -m app.provision_org` — so the one
@@ -66,14 +72,12 @@ export function Landing({ onEnter, onSignUp }: {
         <header className="lp-hero" id="top">
           <div className="lp-wrap lp-hero-grid">
             <div className="lp-hero-copy">
-              <p className="lp-eyebrow">For distributors on Zoho Books — and now six US ERPs</p>
+              <p className="lp-eyebrow">The commercial intelligence layer for distributors</p>
               <h1>Stop quoting away your <em>margin.</em></h1>
               <p className="lp-sub">
-                PIE connects to the books you already keep and watches the two
-                places trading businesses lose money: <b>quotes going out too
-                cheap</b> and <b>customers quietly slipping away</b>. Every figure
-                is computed, versioned and auditable — <b>AI phrases, it never
-                prices</b>.
+                PIE connects to the books you already use and helps your team{" "}
+                <b>quote correctly</b>, <b>protect margin</b>, and spot customers
+                that are <b>quietly buying less</b>.
               </p>
               <div className="lp-ctas">
                 <a className="lp-btn solid" href="#signin" onClick={start}>Get started free</a>
@@ -88,7 +92,7 @@ export function Landing({ onEnter, onSignUp }: {
             <div
               className="lp-card"
               role="img"
-              aria-label="A PIE decision card drawn like an engineering sheet: a quote priced below the margin floor, with computed facts, an approval action, and a title block naming the policy that computed it."
+              aria-label="A PIE decision card drawn like an engineering sheet: a quote priced below the margin floor, showing cost, margin floor and recommended price, with an approval action and a title block naming the policy that computed it."
             >
               <span className="lp-corner tl" aria-hidden="true" />
               <span className="lp-corner tr" aria-hidden="true" />
@@ -100,18 +104,17 @@ export function Landing({ onEnter, onSignUp }: {
               </div>
               <h3>This line is priced under your own floor</h3>
               <p className="lp-card-body">
-                <b>ABC Industries</b> asked for 200 units; the proposed price sits
-                below the negotiation floor your margin policy sets for this item.
-                Sending it needs a manager's sign-off — the platform holds it, not
-                the salesperson.
+                <b>ABC Industries</b> asked for 200 units at ₹412 — below the
+                floor your margin policy sets for this item. It routes for a
+                manager's sign-off: the platform holds it, not the salesperson.
               </p>
               <div className="lp-facts">
                 <div className="lp-fact">
-                  <div className="k">Proposed</div>
-                  <div className="v lp-num down">₹412</div>
+                  <div className="k">Cost</div>
+                  <div className="v lp-num">₹381</div>
                 </div>
                 <div className="lp-fact">
-                  <div className="k">Floor</div>
+                  <div className="k">Margin floor</div>
                   <div className="v lp-num">₹448</div>
                 </div>
                 <div className="lp-fact">
@@ -149,7 +152,7 @@ export function Landing({ onEnter, onSignUp }: {
           <span className="lp-sys">Sage X3</span>
           <span className="lp-sys">Sage 100</span>
           <span className="lp-sched-note">
-            — one registry, one validator; every row stamped with the system it came from
+            — your ERP records what happened; PIE helps you decide what to do next
           </span>
         </div>
 
@@ -167,23 +170,20 @@ export function Landing({ onEnter, onSignUp }: {
             <div className="lp-two">
               <div className="lp-panel">
                 <span className="lp-tag">Leak one — outbound</span>
-                <h3>Quotes below your own floor</h3>
+                <h3>Quotes below your floor</h3>
                 <p>
-                  A discount to close the month, a price copied from last year, a
-                  code quoted from memory. Each defensible; together they compound
-                  into points of gross margin. PIE checks every line against{" "}
-                  <b>your</b> margin policy at the moment of quoting — and holds
-                  what breaches it.
+                  Salespeople don&rsquo;t always have the history and margin
+                  context when quoting. PIE checks every line against <b>your</b>{" "}
+                  policy at the moment of quoting — and holds what breaches it.
                 </p>
               </div>
               <div className="lp-panel">
                 <span className="lp-tag">Leak two — inbound</span>
                 <h3>Customers quietly buying less</h3>
                 <p>
-                  No angry email, no cancelled contract — just a customer whose
-                  orders thinned out three months ago, noticed at year end. PIE
-                  watches every account&rsquo;s pattern and raises the decline
-                  while there is still a relationship to save.
+                  Revenue can decline before anyone notices. PIE watches every
+                  account&rsquo;s pattern and raises the decline while there is
+                  still a relationship to save.
                 </p>
               </div>
             </div>
@@ -196,13 +196,16 @@ export function Landing({ onEnter, onSignUp }: {
             <div className="lp-sec-head">
               <h2>A quote desk with a commercial brain behind it</h2>
               <p>
-                Free to start, and your whole team can use it — unlimited named
-                accounts, each seeing exactly what their role allows. Salespeople
-                quote confidently <b>without ever seeing your cost</b>.
+                Three outcomes: <b>know what to quote</b>, <b>know what you
+                cannot afford to quote</b>, and <b>know which customers need
+                attention</b>. Unlimited named accounts, each seeing what their
+                role allows — salespeople quote confidently{" "}
+                <b>without ever seeing your cost</b>.
               </p>
             </div>
             <div className="lp-grid3">
               <div className="lp-feat">
+                <p className="lp-eyebrow">Quote</p>
                 <h3>Quote from a pasted email</h3>
                 <p>
                   Drop a customer&rsquo;s RFQ in as they wrote it; PIE reads it
@@ -211,6 +214,7 @@ export function Landing({ onEnter, onSignUp }: {
                 </p>
               </div>
               <div className="lp-feat">
+                <p className="lp-eyebrow">Margin</p>
                 <h3>Margin floors &amp; approvals</h3>
                 <p>
                   Your policy sets the floor per line. A breach doesn&rsquo;t send
@@ -219,6 +223,7 @@ export function Landing({ onEnter, onSignUp }: {
                 </p>
               </div>
               <div className="lp-feat">
+                <p className="lp-eyebrow">Quote</p>
                 <h3>Your catalog, decoded</h3>
                 <p>
                   We decode your suppliers&rsquo; price lists so every code, size
@@ -227,6 +232,7 @@ export function Landing({ onEnter, onSignUp }: {
                 </p>
               </div>
               <div className="lp-feat">
+                <p className="lp-eyebrow">Quote</p>
                 <h3>Alternatives across brands</h3>
                 <p>
                   When the asked-for item is slow or thin, PIE proposes
@@ -235,6 +241,7 @@ export function Landing({ onEnter, onSignUp }: {
                 </p>
               </div>
               <div className="lp-feat">
+                <p className="lp-eyebrow">Attention</p>
                 <h3>A daily attention list</h3>
                 <p>
                   Signals from your own numbers — margin drift, customer decline,
@@ -243,6 +250,7 @@ export function Landing({ onEnter, onSignUp }: {
                 </p>
               </div>
               <div className="lp-feat">
+                <p className="lp-eyebrow">Margin</p>
                 <h3>Authentic price lists</h3>
                 <p>
                   Every edition is fingerprinted on arrival and validated
@@ -297,36 +305,29 @@ export function Landing({ onEnter, onSignUp }: {
                 <p className="lp-eyebrow">Why it can be trusted</p>
                 <h2>The AI never computes <em>a single number.</em></h2>
                 <p>
-                  Every price, margin, floor and priority is calculated
-                  deterministically from your persisted records, stamped with the
-                  version of the policy that produced it. A model reads those
-                  facts and phrases them — it may never invent one.
+                  Your business data and rules determine the number. AI explains
+                  it.
                 </p>
                 <p>
-                  That is what makes every card on screen auditable: same inputs,
-                  same answer, every time, with a paper trail.
+                  Same inputs, same answer, every time — with a paper trail.
                 </p>
               </div>
               <ul>
                 <li>
-                  Figures computed by <b>versioned policy</b> — change the policy
-                  and past numbers still say which rules judged them
+                  <b>Deterministic calculations</b> — every figure is arithmetic
+                  on your records; turn AI off and every number still works
                 </li>
                 <li>
-                  Model output is <b>validated on the way out</b>; a narrative
-                  that doesn&rsquo;t cite the real figures is refused
+                  <b>Auditable decisions</b> — each number names the policy that
+                  produced it, so past decisions stay explainable
                 </li>
                 <li>
-                  AI runs on <b>your own</b> Anthropic, OpenAI or Google account
-                  at your rates — zero markup, and we set it up with you
+                  <b>Your data</b> — read from your own books, used for you
+                  alone; AI runs on your own account
                 </li>
                 <li>
-                  <b>Skip AI entirely</b> and every number still works — the
-                  intelligence is deterministic, the prose is optional
-                </li>
-                <li>
-                  Thin evidence is reported as <b>unknown</b>, never papered over
-                  — an empty screen beats a confident guess
+                  <b>Your rules</b> — you set the floors and thresholds, and PIE
+                  holds every quote to them
                 </li>
               </ul>
             </div>
@@ -338,7 +339,11 @@ export function Landing({ onEnter, onSignUp }: {
           <div className="lp-wrap">
             <div className="lp-sec-head">
               <h2>What you own — and we can prove it</h2>
-              <p>Not policy-page promises: each of these is a mechanism in the product you can test.</p>
+              <p>
+                Your ERP stays yours. PIE works on top of it — and each of these
+                is a mechanism in the product you can test, not a policy-page
+                promise.
+              </p>
             </div>
             <div className="lp-grid3">
               <div className="lp-panel">
@@ -383,24 +388,26 @@ export function Landing({ onEnter, onSignUp }: {
                 <h3>Quote Desk</h3>
                 <div className="p">Free</div>
                 <p>
-                  The quote desk, RFQ reading, margin floors and approvals — for
-                  as long as you like, no card.
+                  <b>Quote faster.</b> The quote desk, RFQ reading, margin floors
+                  and approvals — for as long as you like, no card.
                 </p>
               </div>
               <div className="lp-panel lp-plan mid">
                 <h3>Commercial Intelligence</h3>
                 <div className="p lp-num">₹9,999<small> /month</small></div>
                 <p>
-                  Everything watched: the attention list, customer health,
-                  collections, cross-brand alternatives, authenticity checks.
+                  <b>Quote more profitably.</b> The attention list, customer
+                  health, collections, cross-brand alternatives, authenticity
+                  checks.
                 </p>
               </div>
               <div className="lp-panel lp-plan">
                 <h3>Platform</h3>
                 <div className="p lp-num">₹19,999<small> /month +</small></div>
                 <p>
-                  Several companies, one view — with all catalog builds included
-                  and a named person who knows your setup.
+                  <b>Commercial intelligence across the business.</b> Several
+                  companies, one view — with all catalog builds included and a
+                  named person who knows your setup.
                 </p>
               </div>
             </div>
@@ -414,7 +421,7 @@ export function Landing({ onEnter, onSignUp }: {
         <div className="lp-final">
           <div className="lp-wrap">
             <h2>Your books already know where the margin went.</h2>
-            <p>Connect them, and let PIE show you — the first month of intelligence is included.</p>
+            <p>PIE turns that history into better commercial decisions.</p>
             <a className="lp-btn solid" href="#signin" onClick={start}>Get started free</a>
           </div>
         </div>
@@ -422,8 +429,9 @@ export function Landing({ onEnter, onSignUp }: {
         <footer className="lp-footer">
           <div className="lp-wrap">
             <div>
-              <b>PIE</b> — the Commercial Decision Platform. Deterministic
-              numbers, auditable decisions, your data provably yours.
+              <b>PIE</b> — the commercial intelligence layer for distributors.
+              Deterministic numbers, auditable decisions, your data provably
+              yours.
             </div>
             <div>
               Already have an account?{" "}

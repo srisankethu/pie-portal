@@ -199,14 +199,9 @@ def test_the_operator_chooses_the_start_date(client, monkeypatch):
 def test_wrong_organization_id_names_the_right_one(client, monkeypatch):
     """The most likely misconfiguration should hand back the correct value."""
     import app.routers.data_status as data_status_mod
+    from app.ingestion.connections import set_zoho_credentials
 
     monkeypatch.setattr(settings, "ZOHO_SOURCE", "api")
-    # No stored connection for the default org: falls back to settings, the
-    # pre-multi-tenant configuration path this test exercises.
-    monkeypatch.setattr(settings, "ZOHO_ORGANIZATION_ID", "60036630487")
-    monkeypatch.setattr(settings, "ZOHO_CLIENT_ID", "cid")
-    monkeypatch.setattr(settings, "ZOHO_CLIENT_SECRET", "csec")
-    monkeypatch.setattr(settings, "ZOHO_REFRESH_TOKEN", "rtok")
 
     class Fake:
         def __init__(self, *a, **k):
@@ -219,6 +214,11 @@ def test_wrong_organization_id_names_the_right_one(client, monkeypatch):
 
     monkeypatch.setattr("app.ingestion.zoho_client.ZohoApiSource", Fake)
     s = client.Maker()
+    # A stored connection whose org id Zoho does not return — the wrong-org case.
+    # Every connection is stored now; there is no environment fallback to lean on.
+    set_zoho_credentials(s, settings.DEFAULT_ORG_ID, zoho_organization_id="60036630487",
+                         client_id="cid", client_secret="csec", refresh_token="rtok")
+    s.commit()
     c = data_status_mod._connection(s, settings.DEFAULT_ORG_ID)
     s.close()
     assert c["state"] == "WRONG_ORG"
@@ -307,7 +307,7 @@ def test_a_fixture_source_sync_does_not_purge_demo_data(client, monkeypatch):
 # ── multi-tenant Zoho connections ──────────────────────────────────────────
 def test_not_configured_when_the_org_has_no_connection(client, monkeypatch):
     monkeypatch.setattr(settings, "ZOHO_SOURCE", "api")
-    monkeypatch.setattr(settings, "ZOHO_ORGANIZATION_ID", "")
+    # No stored connection and no environment fallback → NOT_CONFIGURED.
     body = client.get("/api/v1/data/status", headers=_hdr(client, "s.menon@pie.example")).json()
     assert body["connection"]["state"] == "NOT_CONFIGURED"
 

@@ -37,7 +37,6 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import crypto
-from ..config import settings
 from ..domain import models
 from .zoho_client import ZohoCredentials
 
@@ -181,8 +180,10 @@ def get_zoho_credentials(session: Session, organization_id: str,
             if (getattr(r, "connector", None) or ZOHO_CONNECTOR) == ZOHO_CONNECTOR]
     if rows:
         return credentials_for(session, rows[0])
-    if organization_id == settings.DEFAULT_ORG_ID and settings.ZOHO_ORGANIZATION_ID:
-        return ZohoCredentials.from_settings()
+    # No environment fallback, not even for the default org: every organization —
+    # the seeded one included — connects through a stored, per-tenant credential.
+    # A platform serving many tenants cannot resolve one tenant's Zoho grant from
+    # a process-wide ZOHO_* variable.
     return None
 
 

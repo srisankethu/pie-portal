@@ -227,17 +227,15 @@ class Settings:
     SALES_TAX_RATE: float = float(os.environ.get("SALES_TAX_RATE", "0.18"))
     SALES_TAX_LABEL: str = os.environ.get("SALES_TAX_LABEL", "GST")
 
-    # Zoho connector credentials (read-only). Unused until live sync is enabled;
-    # the fixture source backs dev/test. Never commit real values (.env only).
-    ZOHO_ORGANIZATION_ID: str = os.environ.get("ZOHO_ORGANIZATION_ID", "")
-    ZOHO_CLIENT_ID: str = os.environ.get("ZOHO_CLIENT_ID", "")
-    ZOHO_CLIENT_SECRET: str = os.environ.get("ZOHO_CLIENT_SECRET", "")
-    ZOHO_REFRESH_TOKEN: str = os.environ.get("ZOHO_REFRESH_TOKEN", "")
-    ZOHO_API_BASE: str = os.environ.get("ZOHO_API_BASE", "https://www.zohoapis.in/books/v3")
-    # OAuth token endpoint host. MUST match the data centre the account lives in
-    # (.in for India, .com for US, .eu, .com.au, .jp) — a refresh token issued in
-    # one DC is rejected by every other.
-    ZOHO_ACCOUNTS_BASE: str = os.environ.get("ZOHO_ACCOUNTS_BASE", "https://accounts.zoho.in")
+    # There are deliberately no ZOHO_* credential settings. A Zoho grant (client
+    # id, secret, refresh token, data centre, organization id) belongs to one
+    # tenant and is stored per-connection in the database, encrypted at rest — a
+    # multi-tenant platform cannot resolve one tenant's credential from a
+    # process-wide environment variable. Connect a company under Settings →
+    # Connections. (A live contract test reads real values straight from the
+    # environment for the account it exercises; that is test scaffolding, not a
+    # runtime path.)
+
     # "fixture" (deterministic offline source) or "api" (live Zoho).
     ZOHO_SOURCE: str = os.environ.get("ZOHO_SOURCE", "fixture")
 

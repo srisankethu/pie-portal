@@ -1,3 +1,4 @@
+import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Chip from "@mui/material/Chip";
 import MenuItem from "@mui/material/MenuItem";
@@ -1146,17 +1147,19 @@ function Scopes({ view }: { view: ConnectionsView }) {
         Paste this into the scope field when you generate the token in the Zoho API
         console. Granting fewer does not fail loudly; it fails quietly, later.
       </p>
-      <table className="cx-scopes">
-        <tbody>
-          {view.required_scopes.map((s) => (
-            <tr key={s.scope}>
-              <td className="mono">{s.scope}</td>
-              <td>{s.why}</td>
-              <td className="req">{s.required ? "required" : "optional"}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <Box sx={{ overflowX: "auto" }}>
+        <table className="cx-scopes">
+          <tbody>
+            {view.required_scopes.map((s) => (
+              <tr key={s.scope}>
+                <td className="mono">{s.scope}</td>
+                <td>{s.why}</td>
+                <td className="req">{s.required ? "required" : "optional"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Box>
       <div className="cx-scopestring">
         <code>{view.scope_string}</code>
         <Button

@@ -540,24 +540,26 @@ export function CustomerItemScreen({
       {/* E. did the lower margin buy anything */}
       <div className="section-h">Volume against margin</div>
       <Bp style={{ padding: 2 }}>
-        <table className="dp-table ci-table">
-          <thead>
-            <tr>
-              <th>Period</th><th className="num">Quantity</th>
-              <th className="num">Revenue</th><th className="num">Margin</th>
-            </tr>
-          </thead>
-          <tbody>
-            {data.volume_vs_margin.map((p) => (
-              <tr key={p.period_start}>
-                <td>{when(p.period_start)} – {when(p.period_end)}</td>
-                <td className="num">{num(p.qty)}</td>
-                <td className="num">{money(p.revenue)}</td>
-                <td className="num">{pct(p.margin)}</td>
+        <Box sx={{ overflowX: "auto" }}>
+          <table className="dp-table ci-table">
+            <thead>
+              <tr>
+                <th>Period</th><th className="num">Quantity</th>
+                <th className="num">Revenue</th><th className="num">Margin</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {data.volume_vs_margin.map((p) => (
+                <tr key={p.period_start}>
+                  <td>{when(p.period_start)} – {when(p.period_end)}</td>
+                  <td className="num">{num(p.qty)}</td>
+                  <td className="num">{money(p.revenue)}</td>
+                  <td className="num">{pct(p.margin)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Box>
       </Bp>
 
       {/* F. the evidence every conclusion above rests on */}

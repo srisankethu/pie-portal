@@ -861,7 +861,7 @@ textarea.input { min-height: 160px; resize: vertical; font-family: ui-monospace,
 .mp-family {
   display: flex; align-items: center; gap: 5px; padding: 4px 6px 4px 10px;
   background: var(--color-neutral-100); border: 1px solid var(--color-divider);
-  border-radius: 12px; font-size: 12px;
+  border-radius: 12px; font-size: 12px; flex-wrap: wrap;
 }
 .mp-family .input { width: 58px; padding: 2px 5px; font-size: 12.5px; }
 .mp-family button {
@@ -942,7 +942,7 @@ textarea.input { min-height: 160px; resize: vertical; font-family: ui-monospace,
 /* Its own line: the button belongs to the select above it, not to the label
    of the field below, and side by side it read as part of the wrong one. */
 .cx-add form > button.btn-ghost { display: block; margin: 8px 0 0; }
-.cx-tabs { display: flex; gap: 6px; margin-bottom: 12px; }
+.cx-tabs { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
 .cx-tab {
   font-size: 12px; padding: 4px 11px; border-radius: 12px; cursor: pointer;
   border: 1px solid var(--color-divider); background: var(--color-surface);
@@ -1244,4 +1244,23 @@ textarea.input { min-height: 160px; resize: vertical; font-family: ui-monospace,
 .cash-running-expected {
   stroke-dasharray: 5 3;
   opacity: 0.85;
+}
+
+/* ── phone-width collapses ───────────────────────────────────────────────────
+ * Fixed multi-column grids read fine on a laptop and cramp or overflow on a
+ * phone: three number inputs at ~90px each, four fact columns at ~66px, a
+ * two-input form row squeezed against its buttons. Below MUI's `sm` breakpoint
+ * (600px) each collapses to one or two columns so the content box stays usable
+ * at 360px. Layout-only, and only at phone width — the desktop grids above are
+ * untouched. The grids that already use `repeat(auto-fit, minmax(...))` reflow
+ * on their own and are deliberately absent here. */
+@media (max-width: 600px) {
+  .st-pw, .st-newuser { grid-template-columns: 1fr; }
+  .mp-grid { grid-template-columns: 1fr; }
+  .mp-fixed { grid-template-columns: repeat(2, 1fr); }
+  .cx-facts { grid-template-columns: repeat(2, 1fr); }
+  .ap-econ { grid-template-columns: repeat(2, 1fr); }
+  .st-thresholds { grid-template-columns: repeat(2, 1fr); }
+  .drawer-pricing-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .qi-econ { grid-template-columns: 1fr; }
 }

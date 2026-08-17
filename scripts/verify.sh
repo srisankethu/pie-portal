@@ -51,7 +51,7 @@ fi
 # ── 1. Lint ──────────────────────────────────────────────────────────────────
 # Rule set in ruff.toml, version pinned in backend/requirements-dev.txt. Both
 # halves are needed; the header of ruff.toml has the incident.
-step "1/5  ruff"
+step "1/6  ruff"
 if $PY -m ruff check . ; then pass "lint"; else fail "ruff check ."; fi
 
 # ── 2. The §1 invariants ─────────────────────────────────────────────────────
@@ -60,7 +60,7 @@ if $PY -m ruff check . ; then pass "lint"; else fail "ruff check ."; fi
 # imports properly and is what actually blocks; it is repeated here because it
 # costs milliseconds and because a failure here is legible without reading a
 # traceback.
-step "2/5  §1 layer invariants"
+step "2/6  §1 layer invariants"
 INV_OK=1
 if grep -rnE '^\s*(from|import)\s+\.*\.?ai[. ]' \
      backend/app/commercial backend/app/signals \
@@ -80,7 +80,7 @@ if [ "$INV_OK" = "1" ]; then pass "deterministic layers never import ai/"; else 
 # Parallel by default. Each xdist worker gets its own SQLite file (see
 # backend/tests/conftest.py) — without that the workers race on one `alembic
 # upgrade head` and lose. Set PYTEST_WORKERS=0 to force the serial path.
-step "3/5  backend tests"
+step "3/6  backend tests"
 WORKERS="${PYTEST_WORKERS:-auto}"
 if [ "$WORKERS" = "0" ]; then NARG=(); else NARG=(-n "$WORKERS"); fi
 if (cd backend && $PY -m pytest tests -q "${NARG[@]}"); then
@@ -90,12 +90,12 @@ else
 fi
 
 if [ "$FAST" = "1" ]; then
-  step "4-5/5  skipped (--fast)"
+  step "4-6/6  skipped (--fast)"
   printf '      frontend build and the empty-database migration check not run.\n'
   printf '      Do not merge on --fast.\n'
 else
   # ── 4. Frontend ────────────────────────────────────────────────────────────
-  step "4/5  frontend — tests, types, production build"
+  step "4/6  frontend — tests, types, production build"
   if [ ! -d frontend/node_modules ]; then
     printf '      installing frontend dependencies (npm ci)…\n'
     (cd frontend && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci >/dev/null 2>&1) \
@@ -132,7 +132,7 @@ else
   # CLAUDE.md §6 step 5, and the one check that would have caught the incident
   # in §4. A developer's own database is already migrated and can never exercise
   # the empty case; production always does. Note the `rm`.
-  step "5/5  migrations from nothing"
+  step "5/6  migrations from nothing — SQLite"
   MIGDB="$(mktemp -u /tmp/verify-mig-XXXXXX.db)"
   rm -f "$MIGDB"
   if (cd backend && DATABASE_URL="sqlite:///$MIGDB" $PY -m alembic upgrade head >/dev/null 2>&1); then
@@ -159,6 +159,49 @@ else
     fail "alembic upgrade head on an empty database"
   fi
   rm -f "$MIGDB"
+
+  # ── 6. Migrations, on an EMPTY database — PostgreSQL ───────────────────────
+  # The dialect production actually runs (deploy/compose.yaml) and the one this
+  # gate never used to exercise: the chain had been proven only on SQLite while
+  # every real deployment migrates Postgres. Same two checks as step 5 —
+  # upgrade from nothing, then models-vs-schema drift — on the real dialect.
+  #
+  # Where the server comes from, in order:
+  #   PG_VERIFY_URL   an existing server; the named database is WIPED each run,
+  #                   so point it only at a disposable one
+  #   pg_sandbox.sh   a throwaway cluster in /tmp, when server binaries exist
+  #                   (GitHub's ubuntu runners ship them; most laptops do too)
+  # With neither, this is SKIPPED and the verdict says so — narrowed, never
+  # silently passed, exactly the pie-parser arrangement above.
+  step "6/6  migrations from nothing — PostgreSQL"
+  PG_COVERED=1
+  PG_SANDBOX_STARTED=0
+  PG_URL="${PG_VERIFY_URL:-}"
+  if [ -z "$PG_URL" ]; then
+    if PG_URL=$(./scripts/pg_sandbox.sh start 2>/dev/null); then
+      PG_SANDBOX_STARTED=1
+    else
+      PG_URL=""
+    fi
+  fi
+  if [ -z "$PG_URL" ]; then
+    PG_COVERED=0
+    printf '\033[33mnote:\033[0m no PostgreSQL server binaries and no PG_VERIFY_URL.\n'
+    printf '      The Postgres migration check will SKIP. Everything else still runs.\n'
+    printf '      To cover it: install postgresql (the server), or point\n'
+    printf '      PG_VERIFY_URL at a disposable database.\n'
+  else
+    # One script for the quiet run and the show-the-failure rerun — two inline
+    # copies would be this file's own §6 drift story all over again.
+    if (cd backend && DATABASE_URL="$PG_URL" $PY ../scripts/verify_pg_migrations.py) >/dev/null 2>&1; then
+      pass "empty Postgres database migrates to head, no drift"
+    else
+      printf '      re-running to show the failure:\n'
+      (cd backend && DATABASE_URL="$PG_URL" $PY ../scripts/verify_pg_migrations.py) 2>&1 | tail -25
+      fail "Postgres: alembic upgrade head on an empty database, or drift"
+    fi
+    [ "$PG_SANDBOX_STARTED" = "1" ] && ./scripts/pg_sandbox.sh stop >/dev/null 2>&1
+  fi
 fi
 
 # ── Verdict ──────────────────────────────────────────────────────────────────
@@ -171,13 +214,20 @@ if [ ${#FAILED[@]} -eq 0 ]; then
     # from "not run yet". Only a full run stamps: --fast skipped two checks, and
     # a stamp that lies is worse than no stamp.
     ./scripts/source_signature.sh > .verify-stamp 2>/dev/null || true
-    if [ "$PIE_AVAILABLE" = "0" ]; then
+    if [ "$PIE_AVAILABLE" = "0" ] || [ "${PG_COVERED:-1}" = "0" ]; then
       # Still stamped: the gate did run, and nagging a developer who simply has
       # no submodule would train them to ignore the hook. But a narrowed run must
       # never read as a full one, so the verdict says which part went uncovered.
       printf '\033[32mVERIFIED\033[0m — all checks passed, \033[33mbut narrowed\033[0m:\n'
-      printf '      the engine-backed (requires_pie) tests were SKIPPED, because\n'
-      printf '      pie-parser is not checked out. CI covers them in pie-contract.\n'
+      if [ "$PIE_AVAILABLE" = "0" ]; then
+        printf '      · the engine-backed (requires_pie) tests were SKIPPED, because\n'
+        printf '        pie-parser is not checked out. CI covers them in pie-contract.\n'
+      fi
+      if [ "${PG_COVERED:-1}" = "0" ]; then
+        printf '      · the PostgreSQL migration check was SKIPPED — no server\n'
+        printf '        binaries and no PG_VERIFY_URL. CI covers it; production\n'
+        printf '        migrates Postgres, so cover it locally before a deploy.\n'
+      fi
     else
       printf '\033[32mVERIFIED\033[0m — all checks passed.\n'
     fi

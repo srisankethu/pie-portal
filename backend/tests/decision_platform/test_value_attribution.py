@@ -37,18 +37,18 @@ import pytest
 from fastapi import Depends, FastAPI
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
 from app import clock, entitlements
+import dbsupport
 from app.attribution import detectors as det
 from app.attribution import evaluator as ev
 from app.attribution import ledger as led
 from app.attribution.calculator import roi
 from app.commercial.quote_exceptions import BELOW_MARGIN_FLOOR
 from app.commercial.references import MARGIN_FLOOR_PRICE
-from app.db import Base, get_session
+from app.db import get_session
 from app.domain import models
 from app.domain.enums import ValueClass, ValueEventType
 from app.routers import attribution as attribution_router
@@ -223,6 +223,10 @@ def _ledger_rows(s) -> list[models.ValueEvent]:
 def trial(session):
     """An organization with a live trial, for the module-level rollups."""
     session.add(models.Organization(organization_id=ORG, name="PIE"))
+    # Flush the parent before the trial row references it: without mapped
+    # relationship()s the unit of work does not order inserts across these
+    # tables, and both backends now enforce the foreign key at flush time.
+    session.flush()
     return _start_trial(session)
 
 
@@ -234,9 +238,7 @@ def client():
     something to find: a leak test against an empty surface passes for the one
     reason that proves nothing.
     """
-    engine = create_engine("sqlite://", connect_args={"check_same_thread": False},
-                           poolclass=StaticPool, future=True)
-    Base.metadata.create_all(engine)
+    engine = dbsupport.fresh_engine()
     Maker = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False,
                          future=True)
 

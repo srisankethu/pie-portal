@@ -19,6 +19,7 @@ from datetime import date
 
 import pytest
 
+import dbsupport
 from app.commercial.config import CommercialThresholds
 from app.commercial.insight import dependency as dep
 
@@ -305,18 +306,14 @@ def client():
 
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
-    from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
-    from sqlalchemy.pool import StaticPool
 
-    from app.db import Base, get_session
+    from app.db import get_session
     from app.domain import models
     from app.routers import insight, platform_auth
     from app.seed import ensure_org_and_users
 
-    engine = create_engine("sqlite://", connect_args={"check_same_thread": False},
-                           poolclass=StaticPool, future=True)
-    Base.metadata.create_all(engine)
+    engine = dbsupport.fresh_engine()
     Maker = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False,
                          future=True)
     s = Maker()
@@ -325,6 +322,10 @@ def client():
     for conn, label in (("c_sls", "SLS Engineers"), ("c_4u", "4U Precision")):
         s.add(models.ZohoConnection(connection_id=conn, organization_id=org,
                                     label=label, zoho_organization_id=conn))
+    # Parents on disk before children reference them: without relationship()s
+    # the unit of work does not order inserts across mappers, and both
+    # backends enforce the foreign keys at flush time.
+    s.flush()
     # One customer, one vendor, one item and one sale per company — so every
     # figure on both halves differs between the two.
     for i, conn in enumerate(("c_sls", "c_4u")):
@@ -337,6 +338,7 @@ def client():
         s.add(models.Product(product_id=f"p_{conn}", organization_id=org,
                              external_id=f"ep_{conn}", name=f"Item {conn}",
                              hsn="82071900", active=True, source_ref={}))
+        s.flush()
         s.add(models.CostRecord(
             cost_record_id=f"cr_{conn}", organization_id=org,
             external_ref=f"b_{conn}:1", product_id=f"p_{conn}",

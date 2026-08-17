@@ -26,14 +26,13 @@ from datetime import date, timedelta
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
+import dbsupport
 from app.commercial import categories
 from app.commercial.config import CommercialThresholds
 from app.commercial.insight import bonds, payments
-from app.db import Base, get_session
+from app.db import get_session
 from app.routers import insight, platform_auth
 from app.seed import SEED_PASSWORD, ensure_org_and_users
 from app.signals.config import SignalThresholds
@@ -377,9 +376,7 @@ def test_the_view_names_what_it_cannot_answer():
 # ── the endpoint, and the role split through the middle of it ────────────────
 @pytest.fixture()
 def client():
-    engine = create_engine("sqlite://", connect_args={"check_same_thread": False},
-                           poolclass=StaticPool, future=True)
-    Base.metadata.create_all(engine)
+    engine = dbsupport.fresh_engine()
     Maker = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False,
                          future=True)
     s = Maker()

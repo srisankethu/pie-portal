@@ -275,6 +275,12 @@ def health(response: Response) -> dict:
         body["migration"] = state.to_dict()
         gap = describe(missing_columns(engine))
         body["schema_gap"] = gap
+        # Which dialect this process is actually serving, and how full its
+        # pool is. Informational, never part of `ok`: a busy pool is load, not
+        # ill health — but when requests start timing out with "QueuePool
+        # limit reached", this is the line that says so without a debugger.
+        body["database"] = {"dialect": engine.dialect.name,
+                            "pool": engine.pool.status()}
         body["ok"] = state.healthy and gap is None
     except Exception as exc:  # noqa: BLE001
         log.exception("health check could not read the database")

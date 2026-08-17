@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import pytest
 
+import dbsupport
 from app.commercial import principals as pr
 
 VENDORS = {
@@ -251,18 +252,14 @@ def client():
 
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
-    from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
-    from sqlalchemy.pool import StaticPool
 
-    from app.db import Base, get_session
+    from app.db import get_session
     from app.domain import models
     from app.routers import insight, platform_auth
     from app.seed import ensure_org_and_users
 
-    engine = create_engine("sqlite://", connect_args={"check_same_thread": False},
-                           poolclass=StaticPool, future=True)
-    Base.metadata.create_all(engine)
+    engine = dbsupport.fresh_engine()
     Maker = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False,
                          future=True)
     s = Maker()
@@ -283,6 +280,9 @@ def client():
                        external_id="e3", name="Unknown part", hsn="82071900",
                        active=True, source_ref={}),
     ])
+    # Vendor and items on disk before the bill references them — the unit of
+    # work does not order inserts across unrelated mappers.
+    s.flush()
     # Only the first has a bill. The second is the case that matters: stock
     # bought before the sync window, which the manufacturer is the only witness to.
     s.add(models.CostRecord(cost_record_id="c1", organization_id=org,
@@ -293,6 +293,7 @@ def client():
     # empty-book refusal — and so the coverage figures have money behind them.
     s.add(models.Customer(customer_id="c1", organization_id=org,
                           external_id="ec1", name="Precision Motors"))
+    s.flush()
     for pid, revenue in (("p-billed", "500"), ("p-maker", "300"),
                          ("p-neither", "200")):
         s.add(models.SalesTxn(

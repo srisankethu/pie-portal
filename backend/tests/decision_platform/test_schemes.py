@@ -25,6 +25,7 @@ from decimal import Decimal
 
 import pytest
 
+import dbsupport
 from app.commercial.insight import schemes
 from app.commercial.insight.dependency import Target
 
@@ -368,18 +369,14 @@ def test_the_rebate_is_exact_to_the_paise():
 def client():
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
-    from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
-    from sqlalchemy.pool import StaticPool
 
-    from app.db import Base, get_session
+    from app.db import get_session
     from app.domain import models
     from app.routers import insight, platform_auth
     from app.seed import ensure_org_and_users
 
-    engine = create_engine("sqlite://", connect_args={"check_same_thread": False},
-                           poolclass=StaticPool, future=True)
-    Base.metadata.create_all(engine)
+    engine = dbsupport.fresh_engine()
     Maker = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False,
                          future=True)
     s = Maker()
@@ -391,6 +388,10 @@ def client():
                           external_id="ec1", name="Buyer"))
     s.add(models.Product(product_id="p1", organization_id=org, external_id="ep1",
                          name="Insert", source_ref={}))
+    # Parents on disk before the cost lines reference them: the unit of work
+    # does not order inserts across unrelated mappers, and both backends
+    # enforce the foreign keys at flush.
+    s.flush()
     # Eight bills through the quarter, ₹5.25 lakh each — ₹42 lakh by 26 May, on
     # a ₹50 lakh number. The sentence in the brief, as rows.
     for i in range(8):

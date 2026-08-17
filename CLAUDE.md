@@ -543,7 +543,11 @@ with it.
 What it runs, in order: `ruff check .` (rule set in `ruff.toml`, version pinned
 in `backend/requirements-dev.txt`) · the §1 layer invariants · the backend suite
 in parallel · `tsc -b` and the production build · `alembic upgrade head` **on an
-empty database**, then the drift test and the single-head check.
+empty database**, then the drift test and the single-head check — first on
+SQLite, then again on a disposable **PostgreSQL** (the dialect production runs;
+provisioned by `scripts/pg_sandbox.sh`, skipped with a visible note where no
+server binaries exist). To run the whole backend suite on Postgres instead of
+SQLite, set `PIE_TEST_DATABASE_URL` — `docs/postgres.md` has the loop.
 
 It runs every step and reports all failures at the end rather than stopping at
 the first, so one red build tells you everything that is wrong.

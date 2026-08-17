@@ -24,7 +24,19 @@ def _engine_kwargs(url: str) -> dict:
     # SQLite needs check_same_thread off for the FastAPI threadpool.
     if url.startswith("sqlite"):
         return {"connect_args": {"check_same_thread": False, "timeout": 30}}
-    return {"pool_pre_ping": True}
+    # Postgres: a bounded pool with loud failure. Sizes and the reasoning
+    # behind them live on the settings themselves (config.py) — the short
+    # version is 2 uvicorn workers × (5 + 10) = 30 connections worst case,
+    # against stock max_connections=100. pre_ping turns a connection the
+    # server quietly dropped into a reconnect instead of a request-time error;
+    # recycle retires connections before proxy idle cutoffs get there first.
+    return {
+        "pool_pre_ping": True,
+        "pool_size": settings.DB_POOL_SIZE,
+        "max_overflow": settings.DB_MAX_OVERFLOW,
+        "pool_timeout": settings.DB_POOL_TIMEOUT,
+        "pool_recycle": settings.DB_POOL_RECYCLE,
+    }
 
 
 engine = create_engine(settings.DATABASE_URL, echo=settings.SQL_ECHO, future=True,

@@ -16,6 +16,8 @@ from sqlalchemy import event
 from sqlalchemy.engine import Engine
 from sqlalchemy.pool import Pool
 
+from ..config import settings
+
 from .metrics import metrics
 
 log = logging.getLogger("pie_portal.observability.instrumentation")
@@ -131,9 +133,15 @@ def instrument_database(engine: Engine) -> None:
             db_queries.inc()
             db_query_duration.observe(duration)
 
-            # Log slow queries
-            if duration > 1.0:
-                log.warning("slow query detected: %.3f seconds", duration)
+            # Log slow queries. Threshold from DB_SLOW_QUERY_MS (0 = off);
+            # the compose stack sets 500. The line carries the statement text
+            # with placeholders and never the bound parameters — binds hold
+            # customer names, payload text and credentials, and trust/ exists
+            # so those never reach a log file.
+            threshold_ms = settings.DB_SLOW_QUERY_MS
+            if threshold_ms > 0 and duration * 1000 >= threshold_ms:
+                log.warning("slow query (%.0f ms): %s", duration * 1000,
+                            " ".join(statement.split())[:500])
 
     @event.listens_for(Engine, "handle_error")
     def receive_handle_error(exception_context):

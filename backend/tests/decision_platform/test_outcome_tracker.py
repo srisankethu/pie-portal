@@ -15,6 +15,7 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import select
 
+import dbsupport
 from app.commercial import outcome_tracker
 from app.domain import models
 from app.domain.enums import HumanAction, OutcomeStatus
@@ -73,6 +74,20 @@ def _cost(session, *, product, on, unit_cost, org=ORG, ref=None):
 
 def _snapshot(session, *, category, subject_type, subject_id, baseline,
               accepted, horizon=90, org=ORG, version="th_testversion"):
+    # The decision and signal the snapshot points at must exist — the
+    # foreign keys are enforced on both backends now, and a snapshot of a
+    # decision that was never taken is exactly the phantom they exclude.
+    session.add(models.Signal(
+        signal_id=f"sig_{category}_{subject_id}", organization_id=org,
+        signal_type=category, subject_entity_type=subject_type,
+        subject_entity_id=subject_id, detector_version="v0",
+        threshold_config_version=version))
+    session.add(models.Decision(
+        decision_id=f"dec_{category}_{subject_id}", organization_id=org,
+        decision_type=category, decision_key=f"dk_{category}_{subject_id}",
+        subject_entity_type=subject_type, subject_entity_id=subject_id,
+        assigned_role="SALES_MANAGER"))
+    session.flush()
     row = models.OutcomeSnapshot(
         organization_id=org, decision_id=f"dec_{category}_{subject_id}",
         signal_id=f"sig_{category}_{subject_id}", category=category,
@@ -311,18 +326,14 @@ def test_a_category_without_an_evaluator_is_unknown_with_the_reason_named(sessio
 def api():
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
-    from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
-    from sqlalchemy.pool import StaticPool
 
-    from app.db import Base, get_session
+    from app.db import get_session
     from app.routers import outcomes as outcomes_router
     from app.routers import platform_auth
     from app.seed import ensure_org_and_users
 
-    engine = create_engine("sqlite://", connect_args={"check_same_thread": False},
-                           poolclass=StaticPool, future=True)
-    Base.metadata.create_all(engine)
+    engine = dbsupport.fresh_engine()
     maker = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False,
                          future=True)
     s = maker()

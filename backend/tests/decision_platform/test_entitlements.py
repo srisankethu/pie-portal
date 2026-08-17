@@ -17,12 +17,11 @@ from datetime import timedelta
 import pytest
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
 from app import clock, entitlements
-from app.db import Base, get_session
+import dbsupport
+from app.db import get_session
 from app.domain import models
 from app.domain.enums import PlanTier
 from app.ingestion import connections as conn
@@ -214,9 +213,7 @@ def test_connecting_starts_the_trial_and_reconnecting_elsewhere_does_not(
 # ── over HTTP: the gate answers in plan language ─────────────────────────────
 @pytest.fixture()
 def client():
-    engine = create_engine("sqlite://", connect_args={"check_same_thread": False},
-                           poolclass=StaticPool, future=True)
-    Base.metadata.create_all(engine)
+    engine = dbsupport.fresh_engine()
     Maker = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False,
                          future=True)
 

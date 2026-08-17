@@ -17,10 +17,9 @@ import pytest
 # when it loads the engine. These tests assert against the engine's key shape
 # without paying for a catalogue load, so they add it directly.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "pie-parser"))
-from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.db import Base
+import dbsupport
 from app.domain import models
 from app.identity import service as identity_service
 from app.identity.mapping_store import OrgMappingStore
@@ -31,8 +30,7 @@ IDENTITY = "identity-pitti"
 
 @pytest.fixture()
 def session():
-    engine = create_engine("sqlite://")
-    Base.metadata.create_all(engine)          # a fixture, per CLAUDE.md §4
+    engine = dbsupport.fresh_engine()          # a fixture, per CLAUDE.md §4
     s = sessionmaker(bind=engine)()
     yield s
     s.close()

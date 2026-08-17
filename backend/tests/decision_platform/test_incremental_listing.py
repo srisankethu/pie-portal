@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from datetime import date
 
+import dbsupport
 from app.ingestion.zoho_client import ZohoApiSource
 
 
@@ -374,17 +375,12 @@ def test_coverage_reads_finished_runs_only(tmp_path):
     """
     from datetime import datetime, timezone
 
-    from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
-    from sqlalchemy.pool import StaticPool
 
-    from app.db import Base
     from app.domain import models
     from app.repositories import ReadModelRepository
 
-    engine = create_engine("sqlite://", connect_args={"check_same_thread": False},
-                           poolclass=StaticPool, future=True)
-    Base.metadata.create_all(engine)
+    engine = dbsupport.fresh_engine()
     s = sessionmaker(bind=engine, future=True)()
 
     def _run(since, status):

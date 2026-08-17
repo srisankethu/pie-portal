@@ -216,6 +216,13 @@ export function vizPath(route: string): string {
     supply: "supply",
     negotiate: "negotiate",
     "quote-outcomes": "quoteOutcomes",
+    // The two names the *needs-you* tiles carry. They were missing, and the
+    // fallback below sends an unknown name to home — so "Approvals waiting"
+    // and "Decisions in the queue" navigated to the screen the reader was
+    // already standing on, and only ever on the days those tiles had work in
+    // them, which is when the link renders at all.
+    approvals: "approvals",
+    list: "list",
     // Bare `customer` — no id — is the Customers screen with its own picker.
     // It routes here now that Customers is a nav destination in its own right
     // rather than only ever a link carrying an account.

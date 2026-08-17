@@ -1492,7 +1492,9 @@ function ByokProviderRow({ token, row, active, onView }: {
   );
 }
 
-export function SettingsScreen({ session }: { session: PlatformSession }) {
+export function SettingsScreen(
+  { session, onToken }: { session: PlatformSession; onToken: (token: string) => void },
+) {
   const [users, setUsers] = useState<PlatformUser[]>([]);
   const [canManage, setCanManage] = useState(false);
   const [policy, setPolicy] = useState<OrgPolicy | null>(null);
@@ -1562,7 +1564,14 @@ export function SettingsScreen({ session }: { session: PlatformSession }) {
     e.preventDefault();
     setPwMsg(null);
     try {
-      await papi.changeOwnPassword(session.token, pw.current, pw.next);
+      // The new token must replace the one in the session, not be discarded.
+      // Changing a password stamps `password_changed_at`, and the server then
+      // rejects every token minted before it — so keeping the old one signs the
+      // user out by their own success, into a shell that still looks live
+      // because nothing here tells it otherwise. `ForcedPasswordChange` has
+      // always done this; only this screen forgot.
+      const { token } = await papi.changeOwnPassword(session.token, pw.current, pw.next);
+      onToken(token);
       setPwMsg("Password changed.");
       setPw({ current: "", next: "" });
     } catch (err) {

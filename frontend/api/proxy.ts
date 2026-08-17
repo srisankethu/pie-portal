@@ -43,6 +43,14 @@ export default async function handler(request: Request): Promise<Response> {
   }
 
   const incoming = new URL(request.url);
+
+  // Only the rewrite may reach this function. Vercel serves it at its own
+  // filesystem path too, so /api/proxy is a public URL whose `__path` is
+  // whatever the caller types — and the rewrite is the only thing that
+  // guarantees the value came from a path under /api/.
+  if (!incoming.searchParams.has(PATH_PARAM)) {
+    return proxyError(404, "Not found");
+  }
   const path = incoming.searchParams.get(PATH_PARAM) ?? "";
 
   // The caller's own query string survives: Vercel merges it into the
@@ -51,7 +59,20 @@ export default async function handler(request: Request): Promise<Response> {
   forwarded.delete(PATH_PARAM);
   const query = forwarded.toString();
 
-  const target = `https://${backend}/api/${path}${query ? `?${query}` : ""}`;
+  // Resolved, not concatenated. String interpolation forwards `..` verbatim,
+  // and the backend resolves it — so /api/proxy?__path=../openapi.json served
+  // the production schema (every route and model, including the trust, admin
+  // and margin-policy surfaces) and ../docs served Swagger UI, neither of them
+  // reachable through the /api/ rewrite this proxy exists to be. The URL
+  // constructor collapses the traversal here, where it can be seen and
+  // refused, instead of at the origin where it succeeds.
+  const base = `https://${backend}/api/`;
+  const resolved = new URL(path.replace(/^\/+/, ""), base);
+  if (!resolved.href.startsWith(base)) {
+    return proxyError(400, "Rejected a path outside /api/");
+  }
+  resolved.search = query;
+  const target = resolved.href;
 
   // Drop the inbound Host: it names the Vercel domain, and forwarding it to a
   // different origin invites that edge to route on a name it does not serve.
@@ -86,8 +107,36 @@ export default async function handler(request: Request): Promise<Response> {
 
   // Everything from here is the backend's own answer, including its errors:
   // status and body pass through untouched so a real 500 still reads as one.
-  return new Response(upstream.body, {
-    status: upstream.status,
-    headers: upstream.headers,
-  });
+  // The headers need two corrections first, and neither is reachable from the
+  // app as it stands today — they are here because each becomes live the
+  // moment an ordinary change lands upstream, and both fail silently.
+  const out = new Headers(upstream.headers);
+
+  // 1. A redirect's Location names the backend origin, because that is the
+  //    origin the backend saw. Passed through, the browser leaves this site
+  //    for the Railway host, where CORS is empty by design and the request
+  //    dies. Rewritten to a same-origin path, the redirect still means what
+  //    the backend intended. Nothing emits a 3xx today: no route ends in "/"
+  //    and no caller sends a trailing slash, so FastAPI's redirect_slashes
+  //    never fires -- but an interpolated id that arrives empty builds one.
+  const location = out.get("location");
+  if (location) {
+    try {
+      const to = new URL(location, `https://${backend}/`);
+      if (to.host === backend) out.set("location", to.pathname + to.search);
+    } catch {
+      /* not a URL we can reinterpret; leave the backend's own value */
+    }
+  }
+
+  // 2. content-encoding and content-length describe the body the *runtime*
+  //    received, and it has already decoded it before handing us `body`.
+  //    Re-emitting them tells the browser to decompress something that is no
+  //    longer compressed. The backend adds no compression middleware today,
+  //    so this cannot fire -- until somebody adds GZipMiddleware, which is a
+  //    one-line change that would corrupt every response through this proxy.
+  out.delete("content-encoding");
+  out.delete("content-length");
+
+  return new Response(upstream.body, { status: upstream.status, headers: out });
 }

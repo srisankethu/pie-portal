@@ -12,6 +12,11 @@
 // and it would agree with the first right up until somebody renames a screen.
 import { describe, expect, it } from "vitest";
 
+// The server's own source, inlined by Vite at transform time (`?raw`). Read
+// rather than restated, because a copy of the destination list is a copy that
+// stops matching the day somebody adds a tile.
+import dailySource from "../../../backend/app/commercial/insight/daily.py?raw";
+
 import type { Screen } from "./route";
 import { LEGACY_ACCOUNTS, PATH, PATTERN, pathFor, screenAt, vizPath } from "./route";
 
@@ -119,5 +124,35 @@ describe("vizPath", () => {
     expect(vizPath("")).toBe(PATH.home);
     // …and still keeps the query, so the fallback is a working link.
     expect(vizPath("unknown?x=1")).toBe(`${PATH.home}?x=1`);
+  });
+
+  // The fallback above is what makes this test necessary. A destination the
+  // server emits but the map has never heard of does not fail loudly — it
+  // resolves to home, so the link renders, clicks, and goes nowhere. Three of
+  // them shipped that way: `approvals`, `list`, and a plural `customers` typo,
+  // each dead exactly on the days its tile had something in it.
+  //
+  // Read from the server's source rather than restated here, because a copy of
+  // the list is a copy that stops matching.
+  it("routes every destination the Daily tiles actually emit", () => {
+    const daily = dailySource;
+
+    const emitted = new Set<string>();
+    for (const m of daily.matchAll(/route=["']([a-z-]+)["']/g)) emitted.add(m[1]);
+    // The `spec` rows carry their destination positionally: (key, label, route, why).
+    for (const m of daily.matchAll(/\(\s*"[a-z_]+",\s*"[^"]+",\s*"([a-z-]+)",/g)) emitted.add(m[1]);
+
+    // A tripwire on the scrape itself, not a count of tiles: if the regexes
+    // stop matching — a rename, a reformat — `emitted` empties and the real
+    // assertion below passes over nothing, which would read as "all fine".
+    // Seven distinct destinations exist today (daily.py is the only module in
+    // insight/ that emits any); this fails if that scrape ever finds fewer.
+    expect(emitted.size).toBeGreaterThanOrEqual(7);
+
+    // `revenue-flow` is deliberately home: the flow chart lives on that screen.
+    const deliberatelyHome = new Set(["revenue-flow"]);
+    const dead = [...emitted]
+      .filter((r) => !deliberatelyHome.has(r) && vizPath(r) === PATH.home);
+    expect(dead).toEqual([]);
   });
 });

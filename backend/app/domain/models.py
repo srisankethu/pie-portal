@@ -3185,10 +3185,15 @@ class BusinessState(Base):
                                                    default=_uuid)
     organization_id: Mapped[str] = mapped_column(String(64), index=True)
     state: Mapped[str] = mapped_column(String(48), index=True)
-    #: The thing this state is *about* — a product id, a party id. A local id,
-    #: never an external one: two connected companies can number from one, and
-    #: a state keyed on an external id would silently merge them.
-    key: Mapped[str] = mapped_column(String(64), index=True)
+    #: The thing this state is *about* — a product id, a party id, or a
+    #: reducer's composite of them (``vendor:product``,
+    #: ``customer:product:2026-03``). Local ids, never external ones: two
+    #: connected companies can number from one, and a state keyed on an
+    #: external id would silently merge them. 160 because a composite of two
+    #: 64-char ids plus a month bucket is 137 — String(64) fit only the single
+    #: ids, which SQLite never enforced and Postgres rejected on first
+    #: contact.
+    key: Mapped[str] = mapped_column(String(160), index=True)
     as_of: Mapped[date] = mapped_column(Date, index=True)
     value: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     #: How many live events were folded into this row. Not decoration: a state
@@ -3229,7 +3234,8 @@ class StateTransition(Base):
     event_seq: Mapped[int] = mapped_column(Integer, index=True)
     event_type: Mapped[str] = mapped_column(String(48))
     state: Mapped[str] = mapped_column(String(48), index=True)
-    key: Mapped[str] = mapped_column(String(64), index=True)
+    #: Same width as BusinessState.key, for the same composite-key reason.
+    key: Mapped[str] = mapped_column(String(160), index=True)
     #: Which fold this working belongs to. Two builds at different ``as_of``
     #: dates are two different arithmetics over the same events, and a
     #: transition that did not say which would explain the wrong one.

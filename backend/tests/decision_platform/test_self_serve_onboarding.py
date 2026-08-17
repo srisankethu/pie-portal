@@ -27,13 +27,13 @@ from __future__ import annotations
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, select
+from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
 from app import clock, entitlements, onboarding
+import dbsupport
 from app.config import settings
-from app.db import Base, get_session
+from app.db import get_session
 from app.domain import models
 from app.domain.enums import PlanTier, Role
 from app.passwords import verify_password
@@ -65,9 +65,7 @@ def client(monkeypatch):
     # whichever test ran next.
     monkeypatch.setattr(onboarding_router, "_RECENT", {})
 
-    eng = create_engine("sqlite://", connect_args={"check_same_thread": False},
-                        poolclass=StaticPool, future=True)
-    Base.metadata.create_all(eng)
+    eng = dbsupport.fresh_engine()
     maker = sessionmaker(bind=eng, autoflush=False, expire_on_commit=False,
                          future=True)
 

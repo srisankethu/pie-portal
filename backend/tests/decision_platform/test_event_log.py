@@ -162,9 +162,13 @@ def _wipe(session, org: str) -> None:
     rebuild what it wrote, resolving against masters that are still there. A
     replay into an empty database would be testing a different, weaker claim.
     """
+    # Children before parents: applications reference the receipts and
+    # payments the loop below deletes, and the foreign keys are enforced on
+    # both backends now.
+    session.execute(delete(models.PaymentApplication))
+    session.execute(delete(models.BillPaymentApplication))
     for model, _ in _REBUILT:
         session.execute(delete(model).where(model.organization_id == org))
-    session.execute(delete(models.PaymentApplication))
     session.flush()
 
 

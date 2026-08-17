@@ -72,8 +72,22 @@ if _PIE_ROOT not in sys.path:
 # Serial runs are untouched, so `pytest tests` behaves exactly as before; only
 # `-n` opts into the isolated path. The migration suite passes its own explicit
 # URLs and is unaffected either way.
+#
+# With PIE_TEST_DATABASE_URL set, the same isolation happens on a Postgres
+# server instead — the production dialect: each worker gets `<base>_app_<id>`,
+# created on first use and migrated by the bootstrap fixture below through the
+# real Alembic chain. Serial runs are isolated too (worker "main"), because in
+# this mode there is no SQLite file to fall back to. `tests/dbsupport.py` is
+# the other half: the per-test fixture databases.
 _WORKER = os.environ.get("PYTEST_XDIST_WORKER")
-if _WORKER:
+_PG_TEST = os.environ.get("PIE_TEST_DATABASE_URL")
+if _PG_TEST:
+    from sqlalchemy.engine import make_url
+
+    _u = make_url(_PG_TEST)
+    os.environ["DATABASE_URL"] = str(
+        _u.set(database=f"{_u.database}_app_{_WORKER or 'main'}"))
+elif _WORKER:
     _worker_db = BACKEND / "data" / f"test_{_WORKER}.db"
     _worker_db.parent.mkdir(parents=True, exist_ok=True)
     # Not setdefault: an inherited DATABASE_URL would put every worker back on
@@ -141,6 +155,16 @@ def _platform_database():
     Alembic-only and idempotent, so this is `make bootstrap` rather than a
     second schema path (CLAUDE.md §4 — never `create_all` outside a fixture,
     and this is not one of those either).
+
+    On Postgres (PIE_TEST_DATABASE_URL set) the worker's application database
+    is created and emptied first, so every run migrates from nothing — a
+    leftover schema from another checkout would otherwise make this worker's
+    results depend on what ran here last.
     """
+    if _PG_TEST:
+        import dbsupport
+
+        dbsupport.ensure_database(os.environ["DATABASE_URL"])
+        dbsupport.wipe_schema(os.environ["DATABASE_URL"])
     from app.bootstrap import bootstrap
     bootstrap()

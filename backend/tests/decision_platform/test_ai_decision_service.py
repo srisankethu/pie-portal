@@ -5,12 +5,11 @@ from __future__ import annotations
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
+import dbsupport
 from app.ai.mock_provider import MockProvider
-from app.db import Base, get_session
+from app.db import get_session
 from app.decisions.service import DecisionService
 from app.domain import models
 from app.routers import internal, platform_auth
@@ -142,9 +141,7 @@ def test_organization_isolation(session):
 # ── endpoint ──────────────────────────────────────────────────────────────────
 @pytest.fixture()
 def client():
-    engine = create_engine("sqlite://", connect_args={"check_same_thread": False},
-                           poolclass=StaticPool, future=True)
-    Base.metadata.create_all(engine)
+    engine = dbsupport.fresh_engine()
     Maker = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False, future=True)
     s = Maker()
     ensure_org_and_users(s)

@@ -97,6 +97,44 @@ class Settings:
     )
     SQL_ECHO: bool = os.environ.get("SQL_ECHO", "0") == "1"
 
+    # Postgres connection pool (ignored on SQLite). The defaults are sized for
+    # this deployment's actual shape — compose runs UVICORN_WORKERS=2, so the
+    # worst case is workers × (size + overflow) = 2 × 15 = 30 connections,
+    # comfortably inside stock Postgres' max_connections=100 with room for the
+    # release job, psql, and a second replica. Raise deliberately, with that
+    # arithmetic redone, not because a benchmark said bigger is faster.
+    #   POOL_TIMEOUT  how long a request waits for a free connection before
+    #                 failing loudly (better a named 30s failure than a silent
+    #                 pile-up);
+    #   POOL_RECYCLE  retire connections before typical NAT/proxy idle cutoffs
+    #                 (managed Postgres front-ends commonly drop at 30–60 min;
+    #                 30 min stays under all of them). pool_pre_ping catches
+    #                 what recycling misses.
+    DB_POOL_SIZE: int = int(os.environ.get("DB_POOL_SIZE", "5"))
+    DB_MAX_OVERFLOW: int = int(os.environ.get("DB_MAX_OVERFLOW", "10"))
+    DB_POOL_TIMEOUT: int = int(os.environ.get("DB_POOL_TIMEOUT", "30"))
+    DB_POOL_RECYCLE: int = int(os.environ.get("DB_POOL_RECYCLE", "1800"))
+
+    # Log any statement slower than this many milliseconds (0 = off). Read by
+    # observability/instrumentation.py — the one place query timing lives.
+    # 1000 keeps the threshold that module always had, now tunable; the
+    # compose stack tightens it to 500. The log line carries the statement and
+    # duration, never parameter values — bind parameters hold customer names
+    # and credentials, and trust/ exists so those never reach a log file.
+    DB_SLOW_QUERY_MS: int = int(os.environ.get("DB_SLOW_QUERY_MS", "1000"))
+
+    # ── Redis (provisioned infrastructure; no feature requires it yet) ──────
+    # Both compose stacks run a Redis next to the API for the state that must
+    # one day live outside a process: cross-replica rate limiting (the signup
+    # limiter in routers/onboarding.py is in-process and says so), cache, and
+    # background-job coordination if the thread-based sync ever needs to span
+    # replicas. Empty means "none configured", and nothing may *require* Redis
+    # to serve a request — a candidate consumer degrades to its in-process
+    # behaviour, the way the signup limiter behaves today. Kept honest on
+    # purpose: config that pretends a dependency is load-bearing before any
+    # code reads it teaches operators to ignore this file.
+    REDIS_URL: str = os.environ.get("REDIS_URL", "")
+
     # Create the database + schema + demo users on startup, so a fresh clone
     # runs without a separate migrate/seed step. Always disabled in production,
     # where migrations are a deliberate, reviewed deploy step.

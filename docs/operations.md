@@ -29,8 +29,14 @@ always wins over it**. All values have defaults that work for local development.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `DATABASE_URL` | `sqlite:///backend/data/platform.db` | SQLAlchemy URL. Production: `postgresql+psycopg://user:pw@host/db`. |
+| `DATABASE_URL` | `sqlite:///backend/data/platform.db` | SQLAlchemy URL. Production: `postgresql+psycopg://user:pw@host/db` — see [postgres.md](postgres.md), including the data-move tool for an existing SQLite file. |
 | `SQL_ECHO` | `0` | Log every SQL statement. Debugging only. |
+| `DB_POOL_SIZE` | `5` | Postgres pool per process (ignored on SQLite). The sizing arithmetic is on the setting in `config.py`; redo it before raising. |
+| `DB_MAX_OVERFLOW` | `10` | Extra Postgres connections under burst, released when idle. |
+| `DB_POOL_TIMEOUT` | `30` | Seconds a request waits for a free connection before failing loudly. |
+| `DB_POOL_RECYCLE` | `1800` | Retire pooled connections before proxy/NAT idle cutoffs drop them first. |
+| `DB_SLOW_QUERY_MS` | `1000` | Log statements slower than this (0 = off; the compose stack sets 500). Statement text only — parameter values never reach the log. |
+| `REDIS_URL` | *(empty)* | Provisioned infrastructure (both compose stacks run one); no feature requires it yet, and nothing may refuse to serve because it is absent. |
 | `AUTO_BOOTSTRAP` | `1` | Create the DB, migrate, and seed users on startup. **Ignored in production.** |
 | `DEMO_SEED_ON_START` | `1` | Seed the demo dataset on startup. **Ignored in production, and ignored whenever `ZOHO_SOURCE=api`** — a live account means no fabricated customer should ever appear. |
 

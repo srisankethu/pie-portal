@@ -27,11 +27,10 @@ These tests need no engine: they exercise the gate, not resolution.
 from __future__ import annotations
 
 import pytest
-from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+import dbsupport
 from app.authz import Principal
-from app.db import Base
 from app.domain import models
 from app.domain.enums import Role
 from app.pie_service import Candidate, Resolution
@@ -44,8 +43,7 @@ IDENTITY = "identity-pitti"
 
 @pytest.fixture()
 def session():
-    engine = create_engine("sqlite://")
-    Base.metadata.create_all(engine)          # a fixture, per CLAUDE.md §4
+    engine = dbsupport.fresh_engine()          # a fixture, per CLAUDE.md §4
     s = sessionmaker(bind=engine)()
     yield s
     s.close()

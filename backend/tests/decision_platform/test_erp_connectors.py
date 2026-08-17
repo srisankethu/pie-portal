@@ -31,11 +31,11 @@ from urllib.parse import quote, unquote
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, select
+from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
-from app.db import Base, get_session
+import dbsupport
+from app.db import get_session
 from app.domain import models
 from app.domain.origin import CONNECTORS
 from app.ingestion import erp
@@ -376,10 +376,7 @@ def test_transport_reports_a_named_scope_refusal_over_a_generic_auth_error():
 # ── the connect service ─────────────────────────────────────────────────────
 @pytest.fixture()
 def db():
-    engine = create_engine("sqlite://",
-                           connect_args={"check_same_thread": False},
-                           poolclass=StaticPool, future=True)
-    Base.metadata.create_all(engine)
+    engine = dbsupport.fresh_engine()
     Maker = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False,
                          future=True)
     s = Maker()
@@ -402,7 +399,12 @@ def test_secrets_are_encrypted_at_rest_and_config_stays_readable(db):
     cred = row.credential
     assert cred.connector == "netsuite"
     stored = cred.secrets_encrypted
-    assert stored and "cs" not in stored and "ts" not in stored
+    # The quoted-JSON forms, not bare "cs"/"ts": those are two base64
+    # characters and appear somewhere in a ~120-char Fernet token by pure
+    # chance in roughly one run in twenty. A double quote can never occur in
+    # base64url, so cleartext JSON — the thing this test exists to forbid —
+    # is detected deterministically.
+    assert stored and '"cs"' not in stored and '"ts"' not in stored
     material = conn.credential_material(db, row)
     assert material.secrets == {"consumer_secret": "cs", "token_secret": "ts"}
     assert cred.config == {"consumer_key": "ck", "token_id": "ti"}
@@ -569,10 +571,7 @@ def test_a_foreign_currency_document_is_refused_not_pooled(db, us_org):
 # ── the HTTP surface ────────────────────────────────────────────────────────
 @pytest.fixture()
 def client():
-    engine = create_engine("sqlite://",
-                           connect_args={"check_same_thread": False},
-                           poolclass=StaticPool, future=True)
-    Base.metadata.create_all(engine)
+    engine = dbsupport.fresh_engine()
     Maker = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False,
                          future=True)
     s = Maker()

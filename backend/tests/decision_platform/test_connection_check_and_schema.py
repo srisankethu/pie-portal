@@ -21,10 +21,10 @@ from __future__ import annotations
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
+import dbsupport
 from app.db import Base, get_session
 from app.ingestion.zoho_client import ZohoAuthError
 from app.routers import connections as cr, data_status, platform_auth
@@ -63,15 +63,23 @@ def _app(engine):
 
 @pytest.fixture()
 def client():
-    engine = create_engine("sqlite://", connect_args={"check_same_thread": False},
-                           poolclass=StaticPool, future=True)
-    Base.metadata.create_all(engine)
+    engine = dbsupport.fresh_engine()
     return _app(engine)
 
 
 @pytest.fixture()
 def stale_client():
-    """A database from before sync_runs gained connection_id."""
+    """A database from before sync_runs gained connection_id.
+
+    Deliberately NOT dbsupport.fresh_engine(): this fixture damages the schema,
+    and in Postgres mode that engine is a shared per-worker database — DDL run
+    against it would outlive this test. The staleness being simulated is
+    backend-neutral (the inspector-based schema check is what's under test), so
+    a private in-memory SQLite database is the right tool on every backend.
+    """
+    from sqlalchemy import create_engine
+    from sqlalchemy.pool import StaticPool
+
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False},
                            poolclass=StaticPool, future=True)
     Base.metadata.create_all(engine)

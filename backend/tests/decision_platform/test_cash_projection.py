@@ -740,6 +740,12 @@ def test_lateness_is_measured_against_the_agreed_term_not_the_erps(session):
     client, token = _api(session)
     vendor = _vendor_of(session, "v1")
     raised = date(2026, 5, 1)
+    # The application's payment must exist — the foreign key is enforced on
+    # both backends now.
+    session.add(models.VendorPaymentDoc(
+        vendor_payment_id="vp-x", organization_id=ORG, external_ref="vp-x",
+        date=raised + timedelta(days=40), amount=Decimal("1000")))
+    session.flush()
     session.add(models.BillPaymentApplication(
         organization_id=ORG, external_ref="bp-guard", vendor_payment_id="vp-x",
         vendor_id=vendor, bill_external_ref="b-guard", bill_number="B-GUARD",

@@ -46,6 +46,23 @@ x-backend-env: &backend-env
 
   ZOHO_SOURCE: ${ZOHO_SOURCE:-fixture}
 
+  # Provisioned beside the API for cross-replica state (rate limits, cache,
+  # job coordination). No feature requires it yet — config.py says which
+  # candidates exist — so the API must keep serving if Redis is down.
+  REDIS_URL: redis://redis:6379/0
+
+  # Postgres pool. The defaults' arithmetic is documented on the settings in
+  # config.py: 2 uvicorn workers × (5 + 10) = 30 worst case, against stock
+  # max_connections=100. Redo it before raising anything here.
+  DB_POOL_SIZE: ${DB_POOL_SIZE:-5}
+  DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-10}
+  DB_POOL_TIMEOUT: ${DB_POOL_TIMEOUT:-30}
+  DB_POOL_RECYCLE: ${DB_POOL_RECYCLE:-1800}
+  # On in production (unlike the code default of 0): a statement slower than
+  # half a second is worth a log line before it is worth a support call. The
+  # line carries the statement only — parameter values never reach the log.
+  DB_SLOW_QUERY_MS: ${DB_SLOW_QUERY_MS:-500}
+
   AI_PROVIDER: ${AI_PROVIDER:-mock}
   ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
   AI_MODEL: ${AI_MODEL:-claude-haiku-4-5-20251001}
@@ -80,6 +97,21 @@ services:
       retries: 24
     restart: unless-stopped
 
+  redis:
+    image: redis:7-alpine
+    # Append-only so rate-limit and job state survive a restart. Losing this
+    # volume must never lose business data: Postgres is the system of record,
+    # Redis only ever holds state that can be dropped or rebuilt.
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
+
   api:
     build: *api-build
     image: pie-portal-api:latest
@@ -87,6 +119,11 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      # service_started, not service_healthy: Redis being down degrades
+      # candidates to their in-process behaviour, it must not hold the API
+      # hostage — the same reasoning as web→api below.
+      redis:
+        condition: service_started
     healthcheck:
       # /api/health is the one that can fail: it reports 503 when the schema is
       # behind the code, which is exactly the deploy that otherwise looks
@@ -142,5 +179,6 @@ services:
 
 volumes:
   db-data:
+  redis-data:
   caddy-data:
   caddy-config:

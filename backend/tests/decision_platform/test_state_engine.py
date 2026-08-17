@@ -542,6 +542,14 @@ def test_an_event_whose_master_is_missing_is_reported_not_keyed(session):
     """A state built from 90% of the evidence that says so is usable; one that
     says nothing is not."""
     _synced(session)
+    # Removing the master while its events remain is the scenario; the sales
+    # rows that reference the product must go with it (enforced foreign keys),
+    # and the event log — deliberately not FK-bound — still holds the
+    # reference the build must report as unresolved.
+    gone = session.query(models.Product).filter_by(external_id="i2").one()
+    session.query(models.SalesTxn).filter_by(product_id=gone.product_id).delete()
+    session.query(models.CostRecord).filter_by(product_id=gone.product_id).delete()
+    session.query(models.StockSnapshot).filter_by(product_id=gone.product_id).delete()
     session.query(models.Product).filter_by(external_id="i2").delete()
     session.flush()
 

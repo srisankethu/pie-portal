@@ -54,7 +54,13 @@ def _alembic_config(database_url: str):
 
     cfg = Config(str(BACKEND_DIR / "alembic.ini"))
     cfg.set_main_option("script_location", str(BACKEND_DIR / "alembic"))
-    cfg.set_main_option("sqlalchemy.url", database_url)
+    # Alembic's config is a ConfigParser with %-interpolation, so a literal
+    # percent must be doubled or set_main_option raises. Percent signs are
+    # routine in real Postgres URLs — every URL-encoded password or socket
+    # path has them ("p@ss" is "p%40ss") — which is why this never surfaced
+    # on SQLite file paths. env.py reads the value back through interpolation,
+    # which undoes the doubling exactly.
+    cfg.set_main_option("sqlalchemy.url", database_url.replace("%", "%%"))
     return cfg
 
 

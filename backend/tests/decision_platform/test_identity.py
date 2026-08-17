@@ -15,11 +15,10 @@ from __future__ import annotations
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
-from app.db import Base, get_session
+import dbsupport
+from app.db import get_session
 from app.domain import models
 from app.identity import service as identity
 from app.identity.matchers import normalize_gstin, normalize_name, normalize_sku
@@ -36,9 +35,7 @@ GSTIN = "29ABCDE1234F1Z5"
 
 @pytest.fixture()
 def client():
-    engine = create_engine("sqlite://", connect_args={"check_same_thread": False},
-                           poolclass=StaticPool, future=True)
-    Base.metadata.create_all(engine)
+    engine = dbsupport.fresh_engine()
     Maker = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False,
                          future=True)
     s = Maker()

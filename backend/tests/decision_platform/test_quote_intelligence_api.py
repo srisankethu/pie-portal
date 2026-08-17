@@ -14,11 +14,11 @@ from decimal import Decimal
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, event
+from sqlalchemy import event
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
-from app.db import Base, get_session
+import dbsupport
+from app.db import get_session
 from app.domain import models
 from app.routers import platform_auth, quote_intelligence
 from app.seed import SEED_PASSWORD, ensure_org_and_users
@@ -79,9 +79,7 @@ def _seed(s) -> None:
 
 @pytest.fixture()
 def client():
-    engine = create_engine("sqlite://", connect_args={"check_same_thread": False},
-                           poolclass=StaticPool, future=True)
-    Base.metadata.create_all(engine)
+    engine = dbsupport.fresh_engine()
     Maker = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False,
                          future=True)
 

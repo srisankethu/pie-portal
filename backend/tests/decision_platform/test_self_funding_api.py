@@ -55,6 +55,12 @@ def _org() -> str:
 
 
 def _entity(session, connection_id: str, label: str):
+    from app.seed import ensure_org_and_users
+
+    # The connection row references the organization, which a bare session
+    # does not hold. Idempotent, and it flushes — so this also serves the
+    # tests that never build the HTTP client.
+    ensure_org_and_users(session)
     session.add(models.ZohoConnection(
         connection_id=connection_id, organization_id=_org(), label=label,
         zoho_organization_id=f"zoho-{connection_id}"))

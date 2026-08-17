@@ -69,7 +69,18 @@
 }
 
 /* ── nav ── */
-.pie-landing .lp-nav { border-bottom: 1px solid var(--color-accent-300); }
+/* Sticky, so the way out of a long page is always one click away. It sits
+   above the sheet's inner hairline (::after, no z-index of its own) and needs
+   an opaque background because the hero's grid paper scrolls underneath —
+   a transparent bar would drag the grid lines through the links. */
+.pie-landing .lp-nav {
+  position: sticky; top: 0; z-index: 20;
+  background: var(--color-bg);
+  border-bottom: 1px solid var(--color-accent-300);
+}
+/* The in-page links (#product, #how, #trust, #pricing) would otherwise land
+   their target underneath the bar that is now pinned over it. */
+.pie-landing section[id], .pie-landing header[id] { scroll-margin-top: 76px; }
 .pie-landing .lp-nav-inner { display: flex; align-items: center; gap: 28px; padding: 16px 0; }
 .pie-landing .lp-logo {
   font-family: var(--font-heading); font-weight: 700; font-size: 22px;

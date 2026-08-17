@@ -18,10 +18,17 @@ RUN npm ci
 
 COPY frontend/ ./
 
-# `npm run build` is tsc -b, then the form check, then vite build — the same
-# three steps scripts/verify.sh runs, so a type error fails the image build
-# rather than shipping.
-RUN npm run build
+# `npm run build` is tsc -b, the form check, vite build, then the landing
+# prerender (scripts/prerender.mjs bakes the public page and its crawl files
+# into dist) — the same steps scripts/verify.sh runs, so a type error fails
+# the image build rather than shipping.
+#
+# SITE_ORIGIN is the one build-time setting the prerender reads: the absolute
+# origin written into the canonical tag, sitemap and robots.txt. The default
+# is the hosted deployment's URL; a self-host behind its own domain should
+# pass --build-arg SITE_ORIGIN=https://its.domain here.
+ARG SITE_ORIGIN
+RUN SITE_ORIGIN="$SITE_ORIGIN" npm run build
 
 
 FROM caddy:2-alpine

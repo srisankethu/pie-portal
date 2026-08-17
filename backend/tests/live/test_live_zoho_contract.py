@@ -41,6 +41,7 @@ Skips cleanly: when credentials are absent, and per-endpoint when this
 """
 from __future__ import annotations
 
+import os
 from datetime import date, timedelta
 from itertools import islice
 from numbers import Real
@@ -65,13 +66,29 @@ MASTER_ROWS = 5
 WINDOW_DAYS = 120
 
 
+_ENV_CREDENTIAL_KEYS = ("ZOHO_ORGANIZATION_ID", "ZOHO_CLIENT_ID",
+                        "ZOHO_CLIENT_SECRET", "ZOHO_REFRESH_TOKEN")
+
+
 def _credentials_present() -> bool:
-    return all([
-        settings.ZOHO_ORGANIZATION_ID,
-        settings.ZOHO_CLIENT_ID,
-        settings.ZOHO_CLIENT_SECRET,
-        settings.ZOHO_REFRESH_TOKEN,
-    ])
+    return all(os.environ.get(k) for k in _ENV_CREDENTIAL_KEYS)
+
+
+def _env_credentials() -> ZohoCredentials:
+    """Real credentials for the live run, read straight from the environment.
+
+    This is test scaffolding, not a runtime path. The platform itself has no
+    environment credential fallback — every connection is stored per
+    organization — so a live contract run against a real book supplies its own
+    grant here, in the test, rather than through any application code."""
+    return ZohoCredentials(
+        organization_id=os.environ.get("ZOHO_ORGANIZATION_ID", ""),
+        client_id=os.environ.get("ZOHO_CLIENT_ID", ""),
+        client_secret=os.environ.get("ZOHO_CLIENT_SECRET", ""),
+        refresh_token=os.environ.get("ZOHO_REFRESH_TOKEN", ""),
+        accounts_base=os.environ.get("ZOHO_ACCOUNTS_BASE", "https://accounts.zoho.in"),
+        api_base=os.environ.get("ZOHO_API_BASE", "https://www.zohoapis.in/books/v3"),
+    )
 
 
 class RecordingTransport:
@@ -108,12 +125,12 @@ class RecordingTransport:
         host, so it is excluded — it is authentication, not a write to the book.
 
         The base comes from the resolved credentials rather than
-        ``settings.ZOHO_API_BASE``, because a connection may carry its own (a
+        the ``ZOHO_API_BASE`` env default, because a connection may carry its own (a
         different data centre). Reading the setting instead would compare
         against a host nothing was sent to, and the assertion would pass by
         matching nothing — a test that cannot fail.
         """
-        api = ZohoCredentials.from_settings().api_base.rstrip("/")
+        api = _env_credentials().api_base.rstrip("/")
         return [(m, u) for m, u in self.calls if m != "GET" and u.startswith(api)]
 
 
@@ -132,7 +149,7 @@ def source(transport: RecordingTransport) -> ZohoApiSource:
     return ZohoApiSource(
         http=transport,
         since=date.today() - timedelta(days=WINDOW_DAYS),
-        credentials=ZohoCredentials.from_settings(),
+        credentials=_env_credentials(),
     )
 
 
@@ -188,7 +205,7 @@ def test_ping_authenticates_and_finds_the_configured_organization(source):
 
     assert result["authenticated"] is True
     assert result["organization_found"] is True, (
-        f"ZOHO_ORGANIZATION_ID {settings.ZOHO_ORGANIZATION_ID} is not among the "
+        f"ZOHO_ORGANIZATION_ID {os.environ.get('ZOHO_ORGANIZATION_ID', '')} is not among the "
         f"organizations this token can see: {result['visible_organizations']}. "
         "The credentials are valid; the org id or the data centre is not."
     )

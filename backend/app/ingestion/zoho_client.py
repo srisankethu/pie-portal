@@ -68,29 +68,12 @@ class ZohoCredentials:
     accounts_base: str = "https://accounts.zoho.in"
     api_base: str = "https://www.zohoapis.in/books/v3"
     #: Where these values were configured, in words, for the one message that
-    #: has to send somebody to the right screen. A stored connection and the
-    #: environment fallback fail identically at the token endpoint and are
-    #: fixed in completely different places — an owner told to check
-    #: ``ZOHO_ACCOUNTS_BASE`` about a connection they typed into a form goes
-    #: looking for a variable that has no bearing on it and cannot be edited
-    #: from where they are.
+    #: has to send somebody to the right screen. Always a stored connection now
+    #: (there is no environment fallback): an owner told to check
+    #: ``ZOHO_ACCOUNTS_BASE`` — a variable — about a connection they typed into a
+    #: form would go looking for something that has no bearing on it and cannot
+    #: be edited from where they are, so the message names the connection.
     configured_in: str = "this connection"
-
-    @classmethod
-    def from_settings(cls) -> "ZohoCredentials":
-        """The pre-multi-tenant configuration path: one connection, from
-        environment variables. Used only as the fallback for the platform's
-        default organization when it has no stored connection of its own —
-        every other organization must configure its own."""
-        return cls(
-            organization_id=settings.ZOHO_ORGANIZATION_ID,
-            client_id=settings.ZOHO_CLIENT_ID,
-            client_secret=settings.ZOHO_CLIENT_SECRET,
-            refresh_token=settings.ZOHO_REFRESH_TOKEN,
-            accounts_base=settings.ZOHO_ACCOUNTS_BASE,
-            api_base=settings.ZOHO_API_BASE,
-            configured_in="the ZOHO_* environment variables",
-        )
 
 
 # ── what Zoho's token endpoint is actually telling you ──────────────────────
@@ -259,7 +242,17 @@ class ZohoTransport:
 
     def __init__(self, http: Any = None,
                  credentials: Optional[ZohoCredentials] = None) -> None:
-        creds = credentials or ZohoCredentials.from_settings()
+        # Credentials are required and come from the stored, per-organization
+        # connection (``connections.credentials_for``). There is no environment
+        # fallback: a multi-tenant platform cannot read one tenant's Zoho grant
+        # from a process-wide ``ZOHO_*`` variable, and every real caller already
+        # passes the decrypted credential for the connection it means.
+        if credentials is None:
+            raise ValueError(
+                "ZohoTransport requires credentials for a specific connection. "
+                "Add the company under Settings → Connections; there is no "
+                "environment-variable fallback.")
+        creds = credentials
         self._creds = creds
         self._base = creds.api_base.rstrip("/")
         self._accounts = creds.accounts_base.rstrip("/")

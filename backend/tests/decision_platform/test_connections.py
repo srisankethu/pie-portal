@@ -123,26 +123,19 @@ def test_two_organizations_do_not_see_each_other_s_connection(session):
         "clearing one org's connection must not touch the other's"
 
 
-# ── the default-organization fallback ───────────────────────────────────────
-def test_the_default_org_falls_back_to_settings_when_unconfigured(session, monkeypatch):
-    """Backward compatibility: an existing single-tenant deployment configured
-    entirely via ZOHO_* environment variables must keep working with no DB
-    migration step required of it."""
-    monkeypatch.setattr(settings, "ZOHO_ORGANIZATION_ID", "60036630487")
-    monkeypatch.setattr(settings, "ZOHO_CLIENT_ID", "env-cid")
-    monkeypatch.setattr(settings, "ZOHO_CLIENT_SECRET", "env-secret")
-    monkeypatch.setattr(settings, "ZOHO_REFRESH_TOKEN", "env-rtok")
+# ── no environment fallback for anyone ──────────────────────────────────────
+def test_the_default_org_gets_no_environment_fallback(session):
+    """The pre-multi-tenant special case is gone: the default org is not
+    special. With no stored connection it resolves to None, exactly like any
+    tenant — a platform serving many tenants cannot hand one of them a
+    process-wide grant."""
     _org(session, settings.DEFAULT_ORG_ID)
-
-    creds = get_zoho_credentials(session, settings.DEFAULT_ORG_ID)
-    assert creds == ZohoCredentials.from_settings()
-    assert creds.organization_id == "60036630487"
+    assert get_zoho_credentials(session, settings.DEFAULT_ORG_ID) is None
 
 
-def test_a_stored_connection_wins_over_settings_even_for_the_default_org(session, monkeypatch):
-    """Once the default org explicitly connects its own account, that — not
-    whatever is left in the environment — is authoritative."""
-    monkeypatch.setattr(settings, "ZOHO_ORGANIZATION_ID", "60036630487")
+def test_a_stored_connection_is_used_for_the_default_org(session):
+    """The default org connects its own account like any tenant, and that stored
+    connection is authoritative."""
     org = _org(session, settings.DEFAULT_ORG_ID)
     set_zoho_credentials(session, org, zoho_organization_id="99999999", client_id="cid",
                          client_secret="s", refresh_token="r")
@@ -150,16 +143,11 @@ def test_a_stored_connection_wins_over_settings_even_for_the_default_org(session
     assert get_zoho_credentials(session, org).organization_id == "99999999"
 
 
-def test_a_non_default_org_with_no_connection_gets_none_not_the_environment(session, monkeypatch):
-    """The settings fallback is scoped to exactly one organization. Any other
-    org with no connection of its own must never silently inherit whatever
-    happens to be sitting in the process environment."""
-    monkeypatch.setattr(settings, "ZOHO_ORGANIZATION_ID", "60036630487")
-    monkeypatch.setattr(settings, "ZOHO_CLIENT_ID", "env-cid")
-    monkeypatch.setattr(settings, "ZOHO_CLIENT_SECRET", "env-secret")
-    monkeypatch.setattr(settings, "ZOHO_REFRESH_TOKEN", "env-rtok")
+def test_an_org_with_no_connection_gets_none(session):
+    """No environment fallback for anyone: an organization with no stored
+    connection of its own resolves to None rather than silently inheriting
+    whatever happens to be sitting in the process environment."""
     org = _org(session, "org_some_other_tenant")
-
     assert get_zoho_credentials(session, org) is None
 
 

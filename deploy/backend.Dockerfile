@@ -70,4 +70,8 @@ EXPOSE 8000
 # catalogue (~13 MB decoded), so this trades memory for concurrency: raise it on
 # a larger box, or set PIE_WARM=0 to start lean and pay the warm on first use.
 ENV UVICORN_WORKERS=2
-CMD ["sh", "-c", "exec python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers ${UVICORN_WORKERS}"]
+# ${PORT:-8000}, not a hardcoded 8000: platforms like Railway assign the
+# listen port at runtime via $PORT and healthcheck exactly that port, so a
+# fixed port here means the healthcheck can never connect. Compose deployments
+# never set PORT, so they keep the 8000 default untouched.
+CMD ["sh", "-c", "exec python -m uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers ${UVICORN_WORKERS}"]

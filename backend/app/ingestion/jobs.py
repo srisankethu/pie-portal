@@ -439,7 +439,7 @@ def execute_sync(session: Session, run: models.SyncRun, *,
             except Exception:  # noqa: BLE001
                 log.exception("demo-data purge failed; continuing with the sync")
 
-        phase("Connecting to Zoho")
+        phase("Connecting to the books")
 
         def source_for(start: date, end: Optional[date], conn: Optional[str]):
             """One source per window, each asking Zoho only for its own months."""
@@ -811,14 +811,13 @@ class _Target:
     """One connected company a run will read, and what to call it on screen."""
     connection_id: Optional[str]
     label: str
-    #: Which system this book is read from. Every target below is built from a
-    #: ``ZohoConnection`` row, so "zoho" is not an assumption here — it is what
-    #: the table means. It is carried explicitly all the same, because the
-    #: alternative is a caller that omits it and silently takes a default: a
-    #: pull that labels its rows with the wrong connector has them adopted into
-    #: that connector's id space by ``repositories._for_upsert``, and no test
-    #: in the tree would notice. When connections gain a discriminator this
-    #: field is where it lands, and the call site is already correct.
+    #: Which system this book is read from — the connection row's own
+    #: discriminator, carried explicitly because the alternative is a caller
+    #: that omits it and silently takes a default: a pull that labels its rows
+    #: with the wrong connector has them adopted into that connector's id
+    #: space by ``repositories._for_upsert``, and no test in the tree would
+    #: notice. The default exists only for the connectionless legacy pull,
+    #: which is Zoho by definition (it reads the ``ZOHO_*`` environment).
     connector: str = "zoho"
 
 
@@ -835,17 +834,20 @@ def _sync_targets(session: Session, organization_id: str,
     """
     from .connections import get_connection, list_connections
 
+    def target(conn) -> _Target:
+        return _Target(conn.connection_id,
+                       conn.label or conn.zoho_organization_id or "",
+                       connector=getattr(conn, "connector", None) or "zoho")
+
     if connection_id is not None:
         try:
-            conn = get_connection(session, organization_id, connection_id)
-            return [_Target(connection_id, conn.label or conn.zoho_organization_id or "")]
+            return [target(get_connection(session, organization_id, connection_id))]
         except Exception:  # noqa: BLE001 — a label is never a reason to refuse a pull
             return [_Target(connection_id, "")]
 
     rows = list_connections(session, organization_id, enabled_only=True)
     if rows:
-        return [_Target(r.connection_id, r.label or r.zoho_organization_id or "")
-                for r in rows]
+        return [target(r) for r in rows]
     return [_Target(None, "")]
 
 

@@ -2,8 +2,11 @@
 
 An AI-native Commercial Decision Platform for a B2B cutting-tool distributor
 running on Zoho Books, across three legal entities (SLS Engineers, 4U Precision,
-UPS). Python 3.11 / FastAPI / SQLAlchemy 2.0 / Alembic on the backend; React 18 +
-Vite + TypeScript on the front.
+UPS) — and, for US clients, on NetSuite, Dynamics 365 Business Central,
+Acumatica, Epicor Prophet 21 and Sage through the connector registry in
+`ingestion/erp/` (see `docs/connectors.md`). Python 3.11 / FastAPI /
+SQLAlchemy 2.0 / Alembic on the backend; React 18 + Vite + TypeScript on the
+front.
 
 Read `docs/architecture.md` for the design and `docs/development.md` for the
 day-to-day loop. This file is the part that constrains how code gets *added*.
@@ -242,7 +245,10 @@ backend/app/
   decisions/     The seam: deterministic signal in, AI reading out. May import ai/.
   ai/            Providers, prompts, validation, telemetry. Receives facts;
                  never computes them. Never imports commercial/.
-  ingestion/     Zoho adapters, normalisation, connections, credentials.
+  ingestion/     Source adapters (Zoho + the erp/ connector registry),
+                 normalisation, connections, credentials. A new source's
+                 knowledge lives in its own erp/ module; the sync stays
+                 connector-blind.
   identity/      Cross-connector record linking. Never merges, only links.
   trust/         Tenant keys, name vault, pseudonyms, break-glass, disclosure,
                  erasure. Infrastructure — imports neither commercial/ nor ai/.

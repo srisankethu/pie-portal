@@ -2004,9 +2004,12 @@ def _companies(session: Session, org: str) -> list[dict]:
         .where(models.Customer.organization_id == org,
                models.Customer.connection_id.is_not(None))
         .group_by(models.Customer.connection_id)).all())
+    from ..domain.origin import fallback_company_label
+
     return [
         {"connection_id": c.connection_id,
-         "label": c.label or f"Zoho org {c.zoho_organization_id}",
+         "label": c.label or fallback_company_label(
+             getattr(c, "connector", None) or "zoho", c.zoho_organization_id),
          "customers": counts.get(c.connection_id, 0)}
         for c in session.scalars(
             select(models.ZohoConnection).where(

@@ -1,4 +1,4 @@
-import type { AccessReport, Account, AccountItem, AiByokView, AiKeyTestResult, AiMetricsReport, AiReadiness, ApprovalRequest, AttributionEvaluation, AttributionEvents, AttributionSummary, AuthorizeResponse, ConnectionCheck, ConnectionsView, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, DecisionTrace, DisclosureStatement, Entitlements, EntityKind, ErasureState, FixedThresholds, Identity, IdentityCoverage, IdentityPolicy, IdentitySuggestion, MarginPolicy, MarginPolicyPatch, NewConnectionInput, OnboardingView, OrgPolicy, PayloadsReport, PlatformSession, PlatformUser, QuoteGate, Role, SignupOffer, SkippedRows, StatusFilter, SyncOptions, SyncStartResponse, SyncState, ThresholdView, ZohoConnection, ZohoConnectionInput, ZohoCredential, ZohoVisibleOrg } from "./types";
+import type { AccessReport, Account, AccountItem, AiByokView, AiKeyTestResult, AiMetricsReport, AiReadiness, ApprovalRequest, AttributionEvaluation, AttributionEvents, AttributionSummary, AuthorizeResponse, ConnectionCheck, ConnectionsView, ConnectorCatalog, ErpConnectInput, ErpDiscoveredCompany, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, DecisionTrace, DisclosureStatement, Entitlements, EntityKind, ErasureState, FixedThresholds, Identity, IdentityCoverage, IdentityPolicy, IdentitySuggestion, MarginPolicy, MarginPolicyPatch, NewConnectionInput, OnboardingView, OrgPolicy, PayloadsReport, PlatformSession, PlatformUser, QuoteGate, Role, SignupOffer, SkippedRows, StatusFilter, SyncOptions, SyncStartResponse, SyncState, ThresholdView, ZohoConnection, ZohoConnectionInput, ZohoCredential, ZohoVisibleOrg } from "./types";
 
 import { setMoneyCurrency } from "../money";
 import { setBusinessTimezone } from "../when";
@@ -751,6 +751,25 @@ export const papi = {
 
   checkConnection: (t: string, id: string) =>
     req<ConnectionCheck>(`/api/v1/connections/${id}/check`, { method: "POST" }, t),
+
+  // ── registered ERP connectors (NetSuite, Business Central, Acumatica, P21,
+  //    Sage) — the form renders from this catalog, never from hardcoded fields
+  connectorCatalog: (t: string) =>
+    req<ConnectorCatalog>("/api/v1/connections/catalog", {}, t),
+
+  addErpConnection: (t: string, body: ErpConnectInput) =>
+    req<ConnectionCheck>("/api/v1/connections/erp",
+      { method: "POST", body: JSON.stringify(body) }, t),
+
+  discoverErpCompanies: (t: string, connector: string, values: Record<string, string>) =>
+    req<{ connector: string; companies: ErpDiscoveredCompany[] }>(
+      "/api/v1/connections/erp/discover",
+      { method: "POST", body: JSON.stringify({ connector, values }) }, t),
+
+  rotateErpConnection: (t: string, id: string, values: Record<string, string>) =>
+    req<ConnectionCheck & { rotated: boolean; note: string }>(
+      `/api/v1/connections/${id}/rotate-erp`,
+      { method: "POST", body: JSON.stringify({ values }) }, t),
 
   // ── OAuth authorization flow ──────────────────────────────────────────────
   authorizeZoho: (t: string, dc: string) =>

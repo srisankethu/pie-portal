@@ -872,7 +872,13 @@ export interface ZohoVisibleOrg {
  */
 export interface ZohoConnection {
   connection_id: string;
+  /** Which system this company is read from ("zoho", "netsuite",
+   *  "dynamics365", "acumatica", "prophet21", "sagex3", "sage100"). */
+  connector: string;
+  connector_label: string;
   label: string;
+  /** The company's id in its own system — a Zoho org id, a Business Central
+   *  company GUID, an Acumatica tenant. The field name is historical. */
   zoho_organization_id: string;
   enabled: boolean;
   credential_id: string | null;
@@ -881,6 +887,9 @@ export interface ZohoConnection {
   credential_rotated_at: string | null;
   accounts_base: string;
   api_base: string;
+  /** A registered connector's non-secret settings (company GUID, branch,
+   *  endpoint …). Null for Zoho rows. Secrets are never in any response. */
+  config: Record<string, string> | null;
   last_checked_at: string | null;
   last_check_ok: boolean | null;
   last_check_detail: string | null;
@@ -946,6 +955,7 @@ export interface RequiredScope {
  *  endpoint. */
 export interface ConnectionCredential {
   credential_id: string;
+  connector: string;
   label: string;
   client_id: string;
   is_owner: boolean;
@@ -999,6 +1009,51 @@ export interface SelectOrgRequest {
   credential_id: string;
   zoho_organization_id: string;
   label?: string;
+}
+
+/* ── registered ERP connectors (NetSuite, Business Central, Acumatica, P21,
+ *    Sage) ──────────────────────────────────────────────────────────────────
+ * The connect form for these renders from the catalog's field specs, so the
+ * UI never hardcodes what one system needs — a new connector appears here the
+ * day its backend module registers. Zoho keeps its richer bespoke flow.
+ */
+export interface ConnectorField {
+  name: string;
+  label: string;
+  secret: boolean;
+  required: boolean;
+  placeholder: string;
+  help: string;
+}
+
+export interface ConnectorCatalogEntry {
+  key: string;
+  label: string;
+  /** What that system calls one set of books — "company", "tenant", "folder". */
+  company_term: string;
+  icon: string;
+  setup_note: string;
+  credential_fields: ConnectorField[];
+  connection_fields: ConnectorField[];
+  external_id_field: string;
+  /** Whether entered credentials can list visible companies to pick from. */
+  can_discover: boolean;
+}
+
+export interface ConnectorCatalog {
+  connectors: ConnectorCatalogEntry[];
+}
+
+export interface ErpConnectInput {
+  connector: string;
+  values: Record<string, string>;
+  label?: string;
+  credential_label?: string;
+}
+
+export interface ErpDiscoveredCompany {
+  id: string;
+  name: string;
 }
 
 

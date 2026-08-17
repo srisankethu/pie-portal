@@ -2,6 +2,13 @@
 
 Configuration reference, production deployment, and the runbook.
 
+Non-Zoho ERP connections (NetSuite, Business Central, Acumatica, Prophet 21,
+Sage) need **no environment configuration**: their credentials are entered
+per organization in Data & connection and stored encrypted. Setup per system
+is in `docs/connectors.md`. The `ZOHO_*` variables below configure the Zoho
+client and the legacy single-tenant fallback only; `ZOHO_SOURCE=api` remains
+the process-wide switch that turns every connector's live client on.
+
 ---
 
 ## Configuration reference

@@ -14,11 +14,39 @@ import "./landing.css";
  * decorative and aria-hidden; the dividers are real text because they are the
  * section labels.
  *
- * The honesty rule this page keeps on purpose: every figure on it is a real,
- * checkable property of the product (the corpus numbers, the determinism
- * claims, the plan prices, the connector registry's actual systems) — no
- * invented customers, no testimonials, no logos. The connectors are named in
+ * The honesty rule this page keeps on purpose: every claim on it is a real,
+ * checkable property of the product — the determinism and audit-trail claims,
+ * the trial, the plan tiers, the connector registry's actual systems — with no
+ * invented customers, no testimonials and no logos. The connectors are named in
  * plain type for the same reason.
+ *
+ * That rule was audited against the backend in Aug 2026 and had drifted in six
+ * places, so the specifics are worth keeping — every one of them read as good
+ * news, which is why none had been noticed:
+ *
+ *   - "100% of a 6,717-SKU catalog decoded" was pie-parser's own *bundled*
+ *     corpus, not any customer's book. Its source document measures only 21.1%
+ *     of that corpus as reachable from the real item master — a coverage
+ *     warning the page had inverted into a coverage boast.
+ *   - The erasure panel promised data "destroyed — backups included".
+ *     `trust/erasure.py` documents the opposite for plaintext columns, and its
+ *     docstring predicts this exact overclaim losing a security review.
+ *   - "Live in about a week. Six hours of your team's time." No duration is
+ *     modelled anywhere; `onboarding.py` has a four-step checklist and no ETA
+ *     field.
+ *   - "Two years of history" where `connections.DEFAULT_HISTORY_MONTHS` offers
+ *     18 — the page and the product's own checklist told a customer different
+ *     numbers.
+ *   - "Authentic price lists" described price-list ingestion that does not
+ *     exist: no upload surface, and the one real hash covers nomenclature, not
+ *     prices.
+ *   - "Alternatives across brands" — one manufacturer pack is indexed, and
+ *     `docs/reviews/positioning-review-2026-08.md` measures a second as
+ *     strictly worse today. Cross-brand substitution is deferred, not shipped.
+ *
+ * Marketing copy drifts from the code silently, because nothing compiles it and
+ * no test fails. Check a claim against the module that would implement it
+ * before putting it on this page.
  *
  * The decision card's figures are illustrative but formula-consistent:
  * floor = cost / (1 − margin floor), so cost ₹381 at a 15% floor gives ₹448.
@@ -135,7 +163,7 @@ export function Landing({ onEnter, onSignUp }: {
 
         <div className="lp-proof">
           <div className="lp-wrap lp-proof-grid">
-            <div><div className="v lp-num">100%</div><div className="k">of a 6,717-SKU catalog decoded, zero rows skipped</div></div>
+            <div><div className="v">Versioned</div><div className="k">every number carries the policy that produced it</div></div>
             <div><div className="v">Deterministic</div><div className="k">identical input, byte-identical output — reruns prove it</div></div>
             <div><div className="v lp-num">0</div><div className="k">prices computed by AI — models phrase, policy prices</div></div>
             <div><div className="v">Yours</div><div className="k">your data, your catalog, your AI account — provably</div></div>
@@ -164,7 +192,7 @@ export function Landing({ onEnter, onSignUp }: {
               <p>
                 A busy quote desk makes hundreds of small pricing decisions a
                 month. Nobody sees the pattern — because the pattern lives across
-                two years of ledger, and nobody has time to read the ledger.
+                years of ledger, and nobody has time to read the ledger.
               </p>
             </div>
             <div className="lp-two">
@@ -227,17 +255,18 @@ export function Landing({ onEnter, onSignUp }: {
                 <h3>Your catalog, decoded</h3>
                 <p>
                   We decode your suppliers&rsquo; price lists so every code, size
-                  and grade is understood — proven to 100% coverage. Pay once,{" "}
+                  and grade is understood — and the coverage is measured against
+                  your own catalog, not promised. Pay once,{" "}
                   <b>own it permanently</b>.
                 </p>
               </div>
               <div className="lp-feat">
                 <p className="lp-eyebrow">Quote</p>
-                <h3>Alternatives across brands</h3>
+                <h3>Equivalents, scored not guessed</h3>
                 <p>
-                  When the asked-for item is slow or thin, PIE proposes
-                  equivalents from the other brands you carry — deterministically,
-                  with the geometry to justify it.
+                  PIE ranks alternatives from your catalog on geometry and grade
+                  — deterministically — and <b>abstains when nothing
+                  discriminates</b> rather than inventing a match.
                 </p>
               </div>
               <div className="lp-feat">
@@ -251,11 +280,11 @@ export function Landing({ onEnter, onSignUp }: {
               </div>
               <div className="lp-feat">
                 <p className="lp-eyebrow">Margin</p>
-                <h3>Authentic price lists</h3>
+                <h3>Every quote, on record</h3>
                 <p>
-                  Every edition is fingerprinted on arrival and validated
-                  structurally, so every quoted price traces to a genuine, current
-                  manufacturer price list — never a stale or doctored file.
+                  Each decision is stamped with the policy version and catalog
+                  edition that produced it, and the record is append-only — so a
+                  price you quoted last quarter still explains itself.
                 </p>
               </div>
             </div>
@@ -266,15 +295,15 @@ export function Landing({ onEnter, onSignUp }: {
         <section id="how">
           <div className="lp-wrap">
             <div className="lp-sec-head">
-              <h2>Live in about a week. Six hours of your team&rsquo;s time.</h2>
-              <p>Most of it is deciding your own margin floors — not fighting software.</p>
+              <h2>Four steps, and PIE tracks which are done.</h2>
+              <p>Most of the work is deciding your own margin floors — not fighting software.</p>
             </div>
             <div className="lp-grid3 lp-steps">
               <div className="lp-step">
                 <h3>Connect your books</h3>
                 <p>
                   Link Zoho Books — or NetSuite, Business Central, Acumatica,
-                  Prophet 21 or Sage — and PIE syncs up to <b>two years of
+                  Prophet 21 or Sage — and PIE pulls <b>about 18 months of
                   history</b>: customers, items, invoices, bills, payments.
                 </p>
               </div>
@@ -349,9 +378,11 @@ export function Landing({ onEnter, onSignUp }: {
               <div className="lp-panel">
                 <h3>Your data. Export any time, erase provably.</h3>
                 <p>
-                  Full export on request. On exit, your data is destroyed —
-                  backups included — and you receive a signed erasure receipt you
-                  can verify.
+                  Full export on request. On exit your tenant key is destroyed,
+                  making everything encrypted under it permanently unreadable —
+                  live tables, replicas and backups alike. The signed receipt
+                  lists exactly what that reached and what it did not, and you
+                  can verify it.
                 </p>
               </div>
               <div className="lp-panel">
@@ -397,8 +428,8 @@ export function Landing({ onEnter, onSignUp }: {
                 <div className="p lp-num">₹9,999<small> /month</small></div>
                 <p>
                   <b>Quote more profitably.</b> The attention list, customer
-                  health, collections, cross-brand alternatives, authenticity
-                  checks.
+                  health, collections — and the ledger measuring what the
+                  intelligence layer was worth.
                 </p>
               </div>
               <div className="lp-panel lp-plan">

@@ -9,7 +9,7 @@ Compose stack.
 ```
    browser ──── Vercel (frontend/, static build)
                   │
-                  │  api/[...path].ts proxies /api/* → Railway
+                  │  api/proxy.ts proxies /api/* → Railway
                   ▼
                 Railway (deploy/backend.Dockerfile, FastAPI)
                   │
@@ -17,7 +17,7 @@ Compose stack.
                 Neon (Postgres)
 ```
 
-Because `frontend/api/[...path].ts` proxies `/api/*` to the Railway URL
+Because `frontend/api/proxy.ts` proxies `/api/*` to the Railway URL
 server-side, the frontend keeps using the same relative `/api/v1/...` paths it
 already uses in dev and in the self-hosted deploy
 (`frontend/src/platform/api.ts`) — no frontend code changes, and the browser
@@ -143,8 +143,11 @@ fallback (see `docs/operations.md`).
 
 1. New project → import this repo → set **Root Directory** to `frontend`.
    Vercel will pick up `frontend/vercel.json` for the build command and
-   output directory, and will auto-detect `frontend/api/[...path].ts` as a
-   serverless (edge) function serving `/api/*`.
+   output directory, and will build `frontend/api/proxy.ts` as a serverless
+   (edge) function. `/api/*` reaches it through an explicit rewrite rather
+   than a catch-all filename: `api/[...path].ts` was matched for a single
+   segment only, so `/api/health` worked while `/api/v1/auth/login` returned
+   404 — the app loaded and every sign-in failed.
 
    The SPA rewrite in that file reads `/((?!api/).*)`, and **the exclusion is
    load-bearing**. A bare `/(.*)` catch-all sends `/api/*` to `index.html`
@@ -169,7 +172,7 @@ repo change needed.
 
 | | Self-hosted (`hosting.md`) | Free tier (this doc) |
 |---|---|---|
-| Edge / TLS | Caddy, one origin | Vercel edge + Railway edge, joined by `frontend/api/[...path].ts` |
+| Edge / TLS | Caddy, one origin | Vercel edge + Railway edge, joined by `frontend/api/proxy.ts` |
 | `CORS_ORIGINS` | empty (same origin via Caddy) | empty (same origin via the Vercel proxy function) |
 | Backend URL config | `SITE_ADDRESS` in `.env.production` | `BACKEND_URL` env var on the Vercel project |
 | Redis | provisioned, unused today | not provisioned, unused today |

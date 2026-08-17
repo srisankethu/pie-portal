@@ -122,6 +122,16 @@ fallback (see `docs/operations.md`).
 5. Confirm: `curl https://<your-railway-url>/api/health` should report the
    schema as `CURRENT`, the same check `hosting.md` uses.
 
+   `railway.json` sets `healthcheckTimeout` to 600s, which looks absurd for
+   an app that answers in milliseconds. It is sized for the slowest
+   *legitimate* first boot, not the steady state: a boot that migrates an
+   empty database runs ~70 revisions, each a series of DDL round trips, and
+   against a cross-region endpoint at ~170 ms that alone passes 100s —
+   Neon's scale-to-zero adds ~8s before the first statement even runs.
+   Bootstrap happens inside the startup lifespan, so uvicorn accepts no
+   request until it finishes, and a window shorter than the migration kills
+   a deploy that was succeeding. Steady-state boots never approach it.
+
    **Until step 4 has run, this endpoint returns 503 and the Railway
    healthcheck fails the deployment.** That is correct behaviour, not a
    misconfiguration: an empty database is `EMPTY`, not healthy (CLAUDE.md §4),
@@ -135,6 +145,13 @@ fallback (see `docs/operations.md`).
    Vercel will pick up `frontend/vercel.json` for the build command and
    output directory, and will auto-detect `frontend/api/[...path].ts` as a
    serverless (edge) function serving `/api/*`.
+
+   The SPA rewrite in that file reads `/((?!api/).*)`, and **the exclusion is
+   load-bearing**. A bare `/(.*)` catch-all sends `/api/*` to `index.html`
+   along with everything else, and a static file answers GET but rejects POST
+   with 405 — so the app loads, `/api/health` looks fine because it is a GET,
+   and every sign-in fails. Real assets are unaffected either way, because
+   the filesystem is checked before rewrites are applied.
 2. Project → Settings → Environment Variables → add
    `BACKEND_URL` = the Railway host from step 2.3, e.g.
    `pie-portal-production.up.railway.app` (host only, no `https://`).
@@ -162,6 +179,14 @@ repo change needed.
 Everything else — env var meaning, the AI-spend go-live gate, the
 `ZOHO_SOURCE` switch, what `/api/health` reports — is unchanged; see
 `docs/operations.md`.
+
+**Why the reasoning above lives here rather than beside the settings.**
+`vercel.json` and `railway.json` are validated against published schemas that
+reject unknown properties, so a `_comment_…` key is not an inert annotation —
+Vercel fails the deployment outright with *"should NOT have additional
+property"*. JSON has no comments and these two files cannot fake them, which
+is exactly why a non-obvious value in either one needs a paragraph in this
+document instead.
 
 ## Moving to AWS later
 

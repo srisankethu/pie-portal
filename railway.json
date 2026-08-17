@@ -6,7 +6,6 @@
   },
   "deploy": {
     "healthcheckPath": "/api/health",
-    "_comment_healthcheckTimeout": "Sized for the SLOWEST legitimate first boot, not the steady state. A boot that migrates an empty managed Postgres runs ~70 revisions, each a series of DDL round trips; against a cross-region endpoint at ~170ms that alone can pass 100s, and Neon's scale-to-zero adds ~8s before the first statement. Bootstrap runs inside the startup lifespan, so uvicorn accepts no request until it finishes -- a window shorter than the migration kills a deploy that was succeeding. Steady-state boots answer in seconds and never approach this.",
     "healthcheckTimeout": 600,
     "restartPolicyType": "ON_FAILURE"
   }

@@ -12,7 +12,7 @@ mechanically.
 """
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi import Depends, FastAPI
@@ -116,6 +116,15 @@ def test_describe_counts_the_days_left_and_names_what_expires(session, orgs,
     about what a tenant is about to lose.
     """
     _free_default(monkeypatch)
+    # Freeze the clock at local mid-day so the day count is deterministic.
+    # `days_remaining` is `(ends_at.date() - today).days` in the org's zone, and
+    # with the real wall clock `now + 6d2h` crosses midnight in that zone whenever
+    # the current local time is within 2h of it — days_remaining then comes back 7.
+    # 06:30 UTC is noon in Asia/Kolkata (the default org zone), the furthest point
+    # from any midnight boundary. This is a test-only flake: the production count
+    # is correct; only this fixed-instant assertion needed pinning.
+    monkeypatch.setattr(clock, "now",
+                        lambda: datetime(2026, 6, 15, 6, 30, tzinfo=timezone.utc))
     trial = entitlements.begin_trial(session, ORG, "60005555")
     trial.ends_at = clock.now() + timedelta(days=6, hours=2)
     session.flush()

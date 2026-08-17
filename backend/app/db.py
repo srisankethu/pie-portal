@@ -36,6 +36,32 @@ def _engine_kwargs(url: str) -> dict:
         "max_overflow": settings.DB_MAX_OVERFLOW,
         "pool_timeout": settings.DB_POOL_TIMEOUT,
         "pool_recycle": settings.DB_POOL_RECYCLE,
+        # Notice a connection that has died mid-statement. Everything above
+        # acts at *checkout*: pre_ping validates a connection before handing it
+        # out, recycle retires an idle one. None of them help once a statement
+        # is in flight — TCP has no timeout of its own, so if the peer stops
+        # answering, ``recv`` blocks forever and the caller simply never
+        # returns.
+        #
+        # That is not hypothetical here. A managed endpoint reached over the
+        # public internet sits behind a proxy and a NAT that can drop a flow
+        # without sending a FIN, and a first deploy against an empty database
+        # hung for ten minutes on exactly this: the migration context was
+        # established, then nothing, with no error to log because from the
+        # client's side the connection was still open.
+        #
+        # keepalives turn that into a named failure after roughly a minute and
+        # a half (idle 30s, then 5 probes 10s apart), which the pool then
+        # replaces. connect_timeout bounds the other end of the same problem:
+        # a scale-to-zero endpoint waking up should fail loudly if it cannot
+        # be reached, not stall the whole startup.
+        "connect_args": {
+            "connect_timeout": 10,
+            "keepalives": 1,
+            "keepalives_idle": 30,
+            "keepalives_interval": 10,
+            "keepalives_count": 5,
+        },
     }
 
 

@@ -17,12 +17,28 @@ export const config = { runtime: "edge" };
 // backend never sees it.
 const PATH_PARAM = "__path";
 
+// Every failure this proxy produces itself is labelled and given a status the
+// backend never returns for these routes, because the alternative cost a real
+// debugging session: a misconfigured proxy answered 500, the backend answers
+// 500 for its own faults, and the two were indistinguishable from the network
+// tab -- so "the API is broken" and "the deployment is missing a variable"
+// looked identical. 503 means this proxy is not configured, 502 means it could
+// not reach the backend, and any other status came from the backend itself,
+// body and all.
+function proxyError(status: number, error: string, detail?: string): Response {
+  return new Response(
+    JSON.stringify({ source: "vercel-proxy", error, ...(detail ? { detail } : {}) }),
+    { status, headers: { "content-type": "application/json" } },
+  );
+}
+
 export default async function handler(request: Request): Promise<Response> {
   const backend = process.env.BACKEND_URL;
   if (!backend) {
-    return new Response(
-      JSON.stringify({ error: "BACKEND_URL is not configured on this Vercel project" }),
-      { status: 500, headers: { "content-type": "application/json" } },
+    return proxyError(
+      503,
+      "BACKEND_URL is not configured on this Vercel project",
+      "Set it in Vercel → Settings → Environment Variables to the backend host, e.g. example.up.railway.app (host only, no scheme), then redeploy.",
     );
   }
 
@@ -48,13 +64,28 @@ export default async function handler(request: Request): Promise<Response> {
   // exists to carry. These are small JSON payloads.
   const hasBody = request.method !== "GET" && request.method !== "HEAD";
 
-  const upstream = await fetch(target, {
-    method: request.method,
-    headers,
-    body: hasBody ? await request.arrayBuffer() : undefined,
-    redirect: "manual",
-  });
+  // An unreachable backend must not surface as an unhandled throw. Letting it
+  // escape gives Vercel's own bodiless 500, which says nothing about which of
+  // the two services failed -- and a sleeping or restarting backend is the
+  // most ordinary thing that can go wrong here.
+  let upstream: Response;
+  try {
+    upstream = await fetch(target, {
+      method: request.method,
+      headers,
+      body: hasBody ? await request.arrayBuffer() : undefined,
+      redirect: "manual",
+    });
+  } catch (cause) {
+    return proxyError(
+      502,
+      `Could not reach the backend at ${backend}`,
+      cause instanceof Error ? cause.message : String(cause),
+    );
+  }
 
+  // Everything from here is the backend's own answer, including its errors:
+  // status and body pass through untouched so a real 500 still reads as one.
   return new Response(upstream.body, {
     status: upstream.status,
     headers: upstream.headers,

@@ -896,6 +896,7 @@ textarea.input { min-height: 160px; resize: vertical; font-family: ui-monospace,
 .cx-card.bad { border-left-color: var(--danger-fg); }
 .cx-card.off { border-left-color: var(--color-neutral-400); opacity: .72; }
 .cx-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+.cx-headright { display: flex; gap: 8px; align-items: center; }
 .cx-name { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .cx-name h4 { margin: 0; font-size: 15px; }
 .cx-name .input { font-size: 14px; padding: 3px 7px; max-width: 260px; }

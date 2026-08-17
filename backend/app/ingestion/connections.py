@@ -1,8 +1,14 @@
-"""Zoho credentials and the connections that use them.
+"""Credentials and the connections that use them — Zoho's OAuth grants and
+every registered ERP connector's alike.
 
-A **credential** is one OAuth grant: an app registration plus one Zoho user's
-refresh token. A **connection** points one platform organization at one Zoho
-Books company id, through a credential.
+A **credential** is one sign-in: for Zoho, an app registration plus one user's
+refresh token in the typed columns; for every other connector, that system's
+secrets as one encrypted JSON document whose shape ``ingestion/erp`` declares.
+A **connection** points one platform organization at one company in one
+system, through a credential. ``connect_erp`` is the generic connect path;
+everything below it — sharing, rotation-in-one-place, the multi-company plan
+gate, the trial — is one mechanism for all connectors, which is the reason
+the tables are shared rather than per-connector.
 
 They are separate because Zoho separates them. A refresh token belongs to a
 user, not a company; ``organization_id`` is a request parameter, and
@@ -119,7 +125,17 @@ def get_connection(session: Session, organization_id: str,
 
 def credentials_for(session: Session,
                     connection: models.ZohoConnection) -> ZohoCredentials:
-    """Turn one connection row into the credentials a pull needs."""
+    """Turn one Zoho connection row into the credentials a pull needs.
+
+    Zoho only, by type: another connector's connection resolves through
+    ``credential_material`` instead, and asking this function for one is a
+    caller bug worth an exception rather than a half-shaped credential.
+    """
+    if (getattr(connection, "connector", None) or ZOHO_CONNECTOR) != ZOHO_CONNECTOR:
+        raise ValueError(
+            f"Connection {connection.connection_id} reads "
+            f"{connection.connector}, which has no Zoho credentials — "
+            "resolve it through credential_material.")
     cred = connection.credential
     if cred is not None:
         if not cred.is_usable_by(connection.organization_id):
@@ -157,7 +173,12 @@ def get_zoho_credentials(session: Session, organization_id: str,
         return credentials_for(session, get_connection(session, organization_id,
                                                        connection_id))
 
-    rows = list_connections(session, organization_id, enabled_only=True)
+    # The first enabled *Zoho* company. Another connector's connection cannot
+    # answer this question, and picking one would hand a NetSuite row to a
+    # caller about to build a Zoho client.
+    rows = [r for r in list_connections(session, organization_id,
+                                        enabled_only=True)
+            if (getattr(r, "connector", None) or ZOHO_CONNECTOR) == ZOHO_CONNECTOR]
     if rows:
         return credentials_for(session, rows[0])
     if organization_id == settings.DEFAULT_ORG_ID and settings.ZOHO_ORGANIZATION_ID:
@@ -364,18 +385,28 @@ def connections_using(session: Session, credential_id: str) -> list[models.ZohoC
 
 # ── connections ─────────────────────────────────────────────────────────────
 def add_connection(session: Session, organization_id: str, *, credential_id: str,
-                   zoho_organization_id: str, label: str = "") -> models.ZohoConnection:
-    """Point this organization at another Zoho company through an existing grant.
+                   zoho_organization_id: str, label: str = "",
+                   config: Optional[dict] = None) -> models.ZohoConnection:
+    """Point this organization at another company through an existing grant.
+
+    Which *system* that company lives in comes from the credential — a
+    connection's connector is its credential's, always, and taking it as a
+    separate parameter would make the mismatch expressible. For a non-Zoho
+    connector, ``zoho_organization_id`` carries that system's company id (the
+    column name is historical; the model docstring owns that decision) and
+    ``config`` carries the connection's own settings.
 
     No secret is re-entered, so there is no second copy for a rotation to miss.
     A company already connected is updated rather than duplicated: two rows for
-    one Zoho org id would sync it twice and double every figure.
+    one company would sync it twice and double every figure.
     """
     cred = get_credential(session, organization_id, credential_id)
+    connector = getattr(cred, "connector", None) or ZOHO_CONNECTOR
     zoho_organization_id = zoho_organization_id.strip()
 
     existing = session.scalar(select(models.ZohoConnection).where(
         models.ZohoConnection.organization_id == organization_id,
+        models.ZohoConnection.connector == connector,
         models.ZohoConnection.zoho_organization_id == zoho_organization_id))
 
     # The plan boundary, enforced where the violation would happen. A second
@@ -383,12 +414,17 @@ def add_connection(session: Session, organization_id: str, *, credential_id: str
     # below it the licence unit is one company's books, and refusing here —
     # rather than auditing later — is what makes that a rule instead of a
     # suggestion. Updating a company already connected is never a new company.
+    # Distinctness is the (connector, company) pair: a NetSuite book beside a
+    # Zoho book is two companies, exactly as two Zoho books are.
     if existing is None:
+        from sqlalchemy import or_
+
         from .. import entitlements
 
         others = session.scalar(select(models.ZohoConnection.connection_id).where(
             models.ZohoConnection.organization_id == organization_id,
-            models.ZohoConnection.zoho_organization_id != zoho_organization_id))
+            or_(models.ZohoConnection.connector != connector,
+                models.ZohoConnection.zoho_organization_id != zoho_organization_id)))
         if others is not None:
             entitlements.assert_feature(session, organization_id, "multi_company")
 
@@ -396,9 +432,12 @@ def add_connection(session: Session, organization_id: str, *, credential_id: str
     if existing is None:
         session.add(row)
 
+    row.connector = connector
     row.zoho_organization_id = zoho_organization_id
     row.credential_id = cred.credential_id
     row.label = (label or "").strip()[:255]
+    if config is not None:
+        row.config = dict(config)
     if existing is None:
         row.enabled = True
     # Any legacy inline secret is cleared: a stale copy that rotation would miss
@@ -413,12 +452,16 @@ def add_connection(session: Session, organization_id: str, *, credential_id: str
     # The free intelligence month starts when books connect for the first time
     # anywhere — keyed to the books, so reconnecting the same company under a
     # fresh organization finds the trial already spent (see IntelligenceTrial).
+    # Non-Zoho books key as "connector:company", because two systems may issue
+    # the same id string and a NetSuite book must not find a Zoho book's trial
+    # already spent. Zoho keys stay bare so existing trial rows keep matching.
     if existing is None:
         from .. import entitlements
         from ..attribution import capture_baseline
 
-        trial = entitlements.begin_trial(session, organization_id,
-                                         zoho_organization_id)
+        books_key = (zoho_organization_id if connector == ZOHO_CONNECTOR
+                     else f"{connector}:{zoho_organization_id}")
+        trial = entitlements.begin_trial(session, organization_id, books_key)
         # "Better" needs a "before", and the only moment the before-window is
         # unambiguous is the moment the trial starts. Captured in the caller's
         # transaction — no commit here — so a connection is one atomic act.
@@ -524,6 +567,152 @@ def set_zoho_credentials(
 
 # Kept under its old name: callers that meant "connect this org" still work.
 connect_with_credential = add_connection
+
+
+# ── the registered ERP connectors ───────────────────────────────────────────
+#
+# One connect path for every non-Zoho system, driven by the connector's own
+# spec (``ingestion/erp``): the spec says which entered values are secrets,
+# the secrets travel as one encrypted JSON document, and everything below the
+# credential row — sharing, delete-guard, the plan gate, the trial — is the
+# same mechanism Zoho already exercises, because it is literally the same
+# rows.
+
+def _decrypt_secrets(cred: models.ZohoCredential) -> dict[str, str]:
+    import json
+
+    if not cred.secrets_encrypted:
+        return {}
+    loaded = json.loads(crypto.decrypt(cred.secrets_encrypted))
+    return {str(k): str(v) for k, v in loaded.items()} if isinstance(loaded, dict) else {}
+
+
+def credential_material(session: Session, connection: models.ZohoConnection):
+    """One non-Zoho connection row → the decrypted material its source needs.
+
+    The counterpart of ``credentials_for``, for the connectors whose secret
+    shape is the spec's rather than Zoho's OAuth triple. Never logged, never
+    persisted; decryption failures propagate for the reason they do there —
+    an unreadable secret is not an absent one.
+    """
+    from . import erp
+
+    connector = getattr(connection, "connector", None) or ZOHO_CONNECTOR
+    if connector == ZOHO_CONNECTOR:
+        raise ValueError(
+            "A Zoho connection resolves through credentials_for, not here.")
+    cred = connection.credential
+    if cred is None:
+        raise CredentialNotUsable(
+            "This connection has no stored credential to sign in with — "
+            "reconnect it with the sign-in details.")
+    if not cred.is_usable_by(connection.organization_id):
+        raise CredentialNotUsable(
+            f"Organization {connection.organization_id!r} is no longer "
+            f"permitted to use credential {cred.credential_id!r}")
+    return erp.CredentialMaterial(
+        connector=connector,
+        secrets=_decrypt_secrets(cred),
+        config=dict(cred.config or {}),
+        connection_config=dict(connection.config or {}),
+        external_org_id=connection.zoho_organization_id,
+    )
+
+
+def build_erp_source(session: Session, connection: models.ZohoConnection,
+                     since=None):
+    """A live source for one non-Zoho connection — the registry's factory fed
+    with this row's decrypted material. What ``get_source`` and the connect
+    check both call, so the two can never build the client differently."""
+    from . import erp
+
+    material = credential_material(session, connection)
+    return erp.get_spec(material.connector).build_source(material, since=since)
+
+
+def find_matching_erp_credential(
+        session: Session, organization_id: str, connector: str,
+        secrets: dict[str, str],
+        config: dict) -> Optional[models.ZohoCredential]:
+    """An existing credential of this connector holding exactly these values —
+    the same one-secret-one-row rule ``find_matching_credential`` keeps for
+    Zoho, for the same rotation reason."""
+    for cred in usable_credentials(session, organization_id):
+        if (getattr(cred, "connector", None) or ZOHO_CONNECTOR) != connector:
+            continue
+        try:
+            if (_decrypt_secrets(cred) == secrets
+                    and dict(cred.config or {}) == dict(config)):
+                return cred
+        except Exception:  # noqa: BLE001 — an undecryptable row is not a match
+            continue
+    return None
+
+
+def connect_erp(session: Session, organization_id: str, *, connector: str,
+                values: dict, label: str = "",
+                credential_label: str = "") -> models.ZohoConnection:
+    """Connect one company of a registered ERP from its entered form values.
+
+    Validation is the spec's (missing required fields refuse by label before
+    anything is stored), identical secrets attach to the credential already on
+    file, and the connection itself goes through ``add_connection`` so the
+    duplicate-company update, the multi-company plan gate and the trial all
+    apply exactly as they do to Zoho.
+    """
+    import json
+
+    from . import erp
+
+    spec = erp.get_spec(connector)
+    secrets, cred_config, conn_config, external = erp.split_inputs(spec, values)
+
+    cred = find_matching_erp_credential(session, organization_id, connector,
+                                        secrets, cred_config)
+    if cred is None:
+        # Not create_credential: that function is the Zoho OAuth shape (typed
+        # columns, accounts/api hosts) and this is the spec shape (one
+        # encrypted document). Same table, same lifecycle, different halves
+        # of the row.
+        cred = models.ZohoCredential(
+            owner_organization_id=organization_id,
+            connector=connector,
+            label=(credential_label or label or spec.label)[:255],
+            secrets_encrypted=crypto.encrypt(
+                json.dumps(secrets, sort_keys=True)),
+            config=cred_config,
+            shared_with_organization_ids=[],
+            rotated_at=datetime.now(timezone.utc),
+        )
+        session.add(cred)
+        session.flush()
+    return add_connection(session, organization_id,
+                          credential_id=cred.credential_id,
+                          zoho_organization_id=external, label=label,
+                          config=conn_config)
+
+
+def rotate_erp_credential(session: Session, organization_id: str,
+                          credential_id: str, *,
+                          values: dict) -> models.ZohoCredential:
+    """Replace a registered connector's secrets. Every connection follows —
+    the same one-operation rotation the credential split exists for, with the
+    same owner-only rule ``rotate_credential`` enforces."""
+    import json
+
+    from . import erp
+
+    cred = session.get(models.ZohoCredential, credential_id)
+    if cred is None or cred.owner_organization_id != organization_id:
+        raise CredentialNotUsable(
+            "Only the organization that owns a credential can rotate it")
+    spec = erp.get_spec(getattr(cred, "connector", None) or "")
+    secrets, cred_config = erp.split_credential_inputs(spec, values)
+    cred.secrets_encrypted = crypto.encrypt(json.dumps(secrets, sort_keys=True))
+    cred.config = cred_config
+    cred.rotated_at = datetime.now(timezone.utc)
+    session.flush()
+    return cred
 
 
 def clear_zoho_connection(session: Session, organization_id: str) -> bool:

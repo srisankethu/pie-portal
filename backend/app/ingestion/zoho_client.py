@@ -33,6 +33,8 @@ from typing import Any, Callable, Iterable, Iterator, Optional
 
 from ..clock import utc_stamp
 from ..config import settings
+from .errors import (IngestionError, SourceAuthError, SourceScopeError,
+                     SourceThrottleError)
 
 log = logging.getLogger("pie_portal.zoho")
 
@@ -137,15 +139,20 @@ def token_error_help(error: Any, *, accounts_base: str, configured_in: str) -> s
     return template.format(accounts=accounts_base, configured_in=configured_in)
 
 
-class ZohoError(RuntimeError):
-    """A Zoho call failed. Carries the API's own message where there is one."""
+class ZohoError(IngestionError):
+    """A Zoho call failed. Carries the API's own message where there is one.
+
+    Subclasses of the neutral taxonomy in ``ingestion/errors.py``, so the sync
+    layer reacts to the *kind* of failure without knowing which system raised
+    it; the Zoho names stay because callers and tests already catch them.
+    """
 
 
-class ZohoAuthError(ZohoError):
+class ZohoAuthError(ZohoError, SourceAuthError):
     """Credentials were rejected — wrong DC, revoked token, or bad client."""
 
 
-class ZohoThrottleError(ZohoError):
+class ZohoThrottleError(ZohoError, SourceThrottleError):
     """The rate limiter won. Distinct from other failures because the remedy is
     different: wait and resume, rather than fix a credential."""
 
@@ -161,7 +168,7 @@ class ZohoWriteUncertain(ZohoError):
     """
 
 
-class ZohoScopeError(ZohoAuthError):
+class ZohoScopeError(ZohoAuthError, SourceScopeError):
     """The credentials are fine; this *endpoint* was not granted.
 
     A subclass of ``ZohoAuthError`` so nothing that already handles an auth
@@ -177,9 +184,7 @@ class ZohoScopeError(ZohoAuthError):
     """
 
     def __init__(self, message: str, *, path: str, scope: Optional[str]) -> None:
-        super().__init__(message)
-        self.path = path
-        self.scope = scope
+        super().__init__(message, path=path, scope=scope)
 
 
 #: Which OAuth scope each list endpoint needs, so a 401 can name the missing

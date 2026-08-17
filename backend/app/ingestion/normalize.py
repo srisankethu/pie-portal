@@ -1,10 +1,21 @@
-"""Pure adaptation: raw Zoho Books payloads → validated canonical DTOs.
+"""Pure adaptation: canonical raw payloads → validated canonical DTOs.
 
 Deterministic and side-effect free. Source data is preserved (external ids +
 ``source_ref`` retained); values are never invented beyond a documented,
 deterministic fallback (line_revenue = qty × rate when the source omits a line
 total). Malformed/missing rows raise :class:`NormalizationError`, which the sync
 layer records and skips — never a silent drop, never a silent mutation.
+
+**The payload shape this module reads is the platform's canonical wire shape.**
+It descends from the Zoho Books API because Zoho was the first connector, and
+it is kept deliberately: one normalizer means one place where dates, decimals
+and the discount ladder are validated, for every connector alike. A Zoho pull
+feeds Zoho's own payloads straight in; every other connector's adapter in
+``ingestion/erp`` translates its native records into this shape first, and the
+sync passes the connector's name as ``system`` so provenance says where a row
+truly came from. Two normalizers that differ in one edge case would disagree on
+a row nobody looks at — the translation layer varies per connector, the
+validation must not.
 """
 from __future__ import annotations
 
@@ -21,10 +32,11 @@ from ..domain.schemas import (BillIn, CostRecordIn, CreditNoteApplicationIn,
                              StockLocationSnapshotIn, StockSnapshotIn, VendorIn,
                              VendorPaymentIn)
 
-#: The system every record in this module came from. Stated once, and stated
-#: *here* rather than defaulted in ``SourceRef``, because this file is the Zoho
-#: adapter — it is the only layer entitled to know that. A second adapter names
-#: itself the same way, and neither can silently inherit the other's answer.
+#: The default ``system`` stamped into provenance, for callers written when
+#: Zoho was the only connector. The sync layer always passes its connection's
+#: connector explicitly — ``test_multi_connector_sync`` pins that a non-Zoho
+#: pull leaves no row claiming Zoho — so the default exists for the historical
+#: call sites and their tests, not as something a new caller may lean on.
 ZOHO = "zoho"
 
 _HUNDRED = Decimal("100")
@@ -59,18 +71,18 @@ def _parse_decimal(value: Any, ctx: str, field: str) -> Decimal:
         raise NormalizationError("BAD_NUMBER", f"{ctx}: {field} not numeric ({value!r})")
 
 
-def normalize_customer(raw: dict[str, Any]) -> CustomerIn:
+def normalize_customer(raw: dict[str, Any], *, system: str = ZOHO) -> CustomerIn:
     cid = _require(raw, "contact_id", "contact")
     status = str(raw.get("status", "active")).lower()
     return CustomerIn(
         external_id=str(cid),
         name=str(_require(raw, "contact_name", "contact")),
         status=CustomerStatus.ACTIVE if status == "active" else CustomerStatus.INACTIVE,
-        source_ref=SourceRef(system=ZOHO, record_type="contact", record_id=str(cid)),
+        source_ref=SourceRef(system=system, record_type="contact", record_id=str(cid)),
     )
 
 
-def normalize_product(raw: dict[str, Any]) -> ProductIn:
+def normalize_product(raw: dict[str, Any], *, system: str = ZOHO) -> ProductIn:
     iid = _require(raw, "item_id", "item")
     status = str(raw.get("status", "active")).lower()
     return ProductIn(
@@ -82,11 +94,11 @@ def normalize_product(raw: dict[str, Any]) -> ProductIn:
         manufacturer=(str(raw["manufacturer"]) if raw.get("manufacturer")
                       else None),
         active=(status == "active"),
-        source_ref=SourceRef(system=ZOHO, record_type="item", record_id=str(iid)),
+        source_ref=SourceRef(system=system, record_type="item", record_id=str(iid)),
     )
 
 
-def normalize_invoice(raw: dict[str, Any]) -> list[SalesTxnIn]:
+def normalize_invoice(raw: dict[str, Any], *, system: str = ZOHO) -> list[SalesTxnIn]:
     """One invoice → one SalesTxnIn per line item (invoice-line grain).
 
     ``unit_price`` is the *net* selling price — after the line discount, which
@@ -119,7 +131,7 @@ def normalize_invoice(raw: dict[str, Any]) -> list[SalesTxnIn]:
             product_external_id=product_ext,
             date=when, qty=qty, unit_price=net_price, line_revenue=revenue,
             rate=rate, discount_percent=discount_pct,
-            source_ref=SourceRef(system=ZOHO, record_type="invoice", record_id=inv_id, line_id=line_id),
+            source_ref=SourceRef(system=system, record_type="invoice", record_id=inv_id, line_id=line_id),
         ))
     return out
 
@@ -188,7 +200,7 @@ def _effective_unit_amount(rate: Decimal, qty: Decimal, ln: dict[str, Any],
     return amount, discount_pct
 
 
-def normalize_bill(raw: dict[str, Any]) -> list[CostRecordIn]:
+def normalize_bill(raw: dict[str, Any], *, system: str = ZOHO) -> list[CostRecordIn]:
     """One bill → one CostRecordIn per line item (bill-line grain).
 
     ``unit_cost`` is the *effective*, post-discount cost — what every margin,
@@ -219,7 +231,7 @@ def normalize_bill(raw: dict[str, Any]) -> list[CostRecordIn]:
             vendor_external_id=vendor_ext,
             date=when, qty=qty, unit_cost=unit_cost, rate=rate,
             discount_percent=discount_pct,
-            source_ref=SourceRef(system=ZOHO, record_type="bill", record_id=bill_id, line_id=line_id),
+            source_ref=SourceRef(system=system, record_type="bill", record_id=bill_id, line_id=line_id),
         ))
     return out
 
@@ -227,7 +239,7 @@ def normalize_bill(raw: dict[str, Any]) -> list[CostRecordIn]:
 # ── supply, stock and cash ───────────────────────────────────────────────────
 
 
-def normalize_vendor(raw: dict[str, Any]) -> VendorIn:
+def normalize_vendor(raw: dict[str, Any], *, system: str = ZOHO) -> VendorIn:
     vid = _require(raw, "contact_id", "vendor")
     status = str(raw.get("status", "active")).lower()
     terms = raw.get("payment_terms")
@@ -241,11 +253,11 @@ def normalize_vendor(raw: dict[str, Any]) -> VendorIn:
         # falsiness, which would erase every due-on-receipt supplier.
         payment_terms_days=(int(terms) if terms not in (None, "") else None),
         status=CustomerStatus.ACTIVE if status == "active" else CustomerStatus.INACTIVE,
-        source_ref=SourceRef(system=ZOHO, record_type="vendor", record_id=str(vid)),
+        source_ref=SourceRef(system=system, record_type="vendor", record_id=str(vid)),
     )
 
 
-def normalize_stock(raw: dict[str, Any], as_of: date) -> StockSnapshotIn:
+def normalize_stock(raw: dict[str, Any], as_of: date, *, system: str = ZOHO) -> StockSnapshotIn:
     """The stock fields riding along on the item payload.
 
     ``as_of`` is passed in rather than read from the clock here so a whole pull
@@ -265,7 +277,7 @@ def normalize_stock(raw: dict[str, Any], as_of: date) -> StockSnapshotIn:
         # A service has no shelf. Counting it as "zero on hand" would put every
         # service line in the out-of-stock list forever.
         tracked=bool(raw.get("track_inventory")) and item_type != "service",
-        source_ref=SourceRef(system=ZOHO, record_type="item", record_id=str(iid)),
+        source_ref=SourceRef(system=system, record_type="item", record_id=str(iid)),
     )
 
 
@@ -304,7 +316,7 @@ def _applications(raw: dict[str, Any], payment_id: str, ctx: str, *,
     return out
 
 
-def normalize_payment(raw: dict[str, Any]) -> PaymentReceiptIn:
+def normalize_payment(raw: dict[str, Any], *, system: str = ZOHO) -> PaymentReceiptIn:
     pid = _require(raw, "payment_id", "payment")
     ctx = f"payment {pid}"
     applications = _applications(
@@ -319,11 +331,11 @@ def normalize_payment(raw: dict[str, Any]) -> PaymentReceiptIn:
         is_advance=bool(raw.get("is_advance_payment")),
         unapplied_amount=raw.get("unused_amount"),
         applications=applications,
-        source_ref=SourceRef(system=ZOHO, record_type="customerpayment", record_id=str(pid)),
+        source_ref=SourceRef(system=system, record_type="customerpayment", record_id=str(pid)),
     )
 
 
-def normalize_sales_order(raw: dict[str, Any]) -> SalesOrderIn:
+def normalize_sales_order(raw: dict[str, Any], *, system: str = ZOHO) -> SalesOrderIn:
     """One customer order. Header grain, mirroring ``normalize_purchase_order``.
 
     ``expected_ship_date`` is left as ``None`` when Zoho has none rather than
@@ -346,11 +358,11 @@ def normalize_sales_order(raw: dict[str, Any]) -> SalesOrderIn:
         total=raw.get("total"),
         salesperson_external_id=(str(raw["salesperson_id"])
                                  if raw.get("salesperson_id") else None),
-        source_ref=SourceRef(system=ZOHO, record_type="salesorder", record_id=str(soid)),
+        source_ref=SourceRef(system=system, record_type="salesorder", record_id=str(soid)),
     )
 
 
-def normalize_bill_terms(raw: dict[str, Any]) -> BillIn:
+def normalize_bill_terms(raw: dict[str, Any], *, system: str = ZOHO) -> BillIn:
     """The payable header of a bill, from the payload ``normalize_bill``
     already receives.
 
@@ -380,7 +392,7 @@ def normalize_bill_terms(raw: dict[str, Any]) -> BillIn:
         status=str(raw.get("status") or ""),
         total=raw.get("total"),
         balance=raw.get("balance"),
-        source_ref=SourceRef(system=ZOHO, record_type="bill", record_id=bill_id),
+        source_ref=SourceRef(system=system, record_type="bill", record_id=bill_id),
     )
 
 
@@ -423,7 +435,7 @@ def _invoice_sales_orders(raw: dict[str, Any]) -> list[InvoiceSalesOrderRef]:
     return out
 
 
-def normalize_invoice_terms(raw: dict[str, Any]) -> InvoiceIn:
+def normalize_invoice_terms(raw: dict[str, Any], *, system: str = ZOHO) -> InvoiceIn:
     """The receivable header of an invoice, from the payload
     ``normalize_invoice`` already receives.
 
@@ -455,11 +467,11 @@ def normalize_invoice_terms(raw: dict[str, Any]) -> InvoiceIn:
         total=raw.get("total"),
         balance=raw.get("balance"),
         sales_orders=_invoice_sales_orders(raw),
-        source_ref=SourceRef(system=ZOHO, record_type="invoice", record_id=invoice_id),
+        source_ref=SourceRef(system=system, record_type="invoice", record_id=invoice_id),
     )
 
 
-def normalize_location(raw: dict[str, Any]) -> LocationIn:
+def normalize_location(raw: dict[str, Any], *, system: str = ZOHO) -> LocationIn:
     """One place the business trades from."""
     loc_id = str(_require(raw, "location_id", "location"))
     return LocationIn(
@@ -475,11 +487,11 @@ def normalize_location(raw: dict[str, Any]) -> LocationIn:
                    else bool(raw["is_location_active"])),
         is_primary=bool(raw.get("is_primary_location")),
         tax_reg_no=(str(raw["tax_reg_no"]) if raw.get("tax_reg_no") else None),
-        source_ref=SourceRef(system=ZOHO, record_type="location", record_id=loc_id),
+        source_ref=SourceRef(system=system, record_type="location", record_id=loc_id),
     )
 
 
-def normalize_item_location(raw: dict[str, Any], as_of: date) -> StockLocationSnapshotIn:
+def normalize_item_location(raw: dict[str, Any], as_of: date, *, system: str = ZOHO) -> StockLocationSnapshotIn:
     """One item's holding at one location, on one day.
 
     Quantities and the valuation are passed through exactly as Zoho states
@@ -497,13 +509,13 @@ def normalize_item_location(raw: dict[str, Any], as_of: date) -> StockLocationSn
         on_hand=raw.get("on_hand"),
         available=raw.get("available"),
         asset_value=raw.get("asset_value"),
-        source_ref=SourceRef(system=ZOHO, record_type="item_location",
+        source_ref=SourceRef(system=system, record_type="item_location",
                              record_id=item_id, line_id=location_id),
     )
 
 
 def normalize_credit_note(
-    raw: dict[str, Any],
+    raw: dict[str, Any], *, system: str = ZOHO,
 ) -> tuple[CreditNoteIn, list[CreditNoteApplicationIn]]:
     """One credit note → its header, and each invoice it was applied to.
 
@@ -534,7 +546,7 @@ def normalize_credit_note(
         status=str(raw.get("status") or ""),
         total=raw.get("total"),
         balance=raw.get("balance"),
-        source_ref=SourceRef(system=ZOHO, record_type="credit_note", record_id=note_id),
+        source_ref=SourceRef(system=system, record_type="credit_note", record_id=note_id),
     )
     applications: list[CreditNoteApplicationIn] = []
     for i, a in enumerate(raw.get("invoices_credited") or []):
@@ -564,13 +576,13 @@ def normalize_credit_note(
             invoice_date=(_parse_date(invoice_raw, ctx) if invoice_raw else None),
             applied_on=_parse_date(applied_raw, ctx),
             amount_applied=_parse_decimal(amount, ctx, "amount_applied"),
-            source_ref=SourceRef(system=ZOHO, record_type="credit_note",
+            source_ref=SourceRef(system=system, record_type="credit_note",
                                  record_id=note_id, line_id=invoice_ref),
         ))
     return header, applications
 
 
-def normalize_vendor_payment(raw: dict[str, Any]) -> VendorPaymentIn:
+def normalize_vendor_payment(raw: dict[str, Any], *, system: str = ZOHO) -> VendorPaymentIn:
     """One payment out, with the bills it settled. The amount is required.
 
     A payment row with no amount is malformed, not a zero-rupee payment, and
@@ -595,11 +607,11 @@ def normalize_vendor_payment(raw: dict[str, Any]) -> VendorPaymentIn:
         applications=_applications(
             raw, str(pid), ctx, listed_under="bills", document_key="bill_id",
             number_key="bill_number", application_key="bill_payment_id"),
-        source_ref=SourceRef(system=ZOHO, record_type="vendorpayment", record_id=str(pid)),
+        source_ref=SourceRef(system=system, record_type="vendorpayment", record_id=str(pid)),
     )
 
 
-def normalize_purchase_order(raw: dict[str, Any]) -> PurchaseOrderIn:
+def normalize_purchase_order(raw: dict[str, Any], *, system: str = ZOHO) -> PurchaseOrderIn:
     poid = _require(raw, "purchaseorder_id", "purchase order")
     ctx = f"purchase order {poid}"
     expected = raw.get("expected_delivery_date")
@@ -620,5 +632,5 @@ def normalize_purchase_order(raw: dict[str, Any]) -> PurchaseOrderIn:
         pending_qty=raw.get("quantity_yet_to_receive"),
         total=raw.get("total"),
         received_on=received_on,
-        source_ref=SourceRef(system=ZOHO, record_type="purchaseorder", record_id=str(poid)),
+        source_ref=SourceRef(system=system, record_type="purchaseorder", record_id=str(poid)),
     )

@@ -103,22 +103,43 @@ class ZohoCredential(Base):
     ``client_secret`` and ``refresh_token`` are encrypted at rest (see
     ``app/crypto.py``) — this table, unlike a ``.env`` file, can end up in a
     database backup or a read replica.
+
+    **The table now holds every connector's grants, not only Zoho's.** The name
+    is historical and deliberately kept: renaming a table every imported row's
+    provenance convention points at would churn the schema for a cosmetic gain.
+    ``connector`` says which system a grant signs into. Zoho rows keep using the
+    typed OAuth columns below; every other connector stores its secrets as one
+    encrypted JSON document in ``secrets_encrypted`` and its non-secret settings
+    (account id, tenant, environment …) in ``config``, because five ERPs have
+    five different auth shapes and a typed column per field would grow a
+    nullable column per connector per secret. The shape of both documents is
+    declared per connector in ``ingestion/erp`` — a credential is only ever
+    written through its connector's spec, never free-form.
     """
 
     __tablename__ = "zoho_credentials"
 
     credential_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    # Which system this grant signs into. The discriminator every credential
+    # consumer branches on — through the ``ingestion/erp`` registry, not an if.
+    connector: Mapped[str] = mapped_column(String(32), default="zoho",
+                                           server_default="zoho")
     # Who may rotate it and decide who else may use it.
     owner_organization_id: Mapped[str] = mapped_column(String(64), index=True)
     label: Mapped[str] = mapped_column(String(255), default="")
 
-    client_id: Mapped[str] = mapped_column(String(255))
-    client_secret_encrypted: Mapped[str] = mapped_column(String(2048))
-    refresh_token_encrypted: Mapped[str] = mapped_column(String(2048))
+    client_id: Mapped[Optional[str]] = mapped_column(String(255))
+    client_secret_encrypted: Mapped[Optional[str]] = mapped_column(String(2048))
+    refresh_token_encrypted: Mapped[Optional[str]] = mapped_column(String(2048))
     accounts_base: Mapped[str] = mapped_column(String(255),
                                                default="https://accounts.zoho.in")
     api_base: Mapped[str] = mapped_column(String(255),
                                           default="https://www.zohoapis.in/books/v3")
+    # Non-Zoho connectors only. ``secrets_encrypted`` is an encrypted JSON
+    # object of the connector's secret fields; ``config`` carries the values
+    # that are identifying rather than secret. Zoho rows leave both NULL.
+    secrets_encrypted: Mapped[Optional[str]] = mapped_column(String(4096))
+    config: Mapped[Optional[dict]] = mapped_column(JSON)
 
     # Other platform organizations allowed to connect through this grant.
     # Explicit rather than implicit: a credential reachable by every tenant in
@@ -162,11 +183,24 @@ class ZohoConnection(Base):
     explicitly connects it — until then it falls back to the ``ZOHO_*``
     environment variables, so an existing single-tenant deployment keeps working
     unchanged (see ``ingestion/connections.py``).
+
+    **The table now holds every connector's connections.** The name is
+    historical, kept for the reason ``ZohoCredential`` states; ``connector``
+    says which system a row reads, and ``zoho_organization_id`` is read as "the
+    company's id in that system" — a Zoho org id, a Business Central company
+    GUID, an Acumatica tenant, a NetSuite account. One shared table rather than
+    one per connector is what keeps every query that asks "how many companies
+    does this organization have" (the sole-connection adoption guard, the
+    multi-company plan gate, the sync-all fan-out, ``origin.Companies``)
+    correct without knowing connectors exist.
     """
 
     __tablename__ = "zoho_connections"
     __table_args__ = (
-        UniqueConstraint("organization_id", "zoho_organization_id",
+        # Identity is (connector, company-in-that-system): two systems may
+        # legitimately issue the same id string, and one system's company must
+        # still not be connected twice.
+        UniqueConstraint("organization_id", "connector", "zoho_organization_id",
                          name="uq_zoho_connection_org_company"),
     )
 
@@ -174,8 +208,12 @@ class ZohoConnection(Base):
                                                default=_uuid)
     organization_id: Mapped[str] = mapped_column(
         String(64), ForeignKey("organizations.organization_id"), index=True)
-    # What a person calls this company. The Zoho org id is the identity; this is
-    # what makes a list of three connections readable.
+    # Which system this connection reads. The value every imported row's
+    # ``connector`` column is stamped from.
+    connector: Mapped[str] = mapped_column(String(32), default="zoho",
+                                           server_default="zoho")
+    # What a person calls this company. The external org id is the identity;
+    # this is what makes a list of three connections readable.
     label: Mapped[str] = mapped_column(String(255), default="")
     # Off means "keep the credentials, skip it on a sync-all". Deleting is for
     # connections that are wrong; disabling is for ones that are simply quiet.
@@ -184,6 +222,10 @@ class ZohoConnection(Base):
     zoho_organization_id: Mapped[str] = mapped_column(String(64))
     credential_id: Mapped[Optional[str]] = mapped_column(
         String(64), ForeignKey("zoho_credentials.credential_id"), index=True)
+    # Non-Zoho connectors only: per-company settings the credential does not
+    # carry — a Business Central company GUID is here, its tenant id is on the
+    # credential. Shapes are declared per connector in ``ingestion/erp``.
+    config: Mapped[Optional[dict]] = mapped_column(JSON)
 
     # Legacy inline credentials. Rows created before credentials were separated
     # keep working from these until the migration backfills them; nothing new is

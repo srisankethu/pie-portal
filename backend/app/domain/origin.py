@@ -68,6 +68,14 @@ CONNECTORS: dict[str, dict[str, str]] = {
     "odoo": {"label": "Odoo", "short": "Odoo", "icon": "●"},
     "quickbooks": {"label": "QuickBooks", "short": "QB", "icon": "◗"},
     "erpnext": {"label": "ERPNext", "short": "ERPNext", "icon": "◆"},
+    # The US-market connectors, served by ``ingestion/erp``.
+    "netsuite": {"label": "Oracle NetSuite", "short": "NetSuite", "icon": "▣"},
+    "dynamics365": {"label": "Dynamics 365 Business Central",
+                    "short": "D365 BC", "icon": "◫"},
+    "acumatica": {"label": "Acumatica", "short": "Acumatica", "icon": "◉"},
+    "prophet21": {"label": "Epicor Prophet 21", "short": "P21", "icon": "▤"},
+    "sagex3": {"label": "Sage X3", "short": "Sage X3", "icon": "◈"},
+    "sage100": {"label": "Sage 100", "short": "Sage 100", "icon": "◇"},
 }
 
 #: What an unregistered connector renders as. A connector nobody has described
@@ -110,25 +118,12 @@ class Origin:
         }
 
 
-@dataclass(frozen=True)
-class _ConnectionSource:
-    """One connector's connection table, described rather than branched on."""
-
-    connector: str
-    model: Any
-    fallback_label: Any
-
-
-#: Every table that holds connected companies. A list of one today. A second
-#: connector appends a row here (or, better, replaces the list with one shared
-#: table) and nothing downstream changes.
-_CONNECTION_SOURCES: tuple[_ConnectionSource, ...] = (
-    _ConnectionSource(
-        connector="zoho",
-        model=models.ZohoConnection,
-        fallback_label=lambda row: f"Zoho company {row.zoho_organization_id}",
-    ),
-)
+def fallback_company_label(connector: Optional[str], external_org_id: str) -> str:
+    """What to call an unlabelled connected company: the system's name plus the
+    id that system knows it by — the two things that make it findable there."""
+    meta = CONNECTORS.get(connector or "", _UNKNOWN)
+    system = meta["label"] or (connector or "Connected")
+    return f"{system} company {external_org_id}"
 
 
 class Companies:
@@ -142,23 +137,19 @@ class Companies:
     def __init__(self, session: Session, organization_id: str) -> None:
         self._labels: dict[str, str] = {}
         self._connectors: dict[str, str] = {}
-        # ── the one connector-specific line in this module, and where the
-        #    second connector starts ────────────────────────────────────────
-        #
-        # There is exactly one connection table today and it is Zoho's, so this
-        # reads it and stamps its connector name. That is a real coupling and
-        # it is stated rather than hidden: when the second connector lands, the
-        # fix is a ``connections`` table with a ``connector`` column that every
-        # connector writes to, and this loop becomes one query with no literal
-        # in it. Nothing *else* in this module or in the callers needs to
-        # change when that happens — which is the property the split is for.
-        for source in _CONNECTION_SOURCES:
-            for row in session.scalars(
-                    select(source.model).where(
-                        source.model.organization_id == organization_id)):
-                self._labels[row.connection_id] = (
-                    row.label or source.fallback_label(row))
-                self._connectors[row.connection_id] = source.connector
+        # One shared connections table with a ``connector`` column, so this is
+        # one query with no connector literal in it. (It used to iterate a
+        # described list of per-connector tables — a list of one — and the
+        # comment here promised exactly this shape the day a second connector
+        # landed.)
+        for row in session.scalars(
+                select(models.ZohoConnection).where(
+                    models.ZohoConnection.organization_id == organization_id)):
+            connector = getattr(row, "connector", None) or "zoho"
+            self._labels[row.connection_id] = (
+                row.label or fallback_company_label(
+                    connector, row.zoho_organization_id))
+            self._connectors[row.connection_id] = connector
 
     def of(self, record: Sourced) -> Origin:
         connection_id = getattr(record, "connection_id", None)

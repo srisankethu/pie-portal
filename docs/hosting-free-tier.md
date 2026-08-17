@@ -87,6 +87,13 @@ fallback (see `docs/operations.md`).
    gives you far less RAM than the 4 GB `hosting.md` recommends, and each
    worker warms its own ~13 MB catalogue copy.
 
+   **Put the Railway service in the same region as the Neon project.** This is
+   not a tuning nicety. Every DDL statement and every query is a round trip, so
+   a Singapore database behind a US service pays ~170 ms per trip — enough to
+   turn a first-boot migration from seconds into minutes, and to make every
+   screen feel slow afterwards. Railway sets the region per service; Neon shows
+   its region in the connection host (`…ap-southeast-1.aws.neon.tech`).
+
 3. Deploy. Railway will give the service a public URL
    (`https://<something>.up.railway.app`) — copy it, you need it in step 3.
 4. **Run the release step once — before trusting the deploy.** Migrations and

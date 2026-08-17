@@ -17,11 +17,18 @@ Compose stack.
                 Neon (Postgres)
 ```
 
-Because Vercel rewrites `/api/*` to the Railway URL server-side, the frontend
-keeps using the same relative `/api/v1/...` paths it already uses in dev and in
-the self-hosted deploy (`frontend/src/platform/api.ts`) — no frontend code
-changes, and the browser only ever talks to one origin, so `CORS_ORIGINS` can
-stay empty exactly as it does in the Caddy setup.
+Because `frontend/api/[...path].ts` proxies `/api/*` to the Railway URL
+server-side, the frontend keeps using the same relative `/api/v1/...` paths it
+already uses in dev and in the self-hosted deploy
+(`frontend/src/platform/api.ts`) — no frontend code changes, and the browser
+only ever talks to one origin, so `CORS_ORIGINS` can stay empty exactly as it
+does in the Caddy setup.
+
+The Railway URL is read from an environment variable (`BACKEND_URL`) at
+request time, not baked into `vercel.json` — `vercel.json`'s `rewrites` are
+static and can't interpolate env vars, so the proxy lives in a small edge
+function instead. That means the backend's URL is a dashboard setting you can
+change without touching the repo.
 
 Redis is not provisioned in this variant. `compose.yaml` provisions it only for
 future cross-replica state; nothing today requires it, so `REDIS_URL` is simply
@@ -94,15 +101,19 @@ fallback (see `docs/operations.md`).
 ## 3. Vercel (frontend)
 
 1. New project → import this repo → set **Root Directory** to `frontend`.
-   Vercel will pick up `frontend/vercel.json` for the build command, output
-   directory, and the `/api/*` rewrite.
-2. Before the first deploy, edit `frontend/vercel.json` and replace
-   `REPLACE_WITH_RAILWAY_URL` with the Railway URL from step 2.3 (just the
-   host, no `https://` prefix duplicated — see the existing rewrite line).
-   Commit and push; Vercel redeploys on push.
+   Vercel will pick up `frontend/vercel.json` for the build command and
+   output directory, and will auto-detect `frontend/api/[...path].ts` as a
+   serverless (edge) function serving `/api/*`.
+2. Project → Settings → Environment Variables → add
+   `BACKEND_URL` = the Railway host from step 2.3, e.g.
+   `pie-portal-production.up.railway.app` (host only, no `https://`).
 3. Deploy. Open the Vercel URL and sign in with `s.menon@…` / the
    `SEED_PASSWORD` you generated — same three seeded accounts as
    `hosting.md` describes, flagged `must_change_password`.
+
+If the backend later moves (a new Railway service, a different host
+entirely), update `BACKEND_URL` in Vercel's dashboard and redeploy — no
+repo change needed.
 
 ---
 
@@ -110,8 +121,9 @@ fallback (see `docs/operations.md`).
 
 | | Self-hosted (`hosting.md`) | Free tier (this doc) |
 |---|---|---|
-| Edge / TLS | Caddy, one origin | Vercel edge + Railway edge, joined by a rewrite |
-| `CORS_ORIGINS` | empty (same origin via Caddy) | empty (same origin via Vercel rewrite) |
+| Edge / TLS | Caddy, one origin | Vercel edge + Railway edge, joined by `frontend/api/[...path].ts` |
+| `CORS_ORIGINS` | empty (same origin via Caddy) | empty (same origin via the Vercel proxy function) |
+| Backend URL config | `SITE_ADDRESS` in `.env.production` | `BACKEND_URL` env var on the Vercel project |
 | Redis | provisioned, unused today | not provisioned, unused today |
 | Release step | `docker compose --profile release run --rm release` | `railway run ... bash deploy/release.sh` |
 | Images | built and run by Compose | `deploy/backend.Dockerfile` built by Railway; frontend built natively by Vercel, not via `deploy/web.Dockerfile` |

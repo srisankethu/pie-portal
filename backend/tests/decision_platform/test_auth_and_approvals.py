@@ -135,6 +135,48 @@ def test_failure_does_not_reveal_whether_the_account_exists(client):
     assert unknown.json()["detail"] == wrong.json()["detail"]
 
 
+def test_repeated_bad_logins_are_throttled(client):
+    """Brute-force protection must actually engage — driven through the endpoint.
+
+    The failure counter was incremented and ``flush``ed, then the handler raised
+    401; ``get_session`` rolls back on that raise, so the increment was discarded
+    and the count could never pass the threshold. Throttling was unreachable: the
+    unit test exercised ``record_login_failure`` directly and never saw it. It
+    commits now, so the count survives the 401 and the 429 branch is reachable.
+    """
+    from app.authz import LOGIN_THROTTLE_THRESHOLD
+
+    for _ in range(LOGIN_THROTTLE_THRESHOLD):
+        assert _login(client, OWNER, "wrong").status_code == 401
+    # The next attempt is throttled — and so is a *correct* password, because the
+    # lockout is on the account, not on the particular guess.
+    assert _login(client, OWNER, "wrong").status_code == 429
+    assert _login(client, OWNER).status_code == 429
+
+    # The counter actually persisted across the 401s — the whole of the bug.
+    s = client.Maker()
+    try:
+        assert s.get(models.User, "usr_owner").login_failures_count >= LOGIN_THROTTLE_THRESHOLD
+    finally:
+        s.close()
+
+
+def test_login_hashes_even_for_an_unknown_account(client, monkeypatch):
+    """The uniform failure message only hides account existence if the *timing*
+    is uniform too. `verify_password` (240k PBKDF2 iterations) must run even when
+    the account does not exist — otherwise the ~35x response-time gap between a
+    real address and an unknown one enumerates accounts around the message. Pinned
+    by call count, not by the clock, so it cannot be flaky."""
+    import app.routers.platform_auth as pa
+
+    calls = []
+    real = pa.verify_password
+    monkeypatch.setattr(pa, "verify_password",
+                        lambda pw, stored: (calls.append(1), real(pw, stored))[1])
+    assert _login(client, "ghost@nowhere.example", "whatever").status_code == 401
+    assert len(calls) == 1, "a verification must run even for an unknown account"
+
+
 def test_the_token_carries_the_role_from_the_user_row(client):
     for email, role in ((OWNER, "OWNER"), (MANAGER, "SALES_MANAGER"),
                         (SALES, "SALESPERSON")):
@@ -290,6 +332,19 @@ def _raise(c, email, price, quote_id="q1", line_id="L1", reason="Volume commitme
                   headers=_hdr(c, email))
 
 
+def _approver_view(c, rid, email=OWNER):
+    """The request as an approver sees it — the only view that carries the real
+    ``required_authority`` and ``requires_rationale``.
+
+    A salesperson's view deliberately no longer does: those fields are OWNER iff
+    the line is below cost, a boundary with no policy multiplier, so serving them
+    to the requester let a salesperson walk the price and recover cost (the
+    resurrected NEGATIVE_MARGIN oracle, CLAUDE.md §1). Tests that care about the
+    authority a request *carries* therefore read it from here, not from the
+    salesperson response that raised it."""
+    return c.get(f"/api/v1/approvals/{rid}", headers=_hdr(c, email)).json()
+
+
 def test_a_price_within_policy_cannot_have_an_approval_raised_for_it(client):
     """A queue full of requests nobody needed is a queue nobody reads."""
     r = _raise(client, SALES, 180.0)
@@ -302,8 +357,12 @@ def test_a_thin_price_raises_a_manager_level_request(client):
     assert r.status_code == 201, r.text
     body = r.json()
     assert body["status"] == "PENDING"
-    assert body["required_authority"] == "MANAGER"
+    # The salesperson sees the collapsed authority, never MANAGER-vs-OWNER.
+    assert body["required_authority"] == "APPROVAL_REQUIRED"
     assert body["can_decide"] is False, "the salesperson cannot decide their own"
+    # The real authority is manager-level, read from the approver's view.
+    assert _approver_view(client, body["approval_request_id"],
+                          MANAGER)["required_authority"] == "MANAGER"
 
 
 def test_selling_below_cost_is_escalated_to_the_owner_not_the_manager(client):
@@ -311,9 +370,12 @@ def test_selling_below_cost_is_escalated_to_the_owner_not_the_manager(client):
     different decision, and it belongs to a different person."""
     r = _raise(client, SALES, 100.0)     # under the ₹124 cost
     assert r.status_code == 201
-    assert r.json()["required_authority"] == "OWNER"
-
+    # The salesperson is not told this escalated to the owner — that fact is
+    # `below_cost`. The owner's own view carries the real authority.
+    assert r.json()["required_authority"] == "APPROVAL_REQUIRED"
     rid = r.json()["approval_request_id"]
+    assert _approver_view(client, rid, OWNER)["required_authority"] == "OWNER"
+
     denied = client.post(f"/api/v1/approvals/{rid}/decide",
                          json={"status": "APPROVED"}, headers=_hdr(client, MANAGER))
     assert denied.status_code == 403
@@ -370,8 +432,14 @@ def test_signing_a_below_cost_price_needs_a_reason_on_the_record(client):
     """
     _snapshot(client, SALES, 100.0)                 # under the 124.0 unit cost
     raised = _raise(client, SALES, 100.0).json()
-    assert raised["required_authority"] == "OWNER"
-    assert raised["requires_rationale"] is True, "the server says so, not the browser"
+    # The salesperson does not see the below-cost escalation or the rationale
+    # flag — both flip at cost. The owner's view carries them, and enforcement
+    # (below) is on the decide path regardless of what the requester was shown.
+    assert raised["required_authority"] == "APPROVAL_REQUIRED"
+    assert raised["requires_rationale"] is False
+    owner_view = _approver_view(client, raised["approval_request_id"], OWNER)
+    assert owner_view["required_authority"] == "OWNER"
+    assert owner_view["requires_rationale"] is True, "the server says so, not the browser"
 
     bare = client.post(f"/api/v1/approvals/{raised['approval_request_id']}/decide",
                        json={"status": "APPROVED"}, headers=_hdr(client, OWNER))
@@ -398,8 +466,10 @@ def test_a_thin_price_can_still_be_approved_without_a_note(client):
     """Only the irreversible one is gated. A manager signing an ordinary thin
     margin should not be made to write a sentence to clear their queue."""
     raised = _raise(client, SALES, 135.0).json()
-    assert raised["required_authority"] == "MANAGER"
-    assert raised["requires_rationale"] is False
+    assert raised["required_authority"] == "APPROVAL_REQUIRED"
+    mgr_view = _approver_view(client, raised["approval_request_id"], MANAGER)
+    assert mgr_view["required_authority"] == "MANAGER"
+    assert mgr_view["requires_rationale"] is False
 
     r = client.post(f"/api/v1/approvals/{raised['approval_request_id']}/decide",
                     json={"status": "APPROVED"}, headers=_hdr(client, MANAGER))
@@ -419,12 +489,14 @@ def test_a_managers_count_excludes_what_only_an_owner_may_sign(client):
     _snapshot(client, SALES, 135.0, line_id="L1")
     thin = _raise(client, SALES, 135.0, line_id="L1")
     assert thin.status_code == 201, thin.text
-    assert thin.json()["required_authority"] == "MANAGER"
+    # Both come back to the salesperson as the same collapsed value; the split
+    # that this test is about is proven by the approver-side counts below.
+    assert thin.json()["required_authority"] == "APPROVAL_REQUIRED"
 
     _snapshot(client, SALES, 100.0, line_id="L2")     # under the 124.0 unit cost
     below = _raise(client, SALES, 100.0, line_id="L2")
     assert below.status_code == 201, below.text
-    assert below.json()["required_authority"] == "OWNER", "below cost is the owner's"
+    assert below.json()["required_authority"] == "APPROVAL_REQUIRED"
 
     mgr = client.get("/api/v1/approvals", headers=_hdr(client, MANAGER)).json()
     decidable = [r for r in mgr["requests"] if r["can_decide"]]
@@ -457,6 +529,39 @@ def test_the_request_carries_economics_to_the_approver_and_not_to_the_requester(
     sales = client.get(f"/api/v1/approvals/{rid}", headers=_hdr(client, SALES)).json()
     assert "subject" not in sales
     assert sales["summary"] and sales["status"] == "PENDING"
+
+
+def test_a_salesperson_cannot_walk_the_price_to_recover_cost(client):
+    """The approvals surface must not become the NEGATIVE_MARGIN oracle again.
+
+    ``required_authority`` escalates to OWNER exactly when the line is priced at
+    or below what the item cost us — a boundary with no policy multiplier — and
+    the rationale flag, the cannot-decide reason and the title all move with it.
+    Served to the requesting salesperson, those four let them binary-search the
+    price across ``unit_cost`` (124 here) and recover cost to the paisa. So every
+    one of them must read identically on both sides of cost.
+
+    The approver control at the end is not decoration: without it this passes
+    just as well if the flow produced no request at all — the "absence of
+    evidence is not a pass" trap CLAUDE.md §1 records three times.
+    """
+    sensitive = ("required_authority", "requires_rationale",
+                 "cannot_decide_reason", "title")
+    seen = set()
+    for price in (100.0, 118.0, 123.0, 124.0, 130.0, 135.0):   # straddles cost 124
+        body = _raise(client, SALES, price, line_id="L1").json()
+        assert body["status"] == "PENDING", body
+        seen.add(tuple(body[k] for k in sensitive))
+    assert len(seen) == 1, (
+        f"a salesperson-visible field changed with price across cost: {seen}. "
+        "That is the cost oracle — none of these fields may vary at unit_cost.")
+
+    # Control: the approver's view *does* carry the real, cost-varying authority,
+    # so the collapse above is hiding a distinction that genuinely exists.
+    below = _raise(client, SALES, 100.0, line_id="L2").json()["approval_request_id"]
+    assert _approver_view(client, below, OWNER)["required_authority"] == "OWNER"
+    thin = _raise(client, SALES, 135.0, line_id="L3").json()["approval_request_id"]
+    assert _approver_view(client, thin, MANAGER)["required_authority"] == "MANAGER"
 
 
 def test_the_approver_sees_the_price_asked_about_not_whatever_it_became(client):

@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DataGrid, numeric } from "./DataGrid";
 import { EntityName, EntitySource } from "./EntityName";
 import { CompanyFilter, useCompanyFilter } from "./CompanyFilter";
@@ -10,6 +10,7 @@ import {
   loadPlatformSession,
   papi,
   savePlatformSession,
+  setAuthLossHandler,
 } from "./api";
 import type { Account, DecisionDetail, DecisionSummary, DecisionTrace, PlatformSession, Role, StatusFilter } from "./types";
 import { aiState, factLabel, factValue, isPrimaryFact, stateFieldLabel, ROLE_LABEL } from "./format";
@@ -348,6 +349,14 @@ export default function PlatformApp() {
   const location = useLocation();
   const navigate = useNavigate();
   const screen: Screen = screenAt(location.pathname);
+  // The destination a signed-out visitor actually asked for, held across the
+  // sign-in detour. A shared link to an account, or the screen a user was on
+  // when their token was retired, is otherwise lost: sign-in navigated to home
+  // unconditionally, under a comment claiming the deep link was preserved.
+  // Seeded from the first render because that is when the requested URL is
+  // still on screen.
+  const intended = useRef<string | null>(
+    screenAt(location.pathname) === "home" ? null : location.pathname + location.search);
   const [summaries, setSummaries] = useState<DecisionSummary[] | null>(null);
   const [details, setDetails] = useState<Record<string, DecisionDetail>>({});
   const [loading, setLoading] = useState(false);
@@ -404,11 +413,23 @@ export default function PlatformApp() {
   /** A dead session must return the user to sign-in, not strand them inside
    *  application chrome that looks live but can load nothing. */
   const handleAuthLoss = useCallback(() => {
+    // Where they were, so signing back in returns them there rather than to
+    // home. Captured before signOut swaps the shell for the landing page.
+    intended.current = location.pathname + location.search;
     signOut();
     // The toast lives inside the signed-in shell, which is about to unmount —
     // the message has to survive onto the sign-in screen to be seen at all.
     setNotice("Your session expired. Please sign in again.");
-  }, [signOut]);
+  }, [signOut, location.pathname, location.search]);
+
+  // Registered once for the whole app. Before this, a 401 was recognised only
+  // where a screen remembered to ask `isAuthError` — three call sites, all on
+  // the decision queue — so every other screen showed "this did not load"
+  // inside a shell that still looked signed in.
+  useEffect(() => {
+    setAuthLossHandler(handleAuthLoss);
+    return () => setAuthLossHandler(null);
+  }, [handleAuthLoss]);
 
   const load = useCallback(async () => {
     if (!session) return;
@@ -451,8 +472,31 @@ export default function PlatformApp() {
     setNotice(null);
     savePlatformSession(s);
     setSession(s);
-    navigate(PATH.home);
+    // Back to what they asked for, if they asked for anything. `intended` is
+    // only ever set from a path `screenAt` recognises as a real screen, so an
+    // unknown or landing-page path still goes home — which is where the
+    // catch-all route would have put them anyway.
+    //
+    // `replace`, so Back does not return to the sign-in card they have just
+    // left. Cleared afterwards: a second sign-in in the same tab, from home,
+    // must not be sent to a destination the previous session wanted.
+    const wanted = intended.current;
+    intended.current = null;
+    navigate(wanted ?? PATH.home, { replace: true });
   };
+  /** Swap in a token the server has just issued, keeping the rest of the
+   *  session. Changing a password retires every token minted before it, so a
+   *  screen that performs one and keeps the old token has signed the user out
+   *  without either of them knowing. */
+  const adoptToken = useCallback((token: string) => {
+    setSession((prev) => {
+      if (!prev) return prev;
+      const next = { ...prev, token };
+      savePlatformSession(next);
+      return next;
+    });
+  }, []);
+
   const refresh = useCallback(async (id?: string) => {
     if (!session) return;
     if (id) {
@@ -933,7 +977,8 @@ export default function PlatformApp() {
             <Route path={PATH.approvals} element={<ApprovalsScreen session={session} />} />
             <Route path={PATH.identity} element={<IdentityScreen token={session.token} />} />
             <Route path={PATH.trust} element={<TrustScreen session={session} />} />
-            <Route path={PATH.settings} element={<SettingsScreen session={session} />} />
+            <Route path={PATH.settings} element={
+              <SettingsScreen session={session} onToken={adoptToken} />} />
 
             {/* ── AI STATES (reference) ── */}
             <Route path={PATH.states} element={<StatesScreen />} />

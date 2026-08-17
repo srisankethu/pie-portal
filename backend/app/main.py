@@ -136,8 +136,19 @@ async def lifespan(_app: FastAPI):
     yield
 
 
+# The interactive docs and the schema behind them are development affordances,
+# and in production they are an unauthenticated index of every route and model
+# in the platform — including the trust, admin and margin-policy surfaces. On a
+# managed host the API has a public hostname of its own, so "internal" is not a
+# property anything enforces. They stay on outside production, where they are
+# how people read the API.
+_docs = None if settings.is_production else "/docs"
+_redoc = None if settings.is_production else "/redoc"
+_openapi = None if settings.is_production else "/openapi.json"
+
 app = FastAPI(title="PIE — Commercial Decision Platform", version="0.1.0",
-              lifespan=lifespan)
+              lifespan=lifespan,
+              docs_url=_docs, redoc_url=_redoc, openapi_url=_openapi)
 
 @app.exception_handler(Exception)
 async def unhandled_error(request: Request, exc: Exception) -> JSONResponse:

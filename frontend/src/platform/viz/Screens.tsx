@@ -19,6 +19,7 @@
 import Button from "@mui/material/Button";
 import { MonthPicker as SharedMonthPicker } from "./Seg";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { money } from "../../money";
 import { Tip } from "../../Tip";
 import { ChartTip, InlineLink, Unavailable, VarianceIndicator } from "../kit";
@@ -546,7 +547,15 @@ export function JourneyScreen({
 // behavioural guess is labelled as the user's assumption, in the UI as well as
 // in the payload.
 export function SimulatorScreen({ session }: { session: PlatformSession }) {
-  const [scenario, setScenario] = useState("PRICE_CHANGE");
+  // The Storyboard's "Model it" links here as `simulate?scenario=MARGIN_FLOOR`
+  // (Storyboard.tsx:206). Reading it was missing, so the beat about the margin
+  // floor opened a price-change model: an answer to a question the reader did
+  // not ask, with the URL claiming otherwise.
+  //
+  // `useSearchParams`, never `window.location.search` — the router may hold the
+  // query inside the hash, where `location.search` is empty.
+  const [params] = useSearchParams();
+  const [scenario, setScenario] = useState(() => params.get("scenario") || "PRICE_CHANGE");
   const [pctChange, setPctChange] = useState(5);
   const [volume, setVolume] = useState(0);
   const [floor, setFloor] = useState(20);
@@ -557,6 +566,18 @@ export function SimulatorScreen({ session }: { session: PlatformSession }) {
   const { data: scenarios } = useInsight(
     "simulationScenarios",
     () => papi.simulationScenarios(session.token), [session.token]);
+
+  // The URL is a value a person can type, so it is checked against the list the
+  // server actually offers rather than trusted. An unknown name falls back to
+  // the default instead of being posted and rejected — the reader would
+  // otherwise get an error where the link promised a model. Runs once the list
+  // arrives, and only to reject: a name that is in the list is left alone.
+  useEffect(() => {
+    const available = scenarios?.available as { scenario?: string }[] | undefined;
+    if (!available) return;
+    const known = available.map((s) => s.scenario);
+    setScenario((current) => (known.includes(current) ? current : "PRICE_CHANGE"));
+  }, [scenarios]);
 
   const run = useCallback(async () => {
     setRunning(true);

@@ -352,7 +352,7 @@ def _moved(moved: dict, *, on_document_dates: bool = False) -> list[Tile]:
                   "First seen by the platform in the chosen window — a master "
                   "record has no business date to be counted by.")
     spec = [
-        ("invoices", "Invoices raised", "customers", dated),
+        ("invoices", "Invoices raised", "customer", dated),
         ("payments", "Payments received", "payments", dated),
         ("purchase_orders", "Purchase orders placed", "supply", dated),
         ("customers", "New customers", "customer", first_seen),

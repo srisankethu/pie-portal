@@ -40,6 +40,38 @@ export function clearPlatformSession() {
   localStorage.removeItem(KEY);
 }
 
+/** Told once, from the shell, what to do when the session stops being valid.
+ *
+ *  This is registered rather than thrown-and-caught because catching it was the
+ *  bug: `isAuthError` existed and exactly three call sites used it, all three on
+ *  the decision queue. Every other screen — Customers, Cash, Quotes, Settings —
+ *  turned a retired token into its ordinary "this did not load" panel, inside a
+ *  shell that still drew the user's name and role. The session was gone and the
+ *  app looked signed in, and the way out was to notice the pattern and press
+ *  Sign out.
+ *
+ *  A 401 is not a per-screen error. It is a statement about the session that
+ *  every request can make, so the transport is the only place that can hear all
+ *  of them. Screens keep their catch blocks and still get the throw; they no
+ *  longer have to remember to ask whether this particular failure ended the
+ *  session. */
+let onAuthLoss: (() => void) | null = null;
+
+export function setAuthLossHandler(fn: (() => void) | null): void {
+  onAuthLoss = fn;
+}
+
+/** Fired for any 401, before the error reaches the caller. Never throws: a
+ *  handler that fails must not replace the real error with its own. */
+function noteAuthLoss(status: number): void {
+  if (status !== 401 || !onAuthLoss) return;
+  try {
+    onAuthLoss();
+  } catch {
+    /* the throw below is the more useful signal */
+  }
+}
+
 async function req<T>(path: string, opts: RequestInit = {}, token?: string): Promise<T> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (token) headers.Authorization = `Bearer ${token}`;
@@ -77,6 +109,7 @@ async function req<T>(path: string, opts: RequestInit = {}, token?: string): Pro
     }
     const err = new Error(detail) as Error & { status?: number };
     err.status = res.status;
+    noteAuthLoss(res.status);
     throw err;
   }
   return (await res.json()) as T;
@@ -108,6 +141,7 @@ async function download(path: string, token: string, fallbackName: string):
     }
     const err = new Error(detail) as Error & { status?: number };
     err.status = res.status;
+    noteAuthLoss(res.status);
     throw err;
   }
   const disposition = res.headers.get("Content-Disposition") || "";

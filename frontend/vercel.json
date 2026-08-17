@@ -1,7 +1,8 @@
 {
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
+  "_comment_rewrites": "The exclusion is load-bearing. A bare /(.*) catch-all sends /api/* to index.html too, and a static file answers GET but rejects POST with 405 -- so the app loads and every sign-in fails. Excluding /api/ leaves those paths to api/[...path].ts. Real assets are unaffected either way: the filesystem is checked before rewrites are applied.",
   "rewrites": [
-    { "source": "/(.*)", "destination": "/index.html" }
+    { "source": "/((?!api/).*)", "destination": "/index.html" }
   ]
 }

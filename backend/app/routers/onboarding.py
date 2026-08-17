@@ -30,12 +30,12 @@ import logging
 import time
 from collections import deque
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from .. import clock, onboarding
-from ..authz import Principal, current_principal, issue_token
+from ..authz import Principal, current_principal, open_session, set_session_cookie
 from ..config import settings
 from ..db import get_session
 from ..domain import models
@@ -125,7 +125,7 @@ class SignUpResponse(BaseModel):
 
 @router.post("/signup", status_code=status.HTTP_201_CREATED,
              response_model=SignUpResponse)
-def sign_up(body: SignUpRequest, request: Request,
+def sign_up(body: SignUpRequest, request: Request, response: Response,
             session: Session = Depends(get_session)) -> SignUpResponse:
     """Create an organization and its owner, and sign that owner in.
 
@@ -155,8 +155,13 @@ def sign_up(body: SignUpRequest, request: Request,
 
     org = session.get(models.Organization, org_id)
     log.info("signup complete org=%s user=%s", org_id, owner.user_id)
+    token, _row = open_session(session, owner, request.headers.get("user-agent"))
+    # Committed before the token leaves, for the reason `auth.login` gives: a
+    # token naming an uncommitted row is a credential that does not work.
+    session.commit()
+    set_session_cookie(response, token)
     return SignUpResponse(
-        token=issue_token(owner.user_id, owner.organization_id),
+        token=token,
         user_id=owner.user_id, organization_id=owner.organization_id,
         role=owner.role, name=owner.name, email=owner.email,
         currency=(getattr(org, "currency", None) or settings.DEFAULT_CURRENCY),

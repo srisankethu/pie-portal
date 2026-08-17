@@ -10,6 +10,7 @@
  * deciding what to show from another's role.
  */
 import type { Quote } from "./types";
+import { authInit } from "./authFetch";
 
 const DRAFT_KEY = "pie_portal_draft";
 
@@ -31,9 +32,7 @@ export function clearDraftQuote() {
 }
 
 async function req<T>(path: string, opts: RequestInit = {}, token?: string): Promise<T> {
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (token) headers.Authorization = `Bearer ${token}`;
-  const res = await fetch(path, { ...opts, headers: { ...headers, ...(opts.headers || {}) } });
+  const res = await fetch(path, authInit(opts, token));
   if (!res.ok) {
     let detail = res.statusText;
     try {

@@ -197,6 +197,12 @@ EXCLUDED_REASONS: dict[str, str] = {
     "users": (
         "Staff accounts and password hashes. Yours to administer, and not "
         "something a data export should carry."),
+    "user_sessions": (
+        "Who is currently signed in, and from what. Each row's id is the "
+        "credential the session rides on, so exporting the table would put "
+        "live sign-ins in a file that travels by email — the same reason the "
+        "ERP credentials above are withheld. Ending them is a button in the "
+        "app, not a download."),
     "tenant_keys": (
         "Your data key, wrapped by our master key. Exporting it would export "
         "nothing usable and weaken the thing that makes erasure provable."),
@@ -254,6 +260,7 @@ MANIFESTED: tuple[tuple[str, Any], ...] = EXPORTED + (
     ("intelligence_trials", models.IntelligenceTrial),
     ("tenant_keys", models.TenantKey),
     ("users", models.User),
+    ("user_sessions", models.UserSession),
 )
 
 # ── what the receipt attests ────────────────────────────────────────────────

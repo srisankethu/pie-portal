@@ -266,7 +266,7 @@ export default function AppShell({
               whiteSpace: "nowrap",
             }}
           >
-            PIE · Decisions
+            {BRAND}
           </Typography>
           <Box sx={{ flex: 1 }} />
           {/* No role switcher. A user has exactly one role, it comes from their
@@ -325,6 +325,20 @@ export default function AppShell({
   );
 }
 
+/** How the product names itself, written once.
+ *
+ *  It was `PIE · Decisions` in two places — the shell header and `BrandMark` —
+ *  even though `BrandMark` exists precisely so the surfaces cannot disagree; the
+ *  header simply restated the string instead of using it. The sub-brand was also
+ *  stale: it dated from when the product was "Commercial Decisions", while the
+ *  landing page, the tab title and the positioning had all moved to commercial
+ *  intelligence.
+ *
+ *  So it is the plain wordmark now, matching the landing's own logo. A name with
+ *  a category glued to it goes out of date every time the category is rethought,
+ *  which is twice so far; a wordmark does not. */
+export const BRAND = "PIE";
+
 /** The tooltip-wrapped brand mark, exported for the sign-in screen so the two
  *  surfaces agree on how the product names itself. */
 export function BrandMark({ tip }: { tip?: string }) {
@@ -339,7 +353,7 @@ export function BrandMark({ tip }: { tip?: string }) {
         fontSize: 15,
       }}
     >
-      PIE · Decisions
+      {BRAND}
     </Typography>
   );
   return tip ? <Tooltip title={tip}>{mark}</Tooltip> : mark;

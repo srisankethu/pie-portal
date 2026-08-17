@@ -388,6 +388,64 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
+class UserSession(Base):
+    """One sign-in, as a row — so it can be ended.
+
+    The token used to be the whole session: an HMAC over ``{uid, oid, iat}`` and
+    nothing else. That made signing out a client-side fiction. Clearing the
+    browser's copy left the token cryptographically valid for its full 30 days,
+    so a token captured from a shared machine outlived the "sign out" the person
+    clicked, and there was no way to end one session without changing the
+    password and ending all of them.
+
+    So the token now carries a ``sid`` naming a row here, and
+    ``authz.load_principal`` reads it on every request. Revoking is a write, not
+    a hope. The cost is one indexed lookup per request, which is not a new class
+    of cost: the same function already loads the ``User`` row to resolve role and
+    active status, and for the same reason — authority belongs in the database,
+    where it can be withdrawn, never in a bearer's copy of it.
+
+    ``revoked_at`` is set, never deleted. A signed-out session stays as evidence
+    that it existed and when it ended; ``authz.purge_expired_sessions`` is what
+    eventually reclaims the rows, long after they could matter.
+    """
+
+    __tablename__ = "user_sessions"
+    __table_args__ = (
+        # The session list and the revoke-all sweep both ask "live sessions for
+        # this user", which is this index. `revoked_at` is not in it on purpose:
+        # it is null for exactly the rows those queries want, and a null-heavy
+        # column adds nothing to the lookup.
+        Index("ix_user_sessions_user_live", "user_id", "revoked_at"),
+    )
+
+    #: Opaque and random, never derived from the user — it travels in a token
+    #: and, before the cookie, in `localStorage`. A guessable id would let a
+    #: caller name a session that is not theirs on the revoke endpoint; the
+    #: endpoint checks ownership anyway, and this makes the check redundant
+    #: rather than load-bearing.
+    session_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("users.user_id"), index=True)
+    #: Denormalised from the user so a revocation sweep never has to join. The
+    #: token carries an org too, and `load_principal` rejects a mismatch.
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+
+    issued_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, index=True)
+    #: Advanced lazily — see `authz.LAST_SEEN_RESOLUTION_SECONDS`. Writing it on
+    #: every request would put a write in front of every read, which on SQLite
+    #: means a write lock in front of every read.
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+    #: What the person should recognise in the session list — "Chrome on
+    #: Windows", roughly. Truncated, and deliberately the only thing recorded
+    #: about the client: an IP address would be a second, more sensitive
+    #: identifier for no gain over "is this device mine?".
+    user_agent: Mapped[Optional[str]] = mapped_column(String(256))
+
+
 class Customer(Base):
     __tablename__ = "customers"
     __table_args__ = (

@@ -3,6 +3,7 @@ import type { AccessReport, Account, AccountItem, AiByokView, AiKeyTestResult, A
 import { setMoneyCurrency } from "../money";
 import { setBusinessTimezone } from "../when";
 import { parseStoredSession } from "./schemas";
+import { authInit } from "../authFetch";
 
 const KEY = "pie_platform_session";
 
@@ -32,12 +33,42 @@ export function loadPlatformSession(): PlatformSession | null {
   return parsed as PlatformSession;
 }
 export function savePlatformSession(s: PlatformSession) {
-  localStorage.setItem(KEY, JSON.stringify(s));
+  // The token is deliberately dropped on the way to storage. It lives in an
+  // httpOnly cookie now, which script on this page cannot read and therefore
+  // cannot leak — the whole reason for the move. What stays here is the part
+  // that is not a secret: who you are, what role, which currency and zone, so
+  // the shell can draw itself on the first frame instead of flashing empty
+  // while `/auth/me` answers.
+  //
+  // Kept as a field rather than removed from the type because `req` already
+  // treats an empty token as "no Authorization header", so every call site
+  // passes `session.token` unchanged and the cookie authenticates instead.
+  localStorage.setItem(KEY, JSON.stringify({ ...s, token: "" }));
   setMoneyCurrency(s.currency);
   setBusinessTimezone(s.timezone);
 }
 export function clearPlatformSession() {
   localStorage.removeItem(KEY);
+}
+
+/** Watch for the session changing in *another* tab.
+ *
+ *  `localStorage` is shared across every tab of a profile, and one session per
+ *  browser is the intended model — but nothing propagated a change, so the tabs
+ *  disagreed. Signing out in one left the others drawing a full signed-in shell
+ *  whose every request would 401; signing in as somebody else left the first tab
+ *  showing the previous person's name and role until it happened to reload,
+ *  which on a shared machine is the wrong person's screen.
+ *
+ *  The `storage` event only fires in the *other* tabs, never the one that wrote,
+ *  so this cannot loop back on itself. Returns its own unsubscribe. */
+export function onSessionChangedElsewhere(fn: (next: PlatformSession | null) => void): () => void {
+  const handler = (e: StorageEvent) => {
+    if (e.key !== null && e.key !== KEY) return;   // null = storage cleared wholesale
+    fn(e.newValue ? loadPlatformSession() : null);
+  };
+  window.addEventListener("storage", handler);
+  return () => window.removeEventListener("storage", handler);
 }
 
 /** Told once, from the shell, what to do when the session stops being valid.
@@ -73,9 +104,7 @@ function noteAuthLoss(status: number): void {
 }
 
 async function req<T>(path: string, opts: RequestInit = {}, token?: string): Promise<T> {
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (token) headers.Authorization = `Bearer ${token}`;
-  const res = await fetch(path, { ...opts, headers: { ...headers, ...(opts.headers || {}) } });
+  const res = await fetch(path, authInit(opts, token));
   if (!res.ok) {
     // A crash that escapes FastAPI's handlers comes back as plain text, not
     // JSON — so parsing as JSON and giving up threw away the only description
@@ -128,7 +157,7 @@ async function req<T>(path: string, opts: RequestInit = {}, token?: string): Pro
  *  the error message. */
 async function download(path: string, token: string, fallbackName: string):
     Promise<{ blob: Blob; filename: string }> {
-  const res = await fetch(path, { headers: { Authorization: `Bearer ${token}` } });
+  const res = await fetch(path, authInit({}, token));
   if (!res.ok) {
     const body = await res.text().catch(() => "");
     let detail = res.statusText;
@@ -170,9 +199,41 @@ interface LoginResp {
   must_change_password: boolean;
 }
 
+/** One live session, as `/auth/sessions` returns it. */
+export interface PlatformSessionRow {
+  session_id: string;
+  issued_at: string;
+  last_seen_at: string;
+  user_agent: string;
+  /** The session this browser is reading the list with. */
+  current: boolean;
+}
+
 export const papi = {
   login: (email: string, password: string) =>
     req<LoginResp>("/api/v1/auth/login", { method: "POST", body: JSON.stringify({ email, password }) }),
+
+  /** Who the session cookie belongs to, asked on boot.
+   *
+   *  The stored profile is a cache for the first frame; this is the truth. It
+   *  is also how a session revoked from another device is noticed at load
+   *  rather than at whichever request happens to fail first. */
+  me: () => req<LoginResp>("/api/v1/auth/me"),
+
+  /** End this session on the server, not just in this browser. */
+  logout: () => req<{ ok: boolean }>("/api/v1/auth/logout", { method: "POST" }),
+
+  /** End every session for this account, this device included. */
+  logoutAll: () =>
+    req<{ ok: boolean; ended: number }>("/api/v1/auth/logout-all", { method: "POST" }),
+
+  /** Where this account is signed in. */
+  sessions: () => req<PlatformSessionRow[]>("/api/v1/auth/sessions"),
+
+  /** Sign out one other device. */
+  revokeSession: (sessionId: string) =>
+    req<{ ok: boolean }>(`/api/v1/auth/sessions/${encodeURIComponent(sessionId)}`,
+                         { method: "DELETE" }),
 
   /** Whether this deployment lets a company create its own tenant.
    *

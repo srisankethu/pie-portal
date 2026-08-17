@@ -45,6 +45,34 @@ def _path_env(name: str, default: Path) -> Path:
     return Path(raw).expanduser().resolve() if raw else default
 
 
+def _normalize_database_url(url: str) -> str:
+    """Name the driver this deployment actually ships: psycopg 3.
+
+    A bare ``postgresql://`` resolves to SQLAlchemy's *default* PostgreSQL
+    driver, which is psycopg2 — a package `requirements.txt` deliberately does
+    not install, because this codebase uses psycopg 3. The failure is
+    ``ModuleNotFoundError: No module named 'psycopg2'`` raised from
+    ``create_engine`` at import time, so the process dies before it can log
+    anything about the database, and the traceback names a library nobody put
+    in the URL.
+
+    That URL form is not a typo — it is what every managed provider hands you.
+    Neon, Railway's database linking, Render and Heroku all inject
+    ``postgresql://`` (Heroku still emits the older ``postgres://``), so the
+    fix cannot be "paste it correctly": the value arrives that way, and a
+    linked variable is re-injected over any hand-edit.
+
+    Only a URL that names *no* driver is rewritten. An explicit
+    ``postgresql+psycopg2://`` or ``postgresql+asyncpg://`` is someone stating
+    a deliberate choice, and it is left exactly as written.
+    """
+    if url.startswith("postgres://"):          # Heroku's legacy spelling
+        url = "postgresql://" + url[len("postgres://"):]
+    if url.startswith("postgresql://"):        # no driver named → psycopg 3
+        url = "postgresql+psycopg://" + url[len("postgresql://"):]
+    return url
+
+
 class Settings:
     """Process-wide settings (plain attributes; no external deps)."""
 
@@ -92,9 +120,9 @@ class Settings:
     # ── Commercial Decision Platform (Phase 1 foundation) ────────────────────
     # Single primary database. Dev/test default to SQLite; production sets a
     # Postgres URL. SQLAlchemy URL form, e.g. postgresql+psycopg://user:pw@host/db
-    DATABASE_URL: str = os.environ.get(
+    DATABASE_URL: str = _normalize_database_url(os.environ.get(
         "DATABASE_URL", f"sqlite:///{REPO_ROOT / 'backend' / 'data' / 'platform.db'}"
-    )
+    ))
     SQL_ECHO: bool = os.environ.get("SQL_ECHO", "0") == "1"
 
     # Postgres connection pool (ignored on SQLite). The defaults are sized for

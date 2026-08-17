@@ -41,9 +41,14 @@ fallback (see `docs/operations.md`).
 
 1. Create a project at neon.tech. Note the connection string it gives you —
    it looks like `postgresql://user:pass@ep-xxx.neon.tech/neondb?sslmode=require`.
-2. Rewrite it for SQLAlchemy's driver, the same way `compose.yaml` does:
-   `postgresql+psycopg://user:pass@ep-xxx.neon.tech/neondb?sslmode=require`
-   This full string is your `DATABASE_URL`.
+   Use the **direct** host, not the `-pooler` one: the app does its own
+   connection pooling (`DB_POOL_SIZE`), and PgBouncer's transaction mode
+   breaks session-level behaviour SQLAlchemy relies on. Revisit that only if
+   you scale past one backend instance.
+2. That string is your `DATABASE_URL` as-is — `config.py` rewrites a bare
+   `postgresql://` (and Heroku's `postgres://`) to `postgresql+psycopg://`,
+   naming the driver this image actually ships. Writing `postgresql+psycopg://`
+   yourself is equally fine; an explicitly named driver is never rewritten.
 3. Nothing else to do here yet — the database is migrated in step 2.4,
    which must happen before the Railway deploy can pass its healthcheck.
 

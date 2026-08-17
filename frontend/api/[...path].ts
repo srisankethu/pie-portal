@@ -23,10 +23,24 @@ export default async function handler(request: Request): Promise<Response> {
   const incoming = new URL(request.url);
   const target = new URL(incoming.pathname + incoming.search, `https://${backend}`);
 
+  // Drop the inbound Host: it names the Vercel domain, and forwarding it to a
+  // different origin invites the upstream edge to route on a name it does not
+  // serve. fetch sets the correct one for the target.
+  const headers = new Headers(request.headers);
+  headers.delete("host");
+
+  // Buffered rather than streamed. Passing request.body through is a
+  // ReadableStream, and a fetch that streams a body requires duplex: "half"
+  // in the runtimes that implement the newer spec -- omitting it throws
+  // before the request is ever sent, which would fail exactly the POSTs this
+  // proxy exists to carry. These bodies are small JSON payloads, so buffering
+  // costs nothing and works on every runtime.
+  const hasBody = request.method !== "GET" && request.method !== "HEAD";
+
   const upstream = await fetch(target, {
     method: request.method,
-    headers: request.headers,
-    body: ["GET", "HEAD"].includes(request.method) ? undefined : request.body,
+    headers,
+    body: hasBody ? await request.arrayBuffer() : undefined,
     redirect: "manual",
   });
 

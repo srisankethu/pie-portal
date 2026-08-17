@@ -14,7 +14,13 @@
 #     docker compose --profile release run --rm release
 set -euo pipefail
 
-cd /app/backend
+# Derived from this script's own location rather than hardcoded to the image's
+# /app/backend. Both are the same path inside the container, but a hardcoded one
+# makes this script container-only — and a managed platform whose database is
+# reachable from anywhere (Neon, RDS with a public endpoint) is most easily
+# migrated by running exactly this script from a workstation. `railway run`,
+# notably, executes on the caller's machine, not in the container.
+cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../backend" && pwd)"
 
 # Where the database sits in the revision history, in the words CLAUDE.md §4
 # uses. Printed before *and* after, because the pair is the record of what this

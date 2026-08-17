@@ -2,14 +2,14 @@
 
 The variant of [hosting.md](hosting.md) for a free-tier launch instead of a
 single VM. Same images, same migration discipline — `deploy/backend.Dockerfile`
-and `deploy/release.sh` are unchanged and reused as-is. What differs is the
+and `deploy/release.sh` are the same ones the self-hosted deploy runs. What differs is the
 topology: no Caddy, no shared origin, three separate platforms instead of one
 Compose stack.
 
 ```
    browser ──── Vercel (frontend/, static build)
                   │
-                  │  vercel.json rewrite: /api/* → Railway backend
+                  │  api/[...path].ts proxies /api/* → Railway
                   ▼
                 Railway (deploy/backend.Dockerfile, FastAPI)
                   │
@@ -44,7 +44,8 @@ fallback (see `docs/operations.md`).
 2. Rewrite it for SQLAlchemy's driver, the same way `compose.yaml` does:
    `postgresql+psycopg://user:pass@ep-xxx.neon.tech/neondb?sslmode=require`
    This full string is your `DATABASE_URL`.
-3. Nothing else to do here yet — migrations run from Railway in step 3.
+3. Nothing else to do here yet — the database is migrated in step 2.4,
+   which must happen before the Railway deploy can pass its healthcheck.
 
 ## 2. Railway (backend)
 
@@ -83,20 +84,38 @@ fallback (see `docs/operations.md`).
 
 3. Deploy. Railway will give the service a public URL
    (`https://<something>.up.railway.app`) — copy it, you need it in step 3.
-4. Run the release step once — migrations and seed — the same deliberate,
-   separate step `hosting.md` uses, not folded into the boot command:
+4. **Run the release step once — before trusting the deploy.** Migrations and
+   seed, the same deliberate step `hosting.md` uses and never folded into the
+   boot command. Run it from your workstation: Neon is reachable from
+   anywhere, so nothing has to happen inside the container.
 
    ```bash
-   railway run --service <your-service-name> bash deploy/release.sh
+   cd backend && pip install -r requirements.txt      # once
+   cd ..
+   DATABASE_URL="<the Neon URL from step 1>" \
+     SEED_PASSWORD="<the same value you set on Railway>" \
+     bash deploy/release.sh
    ```
 
-   (Requires the Railway CLI: `npm i -g @railway/cli && railway login`, run
-   from the repo root after `railway link`.) Re-running this after a later
-   schema change is the same command — it is idempotent and reports
-   `BEFORE`/`AFTER` migration state exactly as it does in the self-hosted flow.
+   Re-running it after a later schema change is the same command — it is
+   idempotent and reports `BEFORE`/`AFTER` migration state exactly as it does
+   in the self-hosted flow.
+
+   Note that `railway run` is *not* the way to do this: it executes the
+   command on your machine with Railway's variables injected, not inside the
+   container, so it buys nothing here and obscures which database is being
+   migrated. Use `railway ssh` if you genuinely want to run it in the
+   container.
 
 5. Confirm: `curl https://<your-railway-url>/api/health` should report the
    schema as `CURRENT`, the same check `hosting.md` uses.
+
+   **Until step 4 has run, this endpoint returns 503 and the Railway
+   healthcheck fails the deployment.** That is correct behaviour, not a
+   misconfiguration: an empty database is `EMPTY`, not healthy (CLAUDE.md §4),
+   and `AUTO_BOOTSTRAP` is ignored in production so the app will never migrate
+   itself. Pointing `DATABASE_URL` at a fresh database *always* means migrating
+   it before the next deploy can go green.
 
 ## 3. Vercel (frontend)
 
@@ -125,7 +144,7 @@ repo change needed.
 | `CORS_ORIGINS` | empty (same origin via Caddy) | empty (same origin via the Vercel proxy function) |
 | Backend URL config | `SITE_ADDRESS` in `.env.production` | `BACKEND_URL` env var on the Vercel project |
 | Redis | provisioned, unused today | not provisioned, unused today |
-| Release step | `docker compose --profile release run --rm release` | `railway run ... bash deploy/release.sh` |
+| Release step | `docker compose --profile release run --rm release` | `DATABASE_URL=... bash deploy/release.sh` from a workstation |
 | Images | built and run by Compose | `deploy/backend.Dockerfile` built by Railway; frontend built natively by Vercel, not via `deploy/web.Dockerfile` |
 
 Everything else — env var meaning, the AI-spend go-live gate, the
@@ -137,4 +156,4 @@ Everything else — env var meaning, the AI-spend go-live gate, the
 Nothing above is a dead end. `deploy/backend.Dockerfile` is the same image
 App Runner or ECS Fargate would run; `DATABASE_URL` pointing at Neon becomes
 `DATABASE_URL` pointing at RDS; `deploy/release.sh` becomes a one-off ECS task
-instead of a `railway run`. The migration is a config change, not a rewrite.
+instead of a workstation run. The migration is a config change, not a rewrite.

@@ -57,9 +57,18 @@ log = logging.getLogger("pie_portal.quote")
 router = APIRouter(prefix="/api/quotes", tags=["quotes"])
 
 
-def _get_quote(quote_id: str) -> Quote:
+def _get_quote(quote_id: str, org: str) -> Quote:
+    """The quote, only if it belongs to this tenant.
+
+    The store is one process-wide dict with enumerable ids and no tenant
+    column of its own, so the org check is the whole of quote authorization:
+    without it a signed-in user from any tenant could read or mutate another
+    tenant's quote by guessing its id. A foreign (or absent) id is a 404 —
+    the two are deliberately indistinguishable, so the endpoint never confirms
+    that some other org's quote exists.
+    """
     q = store.get(quote_id)
-    if q is None:
+    if q is None or q.organizationId != org:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Quote not found")
     return q
 
@@ -97,8 +106,8 @@ def books_for_quote(quote_id: str,
     if settings.ZOHO_QUOTE_SERVICE != "live":
         return QuoteBooks(zoho=select_zoho_service())
 
-    quote = _get_quote(quote_id)
     org = principal.organization_id
+    quote = _get_quote(quote_id, org)
     customer = quote_service.resolve_customer(session, org, quote.customer_ref)
     if customer is None:
         return QuoteBooks(zoho=select_zoho_service(reason=(
@@ -126,13 +135,14 @@ def _get_line(quote: Quote, line_id: str) -> Line:
 
 @router.post("")
 def create_quote(body: CreateQuoteRequest, principal: Principal = Depends(current_principal)):
-    q = store.create(body.customer, body.customer_id)
+    q = store.create(body.customer, body.customer_id, principal.organization_id)
     return q.to_dict(principal.is_manager_or_owner)
 
 
 @router.get("/{quote_id}")
 def get_quote(quote_id: str, principal: Principal = Depends(current_principal)):
-    return _get_quote(quote_id).to_dict(principal.is_manager_or_owner)
+    return _get_quote(quote_id, principal.organization_id).to_dict(
+        principal.is_manager_or_owner)
 
 
 @router.post("/{quote_id}/intake")
@@ -140,7 +150,7 @@ def intake(quote_id: str, body: IntakeRequest,
            principal: Principal = Depends(current_principal),
            zoho: ZohoService = Depends(zoho_for_quote),
            session: Session = Depends(get_session)):
-    q = _get_quote(quote_id)
+    q = _get_quote(quote_id, principal.organization_id)
     if not body.text.strip():
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "No RFQ text provided")
     # Read the enquiry into rows first. This is the one place in the quote
@@ -223,7 +233,7 @@ def _customer_scope(session: Session, principal: Principal,
 def line_options(quote_id: str, line_id: str,
                  principal: Principal = Depends(current_principal)):
     """Ranked supply candidates for a line (the design's supply drawer)."""
-    q = _get_quote(quote_id)
+    q = _get_quote(quote_id, principal.organization_id)
     ln = _get_line(q, line_id)
     return {
         "lineId": ln.id,
@@ -240,7 +250,7 @@ def select_supply(quote_id: str, line_id: str, body: SelectSupplyRequest,
                   principal: Principal = Depends(current_principal),
                   zoho: ZohoService = Depends(zoho_for_quote),
                   session: Session = Depends(get_session)):
-    q = _get_quote(quote_id)
+    q = _get_quote(quote_id, principal.organization_id)
     ln = _get_line(q, line_id)
     confirmed = _confirm_identity(session, principal, q, ln, body.code)
     store.select_supply(ln, body.code, zoho, manual=body.manual)
@@ -290,7 +300,7 @@ def confirm_reading(quote_id: str, line_id: str,
     knows what was meant — and because a confirmation queue that only a manager
     can clear is a quote that waits for a manager.
     """
-    q = _get_quote(quote_id)
+    q = _get_quote(quote_id, principal.organization_id)
     store.confirm_reading(_get_line(q, line_id))
     return q.to_dict(principal.is_manager_or_owner)
 
@@ -298,7 +308,7 @@ def confirm_reading(quote_id: str, line_id: str,
 @router.post("/{quote_id}/lines/{line_id}/price")
 def set_price(quote_id: str, line_id: str, body: SetPriceRequest,
               principal: Principal = Depends(current_principal)):
-    q = _get_quote(quote_id)
+    q = _get_quote(quote_id, principal.organization_id)
     ln = _get_line(q, line_id)
     store.set_price(ln, body.price)
     return q.to_dict(principal.is_manager_or_owner)
@@ -307,7 +317,7 @@ def set_price(quote_id: str, line_id: str, body: SetPriceRequest,
 @router.delete("/{quote_id}/lines/{line_id}")
 def delete_line(quote_id: str, line_id: str,
                 principal: Principal = Depends(current_principal)):
-    q = _get_quote(quote_id)
+    q = _get_quote(quote_id, principal.organization_id)
     store.delete_line(q, line_id)
     return q.to_dict(principal.is_manager_or_owner)
 
@@ -315,7 +325,7 @@ def delete_line(quote_id: str, line_id: str,
 @router.post("/{quote_id}/discount")
 def apply_discount(quote_id: str, body: DiscountRequest,
                    principal: Principal = Depends(current_principal)):
-    q = _get_quote(quote_id)
+    q = _get_quote(quote_id, principal.organization_id)
     selected = [ln for ln in q.lines if ln.id in set(body.lineIds)]
     n = store.apply_discount(selected, body.percent)
     result = q.to_dict(principal.is_manager_or_owner)
@@ -327,7 +337,7 @@ def apply_discount(quote_id: str, body: DiscountRequest,
 def create_item(quote_id: str, line_id: str,
                 principal: Principal = Depends(current_principal),
                 zoho: ZohoService = Depends(zoho_for_quote)):
-    q = _get_quote(quote_id)
+    q = _get_quote(quote_id, principal.organization_id)
     ln = _get_line(q, line_id)
     if not ln.supplyCode:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Line has no supply product to create")
@@ -347,7 +357,7 @@ def create_estimate(quote_id: str,
                     principal: Principal = Depends(current_principal),
                     books: QuoteBooks = Depends(books_for_quote),
                     session: Session = Depends(get_session)):
-    q = _get_quote(quote_id)
+    q = _get_quote(quote_id, principal.organization_id)
     blockers = store.blockers(q)
     if blockers:
         return EstimateResponse(

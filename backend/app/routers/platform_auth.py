@@ -41,6 +41,13 @@ router = APIRouter(prefix="/api/v1/auth", tags=["platform-auth"])
 _REJECTED = "Incorrect email or password"
 _THROTTLED = "Too many login failures. Please try again in {delay} seconds."
 
+# A real hash of a fixed dummy, verified against when no usable account hash
+# exists, so an absent/inactive/no-password account costs the same PBKDF2 work
+# (and time) as a real one. Built at import with the live iteration count, so
+# its timing tracks real hashes even if that count changes — a hardcoded digest
+# would drift. It matches no real password: the dummy is not a valid credential.
+_SENTINEL_HASH = hash_password("pie-portal login-timing sentinel — not a password")
+
 
 class LoginRequest(BaseModel):
     email: str
@@ -88,14 +95,32 @@ def login(body: LoginRequest, session: Session = Depends(get_session)) -> LoginR
             raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS,
                                _THROTTLED.format(delay=throttle_delay))
 
-    if user is None or not user.active or not verify_password(body.password,
-                                                              user.password_hash):
+    # Always spend exactly one PBKDF2 verification, against a real hash, even
+    # when the account is absent, inactive, or has no password set. Otherwise the
+    # 240k-iteration hash runs only for real, password-bearing accounts, and the
+    # ~35x response-time gap turns the deliberately uniform `_REJECTED` message
+    # into an account-enumeration oracle — it tells an attacker which addresses
+    # exist, which is the exact thing the single message is meant to hide.
+    # `verify_password` returns False early (no hashing) on a missing/blank hash,
+    # so the sentinel must be a real hash and must be used whenever the row has
+    # none.
+    stored = user.password_hash if (user is not None and user.password_hash) else _SENTINEL_HASH
+    # Computed on its own line, before the guard below — folding it into
+    # `user is None or ... or not verify_password(...)` would let `user is None`
+    # short-circuit the `or` and skip the hash for absent accounts, which is the
+    # very timing gap this closes. Always one verification, every path.
+    password_ok = verify_password(body.password, stored)
+    if user is None or not user.active or not password_ok:
         log.info("failed sign-in for %r", email)
         # Record the failure if we have a user to update. Failures on non-existent
         # accounts are not tracked (would require creating them, which would leak).
         if user is not None and user.active:
             record_login_failure(user)
-            session.flush()
+            # `commit`, not `flush`: this handler raises HTTPException below, and
+            # `get_session` rolls back on any exception — a flush would be undone
+            # with it, so the counter never persisted and throttling never
+            # engaged (5 failures stayed 0). Commit the increment before raising.
+            session.commit()
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, _REJECTED)
 
     # Password verified; reset the failure counter.

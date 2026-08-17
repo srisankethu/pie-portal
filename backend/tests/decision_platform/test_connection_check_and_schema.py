@@ -501,3 +501,27 @@ def test_an_unplaceable_country_label_leaves_the_column_alone(client, monkeypatc
 
     client.post(f"/api/v1/connections/{cid}/check", headers=_hdr(client))
     assert _org_country(client) is None
+
+
+# ── the customer-facing OAuth endpoints must not 500 ────────────────────────
+def test_the_oauth_callback_does_not_500(client):
+    """`zoho_oauth_callback` is the router's only `async def`, and the schema
+    guard wrapped every endpoint in a *synchronous* wrapper. Wrapping an async
+    endpoint that way returns an un-awaited coroutine, which FastAPI cannot
+    serialize — a ResponseValidationError (500) on every call, the real handler
+    (CSRF-state check, token exchange) never running. It reaches the handler now,
+    which rejects the unknown state with a handled 4xx rather than crashing."""
+    r = client.get("/api/v1/connections/zoho/callback?code=x&state=bogus",
+                   headers=_hdr(client))
+    assert r.status_code != 500, r.text
+    assert 400 <= r.status_code < 500
+
+
+def test_authorize_without_oauth_config_is_a_handled_error_not_a_500(client):
+    """With ZOHO_OAUTH_CLIENT_ID unset, `oauth.authorization_url` raises
+    ValueError — a configuration state, not a server fault. It used to reach the
+    global handler as a bare 500; it maps to 503 with a message that names the
+    missing settings and carries no secret."""
+    r = client.get("/api/v1/connections/zoho/authorize?dc=in", headers=_hdr(client))
+    assert r.status_code == 503, r.text
+    assert "not configured" in r.json()["detail"].lower()

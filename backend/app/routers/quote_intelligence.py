@@ -179,7 +179,7 @@ def _validate(body: AssessRequest | SnapshotRequest, *, what: str) -> None:
     _reject_price_sweep(list(body.lines))
 
 
-def _inputs(body: AssessRequest) -> list[QuoteLineInput]:
+def _inputs(body: AssessRequest, org: str) -> list[QuoteLineInput]:
     return [
         QuoteLineInput(line_id=ln.line_id, product_ref=ln.product,
                        qty=ln.qty, proposed_price=ln.proposed_price,
@@ -187,7 +187,9 @@ def _inputs(body: AssessRequest) -> list[QuoteLineInput]:
                        # Only when the caller named the quote. Without an id
                        # there is no server-held line to read a cost from, and
                        # the assessment falls back to bills alone as before.
-                       item_master_cost=(store.line_cost(body.quote_id, ln.line_id)
+                       # `org` is passed so a quote_id belonging to another
+                       # tenant reads as no cost, not as that tenant's cost.
+                       item_master_cost=(store.line_cost(body.quote_id, ln.line_id, org)
                                          if body.quote_id else None))
         for ln in body.lines
     ]
@@ -208,7 +210,7 @@ def assess(
         session, org,
         customer_ref=_visible_customer_ref(session, principal,
                                            body.customer.strip()),
-        lines=_inputs(body), as_of=body.as_of)
+        lines=_inputs(body, org), as_of=body.as_of)
     refs = {ln.line_id: ln.product for ln in body.lines}
 
     outcome = get_outcome(session, org, body.quote_id) if body.quote_id else None
@@ -268,7 +270,7 @@ def snapshot(
         lines=[QuoteLineInput(line_id=ln.line_id, product_ref=ln.product, qty=ln.qty,
                               proposed_price=ln.proposed_price, family=ln.family,
                               item_master_cost=store.line_cost(body.quote_id,
-                                                               ln.line_id))
+                                                               ln.line_id, org))
                for ln in body.lines],
         user_id=principal.user_id,
         overrides={ln.line_id: (ln.override_reason, ln.override_reason_code)

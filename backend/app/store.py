@@ -391,6 +391,15 @@ class Quote:
     id: str
     customer: str
     number: str
+    #: The tenant that owns this quote. The store is one process-wide dict keyed
+    #: only by ``quote_id``, and the ids are enumerable (``q{run}-{counter}``),
+    #: so without this every read seam authorized on the caller's *session* but
+    #: never on the quote's *tenant*: another org's owner could pass a guessed id
+    #: to ``GET /api/quotes/{id}``, ``/intake``, the approval gate or
+    #: ``quote-intelligence/assess`` and read — or mutate — it, cost and margin
+    #: included. Stamped at ``create`` from ``principal.organization_id`` and
+    #: checked at every seam (``_get_quote``, ``line_cost``, ``_below_floor_lines``).
+    organizationId: str = ""
     #: The platform's own id for the customer, when one was picked rather than
     #: typed.
     #:
@@ -592,7 +601,8 @@ class QuoteStore:
     def get(self, quote_id: str) -> Optional[Quote]:
         return self._quotes.get(quote_id)
 
-    def line_cost(self, quote_id: str, line_id: str) -> Optional[Decimal]:
+    def line_cost(self, quote_id: str, line_id: str,
+                  organization_id: str) -> Optional[Decimal]:
         """The landed cost this server already holds against one quote line.
 
         Read by the assessment path so the gate is judging the same cost the
@@ -604,9 +614,15 @@ class QuoteStore:
         Server-held, never requester-supplied: the cost arrived from the books at
         intake and lives here, so passing it into an assessment is not the same
         thing as trusting a number in a request body.
+
+        ``organization_id`` is required and enforced: this returns a *cost*, and
+        the store is not tenant-scoped, so a caller passing another org's
+        ``quote_id`` would otherwise read that tenant's landed cost. A mismatch
+        is treated exactly like an unknown quote — ``None`` — so a foreign id is
+        indistinguishable from one that never existed.
         """
         quote = self._quotes.get(quote_id)
-        if quote is None:
+        if quote is None or quote.organizationId != organization_id:
             return None
         line = next((row for row in quote.lines if row.id == line_id), None)
         if line is None or line.cost is None:
@@ -615,11 +631,13 @@ class QuoteStore:
         # and the binary-float detour is how 420.0 becomes 419.99999999999994.
         return Decimal(str(line.cost))
 
-    def create(self, customer: str, customer_id: Optional[str] = None) -> Quote:
+    def create(self, customer: str, customer_id: Optional[str] = None,
+               organization_id: str = "") -> Quote:
         with self._lock:
             qid = f"q{_RUN}-{next(_ids)}"
             num = f"QB-{int(time.time()) % 100000:05d}"
             q = Quote(id=qid, customer=customer or "New customer", number=num,
+                      organizationId=organization_id,
                       customerId=customer_id or None,
                       reference=f"{num}-{uuid.uuid4().hex[:8]}")
             self._quotes[qid] = q

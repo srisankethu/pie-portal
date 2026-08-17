@@ -301,7 +301,12 @@ def is_login_throttled(user: models.User) -> Optional[int]:
     now = datetime.now(timezone.utc)
     failures_since_threshold = user.login_failures_count - LOGIN_THROTTLE_THRESHOLD
     delay_seconds = LOGIN_THROTTLE_BASE_DELAY_SECONDS * (2 ** failures_since_threshold)
-    next_allowed = user.login_failures_last_at + timedelta(seconds=delay_seconds)
+    # `clock.aware`, not the bare column: SQLite hands `login_failures_last_at`
+    # back tz-naive, and adding a timedelta then comparing against the tz-aware
+    # `now` raises "can't compare offset-naive and offset-aware datetimes" — a
+    # 500 on the throttle path, i.e. exactly when the account is under attack.
+    # `load_principal` already normalizes every other stored timestamp this way.
+    next_allowed = clock.aware(user.login_failures_last_at) + timedelta(seconds=delay_seconds)
 
     if now < next_allowed:
         return int((next_allowed - now).total_seconds()) + 1

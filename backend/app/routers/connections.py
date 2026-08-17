@@ -54,12 +54,27 @@ def _schema_guard(call):
     to one of them: a bare 500 with an empty body is what a browser console
     shows, and it names neither the cause nor the fix.
     """
-    def wrapper(*args, **kwargs):
-        try:
-            return call(*args, **kwargs)
-        except SchemaBehind as e:
-            log.error("schema behind: %s", e)
-            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(e)) from e
+    # The wrapper must match the endpoint's sync/async nature. An `async def`
+    # endpoint (the Zoho OAuth callback is the only one) wrapped by a plain `def`
+    # returns an un-awaited coroutine; FastAPI runs the sync wrapper in a
+    # threadpool and tries to serialize that coroutine as the body — a
+    # ResponseValidationError (500) on every call, with the real handler (CSRF
+    # state check, token exchange) never executing. So await when the wrapped
+    # call is a coroutine function, and stay synchronous otherwise.
+    if inspect.iscoroutinefunction(call):
+        async def wrapper(*args, **kwargs):
+            try:
+                return await call(*args, **kwargs)
+            except SchemaBehind as e:
+                log.error("schema behind: %s", e)
+                raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(e)) from e
+    else:
+        def wrapper(*args, **kwargs):
+            try:
+                return call(*args, **kwargs)
+            except SchemaBehind as e:
+                log.error("schema behind: %s", e)
+                raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(e)) from e
     wrapper.__name__ = call.__name__
     wrapper.__doc__ = call.__doc__
     # FastAPI reads the signature to build the dependency graph, so it has to
@@ -924,8 +939,14 @@ def authorize_zoho_oauth(
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR,
                             "Failed to store authorization state") from e
 
-    # Generate authorization URL
-    auth_url = oauth.authorization_url(state, scope=conn.SCOPE_STRING)
+    # Generate authorization URL. `authorization_url` raises ValueError when the
+    # deployment has not set ZOHO_OAUTH_CLIENT_ID / _REDIRECT_URI — a
+    # configuration state, not a server fault, so it maps to 503 with the
+    # (secret-free) reason rather than reaching the global handler as a bare 500.
+    try:
+        auth_url = oauth.authorization_url(state, scope=conn.SCOPE_STRING)
+    except ValueError as e:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(e)) from e
 
     return {
         "authorization_url": auth_url,

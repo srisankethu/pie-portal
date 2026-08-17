@@ -1,3 +1,4 @@
+import { useState } from "react";
 import "./landing.css";
 
 /**
@@ -77,6 +78,14 @@ export function Landing({ onEnter, onSignUp }: {
     (onSignUp ?? onEnter)();
   };
 
+  // The mobile nav collapses the section links behind a menu button. Closed on
+  // first render, which is also the state the prerenderer bakes into the static
+  // HTML — a signed-out visitor without JS sees the logo and Sign in, and the
+  // toggle comes alive when the bundle mounts. Tapping a link closes it so the
+  // panel is not left covering the section it just jumped to.
+  const [menuOpen, setMenuOpen] = useState(false);
+  const closeMenu = () => setMenuOpen(false);
+
   return (
     <div className="pie-landing">
       <div className="lp-sheet">
@@ -86,13 +95,26 @@ export function Landing({ onEnter, onSignUp }: {
 
         <nav className="lp-nav">
           <div className="lp-wrap lp-nav-inner">
-            <a className="lp-logo" href="#top">PIE<span>.</span></a>
-            <div className="lp-nav-links">
-              <a href="#product">Product</a>
-              <a href="#how">How it works</a>
-              <a href="#trust">Trust</a>
-              <a href="#pricing">Pricing</a>
-              <a className="lp-btn solid" href="#signin" onClick={enter}>Sign in</a>
+            <a className="lp-logo" href="#top" onClick={closeMenu}>PIE<span>.</span></a>
+            <button
+              type="button"
+              className="lp-nav-toggle"
+              aria-label={menuOpen ? "Close menu" : "Open menu"}
+              aria-expanded={menuOpen}
+              aria-controls="lp-nav-menu"
+              onClick={() => setMenuOpen((open) => !open)}
+            >
+              <span className={`lp-burger${menuOpen ? " open" : ""}`} aria-hidden="true" />
+            </button>
+            <div
+              className={`lp-nav-links${menuOpen ? " open" : ""}`}
+              id="lp-nav-menu"
+            >
+              <a href="#product" onClick={closeMenu}>Product</a>
+              <a href="#how" onClick={closeMenu}>How it works</a>
+              <a href="#trust" onClick={closeMenu}>Trust</a>
+              <a href="#pricing" onClick={closeMenu}>Pricing</a>
+              <a className="lp-btn solid lp-nav-cta" href="#signin" onClick={enter}>Sign in</a>
             </div>
           </div>
         </nav>

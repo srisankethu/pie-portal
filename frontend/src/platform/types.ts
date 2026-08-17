@@ -987,30 +987,6 @@ export interface NewConnectionInput {
   api_base?: string;
 }
 
-/* ── OAuth authorization flow ───────────────────────────────────────────────── */
-export interface AuthorizeResponse {
-  authorization_url: string;
-  state_token: string;
-  expires_in_seconds: number;
-}
-
-export interface ZohoOrganization {
-  organization_id: string;
-  name: string;
-  currency: string;
-}
-
-export interface OAuthCallbackResponse {
-  organizations: ZohoOrganization[];
-  credential_id: string;
-}
-
-export interface SelectOrgRequest {
-  credential_id: string;
-  zoho_organization_id: string;
-  label?: string;
-}
-
 /* ── registered ERP connectors (NetSuite, Business Central, Acumatica, P21,
  *    Sage) ──────────────────────────────────────────────────────────────────
  * The connect form for these renders from the catalog's field specs, so the

@@ -46,16 +46,22 @@ import { Bp, Labelled, Tip } from "./ui";
  * the wrong one for entities that must stay apart, so it is stated up front.
  */
 
-const DC_PRESETS: { label: string; accounts_base: string; api_base: string }[] = [
-  { label: "India (.in)", accounts_base: "https://accounts.zoho.in",
+// `code` is the short data-centre token the OAuth endpoint expects on
+// `?dc=` (in / com / eu / com.au / jp) — it maps that to the accounts and API
+// bases server-side. The `accounts_base` URL is what the *manual-credentials*
+// form stores on a connection. These are two different values, and sending the
+// URL where the code was wanted is what produced "Unknown data centre:
+// https://accounts.zoho.in": the endpoint had no key by that name.
+const DC_PRESETS: { label: string; code: string; accounts_base: string; api_base: string }[] = [
+  { label: "India (.in)", code: "in", accounts_base: "https://accounts.zoho.in",
     api_base: "https://www.zohoapis.in/books/v3" },
-  { label: "United States (.com)", accounts_base: "https://accounts.zoho.com",
+  { label: "United States (.com)", code: "com", accounts_base: "https://accounts.zoho.com",
     api_base: "https://www.zohoapis.com/books/v3" },
-  { label: "Europe (.eu)", accounts_base: "https://accounts.zoho.eu",
+  { label: "Europe (.eu)", code: "eu", accounts_base: "https://accounts.zoho.eu",
     api_base: "https://www.zohoapis.eu/books/v3" },
-  { label: "Australia (.com.au)", accounts_base: "https://accounts.zoho.com.au",
+  { label: "Australia (.com.au)", code: "com.au", accounts_base: "https://accounts.zoho.com.au",
     api_base: "https://www.zohoapis.com.au/books/v3" },
-  { label: "Japan (.jp)", accounts_base: "https://accounts.zoho.jp",
+  { label: "Japan (.jp)", code: "jp", accounts_base: "https://accounts.zoho.jp",
     api_base: "https://www.zohoapis.jp/books/v3" },
 ];
 
@@ -844,8 +850,9 @@ function AddConnection({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // OAuth flow state
-  const [oauthDc, setOauthDc] = useState<string>(DC_PRESETS[0].accounts_base);
+  // OAuth flow state. Holds the data-centre *code* (in / com / …), which is
+  // what `authorizeZoho` sends on `?dc=` — not the accounts_base URL.
+  const [oauthDc, setOauthDc] = useState<string>(DC_PRESETS[0].code);
   const [oauthAuthUrl, setOauthAuthUrl] = useState<string | null>(null);
 
   // Adding the *first* company creates the first sign-in, and the second
@@ -1019,7 +1026,7 @@ function AddConnection({
                   sx={{ mt: 1.5, mb: 1.5 }}
                 >
                   {DC_PRESETS.map((p) => (
-                    <MenuItem key={p.accounts_base} value={p.accounts_base}>
+                    <MenuItem key={p.code} value={p.code}>
                       {p.label}
                     </MenuItem>
                   ))}

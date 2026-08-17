@@ -226,6 +226,17 @@ app.include_router(decisions.router,
 # the one intelligence surface a free plan can read.
 app.include_router(outcomes.router,
                    dependencies=[Depends(plan.require_feature("intelligence"))])
+# Deliberately *not* gated, unlike the four intelligence surfaces above and
+# below it. Quote-support is the free Quote Builder's own inline recommendation
+# on a line a salesperson is actively quoting (it renders in the supply drawer):
+# it phrases the deterministic facts and returns no RESTRICTED cost/margin data,
+# which is quoting — the free Quote Desk — not the paid decision layer. It does
+# persist a QUOTE_CONTEXT decision, but the surfaces that *read* the decision
+# store (decisions, outcomes, insight, attribution) are all gated, so a free
+# org can write one and never read it back. Gating this instead would 403 a
+# working panel inside the free desk. Left ungated on purpose; stated here so
+# the next audit finds a decision rather than an oversight (the absence of both
+# a gate and this note is what flagged it once).
 app.include_router(quote_support.router)
 app.include_router(accounts.router)
 app.include_router(data_status.router)

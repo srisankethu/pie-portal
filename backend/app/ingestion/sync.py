@@ -89,6 +89,13 @@ class SyncReport:
     #: that widens the window costs list calls over the new months, and a run
     #: that reports zero here read nothing it had not already read.
     windows_listed_in_full: int = 0
+    #: Whether this pull read the item catalogue and its shelf, or found
+    #: today's reading already taken and went straight to the documents.
+    #: Reported rather than inferred: a run with no new items is
+    #: indistinguishable from a run that never looked, and only one of those is
+    #: worth investigating.
+    catalogue_read: bool = False
+    catalogue_skipped_reason: str = ""
     skipped: list[dict[str, str]] = field(default_factory=list)
     # Relationships this pull actually moved. Lets the Customer × Item
     # recompute afterwards target what changed instead of rebuilding the whole
@@ -295,7 +302,8 @@ class SyncService:
                  on_phase: Optional[Callable[[str], None]] = None,
                  connector: str = "zoho",
                  connection_id: Optional[str] = None,
-                 incremental: bool = True) -> None:
+                 incremental: bool = True,
+                 catalogue_due: bool = True) -> None:
         self.s = session
         self.source = source
         self.org = organization_id
@@ -304,6 +312,19 @@ class SyncService:
         # reconciliation: still cheap (unchanged documents cost no detail call)
         # but complete, which is the only state in which deletions are visible.
         self.incremental = incremental
+        # Whether this pull reads the item catalogue and its per-location
+        # shelf, or leaves today's reading as it stands. See `run_reference`:
+        # these two are the dominant cost of a sync and are a daily reading, so
+        # a second pull on the same day was spending five minutes of item pages
+        # and 152 stock calls to rewrite what the first one wrote.
+        #
+        # Contacts and suppliers are **not** in this: they are read on every
+        # pull, whatever this says. An item a document names is fetched by id
+        # when the master lacks it (`_resolve_product`); a *customer* has no
+        # such rescue, so deferring the contact list would skip a new
+        # customer's first invoice as UNKNOWN_CUSTOMER. 26 calls to keep every
+        # line resolvable is not the cost worth cutting.
+        self.catalogue_due = catalogue_due
         # Reports what the pull is doing, so a job that takes minutes can say
         # so in words. Optional: a scripted caller that does not care passes
         # nothing and the stages run exactly as before.
@@ -401,8 +422,23 @@ class SyncService:
         """
         self._phase("Reading customers")
         self._sync_customers()
-        self._phase("Reading items")
-        self._sync_products()
+        if self.catalogue_due:
+            self.report.catalogue_read = True
+            self._phase("Reading items")
+            self._sync_products()
+        else:
+            # Not a shortcut around correctness: an item this pull's documents
+            # name and the catalogue does not hold is still fetched by id
+            # (`_resolve_product`), so no line goes unresolved for want of this
+            # pass. What is deferred is the *refresh* of names, prices, status
+            # and stock — a daily reading by construction, since every row it
+            # writes is keyed and upserted by day.
+            self.report.catalogue_skipped_reason = (
+                "today's reading was already taken; the item catalogue and the "
+                "per-location shelf are read once a day, and a full sync reads "
+                "them whatever the day")
+            log.info("skipping the item catalogue and the shelf: %s",
+                     self.report.catalogue_skipped_reason)
         if hasattr(self.source, "list_vendors"):
             self._supply_phase("Reading suppliers", "vendor", self._sync_vendors)
         self.s.flush()  # ensure customers/products have ids for FK resolution
@@ -710,6 +746,13 @@ class SyncService:
         reports a current number with no history, so history exists only because
         something writes it down once a day.
         """
+        if not self.catalogue_due:
+            # The expensive half of the daily reading: one `itemdetails` call
+            # per hundred items, so a fifteen-thousand-line master is 152 calls
+            # against a pacer that allows ninety a minute. Skipped for the same
+            # reason the master list is — today's shelf is already written down,
+            # and these rows are upserted by day.
+            return
         by_external = self.repo.product_ids_by_external()
         if not by_external:
             return

@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import logging
 import logging.handlers
+import re
 import threading
 import traceback
 from contextlib import contextmanager
@@ -57,6 +58,65 @@ DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 _configured = False
 _lock = threading.Lock()
+
+#: Query parameters and fields whose value is a credential. Matched
+#: case-insensitively against ``name=value`` and ``"name": "value"`` in any log
+#: line, and the value replaced.
+#:
+#: This exists because it already happened. The Zoho token refresh sent the
+#: refresh token and the client secret as *query parameters*, httpx logs every
+#: request URL at INFO, and once a run's log was kept with the run those two
+#: values were written to the database and rendered on a screen. The call site
+#: is fixed — they travel in the body now — and this is the second line of
+#: defence, because the next one will be somebody else's URL.
+SECRET_KEYS = ("refresh_token", "access_token", "client_secret", "authorization",
+               "api_key", "apikey", "password", "secret", "token")
+
+_SECRET_QUERY = re.compile(
+    r"\b(" + "|".join(SECRET_KEYS) + r")=([^&\s\"']+)", re.IGNORECASE)
+_SECRET_JSON = re.compile(
+    r"([\"'](?:" + "|".join(SECRET_KEYS) + r")[\"']\s*:\s*[\"'])([^\"']+)",
+    re.IGNORECASE)
+
+REDACTED = "[redacted]"
+
+
+def redact(text: str) -> str:
+    """Strip credential values out of one line, keeping the shape readable.
+
+    The parameter name stays: a log that says ``refresh_token=[redacted]`` still
+    tells the reader which call this was and that a credential was involved,
+    which is most of why the line was worth having.
+    """
+    if not text:
+        return text
+    text = _SECRET_QUERY.sub(lambda m: f"{m.group(1)}={REDACTED}", text)
+    return _SECRET_JSON.sub(lambda m: f"{m.group(1)}{REDACTED}", text)
+
+
+class _Redactor(logging.Filter):
+    """Applies ``redact`` to every record, before any handler formats it.
+
+    A filter on the handlers rather than a wrapper at the call sites, because
+    the call site that leaked was inside httpx — a library that has never heard
+    of this codebase's rules and never will.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            message = record.getMessage()
+        except Exception:  # noqa: BLE001 — a bad format string is not our business
+            return True
+        cleaned = redact(message)
+        if cleaned != message:
+            # Rewritten as a literal: the arguments are what carried the secret,
+            # and leaving them in place would let a later formatter re-expand it.
+            record.msg = cleaned
+            record.args = ()
+        return True
+
+
+_REDACTOR = _Redactor()
 
 
 def is_configured() -> bool:
@@ -97,6 +157,7 @@ def configure(*, force: bool = False) -> None:
 
         stream = logging.StreamHandler()
         stream.setFormatter(formatter)
+        stream.addFilter(_REDACTOR)
         root.addHandler(stream)
 
         if settings.LOG_FILE:
@@ -107,6 +168,7 @@ def configure(*, force: bool = False) -> None:
                     backupCount=settings.LOG_FILE_KEEP,
                     encoding="utf-8")
                 rotating.setFormatter(formatter)
+                rotating.addFilter(_REDACTOR)
                 root.addHandler(rotating)
             except OSError:
                 # An unwritable path must not stop the app booting — but it must
@@ -114,6 +176,7 @@ def configure(*, force: bool = False) -> None:
                 root.exception("could not open LOG_FILE %r; logging to stdout "
                                "only", settings.LOG_FILE)
 
+        _CAPTURE.addFilter(_REDACTOR)
         root.addHandler(_CAPTURE)
         _configured = True
 

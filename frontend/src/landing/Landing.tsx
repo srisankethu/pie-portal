@@ -75,6 +75,13 @@ import "./landing.css";
  *     specifics are free and they are the only credibility available to a
  *     vendor with no customers it can name.
  *
+ *   - The pricing section named three tiers whose upper two could be reached
+ *     only by somebody with a shell on the server, so it described a purchase
+ *     nobody could make. `PlanChangeRequest` gave it a real mechanism and the
+ *     section now says what that is. The rate lock and the yearly discount stay
+ *     as written: they are commitments rather than product claims, and no
+ *     module was ever going to implement them.
+ *
  * The eyebrow is unchanged on purpose. `prerender.test.tsx` pins that string, so
  * moving it is a deliberate act rather than a copy edit, and the positioning
  * question it belongs to is not settled on this branch.
@@ -567,8 +574,28 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
             <div className="lp-sec-head">
               <h2>Free to quote. Cheap to know. Priced per organization.</h2>
               <p>
-                Unlimited users on every plan. Early-adopter rates, locked for 24
-                months. Yearly billing gets two months free.
+                Unlimited users on every plan — nothing here counts seats.
+                Early-adopter rates, locked for 24 months; yearly billing gets
+                two months free.
+              </p>
+              {/* Added once the ask existed. Before it, the page named three
+                  tiers and the only way to reach the upper two was somebody
+                  with a shell on the server — so the section described a
+                  purchase nobody could make. It now describes what actually
+                  happens, which is not a checkout and should not be dressed as
+                  one: `PlanChangeRequest` records the ask, an operator applies
+                  it, and an invoice follows. Saying "no card" is worth more to
+                  this buyer than a payment page would be.
+
+                  The two terms above are commitments rather than mechanisms —
+                  nothing in the code enforces a rate lock or a yearly
+                  discount — which is fine for a price list and is why they sit
+                  in the sentence about what we will do rather than among the
+                  claims about what the product does. */}
+              <p className="lp-pricing-how">
+                To move plan you ask from inside the product and a person
+                confirms it — there is no card and no checkout. The free desk
+                needs no conversation at all.
               </p>
             </div>
             <div className="lp-grid3">

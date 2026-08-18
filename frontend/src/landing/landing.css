@@ -267,6 +267,14 @@
 }
 .pie-landing .lp-sched .lp-sched-note { font-size: 11.5px; color: var(--color-neutral-600); margin-left: 4px; }
 
+/* How a plan actually changes. Sits under the pricing standfirst, quieter than
+   it — it is the mechanism, not the offer. */
+.pie-landing .lp-pricing-how {
+  font-size: 13px;
+  color: var(--color-neutral-600);
+  margin-top: -4px;
+}
+
 /* ── what this is not: one aside, in the register of a drawing note ──
    Deliberately quiet. It is a correction to an assumption the reader has
    already made, not a claim of its own, and setting it as loudly as a section

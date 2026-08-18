@@ -24,10 +24,16 @@ Purely a widening — no stored value changes, no index changes. The four tables
   * ``outcome_snapshots`` — copies the signal's subject verbatim
 
 Revision ID: z6subject
-Revises: t13plan_requests
+Revises: u14oauthstates
 Create Date: 2026-08-18
 
-Re-pointed from ``y5runlog`` onto ``t13plan_requests``: two branches added a
+Re-pointed twice, onto ``t13plan_requests`` and then onto ``u14oauthstates``,
+as each landed on ``main`` while this one was still waiting to deploy. The
+reasoning below applies unchanged to both, and the second time is the evidence
+for it: three branches added a revision on the same parent within one afternoon,
+and none of them could deploy while two heads existed.
+
+Re-pointed from ``y5runlog``: two branches added a
 revision on the same parent and both were merged, which left alembic with two
 heads and stopped the deploy — ``upgrade head`` refuses to guess between them,
 correctly, because applying one would leave the other branch's schema missing.
@@ -55,7 +61,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "z6subject"
-down_revision = "t13plan_requests"
+down_revision = "u14oauthstates"
 branch_labels = None
 depends_on = None
 

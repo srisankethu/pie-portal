@@ -3,7 +3,13 @@ import "./landing.css";
 
 /**
  * The public front door — what a signed-out visitor sees before the sign-in
- * card. Purely presentational (no data fetch, no session), styled entirely
+ * card.
+ *
+ * The second CTA is "See it on sample data" where a deployment offers one, and
+ * the wording is held to the same honesty rule as everything else here: it is
+ * sample data, said plainly, rather than "see it live" or "try it free" over a
+ * book that belongs to nobody. Absent where no demonstration workspace is
+ * configured, in which case the pricing link takes the slot back. Purely presentational (no data fetch, no session), styled entirely
  * from the theme's emitted tokens so it reads as the same product as the
  * screens behind it.
  *
@@ -64,9 +70,10 @@ import "./landing.css";
  * the CTAs fall back to sign-in, which is honest for a single-tenant install
  * and was the whole behaviour before.
  */
-export function Landing({ onEnter, onSignUp }: {
+export function Landing({ onEnter, onSignUp, onDemo }: {
   onEnter: () => void;
   onSignUp?: () => void;
+  onDemo?: () => void;
 }) {
   const enter = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -76,6 +83,13 @@ export function Landing({ onEnter, onSignUp }: {
   const start = (e: React.MouseEvent) => {
     e.preventDefault();
     (onSignUp ?? onEnter)();
+  };
+  /** The third door, and the only one that asks for nothing. Optional for the
+   *  same reason `onSignUp` is: a deployment without a demonstration workspace
+   *  must show no such button rather than one that leads nowhere. */
+  const demo = (e: React.MouseEvent) => {
+    e.preventDefault();
+    onDemo?.();
   };
 
   // The mobile nav collapses the section links behind a menu button. Closed on
@@ -131,7 +145,9 @@ export function Landing({ onEnter, onSignUp }: {
               </p>
               <div className="lp-ctas">
                 <a className="lp-btn solid" href="#signin" onClick={start}>Get started free</a>
-                <a className="lp-btn" href="#pricing">See pricing</a>
+                {onDemo
+                  ? <a className="lp-btn" href="#demo" onClick={demo}>See it on sample data</a>
+                  : <a className="lp-btn" href="#pricing">See pricing</a>}
               </div>
               <p className="lp-fine">
                 Free quote desk forever · your first month includes the full

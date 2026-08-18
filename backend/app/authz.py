@@ -54,6 +54,11 @@ class Principal:
     #: end *this* session without touching the person's other devices, and so
     #: the session list can mark which row is the one you are reading it from.
     session_id: Optional[str] = None
+    #: This request is riding a session in the public demonstration workspace,
+    #: which anyone can open without an account. `current_principal` refuses it
+    #: every unsafe method, so the flag is a gate rather than a label — the same
+    #: arrangement as `must_change_password` above.
+    is_demo: bool = False
 
     @property
     def is_salesperson(self) -> bool:
@@ -243,7 +248,22 @@ def load_principal(session: Session, token: str) -> Optional[Principal]:
     return Principal(user_id=user.user_id, organization_id=user.organization_id,
                      role=role, name=user.name, email=user.email,
                      must_change_password=bool(user.must_change_password),
-                     session_id=row.session_id)
+                     session_id=row.session_id,
+                     is_demo=is_demo_org(user.organization_id))
+
+
+def is_demo_org(organization_id: str) -> bool:
+    """Is this the public demonstration workspace?
+
+    Read from settings on every call rather than captured at import: a test that
+    points the deployment at a demo organization must not have to reload this
+    module, and the cost is a string comparison.
+
+    Empty configuration means *no* organization is the demo one — never "every
+    organization", which is the direction this must not be wrong in.
+    """
+    configured = (settings.PUBLIC_DEMO_ORG_ID or "").strip()
+    return bool(configured) and organization_id == configured
 
 
 #: What an account owing a password change may reach. Deliberately tiny:
@@ -346,6 +366,25 @@ def current_principal(
             status.HTTP_403_FORBIDDEN,
             "Change your password before using this account. It is still the one "
             "you were issued.")
+    # The demonstration workspace reads and never writes. Enforced here, at the
+    # one seam every authenticated route passes through, and by *method* rather
+    # than by a list of endpoints — a list is a thing to forget to add to, and
+    # the day somebody forgets, an unauthenticated stranger is writing to a
+    # tenant. Fail-closed and enumeration-free is worth what it costs.
+    #
+    # What it costs is real and is not hidden: the read-only POSTs go too. The
+    # quote desk and the simulator are POST because they take a body, not
+    # because they change anything, so neither works in the demo. Allowlisting
+    # them was the obvious fix and was rejected — `quote_support` genuinely does
+    # persist a QUOTE_CONTEXT decision, so the allowlist would have had to be
+    # right about which POSTs write, forever, including for endpoints written
+    # later by somebody who has never read this comment.
+    if principal.is_demo and request.method.upper() not in SAFE_METHODS:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "This is the demonstration workspace. It shows what the product "
+            "does on made-up data and saves nothing — sign up for an account to "
+            "make changes.")
     return principal
 
 

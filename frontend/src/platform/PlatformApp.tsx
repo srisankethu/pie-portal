@@ -18,6 +18,7 @@ import { aiState, factLabel, factValue, isPrimaryFact, stateFieldLabel, ROLE_LAB
 import { ActionsPanel, Bp, Conf, DecisionCard, ImpactPanel, Interpretation, Labelled,
          Pri, RankingPanel, Tip, WhyPanel, typeLabel } from "./ui";
 import Alert from "@mui/material/Alert";
+import AlertTitle from "@mui/material/AlertTitle";
 import Box from "@mui/material/Box";
 import Paper from "@mui/material/Paper";
 import Button from "@mui/material/Button";
@@ -225,6 +226,24 @@ function useSignupOffer(signedOut: boolean): boolean {
     if (!signedOut) return;
     let live = true;
     papi.signupOffer()
+      .then((o) => { if (live) setOffered(!!o.enabled); })
+      .catch(() => { if (live) setOffered(false); });
+    return () => { live = false; };
+  }, [signedOut]);
+  return offered;
+}
+
+/** Whether this deployment has a demonstration workspace, asked the same way
+ *  and answered `false` the same way on any failure. Two near-identical hooks
+ *  rather than one parameterised by endpoint: the shared version would take a
+ *  fetcher and a flag name and read as indirection over four lines of state,
+ *  which §7 is explicit about not doing. */
+function useDemoOffer(signedOut: boolean): boolean {
+  const [offered, setOffered] = useState(false);
+  useEffect(() => {
+    if (!signedOut) return;
+    let live = true;
+    papi.demoOffer()
       .then((o) => { if (live) setOffered(!!o.enabled); })
       .catch(() => { if (live) setOffered(false); });
     return () => { live = false; };
@@ -648,6 +667,7 @@ export default function PlatformApp() {
 
   // Before the early returns below: hooks run in the same order every render.
   const signupOffered = useSignupOffer(!session);
+  const demoOffered = useDemoOffer(!session);
 
   if (!session) {
     // The landing page is the public front; the two cards are one click behind
@@ -664,6 +684,13 @@ export default function PlatformApp() {
           // offered it, and the only account anybody could have was one an
           // operator made with a shell on the box.
           onSignUp={signupOffered ? () => setDoor("signup") : undefined}
+          // Absent unless the deployment names a demonstration workspace, for
+          // the same reason as the button above: a door that always 404s is
+          // worse than no door. Entering signs the visitor in on a read-only
+          // session, so it goes through `signIn` exactly as the other two do.
+          onDemo={demoOffered
+            ? () => { void papi.enterDemo().then(signIn).catch(() => {}); }
+            : undefined}
         />
       );
     }
@@ -890,6 +917,19 @@ export default function PlatformApp() {
             true wherever the reader happens to be, and the queue it takes away
             is reached from everywhere. It is silent until the last stretch and
             silent for a salesperson — see TrialNotice. */}
+        {/* Every screen, not just the ones with numbers on. A visitor who does
+            not know these figures are invented is being misled by a product
+            whose whole argument is that its figures are real — and this one
+            says so beside a queue, a margin and a cash-cycle chart alike.
+            Never dismissible for the same reason. */}
+        {session.is_demo && (
+          <Alert severity="info" sx={{ mb: 2 }}>
+            <AlertTitle>You are in the demonstration workspace</AlertTitle>
+            Every customer, item and figure here is made up. Nothing you do is
+            saved — the server refuses writes on this session. Sign up for an
+            account to connect your own books.
+          </Alert>
+        )}
         <TrialNotice session={session} />
         {/* An unreachable API must never be dressed as "nothing to do". The
             error REPLACES the queue rather than sitting above a reassuring

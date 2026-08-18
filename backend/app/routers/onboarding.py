@@ -6,6 +6,8 @@ because everything odd about this file follows from it:
 
 - ``GET  /api/v1/signup``     — is sign-up offered here at all? (public, read)
 - ``POST /api/v1/signup``     — create a tenant and sign its owner in (public, write)
+- ``GET  /api/v1/demo``       — is there a demonstration workspace? (public, read)
+- ``POST /api/v1/demo``       — enter it, with no account (public, read-only session)
 - ``GET  /api/v1/onboarding`` — what this organization still has to do (authed)
 
 **The rate limit is a speed bump and is documented as one.** It counts sign-ups
@@ -32,6 +34,7 @@ from collections import deque
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import clock, onboarding
@@ -52,8 +55,13 @@ _RECENT: dict[str, deque[float]] = {}
 _WINDOW_SECONDS = 3600.0
 
 
-def _too_many(request: Request) -> bool:
-    """Whether this address has already used its hour's sign-ups.
+def _too_many(request: Request, *, bucket: str, limit: int) -> bool:
+    """Whether this address has already used its hour's allowance of ``bucket``.
+
+    Two callers, two allowances, one implementation. The buckets are separate
+    because the demonstration door and the sign-up door are different doors: a
+    stranger who looked at the demo five times must still be able to sign up,
+    which is the entire point of having let them look.
 
     ``request.client.host`` is the peer, which behind the reverse proxy in
     ``deploy/`` is the proxy itself — so in that topology this limits sign-ups
@@ -64,14 +72,14 @@ def _too_many(request: Request) -> bool:
     instead would let the caller pick their own bucket, which is worse than the
     imprecision.
     """
-    if settings.SIGNUP_RATE_LIMIT_PER_HOUR <= 0:
+    if limit <= 0:
         return False
-    who = request.client.host if request.client else "unknown"
+    who = f"{bucket}:{request.client.host if request.client else 'unknown'}"
     now = time.monotonic()
     seen = _RECENT.setdefault(who, deque())
     while seen and now - seen[0] > _WINDOW_SECONDS:
         seen.popleft()
-    if len(seen) >= settings.SIGNUP_RATE_LIMIT_PER_HOUR:
+    if len(seen) >= limit:
         return True
     seen.append(now)
     return False
@@ -121,6 +129,9 @@ class SignUpResponse(BaseModel):
     currency: str = "INR"
     timezone: str = "Asia/Kolkata"
     must_change_password: bool = False
+    #: True only from the demonstration door below. Same field the login
+    #: envelope carries, because the client stores both with one code path.
+    is_demo: bool = False
 
 
 @router.post("/signup", status_code=status.HTTP_201_CREATED,
@@ -138,7 +149,8 @@ def sign_up(body: SignUpRequest, request: Request, response: Response,
         # somebody lacks the key to — it is not a door.
         raise HTTPException(status.HTTP_404_NOT_FOUND,
                             "This deployment does not accept sign-ups.")
-    if _too_many(request):
+    if _too_many(request, bucket="signup",
+                 limit=settings.SIGNUP_RATE_LIMIT_PER_HOUR):
         raise HTTPException(
             status.HTTP_429_TOO_MANY_REQUESTS,
             "Too many sign-ups from here in the last hour. Try again later.")
@@ -185,3 +197,101 @@ def my_onboarding(principal: Principal = Depends(current_principal),
     feature — it is the reason the product looks broken.
     """
     return onboarding.checklist(session, principal.organization_id)
+
+
+# ── the demonstration workspace ──────────────────────────────────────────────
+def _demo_user(session: Session):
+    """The account the public demo signs a stranger in as, or ``None``.
+
+    Both halves of the configuration have to be present *and* agree: the named
+    address must exist, be active, and belong to the named organization. A
+    mismatch resolves to no demo rather than to whichever row the address found,
+    because "the demo points at the wrong tenant" must fail as an absent door
+    and never as an open one into somebody's real book.
+    """
+    org_id = (settings.PUBLIC_DEMO_ORG_ID or "").strip()
+    email = (settings.PUBLIC_DEMO_EMAIL or "").strip().lower()
+    if not org_id or not email:
+        return None
+    user = session.scalar(select(models.User).where(models.User.email == email))
+    if user is None or not user.active or user.organization_id != org_id:
+        return None
+    return user
+
+
+@router.get("/demo")
+def demo_offered(session: Session = Depends(get_session)) -> dict:
+    """Whether this deployment has a demonstration workspace to walk into.
+
+    Public and says nothing beyond yes or no — not which organization it is, not
+    who is in it, and nothing about any other tenant. The landing page reads
+    this to decide whether to render the button at all, so an install without a
+    demo shows no door rather than a door that 404s.
+    """
+    return {
+        "enabled": _demo_user(session) is not None,
+        "note": ("A worked example on made-up data. Read-only: it shows what "
+                 "the product does and saves nothing."),
+    }
+
+
+@router.post("/demo", response_model=SignUpResponse)
+def enter_demo(request: Request, response: Response,
+               session: Session = Depends(get_session)) -> SignUpResponse:
+    """Sign a stranger into the demonstration workspace. No account, no password.
+
+    The reason this exists: `app/demo.py` builds a realistic multi-account book
+    whose histories deliberately trigger all five signal families, then runs the
+    real pipeline over it — the best answer this platform has to "what does it
+    actually do", and it sat behind `/api/v1/internal/demo-seed`, which needs an
+    account. So the one artefact written to convince somebody was reachable only
+    by people already convinced.
+
+    **What stops this being a hole.** The session it mints is an ordinary one,
+    so every existing role check applies unchanged; and `authz.current_principal`
+    refuses a demo principal every unsafe method, so the whole of what this
+    opens is a read of fabricated data. It is off unless a deployment names an
+    organization, and it resolves to off if the configuration does not point at
+    a real active user in that organization.
+
+    **What it does not stop, stated rather than implied.** It writes a
+    `UserSession` row per visit without a credential, so a determined caller can
+    grow that table — the speed bump above is a speed bump, exactly as the
+    sign-up one says of itself. It is the same exposure `POST /auth/login`
+    already has, minus the password, and the answer if it ever matters is a real
+    limiter in front of the process rather than a cleverer one inside it.
+
+    Returns the login envelope, deliberately: the client stores this with the
+    same code that stores a sign-in, so there is one way to become signed in
+    rather than two, and the second one is not the one that forgets the
+    currency.
+    """
+    user = _demo_user(session)
+    if user is None:
+        # 404, as sign-up does when it is off: this is not a door somebody
+        # lacks the key to, it is not a door.
+        raise HTTPException(status.HTTP_404_NOT_FOUND,
+                            "This deployment has no demonstration workspace.")
+    if _too_many(request, bucket="demo",
+                 limit=settings.SIGNUP_RATE_LIMIT_PER_HOUR):
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            "Too many demo sessions from here in the last hour. Try again later.")
+
+    org = session.get(models.Organization, user.organization_id)
+    token, _row = open_session(session, user, request.headers.get("user-agent"))
+    # Committed before the token goes out, for the reason `login` gives: a token
+    # naming a session row nobody else can read yet is a dead credential.
+    session.commit()
+    log.info("demo session opened org=%s user=%s", user.organization_id,
+             user.user_id)
+    set_session_cookie(response, token)
+
+    return SignUpResponse(
+        token=token, user_id=user.user_id,
+        organization_id=user.organization_id, role=user.role, name=user.name,
+        email=user.email or "",
+        currency=(getattr(org, "currency", None) or settings.DEFAULT_CURRENCY),
+        timezone=(getattr(org, "timezone", None) or clock.DEFAULT_ZONE),
+        must_change_password=False,
+        is_demo=True)

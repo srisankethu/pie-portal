@@ -18,6 +18,12 @@ export interface PlatformSession {
    *  timestamp the client renders — see `src/when.ts` for why the browser's
    *  own zone is the wrong answer here. */
   timezone: string;
+  /** True while this session is in the public demonstration workspace: made-up
+   *  data, and the server refuses every write. Rendered on every screen rather
+   *  than only where the numbers are — a visitor who does not know the figures
+   *  are invented is being misled by a product whose whole argument is that its
+   *  figures are real. */
+  is_demo?: boolean;
   /** True while this account holds a password somebody else issued. The server
    *  refuses every request but the change itself, so the shell shows the change
    *  screen instead of the app. */
@@ -33,6 +39,16 @@ export interface SignupOffer {
   /** The plan a sign-up lands on. Free, and pinned server-side. */
   plan: string;
   trial_days: number;
+  note: string;
+}
+
+/** Whether this deployment has a demonstration workspace a stranger can open.
+ *
+ *  Says yes or no and nothing else — not which organization it is, not who is
+ *  in it. A single-tenant install leaves it false, which is the default, and
+ *  the landing page then shows no such door rather than one that 404s. */
+export interface DemoOffer {
+  enabled: boolean;
   note: string;
 }
 

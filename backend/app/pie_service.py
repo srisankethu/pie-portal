@@ -266,8 +266,25 @@ class PieService:
             if self._index is not None or self._index_tried:
                 return self._index
             self._index_tried = True
+            # Absent and broken are different facts, and only one of them is a
+            # defect. A deployment built without the private pie-parser
+            # submodule reported `ModuleNotFoundError: No module named
+            # 'identity'` with a traceback, which reads as a bug in this file;
+            # it is a build that shipped without an optional engine, exactly as
+            # `deploy/backend.Dockerfile` says it may. Say which one it is, in
+            # the words `_ensure_loaded` already uses.
+            root_path = settings.PIE_PARSER_ROOT
+            if not (root_path / "identity").is_dir():
+                log.warning(
+                    "pie-parser is not present at %s, so item links will be left "
+                    "unresolved. This deployment was built without the engine "
+                    "(see deploy/backend.Dockerfile); nothing else is affected. "
+                    "Fetch it with ./scripts/setup_pie_parser.sh, or set "
+                    "PIE_PARSER_ROOT.", root_path)
+                self._index = None
+                return self._index
             try:
-                root = str(settings.PIE_PARSER_ROOT)
+                root = str(root_path)
                 if root not in sys.path:
                     sys.path.insert(0, root)
                 from identity.store import AuthoritativeIndex  # noqa: PLC0415

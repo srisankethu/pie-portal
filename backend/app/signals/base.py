@@ -225,6 +225,131 @@ class SignalDraft:
         )
 
 
+# ── what a detector could not judge ──────────────────────────────────────────
+class Withholding:
+    """Why a detector declined to speak about one subject.
+
+    Every one of these was a bare ``continue`` in a detector loop, and the
+    consequence is the §1 failure in its purest form: a book whose customers all
+    have four months of history produces zero decline signals, and a book whose
+    customers are all growing produces zero decline signals. From the outside
+    those are the same screen, and they mean opposite things.
+    """
+
+    # decline
+    NOT_ENOUGH_HISTORY = "NOT_ENOUGH_HISTORY"
+    TOO_FEW_PRIOR_ORDERS = "TOO_FEW_PRIOR_ORDERS"
+    NO_BASELINE_REVENUE = "NO_BASELINE_REVENUE"
+    # dormancy
+    NO_ORDERS_ON_RECORD = "NO_ORDERS_ON_RECORD"
+    CADENCE_NOT_ESTABLISHED = "CADENCE_NOT_ESTABLISHED"
+    # margin + cost pass-through
+    NO_SALES_ON_RECORD = "NO_SALES_ON_RECORD"
+    NO_COST_ON_RECORD = "NO_COST_ON_RECORD"
+    NOT_PRICED_IN_BOTH_PERIODS = "NOT_PRICED_IN_BOTH_PERIODS"
+    NO_COST_BASIS_IN_PERIOD = "NO_COST_BASIS_IN_PERIOD"
+    COST_NOT_RELIABLE = "COST_NOT_RELIABLE"
+    TOO_FEW_COST_POINTS = "TOO_FEW_COST_POINTS"
+    PRIOR_COST_NOT_USABLE = "PRIOR_COST_NOT_USABLE"
+    PRICE_NOT_COMPARABLE = "PRICE_NOT_COMPARABLE"
+
+
+#: What each reason means to somebody reading a report rather than the code.
+#: Phrased as the missing evidence and, where there is one, the thing that would
+#: fix it — "not enough data" sends nobody to do anything.
+WITHHOLDING_REASONS: dict[str, str] = {
+    Withholding.NOT_ENOUGH_HISTORY:
+        "too little trading history to compare two periods — this improves on "
+        "its own as the book ages, or sooner by syncing further back",
+    Withholding.TOO_FEW_PRIOR_ORDERS:
+        "too few orders in the earlier period to call a drop a decline rather "
+        "than ordinary lumpiness",
+    Withholding.NO_BASELINE_REVENUE:
+        "no revenue in the earlier period, so there is nothing to have declined "
+        "from",
+    Withholding.NO_ORDERS_ON_RECORD:
+        "no orders on record for this customer in the synced history",
+    Withholding.CADENCE_NOT_ESTABLISHED:
+        "too few orders to establish this customer's own ordering rhythm, so "
+        "there is no rhythm for them to be late against",
+    Withholding.NO_SALES_ON_RECORD:
+        "no sales on record for this product, so there is no margin to speak of",
+    Withholding.NO_COST_ON_RECORD:
+        "no purchase cost on record for this product — margin cannot be computed "
+        "from a price alone. Syncing purchase bills is what closes this",
+    Withholding.NOT_PRICED_IN_BOTH_PERIODS:
+        "not sold in both periods, so there are not two margins to compare",
+    Withholding.NO_COST_BASIS_IN_PERIOD:
+        "no cost applicable to one of the two periods",
+    Withholding.COST_NOT_RELIABLE:
+        "the recorded cost is zero, a placeholder, or above the selling price. "
+        "A margin computed on it would be asserted, not measured",
+    Withholding.TOO_FEW_COST_POINTS:
+        "fewer than two purchase costs on record, so no cost movement can be "
+        "established",
+    Withholding.PRIOR_COST_NOT_USABLE:
+        "the earlier cost is zero or a placeholder, so a change against it "
+        "would be arithmetic on a number that is not a cost",
+    Withholding.PRICE_NOT_COMPARABLE:
+        "not sold on both sides of the cost change, so whether the price "
+        "followed it cannot be observed",
+}
+
+
+@dataclass(frozen=True)
+class Withheld:
+    """One subject a detector examined and could not judge, and why."""
+
+    subject_id: str
+    reason: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"subject_id": self.subject_id, "reason": self.reason,
+                "detail": WITHHOLDING_REASONS.get(self.reason, self.reason)}
+
+
+@dataclass
+class Coverage:
+    """What one detector looked at, what it found, and what it could not judge.
+
+    ``considered`` is the denominator, and it is the whole point. "No signals"
+    is ambiguous between a detector that examined four hundred customers and
+    found nothing wrong and one that could not examine any of them — and those
+    two mean opposite things about whether the quiet screen can be believed.
+    ``attribution.DetectionResult`` makes the same argument for the value ledger
+    and this deliberately mirrors it; the types are separate because the
+    subjects are (a customer or product here, an evidence ref there) and because
+    ``signals/`` importing ``attribution/`` would couple two layers that have no
+    other reason to know about each other.
+
+    The three outcomes are exhaustive and do not overlap. **found** is a signal
+    raised. **withheld** is "I could not look". **clear** is "I looked and there
+    was nothing to raise" — a real, reportable negative, and it must never be
+    pooled with the other two. Collapsing clear into withheld makes a healthy
+    book look unexamined; collapsing withheld into clear is the benign default
+    §1 exists to forbid, and is what the bare ``continue`` used to do.
+    """
+
+    detector: str
+    considered: int = 0
+    drafts: list["SignalDraft"] = field(default_factory=list)
+    withheld: list[Withheld] = field(default_factory=list)
+
+    def withhold(self, subject_id: str, reason: str) -> None:
+        self.withheld.append(Withheld(subject_id=subject_id, reason=reason))
+
+    @property
+    def clear(self) -> int:
+        """Subjects examined, judged, and found to have nothing to report."""
+        return max(0, self.considered - len(self.drafts) - len(self.withheld))
+
+    def withheld_counts(self) -> dict[str, int]:
+        out: dict[str, int] = {}
+        for row in self.withheld:
+            out[row.reason] = out.get(row.reason, 0) + 1
+        return dict(sorted(out.items()))
+
+
 # ── numeric helpers (avoid false precision; deterministic) ───────────────────
 def clamp_severity(value: float) -> int:
     return max(0, min(100, int(round(value))))

@@ -5,7 +5,7 @@ from dataclasses import replace
 from decimal import Decimal
 
 from app.signals import cost_pass_through, decline, dormancy, margin
-from app.signals.base import Anomaly
+from app.signals.base import Anomaly, Withholding
 from app.signals.config import SignalThresholds
 from app.signals.quality import cost_anomalies, cost_is_reliable, sales_outliers
 
@@ -224,3 +224,102 @@ def test_no_crash_on_empty_snapshot():
     assert dormancy.detect(s, TH, AS_OF) == []
     assert margin.detect(s, TH, AS_OF) == []
     assert cost_pass_through.detect(s, TH, AS_OF) == []
+
+
+# ── coverage: the difference between "nothing wrong" and "could not look" ────
+# Every detector used to `continue` silently on insufficient evidence, so a book
+# whose customers all have four months of history produced exactly the same
+# empty screen as a book whose customers are all healthy. `examine` keeps the
+# denominator and the reasons; these pin that the two stay distinguishable.
+def test_a_thin_book_and_a_healthy_book_do_not_look_alike():
+    """The §1 failure this contract exists to close.
+
+    Both runs raise zero signals. Only one of them examined anything.
+    """
+    new = [sale("c_new", "p1", "2026-06-01", 10, 100, invoice="i1"),
+           sale("c_new", "p1", "2026-06-15", 10, 100, invoice="i2"),
+           sale("c_new", "p1", "2026-07-01", 2, 100, invoice="i3")]
+    thin = decline.examine(snap(sales=new), TH, AS_OF)
+    healthy = decline.examine(snap(sales=steady_customer()), TH, AS_OF)
+
+    assert thin.drafts == [] and healthy.drafts == []
+    assert thin.clear == 0, "nothing in the thin book was actually judged"
+    assert healthy.clear == 1, "the steady customer was judged, and was fine"
+    assert thin.withheld_counts() == {Withholding.NOT_ENOUGH_HISTORY: 1}
+    assert healthy.withheld_counts() == {}
+
+
+def test_every_subject_lands_in_exactly_one_outcome():
+    """found + clear + withheld = considered, with no subject counted twice.
+
+    The partition is what makes the report addable. If a subject could be both
+    withheld and clear the coverage figures would overlap and a reader summing
+    them would get a denominator larger than the book.
+    """
+    sales = declining_customer() + steady_customer() + [
+        sale("c_new", "p1", "2026-06-01", 10, 100, invoice="i9")]
+    coverage = decline.examine(snap(sales=sales), TH, AS_OF)
+
+    assert coverage.considered == 3
+    assert len(coverage.drafts) + coverage.clear + len(coverage.withheld) == 3
+    assert len(coverage.drafts) == 1 and coverage.clear == 1
+    assert len(coverage.withheld) == 1
+
+
+def test_a_book_with_no_purchase_costs_says_so_rather_than_going_quiet():
+    """The most consequential withhold of the four.
+
+    A book that has synced invoices but no bills produces no margin signal for
+    any product. As a bare count that is a business with no margin problem.
+    """
+    sales, _ = margin_deterioration_product()
+    coverage = margin.examine(snap(sales=sales, costs=[]), TH, AS_OF)
+
+    assert coverage.drafts == []
+    assert coverage.considered > 0
+    assert coverage.clear == 0
+    assert coverage.withheld_counts() == {
+        Withholding.NO_COST_ON_RECORD: coverage.considered}
+
+
+def test_a_result_below_the_threshold_is_clear_and_not_withheld():
+    """The good news has to be real news.
+
+    A margin that moved less than the threshold was examined on reliable cost
+    and found acceptable. Filing that under "could not judge" would make an
+    honest book unreadable in the other direction.
+    """
+    sales, costs = _margin_drop_of_one_sixteenth()
+    coverage = margin.examine(snap(sales=sales, costs=costs),
+                              replace(TH, margin_drop_points=0.20), AS_OF)
+
+    assert coverage.drafts == []
+    assert coverage.withheld == [], "cost was present and reliable — this was judged"
+    assert coverage.clear == coverage.considered
+
+
+def test_a_customer_with_too_few_orders_is_unjudgeable_not_on_time():
+    """Dormancy's own version of the same trap.
+
+    A customer with two orders ever has no established rhythm, so they are not
+    late — but neither are they punctual, and counting them among the quiet
+    majority is what made a sparse book look like a calm one.
+    """
+    sparse = [sale("c_sparse", "p1", "2026-01-10", 5, 100, invoice="s1"),
+              sale("c_sparse", "p1", "2026-02-10", 5, 100, invoice="s2")]
+    coverage = dormancy.examine(snap(sales=sparse),
+                                replace(TH, dormancy_min_orders=4), AS_OF)
+
+    assert coverage.drafts == []
+    assert coverage.clear == 0
+    assert coverage.withheld_counts() == {Withholding.CADENCE_NOT_ESTABLISHED: 1}
+
+
+def test_every_withholding_reason_can_be_read_by_a_person():
+    """A reason code with no sentence behind it reaches a screen as a code."""
+    from app.signals.base import WITHHOLDING_REASONS
+
+    codes = {v for k, v in vars(Withholding).items() if not k.startswith("_")
+             and isinstance(v, str)}
+    assert codes and codes <= set(WITHHOLDING_REASONS)
+    assert all(WITHHOLDING_REASONS[c].strip() for c in codes)

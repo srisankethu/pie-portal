@@ -40,11 +40,20 @@ def snap(sales=None, costs=None, cust_names=None, prod_names=None) -> Snapshot:
 
 # ── scenario builders ────────────────────────────────────────────────────────
 def steady_customer(cust="c_steady", prod="p1") -> list[SaleRow]:
-    """Even revenue across both windows — should NOT trigger decline."""
+    """Even revenue across both windows — should NOT trigger decline.
+
+    The April order is load bearing and was missing. Without it the prior
+    window (2026-01-02 to 2026-04-02) held two orders against a floor of three,
+    so this customer was *unjudgeable* rather than steady — and every test
+    asserting "no decline signal" for them passed on insufficient evidence
+    instead of on even revenue, which is the one thing the fixture is named for.
+    Found by ``examine`` reporting the withhold that ``detect`` swallowed.
+    """
     out = []
     for i, d in enumerate(["2025-07-01", "2025-08-01", "2025-09-01", "2025-10-01",
                            "2025-11-01", "2025-12-01", "2026-01-01", "2026-02-01",
-                           "2026-03-01", "2026-05-01", "2026-06-01", "2026-07-01"]):
+                           "2026-03-01", "2026-04-01", "2026-05-01", "2026-06-01",
+                           "2026-07-01"]):
         out.append(sale(cust, prod, d, 10, 100, invoice=f"inv-{cust}-{i}"))
     return out
 

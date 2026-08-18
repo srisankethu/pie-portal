@@ -790,13 +790,20 @@ def test_a_customer_exactly_on_their_expected_interval_is_not_yet_overdue():
 
 def test_the_three_cadence_readers_share_one_implementation():
     """Not "agree today" — the same function. dormancy raises the signal,
-    quote_context publishes the facts, the rhythm screen shows the population."""
+    quote_context publishes the facts, the rhythm screen shows the population.
+
+    Points at ``dormancy.examine`` rather than ``dormancy.detect``: ``detect``
+    is now a one-line delegation and the cadence read lives in ``examine``. The
+    invariant is unchanged — one implementation of who is late — and reading the
+    source of the wrapper instead of the body would let it pass on a function
+    that no longer contains anything.
+    """
     import inspect
 
     from app.commercial.insight import cadence as screen
     from app.signals import dormancy, quote_context
 
-    for module in (dormancy.detect, quote_context.assemble, screen.build):
+    for module in (dormancy.examine, quote_context.assemble, screen.build):
         assert "cadence_of" in inspect.getsource(module), module.__qualname__
 
 

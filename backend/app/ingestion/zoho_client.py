@@ -315,9 +315,16 @@ class ZohoTransport:
             return self._token
         self._require_credentials()
         self._guard_fetch(f"{self._accounts}/oauth/v2/token")
+        # **In the body, not the query string.** These four values are the whole
+        # credential: anyone holding the refresh token and the client secret can
+        # read this company's books. httpx logs every request URL at INFO, so as
+        # query parameters they were written verbatim to stdout, to the log file,
+        # and — once a run's log was kept with the run — into the database and
+        # onto a screen. A form body is what OAuth specifies anyway; the query
+        # string was the accident.
         resp = self._client().post(
             f"{self._accounts}/oauth/v2/token",
-            params={
+            data={
                 "refresh_token": self._creds.refresh_token,
                 "client_id": self._creds.client_id,
                 "client_secret": self._creds.client_secret,
@@ -755,8 +762,16 @@ class ZohoApiSource(ZohoTransport):
     #: batching is the whole reason per-location stock is affordable at all —
     #: the per-item detail endpoint would be one call per item, which on an
     #: 800-line master is 800 calls a sync to answer a question about three
-    #: branches. Kept modest because the ids travel in the query string.
-    ITEM_DETAIL_BATCH = 25
+    #: branches.
+    #:
+    #: 100, raised from 25 after a live book grew past 15,000 items: at 25 that
+    #: is 608 calls, and at the pacer's 90 a minute the stock stage alone ran
+    #: for the better part of half an hour on a sync whose documents took
+    #: thirty seconds. The ids travel in the query string, which is what keeps
+    #: this from being larger still — a Zoho item id is 19 characters, so 100
+    #: of them plus separators is about 2 KB of URL, comfortably inside every
+    #: limit in the path. Do not raise it without redoing that arithmetic.
+    ITEM_DETAIL_BATCH = 100
 
     def list_locations(self) -> Iterable[dict[str, Any]]:
         """Where this company trades from.

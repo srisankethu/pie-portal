@@ -255,6 +255,13 @@ export const papi = {
    *  no credential and returns the same envelope a sign-in does, so the client
    *  stores it with the same code — one way to become signed in, not two. */
   demoOffer: () => req<DemoOffer>("/api/v1/demo"),
+
+  /** Ask to move plan. Owner only, and it grants nothing — a person decides it.
+   *  Returns the whole entitlement view so the caller re-renders from one
+   *  answer instead of deciding locally that it worked. */
+  requestPlan: (t: string, plan: string, note = "") =>
+    req<Entitlements>("/api/v1/entitlements",
+                      { method: "POST", body: JSON.stringify({ plan, note }) }, t),
   enterDemo: () => req<LoginResp>("/api/v1/demo", { method: "POST" }),
 
   /** What this organization still has to do before the screens have anything

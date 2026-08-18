@@ -7,10 +7,12 @@
 // it, and whether it promises anything the deployment cannot do.
 //
 // That last one is the reason this file exists rather than being left to
-// judgement. There is no billing in this product: `set_plan` is an operator
-// command with deliberately no API. A notice that grew an "Upgrade" button
-// would be a dead end shipped to the one person most likely to press it, and
-// nothing else in the suite would notice.
+// judgement. There is still no billing in this product: `set_plan` is an
+// operator command with deliberately no API. What the notice grew is not a
+// checkout — it records a request that a person then decides — and the tests
+// below hold it to being exactly that. A control here that implied a payment,
+// or that claimed the plan had moved, would be a lie shipped to the one person
+// most likely to press it, and nothing else in the suite would notice.
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
@@ -18,8 +20,9 @@ import { describe, expect, it, vi } from "vitest";
 import { TrialNotice } from "./TrialNotice";
 import type { Entitlements, PlatformSession, Role } from "./types";
 
-const { entitlements } = vi.hoisted(() => ({ entitlements: vi.fn() }));
-vi.mock("./api", () => ({ papi: { entitlements } }));
+const { entitlements, requestPlan } = vi.hoisted(
+  () => ({ entitlements: vi.fn(), requestPlan: vi.fn() }));
+vi.mock("./api", () => ({ papi: { entitlements, requestPlan } }));
 
 function session(role: Role = "OWNER"): PlatformSession {
   return {
@@ -39,6 +42,21 @@ function view(days: number | null): Entitlements {
       : { ends_at: "2026-09-01T00:00:00Z", ends_on: "2026-09-01", days_remaining: days },
     features: { intelligence: days !== null, multi_company: false },
     loses_on_expiry: days === null ? [] : ["intelligence"],
+    pending_request: null,
+  };
+}
+
+/** The same view, after the owner has asked. */
+function asked(days: number): Entitlements {
+  return {
+    ...view(days),
+    pending_request: {
+      request_id: "req_1",
+      requested_plan: "intelligence",
+      requested_plan_label: "Commercial Intelligence",
+      requested_at: "2026-08-18T09:00:00Z",
+      status: "REQUESTED",
+    },
   };
 }
 
@@ -94,13 +112,44 @@ describe("TrialNotice", () => {
     expect(screen.getByRole("alert")).toHaveTextContent(/nothing you have synced is deleted/i);
   });
 
-  it("offers no upgrade control, because there is nothing behind one", async () => {
-    // The product has no billing. If that changes, this is the test to change
-    // — and until it does, this is what stops a dead button reaching an owner.
+  it("offers an ask, and does not dress it as a purchase", async () => {
+    // This test used to assert the opposite — no control at all — because a
+    // button that opened a checkout nobody built would have been worse than
+    // none. What changed is that the control no longer implies one: it records
+    // a request. The wording is the whole of the difference, so the wording is
+    // what is pinned.
     await show(view(1));
+    const button = screen.getByRole("button");
+    expect(button).toHaveTextContent(/ask to keep/i);
+    expect(button).not.toHaveTextContent(/upgrade|buy|pay|checkout|card/i);
+  });
+
+  it("shows a salesperson nothing to press", async () => {
+    // The whole notice is already owner-and-manager only; this pins that a
+    // *manager* — who can read it — is not offered a commitment to spend.
+    await show(view(1), "SALES_MANAGER");
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
-    expect(screen.queryByRole("link")).not.toBeInTheDocument();
-    expect(screen.getByRole("alert")).toHaveTextContent(/whoever runs this deployment/i);
+    expect(screen.getByRole("alert")).toHaveTextContent(/your owner can arrange/i);
+  });
+
+  it("replaces the control with what was asked, once it has been", async () => {
+    // An owner who pressed it and still sees a button concludes it did not
+    // work and presses again — which the server refuses, so the screen would
+    // be inviting an error it created.
+    await show(asked(1));
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent(/you asked to move to/i);
+    expect(screen.getByRole("alert")).toHaveTextContent(/Commercial Intelligence/);
+  });
+
+  it("never claims the plan has moved", async () => {
+    // The one thing this screen must not say. Asking is not granting, and a
+    // notice that implied otherwise would contradict the entitlement the very
+    // same payload carries.
+    await show(asked(1));
+    const alert = screen.getByRole("alert");
+    expect(alert).toHaveTextContent(/nothing is charged from these screens/i);
+    expect(alert).not.toHaveTextContent(/you are now on|upgraded|activated/i);
   });
 
   // Two tests rather than two renders in one: `cleanup` runs between tests, not

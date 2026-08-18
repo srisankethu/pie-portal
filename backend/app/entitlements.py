@@ -29,8 +29,18 @@ than succeed silently).
 
 Plans are set by the *operator* (the CLI at the bottom: ``python -m
 app.entitlements set-plan <org> <plan>``), never by a tenant through the API —
-an owner who could set their own plan would not have one. Billing, when it
-exists, will call ``set_plan`` the same way.
+an owner who could set their own plan would not have one.
+
+What an owner *can* do is ask. ``request_plan_change`` records a
+``PlanChangeRequest`` and grants nothing; ``decide_request`` is the only path
+that both reads one and moves a plan, and it goes through ``set_plan`` rather
+than writing the column itself, so there stays exactly one function that changes
+what an organization may use. That split is what let the trial notice grow the
+button its own docstring said it could not have: the ask is self-service, the
+grant is a decision somebody makes.
+
+Billing, when it exists, calls ``decide_request`` — it is the same shape a
+payment confirmation has, and the queue is what it will drain.
 """
 from __future__ import annotations
 
@@ -251,10 +261,122 @@ def describe(session: Session, organization_id: str) -> dict:
         # the client to hardcode: the client would then hold a second copy of
         # the plan map, and the two would disagree the first time a feature moved
         # between tiers.
+        # What this organization has asked for and not yet been given. Present
+        # so the upgrade control can say "requested on the 3rd" rather than
+        # offering the same button again to somebody who already pressed it.
+        "pending_request": _request_view(pending_request(session, organization_id)),
         "loses_on_expiry": (
             sorted(name for name in FEATURES
                    if allows(effective, name) and not allows(licensed, name))
             if trial is not None else []),
+    }
+
+
+# ── asking, which is not granting ────────────────────────────────────────────
+REQUESTED = "REQUESTED"
+APPLIED = "APPLIED"
+DECLINED = "DECLINED"
+
+
+class PlanRequestRefused(ValueError):
+    """The request cannot be recorded. The message is for the person asking."""
+
+
+def pending_request(session: Session,
+                    organization_id: str) -> Optional[models.PlanChangeRequest]:
+    """This organization's outstanding request, or None. Newest first.
+
+    One at a time, and the constraint is deliberate: a second ask while the
+    first is open is the same ask again, and two open rows would make "what did
+    they want" a question with two answers.
+    """
+    return session.scalars(
+        select(models.PlanChangeRequest)
+        .where(models.PlanChangeRequest.organization_id == organization_id,
+               models.PlanChangeRequest.status == REQUESTED)
+        .order_by(models.PlanChangeRequest.requested_at.desc())
+        .limit(1)).first()
+
+
+def request_plan_change(session: Session, organization_id: str, *,
+                        requested_plan: PlanTier, requested_by: str,
+                        note: str = "") -> models.PlanChangeRequest:
+    """Record that an owner wants a different plan. **Grants nothing.**
+
+    The whole point of the split. ``set_plan`` still moves a plan and is still
+    reachable only by an operator, so this can be self-service without an owner
+    being able to hand themselves the top tier — which is the property
+    ``entitlements``'s own docstring says the missing API was protecting.
+
+    Refuses a request for the plan they are already licensed on. Not out of
+    tidiness: an "upgrade" that would change nothing wastes an operator's
+    attention on a queue whose whole value is that every row in it is real.
+    Refuses a second open request for the same reason.
+    """
+    licensed = licensed_plan(session.get(models.Organization, organization_id))
+    if requested_plan is licensed:
+        raise PlanRequestRefused(
+            f"This organization is already on {PLAN_LABEL[licensed]}.")
+    existing = pending_request(session, organization_id)
+    if existing is not None:
+        raise PlanRequestRefused(
+            "A plan change is already requested for this organization and has "
+            "not been decided yet.")
+
+    row = models.PlanChangeRequest(
+        organization_id=organization_id,
+        requested_plan=requested_plan.value,
+        plan_at_request=licensed.value,
+        requested_by=requested_by,
+        requested_at=clock.now(),
+        note=(note or "").strip()[:2000],
+        status=REQUESTED)
+    session.add(row)
+    session.flush()
+    log.info("plan change requested org=%s from=%s to=%s by=%s",
+             organization_id, licensed.value, requested_plan.value, requested_by)
+    return row
+
+
+def decide_request(session: Session, request_id: str, *, apply: bool,
+                   decided_by: str) -> models.PlanChangeRequest:
+    """Apply or decline one request. The only path that both reads and grants.
+
+    Applying calls ``set_plan`` rather than writing ``organizations.plan``
+    itself, so there stays exactly one function that moves a plan and exactly
+    one log line saying it moved.
+
+    The request is stamped and never rewritten: what was asked for stays what
+    was asked for, because the argument six months from now is about that and
+    not about what it became.
+    """
+    row = session.get(models.PlanChangeRequest, request_id)
+    if row is None:
+        raise LookupError(f"No such request {request_id!r}")
+    if row.status != REQUESTED:
+        raise PlanRequestRefused(
+            f"Request {request_id} was already {row.status.lower()}.")
+    if apply:
+        set_plan(session, row.organization_id, PlanTier(row.requested_plan))
+    row.status = APPLIED if apply else DECLINED
+    row.decided_at = clock.now()
+    row.decided_by = decided_by
+    session.flush()
+    log.info("plan change %s request=%s org=%s by=%s",
+             row.status.lower(), request_id, row.organization_id, decided_by)
+    return row
+
+
+def _request_view(row: Optional[models.PlanChangeRequest]) -> Optional[dict]:
+    if row is None:
+        return None
+    return {
+        "request_id": row.request_id,
+        "requested_plan": row.requested_plan,
+        "requested_plan_label": PLAN_LABEL.get(
+            PlanTier(row.requested_plan), row.requested_plan),
+        "requested_at": clock.iso(row.requested_at),
+        "status": row.status,
     }
 
 
@@ -276,19 +398,46 @@ def _main() -> int:
 
     parser = argparse.ArgumentParser(
         prog="python -m app.entitlements",
-        description="Operator plan management (there is deliberately no API for this).")
+        description="Operator plan management. An owner can *ask* over the API; granting stays here, which is the whole of the split.")
     sub = parser.add_subparsers(dest="cmd", required=True)
     p_set = sub.add_parser("set-plan", help="Put an organization on a plan")
     p_set.add_argument("organization_id")
     p_set.add_argument("plan", choices=[p.value for p in PlanTier])
     p_show = sub.add_parser("show", help="Show an organization's entitlements")
     p_show.add_argument("organization_id")
+    sub.add_parser("requests", help="Plan changes owners have asked for")
+    p_apply = sub.add_parser("apply", help="Grant a requested plan change")
+    p_apply.add_argument("request_id")
+    p_decline = sub.add_parser("decline", help="Refuse a requested plan change")
+    p_decline.add_argument("request_id")
     args = parser.parse_args()
 
     with SessionLocal() as session:
         if args.cmd == "set-plan":
             set_plan(session, args.organization_id, PlanTier(args.plan))
             session.commit()
+        elif args.cmd == "requests":
+            rows = session.scalars(
+                select(models.PlanChangeRequest)
+                .where(models.PlanChangeRequest.status == REQUESTED)
+                .order_by(models.PlanChangeRequest.requested_at)).all()
+            if not rows:
+                print("No plan changes are waiting.")
+                return 0
+            for row in rows:
+                print(f"{row.request_id}  {row.organization_id}  "
+                      f"{row.plan_at_request} -> {row.requested_plan}  "
+                      f"asked {clock.iso(row.requested_at)}  by {row.requested_by}")
+                if row.note:
+                    print(f"    note: {row.note}")
+            return 0
+        elif args.cmd in ("apply", "decline"):
+            row = decide_request(session, args.request_id,
+                                 apply=args.cmd == "apply", decided_by="operator")
+            session.commit()
+            print(f"{row.status} — {row.organization_id} is now on "
+                  f"{licensed_plan(session.get(models.Organization, row.organization_id)).value}")
+            return 0
         print(describe(session, args.organization_id))
     return 0
 

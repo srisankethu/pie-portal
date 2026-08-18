@@ -288,3 +288,125 @@ def test_the_entitlements_read_says_what_a_screen_needs(client, monkeypatch):
     assert body["effective_plan"] == "free"
     assert body["trial"] is None
     assert body["features"] == {"intelligence": False, "multi_company": False}
+
+
+# ── asking, which is not granting ────────────────────────────────────────────
+# The platform sold three tiers and offered no way to buy the upper two:
+# `set_plan` is an operator command with deliberately no API, and the trial
+# notice said so out loud — "a button that opened a checkout nobody built would
+# be worse than no button". Splitting the ask from the grant is what lets the
+# button exist. The first test is the one that matters.
+def test_asking_for_a_plan_does_not_grant_it(session, orgs, monkeypatch):
+    """The whole property. If this ever passes for the wrong reason, an owner
+    can hand themselves the top tier, which is what the missing API prevented."""
+    _free_default(monkeypatch)
+    entitlements.request_plan_change(
+        session, ORG, requested_plan=PlanTier.PLATFORM, requested_by="usr_x")
+
+    assert entitlements.effective_plan(session, ORG) is PlanTier.FREE
+    assert entitlements.licensed_plan(session.get(models.Organization, ORG)) \
+        is PlanTier.FREE
+
+
+def test_a_request_is_refused_for_the_plan_they_are_already_on(session, orgs,
+                                                               monkeypatch):
+    """An 'upgrade' that changes nothing wastes the attention of a queue whose
+    whole value is that every row in it is real."""
+    _free_default(monkeypatch)
+    with pytest.raises(entitlements.PlanRequestRefused):
+        entitlements.request_plan_change(
+            session, ORG, requested_plan=PlanTier.FREE, requested_by="usr_x")
+
+
+def test_a_second_open_request_is_refused(session, orgs, monkeypatch):
+    _free_default(monkeypatch)
+    entitlements.request_plan_change(
+        session, ORG, requested_plan=PlanTier.INTELLIGENCE, requested_by="usr_x")
+    with pytest.raises(entitlements.PlanRequestRefused):
+        entitlements.request_plan_change(
+            session, ORG, requested_plan=PlanTier.PLATFORM, requested_by="usr_x")
+
+
+def test_applying_a_request_is_the_only_thing_that_moves_the_plan(session, orgs,
+                                                                  monkeypatch):
+    _free_default(monkeypatch)
+    row = entitlements.request_plan_change(
+        session, ORG, requested_plan=PlanTier.INTELLIGENCE, requested_by="usr_x")
+
+    entitlements.decide_request(session, row.request_id, apply=True,
+                                decided_by="operator")
+
+    assert entitlements.effective_plan(session, ORG) is PlanTier.INTELLIGENCE
+    assert row.status == entitlements.APPLIED
+    assert row.decided_by == "operator" and row.decided_at is not None
+    # What was asked for stays what was asked for.
+    assert row.requested_plan == PlanTier.INTELLIGENCE.value
+    assert row.plan_at_request == PlanTier.FREE.value
+
+
+def test_declining_leaves_the_plan_alone_and_closes_the_request(session, orgs,
+                                                                monkeypatch):
+    _free_default(monkeypatch)
+    row = entitlements.request_plan_change(
+        session, ORG, requested_plan=PlanTier.PLATFORM, requested_by="usr_x")
+
+    entitlements.decide_request(session, row.request_id, apply=False,
+                                decided_by="operator")
+
+    assert entitlements.effective_plan(session, ORG) is PlanTier.FREE
+    assert row.status == entitlements.DECLINED
+    assert entitlements.pending_request(session, ORG) is None
+
+
+def test_a_decided_request_cannot_be_decided_again(session, orgs, monkeypatch):
+    """Never back to REQUESTED: a second ask is a second row."""
+    _free_default(monkeypatch)
+    row = entitlements.request_plan_change(
+        session, ORG, requested_plan=PlanTier.INTELLIGENCE, requested_by="usr_x")
+    entitlements.decide_request(session, row.request_id, apply=True,
+                                decided_by="operator")
+    with pytest.raises(entitlements.PlanRequestRefused):
+        entitlements.decide_request(session, row.request_id, apply=False,
+                                    decided_by="operator")
+
+
+# ── over HTTP ────────────────────────────────────────────────────────────────
+def test_an_owner_can_ask_and_the_answer_says_they_asked(client, monkeypatch):
+    tc, _ = client
+    _free_default(monkeypatch)
+    hdr = _hdr(tc)
+
+    assert tc.get("/api/v1/entitlements", headers=hdr).json()["pending_request"] is None
+
+    r = tc.post("/api/v1/entitlements",
+                json={"plan": "intelligence", "note": "three companies"},
+                headers=hdr)
+    assert r.status_code == 201, r.text
+    body = r.json()
+    # Still free — asking is not granting, over HTTP as much as anywhere.
+    assert body["plan"] == "free"
+    assert body["pending_request"]["requested_plan"] == "intelligence"
+    # And the button has something to render instead of offering itself again.
+    assert body["pending_request"]["requested_at"]
+
+
+def test_a_manager_cannot_commit_the_business_to_a_subscription(client,
+                                                                monkeypatch):
+    tc, _ = client
+    _free_default(monkeypatch)
+    r = tc.post("/api/v1/entitlements", json={"plan": "intelligence"},
+                headers=_hdr(tc, "m.rao@pie.example"))
+    assert r.status_code == 403
+
+
+def test_a_typo_is_refused_rather_than_recorded_as_a_request_for_free(
+        client, monkeypatch):
+    """`parse_plan` degrades an unknown value to free and logs, which is right
+    where a *stored* plan is resolved and wrong here — it would file a request
+    nobody made."""
+    tc, _ = client
+    _free_default(monkeypatch)
+    r = tc.post("/api/v1/entitlements", json={"plan": "platfrom"},
+                headers=_hdr(tc))
+    assert r.status_code == 400
+    assert "platfrom" in r.json()["detail"]

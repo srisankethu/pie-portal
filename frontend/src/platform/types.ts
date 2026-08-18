@@ -77,6 +77,17 @@ export interface Entitlements {
   /** Feature keys in force only because of the trial — what expiry costs.
    *  Derived from the server's plan map so the client holds no second copy. */
   loses_on_expiry: string[];
+  /** What this organization has asked for and not yet been given. `null` when
+   *  nothing is outstanding — the upgrade control keys off this so an owner who
+   *  already pressed it is shown what they asked for rather than the button
+   *  again. */
+  pending_request: {
+    request_id: string;
+    requested_plan: string;
+    requested_plan_label: string;
+    requested_at: string;
+    status: string;
+  } | null;
 }
 
 /** One thing a new organization has or has not done.

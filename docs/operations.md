@@ -182,6 +182,58 @@ cleanly when no key is set.
 
 ---
 
+## The two shapes this deploys in
+
+There are two, they need different settings, and until now only one of them was
+written down anywhere. The defaults describe the **installed** shape, which is
+correct — an existing deployment pulling new code must not change what it does —
+but it means the hosted shape is four settings you have to know about, and
+getting one wrong is silent.
+
+|  | **Installed** (one distributor, an operator on the box) | **Hosted** (strangers sign themselves up) |
+|---|---|---|
+| `DEFAULT_PLAN` | `platform` *(default)* — the one tenant has every feature | `free` — a tenant gets what it is licensed for |
+| `SELF_SERVE_SIGNUP` | `0` *(default)* — accounts are made by the operator | `1` |
+| `PUBLIC_DEMO_ORG_ID` / `PUBLIC_DEMO_EMAIL` | unset — no public door | set, pointing at a tenant built by `python -m app.demo --org … --email …` |
+| The landing page's pricing section | Not applicable. Three tiers and locked rates describe a thing this shape does not do — remove the section or do not serve the landing publicly. | Applicable, and see the plan queue below. |
+
+**The failure to avoid is the mixture**: a public landing selling three tiers on
+top of `DEFAULT_PLAN=platform`, where every organization silently holds the top
+tier and nothing the pricing section says is enforced by anything. Nothing in
+the code can detect that combination — the app cannot know whether its landing
+page is reachable — so it is written here instead.
+
+### Plans, and how one actually changes
+
+There is no billing in this codebase. `set_plan` moves a plan and is reachable
+only from the operator CLI, on purpose: an owner who could set their own plan
+would not have one.
+
+What an owner *can* do is ask. The trial notice carries a control that records a
+`PlanChangeRequest` and grants nothing, so the ask is self-service and the grant
+stays a decision somebody makes. Draining that queue is an operator job:
+
+```bash
+cd backend
+python3 -m app.entitlements requests          # what has been asked for
+python3 -m app.entitlements apply <request>   # grant it, and stamp the row
+python3 -m app.entitlements decline <request> # refuse it, and stamp the row
+```
+
+`apply` calls `set_plan`, so there stays exactly one function that changes what
+an organization may use and exactly one log line saying it changed. When billing
+does exist it drains the same queue through the same `decide_request` — the
+payment confirmation takes the operator's place, and nothing above this line
+changes.
+
+**Watch the queue.** Nothing emails anybody yet: a request sits in the table
+until someone runs the command. An owner whose trial expires while their request
+is unread has been told the platform is listening and found that it is not, which
+is worse than the notice that used to say plainly that plans were set by the
+operator.
+
+---
+
 ## Production deployment
 
 ### What `APP_ENV=production` changes

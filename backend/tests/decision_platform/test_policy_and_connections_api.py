@@ -436,13 +436,50 @@ def test_a_salesperson_may_not_see_them_at_all(client):
 
 def test_the_required_scopes_are_published_with_what_each_one_buys(client):
     """A half-granted scope authenticates and then returns nothing — the token
-    works, the endpoint 401s, and the sync reports zero rows."""
-    r = client.get("/api/v1/connections", headers=_hdr(client, OWNER)).json()
-    scopes = {s["scope"]: s for s in r["required_scopes"]}
+    works, the endpoint 401s, and the sync reports zero rows.
+
+    Published on the catalog entry for Zoho rather than beside the connection
+    list, because the screen that names the access requirements is the screen
+    that picks the system. Read the connectors test below for what that buys.
+    """
+    r = client.get("/api/v1/connections/catalog", headers=_hdr(client, OWNER)).json()
+    zoho = next(c for c in r["connectors"] if c["key"] == "zoho")
+    scopes = {p["name"]: p for p in zoho["permissions"]}
     assert "ZohoBooks.bills.READ" in scopes
     assert "margin" in scopes["ZohoBooks.bills.READ"]["why"]
     assert scopes["ZohoBooks.users.READ"]["required"] is False
-    assert "ZohoBooks.bills.READ" in r["scope_string"]
+    assert "ZohoBooks.bills.READ" in zoho["permission_string"]
+
+
+def test_every_system_publishes_its_own_access_requirements(client):
+    """The defect this pins: the screen showed Zoho's ten scope strings under
+    "Scopes this platform needs" whichever connector the tabs had selected, so
+    an owner connecting NetSuite was told to grant ``ZohoBooks.*.READ`` — names
+    that do not exist in NetSuite — and told nothing about the ones that do.
+
+    So: every system in the catalog carries its own list, no two lists are the
+    same, and no ERP's list mentions a Zoho scope."""
+    r = client.get("/api/v1/connections/catalog", headers=_hdr(client, OWNER)).json()
+    by_key = {c["key"]: c for c in r["connectors"]}
+    assert "zoho" in by_key, "Zoho is one of the systems, not a separate panel"
+
+    seen: dict[str, str] = {}
+    for key, entry in by_key.items():
+        names = [p["name"] for p in entry["permissions"]]
+        assert names, f"{key} publishes no access requirements"
+        assert entry["permission_note"], f"{key} does not say where to grant them"
+        assert any(p["required"] for p in entry["permissions"]), key
+        if key != "zoho":
+            assert not [n for n in names if "ZohoBooks." in n], key
+        fingerprint = "|".join(sorted(names))
+        assert fingerprint not in seen, (
+            f"{key} publishes the same list as {seen.get(fingerprint)}")
+        seen[fingerprint] = key
+
+    # Only Zoho takes its grants as one pasted string; the rest are clicked in
+    # an admin console, and an empty box to copy would be worse than none.
+    assert by_key["zoho"]["permission_string"]
+    assert not by_key["netsuite"]["permission_string"]
 
 
 def test_the_screen_says_that_connections_pool_into_one_analysis(client):

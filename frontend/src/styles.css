@@ -972,6 +972,12 @@ textarea.input { min-height: 160px; resize: vertical; font-family: ui-monospace,
   font-size: 11.5px; word-break: break-all; display: flex; gap: 10px; align-items: center;
 }
 .cx-scopestring code { flex: 1 1 auto; }
+/* The access list closes the add panel it belongs to. Ruled off rather than
+   given its own card: it is one half of a single decision — which system, and
+   what that system must let this read — and two cards is how the two came to
+   describe different connectors. */
+.cx-access { margin-top: 18px; border-top: 1px solid var(--color-divider); }
+.cx-access .section-h { margin-top: 14px; }
 .cx-empty { padding: 16px; font-size: 13px; color: var(--color-neutral-700); }
 
 /* ── sync status ────────────────────────────────────────────────────────────

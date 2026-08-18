@@ -74,6 +74,43 @@ Every connection is checked at connect time and can be re-checked from its
 card; rotation replaces the whole stored sign-in in one operation for every
 company using it (`POST /api/v1/connections/{id}/rotate-erp`).
 
+## What each sign-in must already be granted
+
+A half-granted sign-in is the most common way a connection authenticates and
+then returns nothing: the credential works, one endpoint refuses, and the sync
+reports zero rows of that kind with nothing obviously wrong. So every system
+declares its own access requirements, and the **Add a company** panel lists
+them under the connector the tabs have selected — the same panel, so the two
+have nowhere to disagree.
+
+They are declared as `Permission(name, why, required, reads)` on the connector's
+own spec, and Zoho's scope list is the same type in `ingestion/connections.py`
+(Zoho is a row in the catalog, not a separate panel — that separation is what
+let the screen show `ZohoBooks.*.READ` while NetSuite was selected). `name` is
+what that system's admin console calls the grant, because that is what the
+person granting it is reading:
+
+| Connector | Where it is granted | Shape |
+|---|---|---|
+| `zoho` | Zoho API console, scope field | Ten `ZohoBooks.*.READ` scopes, pasted as one string |
+| `netsuite` | Setup → Users/Roles → Manage Roles, on the token's role | Setup and Reports permissions plus View on each list/transaction |
+| `dynamics365` | Entra ID app registration + permission sets on the app's user | `API.ReadWrite.All` with admin consent (BC publishes no read-only variant), then read on each entity |
+| `acumatica` | User Security → Access Rights by Role | Endpoint access plus View Only per screen |
+| `prophet21` | P21 user API flag + the middleware's exposed views | Per OData view |
+| `sagex3` | Syracuse role | SData access plus read per X3 table |
+| `sage100` | Library Master → Role Maintenance | SData access plus inquiry per module |
+
+`reads` names the sync stages a grant feeds, and that is what keeps the lists
+honest: `test_connector_permissions` asserts the stages a connector's spec asks
+for are exactly the `list_*` stages its source implements, in both directions.
+A stage read but never asked for is a grant *nobody can ever have given*; a
+stage asked for but never read is access requested for no reason. Zoho gets the
+same pinning from `test_every_scope_the_pull_uses_is_declared`.
+
+Only Zoho takes its grants as one pasteable string; every ERP in the registry
+is clicked in an admin console, so their entries carry no `permission_string`
+and the screen shows no copy box for them.
+
 ## What each connector does not read yet, said plainly
 
 Gaps degrade visibly — screens say UNKNOWN or stay empty, and the sync report
@@ -95,8 +132,9 @@ sync report, exactly as the Zoho pull refuses them.
 ## Adding connector number seven
 
 Write one module in `backend/app/ingestion/erp/` that registers a
-`ConnectorSpec` (fields, company term, source factory), import it from
-`erp/__init__.py`, and add a display row to `domain/origin.CONNECTORS`.
+`ConnectorSpec` (fields, company term, source factory, and the permissions its
+sign-in needs), import it from `erp/__init__.py`, and add a display row to
+`domain/origin.CONNECTORS`.
 The catalog endpoint, the connect form, validation, encryption, rotation,
 checks, sync dispatch and provenance all follow from the spec — nothing else
 branches on the key. Field-level truth to keep: translators never invent a

@@ -641,7 +641,7 @@ def test_every_scope_the_pull_uses_is_declared():
     from app.ingestion.connections import REQUIRED_SCOPES
     from app.ingestion.zoho_client import SCOPE_FOR_PATH
 
-    declared = {s for s, _, _ in REQUIRED_SCOPES}
+    declared = {p.name for p in REQUIRED_SCOPES}
     used = set(SCOPE_FOR_PATH.values())
     assert used == declared, (
         f"used but never requested: {sorted(used - declared)}; "

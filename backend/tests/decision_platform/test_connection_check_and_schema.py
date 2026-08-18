@@ -149,8 +149,9 @@ def _reached(monkeypatch, scopes=None):
             {"organization_id": "60036630626", "name": "4U PRECISION"},
             {"organization_id": "60036630999", "name": "SLS ENGINEERS"},
         ]})
-    granted = [{"scope": s, "endpoint": s, "granted": True, "detail": None}
-               for s, _, _ in cr.conn.REQUIRED_SCOPES]
+    granted = [{"scope": p.name, "endpoint": p.name, "granted": True,
+                "detail": None}
+               for p in cr.conn.REQUIRED_SCOPES]
     monkeypatch.setattr(cr.ZohoApiSource, "probe_scopes",
                         lambda self: scopes if scopes is not None else granted)
 

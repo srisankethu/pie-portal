@@ -27,7 +27,7 @@ from typing import Any, Iterable, Iterator, Optional
 from ..errors import SourceAuthError, SourceScopeError
 from ..source import SkipPredicate
 from .base import (ConnectorSpec, CredentialMaterial, DocumentTally, Field,
-                   iso_date, register)
+                   Permission, iso_date, register)
 from .transport import RestTransport
 
 SYSTEM = "dynamics365"
@@ -389,6 +389,46 @@ SPEC = register(ConnectorSpec(
         "registers the app, grants it the Dynamics 365 Business Central API "
         "application permission with admin consent, and creates one client "
         "secret. The platform only ever issues reads."),
+    permission_note=(
+        "Two places, and both are needed: the application permission is "
+        "granted with admin consent on the Entra ID app registration, and the "
+        "entity access comes from the permission sets on the app's user inside "
+        "each Business Central company (Microsoft Entra Applications → the "
+        "app → Permission sets)."),
+    permissions=(
+        Permission("API.ReadWrite.All (application permission, admin consent)",
+                   "The only application permission Business Central publishes "
+                   "for its standard API — there is no read-only variant. This "
+                   "platform never writes; the grant is wider than the use."),
+        Permission("D365 BASIC (permission set on the app's user)",
+                   "Lets the app sign in to the company at all. Without it the "
+                   "token is valid and every company answers 401."),
+        Permission("Read on customers",
+                   "Customers — who was sold to.", reads=("contacts",)),
+        Permission("Read on items",
+                   "Items — the product master.", reads=("items",)),
+        Permission("Read on salesInvoices (with salesInvoiceLines)",
+                   "Invoices — what was sold, and for how much. The lines are "
+                   "part of the same read; a header-only grant imports totals "
+                   "with nothing under them.",
+                   reads=("invoices",)),
+        Permission("Read on purchaseInvoices (with purchaseInvoiceLines)",
+                   "Purchase invoices — what it cost. Without this there is no "
+                   "margin anywhere in the platform, only revenue.",
+                   reads=("bills",)),
+        Permission("Read on vendors",
+                   "Suppliers. Optional: purchase invoices still land without "
+                   "it, with the supplier known only by its GUID.",
+                   required=False, reads=("vendors",)),
+        Permission("Read on salesOrders",
+                   "Sales orders — demand promised but not yet invoiced. "
+                   "Optional.",
+                   required=False, reads=("sales_orders",)),
+        Permission("Read on purchaseOrders",
+                   "Purchase orders — what is on the way from suppliers. "
+                   "Optional: feeds the Supply screen.",
+                   required=False, reads=("purchase_orders",)),
+    ),
     build_source=_build_source,
     discover=_discover,
 ))

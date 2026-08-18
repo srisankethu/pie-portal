@@ -47,6 +47,57 @@ class Field:
                 "help": self.help}
 
 
+#: The canonical sync stages a permission can feed. A ``Permission`` naming a
+#: stage claims the source reads it, and ``test_connector_permissions`` holds
+#: that claim against the source's own ``list_*`` methods in both directions —
+#: the pinning ``REQUIRED_SCOPES`` has for Zoho, for the same reason: a list
+#: nobody can be held to goes stale quietly, and the symptom is a grant an
+#: owner was never told to ask for.
+READ_STAGES: tuple[str, ...] = (
+    "contacts", "vendors", "items", "invoices", "bills",
+    "customer_payments", "vendor_payments", "sales_orders", "purchase_orders",
+    "users",
+)
+
+
+@dataclass(frozen=True)
+class Permission:
+    """One grant the sign-in must already hold in the source system.
+
+    Named the way that system's own admin console names it — a Zoho scope
+    string, a NetSuite role permission, a Business Central application
+    permission — because the person granting it is reading that console, not
+    this codebase. ``why`` says what it buys *here*, in the platform's terms.
+
+    ``required`` separates two different days: without a required grant no sync
+    runs at all, while without an optional one a screen stays empty and nothing
+    else changes.
+
+    ``reads`` names the sync stages the grant feeds — empty for one that gates
+    the sign-in itself (a REST endpoint, a token-based login) rather than any
+    one kind of record, and more than one where a system gates several stages
+    behind a single grant (Zoho reads customers *and* suppliers from
+    ``ZohoBooks.contacts.READ``).
+    """
+
+    name: str
+    why: str
+    required: bool = True
+    reads: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        unknown = [r for r in self.reads if r not in READ_STAGES]
+        if unknown:
+            raise ValueError(
+                f"{self.name}: {', '.join(unknown)} "
+                f"{'is' if len(unknown) == 1 else 'are'} not a sync stage "
+                f"(one of {', '.join(READ_STAGES)})")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"name": self.name, "why": self.why,
+                "required": self.required, "reads": list(self.reads)}
+
+
 @dataclass(frozen=True)
 class ConnectorSpec:
     """One ERP the platform can read, and everything generic code needs to
@@ -74,6 +125,19 @@ class ConnectorSpec:
     setup_note: str
     #: ``(material, since=None) -> source`` — a live source for one company.
     build_source: Callable[..., Any]
+    #: What the sign-in must be granted in that system before it can read
+    #: anything, and what each grant buys. Declared per connector because the
+    #: answer *is* per connector: a screen that shows one system's list while
+    #: another system is selected is telling an owner to grant something that
+    #: does not exist where they are looking.
+    permissions: tuple[Permission, ...] = ()
+    #: One sentence on where those grants are made, in that console's own
+    #: navigation. Rendered above the list.
+    permission_note: str = ""
+    #: The grants as one pasteable string, for the systems that take one (a
+    #: Zoho scope field). Empty where access is clicked rather than typed,
+    #: which is every ERP in the registry.
+    permission_string: str = ""
     #: Optionally ``(material) -> [{"id", "name"}]``: the companies a
     #: credential can see, so the connect flow offers a picker instead of
     #: asking somebody to find a GUID. None for systems whose sign-in is

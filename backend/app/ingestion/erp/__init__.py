@@ -14,6 +14,6 @@ A module not imported here is a connector that does not exist.
 from __future__ import annotations
 
 from . import acumatica, dynamics365, netsuite, prophet21, sage  # noqa: F401
-from .base import (CredentialMaterial, ConnectorSpec, Field,  # noqa: F401
-                   UnknownConnectorError, catalog, get_spec,
-                   split_credential_inputs, split_inputs)
+from .base import (READ_STAGES, CredentialMaterial, ConnectorSpec,  # noqa: F401
+                   Field, Permission, UnknownConnectorError, catalog,
+                   get_spec, split_credential_inputs, split_inputs)

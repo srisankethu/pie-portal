@@ -27,7 +27,7 @@ function entry(over: Partial<ConnectorCatalogEntry>): ConnectorCatalogEntry {
     setup_note: "", credential_fields: [], connection_fields: [],
     external_id_field: "company_id", can_discover: false,
     permissions: [], permission_note: "", permission_string: "",
-    permission_string_minimum: "",
+    permission_string_minimum: "", can_authorize: false,
     ...over,
   };
 }

@@ -296,6 +296,70 @@ class ZohoConnection(Base):
     credential: Mapped[Optional["ZohoCredential"]] = relationship(lazy="joined")
 
 
+class OAuthState(Base):
+    """One in-flight authorization, from the redirect out to the redirect back.
+
+    A row rather than a key in ``Organization.config``, and the difference is
+    not tidiness — it is what makes the flow work at all.
+
+    The previous implementation stored these under the organization. That had
+    two consequences and both were fatal. The write was
+    ``org.config["oauth_states"][hash] = {...}`` on a plain ``JSON`` column, an
+    in-place mutation SQLAlchemy does not mark dirty, so it was flushed as
+    nothing and every callback failed state validation. And storing it *under*
+    the organization meant the callback could only find the state if it already
+    knew which organization — so it demanded a bearer token, on an endpoint the
+    browser reaches by following Zoho's redirect, which carries no such header.
+    The flow 401'd before its handler ran.
+
+    Keyed by the hash, the state is findable by the one value the redirect
+    actually carries. That is what lets the callback be public and still know
+    exactly whose authorization it is completing.
+
+    **The token itself is never stored.** Only ``sha256`` of it, for the reason
+    a password is not stored: this table is readable by anything that reaches
+    the database, and a live state token is a usable half of an authorization.
+
+    Single-use, and enforced by a column rather than by deletion —
+    ``consumed_at`` set means spent, and a second callback carrying the same
+    state is refused rather than silently re-run. Deleting instead would make a
+    replay indistinguishable from a state that had expired and been swept.
+    """
+
+    __tablename__ = "oauth_states"
+
+    #: ``sha256`` of the state token. Never the token.
+    state_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    #: Which platform organization asked. NOT NULL: today the flow starts from
+    #: an authenticated owner adding a company to a tenant that already exists.
+    #: An install-first signup — where the authorization *creates* the tenant —
+    #: is the case that would relax this, and it is a migration when it arrives
+    #: rather than a nullable column nothing writes.
+    organization_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("organizations.organization_id"), index=True)
+    #: Which system is being authorized. Zoho is the only one today; the column
+    #: is here because the table is named for the protocol, not the vendor, and
+    #: a second OAuth connector must not need a second table.
+    connector: Mapped[str] = mapped_column(String(32), default="zoho",
+                                           server_default="zoho")
+    #: The data centre chosen at the start. Carried on the row because the
+    #: callback needs it to exchange the code, and a redirect cannot be trusted
+    #: to hand it back — a ``.com`` user's code redeemed against ``.in`` fails
+    #: in a way nobody can diagnose.
+    accounts_base: Mapped[str] = mapped_column(String(255))
+    api_base: Mapped[str] = mapped_column(String(255))
+    #: Set once the callback has spent it. A second use is refused.
+    consumed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    #: What the callback hands the browser so an authenticated request can claim
+    #: the pending credential. Also a hash, for the reason the state is.
+    handoff_hash: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    #: The credential the exchange created, claimed by the handoff.
+    credential_id: Mapped[Optional[str]] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    #: Indexed because the only query that is not by key is the sweep.
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
 class IntelligenceTrial(Base):
     """One set of books' free month of Commercial Intelligence — ever.
 

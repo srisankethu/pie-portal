@@ -1087,6 +1087,10 @@ export interface ConnectorCatalogEntry {
    *  beside the full set, never instead of it: a scope ungranted does not fail
    *  loudly, it fails quietly and later. Empty wherever `permission_string` is. */
   permission_string_minimum: string;
+  /** Whether this deployment can run the customer-facing authorization for this
+   *  system — false where no application is registered, so the screen omits the
+   *  button rather than offering one that cannot complete. */
+  can_authorize: boolean;
 }
 
 /** One grant a connector's sign-in needs, and what the platform loses without it. */

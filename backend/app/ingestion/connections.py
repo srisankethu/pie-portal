@@ -225,6 +225,33 @@ def credentials_for(session: Session,
         accounts_base=connection.accounts_base, api_base=connection.api_base)
 
 
+def companies_visible_to(credential: models.ZohoCredential) -> list[dict]:
+    """Every Zoho company this grant can reach, before any of them is connected.
+
+    The counterpart of ``discover_erp_companies`` for Zoho, and the step an
+    authorization needs between "the sign-in worked" and "which books did you
+    mean": one refresh token reaches every company its user can see, which is
+    the whole reason a credential is separate from a connection.
+
+    Reads it through ``ping``, which already asks ``/organizations`` and already
+    shapes the answer — the alternative was a second call to the same endpoint,
+    parsed a second way, which is how two lists of one thing start disagreeing.
+    ``ping`` wants an organization id to say whether *that* one was found; there
+    is none yet, so it is passed empty and only ``visible_organizations`` is
+    read. Nothing is persisted.
+    """
+    creds = ZohoCredentials(
+        organization_id="",
+        client_id=credential.client_id,
+        client_secret=crypto.decrypt(credential.client_secret_encrypted),
+        refresh_token=crypto.decrypt(credential.refresh_token_encrypted),
+        accounts_base=credential.accounts_base, api_base=credential.api_base)
+    from .zoho_client import ZohoApiSource
+
+    return list(ZohoApiSource(credentials=creds).ping().get(
+        "visible_organizations") or [])
+
+
 def get_zoho_credentials(session: Session, organization_id: str,
                          connection_id: Optional[str] = None
                          ) -> Optional[ZohoCredentials]:

@@ -424,23 +424,21 @@ def credential_organizations(
     all that is ever needed and the other two connections cost nothing but a
     company id.
     """
-    from ..ingestion.connections import CredentialNotUsable, get_credential
-    from ..ingestion.zoho_client import ZohoApiSource, ZohoAuthError, ZohoCredentials
-    from .. import crypto
+    from ..ingestion.connections import (CredentialNotUsable,
+                                          companies_visible_to, get_credential)
+    from ..ingestion.zoho_client import ZohoAuthError
 
     try:
         cred = get_credential(session, principal.organization_id, credential_id)
     except CredentialNotUsable as e:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e)) from e
 
-    creds = ZohoCredentials(
-        organization_id="",                    # ping lists all of them
-        client_id=cred.client_id,
-        client_secret=crypto.decrypt(cred.client_secret_encrypted),
-        refresh_token=crypto.decrypt(cred.refresh_token_encrypted),
-        accounts_base=cred.accounts_base, api_base=cred.api_base)
+    # Resolved through ``ingestion`` rather than assembled here. Building
+    # ``ZohoCredentials`` and pinging is a Zoho concern, and a router that does
+    # it holds a second copy of how a credential becomes a client — the copy
+    # that keeps working after the first one changes shape (CLAUDE.md §3).
     try:
-        info = ZohoApiSource(credentials=creds).ping()
+        visible = companies_visible_to(cred)
     except ZohoAuthError as e:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY,
                             f"Zoho rejected this credential: {e}") from e
@@ -451,7 +449,7 @@ def credential_organizations(
         "credential_id": credential_id,
         "visible_organizations": [
             {**o, "already_connected": o["organization_id"] in connected}
-            for o in info.get("visible_organizations", [])
+            for o in visible
         ],
     }
 

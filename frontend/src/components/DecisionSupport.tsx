@@ -2,6 +2,7 @@ import Button from "@mui/material/Button";
 import { useEffect, useState } from "react";
 import type { Line } from "../types";
 import { productRef } from "../rel";
+import { authInit } from "../authFetch";
 
 /**
  * Commercial decision support for a quote line, sourced from the Decision
@@ -106,15 +107,14 @@ export function DecisionSupport({ customer, line, token }: {
     setLoading(true);
     setError(null);
     setDecision(null);
-    fetch("/api/v1/quote-support", {
+    fetch("/api/v1/quote-support", authInit({
       method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
       body: JSON.stringify({
         customer,
         products: [productRef(line)],
         proposed_price: line.quoted,
       }),
-    })
+    }, token))
       .then(async (r) => {
         if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
         return r.json();
@@ -139,11 +139,10 @@ export function DecisionSupport({ customer, line, token }: {
   async function act(action: "ACT" | "OVERRIDE" | "DISMISS", label: string, reason?: string) {
     if (!data?.decision_id) return;
     try {
-      const r = await fetch(`/api/v1/decisions/${data.decision_id}/action`, {
+      const r = await fetch(`/api/v1/decisions/${data.decision_id}/action`, authInit({
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({ action, note: reason, reason }),
-      });
+      }, token));
       if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
       setDecision(label);
       setModifying(null);

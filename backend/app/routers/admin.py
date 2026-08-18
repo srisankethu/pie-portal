@@ -22,14 +22,15 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status as http
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status as http
 from pydantic import BaseModel, Field, create_model, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import clock, approvals
-from ..authz import (Principal, current_principal, issue_token,
-                     require_manager_or_owner, require_owner)
+from ..authz import (Principal, current_principal, open_session,
+                     require_manager_or_owner, require_owner,
+                     revoke_all_sessions, set_session_cookie)
 from ..commercial import policy as commercial_policy
 from ..db import get_session
 from ..domain import models
@@ -228,6 +229,8 @@ class ChangePassword(BaseModel):
 @router.post("/me/password")
 def change_own_password(
     body: ChangePassword,
+    request: Request,
+    response: Response,
     principal: Principal = Depends(current_principal),
     session: Session = Depends(get_session),
 ) -> dict:
@@ -249,11 +252,22 @@ def change_own_password(
     user.must_change_password = False
     user.password_changed_at = clock.now()
     session.flush()
-    # A fresh token, because the line above just retired the one this request
+    # End every session this account had, this one included. `password_changed_at`
+    # already retires their tokens, but that check lives in one function and only
+    # covers tokens; revoking the rows is the same intent written where the
+    # session list and every future transport can see it. This is what makes
+    # "change my password" the answer to "someone else is signed in as me".
+    revoke_all_sessions(session, user.user_id)
+    # A fresh session, because the lines above just retired the one this request
     # arrived with. Without handing one back, changing your own password would
     # sign you out — and on the forced-change path that is a loop: the only thing
     # the old token could still reach was the change it had already made.
-    return {"ok": True, "token": issue_token(user.user_id, user.organization_id)}
+    token, _row = open_session(session, user, request.headers.get("user-agent"))
+    # Committed before the token leaves, for the reason `auth.login` gives: a
+    # token naming an uncommitted row is a credential that does not work.
+    session.commit()
+    set_session_cookie(response, token)
+    return {"ok": True, "token": token}
 
 
 # ── approval policy ─────────────────────────────────────────────────────────

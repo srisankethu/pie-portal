@@ -23,7 +23,6 @@ import { useState, type ReactNode } from "react";
 import AppBar from "@mui/material/AppBar";
 import Badge from "@mui/material/Badge";
 import Box from "@mui/material/Box";
-import Button from "@mui/material/Button";
 import Divider from "@mui/material/Divider";
 import Drawer from "@mui/material/Drawer";
 import IconButton from "@mui/material/IconButton";
@@ -75,6 +74,7 @@ import InsightsOutlined from "@mui/icons-material/InsightsOutlined";
 
 import { Link as RouterLink } from "react-router-dom";
 
+import AccountMenu from "./AccountMenu";
 import { pathFor, type Screen } from "./route";
 
 export const DRAWER_WIDTH = 232;
@@ -273,18 +273,9 @@ export default function AppShell({
           <Box sx={{ flex: 1 }} />
           {/* No role switcher. A user has exactly one role, it comes from their
               account, and a control that swapped it would be a control that lets
-              anyone read the cost of every line in the book. */}
-          <Box sx={{ textAlign: "right", lineHeight: 1.2, display: { xs: "none", sm: "block" } }}>
-            <Typography sx={{ fontFamily: "var(--font-heading)", fontWeight: 600, fontSize: 13 }}>
-              {userName}
-            </Typography>
-            <Typography variant="caption" color="text.secondary">
-              {roleLabel}
-            </Typography>
-          </Box>
-          <Button size="small" variant="outlined" color="inherit" onClick={onSignOut}>
-            Sign out
-          </Button>
+              anyone read the cost of every line in the book. The role is shown
+              in there, and only shown. */}
+          <AccountMenu userName={userName} roleLabel={roleLabel} onSignOut={onSignOut} />
         </Toolbar>
       </AppBar>
 

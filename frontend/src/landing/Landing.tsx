@@ -55,6 +55,30 @@ import "./landing.css";
  * no test fails. Check a claim against the module that would implement it
  * before putting it on this page.
  *
+ * Audited again in Aug 2026, after four changes to the product that this page
+ * had not caught up with. What moved, and against what:
+ *
+ *   - The hero led with three capabilities. It leads with the look-back now,
+ *     because `signals/retrospective.py` makes that an offer rather than a
+ *     description — it runs on the history the sync just pulled.
+ *   - "See what it would have caught" promised below-floor quotes on day one
+ *     and could not deliver them: replaying a floor needs `QuoteDecision` rows,
+ *     and a book that connected this morning has none. The decline half runs on
+ *     synced history alone and is true from the first sync, so the claim is now
+ *     split by when each half becomes true.
+ *   - "Four steps, and PIE tracks which are done" rendered three. `onboarding`
+ *     does have four, but they are the setup checklist and not this narrative —
+ *     the heading was counting one list while the page showed the other.
+ *   - The value ledger was fourteen words inside a pricing card. It is Section D
+ *     now, and every claim in it is a property `attribution/` enforces.
+ *   - The proof bar was four adjectives. Each one names its mechanism now; the
+ *     specifics are free and they are the only credibility available to a
+ *     vendor with no customers it can name.
+ *
+ * The eyebrow is unchanged on purpose. `prerender.test.tsx` pins that string, so
+ * moving it is a deliberate act rather than a copy edit, and the positioning
+ * question it belongs to is not settled on this branch.
+ *
  * The decision card's figures are illustrative but formula-consistent:
  * floor = cost / (1 − margin floor), so cost ₹381 at a 15% floor gives ₹448.
  * And the card shows cost because it depicts the *approver's* view — a
@@ -126,6 +150,7 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
             >
               <a href="#product" onClick={closeMenu}>Product</a>
               <a href="#how" onClick={closeMenu}>How it works</a>
+              <a href="#worth" onClick={closeMenu}>What it&rsquo;s worth</a>
               <a href="#trust" onClick={closeMenu}>Trust</a>
               <a href="#pricing" onClick={closeMenu}>Pricing</a>
               <a className="lp-btn solid lp-nav-cta" href="#signin" onClick={enter}>Sign in</a>
@@ -138,10 +163,18 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
             <div className="lp-hero-copy">
               <p className="lp-eyebrow">The commercial intelligence layer for distributors</p>
               <h1>Stop quoting away your <em>margin.</em></h1>
+              {/* Led with three capabilities, which is a description. It now
+                  leads with the offer, because the offer is evidence: the
+                  look-back runs on the history the sync just pulled and needs
+                  nothing the reader has to take on trust. The capabilities are
+                  still here — they are the second sentence, where a description
+                  belongs. */}
               <p className="lp-sub">
-                PIE connects to the books you already use and helps your team{" "}
-                <b>quote correctly</b>, <b>protect margin</b>, and spot customers
-                that are <b>quietly buying less</b>.
+                Connect the books you already keep and PIE reads your own history
+                back to you — <b>which accounts went quiet</b>,{" "}
+                <b>where margin drifted</b>, and how much of it the platform
+                could not judge. Then it checks every new quote line against your
+                own floor before it goes out.
               </p>
               <div className="lp-ctas">
                 <a className="lp-btn solid" href="#signin" onClick={start}>Get started free</a>
@@ -199,12 +232,18 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
           </div>
         </header>
 
+        {/* Each of these was an adjective, and an adjective is a claim. To a
+            buyer who has survived one unfinished ERP implementation,
+            "deterministic" reads as the same register as everything else they
+            were promised. So each one now names the mechanism that enforces it
+            — the specifics are free, they are all true, and specificity is the
+            only credibility available to a vendor with no customers to name. */}
         <div className="lp-proof">
           <div className="lp-wrap lp-proof-grid">
-            <div><div className="v">Versioned</div><div className="k">every number carries the policy that produced it</div></div>
-            <div><div className="v">Deterministic</div><div className="k">identical input, byte-identical output — reruns prove it</div></div>
-            <div><div className="v lp-num">0</div><div className="k">prices computed by AI — models phrase, policy prices</div></div>
-            <div><div className="v">Yours</div><div className="k">your data, your catalog, your AI account — provably</div></div>
+            <div><div className="v">Versioned</div><div className="k">every computed row is stamped with a hash of the policy that judged it</div></div>
+            <div><div className="v">Deterministic</div><div className="k">identical input, byte-identical output — a test re-derives every figure from its operands</div></div>
+            <div><div className="v lp-num">0</div><div className="k">prices computed by AI — enforced by a test that parses the imports, not by a convention</div></div>
+            <div><div className="v">Yours</div><div className="k">your data, your catalog, your AI account — exportable, and erasable on request</div></div>
           </div>
         </div>
 
@@ -220,6 +259,22 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
           <span className="lp-sched-note">
             — your ERP records what happened; PIE helps you decide what to do next
           </span>
+        </div>
+
+        {/* The pattern-match is the thing to beat, and it is silent: a
+            distributor who has already decided that dashboards are things
+            nobody opens files this under "another dashboard" in the first ten
+            seconds and stops reading. Said once, early, as an aside rather than
+            as the argument — leading with what a product is not is a weak
+            opening, and not saying it at all loses the reader before the
+            strong one. */}
+        <div className="lp-notwhat">
+          <div className="lp-wrap">
+            <b>Not an ERP, not a dashboard, not a BI tool.</b> Your ERP keeps the
+            records and PIE does not replace it. There is no chart to go and look
+            at every morning: the platform checks each quote line as it is
+            priced, and raises the handful of accounts that changed.
+          </div>
         </div>
 
         <div className="lp-dim"><b>Section A — The problem</b></div>
@@ -333,7 +388,12 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
         <section id="how">
           <div className="lp-wrap">
             <div className="lp-sec-head">
-              <h2>Four steps, and PIE tracks which are done.</h2>
+              {/* Said "Four steps" and rendered three. `onboarding.py` does have
+                  four — connect, pull, floors, team — but they are the setup
+                  checklist, not this narrative, and the heading was counting
+                  one list while the page showed the other. Named for what is
+                  below it; the checklist speaks for itself inside the product. */}
+              <h2>Connect, look back, then decide.</h2>
               <p>Most of the work is deciding your own margin floors — not fighting software.</p>
             </div>
             <div className="lp-grid3 lp-steps">
@@ -346,11 +406,21 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
                 </p>
               </div>
               <div className="lp-step">
-                <h3>See what it would have caught</h3>
+                {/* This promised below-floor quotes on day one and could not
+                    deliver them: replaying a floor needs quote decisions PIE
+                    recorded, and a book that connected this morning has none.
+                    The decline half runs on the synced history alone and is
+                    real from the first sync. So the claim is split by when each
+                    half becomes true, rather than averaged into one that is
+                    half wrong on the day somebody checks. */}
+                <h3>See what your history already holds</h3>
                 <p>
-                  Your first month includes the full intelligence layer. PIE looks
-                  back across your own history and shows the below-floor quotes
-                  and quiet declines <b>you already paid for</b>.
+                  Your first month includes the full intelligence layer. PIE reads
+                  the history it just pulled and shows the accounts that were
+                  quietly declining and the margins that drifted —{" "}
+                  <b>and how much of your book it could not judge</b>, before
+                  what it found. Below-floor quoting is measured from the quotes
+                  you price here, so that arrives as you use it.
                 </p>
               </div>
               <div className="lp-step">
@@ -401,7 +471,56 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
           </div>
         </div>
 
-        <div className="lp-dim"><b>Section D — Ownership</b></div>
+        <div className="lp-dim"><b>Section D — What it was worth</b></div>
+        <section id="worth">
+          <div className="lp-wrap">
+            <div className="lp-sec-head">
+              {/* Promoted out of a subordinate clause in the middle pricing
+                  card, where it had been the strongest asset on the page
+                  described in fourteen words. Every claim below is a property
+                  of `backend/app/attribution/` and its own docstrings say so
+                  more bluntly than this does. */}
+              <h2>A ledger of what this platform was worth. Including when it was nothing.</h2>
+              <p>
+                Every intervention PIE claims credit for is arithmetic over rows
+                your quote desk already wrote, carrying the operands it was
+                computed from — so you can open any figure and re-derive it. What
+                makes it worth reading is what it refuses to do.
+              </p>
+            </div>
+            <div className="lp-grid3">
+              <div className="lp-panel">
+                <h3>An empty month says UNKNOWN, not zero</h3>
+                <p>
+                  &ldquo;Nothing was detected&rdquo; and &ldquo;no detection ran&rdquo;
+                  are the same silence from outside and mean opposite things, so
+                  the ledger refuses to pick one. A measured zero is reported as a
+                  zero; an absence is reported as an absence.
+                </p>
+              </div>
+              <div className="lp-panel">
+                <h3>Time saved is counted, never priced</h3>
+                <p>
+                  Approvals turned round and quotes priced come back as counts
+                  with no rupee figure anywhere near them. Your business holds no
+                  hourly rate, and multiplying a count by an invented one is a
+                  made-up number that happens to have been computed carefully.
+                </p>
+              </div>
+              <div className="lp-panel">
+                <h3>The gaps sit above the good news</h3>
+                <p>
+                  What the platform could not measure is printed before what it
+                  did — on the renewal screen, where the incentive runs the other
+                  way. Return on investment stays UNKNOWN until you type in what
+                  you are paying; PIE will not assume its own price.
+                </p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <div className="lp-dim"><b>Section E — Ownership</b></div>
         <section id="trust">
           <div className="lp-wrap">
             <div className="lp-sec-head">
@@ -442,7 +561,7 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
           </div>
         </section>
 
-        <div className="lp-dim"><b>Section E — Pricing</b></div>
+        <div className="lp-dim"><b>Section F — Pricing</b></div>
         <section id="pricing">
           <div className="lp-wrap">
             <div className="lp-sec-head">
@@ -466,8 +585,8 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
                 <div className="p lp-num">₹9,999<small> /month</small></div>
                 <p>
                   <b>Quote more profitably.</b> The attention list, customer
-                  health, collections — and the ledger measuring what the
-                  intelligence layer was worth.
+                  health, collections — and the value ledger in Section D, which
+                  is how you decide whether to keep paying for this.
                 </p>
               </div>
               <div className="lp-panel lp-plan">
@@ -480,6 +599,25 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
                 </p>
               </div>
             </div>
+            {/* The arithmetic, done on the page's own numbers rather than left
+                for the reader to do or, worse, asserted as a round claim.
+
+                It uses ₹7,200 and not the ₹15,000 the recommended price would
+                have made, and the difference is the point: the ledger counts a
+                movement only up to the floor, because clearing a floor by more
+                than it asked for is the salesperson's judgement and not
+                something the guardrail did. Quoting the bigger number here
+                would be the page contradicting the module it is describing,
+                two sections after promising it does not. */}
+            <p className="lp-pricing-note">
+              The card at the top of this page is one line: 200 units asked at
+              ₹412 against a floor of ₹448. Held to that floor it is{" "}
+              <span className="lp-num">₹7,200</span> — about three weeks of the
+              middle plan, from one line. The ledger would count exactly that
+              and not the ₹15,000 the recommended price would have made, because
+              clearing a floor by more than it asked for is your judgement, not
+              ours.
+            </p>
             <p className="lp-pricing-note">
               One-time catalog builds from <span className="lp-num">₹4,999</span>,
               yours permanently.

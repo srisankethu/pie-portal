@@ -435,6 +435,35 @@ export interface SyncRun {
  *  The evidence behind `UnresolvedReference`, which is the worklist: this is
  *  the individual bill or invoice line, named well enough to be found in Zoho
  *  and reconciled against it. */
+/** One line of a sync's own log, as the server kept it. */
+export interface SyncLogLine {
+  /** Position within the run. Two lines inside one millisecond are not rare in
+   *  a tight loop, so the order cannot rest on the timestamp. */
+  seq: number;
+  at: string | null;
+  level: string;
+  /** Which logger wrote it — half of reading an interleaved log. */
+  logger: string;
+  message: string;
+}
+
+/** One page of a run's log, and enough state to keep following it. */
+export interface SyncRunLogPage {
+  sync_run_id: string;
+  status: string;
+  phase: string | null;
+  /** Still going, so an empty tail means "nothing new" rather than "the end". */
+  running: boolean;
+  started_at: string | null;
+  finished_at: string | null;
+  total: number;
+  lines: SyncLogLine[];
+  /** Where to resume from on the next poll. */
+  next_seq: number;
+  /** Why the log is empty, when it is. Absence needs a reason, not a blank box. */
+  note: string | null;
+}
+
 export interface SkippedRow {
   skip_id: string;
   /** Position within the run — the order the pull met these rows. */

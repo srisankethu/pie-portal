@@ -766,6 +766,163 @@ def skipped_rows_csv(
         headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
 
+# ── the log of one run ───────────────────────────────────────────────────────
+#
+# "See the server log" is what a crashed sync used to say, to somebody with a
+# browser and no shell. These serve the lines the run itself emitted, kept with
+# the run (``models.SyncRunLog``), so the account of an hour-long pull is
+# readable from the screen that reports it failed.
+#
+# Manager-or-owner, for the same reason the skipped rows are: a log line is
+# whatever the code passed to it, and lines from the cost-record stage name
+# purchase documents.
+
+#: One page of a log. Generous, because the point is to read a run's story
+#: rather than to sample it, and a line is a few hundred bytes.
+LOG_PAGE = 2000
+
+
+def _log_rows(session: Session, org: str, sync_run_id: str, *,
+              after_seq: int, limit: int,
+              levels: Optional[set[str]] = None) -> tuple[models.SyncRun, list[dict[str, Any]], int]:
+    """One run's log from a cursor, with how many lines it holds in total.
+
+    Scoped to the caller's organization inside the query rather than checked
+    after it, like ``_skip_rows``: a run id from another tenant reads as "no
+    such run" rather than as a permission error that confirms it exists.
+
+    ``after_seq`` is what makes a live pull watchable — the screen polls for
+    what it has not already seen instead of re-fetching an hour of log every
+    two seconds.
+    """
+    run = session.scalar(
+        select(models.SyncRun)
+        .where(models.SyncRun.sync_run_id == sync_run_id,
+               models.SyncRun.organization_id == org))
+    if run is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND,
+                            "No sync run with that id in this organization.")
+
+    stmt = (select(models.SyncRunLog)
+            .where(models.SyncRunLog.sync_run_id == sync_run_id,
+                   models.SyncRunLog.organization_id == org))
+    if levels:
+        stmt = stmt.where(models.SyncRunLog.level.in_(sorted(levels)))
+    total = int(session.scalar(
+        select(func.count()).select_from(stmt.subquery())) or 0)
+    rows = session.scalars(
+        stmt.where(models.SyncRunLog.seq > after_seq)
+        .order_by(models.SyncRunLog.seq).limit(limit)).all()
+    return run, [
+        {
+            "seq": r.seq,
+            "at": clock.iso(r.at),
+            "level": r.level,
+            "logger": r.logger,
+            "message": r.message,
+        }
+        for r in rows
+    ], total
+
+
+@router.get("/sync-runs/{sync_run_id}/log")
+def sync_run_log(
+    sync_run_id: str,
+    after_seq: int = -1,
+    limit: int = LOG_PAGE,
+    problems_only: bool = False,
+    principal: Principal = Depends(require_manager_or_owner),
+    session: Session = Depends(get_session),
+) -> dict:
+    """What one sync actually did, line by line.
+
+    ``problems_only`` filters to warnings and errors — the first question about
+    a run that took an hour and failed is usually "what went wrong", and the
+    answer is a handful of lines inside several thousand.
+    """
+    levels = {"WARNING", "ERROR", "CRITICAL"} if problems_only else None
+    run, rows, total = _log_rows(
+        session, principal.organization_id, sync_run_id,
+        after_seq=after_seq, limit=max(1, min(limit, LOG_PAGE)), levels=levels)
+    return {
+        "sync_run_id": run.sync_run_id,
+        "status": run.status,
+        "phase": run.phase,
+        # Still going, so the reader knows an empty tail means "nothing new"
+        # rather than "the log ends here".
+        "running": run.status in jobs.ACTIVE,
+        "started_at": clock.iso(run.started_at),
+        "finished_at": clock.iso(run.finished_at),
+        "total": total,
+        "lines": rows,
+        # Where to resume from. -1 rather than 0 when nothing came back, so a
+        # first poll against an empty log asks for the same window again
+        # instead of skipping line 0.
+        "next_seq": rows[-1]["seq"] if rows else after_seq,
+        # Said plainly rather than left to be inferred from a line count: a run
+        # from before this table existed holds no log, and an empty panel that
+        # cannot say why reads as "the sync did nothing".
+        "note": _log_note(run, total),
+    }
+
+
+def _log_note(run: models.SyncRun, held: int) -> Optional[str]:
+    """Why a log is empty, when it is. Absence needs a reason, not a blank box."""
+    if held:
+        return None
+    if run.status in jobs.ACTIVE:
+        return "This run has not written its first log lines yet."
+    return ("This run kept no log — it ran before its log was stored with it. "
+            "Runs from here on record what they did; re-sync to produce one.")
+
+
+@router.get("/sync-runs/{sync_run_id}/log.txt")
+def sync_run_log_text(
+    sync_run_id: str,
+    principal: Principal = Depends(require_manager_or_owner),
+    session: Session = Depends(get_session),
+) -> Response:
+    """The whole log as a plain text file, to read elsewhere or send on.
+
+    Built server-side for the reason the skipped-rows CSV is: a file assembled
+    from what the screen is showing is a page calling itself the record. This
+    walks the run in pages so a very long pull's log does not have to be held
+    in memory twice over.
+    """
+    org = principal.organization_id
+    lines: list[str] = []
+    after, run = -1, None
+    while True:
+        run, rows, _total = _log_rows(session, org, sync_run_id,
+                                      after_seq=after, limit=LOG_PAGE)
+        if not rows:
+            break
+        lines.extend(f"{r['at']} {r['level']:<8} {r['logger']}: {r['message']}"
+                     for r in rows)
+        after = rows[-1]["seq"]
+
+    header = [
+        f"# sync run {sync_run_id}",
+        f"# organization {org}",
+        f"# status {run.status if run else 'unknown'}",
+        f"# started {clock.iso(run.started_at) if run else ''}",
+        f"# finished {clock.iso(run.finished_at) if run else ''}",
+        "",
+    ]
+    if run is not None and run.error:
+        header[-1:] = [f"# error {run.error}", ""]
+    note = _log_note(run, len(lines)) if run is not None else None
+    if note:
+        header[-1:] = [f"# {note}", ""]
+
+    started = run.started_at.date().isoformat() if run and run.started_at else "run"
+    name = f"sync-log-{started}-{sync_run_id[:8]}.txt"
+    return Response(
+        content="\n".join(header + lines) + "\n",
+        media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
 @router.post("/sync", status_code=status.HTTP_202_ACCEPTED)
 def run_sync(
     req: SyncRequest = Body(default_factory=SyncRequest),

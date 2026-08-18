@@ -10,10 +10,11 @@ CLAUDE.md §4: this migration runs against schemas from months ago and the model
 describe today.
 
 Revision ID: t13plan_requests
-Revises: x4rekey
+Revises: y5runlog
 Create Date: 2026-08-18
 
-Re-pointed from ``c1f4a80b73e2`` to ``x4rekey`` when this branch merged main:
+Re-pointed onto whatever main's head was each time this branch merged it —
+``c1f4a80b73e2`` to ``x4rekey`` to ``y5runlog``:
 both had added a revision on the same parent, which is the two-heads case
 CLAUDE.md §4 describes. Re-pointing rather than an ``alembic merge`` because
 this revision had not been released — it existed only on this branch and had
@@ -26,7 +27,7 @@ from alembic import op
 import sqlalchemy as sa
 
 revision = "t13plan_requests"
-down_revision = "x4rekey"
+down_revision = "y5runlog"
 branch_labels = None
 depends_on = None
 

@@ -9,6 +9,7 @@ import { formatDateTime, since as when, todayISO } from "../when";
 import { papi } from "./api";
 import { ErrorState, LoadingState } from "./kit";
 import { ConnectionsPanel } from "./ConnectionsPanel";
+import { RunLogPanel } from "./RunLogPanel";
 import { SkippedRowsPanel } from "./SkippedRowsPanel";
 import { SyncStatusCard, useSync } from "./SyncStatus";
 import type { DataStatus, PlatformSession, UnresolvedReference } from "./types";
@@ -482,6 +483,17 @@ export function DataScreen({ session, onSynced }: { session: PlatformSession; on
               built from — and the sheet somebody reconciles against Zoho. */}
           {s && s.skipped_count > 0 && (
             <SkippedRowsPanel token={session.token} run={s} canExport={canSync} />
+          )}
+
+          {/* And what the pull recorded as it ran. Last because it is the
+              deepest thing here — the counters above answer "what landed", the
+              worklist answers "what to fix", and this answers "what happened",
+              which is the only one of the three that can explain a run that
+              stopped an hour in. Managers and owners only, like the rows above:
+              a log line is whatever the code passed to it. */}
+          {s && canSync && (
+            <RunLogPanel token={session.token} runId={s.sync_run_id}
+                         running={s.active} />
           )}
         </>
       )}

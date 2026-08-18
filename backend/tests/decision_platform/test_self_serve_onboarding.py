@@ -362,6 +362,59 @@ def test_a_running_pull_is_not_a_finished_one(session, org):
     assert _steps(session, org)["history"]["done"] is False
 
 
+def test_a_running_pull_says_where_it_has_got_to(session, org):
+    """The one question a new owner has during the longest wait in the product.
+
+    ``SyncRun`` carries the answer and ``execute_sync`` commits it at every
+    phase boundary so it can be read from outside the transaction. This step
+    reported "will fill in when it lands" regardless, which is true of a pull
+    that is moving and of one that has been wedged for an hour.
+    """
+    _run(session, org, status="RUNNING", phase="Read invoices — Books",
+         windows_total=18, windows_done=4)
+    step = _steps(session, org)["history"]
+    assert step["done"] is False
+    assert "Read invoices — Books" in step["detail"]
+    assert "4 of 18 windows read" in step["detail"]
+
+
+def test_a_running_pull_past_its_last_window_does_not_overcount(session, org):
+    """A long run spends its tail in the detect and recompute phases, with every
+    window already read. The count must not read "19 of 18" there."""
+    _run(session, org, status="RUNNING", phase="Detecting signals",
+         windows_total=18, windows_done=18)
+    detail = _steps(session, org)["history"]["detail"]
+    assert "18 of 18 windows read" in detail
+    assert "19" not in detail
+
+
+def test_a_pull_with_nothing_recorded_yet_does_not_invent_progress(session, org):
+    """``windows_total`` is 0 until the pull has worked out its slices and
+    ``phase`` is NULL before the first boundary. Absence says less; it does not
+    render "0 of 0"."""
+    _run(session, org, status="RUNNING")
+    detail = _steps(session, org)["history"]["detail"]
+    assert "of 0" not in detail
+    assert detail == "A pull is running. This screen will fill in when it lands."
+
+
+def test_a_queued_pull_says_it_is_queued(session, org):
+    _run(session, org, status="QUEUED")
+    step = _steps(session, org)["history"]
+    assert step["done"] is False
+    assert "queued" in step["detail"]
+
+
+def test_the_first_pull_states_the_window_the_platform_actually_reads(session, org):
+    """The figure is stated to a person in prose and computed from a constant.
+    Two copies means the sentence goes stale the day the constant moves, and the
+    sentence is the one nobody greps for."""
+    from app.ingestion.connections import DEFAULT_HISTORY_MONTHS
+
+    detail = _steps(session, org)["history"]["detail"]
+    assert f"{DEFAULT_HISTORY_MONTHS} months" in detail
+
+
 def test_a_partial_pull_that_landed_rows_counts(session, org):
     _run(session, org, status="PARTIAL", sales_txns=120, cost_records=30)
     step = _steps(session, org)["history"]

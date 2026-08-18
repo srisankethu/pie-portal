@@ -258,6 +258,36 @@ def _connect_step(session: Session, org: str) -> Step:
                 detail=detail, done=True, required=True, route="/data")
 
 
+def _running_detail(run: models.SyncRun) -> str:
+    """What a pull in flight has got to, from what it has already committed.
+
+    Three facts, each used only when it is actually there. ``windows_total`` is
+    zero until the pull has worked out how many slices it will read, and a
+    "window 0 of 0" is worse than saying nothing; ``phase`` is NULL before the
+    first boundary and again once the run is over. So this degrades to the
+    plain sentence rather than rendering a placeholder — the same rule the rest
+    of this module follows, that a detail with no evidence behind it says less
+    rather than guessing.
+    """
+    if run.status == "QUEUED":
+        return "A pull is queued and will start shortly."
+    parts: list[str] = []
+    if run.phase:
+        parts.append(run.phase)
+    if (run.windows_total or 0) > 0:
+        # Windows *read*, not the one in flight. "window 4 of 18" has to decide
+        # whether four are done or four is in progress, and gets it wrong at
+        # both ends — it reads "window 1 of 18" before anything has landed, and
+        # "window 19 of 18" once the pull moves past the last slice into the
+        # detect and recompute phases, which is where a long run spends its
+        # tail. A completed count is the same information and cannot overflow.
+        parts.append(f"{run.windows_done or 0} of {run.windows_total} "
+                     f"windows read")
+    if not parts:
+        return "A pull is running. This screen will fill in when it lands."
+    return f"A pull is running — {', '.join(parts)}."
+
+
 def _history_step(session: Session, org: str) -> Step:
     """Whether any pull has actually landed rows.
 
@@ -265,6 +295,17 @@ def _history_step(session: Session, org: str) -> Step:
     reached, which is what makes the next attempt cheap and is enough to analyse.
     A run that is still going does not count and says so, because a checklist
     that ticks on QUEUED is describing an intention.
+
+    A running pull says *where it has got to*. It used to say "this screen will
+    fill in when it lands", which is true and useless: the first pull reads
+    eighteen months and takes as long as it takes, so the one question a new
+    owner has — is this moving, or is it stuck? — went unanswered for the whole
+    of the longest wait in the product. ``SyncRun`` already carries the answer
+    and ``jobs.execute_sync`` already commits it at every phase boundary
+    precisely so it can be read from outside the transaction; the counter's own
+    docstring names the screen that polls it. This step simply had not been
+    told. Nothing new is computed and nothing is estimated — a remaining time
+    would be a number nobody can stand behind.
     """
     latest = session.scalars(
         select(models.SyncRun)
@@ -277,12 +318,12 @@ def _history_step(session: Session, org: str) -> Step:
                     detail=detail, done=done, required=True, route="/data")
 
     if latest is None:
-        return step("Nothing has been pulled yet. The first pull reads about "
-                    "18 months, which is what the analysis compares against.",
-                    False)
+        return step(f"Nothing has been pulled yet. The first pull reads about "
+                    f"{conn.DEFAULT_HISTORY_MONTHS} months, which is what the "
+                    f"analysis compares against — it runs in the background and "
+                    f"reports each window as it lands.", False)
     if latest.status in ("QUEUED", "RUNNING"):
-        return step("A pull is running. This screen will fill in when it lands.",
-                    False)
+        return step(_running_detail(latest), False)
     if latest.status in ("OK", "PARTIAL"):
         rows = (latest.sales_txns or 0) + (latest.cost_records or 0)
         if rows == 0:

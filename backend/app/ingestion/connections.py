@@ -48,6 +48,18 @@ log = logging.getLogger("pie_portal.connections")
 #: The connector name every Zoho pull records itself under (``sync.SyncService``).
 ZOHO_CONNECTOR = "zoho"
 
+#: How far back a first pull reads when nobody has said otherwise. Eighteen
+#: months gives the detectors a full recent window, a full comparison window,
+#: and room above the six-month history floor — so the first sync produces an
+#: analysis rather than a screen full of "not enough history".
+#:
+#: Here rather than in the router that computes the date from it, because the
+#: onboarding checklist tells a new owner how long their first pull reads and
+#: had the number written out in prose. Two copies of one figure means the
+#: sentence a person is shown goes stale the day the constant moves, and the
+#: sentence is the one nobody greps for.
+DEFAULT_HISTORY_MONTHS = 18
+
 
 class CredentialNotUsable(PermissionError):
     """A credential this organization has not been given access to."""
@@ -118,13 +130,46 @@ REQUIRED_SCOPES: tuple[Permission, ...] = (
                required=False, reads=("users",)),
 )
 
-SCOPE_STRING = ",".join(p.name for p in REQUIRED_SCOPES)
+def scope_string(*, minimum: bool = False) -> str:
+    """The scopes as one pasteable string — everything, or the minimum.
+
+    Parameterised rather than two constants built two ways: the *fact* is the
+    list above, and these are two projections of it. A second hand-written
+    tuple would be the copy that stops agreeing with it the first time a scope
+    moves between required and optional.
+
+    ``minimum=True`` is the set without which no sync runs at all — what
+    ``Permission.required`` already means, and what ``_scope_note`` in the
+    connections router already checks against. It exists as a string because
+    the console the person is reading takes a string, and until now the only
+    one offered was the full set: an owner who wanted to grant the minimum had
+    to assemble it by hand from the table, which is how a scope gets missed.
+
+    The full set stays the default and stays what the screen leads with. The
+    note below says why, and it is not a nudge — a half-granted connection
+    authenticates and then reads nothing, which is the failure this whole list
+    exists to prevent.
+    """
+    return ",".join(p.name for p in REQUIRED_SCOPES
+                    if p.required or not minimum)
+
+
+#: Everything this platform can read. The recommended grant.
+SCOPE_STRING = scope_string()
+
+#: The subset without which a sync does not run. Offered beside the full set
+#: for the owner whose policy is to grant the least that works — and the set a
+#: customer-facing authorization should ask for first, whenever one exists
+#: again: a consent screen listing ten scopes is refused more often than one
+#: listing five, and the other five buy screens rather than the sync.
+MINIMUM_SCOPE_STRING = scope_string(minimum=True)
 
 #: Where the scopes above are granted, said once and rendered above the list.
 ZOHO_PERMISSION_NOTE = (
     "Paste the string below into the scope field when you generate the token "
     "in the Zoho API console. Granting fewer does not fail loudly; it fails "
-    "quietly, later.")
+    "quietly, later — so grant the full set unless something stops you, and "
+    "use the minimum only if it does.")
 
 
 # ── resolution ──────────────────────────────────────────────────────────────
@@ -178,6 +223,33 @@ def credentials_for(session: Session,
         client_secret=crypto.decrypt(connection.client_secret_encrypted),
         refresh_token=crypto.decrypt(connection.refresh_token_encrypted),
         accounts_base=connection.accounts_base, api_base=connection.api_base)
+
+
+def companies_visible_to(credential: models.ZohoCredential) -> list[dict]:
+    """Every Zoho company this grant can reach, before any of them is connected.
+
+    The counterpart of ``discover_erp_companies`` for Zoho, and the step an
+    authorization needs between "the sign-in worked" and "which books did you
+    mean": one refresh token reaches every company its user can see, which is
+    the whole reason a credential is separate from a connection.
+
+    Reads it through ``ping``, which already asks ``/organizations`` and already
+    shapes the answer — the alternative was a second call to the same endpoint,
+    parsed a second way, which is how two lists of one thing start disagreeing.
+    ``ping`` wants an organization id to say whether *that* one was found; there
+    is none yet, so it is passed empty and only ``visible_organizations`` is
+    read. Nothing is persisted.
+    """
+    creds = ZohoCredentials(
+        organization_id="",
+        client_id=credential.client_id,
+        client_secret=crypto.decrypt(credential.client_secret_encrypted),
+        refresh_token=crypto.decrypt(credential.refresh_token_encrypted),
+        accounts_base=credential.accounts_base, api_base=credential.api_base)
+    from .zoho_client import ZohoApiSource
+
+    return list(ZohoApiSource(credentials=creds).ping().get(
+        "visible_organizations") or [])
 
 
 def get_zoho_credentials(session: Session, organization_id: str,

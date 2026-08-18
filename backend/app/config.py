@@ -314,6 +314,37 @@ class Settings:
     # window against a prior one — pulling a decade of ledger costs API calls and
     # buys nothing.
     ZOHO_TIMEOUT_SECONDS: float = float(os.environ.get("ZOHO_TIMEOUT_SECONDS", "30"))
+
+    # ── Zoho OAuth: this deployment's own registered application ───────────────
+    # The customer-facing authorization flow. Unset by default and *checked*
+    # rather than assumed — `oauth.configured()` gates the endpoints and the
+    # screen, so a deployment without an application says the flow is
+    # unavailable instead of offering a button that cannot complete. Offering
+    # that button anyway is what got the first implementation deleted.
+    #
+    # These are the platform's credentials, registered once in the Zoho API
+    # console, and they are not a tenant's: the grant an authorization produces
+    # belongs to the Zoho user who consented. A business connecting its own
+    # books can still use a Self Client refresh token on the manual path and
+    # needs none of this; a Marketplace listing cannot, because a stranger
+    # installing from Zoho has no way to register a redirect URI.
+    ZOHO_OAUTH_CLIENT_ID: str = os.environ.get("ZOHO_OAUTH_CLIENT_ID", "")
+    ZOHO_OAUTH_CLIENT_SECRET: str = os.environ.get("ZOHO_OAUTH_CLIENT_SECRET", "")
+    # Must match the redirect URI registered against that application, exactly.
+    # Example: "https://pie.example.com/api/v1/connections/zoho/callback"
+    ZOHO_OAUTH_REDIRECT_URI: str = os.environ.get("ZOHO_OAUTH_REDIRECT_URI", "")
+    # How long an authorization may stay in flight. Ten minutes is the usual
+    # figure and is longer than a consent screen takes to read.
+    ZOHO_OAUTH_STATE_TTL_SECONDS: int = int(
+        os.environ.get("ZOHO_OAUTH_STATE_TTL_SECONDS", "600"))
+
+    # Where the browser is sent after the callback has done its work. The
+    # callback is reached by following Zoho's redirect, so it answers a person
+    # rather than a script and has to hand them back to a screen. Empty means
+    # same-origin, which is right where the API and the app are served together
+    # (the Caddy self-host) and wrong where they are not (Vercel in front of
+    # Railway) — set it there.
+    FRONTEND_ORIGIN: str = os.environ.get("FRONTEND_ORIGIN", "")
     ZOHO_PAGE_SIZE: int = int(os.environ.get("ZOHO_PAGE_SIZE", "200"))
     ZOHO_MAX_PAGES: int = int(os.environ.get("ZOHO_MAX_PAGES", "50"))
     ZOHO_HISTORY_DAYS: int = int(os.environ.get("ZOHO_HISTORY_DAYS", "730"))

@@ -24,8 +24,36 @@ Purely a widening — no stored value changes, no index changes. The four tables
   * ``outcome_snapshots`` — copies the signal's subject verbatim
 
 Revision ID: z6subject
-Revises: y5runlog
+Revises: u14oauthstates
 Create Date: 2026-08-18
+
+Re-pointed twice, onto ``t13plan_requests`` and then onto ``u14oauthstates``,
+as each landed on ``main`` while this one was still waiting to deploy. The
+reasoning below applies unchanged to both, and the second time is the evidence
+for it: three branches added a revision on the same parent within one afternoon,
+and none of them could deploy while two heads existed.
+
+Re-pointed from ``y5runlog``: two branches added a
+revision on the same parent and both were merged, which left alembic with two
+heads and stopped the deploy — ``upgrade head`` refuses to guess between them,
+correctly, because applying one would leave the other branch's schema missing.
+
+Re-pointing rather than ``alembic merge``, for the reason ``t13plan_requests``
+gives for the same decision twice over: **this revision had run nowhere.** It
+reached ``main`` only in the commit that created the ambiguity, and from that
+moment every ``alembic upgrade head`` — the deploy's pre-deploy step and any
+developer's — failed before applying anything. So there is no database that ran
+``z6subject`` under its old parent and would now be told it is at head with
+``plan_change_requests`` missing. That check is the whole of the argument;
+without it, CLAUDE.md §4 is unambiguous that a released revision is reconciled
+forward with a merge and never edited.
+
+The alternative was a merge revision, and the cost is not theoretical: a merge
+leaves a permanent branchpoint, so ``upgrade +1`` and ``downgrade -1`` both
+become "Ambiguous walk" there for ever. ``test_migrations_apply_one_at_a_time``
+and ``test_the_newest_migration_is_reversible`` fail on exactly that, and they
+are guarding the deployment that gets interrupted halfway. A linear history
+keeps both.
 """
 from __future__ import annotations
 
@@ -33,7 +61,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "z6subject"
-down_revision = "y5runlog"
+down_revision = "u14oauthstates"
 branch_labels = None
 depends_on = None
 

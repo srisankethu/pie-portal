@@ -899,6 +899,21 @@ export const papi = {
   checkConnection: (t: string, id: string) =>
     req<ConnectionCheck>(`/api/v1/connections/${id}/check`, { method: "POST" }, t),
 
+  // ── the customer-facing Zoho authorization ────────────────────────────────
+  // Two calls, not three. `authorizeZoho` starts it; `claimZohoAuthorization`
+  // turns the code the redirect came back with into a credential id. From
+  // there the flow rejoins the manual path exactly — `credentialOrganizations`
+  // to choose a company, `addConnection` to connect it — because an
+  // authorization's only product is a sign-in, and a second company picker
+  // built for this flow would be the copy that stops agreeing with that one.
+  authorizeZoho: (t: string, dc: string) =>
+    req<{ authorization_url: string; expires_in_seconds: number }>(
+      `/api/v1/connections/zoho/authorize?dc=${encodeURIComponent(dc)}`, {}, t),
+
+  claimZohoAuthorization: (t: string, handoff: string) =>
+    req<{ credential_id: string; label: string }>(
+      `/api/v1/connections/zoho/pending/${encodeURIComponent(handoff)}`, {}, t),
+
   // ── registered ERP connectors (NetSuite, Business Central, Acumatica, P21,
   //    Sage) — the form renders from this catalog, never from hardcoded fields
   connectorCatalog: (t: string) =>

@@ -1043,7 +1043,8 @@ export default function PlatformApp() {
             <Route path={PATH.identity} element={<IdentityScreen token={session.token} />} />
             <Route path={PATH.trust} element={<TrustScreen session={session} />} />
             <Route path={PATH.settings} element={
-              <SettingsScreen session={session} onToken={adoptToken} />} />
+              <SettingsScreen session={session} onToken={adoptToken}
+                              onSignedOutEverywhere={forgetSession} />} />
 
             {/* ── AI STATES (reference) ── */}
             <Route path={PATH.states} element={<StatesScreen />} />

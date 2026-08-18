@@ -242,17 +242,31 @@
   border-top: 1px solid var(--color-accent-300); border-bottom: 1px solid var(--color-accent-300);
   background: var(--color-accent-100);
 }
+/* Four claims, so the column count steps 4 → 2 → 1 and every row stays full.
+   `repeat(auto-fit, minmax(200px, 1fr))` was the obvious spelling and it gives
+   three columns from about 700px to 900px, which leaves "Yours" alone on a
+   second row looking like an afterthought.
+
+   `padding` is the whole shorthand and so also resets the wrap's 24px side
+   inset: it has to name the sides again, or the text sits on the sheet's edge
+   on a phone. */
 .pie-landing .lp-proof-grid {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: 8px 28px; padding: 24px 0; text-align: center;
+  display: grid; grid-template-columns: repeat(4, 1fr);
+  gap: 8px 28px; padding: 24px; text-align: center;
 }
 .pie-landing .lp-proof-grid .v { font-size: 22px; font-weight: 700; font-family: var(--font-heading); }
 .pie-landing .lp-proof-grid .k { font-size: 12.5px; color: var(--color-neutral-700); }
+@media (max-width: 900px) {
+  .pie-landing .lp-proof-grid { grid-template-columns: 1fr 1fr; gap: 18px 28px; }
+}
+@media (max-width: 520px) {
+  .pie-landing .lp-proof-grid { grid-template-columns: 1fr; gap: 16px; padding: 20px 24px; }
+}
 
 /* ── the parts schedule: which books it reads ── */
-.pie-landing .lp-sched {
+.pie-landing .lp-sched { padding-top: 14px; }
+.pie-landing .lp-sched .lp-sched-row {
   display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
-  padding: 14px 24px 0;
 }
 .pie-landing .lp-sched .lp-sched-label {
   font-family: var(--font-heading); font-weight: 600; font-size: 11.5px;
@@ -265,7 +279,21 @@
   border: 1px solid var(--color-accent-400); background: var(--color-neutral-100);
   color: var(--color-accent-800);
 }
-.pie-landing .lp-sched .lp-sched-note { font-size: 11.5px; color: var(--color-neutral-600); margin-left: 4px; }
+/* Its own band, at every width. Seven chips already fill the column, so the
+   note wrapped anyway — but as a flex item it landed wherever the last chip
+   left off, indented by a few pixels and reading as a caption on Sage 100
+   rather than on the row. */
+.pie-landing .lp-sched .lp-sched-note {
+  flex: 1 0 100%; margin: 2px 0 0;
+  font-size: 11.5px; color: var(--color-neutral-600);
+}
+/* On a phone the label wants its own line too: inline, it pushes the first
+   chip onto the next row and the uppercase tracking makes the break look like
+   a mistake. */
+@media (max-width: 640px) {
+  .pie-landing .lp-sched .lp-sched-label { flex: 1 0 100%; margin-right: 0; }
+  .pie-landing .lp-sched .lp-sched-row { gap: 8px 6px; }
+}
 
 /* How a plan actually changes. Sits under the pricing standfirst, quieter than
    it — it is the mechanism, not the offer. */
@@ -280,7 +308,7 @@
    already made, not a claim of its own, and setting it as loudly as a section
    would make the page argue with itself. */
 .pie-landing .lp-notwhat {
-  padding: 18px 24px 0;
+  padding-top: 18px;      /* sides come from the .lp-wrap inside it, once */
   font-size: 13.5px;
   line-height: 1.6;
   color: var(--color-neutral-600);

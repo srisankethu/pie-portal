@@ -40,8 +40,9 @@ from .detectors import (
     run_all,
     skip_summary,
 )
-from .evaluator import (capture_baseline, current_trial, list_events,
-                        thirty_day_report, trial_progress)
+from .evaluator import (SUMMARY_DAYS, Window, capture_baseline, current_trial,
+                        list_events, summary_window, thirty_day_report,
+                        value_summary)
 from .ledger import (
     FACT_OF,
     LedgerRefusal,
@@ -80,5 +81,8 @@ __all__ = [
     "run_all",
     "skip_summary",
     "thirty_day_report",
-    "trial_progress",
+    "summary_window",
+    "value_summary",
+    "Window",
+    "SUMMARY_DAYS",
 ]

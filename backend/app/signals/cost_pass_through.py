@@ -12,42 +12,54 @@ from datetime import date
 
 from ..domain.enums import EvidenceSufficiency, SignalType, SubjectEntityType
 from . import aggregates as agg
-from .base import Snapshot, SignalDraft, Sufficiency, clamp_severity, evidence_ref
+from .base import (Coverage, Snapshot, SignalDraft, Sufficiency, Withholding,
+                   clamp_severity, evidence_ref)
 from .config import SignalThresholds
 from .quality import cost_anomalies, cost_is_reliable
 
 
 def detect(snapshot: Snapshot, th: SignalThresholds, as_of: date) -> list[SignalDraft]:
-    drafts: list[SignalDraft] = []
+    """Just the drafts — see ``examine`` for the denominator and the withholds."""
+    return examine(snapshot, th, as_of).drafts
+
+
+def examine(snapshot: Snapshot, th: SignalThresholds, as_of: date) -> Coverage:
+    out = Coverage(detector="COST_PASS_THROUGH")
+    drafts = out.drafts
     for pid in snapshot.product_ids():
+        out.considered += 1
         costs = snapshot.costs_for_product(pid)
         # need ≥ 2 distinct cost points to establish an increase
         if len(costs) < 2:
+            out.withhold(pid, Withholding.TOO_FEW_COST_POINTS)
             continue
         latest = costs[-1]
         prior = costs[-2]
         if prior.unit_cost <= 0:
-            continue  # cannot compute a delta against zero/placeholder prior cost
+            out.withhold(pid, Withholding.PRIOR_COST_NOT_USABLE)
+            continue
 
         # cost reliability (latest cost must be trustworthy)
         anomalies = cost_anomalies(latest.unit_cost, None, th)
         if not cost_is_reliable(anomalies):
+            out.withhold(pid, Withholding.COST_NOT_RELIABLE)
             continue
 
         cost_delta = float((latest.unit_cost - prior.unit_cost) / prior.unit_cost)
         if cost_delta <= th.cost_increase_pct:
-            continue  # no material cost increase
+            continue  # judged, and no material cost increase — a clear result
 
         sales = snapshot.sales_for_product(pid)
         price_before = agg.avg_unit_price_range(sales, None, latest.date)
         price_after = agg.avg_unit_price_range(sales, latest.date, as_of)
         if price_before is None or price_before <= 0 or price_after is None:
+            out.withhold(pid, Withholding.PRICE_NOT_COMPARABLE)
             continue  # cannot assess whether price moved with cost
 
         price_change = float((price_after - price_before) / price_before)
         # compressed = price rose materially less than cost
         if price_change >= cost_delta - th.cost_price_lag_points:
-            continue  # price kept pace with cost — no pass-through gap
+            continue  # judged: price kept pace with cost — a clear result
 
         resulting_margin = (float((price_after - latest.unit_cost) / price_after)
                             if price_after > 0 else None)
@@ -85,4 +97,4 @@ def detect(snapshot: Snapshot, th: SignalThresholds, as_of: date) -> list[Signal
             detector_version="",
             threshold_config_version="",
         ))
-    return drafts
+    return out

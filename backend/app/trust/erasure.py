@@ -178,6 +178,21 @@ EXPORTED: tuple[tuple[str, Any], ...] = (
     ("access_grants", models.AccessGrant),
     ("access_events", models.AccessEvent),
     ("erasure_receipts", models.ErasureReceipt),
+    # What they asked us for, and what we did about it.
+    #
+    # Exported rather than excluded, and the neighbouring judgement is the one
+    # worth reading against: ``intelligence_trials`` sits in EXCLUDED because it
+    # is licensing bookkeeping with "no fact about your business in it". That
+    # sentence would be false here. A plan request carries a free-text note the
+    # owner wrote — "three companies, need it before the quarter" — which is
+    # their own words about their own business, and an exclusion note claiming
+    # otherwise would be untrue for every request that carries one.
+    #
+    # Small, and it is also the record of an ask this platform may not have
+    # answered. A departing customer is entitled to the evidence of what they
+    # requested and when, particularly where that is part of why they are
+    # leaving.
+    ("plan_change_requests", models.PlanChangeRequest),
 )
 
 #: Never exported, and each one has a reason a customer can read. Keyed by

@@ -19,10 +19,11 @@ not, and the check costs one line.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status as http
+from fastapi import (APIRouter, Depends, HTTPException, Query, Request,
+                     Response, status as http)
 from pydantic import BaseModel, Field, create_model, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -407,6 +408,60 @@ def update_margin_policy(
         "note": ("Saved. Existing metrics keep the version they were computed "
                  "with until the next recompute."),
     }
+
+
+@router.get("/margin-policy/backtest")
+def backtest_margin_policy(
+    min_margin: float = Query(..., ge=0, lt=1,
+                              description="Variant approval floor as a ratio "
+                                          "(0.14, not 14)."),
+    margin_floor: Optional[float] = Query(None, ge=0, lt=1),
+    since: Optional[date] = Query(None),
+    until: Optional[date] = Query(None),
+    principal: Principal = Depends(require_owner),
+    session: Session = Depends(get_session),
+) -> dict:
+    """What a different approval floor would have done to quotes already priced.
+
+    Read-only, writes nothing, and saves nothing — this is the question an owner
+    should be able to ask *before* the PATCH above, not after. It was reachable
+    only as ``python -m app.commercial.backtest``, which meant the one edit on
+    the settings screen with a blast radius across every future quote was also
+    the one edit nobody could model first.
+
+    **Owner only, and the reason is arithmetic rather than convention.**
+    ``shortfall_to_new_floor`` is ``(floor − price) × quantity`` and the caller
+    supplies the margin, so cost falls straight out:
+    ``cost = (price + shortfall/qty) × (1 − min_margin)``. That is not a
+    boundary a caller has to walk — it is a closed form, exact, from one
+    response. §1 permits two residual boundaries for a salesperson and this is
+    not one of them; it is full disclosure, and it is correct here only because
+    an owner may see cost outright. **Do not widen this to a role that may not.**
+    Matching ``update_margin_policy`` also keeps read and write on the same
+    person: a manager who could model a floor change still could not make one.
+
+    ``min_margin`` is bounded ``lt=1`` structurally, not as policy — the floor is
+    ``cost / (1 − margin)`` and 1.0 divides by zero. The bound also catches the
+    mistake the CLI help warns about, where 14 is passed for 14% and every line
+    in the book comes back newly gated.
+
+    Not plan-gated, with the rest of ``/admin``. Margin floors and approvals are
+    the free Quote Desk, this reads the ``QuoteDecision`` rows that desk writes,
+    and it tunes that desk's own guardrail — gating the tuning of a free feature
+    behind the paid plan is a commercial choice nobody has made, and this is not
+    the file to make it in.
+
+    Unbounded by default. ``QuoteDecision`` holds only quotes priced *in* PIE,
+    so for most organizations this is a small table and a full replay is the
+    answer an owner actually wants; ``since``/``until`` are there for the book
+    where it is not.
+    """
+    from ..commercial import backtest
+
+    report = backtest.run(session, principal.organization_id,
+                          min_margin=min_margin, margin_floor=margin_floor,
+                          since=since, until=until)
+    return report.to_dict()
 
 
 class UpdatePolicy(BaseModel):

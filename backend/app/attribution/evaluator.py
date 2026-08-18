@@ -29,6 +29,7 @@ deterministically, which is not the same thing as a defensible one.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Optional
@@ -47,6 +48,93 @@ from .detectors import NOT_MEASURABLE_REASONS
 #: How far back a baseline looks. Long enough that one quiet month does not
 #: define "before", short enough to still describe the business as it is now.
 BASELINE_DAYS = 90
+
+#: How far back the value summary looks once there is no trial framing it.
+#: The same 90 days as the baseline, and deliberately a separate constant: they
+#: answer different questions (what the book looked like *before* the platform
+#: versus what the platform has done *lately*) and moving one must not silently
+#: move the other.
+SUMMARY_DAYS = 90
+
+#: What framed the window a summary measured. Strings rather than an enum, as
+#: the gap reasons above are, because nothing persists them.
+WINDOW_TRIAL = "TRIAL"
+WINDOW_RECENT = "RECENT"
+
+
+@dataclass(frozen=True)
+class Window:
+    """The period a summary measured, and what put it there.
+
+    Carried rather than implied. The summary used to be the trial window and
+    nothing else, so a reader could assume it; now that it can be either, a
+    figure whose period is inferred from context is a figure that gets compared
+    against one measured over a different period.
+    """
+
+    start: datetime
+    end: datetime
+    basis: str
+    label: str
+    #: Set when ``end`` was cut short by what the plan entitles this
+    #: organization to read, rather than by the clock. ``None`` otherwise.
+    frozen_at: Optional[datetime] = None
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"basis": self.basis, "label": self.label,
+                "start": clock.iso(self.start), "end": clock.iso(self.end),
+                "days": max(0, (self.end - self.start).days),
+                "frozen_at": clock.iso(self.frozen_at) if self.frozen_at else None}
+
+
+def summary_window(session: Session, org: str, *, days: int = SUMMARY_DAYS,
+                   readable_until: Optional[datetime] = None) -> Window:
+    """The period the value summary should measure for this organization.
+
+    Three cases, and the middle one is the defect this function exists to fix.
+
+    **A running trial** frames the window, because that is what the trial is
+    for and what the countdown on every other screen refers to.
+
+    **A finished trial on a live plan** must *not* keep framing it. It did, and
+    the consequence was that a paying customer's headline stopped advancing on
+    the day their trial ended: the window stayed pinned at ``ends_at``, so value
+    attributed months later fell outside it and the screen reported no events —
+    not a measured zero but the "no detection run is on record" gap, while the
+    ledger held the events. A customer paying for the intelligence layer read
+    that as the platform having found nothing.
+
+    **A finished trial on a lapsed plan** keeps the trial window, and that is
+    not the bug wearing a different hat. ``readable_until`` says the plan
+    entitles this organization to read up to its trial end and no further, so a
+    trailing window would be capped to nothing and report an emptiness that is
+    an entitlement, not a fact about the business. The window it may see is the
+    window it is shown, marked ``frozen_at``.
+
+    An organization that never had a trial gets the trailing window too, rather
+    than the refusal it used to get. A tenant provisioned by an operator has no
+    trial row and never will, and telling it to "connect a Zoho company to start
+    one" when it has been connected for a year is a dead end, not an answer.
+    """
+    now = clock.now()
+    trial = current_trial(session, org)
+    ends = clock.aware(trial.ends_at) if trial is not None else None
+    started = clock.aware(trial.started_at) if trial is not None else None
+
+    if trial is not None and started is not None and ends is not None:
+        if ends > now:
+            return Window(start=started, end=now, basis=WINDOW_TRIAL,
+                          label="Your Commercial Intelligence trial")
+        if readable_until is not None:
+            return Window(start=started, end=min(ends, readable_until),
+                          basis=WINDOW_TRIAL,
+                          label="Your Commercial Intelligence trial",
+                          frozen_at=readable_until)
+
+    end = min(now, readable_until) if readable_until is not None else now
+    return Window(start=end - timedelta(days=days), end=end,
+                  basis=WINDOW_RECENT, label=f"The last {days} days",
+                  frozen_at=readable_until)
 
 #: The value classes this module will report. ESTIMATED is deliberately absent:
 #: no detector produces one, so every field and every breakdown row carrying it
@@ -193,6 +281,7 @@ def _by_event_type(session: Session, org: str,
 def list_events(session: Session, org: str, *,
                 event_type: Optional[ValueEventType] = None,
                 value_class: Optional[ValueClass] = None,
+                readable_until: Optional[datetime] = None,
                 limit: int = 100, offset: int = 0) -> dict[str, Any]:
     """One page of the ledger itself, newest business fact first.
 
@@ -211,6 +300,17 @@ def list_events(session: Session, org: str, *,
     Ordered by ``occurred_at`` with ``value_event_id`` as the tie-break, because
     several events can share a timestamp to the second and a paged list whose
     order is not total will show one row twice and skip another.
+
+    ``readable_until`` caps the window at a moment the caller is entitled to see
+    up to, and is the one filter that is *not* a user choice: an organization
+    whose intelligence plan has lapsed keeps its trial on record, and the rule
+    the router applies is that it may still read what PIE did for it *then*.
+    ``None`` means unbounded. The bound is applied to ``total`` as well as to the
+    page, so the count and the rows agree — a total counted past a cap the reader
+    cannot page to is a number that cannot be opened, which is the one thing this
+    surface exists to avoid. It is echoed back as ``readable_until`` so a screen
+    can say the view is frozen rather than leaving a truncated ledger looking
+    like the whole one.
     """
     where = [models.ValueEvent.organization_id == org,
              models.ValueEvent.superseded_at.is_(None)]
@@ -218,6 +318,8 @@ def list_events(session: Session, org: str, *,
         where.append(models.ValueEvent.event_type == event_type.value)
     if value_class is not None:
         where.append(models.ValueEvent.value_class == value_class.value)
+    if readable_until is not None:
+        where.append(models.ValueEvent.occurred_at <= readable_until)
 
     total = int(session.scalar(
         select(func.count()).select_from(models.ValueEvent).where(*where)) or 0)
@@ -252,6 +354,9 @@ def list_events(session: Session, org: str, *,
         "limit": limit,
         "offset": offset,
         "has_more": offset + len(rows) < total,
+        # Named even when it is ``None``, so a client reads "unbounded" from the
+        # payload rather than from the key being absent.
+        "readable_until": clock.iso(readable_until) if readable_until else None,
         "currency": "INR",
         "page_is_not_a_total": (
             "These are ledger rows, not a rollup. Summing them adds POTENTIAL "
@@ -468,25 +573,34 @@ def capture_baseline(session: Session, org: str,
 
 
 # ── live progress and the report ─────────────────────────────────────────────
-def trial_progress(session: Session, org: str) -> dict[str, Any]:
-    """The numbers so far in the live trial window.
+def value_summary(session: Session, org: str, *,
+                  window: Optional[Window] = None,
+                  days: int = SUMMARY_DAYS,
+                  readable_until: Optional[datetime] = None) -> dict[str, Any]:
+    """What the platform is measured to have been worth over one window.
 
-    Reads the ledger; runs no detector. The report is computed on demand from
-    recorded events precisely so it cannot go stale against its own evidence —
-    but that also means a window with no events says UNKNOWN rather than zero,
+    Reads the ledger; runs no detector. The figures are computed on demand from
+    recorded events precisely so they cannot go stale against their own evidence
+    — but that also means a window with no events says UNKNOWN rather than zero,
     because nothing here can tell "detected and found nothing" from "detection
     never ran".
-    """
-    trial = current_trial(session, org)
-    if trial is None:
-        return {"trial": None, "attributed_value": None,
-                "evidence_gaps": [_gap("trial", NO_TRIAL_ON_RECORD,
-                                       "this organization has no intelligence trial "
-                                       "on record, so there is no window to measure")]}
 
-    started = clock.aware(trial.started_at) or clock.now()
-    ends = clock.aware(trial.ends_at) or clock.now()
-    until = min(clock.now(), ends)
+    ``window`` is chosen by ``summary_window`` when the caller does not supply
+    one; ``thirty_day_report`` supplies the trial window explicitly, because a
+    before-and-after report is about the trial by definition and must not follow
+    the summary's default when that default changes.
+
+    Was ``trial_progress``, and the rename is the fix rather than tidying. The
+    old name was accurate — it measured the trial and only ever the trial — and
+    the screen used it as the general value summary, so a customer's headline
+    froze on the day their trial ended. Naming it for the window it is given
+    makes the caller state which period it wants.
+    """
+    if window is None:
+        window = summary_window(session, org, days=days,
+                                readable_until=readable_until)
+    trial = current_trial(session, org)
+    started, until = window.start, window.end
 
     classes = _by_class(session, org, started, until)
     total_events = sum(c["events"] for c in classes.values())
@@ -496,9 +610,10 @@ def trial_progress(session: Session, org: str) -> dict[str, Any]:
     if not total_events:
         headline: Optional[Decimal] = None
         gaps.append(_gap("attributed_value", NO_EVENTS_RECORDED,
-                         "no value events are recorded in the trial window. That is "
-                         "not a measured zero — it means no detection run has been "
-                         "recorded, and the two cannot be told apart from here"))
+                         f"no value events are recorded in {window.label.lower()}. "
+                         "That is not a measured zero — it means no detection run "
+                         "has been recorded in this window, and the two cannot be "
+                         "told apart from here"))
     else:
         # The window holds events and none of them are ATTRIBUTED: a measured
         # zero, real and reportable, and deliberately not topped up from
@@ -531,13 +646,21 @@ def trial_progress(session: Session, org: str) -> dict[str, Any]:
         gaps.append(_gap(event_type.value, NOT_MEASURABLE,
                          NOT_MEASURABLE_REASONS.get(event_type, UNRECORDED_TYPE)))
 
+    trial_ends = clock.aware(trial.ends_at) if trial is not None else None
     return {
-        "trial": {"trial_id": trial.trial_id,
-                  "started_at": clock.iso(started),
-                  "ends_at": clock.iso(ends),
-                  "measured_to": clock.iso(until),
-                  "days_elapsed": max(0, (until - started).days),
-                  "days_remaining": max(0, (ends - clock.now()).days)},
+        # The window is the authority for what was measured; the trial block is
+        # the trial's own facts and is ``None`` where there has never been one.
+        # They were one object while the two were always the same period, and
+        # keeping them fused is what let a stale window pass as a live one.
+        "window": window.as_dict(),
+        "trial": None if trial is None else {
+            "trial_id": trial.trial_id,
+            "started_at": clock.iso(clock.aware(trial.started_at)),
+            "ends_at": clock.iso(trial_ends),
+            "is_running": bool(trial_ends and trial_ends > clock.now()),
+            "days_remaining": (max(0, (trial_ends - clock.now()).days)
+                               if trial_ends else 0)},
+        "measured_to": clock.iso(until),
         # The headline, and only ATTRIBUTED is in it.
         "attributed_value": headline,
         "attributed_events": attributed["events"],
@@ -571,9 +694,29 @@ def thirty_day_report(session: Session, org: str, *,
     the caller must render that as UNKNOWN. A default cost would make every ROI
     on every screen a number nobody entered.
     """
-    progress = trial_progress(session, org)
-    gaps: list[dict[str, str]] = list(progress.get("evidence_gaps") or [])
     trial = current_trial(session, org)
+    if trial is None:
+        # The summary would happily measure a trailing window here, and that is
+        # right for the summary and wrong for this. A before-and-after report
+        # with no "before" is not a thinner report, it is a different claim.
+        return {"window": None, "trial": None, "attributed_value": None,
+                "baseline": None, "comparison": None,
+                "roi": None, "roi_is_unknown": True,
+                "evidence_gaps": [_gap(
+                    "trial", NO_TRIAL_ON_RECORD,
+                    "this organization has no intelligence trial on record, so "
+                    "there is no before-and-after to draw")]}
+
+    started = clock.aware(trial.started_at) or clock.now()
+    until = min(clock.now(), clock.aware(trial.ends_at) or clock.now())
+
+    # Pinned to the trial explicitly rather than taken from the summary's
+    # default: this report is about the trial by definition, and it must not
+    # start measuring a trailing window the day that default changes.
+    progress = value_summary(session, org, window=Window(
+        start=started, end=until, basis=WINDOW_TRIAL,
+        label="Your Commercial Intelligence trial"))
+    gaps: list[dict[str, str]] = list(progress.get("evidence_gaps") or [])
 
     report: dict[str, Any] = {
         **progress,
@@ -582,12 +725,6 @@ def thirty_day_report(session: Session, org: str, *,
         "roi": None,
         "roi_is_unknown": True,
     }
-    if trial is None:
-        report["evidence_gaps"] = gaps
-        return report
-
-    started = clock.aware(trial.started_at) or clock.now()
-    until = min(clock.now(), clock.aware(trial.ends_at) or clock.now())
 
     baseline = session.scalars(
         select(models.EvaluationBaseline)

@@ -253,6 +253,26 @@ class Settings:
     SIGNUP_RATE_LIMIT_PER_HOUR: int = int(
         os.environ.get("SIGNUP_RATE_LIMIT_PER_HOUR", "5"))
 
+    # ── The public demonstration workspace (app/routers/onboarding.py) ───────
+    # A tenant a stranger may enter without an account, to see what the product
+    # does before deciding whether it is worth signing up for. **Empty unless a
+    # deployment names one**, and empty means the endpoint is not there at all
+    # rather than there and refusing — a single-tenant install pulling new code
+    # must not acquire an unauthenticated door it never asked for.
+    #
+    # Naming the organization *and* the user explicitly rather than inferring
+    # "the owner of that org": inference would pick a different account the day
+    # somebody adds a second owner, and the account a stranger signs in as is
+    # not a thing to decide by whichever row sorts first.
+    #
+    # A demo principal is refused every unsafe method in `authz`, so what this
+    # opens is a read of fabricated data. Point it at an organization that was
+    # seeded by `app.demo` and holds no connection and no credentials; nothing
+    # here checks that, because a settings module cannot, and
+    # `test_public_demo.py` does.
+    PUBLIC_DEMO_ORG_ID: str = os.environ.get("PUBLIC_DEMO_ORG_ID", "")
+    PUBLIC_DEMO_EMAIL: str = os.environ.get("PUBLIC_DEMO_EMAIL", "")
+
     # The single supported organization for V1 (one org, one ERP). organization_id
     # is carried on every record for future multi-org, but no cross-org logic exists.
     DEFAULT_ORG_ID: str = os.environ.get("DEFAULT_ORG_ID", "org_pie")

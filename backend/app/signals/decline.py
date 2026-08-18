@@ -10,17 +10,30 @@ from datetime import date
 
 from ..domain.enums import EvidenceSufficiency, SignalType, SubjectEntityType
 from . import aggregates as agg
-from .base import Snapshot, SignalDraft, Sufficiency, clamp_severity, evidence_ref
+from .base import (Coverage, Snapshot, SignalDraft, Sufficiency, Withholding,
+                   clamp_severity, evidence_ref)
 from .config import SignalThresholds
 from .quality import sales_outliers
 
 
 def detect(snapshot: Snapshot, th: SignalThresholds, as_of: date) -> list[SignalDraft]:
+    """Just the drafts. ``examine`` is the same run with its denominator kept.
+
+    Both exist because twenty-odd call sites want the list and threading
+    ``.drafts`` through all of them adds noise without adding truth. There is
+    still exactly one implementation of who is eligible — this delegates.
+    """
+    return examine(snapshot, th, as_of).drafts
+
+
+def examine(snapshot: Snapshot, th: SignalThresholds, as_of: date) -> Coverage:
     recent_w = agg.recent_window(as_of, th)
     prior_w = agg.prior_window(as_of, th)
-    drafts: list[SignalDraft] = []
+    out = Coverage(detector="CUSTOMER_DECLINE")
+    drafts = out.drafts
 
     for cid in snapshot.customer_ids():
+        out.considered += 1
         sales = snapshot.sales_for_customer(cid)
         history_months = agg.history_span_months(sales, as_of)
         prior_orders = len(agg.orders_in(sales, prior_w))
@@ -30,17 +43,22 @@ def detect(snapshot: Snapshot, th: SignalThresholds, as_of: date) -> list[Signal
 
         # eligibility / minimum evidence — withhold (no signal) if insufficient
         if history_months < th.decline_min_history_months:
+            out.withhold(cid, Withholding.NOT_ENOUGH_HISTORY)
             continue
         if prior_orders < th.decline_min_prior_orders:
+            out.withhold(cid, Withholding.TOO_FEW_PRIOR_ORDERS)
             continue
         baseline = agg.revenue_in(sales, prior_w)
         recent = agg.revenue_in(sales, recent_w)
         if baseline <= 0:
-            continue  # cannot express a decline against a zero/absent baseline
+            # Cannot express a decline against a zero/absent baseline. Withheld
+            # rather than clear: nothing was judged here.
+            out.withhold(cid, Withholding.NO_BASELINE_REVENUE)
+            continue
 
         change_pct = float((recent - baseline) / baseline)
         if change_pct > -th.decline_drop_pct:
-            continue  # not a material decline
+            continue  # judged, and not a material decline — a clear result
 
         metrics = {
             "baseline_revenue": float(round(baseline, 2)),
@@ -69,4 +87,4 @@ def detect(snapshot: Snapshot, th: SignalThresholds, as_of: date) -> list[Signal
             detector_version="",  # stamped by the engine
             threshold_config_version="",
         ))
-    return drafts
+    return out

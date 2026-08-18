@@ -25,7 +25,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..authz import (
-    Principal, clear_session_cookie, current_principal, is_login_throttled,
+    Principal, clear_session_cookie, current_principal, is_demo_org,
+    is_login_throttled,
     open_session, record_login_failure, reset_login_failures, revoke_all_sessions,
     revoke_session, set_session_cookie)
 from .. import clock
@@ -81,6 +82,11 @@ class LoginResponse(BaseModel):
     # a day. The business's day is the one worth showing.
     timezone: str = "Asia/Kolkata"
     must_change_password: bool = False
+    #: This session is in the public demonstration workspace, which reads and
+    #: never writes. Sent so the client can say so on every screen: a visitor
+    #: who does not know the numbers are invented is being misled by a product
+    #: whose whole argument is that its numbers are real.
+    is_demo: bool = False
 
 
 @router.post("/login", response_model=LoginResponse)
@@ -158,7 +164,8 @@ def login(body: LoginRequest, request: Request, response: Response,
         role=user.role, name=user.name, email=user.email,
         currency=(getattr(org, "currency", None) or settings.DEFAULT_CURRENCY),
         timezone=(getattr(org, "timezone", None) or clock.DEFAULT_ZONE),
-        must_change_password=user.must_change_password)
+        must_change_password=user.must_change_password,
+        is_demo=is_demo_org(user.organization_id))
 
 
 class SessionView(BaseModel):

@@ -10,13 +10,21 @@ from datetime import date
 
 from ..domain.enums import EvidenceSufficiency, SignalType, SubjectEntityType
 from . import aggregates as agg
-from .base import Snapshot, SignalDraft, Sufficiency, clamp_severity, evidence_ref
+from .base import (Coverage, Snapshot, SignalDraft, Sufficiency, Withholding,
+                   clamp_severity, evidence_ref)
 from .config import SignalThresholds
 
 
 def detect(snapshot: Snapshot, th: SignalThresholds, as_of: date) -> list[SignalDraft]:
-    drafts: list[SignalDraft] = []
+    """Just the drafts — see ``examine`` for the denominator and the withholds."""
+    return examine(snapshot, th, as_of).drafts
+
+
+def examine(snapshot: Snapshot, th: SignalThresholds, as_of: date) -> Coverage:
+    out = Coverage(detector="CUSTOMER_DORMANCY")
+    drafts = out.drafts
     for cid in snapshot.customer_ids():
+        out.considered += 1
         sales = snapshot.sales_for_customer(cid)
         # Eligibility, the median gap and the overdue test all live in
         # ``aggregates.cadence_of`` — shared with the buying-rhythm screen and
@@ -24,8 +32,18 @@ def detect(snapshot: Snapshot, th: SignalThresholds, as_of: date) -> list[Signal
         cadence = agg.cadence_of(sales, as_of,
                                  min_orders=th.dormancy_min_orders,
                                  multiplier=th.dormancy_interval_multiplier)
-        if not cadence.overdue:
+        # Three outcomes, and only the last is a clear result. No orders and no
+        # established rhythm are both "cannot look" — a customer with two orders
+        # ever is not on time, they are unjudgeable, and folding them into the
+        # quiet majority is what made a thin book look like a calm one.
+        if not cadence.order_dates:
+            out.withhold(cid, Withholding.NO_ORDERS_ON_RECORD)
             continue
+        if cadence.expected_interval_days is None:
+            out.withhold(cid, Withholding.CADENCE_NOT_ESTABLISHED)
+            continue
+        if not cadence.overdue:
+            continue  # judged, and ordering on time
 
         dates = cadence.order_dates
         last_order = dates[-1]
@@ -56,4 +74,4 @@ def detect(snapshot: Snapshot, th: SignalThresholds, as_of: date) -> list[Signal
             detector_version="",
             threshold_config_version="",
         ))
-    return drafts
+    return out

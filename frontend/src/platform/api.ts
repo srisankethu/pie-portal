@@ -1,4 +1,4 @@
-import type { AccessReport, Account, AccountItem, AiByokView, AiKeyTestResult, AiMetricsReport, AiReadiness, ApprovalRequest, AttributionEvaluation, AttributionEvents, AttributionSummary, ConnectionCheck, ConnectionsView, ConnectorCatalog, ErpConnectInput, ErpDiscoveredCompany, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, DecisionTrace, DisclosureStatement, Entitlements, EntityKind, ErasureState, FixedThresholds, Identity, IdentityCoverage, IdentityPolicy, IdentitySuggestion, MarginPolicy, MarginPolicyPatch, NewConnectionInput, OnboardingView, OrgPolicy, PayloadsReport, PlatformSession, PlatformUser, QuoteGate, Role, SignupOffer, SkippedRows, StatusFilter, SyncOptions, SyncRunLogPage, SyncStartResponse, SyncState, ThresholdView, ZohoConnection, ZohoConnectionInput, ZohoCredential, ZohoVisibleOrg } from "./types";
+import type { AccessReport, Account, AccountItem, AiByokView, AiKeyTestResult, AiMetricsReport, AiReadiness, ApprovalRequest, AttributionEvaluation, AttributionEvents, AttributionSummary, ConnectionCheck, ConnectionsView, ConnectorCatalog, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, DecisionTrace, DemoOffer, DisclosureStatement, Entitlements, EntityKind, ErasureState, ErpConnectInput, ErpDiscoveredCompany, FixedThresholds, FloorBacktest, Identity, IdentityCoverage, IdentityPolicy, IdentitySuggestion, MarginPolicy, MarginPolicyPatch, NewConnectionInput, OnboardingView, OrgPolicy, PayloadsReport, PlatformSession, PlatformUser, QuoteGate, Retrospective, Role, SignupOffer, SkippedRows, StatusFilter, SyncOptions, SyncRunLogPage, SyncStartResponse, SyncState, ThresholdView, ZohoConnection, ZohoConnectionInput, ZohoCredential, ZohoVisibleOrg } from "./types";
 
 import { setMoneyCurrency } from "../money";
 import { setBusinessTimezone } from "../when";
@@ -253,6 +253,19 @@ export const papi = {
    *  a sign-in rather than a second path that forgets the currency. */
   signUp: (body: SignUpBody) =>
     req<LoginResp>("/api/v1/signup", { method: "POST", body: JSON.stringify(body) }),
+
+  /** Is there a demonstration workspace here, and entering it. The POST needs
+   *  no credential and returns the same envelope a sign-in does, so the client
+   *  stores it with the same code — one way to become signed in, not two. */
+  demoOffer: () => req<DemoOffer>("/api/v1/demo"),
+
+  /** Ask to move plan. Owner only, and it grants nothing — a person decides it.
+   *  Returns the whole entitlement view so the caller re-renders from one
+   *  answer instead of deciding locally that it worked. */
+  requestPlan: (t: string, plan: string, note = "") =>
+    req<Entitlements>("/api/v1/entitlements",
+                      { method: "POST", body: JSON.stringify({ plan, note }) }, t),
+  enterDemo: () => req<LoginResp>("/api/v1/demo", { method: "POST" }),
 
   /** What this organization still has to do before the screens have anything
    *  to say. Derived server-side from connections, sync runs, the policy row
@@ -591,6 +604,21 @@ export const papi = {
   simulate: (t: string, body: Record<string, unknown>) =>
     req<Record<string, unknown>>("/api/v1/insight/simulate",
       { method: "POST", body: JSON.stringify(body) }, t),
+
+  // ── what a different approval floor would have done ───────────────────────
+  // Owner only, and asked for explicitly rather than on every keystroke: each
+  // call replays every recorded quote line twice.
+  floorBacktest: (t: string, minMargin: number, marginFloor?: number | null) => {
+    const q = new URLSearchParams({ min_margin: String(minMargin) });
+    if (marginFloor !== undefined && marginFloor !== null) {
+      q.set("margin_floor", String(marginFloor));
+    }
+    return req<FloorBacktest>(
+      `/api/v1/admin/margin-policy/backtest?${q.toString()}`, {}, t);
+  },
+
+  // ── what the books already held, before PIE did anything ──────────────────
+  retrospective: (t: string) => req<Retrospective>("/api/v1/retrospective", {}, t),
 
   // ── what PIE changed: the value-attribution ledger ────────────────────────
   // Manager and above for the first two, owner only for the report, and all

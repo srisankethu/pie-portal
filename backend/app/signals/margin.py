@@ -14,7 +14,8 @@ from typing import Optional
 
 from ..domain.enums import EvidenceSufficiency, SignalType, SubjectEntityType
 from . import aggregates as agg
-from .base import Snapshot, SignalDraft, Sufficiency, clamp_severity, evidence_ref
+from .base import (Coverage, Snapshot, SignalDraft, Sufficiency, Withholding,
+                   clamp_severity, evidence_ref)
 from .config import SignalThresholds
 from .quality import cost_anomalies, cost_is_reliable
 
@@ -26,25 +27,46 @@ def _margin(price: Optional[Decimal], cost: Decimal) -> Optional[float]:
 
 
 def detect(snapshot: Snapshot, th: SignalThresholds, as_of: date) -> list[SignalDraft]:
+    """Just the drafts — see ``examine`` for the denominator and the withholds.
+
+    The denominator matters most here of the four. A book that has synced sales
+    but no purchase bills yields no margin signals at all, and read as a bare
+    count that is a business with no margin problem.
+    """
+    return examine(snapshot, th, as_of).drafts
+
+
+def examine(snapshot: Snapshot, th: SignalThresholds, as_of: date) -> Coverage:
     recent_w = agg.recent_window(as_of, th)
     prior_w = agg.prior_window(as_of, th)
-    drafts: list[SignalDraft] = []
+    out = Coverage(detector="MARGIN_DETERIORATION")
+    drafts = out.drafts
 
     for pid in snapshot.product_ids():
+        out.considered += 1
         sales = snapshot.sales_for_product(pid)
         costs = snapshot.costs_for_product(pid)
-        if not sales or not costs:
-            continue  # need both sales and cost to speak about margin
+        # Need both sales and cost to speak about margin, and *which* is missing
+        # is the difference between a product nobody bought and a book with no
+        # purchase bills synced. The second is fixable and worth saying.
+        if not sales:
+            out.withhold(pid, Withholding.NO_SALES_ON_RECORD)
+            continue
+        if not costs:
+            out.withhold(pid, Withholding.NO_COST_ON_RECORD)
+            continue
 
         recent_price = agg.avg_unit_price(sales, recent_w)
         prior_price = agg.avg_unit_price(sales, prior_w)
         if recent_price is None or prior_price is None:
-            continue  # not enough priced activity in both periods
+            out.withhold(pid, Withholding.NOT_PRICED_IN_BOTH_PERIODS)
+            continue
 
         recent_cost_row = agg.cost_basis_asof(costs, recent_w[1])
         prior_cost_row = agg.cost_basis_asof(costs, prior_w[1])
         if recent_cost_row is None or prior_cost_row is None:
-            continue  # no applicable cost basis in a period
+            out.withhold(pid, Withholding.NO_COST_BASIS_IN_PERIOD)
+            continue
 
         # reliability of BOTH costs we compute the two margins from. A placeholder
         # or zero prior cost would inflate the baseline margin toward 100% and
@@ -53,15 +75,17 @@ def detect(snapshot: Snapshot, th: SignalThresholds, as_of: date) -> list[Signal
         prior_anomalies = cost_anomalies(prior_cost_row.unit_cost, prior_price, th)
         if not cost_is_reliable(anomalies) or not cost_is_reliable(prior_anomalies):
             # withhold: do not assert a margin on bad cost; flag for verification
+            out.withhold(pid, Withholding.COST_NOT_RELIABLE)
             continue
 
         current_margin = _margin(recent_price, recent_cost_row.unit_cost)
         baseline_margin = _margin(prior_price, prior_cost_row.unit_cost)
         if current_margin is None or baseline_margin is None:
+            out.withhold(pid, Withholding.PRICE_NOT_COMPARABLE)
             continue
         drop = baseline_margin - current_margin
         if drop <= th.margin_drop_points:
-            continue  # not a material deterioration
+            continue  # judged, and not a material deterioration
 
         price_change = float((recent_price - prior_price) / prior_price) if prior_price else None
         cost_change = (float((recent_cost_row.unit_cost - prior_cost_row.unit_cost)
@@ -104,4 +128,4 @@ def detect(snapshot: Snapshot, th: SignalThresholds, as_of: date) -> list[Signal
             detector_version="",
             threshold_config_version="",
         ))
-    return drafts
+    return out

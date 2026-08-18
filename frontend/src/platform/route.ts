@@ -67,6 +67,9 @@ export type Screen =
   /** What the platform itself changed: the value ledger, its evidence gaps and
    *  — for the owner — the 30-day report against the pre-trial baseline. */
   | "attribution"
+  /** The other half of that pair, and the earlier one: what the book already
+   *  held when it arrived, and how much of it could be judged at all. */
+  | "retrospective"
   /** The approval queue, and organization settings (owner is super admin). */
   | "approvals" | "settings"
   /** Which connector records describe the same customer or item. */
@@ -122,6 +125,7 @@ export const PATH: Record<Screen, string> = {
   negotiate: "/negotiate",
   quoteOutcomes: "/quote-outcomes",
   attribution: "/what-pie-changed",
+  retrospective: "/what-your-books-hold",
 };
 
 /** The three screens whose URL carries an id, as route patterns.

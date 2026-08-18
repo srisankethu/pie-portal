@@ -267,6 +267,29 @@
 }
 .pie-landing .lp-sched .lp-sched-note { font-size: 11.5px; color: var(--color-neutral-600); margin-left: 4px; }
 
+/* How a plan actually changes. Sits under the pricing standfirst, quieter than
+   it — it is the mechanism, not the offer. */
+.pie-landing .lp-pricing-how {
+  font-size: 13px;
+  color: var(--color-neutral-600);
+  margin-top: -4px;
+}
+
+/* ── what this is not: one aside, in the register of a drawing note ──
+   Deliberately quiet. It is a correction to an assumption the reader has
+   already made, not a claim of its own, and setting it as loudly as a section
+   would make the page argue with itself. */
+.pie-landing .lp-notwhat {
+  padding: 18px 24px 0;
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--color-neutral-600);
+}
+.pie-landing .lp-notwhat b {
+  color: var(--color-neutral-900);
+  font-weight: 600;
+}
+
 /* ── dimension-line dividers: the section names live on these ── */
 .pie-landing .lp-dim {
   display: flex; align-items: center; gap: 12px;

@@ -34,7 +34,7 @@ from decimal import Decimal
 from typing import Any, Iterator
 
 import pytest
-from fastapi import Depends, FastAPI
+from fastapi import FastAPI
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
@@ -48,9 +48,11 @@ from app.attribution import ledger as led
 from app.attribution.calculator import roi
 from app.commercial.quote_exceptions import BELOW_MARGIN_FLOOR
 from app.commercial.references import MARGIN_FLOOR_PRICE
+from app.config import settings
 from app.db import get_session
 from app.domain import models
-from app.domain.enums import ValueClass, ValueEventType
+from app.domain.enums import PlanTier, ValueClass, ValueEventType
+from app.passwords import hash_password
 from app.routers import attribution as attribution_router
 from app.routers import platform_auth
 from app.seed import SEED_PASSWORD, ensure_org_and_users
@@ -251,11 +253,10 @@ def client():
 
     app = FastAPI()
     app.include_router(platform_auth.router)
-    # Mirrors main.py: the whole surface is gated at inclusion, and the roles
-    # are enforced per route inside it.
-    app.include_router(
-        attribution_router.router,
-        dependencies=[Depends(entitlements.require_feature("intelligence"))])
+    # Mirrors main.py: this surface is *not* gated at inclusion. The plan rule is
+    # per route (an organization reads up to the window it was entitled to) and
+    # the roles are enforced per route inside it.
+    app.include_router(attribution_router.router)
 
     def _override():
         sess = Maker()
@@ -436,7 +437,7 @@ def test_the_headline_never_includes_potential_or_estimated(session, trial):
     quietly folded in to make a renewal look better.
     """
     _seed_ledger(session)
-    progress = ev.trial_progress(session, ORG)
+    progress = ev.value_summary(session, ORG)
 
     assert progress["attributed_value"] == ATTRIBUTED_AMOUNT
     assert progress["attributed_events"] == 1
@@ -482,13 +483,13 @@ def test_an_empty_window_and_a_measured_zero_stay_distinguishable(session, trial
     Collapsing them would turn "we have not looked" into "we looked and it was
     worth nothing".
     """
-    empty = ev.trial_progress(session, ORG)
+    empty = ev.value_summary(session, ORG)
     assert empty["attributed_value"] is None
     assert ev.NO_EVENTS_RECORDED in {g["reason"] for g in empty["evidence_gaps"]}
 
     # Now the window holds evidence — just none of it ATTRIBUTED.
     led.record(session, ORG, _draft(ValueClass.POTENTIAL, POTENTIAL_AMOUNT))
-    measured = ev.trial_progress(session, ORG)
+    measured = ev.value_summary(session, ORG)
 
     assert measured["attributed_value"] is not None
     assert measured["attributed_value"] == Decimal("0")
@@ -618,7 +619,7 @@ def test_every_unmeasurable_event_type_is_a_named_gap_not_a_measured_zero(
     _protected_line(session, quote_id="q_flag")
     _run_and_record(session)
 
-    progress = ev.trial_progress(session, ORG)
+    progress = ev.value_summary(session, ORG)
     measured = {row["event_type"] for row in progress["by_event_type"]}
     named = {gap["subject"] for gap in progress["evidence_gaps"]}
 
@@ -660,6 +661,299 @@ def test_the_named_gaps_survive_to_the_screen(client):
                        ValueEventType.PROCUREMENT_OPPORTUNITY,
                        ValueEventType.EQUIVALENT_SAVING):
         assert event_type.value in named
+
+
+# ── the window the summary measures ──────────────────────────────────────────
+# The summary used to be the trial window and only ever the trial window, while
+# the screen used it as the general "what PIE changed" figure. So a customer's
+# headline froze on the day their trial ended: value attributed months later
+# fell outside the window and the screen reported the "no detection run is on
+# record" gap — not a measured zero — while the ledger held the events. These
+# pin the window to the question being asked rather than to the trial.
+def _org_with_a_recent_event(s, org: str, *, plan: str, trial: bool,
+                             amount: Decimal = Decimal("50000.0000")):
+    """An organization whose only value event is from *yesterday*.
+
+    Yesterday is the point: it is comfortably outside any trial that ended
+    months ago, so a summary still pinned to the trial cannot see it and the
+    assertion fails for the reason it names.
+    """
+    s.add(models.Organization(organization_id=org, name=org, plan=plan))
+    s.flush()
+    now = clock.now()
+    if trial:
+        ended = now - timedelta(days=90)
+        s.add(models.IntelligenceTrial(
+            organization_id=org, zoho_organization_id=f"z{org}",
+            started_at=ended - timedelta(days=30), ends_at=ended))
+        s.flush()
+    led.record(s, org, led.ValueEventDraft(
+        event_type=ValueEventType.MARGIN_PROTECTED,
+        value_class=ValueClass.ATTRIBUTED,
+        event_key=led.event_key(org, ValueEventType.MARGIN_PROTECTED,
+                                ValueClass.ATTRIBUTED, ("q_recent", "L1")),
+        amount=amount, basis={"formula": "recent"},
+        evidence_refs=[{"record_type": "quote_decision", "record_id": "qd_recent",
+                        "quote_id": "q_recent"}],
+        occurred_at=now - timedelta(days=1),
+        thresholds_version=THRESHOLDS_VERSION))
+    s.flush()
+
+
+def test_a_paying_customers_headline_advances_past_their_trial(session):
+    """The defect this rename exists to fix.
+
+    An organization on the intelligence plan whose trial ended ninety days ago,
+    with value attributed yesterday. Pinned to the trial this reported ``None``
+    and "no detection run has been recorded" — the platform telling a paying
+    customer it had found nothing, while the ledger held ₹50,000.
+    """
+    _org_with_a_recent_event(session, "org_paying",
+                             plan=PlanTier.INTELLIGENCE.value, trial=True)
+    result = ev.value_summary(session, "org_paying")
+
+    assert result["attributed_value"] == Decimal("50000.0000")
+    assert result["window"]["basis"] == ev.WINDOW_RECENT
+    reasons = {g["reason"] for g in result["evidence_gaps"]}
+    assert ev.NO_EVENTS_RECORDED not in reasons
+
+
+def test_an_organization_that_never_had_a_trial_is_measured_not_refused(session):
+    """A tenant an operator provisioned has no trial row and never will.
+
+    It used to get "connect a Zoho company to start one", which is a dead end
+    for a book that has been connected for a year.
+    """
+    _org_with_a_recent_event(session, "org_no_trial",
+                             plan=PlanTier.PLATFORM.value, trial=False)
+    result = ev.value_summary(session, "org_no_trial")
+
+    assert result["trial"] is None
+    assert result["attributed_value"] == Decimal("50000.0000")
+    reasons = {g["reason"] for g in result["evidence_gaps"]}
+    assert ev.NO_TRIAL_ON_RECORD not in reasons
+
+
+def test_a_lapsed_plan_keeps_the_trial_window_rather_than_a_trailing_one(session):
+    """Where the two rules meet.
+
+    A trailing window capped by entitlement would be capped to nothing and
+    report an emptiness that is an entitlement, not a fact about the business.
+    The window a lapsed organization may see is the one it is shown.
+    """
+    _org_with_a_recent_event(session, "org_lapsed_w",
+                             plan=PlanTier.FREE.value, trial=True)
+    trial = ev.current_trial(session, "org_lapsed_w")
+    result = ev.value_summary(session, "org_lapsed_w",
+                              readable_until=clock.aware(trial.ends_at))
+
+    assert result["window"]["basis"] == ev.WINDOW_TRIAL
+    assert result["window"]["frozen_at"] is not None
+    assert result["attributed_value"] is None, \
+        "yesterday's event is past what this plan entitles them to read"
+
+
+def test_the_evaluation_report_stays_pinned_to_the_trial(session):
+    """The summary moved; the before-and-after must not follow it.
+
+    A report that measured a trailing window would compare the pre-trial
+    baseline against a period the trial had nothing to do with.
+    """
+    _org_with_a_recent_event(session, "org_report",
+                             plan=PlanTier.INTELLIGENCE.value, trial=True)
+    report = ev.thirty_day_report(session, "org_report")
+
+    assert report["window"]["basis"] == ev.WINDOW_TRIAL
+    assert report["attributed_value"] is None, \
+        "an event from yesterday is outside a trial that ended 90 days ago"
+
+
+def test_the_summary_says_which_window_it_measured(session):
+    """Carried, never implied.
+
+    Two figures over different periods look identical on a screen, and the one
+    that froze looked exactly like the one that was live — which is why the
+    defect survived as long as it did.
+    """
+    _org_with_a_recent_event(session, "org_window",
+                             plan=PlanTier.INTELLIGENCE.value, trial=False)
+    window = ev.value_summary(session, "org_window")["window"]
+
+    assert window["basis"] in (ev.WINDOW_TRIAL, ev.WINDOW_RECENT)
+    assert window["start"] and window["end"] and window["label"]
+    assert window["days"] == ev.SUMMARY_DAYS
+
+
+# ── the window a lapsed plan keeps ───────────────────────────────────────────
+# The screen a renewal is argued from used to go dark on the day the trial
+# ended: `/attribution` was gated at `include_router` with the other
+# intelligence surfaces, so the organization dropped to free and the owner
+# deciding whether to pay could no longer read what had been done for them —
+# while `jobs.py` went on writing the evidence on every sync. These pin the rule
+# that replaced it: an organization always keeps the window it was entitled to,
+# and rolling detection past that moment is what the plan buys.
+LAPSED_ORG = "org_lapsed"
+LAPSED_OWNER = "owner@lapsed.example"
+
+
+def _lapsed_client(*, with_trial: bool):
+    """An organization on the free plan whose trial has already finished.
+
+    Events are seeded on both sides of ``ends_at`` so the cap has something to
+    exclude — a window test against a ledger that stops before the boundary
+    passes for the one reason that proves nothing.
+    """
+    engine = dbsupport.fresh_engine()
+    Maker = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False,
+                         future=True)
+    s = Maker()
+    ensure_org_and_users(s)
+    s.add(models.Organization(organization_id=LAPSED_ORG, name="Lapsed",
+                              plan=PlanTier.FREE.value))
+    s.flush()
+    s.add(models.User(user_id="usr_lapsed", organization_id=LAPSED_ORG,
+                      email=LAPSED_OWNER, name="Lapsed Owner", role="OWNER",
+                      password_hash=hash_password(SEED_PASSWORD), active=True))
+    now = clock.now()
+    ended = now - timedelta(days=5)
+    if with_trial:
+        s.add(models.IntelligenceTrial(
+            organization_id=LAPSED_ORG, zoho_organization_id="60002222",
+            started_at=ended - timedelta(days=30), ends_at=ended))
+    s.flush()
+    # One inside the window, one after it. Distinct amounts so the assertion
+    # names which row it found rather than counting.
+    led.record(s, LAPSED_ORG, led.ValueEventDraft(
+        event_type=ValueEventType.MARGIN_PROTECTED,
+        value_class=ValueClass.ATTRIBUTED,
+        event_key=led.event_key(LAPSED_ORG, ValueEventType.MARGIN_PROTECTED,
+                                ValueClass.ATTRIBUTED, ("q_in", "L1")),
+        amount=Decimal("1000.0000"),
+        basis={"formula": "in-window"},
+        evidence_refs=[{"record_type": "quote_decision", "record_id": "qd_in",
+                        "quote_id": "q_in"}],
+        occurred_at=ended - timedelta(days=2),
+        thresholds_version=THRESHOLDS_VERSION))
+    led.record(s, LAPSED_ORG, led.ValueEventDraft(
+        event_type=ValueEventType.MARGIN_PROTECTED,
+        value_class=ValueClass.ATTRIBUTED,
+        event_key=led.event_key(LAPSED_ORG, ValueEventType.MARGIN_PROTECTED,
+                                ValueClass.ATTRIBUTED, ("q_after", "L1")),
+        amount=Decimal("2000.0000"),
+        basis={"formula": "after-window"},
+        evidence_refs=[{"record_type": "quote_decision", "record_id": "qd_after",
+                        "quote_id": "q_after"}],
+        occurred_at=now - timedelta(days=1),
+        thresholds_version=THRESHOLDS_VERSION))
+    s.commit()
+    s.close()
+
+    app = FastAPI()
+    app.include_router(platform_auth.router)
+    app.include_router(attribution_router.router)
+
+    def _override():
+        sess = Maker()
+        try:
+            yield sess
+            sess.commit()
+        finally:
+            sess.close()
+
+    app.dependency_overrides[get_session] = _override
+    return TestClient(app)
+
+
+def test_an_expired_trial_can_still_read_what_pie_was_worth(monkeypatch):
+    """The renewal argument survives the trial it argues about."""
+    monkeypatch.setattr(settings, "DEFAULT_PLAN", "free")
+    tc = _lapsed_client(with_trial=True)
+    hdr = _hdr(tc, LAPSED_OWNER)
+
+    # The whole surface answers, rather than 403-ing the way it used to.
+    assert tc.get("/api/attribution/summary", headers=hdr).status_code == 200
+    assert tc.get("/api/attribution/evaluation", headers=hdr).status_code == 200
+
+    body = tc.get("/api/attribution/events", headers=hdr).json()
+    quotes = {ref["quote_id"] for row in body["events"]
+              for ref in row["evidence_refs"]}
+    assert "q_in" in quotes, "the trial window's own evidence must stay readable"
+
+
+def test_the_ledger_stops_at_the_end_of_the_window_it_was_entitled_to(monkeypatch):
+    """And the cap bounds the count, not merely the page.
+
+    A ``total`` counted past a bound the reader cannot page to is a number that
+    cannot be opened, which is the one thing this surface exists to avoid.
+    """
+    monkeypatch.setattr(settings, "DEFAULT_PLAN", "free")
+    tc = _lapsed_client(with_trial=True)
+    body = tc.get("/api/attribution/events",
+                  headers=_hdr(tc, LAPSED_OWNER)).json()
+
+    quotes = {ref["quote_id"] for row in body["events"]
+              for ref in row["evidence_refs"]}
+    assert "q_after" not in quotes, "detection after the trial is what the plan buys"
+    assert body["total"] == 1, "the cap must bound the total, not just the page"
+    assert body["readable_until"] is not None
+    assert body["frozen_reason"], "a frozen view has to say it is frozen"
+
+
+def test_a_paid_plan_reads_the_ledger_unbounded(monkeypatch):
+    """The cap is a consequence of the plan lapsing, not a property of the route."""
+    monkeypatch.setattr(settings, "DEFAULT_PLAN", "free")
+    tc = _lapsed_client(with_trial=True)
+
+    s = tc.app.dependency_overrides[get_session]
+    session = next(s())
+    entitlements.set_plan(session, LAPSED_ORG, PlanTier.INTELLIGENCE)
+    session.commit()
+    session.close()
+
+    body = tc.get("/api/attribution/events",
+                  headers=_hdr(tc, LAPSED_OWNER)).json()
+    quotes = {ref["quote_id"] for row in body["events"]
+              for ref in row["evidence_refs"]}
+    assert {"q_in", "q_after"} <= quotes
+    assert body["readable_until"] is None
+    assert body["frozen_reason"] is None
+
+
+def test_no_trial_and_no_plan_is_refused_rather_than_answered_empty(monkeypatch):
+    """An empty ledger would say "PIE did nothing for you".
+
+    That is a benign default standing in for "you are not entitled to look" —
+    the §1 failure this module is written against. The refusal names the plan.
+    """
+    monkeypatch.setattr(settings, "DEFAULT_PLAN", "free")
+    tc = _lapsed_client(with_trial=False)
+
+    r = tc.get("/api/attribution/events", headers=_hdr(tc, LAPSED_OWNER))
+    assert r.status_code == 403
+    assert "Commercial Intelligence" in r.json()["detail"]
+
+
+def test_the_window_rule_never_lets_a_salesperson_past_their_role(monkeypatch):
+    """Plan and role are different rules, and loosening one must not touch the other.
+
+    The old plan gate happened to refuse a salesperson at a free organization
+    before their role ever came up. Removing it must leave the role refusal
+    doing that work alone.
+    """
+    monkeypatch.setattr(settings, "DEFAULT_PLAN", "free")
+    tc = _lapsed_client(with_trial=True)
+    session = next(tc.app.dependency_overrides[get_session]())
+    session.add(models.User(
+        user_id="usr_lapsed_sales", organization_id=LAPSED_ORG,
+        email="sales@lapsed.example", name="Lapsed Sales", role="SALESPERSON",
+        password_hash=hash_password(SEED_PASSWORD), active=True))
+    session.commit()
+    session.close()
+
+    hdr = _hdr(tc, "sales@lapsed.example")
+    for path in ("/api/attribution/summary", "/api/attribution/events",
+                 "/api/attribution/evaluation"):
+        assert tc.get(path, headers=hdr).status_code == 403, path
 
 
 def test_a_ledger_page_says_it_is_not_a_total(client):
@@ -787,7 +1081,7 @@ def _attributed_total(s) -> Decimal:
     this helper made, quietly turning a corrected ₹3,000 claim into ₹6,000 by
     adding the two measurements it replaced.
     """
-    total = ev.trial_progress(s, ORG)["attributed_value"]
+    total = ev.value_summary(s, ORG)["attributed_value"]
     return Decimal(0) if total is None else Decimal(str(total))
 
 
@@ -1076,7 +1370,7 @@ def test_a_class_the_system_cannot_produce_never_reaches_the_breakdown(session, 
     been deleted to keep it out.
     """
     led.record(session, ORG, _draft(ValueClass.ESTIMATED, ESTIMATED_AMOUNT))
-    progress = ev.trial_progress(session, ORG)
+    progress = ev.value_summary(session, ORG)
 
     classes = {row["value_class"] for row in progress["by_event_type"]}
     assert ValueClass.ESTIMATED.value not in classes, (

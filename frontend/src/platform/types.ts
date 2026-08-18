@@ -18,6 +18,12 @@ export interface PlatformSession {
    *  timestamp the client renders — see `src/when.ts` for why the browser's
    *  own zone is the wrong answer here. */
   timezone: string;
+  /** True while this session is in the public demonstration workspace: made-up
+   *  data, and the server refuses every write. Rendered on every screen rather
+   *  than only where the numbers are — a visitor who does not know the figures
+   *  are invented is being misled by a product whose whole argument is that its
+   *  figures are real. */
+  is_demo?: boolean;
   /** True while this account holds a password somebody else issued. The server
    *  refuses every request but the change itself, so the shell shows the change
    *  screen instead of the app. */
@@ -48,6 +54,16 @@ export interface PlanOption {
   summary: string;
 }
 
+/** Whether this deployment has a demonstration workspace a stranger can open.
+ *
+ *  Says yes or no and nothing else — not which organization it is, not who is
+ *  in it. A single-tenant install leaves it false, which is the default, and
+ *  the landing page then shows no such door rather than one that 404s. */
+export interface DemoOffer {
+  enabled: boolean;
+  note: string;
+}
+
 /** What this organization's plan lets it use, and what it is about to lose.
  *
  *  `GET /api/v1/entitlements` has existed since plans landed and nothing called
@@ -73,6 +89,17 @@ export interface Entitlements {
   /** Feature keys in force only because of the trial — what expiry costs.
    *  Derived from the server's plan map so the client holds no second copy. */
   loses_on_expiry: string[];
+  /** What this organization has asked for and not yet been given. `null` when
+   *  nothing is outstanding — the upgrade control keys off this so an owner who
+   *  already pressed it is shown what they asked for rather than the button
+   *  again. */
+  pending_request: {
+    request_id: string;
+    requested_plan: string;
+    requested_plan_label: string;
+    requested_at: string;
+    status: string;
+  } | null;
 }
 
 /** One thing a new organization has or has not done.
@@ -1368,13 +1395,31 @@ export interface EvidenceGap {
   detail: string;
 }
 
+/** The trial's own facts. Separate from the window that was measured, because
+ *  the two are only the same period while the trial is running — and while they
+ *  were one object, a window frozen at a finished trial was indistinguishable
+ *  from a live one. */
 export interface AttributionTrial {
   trial_id: string;
   started_at: string | null;
   ends_at: string | null;
-  measured_to: string | null;
-  days_elapsed: number;
+  /** Only while this is true do the countdown chips mean anything. */
+  is_running: boolean;
   days_remaining: number;
+}
+
+/** The period a summary measured, and what put it there. `TRIAL` while a trial
+ *  frames it (or while a lapsed plan holds the reader there), `RECENT` for the
+ *  trailing window a paying customer's headline advances over. */
+export interface AttributionWindow {
+  basis: "TRIAL" | "RECENT";
+  label: string;
+  start: string | null;
+  end: string | null;
+  days: number;
+  /** Set when the window was cut short by what the plan entitles this
+   *  organization to read, rather than by the clock. */
+  frozen_at: string | null;
 }
 
 /** One (event type × value class) cell of the window. Never added across
@@ -1401,7 +1446,12 @@ export interface AttributionProductivity {
  *  trial on record gets a three-field payload: the trial, a null headline and
  *  the gap that says why. */
 export interface AttributionSummary {
+  /** What was measured. `null` only on the evaluation report, which needs a
+   *  trial and says so rather than drawing a comparison without a "before". */
+  window: AttributionWindow | null;
   trial: AttributionTrial | null;
+  /** The far end of the window, to the second. */
+  measured_to?: string | null;
   /** ATTRIBUTED only. `null` means no detection run is on record — which is
    *  **not** a measured zero, and the screen must not render it as one. */
   attributed_value: MoneyString | null;
@@ -1438,6 +1488,78 @@ export interface ValueEventRow {
   created_at: string | null;
 }
 
+/** One reason a detector could not judge a subject, with how many it hit and
+ *  the sentence that names the missing evidence. */
+export interface RetrospectiveWithheld {
+  reason: string;
+  count: number;
+  detail: string;
+}
+
+/** One detector's reach over the book, never its findings alone. */
+export interface RetrospectiveDetector {
+  detector: string;
+  considered: number;
+  found: number;
+  clear: number;
+  judged: number;
+  /** `null` where nothing was considered — no share exists, and a 0% there
+   *  would read as "judged none of many". */
+  judged_share: number | null;
+  withheld: RetrospectiveWithheld[];
+}
+
+/** How far back the record goes, read from the rows rather than from the
+ *  configured history window. */
+export interface RetrospectiveHistory {
+  first_document: string | null;
+  last_document: string | null;
+  months: number | null;
+  sales_lines: number;
+  cost_lines: number;
+  detail: string | null;
+}
+
+/** `GET /api/v1/retrospective`. What a book already held, and how much of it
+ *  could be judged. Coverage before findings — the verdict turns on what was
+ *  examined, never on what turned up. */
+export interface Retrospective {
+  as_of: string | null;
+  history: RetrospectiveHistory;
+  verdict: "UNEXAMINED" | "PARTIAL" | "EXAMINED";
+  verdict_detail: string;
+  considered: number;
+  judged: number;
+  judged_share: number | null;
+  found: number;
+  detectors: RetrospectiveDetector[];
+  thresholds_version: string;
+}
+
+/** `GET /api/v1/admin/margin-policy/backtest`. What a different approval floor
+ *  would have done to quotes already priced. Owner only — `shortfall` plus the
+ *  margin the caller supplied yields cost in closed form. */
+export interface FloorBacktest {
+  policy: {
+    baseline_version: string;
+    variant_version: string;
+    baseline_min_margin: number;
+    variant_min_margin: number;
+  };
+  lines_examined: number;
+  newly_requires_approval: number;
+  no_longer_requires_approval: number;
+  revenue_newly_gated: MoneyString | null;
+  shortfall_newly_gated: MoneyString | null;
+  /** Lines with no usable cost. Never counted as passing — a line whose
+   *  economics are unknown has an UNKNOWN verdict, not a clean one. */
+  unjudgeable_no_cost_on_record: number;
+  /** Rows priced under a policy this replay cannot rebuild, so their baseline
+   *  verdict does not match what was recorded. */
+  baseline_disagreements: number;
+  by_customer: { name: string; lines: number; revenue: MoneyString | null }[];
+}
+
 /** `GET /api/attribution/events`. A page of the ledger — never a rollup. */
 export interface AttributionEvents {
   events: ValueEventRow[];
@@ -1454,6 +1576,16 @@ export interface AttributionEvents {
   event_types: string[];
   value_classes: string[];
   empty_reason: string | null;
+  /** How far into the ledger this organization's plan lets it read, or `null`
+   *  for unbounded. An organization whose intelligence plan has lapsed keeps
+   *  the window it was entitled to — it reads up to the end of its trial and no
+   *  further. */
+  readable_until: string | null;
+  /** Why the view stops where it does, when it stops. `null` when unbounded.
+   *  Rendered rather than inferred: a truncated ledger that does not say it is
+   *  truncated reads as the whole one, which is the same benign-default failure
+   *  the rest of this surface is built to refuse. */
+  frozen_reason: string | null;
 }
 
 /** What the book looked like before the trial, and what it looks like during. */

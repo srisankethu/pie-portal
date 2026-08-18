@@ -1,4 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { DataGrid, numeric } from "./DataGrid";
 import { EntityName, EntitySource } from "./EntityName";
 import { CompanyFilter, useCompanyFilter } from "./CompanyFilter";
@@ -18,6 +19,7 @@ import { aiState, factLabel, factValue, isPrimaryFact, stateFieldLabel, ROLE_LAB
 import { ActionsPanel, Bp, Conf, DecisionCard, ImpactPanel, Interpretation, Labelled,
          Pri, RankingPanel, Tip, WhyPanel, typeLabel } from "./ui";
 import Alert from "@mui/material/Alert";
+import AlertTitle from "@mui/material/AlertTitle";
 import Box from "@mui/material/Box";
 import Paper from "@mui/material/Paper";
 import Button from "@mui/material/Button";
@@ -35,7 +37,7 @@ import { Navigate, Route, Routes, useLocation, useNavigate, useParams } from "re
 import {
   LEGACY_ACCOUNTS, PATH, PATTERN, pathFor, screenAt, vizPath, type Screen,
 } from "./route";
-import AppShell, { type NavItem } from "./AppShell";
+import AppShell, { visibleNavItems, type NavItem } from "./AppShell";
 import { SetupChecklist } from "./SetupChecklist";
 import { TrialNotice } from "./TrialNotice";
 import { SignInCard } from "../SignInCard";
@@ -78,6 +80,8 @@ const TrustScreen = lazy(() =>
   import("./TrustScreen").then((m) => ({ default: m.TrustScreen })));
 const AttributionScreen = lazy(() =>
   import("./AttributionScreen").then((m) => ({ default: m.AttributionScreen })));
+const RetrospectiveScreen = lazy(() =>
+  import("./RetrospectiveScreen").then((m) => ({ default: m.RetrospectiveScreen })));
 const DataScreen = lazy(() =>
   import("./DataScreen").then((m) => ({ default: m.DataScreen })));
 const CustomerCommercial = lazy(() =>
@@ -244,6 +248,55 @@ function useSignupOffer(signedOut: boolean): SignupOffer | null {
     return () => { live = false; };
   }, [signedOut]);
   return offer;
+}
+
+/** Whether this organization's books have actually arrived yet.
+ *
+ *  `complete` is every *required* onboarding step — a connection, and a pull
+ *  that read something — derived server-side from rows on every request rather
+ *  than from a stored flag, for the reason `onboarding.py` gives: a "setup
+ *  done" column is one more thing that can disagree with reality.
+ *
+ *  Shares `SetupChecklist`'s query key deliberately, so the two read one answer
+ *  and cannot disagree about whether this organization has a book. A second
+ *  fetch would also be a second chance to show a nav that contradicts the
+ *  panel directly beneath it.
+ *
+ *  Answered `true` on failure, and that is the safe direction here: an
+ *  organization whose checklist will not load should see its whole nav, not a
+ *  truncated one. Hiding screens is only defensible when we positively know
+ *  there is nothing behind them. */
+function useBooksReady(session: PlatformSession | null): boolean {
+  const { data, isError } = useQuery({
+    queryKey: ["onboarding", session?.organization_id],
+    queryFn: () => papi.onboarding(session!.token),
+    enabled: !!session,
+  });
+  if (!session || isError) return true;
+  return data ? !!data.complete : true;
+}
+
+/** Whether this deployment has a demonstration workspace, asked the same way
+ *  and answered `false` the same way on any failure.
+ *
+ *  This said the two hooks were near-identical and that sharing them would be
+ *  indirection over four lines of state. Half of that is now out of date:
+ *  `useSignupOffer` returns the offer itself, because the sign-up form needs
+ *  the plan list out of it, while this one is only ever a yes or no. They are
+ *  two questions with two answer shapes and the earlier reasoning has stopped
+ *  applying — noted rather than left, because a stale justification is worse
+ *  than none. */
+function useDemoOffer(signedOut: boolean): boolean {
+  const [offered, setOffered] = useState(false);
+  useEffect(() => {
+    if (!signedOut) return;
+    let live = true;
+    papi.demoOffer()
+      .then((o) => { if (live) setOffered(!!o.enabled); })
+      .catch(() => { if (live) setOffered(false); });
+    return () => { live = false; };
+  }, [signedOut]);
+  return offered;
 }
 
 // ── action modal ─────────────────────────────────────────────────────────────
@@ -667,6 +720,8 @@ export default function PlatformApp() {
   // Before the early returns below: hooks run in the same order every render.
   const signupOffer = useSignupOffer(!session);
   const signupOffered = signupOffer !== null;
+  const demoOffered = useDemoOffer(!session);
+  const booksReady = useBooksReady(session);
 
   if (!session) {
     // The landing page is the public front; the two cards are one click behind
@@ -684,6 +739,13 @@ export default function PlatformApp() {
           // operator made with a shell on the box.
           onSignUp={signupOffered
             ? (plan?: string) => { setWantedPlan(plan); setDoor("signup"); }
+            : undefined}
+          // Absent unless the deployment names a demonstration workspace, for
+          // the same reason as the button above: a door that always 404s is
+          // worse than no door. Entering signs the visitor in on a read-only
+          // session, so it goes through `signIn` exactly as the other two do.
+          onDemo={demoOffered
+            ? () => { void papi.enterDemo().then(signIn).catch(() => {}); }
             : undefined}
         />
       );
@@ -823,8 +885,13 @@ export default function PlatformApp() {
     // screen with the economics taken out. The owner-only half of it (the
     // report against the pre-trial baseline) is a panel gate inside the screen,
     // not a second nav item.
+    // The look-back and the ledger are a before-and-after pair and sit in that
+    // order: what the book already held, then what the platform changed about
+    // it. Same gate — both are margin-shaped, so both are manager and above.
     ...(ability.can("read", "economics")
-      ? ([{ key: "attribution", label: "What PIE changed",
+      ? ([{ key: "retrospective", label: "What your books hold",
+            group: "understand" },
+          { key: "attribution", label: "What PIE changed",
             group: "understand" }] as NavItem[])
       : []),
 
@@ -902,9 +969,21 @@ export default function PlatformApp() {
     { key: "settings", label: "Settings", group: "setup" },
   ];
 
+  // Until this organization's books have arrived, the analysis groups are
+  // doors to empty rooms — every screen in them reads persisted trading rows,
+  // and there are none. Showing twenty of them on the first login is how a
+  // product that is not a dashboard introduces itself as one.
+  //
+  // Withheld rather than shown-and-empty, and only while we positively know
+  // there is nothing behind them: `useBooksReady` answers true whenever it
+  // cannot tell. `Decide` and `Setup` stay, which is the whole of what a new
+  // organization can actually do — quote, and finish connecting — and the
+  // checklist directly below says which of the two is next.
+  const shownNavItems = visibleNavItems(navItems, booksReady);
+
   return (
     <AppShell
-      items={navItems}
+      items={shownNavItems}
       current={screen}
       userName={session.name}
       roleLabel={roleShort}
@@ -915,6 +994,19 @@ export default function PlatformApp() {
             true wherever the reader happens to be, and the queue it takes away
             is reached from everywhere. It is silent until the last stretch and
             silent for a salesperson — see TrialNotice. */}
+        {/* Every screen, not just the ones with numbers on. A visitor who does
+            not know these figures are invented is being misled by a product
+            whose whole argument is that its figures are real — and this one
+            says so beside a queue, a margin and a cash-cycle chart alike.
+            Never dismissible for the same reason. */}
+        {session.is_demo && (
+          <Alert severity="info" sx={{ mb: 2 }}>
+            <AlertTitle>You are in the demonstration workspace</AlertTitle>
+            Every customer, item and figure here is made up. Nothing you do is
+            saved — the server refuses writes on this session. Sign up for an
+            account to connect your own books.
+          </Alert>
+        )}
         <TrialNotice session={session} />
         {/* An unreachable API must never be dressed as "nothing to do". The
             error REPLACES the queue rather than sitting above a reassuring
@@ -1060,6 +1152,11 @@ export default function PlatformApp() {
                 a salesperson cannot read it, which is a closed door rather
                 than a broken link for anyone who follows one. */}
             <Route path={PATH.attribution} element={<AttributionScreen session={session} />} />
+
+            {/* The other half of that pair, and the earlier one: what the book
+                already held when it arrived. Same role gate — a count of margin
+                findings is a count of products whose margin fell. */}
+            <Route path={PATH.retrospective} element={<RetrospectiveScreen session={session} />} />
 
             {/* ── QUOTES ──
                 The Quote Builder itself, not a door in front of it. It used to

@@ -11,6 +11,7 @@ import type {
   AiReadiness,
   ApprovalRequest,
   FixedThresholds,
+  FloorBacktest,
   MarginPolicy,
   MarginPolicyPatch,
   OrgPolicy,
@@ -21,6 +22,7 @@ import type {
   Role,
   ZohoConnection } from "./types";
 import Alert from "@mui/material/Alert";
+import AlertTitle from "@mui/material/AlertTitle";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import List from "@mui/material/List";
@@ -443,6 +445,127 @@ function resetLabel(f: PolicyField): string {
   if (f.kind === "days") return `${value} ${unit}`;
   return `${value}${unit}`;
 }
+
+/** "What would this floor have done?" — asked before the floor is saved.
+ *
+ *  The replay existed as `python -m app.commercial.backtest` and nowhere else,
+ *  so the one edit on this screen with a blast radius across every future quote
+ *  was also the one edit nobody could model first. An owner could raise the
+ *  approval floor two points and find out what that meant from the approvals
+ *  queue over the following fortnight.
+ *
+ *  Three decisions worth stating:
+ *
+ *  **It is a button, not a live preview.** Each call replays every recorded
+ *  quote line twice, against the baseline policy and the variant. Firing that
+ *  on every keystroke in the margin box would be a full table scan per digit.
+ *
+ *  **It reads the draft, not the saved policy.** The whole value is answering
+ *  the question before committing to it, so the numbers come from what the
+ *  boxes currently say — and the panel disables itself when the ladder is out
+ *  of order, because the server would refuse that policy anyway.
+ *
+ *  **The two "could not judge" counts sit with the findings, not under them.**
+ *  Lines with no cost on record were not judged either way, and rows priced
+ *  under a policy this replay cannot rebuild do not agree with what was
+ *  recorded. Both are the §1 case: a count of what a replay found means nothing
+ *  without what it could not look at.
+ *
+ *  Owner only, matching the endpoint. `shortfall` plus the margin the caller
+ *  supplied gives cost in closed form, so this is not a surface to widen.
+ */
+function FloorBacktestPanel({ token, minMargin, marginFloor, ready }: {
+  token: string;
+  minMargin: number | undefined;
+  marginFloor: number | undefined;
+  ready: boolean;
+}) {
+  const [report, setReport] = useState<FloorBacktest | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const run = useCallback(async () => {
+    if (minMargin === undefined) return;
+    setBusy(true);
+    setError(null);
+    try {
+      setReport(await papi.floorBacktest(token, minMargin, marginFloor ?? null));
+    } catch (e) {
+      setReport(null);
+      setError(e instanceof Error ? e.message : "The replay could not be run.");
+    } finally {
+      setBusy(false);
+    }
+  }, [token, minMargin, marginFloor]);
+
+  return (
+    <Box sx={{ mt: 2 }}>
+      <Stack direction="row" spacing={1.5}
+             sx={{ alignItems: "center", flexWrap: "wrap" }}>
+        <Button variant="outlined" size="small" onClick={run}
+                disabled={!ready || busy || minMargin === undefined}>
+          {busy ? "Replaying…" : "See what this would have done"}
+        </Button>
+        <Typography variant="caption" color="text.secondary">
+          Replays every quote line already priced here against{" "}
+          {minMargin === undefined ? "this floor" : `a ${pct(minMargin)} approval floor`}.
+          Nothing is saved.
+        </Typography>
+      </Stack>
+
+      {error && <Alert severity="error" sx={{ mt: 1.5 }}>{error}</Alert>}
+
+      {report && (
+        <Alert severity="info" icon={false} sx={{ mt: 1.5 }}>
+          <AlertTitle>
+            {report.newly_requires_approval} line
+            {report.newly_requires_approval === 1 ? "" : "s"} would have needed a
+            signature that did not
+          </AlertTitle>
+          <Typography variant="body2" component="div">
+            Out of {report.lines_examined} priced here.
+            {report.revenue_newly_gated
+              ? ` They are worth ₹${report.revenue_newly_gated} between them.`
+              : ""}
+            {report.no_longer_requires_approval > 0
+              ? ` ${report.no_longer_requires_approval} line(s) would no longer have needed one.`
+              : ""}
+          </Typography>
+
+          {/* Beside the findings, never below them. A replay's counts are not
+              readable without what it could not judge. */}
+          {(report.unjudgeable_no_cost_on_record > 0
+            || report.baseline_disagreements > 0) && (
+            <Box component="ul" sx={{ mt: 1, mb: 0, pl: 2.5 }}>
+              {report.unjudgeable_no_cost_on_record > 0 && (
+                <Typography component="li" variant="body2">
+                  <b>{report.unjudgeable_no_cost_on_record}</b> line(s) had no cost
+                  on record and were not judged either way — not counted as
+                  passing.
+                </Typography>
+              )}
+              {report.baseline_disagreements > 0 && (
+                <Typography component="li" variant="body2">
+                  <b>{report.baseline_disagreements}</b> line(s) were priced under
+                  a policy this replay cannot rebuild, so read the counts above
+                  as covering the rest.
+                </Typography>
+              )}
+            </Box>
+          )}
+
+          {report.by_customer.length > 0 && (
+            <Typography variant="body2" sx={{ mt: 1 }}>
+              Most affected: {report.by_customer.slice(0, 3)
+                .map((c) => `${c.name} (${c.lines})`).join(", ")}.
+            </Typography>
+          )}
+        </Alert>
+      )}
+    </Box>
+  );
+}
+
 
 function MarginPolicySection({
   token,
@@ -895,6 +1018,17 @@ function MarginPolicySection({
           </>
         )}
       </div>
+
+      {/* Between the ladder and Save, which is where the question belongs:
+          you have seen the floors line up, now ask what they would have cost
+          before you commit them. Owner only, matching the endpoint. */}
+      {canManage && (
+        <FloorBacktestPanel
+          token={token}
+          minMargin={live.min_margin}
+          marginFloor={live.margin_floor}
+          ready={ladderOk} />
+      )}
 
       {canManage && (
         <div className="mp-bar">

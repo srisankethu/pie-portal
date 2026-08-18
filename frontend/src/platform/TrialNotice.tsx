@@ -14,19 +14,36 @@
  * matters. Silent until `NOTICE_FROM_DAYS`, then plainly, then more urgently
  * inside `URGENT_FROM_DAYS`.
  *
- * **There is no "Upgrade" button, deliberately.** This deployment has no
- * billing — `set_plan` is an operator command and there is no API for it, on
- * purpose. A button that opened a checkout nobody built would be worse than no
- * button, so the notice says what will happen and who can stop it, and stops
- * there. When billing exists, this is the place the button goes.
+ * **There is an ask, and it is not a checkout.** This deployment still has no
+ * billing, and `set_plan` is still an operator command with no API — an owner
+ * who could set their own plan would not have one. What was missing was the
+ * other half: an owner had no way to *say* they wanted the plan, so a platform
+ * selling three tiers offered no way to buy the upper two. The button records a
+ * `PlanChangeRequest` and grants nothing; a person decides it. Its label says
+ * so, because "Upgrade" over a control that opens a queue rather than a
+ * checkout is the dead button this comment used to be about, wearing a
+ * different coat.
+ *
+ * Once asked, the control is replaced by what was asked and when. An owner who
+ * pressed it and still sees a button concludes it did not work, and presses it
+ * again — which is the case `request_plan_change` refuses server-side, and
+ * refusing something the screen invited is a worse experience than not
+ * inviting it.
  *
  * **Managers and owners only.** A salesperson cannot act on it, and the screens
  * they lose are already the ones their role does not open. Telling them a
  * licence is expiring is a worry with no lever attached.
  */
+import { useState } from "react";
+
 import Alert from "@mui/material/Alert";
 import AlertTitle from "@mui/material/AlertTitle";
-import { useQuery } from "@tanstack/react-query";
+import Box from "@mui/material/Box";
+import Button from "@mui/material/Button";
+import Typography from "@mui/material/Typography";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+
+import { formatDate } from "../when";
 
 import { papi } from "./api";
 import type { PlatformSession } from "./types";
@@ -55,10 +72,32 @@ function daysPhrase(days: number): string {
 }
 
 export function TrialNotice({ session }: { session: PlatformSession }) {
+  const queryClient = useQueryClient();
+  const [asking, setAsking] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const { data } = useQuery({
     queryKey: ["entitlements", session.organization_id],
     queryFn: () => papi.entitlements(session.token),
   });
+
+  /** Record the ask, then re-read from the server rather than patching what is
+   *  on screen. The POST returns the whole entitlement view for that reason —
+   *  a control that decided locally that it had worked is a control that lies
+   *  when the request was refused. */
+  const ask = async () => {
+    setAsking(true);
+    setError(null);
+    try {
+      await papi.requestPlan(session.token, "intelligence");
+      await queryClient.invalidateQueries({
+        queryKey: ["entitlements", session.organization_id] });
+    } catch (e) {
+      setError(e instanceof Error ? e.message
+        : "That could not be sent. Try again, or speak to whoever runs this deployment.");
+    } finally {
+      setAsking(false);
+    }
+  };
 
   // Silent on failure. This is a courtesy notice, and "the trial notice did not
   // load" at the top of every screen is worse than the notice being absent —
@@ -86,9 +125,32 @@ export function TrialNotice({ session }: { session: PlatformSession }) {
       After that you lose {losing || "the trial features"}. Quoting, margin
       floors and approvals carry on as they are, on the free plan, and nothing
       you have synced is deleted.
-      {session.role === "OWNER"
-        ? " To keep the decision layer, speak to whoever runs this deployment — plans are set by the operator, not from these screens."
-        : " Your owner can arrange to keep it."}
+      {session.role === "OWNER" ? null : " Your owner can arrange to keep it."}
+      {session.role === "OWNER" && (
+        <Box sx={{ mt: 1.5 }}>
+          {data.pending_request ? (
+            <Typography variant="body2">
+              You asked to move to{" "}
+              <b>{data.pending_request.requested_plan_label}</b> on{" "}
+              {formatDate(data.pending_request.requested_at)}. Whoever runs this
+              deployment will be in touch — nothing is charged from these
+              screens.
+            </Typography>
+          ) : (
+            <>
+              <Button size="small" variant="outlined" disabled={asking}
+                      onClick={ask}>
+                {asking ? "Sending…" : "Ask to keep Commercial Intelligence"}
+              </Button>
+              {error && (
+                <Typography variant="body2" color="error" sx={{ mt: 1 }}>
+                  {error}
+                </Typography>
+              )}
+            </>
+          )}
+        </Box>
+      )}
     </Alert>
   );
 }

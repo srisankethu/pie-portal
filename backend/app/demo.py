@@ -10,11 +10,14 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 from decimal import Decimal
+from typing import Optional
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .config import settings
 from .domain import models
+from .domain.enums import Role
 from .seed import ensure_org_and_users
 from .signals.engine import run_detectors
 
@@ -64,12 +67,64 @@ def _cost(org, prod, when, qty, unit_cost, bill, line="l1"):
         source_ref={"system": "zoho", "record_type": "bill", "record_id": bill, "line_id": line})
 
 
-def seed_demo(session: Session) -> dict:
-    """Idempotent-ish demo seed. Returns the generate summary."""
-    org = settings.DEFAULT_ORG_ID
-    ensure_org_and_users(session)
+def provision_demo_org(session: Session, organization_id: str,
+                       owner_email: str, *, name: str = "PIE Demo") -> models.User:
+    """The organization and the one account the public demo door signs in as.
 
-    # Skip if already seeded.
+    Separate from ``seed.ensure_org_and_users`` because the two are different
+    jobs: that one builds *the* deployment's tenant from settings, this one
+    builds a named throwaway beside it. Pointing the public demo at the default
+    organization instead would hand a stranger read access to whatever real book
+    a single-tenant install keeps there, which is the one outcome this whole
+    feature must not have.
+
+    The account is created **with no password hash**, and that is the control
+    rather than an omission: ``verify_password`` refuses a blank hash, so
+    ``POST /auth/login`` cannot be talked into this account by any password.
+    The only way in is the demo door, which mints a session without a
+    credential and which `authz` then refuses every write.
+
+    OWNER, so a visitor sees the screens worth seeing. That is safe only
+    because the write refusal is a seam rather than a role check — see
+    ``current_principal``.
+    """
+    org = session.get(models.Organization, organization_id)
+    if org is None:
+        session.add(models.Organization(
+            organization_id=organization_id, name=name,
+            currency=settings.DEFAULT_CURRENCY, country="IN", config={}))
+        session.flush()
+
+    email = owner_email.strip().lower()
+    user = session.scalar(select(models.User).where(models.User.email == email))
+    if user is None:
+        user = models.User(
+            user_id=f"usr_demo_{organization_id}"[:64],
+            organization_id=organization_id, email=email,
+            name="Demo Visitor", role=Role.OWNER.value,
+            password_hash=None, active=True)
+        session.add(user)
+        session.flush()
+    return user
+
+
+def seed_demo(session: Session, *, organization_id: Optional[str] = None) -> dict:
+    """Idempotent-ish demo seed. Returns the generate summary.
+
+    ``organization_id`` defaults to the deployment's own organization, which is
+    what ``/internal/demo-seed`` has always done. Pass one to build the public
+    demonstration tenant beside a real book instead.
+
+    The demo ids are fixed and human-readable by design — no real synced row can
+    collide with ``cst_rane`` — and ``Customer`` is keyed on that id alone, so
+    **one database holds the demo data in exactly one organization.** Seeding a
+    second returns "already seeded" rather than duplicating it.
+    """
+    org = organization_id or settings.DEFAULT_ORG_ID
+    if org == settings.DEFAULT_ORG_ID:
+        ensure_org_and_users(session)
+
+    # Skip if already seeded — anywhere. See the note above on fixed ids.
     if session.get(models.Customer, "cst_rane"):
         return {"note": "demo already seeded"}
 
@@ -171,12 +226,44 @@ def purge_demo_seed(session: Session, organization_id: str) -> dict[str, int]:
 
 
 def main() -> None:
+    """Seed the demo data, and optionally build a tenant to hold it.
+
+        # into this deployment's own organization, as it always did
+        python -m app.demo
+
+        # a public demonstration tenant beside a real book
+        python -m app.demo --org org_demo --email visitor@demo.example
+
+    The second form is what ``PUBLIC_DEMO_ORG_ID`` and ``PUBLIC_DEMO_EMAIL``
+    should then be pointed at. Both settings must name what this created, and
+    ``authz`` treats only that organization as the demo one.
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(description=main.__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--org", help="organization to seed into. Defaults to "
+                                      "this deployment's own.")
+    parser.add_argument("--email", help="the account the public demo door signs "
+                                        "in as. Required with --org.")
+    args = parser.parse_args()
+    if args.org and not args.email:
+        parser.error("--org needs --email: the demo door signs in as a named "
+                     "account, and inferring one is how it ends up being the "
+                     "wrong account.")
+
     from .db import SessionLocal
     s = SessionLocal()
     try:
-        out = seed_demo(s)
+        if args.org:
+            user = provision_demo_org(s, args.org, args.email)
+            print(f"Demo tenant: {args.org} / {user.email}")
+        out = seed_demo(s, organization_id=args.org)
         s.commit()
         print("Demo seed:", out)
+        if args.org:
+            print(f"\nSet PUBLIC_DEMO_ORG_ID={args.org} and "
+                  f"PUBLIC_DEMO_EMAIL={args.email} to open the door.")
     finally:
         s.close()
 

@@ -29,8 +29,18 @@ than succeed silently).
 
 Plans are set by the *operator* (the CLI at the bottom: ``python -m
 app.entitlements set-plan <org> <plan>``), never by a tenant through the API —
-an owner who could set their own plan would not have one. Billing, when it
-exists, will call ``set_plan`` the same way.
+an owner who could set their own plan would not have one.
+
+What an owner *can* do is ask. ``request_plan_change`` records a
+``PlanChangeRequest`` and grants nothing; ``decide_request`` is the only path
+that both reads one and moves a plan, and it goes through ``set_plan`` rather
+than writing the column itself, so there stays exactly one function that changes
+what an organization may use. That split is what let the trial notice grow the
+button its own docstring said it could not have: the ask is self-service, the
+grant is a decision somebody makes.
+
+Billing, when it exists, calls ``decide_request`` — it is the same shape a
+payment confirmation has, and the queue is what it will drain.
 """
 from __future__ import annotations
 
@@ -295,12 +305,17 @@ def describe(session: Session, organization_id: str) -> dict:
     licensed = licensed_plan(org)
     trial = trial_for(session, organization_id)
     effective = effective_plan(session, organization_id)
-    # A plan *request* (``wants_more``) is deliberately not in this payload. It
-    # has one consumer — the operator who can act on it, through the CLI — and
-    # no screen shows it, because the screen that would is the plan-status panel
-    # this product does not have yet. A field on the wire that nothing reads is
-    # the defect ``GET /api/v1/entitlements`` itself was for two releases; it
-    # belongs here on the day something renders it.
+    # The sign-up-time request (``wants_more``) is still deliberately not in this
+    # payload. It has one consumer — the operator who can act on it, through the
+    # CLI — and no screen shows it. A field on the wire that nothing reads is the
+    # defect ``GET /api/v1/entitlements`` itself was for two releases.
+    #
+    # ``pending_request`` below is in it, and by the same rule rather than
+    # against it: that comment ended "it belongs here on the day something
+    # renders it", and the trial notice renders this one. The two are different
+    # facts — what a business said it wanted before it was a customer, and what
+    # this customer has asked for and not yet been given — which is why one is
+    # here and one is not.
     return {
         "plan": licensed.value,
         "plan_label": PLAN_LABEL[licensed],
@@ -308,6 +323,10 @@ def describe(session: Session, organization_id: str) -> dict:
         "effective_label": PLAN_LABEL[effective],
         "trial": _trial_view(org, trial),
         "features": {name: allows(effective, name) for name in FEATURES},
+        # What this organization has asked for and not yet been given. Present
+        # so the upgrade control can say "requested on the 3rd" rather than
+        # offering the same button again to somebody who already pressed it.
+        "pending_request": _request_view(pending_request(session, organization_id)),
         # What actually goes away when the trial does. Named rather than left to
         # the client to hardcode: the client would then hold a second copy of
         # the plan map, and the two would disagree the first time a feature moved
@@ -316,6 +335,114 @@ def describe(session: Session, organization_id: str) -> dict:
             sorted(name for name in FEATURES
                    if allows(effective, name) and not allows(licensed, name))
             if trial is not None else []),
+    }
+
+
+# ── asking, which is not granting ────────────────────────────────────────────
+REQUESTED = "REQUESTED"
+APPLIED = "APPLIED"
+DECLINED = "DECLINED"
+
+
+class PlanRequestRefused(ValueError):
+    """The request cannot be recorded. The message is for the person asking."""
+
+
+def pending_request(session: Session,
+                    organization_id: str) -> Optional[models.PlanChangeRequest]:
+    """This organization's outstanding request, or None. Newest first.
+
+    One at a time, and the constraint is deliberate: a second ask while the
+    first is open is the same ask again, and two open rows would make "what did
+    they want" a question with two answers.
+    """
+    return session.scalars(
+        select(models.PlanChangeRequest)
+        .where(models.PlanChangeRequest.organization_id == organization_id,
+               models.PlanChangeRequest.status == REQUESTED)
+        .order_by(models.PlanChangeRequest.requested_at.desc())
+        .limit(1)).first()
+
+
+def request_plan_change(session: Session, organization_id: str, *,
+                        requested_plan: PlanTier, requested_by: str,
+                        note: str = "") -> models.PlanChangeRequest:
+    """Record that an owner wants a different plan. **Grants nothing.**
+
+    The whole point of the split. ``set_plan`` still moves a plan and is still
+    reachable only by an operator, so this can be self-service without an owner
+    being able to hand themselves the top tier — which is the property
+    ``entitlements``'s own docstring says the missing API was protecting.
+
+    Refuses a request for the plan they are already licensed on. Not out of
+    tidiness: an "upgrade" that would change nothing wastes an operator's
+    attention on a queue whose whole value is that every row in it is real.
+    Refuses a second open request for the same reason.
+    """
+    licensed = licensed_plan(session.get(models.Organization, organization_id))
+    if requested_plan is licensed:
+        raise PlanRequestRefused(
+            f"This organization is already on {PLAN_LABEL[licensed]}.")
+    existing = pending_request(session, organization_id)
+    if existing is not None:
+        raise PlanRequestRefused(
+            "A plan change is already requested for this organization and has "
+            "not been decided yet.")
+
+    row = models.PlanChangeRequest(
+        organization_id=organization_id,
+        requested_plan=requested_plan.value,
+        plan_at_request=licensed.value,
+        requested_by=requested_by,
+        requested_at=clock.now(),
+        note=(note or "").strip()[:2000],
+        status=REQUESTED)
+    session.add(row)
+    session.flush()
+    log.info("plan change requested org=%s from=%s to=%s by=%s",
+             organization_id, licensed.value, requested_plan.value, requested_by)
+    return row
+
+
+def decide_request(session: Session, request_id: str, *, apply: bool,
+                   decided_by: str) -> models.PlanChangeRequest:
+    """Apply or decline one request. The only path that both reads and grants.
+
+    Applying calls ``set_plan`` rather than writing ``organizations.plan``
+    itself, so there stays exactly one function that moves a plan and exactly
+    one log line saying it moved.
+
+    The request is stamped and never rewritten: what was asked for stays what
+    was asked for, because the argument six months from now is about that and
+    not about what it became.
+    """
+    row = session.get(models.PlanChangeRequest, request_id)
+    if row is None:
+        raise LookupError(f"No such request {request_id!r}")
+    if row.status != REQUESTED:
+        raise PlanRequestRefused(
+            f"Request {request_id} was already {row.status.lower()}.")
+    if apply:
+        set_plan(session, row.organization_id, PlanTier(row.requested_plan))
+    row.status = APPLIED if apply else DECLINED
+    row.decided_at = clock.now()
+    row.decided_by = decided_by
+    session.flush()
+    log.info("plan change %s request=%s org=%s by=%s",
+             row.status.lower(), request_id, row.organization_id, decided_by)
+    return row
+
+
+def _request_view(row: Optional[models.PlanChangeRequest]) -> Optional[dict]:
+    if row is None:
+        return None
+    return {
+        "request_id": row.request_id,
+        "requested_plan": row.requested_plan,
+        "requested_plan_label": PLAN_LABEL.get(
+            PlanTier(row.requested_plan), row.requested_plan),
+        "requested_at": clock.iso(row.requested_at),
+        "status": row.status,
     }
 
 
@@ -337,7 +464,7 @@ def _main() -> int:
 
     parser = argparse.ArgumentParser(
         prog="python -m app.entitlements",
-        description="Operator plan management (there is deliberately no API for this).")
+        description="Operator plan management. An owner can *ask* over the API; granting stays here, which is the whole of the split.")
     sub = parser.add_subparsers(dest="cmd", required=True)
     p_set = sub.add_parser("set-plan", help="Put an organization on a plan")
     p_set.add_argument("organization_id")
@@ -346,29 +473,70 @@ def _main() -> int:
     p_show.add_argument("organization_id")
     sub.add_parser(
         "requests",
-        help="Organizations asking for more than they are licensed on")
+        help="Everyone asking for more than they are licensed on, both ways")
+    p_apply = sub.add_parser("apply", help="Grant a requested plan change")
+    p_apply.add_argument("request_id")
+    p_decline = sub.add_parser("decline", help="Refuse a requested plan change")
+    p_decline.add_argument("request_id")
     args = parser.parse_args()
 
     with SessionLocal() as session:
-        # The sign-up form asks which plan a business wants, and the answer is
-        # only worth recording if somebody can find it again. This is that: the
-        # queue between "a stranger asked for Commercial Intelligence" and
-        # `set-plan`, which is still the only thing that grants it.
+        # **One command over two queues, because an operator asking "who wants a
+        # plan" must get one answer.** Two arrived independently and the merge
+        # is where that shows: `organizations.requested_plan` is what a business
+        # said it wanted *on the sign-up form*, before it was a customer, and it
+        # has no decision to make — granting it is `set-plan`. A
+        # `PlanChangeRequest` is an existing customer asking *from inside the
+        # product*, and it carries a decision, which is why it has an id you can
+        # `apply` or `decline`.
+        #
+        # They are genuinely different questions and both are worth having. They
+        # are also two places that answer "what plan does this organization
+        # want", which is the responsibility duplication CLAUDE.md §2 names —
+        # unifying them means the sign-up answer writing a request row and the
+        # column going away, and that is a change to a released feature rather
+        # than something to smuggle into a conflict resolution. Listed together
+        # so nobody has to know there are two tables; flagged here so the next
+        # person to touch it knows there are.
         if args.cmd == "requests":
             asked = [(org, want) for org in session.scalars(
                         select(models.Organization).order_by(
                             models.Organization.created_at))
                      if (want := wants_more(org)) is not None]
-            if not asked:
-                print("No organization is asking for more than it has.")
+            rows = session.scalars(
+                select(models.PlanChangeRequest)
+                .where(models.PlanChangeRequest.status == REQUESTED)
+                .order_by(models.PlanChangeRequest.requested_at)).all()
+            if not asked and not rows:
+                print("Nobody is asking for more than they have.")
                 return 0
-            for org, want in asked:
-                print(f"{org.organization_id}\t{org.name}\t"
-                      f"on {licensed_plan(org).value}\twants {want.value}")
+            if asked:
+                print("Asked for at sign-up — grant with `set-plan`:")
+                for org, want in asked:
+                    print(f"  {org.organization_id}\t{org.name}\t"
+                          f"on {licensed_plan(org).value}\twants {want.value}")
+            if rows:
+                if asked:
+                    print()
+                print("Asked from inside the product — `apply` or `decline`:")
+                for row in rows:
+                    print(f"  {row.request_id}  {row.organization_id}  "
+                          f"{row.plan_at_request} -> {row.requested_plan}  "
+                          f"asked {clock.iso(row.requested_at)}  "
+                          f"by {row.requested_by}")
+                    if row.note:
+                        print(f"      note: {row.note}")
             return 0
         if args.cmd == "set-plan":
             set_plan(session, args.organization_id, PlanTier(args.plan))
             session.commit()
+        elif args.cmd in ("apply", "decline"):
+            row = decide_request(session, args.request_id,
+                                 apply=args.cmd == "apply", decided_by="operator")
+            session.commit()
+            print(f"{row.status} — {row.organization_id} is now on "
+                  f"{licensed_plan(session.get(models.Organization, row.organization_id)).value}")
+            return 0
         print(describe(session, args.organization_id))
     return 0
 

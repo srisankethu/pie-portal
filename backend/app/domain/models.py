@@ -297,6 +297,53 @@ class IntelligenceTrial(Base):
     ends_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
+class PlanChangeRequest(Base):
+    """An owner asking to move plan, and what an operator did about it.
+
+    The row exists because there was no way to ask. ``set_plan`` is an operator
+    command with deliberately no API — an owner who could set their own plan
+    would not have one — and the honest consequence was that the platform sold
+    three tiers and offered no way to buy the upper two. The trial notice said
+    so out loud: *"There is no 'Upgrade' button, deliberately… a button that
+    opened a checkout nobody built would be worse than no button."*
+
+    This is the button, and it is not a checkout. It records a request and
+    **grants nothing**: the plan still moves only through ``set_plan``, which
+    still only an operator can reach. Separating the asking from the granting is
+    what lets the ask be self-service while the grant stays a decision somebody
+    makes.
+
+    Append-only in the way that matters: a request is never edited into a
+    different request. Deciding one stamps the outcome on it and leaves what was
+    asked for intact, because the argument six months from now is about what
+    somebody asked for and when, not about what it later became.
+    """
+
+    __tablename__ = "plan_change_requests"
+
+    request_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    organization_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("organizations.organization_id"), index=True)
+    #: The plan asked for. Stored as its value rather than as a diff from the
+    #: current one: an organization's plan can move between the ask and the
+    #: decision, and a request that read "one tier up" would then mean something
+    #: nobody asked for.
+    requested_plan: Mapped[str] = mapped_column(String(32))
+    #: What they were on when they asked. Kept for the same reason.
+    plan_at_request: Mapped[str] = mapped_column(String(32))
+    requested_by: Mapped[str] = mapped_column(String(64))
+    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    #: Anything the owner wanted to say — how many companies, when they need it.
+    note: Mapped[str] = mapped_column(Text, default="")
+
+    #: REQUESTED until an operator acts. Then APPLIED or DECLINED, with who and
+    #: when. Never back to REQUESTED: a second ask is a second row.
+    status: Mapped[str] = mapped_column(String(16), default="REQUESTED", index=True)
+    decided_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    decided_by: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+
+
 class AIProviderKey(Base):
     """One organization's own API key for one AI provider (BYOK).
 

@@ -268,18 +268,23 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
           </div>
         </div>
 
+        {/* The row is full-bleed, its contents are not: everything on this
+            page lines up on the same 1080px column, and a flex row with only
+            its own padding silently opts out of it. */}
         <div className="lp-sched">
-          <span className="lp-sched-label">Reads the books you already keep</span>
-          <span className="lp-sys">Zoho Books</span>
-          <span className="lp-sys">NetSuite</span>
-          <span className="lp-sys">Dynamics 365 BC</span>
-          <span className="lp-sys">Acumatica</span>
-          <span className="lp-sys">Prophet 21</span>
-          <span className="lp-sys">Sage X3</span>
-          <span className="lp-sys">Sage 100</span>
-          <span className="lp-sched-note">
-            — your ERP records what happened; PIE helps you decide what to do next
-          </span>
+          <div className="lp-wrap lp-sched-row">
+            <span className="lp-sched-label">Reads the books you already keep</span>
+            <span className="lp-sys">Zoho Books</span>
+            <span className="lp-sys">NetSuite</span>
+            <span className="lp-sys">Dynamics 365 BC</span>
+            <span className="lp-sys">Acumatica</span>
+            <span className="lp-sys">Prophet 21</span>
+            <span className="lp-sys">Sage X3</span>
+            <span className="lp-sys">Sage 100</span>
+            <span className="lp-sched-note">
+              — your ERP records what happened; PIE helps you decide what to do next
+            </span>
+          </div>
         </div>
 
         {/* The pattern-match is the thing to beat, and it is silent: a

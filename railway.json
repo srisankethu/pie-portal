@@ -8,6 +8,6 @@
     "healthcheckPath": "/api/health",
     "healthcheckTimeout": 600,
     "restartPolicyType": "ON_FAILURE",
-    "preDeployCommand": "cd /app/backend && python -m alembic upgrade head"
+    "preDeployCommand": "python -m alembic upgrade head"
   }
 }

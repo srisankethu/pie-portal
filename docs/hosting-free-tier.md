@@ -116,6 +116,15 @@ fallback (see `docs/operations.md`).
    ordering `release.sh` has always had (migrate, then start), and the same one
    Compose gets from running `release.sh` before `up`.
 
+   It is one command with no `cd` and no `&&`, and that is deliberate. The
+   image's working directory is already `/app/backend` — which is also the only
+   reason the container's own `uvicorn app.main:app` can import `app` — so
+   `alembic.ini` and its relative `script_location` resolve from there without
+   help. A `cd X && …` prefix would additionally require Railway to run the
+   value through a shell, and if it does not, the stage dies looking for a
+   binary named `cd`: a failure that produces no Alembic output at all, which
+   is indistinguishable from a database that refused the migration.
+
    It was not always so, and the reason it is now is worth keeping. Nothing in
    the pipeline ran migrations, so every schema change needed somebody to
    remember this command — and when it was forgotten the symptom arrived one

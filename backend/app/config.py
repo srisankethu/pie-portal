@@ -128,6 +128,29 @@ class Settings:
     CREDENTIAL_ENCRYPTION_KEY: str = os.environ.get(
         "CREDENTIAL_ENCRYPTION_KEY", "sIfoCtwlOtGqxAtOkV5t3Rz-i6ZQ2VuTNQeXHpxTfWA=")
 
+    # ── logging ──────────────────────────────────────────────────────────────
+    # What the process writes, and where it can be read from afterwards. See
+    # `app/observability/logs.py`; the reason these exist is that "check the
+    # server log" was advice nobody hosting this could act on.
+    #
+    # LOG_LEVEL     root level for everything (DEBUG|INFO|WARNING|ERROR).
+    # LOG_FILE      also write to this file, rotating, for a deployment with a
+    #               disk. Empty means stdout only, which is right where the
+    #               platform captures stdout and wrong where nothing does.
+    # LOG_FILE_MAX_BYTES / LOG_FILE_KEEP  the rotation, so a long-running box
+    #               cannot fill its disk with logs from March.
+    LOG_LEVEL: str = os.environ.get("LOG_LEVEL", "INFO")
+    LOG_FILE: str = os.environ.get("LOG_FILE", "")
+    LOG_FILE_MAX_BYTES: int = int(os.environ.get("LOG_FILE_MAX_BYTES",
+                                                 str(10 * 1024 * 1024)))
+    LOG_FILE_KEEP: int = int(os.environ.get("LOG_FILE_KEEP", "5"))
+
+    # How many lines of one sync's log are kept in the database for the screen
+    # that reads it. A cap, because a pull of five years at INFO is unbounded
+    # and a log table nobody can page through is its own kind of missing log.
+    # Warnings and errors are *never* dropped by it — see `observability/logs`.
+    SYNC_LOG_MAX_LINES: int = int(os.environ.get("SYNC_LOG_MAX_LINES", "5000"))
+
     @property
     def is_production(self) -> bool:
         return self.APP_ENV.strip().lower() == "production"

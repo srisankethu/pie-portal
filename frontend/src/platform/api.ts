@@ -1,4 +1,4 @@
-import type { AccessReport, Account, AccountItem, AiByokView, AiKeyTestResult, AiMetricsReport, AiReadiness, ApprovalRequest, AttributionEvaluation, AttributionEvents, AttributionSummary, ConnectionCheck, ConnectionsView, ConnectorCatalog, ErpConnectInput, ErpDiscoveredCompany, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, DecisionTrace, DisclosureStatement, Entitlements, EntityKind, ErasureState, FixedThresholds, Identity, IdentityCoverage, IdentityPolicy, IdentitySuggestion, MarginPolicy, MarginPolicyPatch, NewConnectionInput, OnboardingView, OrgPolicy, PayloadsReport, PlatformSession, PlatformUser, QuoteGate, Role, SignupOffer, SkippedRows, StatusFilter, SyncOptions, SyncStartResponse, SyncState, ThresholdView, ZohoConnection, ZohoConnectionInput, ZohoCredential, ZohoVisibleOrg } from "./types";
+import type { AccessReport, Account, AccountItem, AiByokView, AiKeyTestResult, AiMetricsReport, AiReadiness, ApprovalRequest, AttributionEvaluation, AttributionEvents, AttributionSummary, ConnectionCheck, ConnectionsView, ConnectorCatalog, ErpConnectInput, ErpDiscoveredCompany, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, DecisionTrace, DisclosureStatement, Entitlements, EntityKind, ErasureState, FixedThresholds, Identity, IdentityCoverage, IdentityPolicy, IdentitySuggestion, MarginPolicy, MarginPolicyPatch, NewConnectionInput, OnboardingView, OrgPolicy, PayloadsReport, PlatformSession, PlatformUser, QuoteGate, Role, SignupOffer, SkippedRows, StatusFilter, SyncOptions, SyncRunLogPage, SyncStartResponse, SyncState, ThresholdView, ZohoConnection, ZohoConnectionInput, ZohoCredential, ZohoVisibleOrg } from "./types";
 
 import { setMoneyCurrency } from "../money";
 import { setBusinessTimezone } from "../when";
@@ -660,6 +660,27 @@ export const papi = {
   syncSkippedCsv: (t: string, runId: string) =>
     download(`/api/v1/data/sync-runs/${encodeURIComponent(runId)}/skipped.csv`,
              t, "skipped-rows.csv"),
+
+  /** What one sync actually did, line by line — the log the run kept of itself.
+   *
+   *  `afterSeq` is what makes a live pull watchable: the panel asks for what it
+   *  has not seen rather than re-fetching an hour of log every few seconds.
+   *  Manager or owner only, for the reason the skipped rows are. */
+  syncRunLog: (t: string, runId: string,
+               opts: { afterSeq?: number; problemsOnly?: boolean } = {}) => {
+    const q = new URLSearchParams();
+    if (opts.afterSeq != null) q.set("after_seq", String(opts.afterSeq));
+    if (opts.problemsOnly) q.set("problems_only", "true");
+    const query = q.toString();
+    return req<SyncRunLogPage>(
+      `/api/v1/data/sync-runs/${encodeURIComponent(runId)}/log${query ? `?${query}` : ""}`,
+      {}, t);
+  },
+
+  /** The whole log as a text file, to read elsewhere or send on. */
+  syncRunLogText: (t: string, runId: string) =>
+    download(`/api/v1/data/sync-runs/${encodeURIComponent(runId)}/log.txt`,
+             t, "sync-log.txt"),
 
   setZohoConnection: (t: string, body: ZohoConnectionInput) =>
     req<{ connection: DataStatus["connection"] }>(

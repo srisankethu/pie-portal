@@ -23,6 +23,11 @@ always wins over it**. All values have defaults that work for local development.
 |---|---|---|
 | `APP_ENV` | `development` | `production` enables the hard guards below. |
 | `AUTH_SECRET` | `dev-secret-change-me` | Signs bearer tokens. **The app refuses to boot in production while this is the default** — the value is public, so a stale default would let anyone forge a token for any user and role. |
+| `LOG_LEVEL` | `INFO` | Root log level (`DEBUG`/`INFO`/`WARNING`/`ERROR`). One place configures logging for the API, the sync CLI and bootstrap alike — `app/observability/logs.py`. |
+| `LOG_FILE` | *(empty)* | Also write the log to this file, rotating. Empty means stdout only, which is right where the platform captures stdout and wrong where nothing does. |
+| `LOG_FILE_MAX_BYTES` | `10485760` | Rotate at this size. |
+| `LOG_FILE_KEEP` | `5` | How many rotated files to keep, so logs from March cannot fill the disk. |
+| `SYNC_LOG_MAX_LINES` | `5000` | How many lines of one sync's log are kept in the database for the Data screen. Warnings and errors are never dropped by this cap, and a log that hits it says so in its own last lines. |
 | `CREDENTIAL_ENCRYPTION_KEY` | *(fixed dev key)* | Encrypts every organization's Zoho client secret and refresh token at rest (see `app/crypto.py`). **The app refuses to boot in production while this is the default** — same reasoning as `AUTH_SECRET`: the value is public. Generate one with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. Rotating it makes every stored connection undecryptable — reconnect them afterward. It also unreads every organization's data key, and reconnecting does **not** fix that half: see [the runbook entry](#could-not-unwrap-this-organizations-data-key) before rotating. |
 
 ### Database
@@ -513,6 +518,44 @@ The database holds two very different kinds of data:
 
 Standard `pg_dump` on the Postgres database covers both. Restore, then re-run
 the sync to bring the read model current.
+
+### Where the logs are
+
+Three places, and they answer different questions.
+
+**One sync, from the screen.** Data & connection → *What this sync did*. Every
+phase the pull entered, every warning, and the full traceback if it failed —
+kept with the run, so a sync that stopped an hour in can still be read
+afterwards. "Problems only" filters to warnings and errors; *Download log*
+gives the whole thing as a text file. Manager or owner only, because a log line
+is whatever the code passed to it and the cost-record stage names purchase
+documents.
+
+Also on the API, if you would rather curl it:
+
+```bash
+curl -sH "Authorization: Bearer $TOKEN" \
+  "$BASE/api/v1/data/sync-runs/$RUN_ID/log?problems_only=true" | python3 -m json.tool
+curl -sH "Authorization: Bearer $TOKEN" "$BASE/api/v1/data/sync-runs/$RUN_ID/log.txt"
+```
+
+**The process log.** stdout, and a rotating file when `LOG_FILE` names one. On
+a platform that captures stdout (Railway, Fly, a systemd unit with journald)
+that is where everything lands; set `LOG_FILE` on anything with a disk and
+nothing collecting stdout, or the log lives as long as the terminal does.
+
+**A run's counters and worklist.** The sync card and *What could not be
+resolved* on the same screen — what landed, and what to fix. The log explains;
+those two say what happened to the data.
+
+> **Migrations used to switch the application log off.** `alembic/env.py` calls
+> `logging.config.fileConfig`, which replaces the root handlers, forces the root
+> level to `WARN`, and (defaulting to `disable_existing_loggers=True`) disables
+> every logger that already exists — every `pie_portal.*` one. The app runs
+> migrations *in-process* at startup, so a deployment came up with no
+> application logging at all: no INFO, and no traceback from a failing sync.
+> Fixed by leaving logging alone when the app has already configured it. If you
+> add anything that reconfigures logging at runtime, this is the trap.
 
 ### "Could not unwrap this organization's data key"
 

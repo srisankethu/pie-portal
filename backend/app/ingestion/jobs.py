@@ -53,6 +53,7 @@ from sqlalchemy.orm import Session
 from ..clock import aware as _aware, now as _now, today as _clock_today
 from ..config import settings
 from ..domain import models
+from ..observability import logs
 
 log = logging.getLogger("pie_portal.sync_jobs")
 
@@ -257,6 +258,81 @@ def plan_windows(since: date, until: Optional[date] = None,
     return windows
 
 
+def persist_log(session: Session, run: models.SyncRun,
+                run_log: Optional["logs.RunLog"] = None) -> int:
+    """Write whatever this run has logged since the last call. Returns the count.
+
+    Called at every phase boundary rather than once at the end, for the reason
+    ``phase`` commits rather than flushes: a log nobody can read until the job
+    is over is no use to somebody watching an hour-long pull to see whether it
+    is still moving. Written through the caller's session so it lands on the
+    same commit as the phase it belongs to.
+
+    Best-effort, like ``_persist_skips`` and for the same reason: this is the
+    account of a pull, and failing a pull that has written real trade in order
+    to protect its diary would be the tail wagging the dog. A SAVEPOINT keeps
+    a failure here from undoing the counters the caller has just written.
+
+    ``run_log`` defaults to whatever this thread is capturing, so callers that
+    never think about logging do the right thing and callers in a test can pass
+    one explicitly.
+    """
+    run_log = run_log if run_log is not None else logs.current_run_log()
+    if run_log is None:
+        return 0
+    pending = run_log.drain()
+    if not pending:
+        return 0
+    try:
+        with session.begin_nested():
+            for offset, line in enumerate(pending):
+                session.add(models.SyncRunLog(
+                    organization_id=run.organization_id,
+                    sync_run_id=run.sync_run_id,
+                    seq=run_log.written + offset,
+                    at=line.at,
+                    level=line.level[:16],
+                    logger=line.logger[:128],
+                    message=line.message))
+            session.flush()
+        run_log.written += len(pending)
+        return len(pending)
+    except Exception:  # noqa: BLE001 — the pull's own rows matter more
+        # Deliberately not `log.exception`: this thread's log handler would
+        # capture that record into the very buffer that just failed to store,
+        # and the next flush would try to write it again.
+        run_log.written += len(pending)
+        return 0
+
+
+def _persist_log_separately(sync_run_id: str, run_log: "logs.RunLog") -> None:
+    """The last lines of a run, on a session of the run's own.
+
+    The tail of a failed job — the traceback above all — is emitted *after* the
+    final phase boundary, and often on a session that has just been rolled back
+    or is otherwise unusable. So the closing write gets a fresh session rather
+    than gambling on the state of the one the job was holding. This is the
+    write that makes a failure legible, and it is the one most likely to be
+    happening in a wreck.
+    """
+    from ..db import SessionLocal
+
+    if not run_log.lines:
+        return
+    session = SessionLocal()
+    try:
+        run = session.get(models.SyncRun, sync_run_id)
+        if run is None:
+            return
+        persist_log(session, run, run_log)
+        session.commit()
+    except Exception:  # noqa: BLE001
+        log.exception("could not store the closing log lines of sync run %s",
+                      sync_run_id)
+    finally:
+        session.close()
+
+
 def _persist_skips(session: Session, run: models.SyncRun,
                    pulls: list[tuple[Optional[str], list[dict]]]) -> None:
     """Write every skipped row of this run, not a sample of them.
@@ -409,8 +485,13 @@ def execute_sync(session: Session, run: models.SyncRun, *,
         written months 1–11. That was the documented design and was not true,
         because nothing had been committed.
         """
+        log.info("phase: %s", name)
         run.phase = name
         run.heartbeat_at = _now()
+        # The run's own log, written on the same commit as the phase it belongs
+        # to — so somebody watching an hour-long pull can read what it is doing
+        # rather than waiting for it to be over to find out.
+        persist_log(session, run)
         session.commit()
 
     run.status = "RUNNING"
@@ -604,6 +685,11 @@ def execute_sync(session: Session, run: models.SyncRun, *,
         # now come back as a return value, which is harder to drop by accident.
         notes.update(analysis_notes)
         run.notes = notes
+        # Everything logged since the last phase boundary, the traceback of a
+        # failed run included. The caller commits; `run_job` writes anything
+        # emitted after this on a session of its own, because a run that died
+        # may have left this one unusable.
+        persist_log(session, run)
         session.flush()
 
     return dict(run.notes or {})
@@ -769,31 +855,49 @@ def run_job(sync_run_id: str, since: date, full: bool,
     from ..db import SessionLocal
 
     session = SessionLocal()
-    try:
-        run = session.get(models.SyncRun, sync_run_id)
-        if run is None:            # deleted between queueing and starting
-            return
-        execute_sync(session, run, since=since, full=full,
-                     connection_id=connection_id, analysis=analysis,
-                     incremental=incremental)
-        session.commit()
-    except Exception:  # noqa: BLE001
-        log.exception("sync job %s crashed outside its own handler", sync_run_id)
-        session.rollback()
-        # Leave a readable row rather than one stuck at RUNNING until it is
-        # reaped ten minutes later.
+    # Everything this thread logs from here on belongs to this run, and is
+    # stored with it. A pull runs for an hour in a background thread; before
+    # this, the only account of what it did was process stdout, which is why a
+    # failed run could say "see the server log" to somebody who has a browser
+    # and no shell.
+    with logs.capture(sync_run_id) as run_log:
         try:
             run = session.get(models.SyncRun, sync_run_id)
-            if run is not None and run.status in ACTIVE:
-                run.status = "FAILED"
-                run.phase = None
-                run.error = "The sync job stopped unexpectedly. See the server log."
-                run.finished_at = _now()
-                session.commit()
+            if run is None:            # deleted between queueing and starting
+                return
+            log.info("sync run %s starting: organization=%s connection=%s "
+                     "since=%s full=%s analysis=%s incremental=%s",
+                     sync_run_id, run.organization_id, connection_id or "every "
+                     "enabled connection", since, full, analysis, incremental)
+            execute_sync(session, run, since=since, full=full,
+                         connection_id=connection_id, analysis=analysis,
+                         incremental=incremental)
+            session.commit()
+            log.info("sync run %s finished with status %s", sync_run_id, run.status)
         except Exception:  # noqa: BLE001
-            log.exception("could not record the crash of sync job %s", sync_run_id)
-    finally:
-        session.close()
+            log.exception("sync job %s crashed outside its own handler", sync_run_id)
+            session.rollback()
+            # Leave a readable row rather than one stuck at RUNNING until it is
+            # reaped ten minutes later.
+            try:
+                run = session.get(models.SyncRun, sync_run_id)
+                if run is not None and run.status in ACTIVE:
+                    run.status = "FAILED"
+                    run.phase = None
+                    run.error = ("The sync job stopped unexpectedly. Its log is "
+                                 "kept with this run — open it for the phase it "
+                                 "reached and the traceback.")
+                    run.finished_at = _now()
+                    session.commit()
+            except Exception:  # noqa: BLE001
+                log.exception("could not record the crash of sync job %s",
+                              sync_run_id)
+        finally:
+            session.close()
+            # Last, and on its own session: the tail of a failed job is emitted
+            # after the final phase boundary, on a session that may have just
+            # been rolled back. It is also the part worth reading.
+            _persist_log_separately(sync_run_id, run_log)
 
 
 def thread_dispatch(sync_run_id: str, since: date, full: bool,

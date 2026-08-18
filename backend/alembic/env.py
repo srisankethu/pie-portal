@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.config import settings  # noqa: E402
 from app.db import Base  # noqa: E402
 from app.domain import models  # noqa: E402,F401  (import populates metadata)
+from app.observability import logs  # noqa: E402
 
 config = context.config
 
@@ -41,8 +42,27 @@ def _database_url() -> str:
     return explicit or settings.DATABASE_URL
 
 
-if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+# Alembic's own logging config, and only when this process is alembic.
+#
+# ``fileConfig`` is not additive. It replaces the root handlers, forces the root
+# level to WARN from ``alembic.ini``, and — because ``disable_existing_loggers``
+# defaults to True — sets ``disabled = True`` on every logger that already
+# exists and is not named in that file. Every ``pie_portal.*`` logger is created
+# at import time, so all of them qualify.
+#
+# The app runs migrations **in-process** at startup (``bootstrap.ensure_schema``)
+# and before a deploy cuts over. So this ran inside the API process, after
+# ``logs.configure`` had set logging up, and left the server with no app
+# logging at all: no INFO, no ``log.exception`` from a failing sync, nothing.
+# That is why a sync that ran for an hour and failed had no server log to check
+# — the log was not missing, it had been switched off by a migration.
+#
+# So: if the application has already configured logging, leave it alone. A
+# ``python -m alembic`` from a shell has not, and still gets alembic's format.
+# ``disable_existing_loggers=False`` there too, because even standing alone
+# there is no reason for a migration to silence loggers it did not create.
+if config.config_file_name is not None and not logs.is_configured():
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
 

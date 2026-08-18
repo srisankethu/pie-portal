@@ -1426,6 +1426,48 @@ class SyncSkip(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
+class SyncRunLog(Base):
+    """One line of what a sync actually did, kept where a person can read it.
+
+    A pull runs for an hour in a background thread and the process log was the
+    only account of it. So a failed run told whoever started it to "see the
+    server log" — a person with a browser, no shell, and on a hosted platform
+    quite possibly no log at all. This table is the answer to that sentence:
+    the lines the run emitted, stored against the run, served to the screen
+    that reports the failure.
+
+    Append-only and **derived**, exactly like ``SyncSkip``: a re-run writes a
+    new run with its own lines, and nothing computes off these. They are an
+    account for a reader.
+
+    ``seq`` orders them, because two lines written inside the same millisecond
+    are not rare in a tight loop and a log that shuffles is not a log. The
+    timestamp is the record's own, not the moment it was flushed — the flush
+    happens at a phase boundary and would bunch a whole phase onto one instant.
+    """
+
+    __tablename__ = "sync_run_logs"
+    __table_args__ = (
+        # The only query: one run's lines, in order, optionally from a cursor
+        # so a screen watching a live pull asks for what it has not seen.
+        Index("ix_sync_run_logs_run_seq", "sync_run_id", "seq"),
+    )
+
+    log_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    sync_run_id: Mapped[str] = mapped_column(String(64), index=True)
+    seq: Mapped[int] = mapped_column(Integer, default=0)
+    #: When the line was *emitted*.
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    level: Mapped[str] = mapped_column(String(16), index=True)
+    #: The logger that wrote it — "pie_portal.sync_jobs", "app.ingestion...".
+    #: Kept because "who said this" is half of reading an interleaved log.
+    logger: Mapped[str] = mapped_column(String(128), default="")
+    #: The line itself. Text, not a bounded string: a traceback is one line by
+    #: this table's reckoning and truncating it loses the frame that matters.
+    message: Mapped[str] = mapped_column(Text, default="")
+
+
 class IngestedDocument(Base):
     """One Zoho document already pulled — the resume cursor.
 

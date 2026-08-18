@@ -17,6 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from . import entitlements as plan
 from .config import settings
+from .observability import logs
 from .observability.instrumentation import api_instrumentation_middleware
 from .pie_service import pie_service
 from .routers import (accounts, admin, ai_settings, approvals, attribution,
@@ -25,7 +26,11 @@ from .routers import (accounts, admin, ai_settings, approvals, attribution,
                       onboarding, outcomes, platform_auth, quote,
                       insight, quote_intelligence, quote_support, trust)
 
-logging.basicConfig(level=logging.INFO)
+# One place decides what this process logs and where it goes — level from
+# LOG_LEVEL, a rotating file when LOG_FILE names one, and the per-run
+# capture that puts a sync's own log where the person who started it can
+# read it. `basicConfig(level=INFO)` was the whole of it before.
+logs.configure()
 log = logging.getLogger("pie_portal")
 
 # Fail fast in production if the auth-signing secret was never overridden — the

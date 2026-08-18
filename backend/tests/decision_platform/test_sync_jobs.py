@@ -684,3 +684,95 @@ def test_one_company_cannot_pull_while_every_company_is_pulling(client):
         "a single-company pull must be handed the all-companies job already "
         "reading that company")
     assert one["run"]["sync_run_id"] == every["run"]["sync_run_id"]
+
+
+# ── reading a run's log ─────────────────────────────────────────────────────
+#
+# "See the server log" was the advice a crashed sync gave to somebody with a
+# browser and no shell. These pin the endpoints that make it a real referent.
+
+
+def _log_a_run(client, *, org=ORG, run_id="run_logged", levels=("INFO", "ERROR")):
+    s = client.Maker()
+    s.add(models.SyncRun(sync_run_id=run_id, organization_id=org, source="api",
+                         status="FAILED", error="RuntimeError: Zoho said no"))
+    for seq, level in enumerate(levels):
+        s.add(models.SyncRunLog(
+            organization_id=org, sync_run_id=run_id, seq=seq, at=datetime.now(timezone.utc),
+            level=level, logger="pie_portal.sync_jobs",
+            message=f"{level.lower()} line {seq}"))
+    s.commit()
+    s.close()
+    return run_id
+
+
+def test_a_finished_run_can_be_read_line_by_line(client):
+    run_id = _log_a_run(client)
+    body = client.get(f"/api/v1/data/sync-runs/{run_id}/log",
+                      headers=_hdr(client)).json()
+
+    assert [line["message"] for line in body["lines"]] == ["info line 0", "error line 1"]
+    assert body["total"] == 2
+    assert body["running"] is False
+    assert body["note"] is None
+
+
+def test_the_log_can_be_followed_from_where_the_reader_left_off(client):
+    """A screen watching an hour-long pull asks for what it has not seen, not
+    for the whole log every two seconds."""
+    run_id = _log_a_run(client)
+    body = client.get(f"/api/v1/data/sync-runs/{run_id}/log?after_seq=0",
+                      headers=_hdr(client)).json()
+
+    assert [line["seq"] for line in body["lines"]] == [1]
+    assert body["next_seq"] == 1
+
+
+def test_the_problems_can_be_read_without_the_rest(client):
+    """The first question about a run that took an hour and failed is what went
+    wrong, and the answer is a few lines inside several thousand."""
+    run_id = _log_a_run(client, levels=("INFO", "INFO", "WARNING", "ERROR"))
+    body = client.get(f"/api/v1/data/sync-runs/{run_id}/log?problems_only=true",
+                      headers=_hdr(client)).json()
+
+    assert [line["level"] for line in body["lines"]] == ["WARNING", "ERROR"]
+    assert body["total"] == 2, "the total describes what was asked for"
+
+
+def test_a_run_that_kept_no_log_says_why_rather_than_looking_empty(client):
+    """An empty panel that cannot explain itself reads as "the sync did
+    nothing" — the same absence-as-good-news failure this codebase keeps
+    finding."""
+    run_id = _log_a_run(client, levels=())
+    body = client.get(f"/api/v1/data/sync-runs/{run_id}/log",
+                      headers=_hdr(client)).json()
+
+    assert body["lines"] == []
+    assert body["note"] and "before its log was stored" in body["note"]
+
+
+def test_the_log_downloads_as_a_file_with_the_run_named_on_it(client):
+    run_id = _log_a_run(client)
+    r = client.get(f"/api/v1/data/sync-runs/{run_id}/log.txt", headers=_hdr(client))
+
+    assert r.status_code == 200
+    assert "attachment" in r.headers["content-disposition"]
+    assert run_id in r.text and "info line 0" in r.text
+    assert "RuntimeError: Zoho said no" in r.text, "the failure travels with the log"
+
+
+def test_another_organizations_run_is_not_readable(client):
+    """Scoped in the query, so a foreign id reads as absent rather than as a
+    permission error that confirms it exists."""
+    _log_a_run(client, org="org_someone_else", run_id="run_theirs")
+    r = client.get("/api/v1/data/sync-runs/run_theirs/log", headers=_hdr(client))
+    assert r.status_code == 404
+
+
+def test_a_salesperson_cannot_read_a_run_log(client):
+    """A log line is whatever the code passed to it, and the cost-record stage
+    names purchase documents. Same gate as the skipped rows."""
+    run_id = _log_a_run(client)
+    r = client.get(f"/api/v1/data/sync-runs/{run_id}/log",
+                   headers=_hdr(client, SALES))
+    assert r.status_code == 403

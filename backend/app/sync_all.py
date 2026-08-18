@@ -35,6 +35,7 @@ from typing import Optional
 from sqlalchemy import select
 
 from .domain import models
+from .observability import logs
 
 log = logging.getLogger("pie_portal.sync_all")
 
@@ -142,8 +143,10 @@ def main(argv: Optional[list[str]] = None) -> int:
                         help="Emit the raw result as JSON instead of a summary.")
     args = parser.parse_args(argv)
 
-    logging.basicConfig(level=logging.INFO,
-                        format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    # The same configuration the API process uses, so a nightly pull's lines
+    # look like every other line and land in the same file when LOG_FILE names
+    # one. Each run's own log is kept with the run either way.
+    logs.configure()
 
     since = date.fromisoformat(args.since) if args.since else None
 

@@ -229,6 +229,13 @@ EXCLUDED_REASONS: dict[str, str] = {
     "sync_runs": (
         "Our own record of how each pull went. Operational plumbing with no "
         "fact about your business in it."),
+    "sync_run_logs": (
+        "The lines each pull wrote as it ran — phases, warnings, tracebacks. "
+        "Our own diagnostics, kept so a failed sync can be explained to you. "
+        "Not excluded because it is sensitive: it is ours, not yours, and a "
+        "file of our stack traces is not part of your data. `sync_skipped_rows` "
+        "is the half of a pull that *is* your trading record, and that one is "
+        "exported."),
     "ingested_documents": (
         "Which document was last read at which timestamp — the bookkeeping "
         "that makes a resumed sync cheap. No business content."),
@@ -254,6 +261,7 @@ MANIFESTED: tuple[tuple[str, Any], ...] = EXPORTED + (
     ("business_states", models.BusinessState),
     ("state_transitions", models.StateTransition),
     ("sync_runs", models.SyncRun),
+    ("sync_run_logs", models.SyncRunLog),
     ("ingested_documents", models.IngestedDocument),
     ("zoho_connections", models.ZohoConnection),
     ("ai_provider_keys", models.AIProviderKey),

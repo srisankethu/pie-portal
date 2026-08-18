@@ -15,6 +15,7 @@
 import type {
   LineIntelligence, QuoteIntelligence, QuoteLossReason, QuoteOutcome, QuoteOutcomeStatus,
 } from "./types";
+import { authInit } from "./authFetch";
 
 export interface AssessLine {
   line_id: string;
@@ -25,11 +26,10 @@ export interface AssessLine {
 }
 
 async function post<T>(path: string, body: unknown, token: string): Promise<T> {
-  const res = await fetch(path, {
+  const res = await fetch(path, authInit({
     method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
     body: JSON.stringify(body),
-  });
+  }, token));
   if (!res.ok) {
     let detail = res.statusText;
     try {
@@ -91,9 +91,8 @@ export const intelligence = {
   /** Whether this quote may be sent, and what is holding it. Mirrors the
    *  server-side check the send endpoint performs — it does not replace it. */
   gate: async (token: string, quoteId: string): Promise<QuoteGate> => {
-    const res = await fetch(`/api/v1/approvals/quotes/${encodeURIComponent(quoteId)}/gate`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
+    const res = await fetch(`/api/v1/approvals/quotes/${encodeURIComponent(quoteId)}/gate`,
+      authInit({}, token));
     if (!res.ok) throw new Error(res.statusText);
     return (await res.json()) as QuoteGate;
   },

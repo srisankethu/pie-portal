@@ -104,6 +104,21 @@ class Settings:
     # Demo auth secret (dev only). A real deployment injects this.
     AUTH_SECRET: str = os.environ.get("AUTH_SECRET", "dev-secret-change-me")
 
+    # ── session lifetime ─────────────────────────────────────────────────────
+    # Two limits, because they answer different questions. The idle timeout ends
+    # a session nobody is using: a browser left open on a shared desk stops being
+    # a way in overnight. The absolute age ends a session no matter how actively
+    # it is used, so a token that was captured and is being kept warm still dies
+    # on a known date. Only the absolute one existed before, which meant a
+    # forgotten sign-in stayed live for a month.
+    #
+    # 12 hours covers a long working day without asking anyone to sign in twice
+    # before dinner, and expires by the next morning.
+    SESSION_IDLE_TIMEOUT_SECONDS: int = int(
+        os.environ.get("SESSION_IDLE_TIMEOUT_SECONDS", str(12 * 60 * 60)))
+    SESSION_MAX_AGE_SECONDS: int = int(
+        os.environ.get("SESSION_MAX_AGE_SECONDS", str(30 * 24 * 60 * 60)))
+
     # Encrypts Zoho client secrets/refresh tokens stored per organization (see
     # app/crypto.py). A Fernet key: 32 url-safe base64 bytes. The default below
     # is fixed and public — fine for local dev, never for production, where a

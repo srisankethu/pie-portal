@@ -20,6 +20,7 @@ import Typography from "@mui/material/Typography";
 import { useCallback, useEffect, useState } from "react";
 import type { PlatformSession } from "./types";
 import { ErrorState, LoadingState } from "./kit";
+import { authInit } from "../authFetch";
 
 const healthStatusColor: Record<string, string> = {
   healthy: "#4caf50",
@@ -98,9 +99,8 @@ export function ObservabilityDashboard({ session }: { session: PlatformSession }
     setLoading(true);
     setError(null);
     try {
-      const response = await fetch("/api/v1/internal/observability/dashboard", {
-        headers: { Authorization: `Bearer ${session.token}` },
-      });
+      const response = await fetch("/api/v1/internal/observability/dashboard",
+        authInit({}, session.token));
       if (!response.ok) throw new Error(`${response.status}`);
       const dashboardData = await response.json();
       setData(dashboardData);

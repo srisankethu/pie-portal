@@ -64,13 +64,33 @@ describe("a session that is not one", () => {
   });
 
   it("refuses a session missing an identity it is supposed to carry", () => {
-    for (const key of ["token", "user_id", "organization_id"]) {
+    // `token` was in this list and is deliberately no longer: it moved to an
+    // httpOnly cookie, so an empty one is the normal stored value rather than a
+    // broken session. The identities below are still required, because they are
+    // what the shell draws itself from and a blank one would render a signed-in
+    // frame belonging to nobody.
+    for (const key of ["user_id", "organization_id"]) {
       expect(parseStoredSession(JSON.stringify({ ...VALID, [key]: "" })),
              `an empty ${key} is not a session`).toBeNull();
       const { [key]: _dropped, ...without } = VALID as Record<string, unknown>;
       expect(parseStoredSession(JSON.stringify(without)),
              `a missing ${key} is not a session`).toBeNull();
     }
+  });
+
+  it("accepts an empty token, because the cookie is the credential now", () => {
+    // The counterpart to the loop above, stated as its own assertion so the
+    // change reads as a decision rather than as a rule somebody quietly dropped.
+    // Storing a token at all is what this change removed; a stored session is a
+    // profile, and `/auth/me` against the cookie is what says it is still live.
+    expect(parseStoredSession(JSON.stringify({ ...VALID, token: "" })))
+      .toMatchObject({ user_id: VALID.user_id, token: "" });
+
+    // The key must still be present, though — a stored object without it is not
+    // one this app wrote, and guessing at its shape is how the old `as` cast
+    // booted a signed-in shell over nothing.
+    const { token: _dropped, ...without } = VALID as Record<string, unknown>;
+    expect(parseStoredSession(JSON.stringify(without))).toBeNull();
   });
 
   it("refuses a field of the wrong type rather than coercing it", () => {

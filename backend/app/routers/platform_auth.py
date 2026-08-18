@@ -19,13 +19,15 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..authz import (
-    issue_token, is_login_throttled, record_login_failure, reset_login_failures)
+    Principal, clear_session_cookie, current_principal, is_login_throttled,
+    open_session, record_login_failure, reset_login_failures, revoke_all_sessions,
+    revoke_session, set_session_cookie)
 from .. import clock
 from ..config import settings
 from ..db import get_session
@@ -82,7 +84,8 @@ class LoginResponse(BaseModel):
 
 
 @router.post("/login", response_model=LoginResponse)
-def login(body: LoginRequest, session: Session = Depends(get_session)) -> LoginResponse:
+def login(body: LoginRequest, request: Request, response: Response,
+          session: Session = Depends(get_session)) -> LoginResponse:
     email = (body.email or "").strip().lower()
     user = session.scalar(select(models.User).where(models.User.email == email))
 
@@ -136,10 +139,127 @@ def login(body: LoginRequest, session: Session = Depends(get_session)) -> LoginR
 
     org = session.get(models.Organization, user.organization_id)
 
+    token, _row = open_session(session, user, request.headers.get("user-agent"))
+    # Committed here, not left to the request teardown. The token about to go out
+    # names that row, and a token naming a row nobody else can read yet is a dead
+    # credential — the same "a flush is invisible outside its own transaction"
+    # trap CLAUDE.md §4 describes, except the invisible thing is the session
+    # itself. Every path that mints a token commits before handing it over.
+    session.commit()
+    # The browser's copy goes in an httpOnly cookie it cannot read. The token is
+    # still in the body for programmatic callers — scripts, tests, anything that
+    # is not a browser and so has nowhere for a cookie to live and no ambient
+    # sending of it to defend against.
+    set_session_cookie(response, token)
+
     return LoginResponse(
-        token=issue_token(user.user_id, user.organization_id),
+        token=token,
         user_id=user.user_id, organization_id=user.organization_id,
         role=user.role, name=user.name, email=user.email,
         currency=(getattr(org, "currency", None) or settings.DEFAULT_CURRENCY),
         timezone=(getattr(org, "timezone", None) or clock.DEFAULT_ZONE),
         must_change_password=user.must_change_password)
+
+
+class SessionView(BaseModel):
+    """One row of "where am I signed in", as the person should read it."""
+    session_id: str
+    issued_at: datetime
+    last_seen_at: datetime
+    user_agent: str = ""
+    #: The session this very request is riding on. Marked so the list can say
+    #: "this device" rather than inviting someone to guess and revoke the wrong
+    #: one.
+    current: bool = False
+
+
+@router.get("/me", response_model=LoginResponse)
+def me(request: Request, session: Session = Depends(get_session),
+       principal: Principal = Depends(current_principal)) -> LoginResponse:
+    """Who the current cookie belongs to.
+
+    The app used to rebuild its whole session — role, currency, timezone — from
+    a blob in `localStorage`, because that blob held the token too. With the
+    token in an httpOnly cookie the browser cannot read, the app has to ask, and
+    this is the ask. It also means a role change or a revoked session is noticed
+    on the next page load rather than at the first request that happens to fail.
+    """
+    user = session.get(models.User, principal.user_id)
+    org = session.get(models.Organization, principal.organization_id)
+    return LoginResponse(
+        # Deliberately empty: the caller already holds the cookie, and echoing
+        # the token into a readable body would undo the point of the cookie.
+        token="",
+        user_id=principal.user_id, organization_id=principal.organization_id,
+        role=principal.role.value, name=principal.name, email=principal.email or "",
+        currency=(getattr(org, "currency", None) or settings.DEFAULT_CURRENCY),
+        timezone=(getattr(org, "timezone", None) or clock.DEFAULT_ZONE),
+        must_change_password=bool(user.must_change_password) if user else False)
+
+
+@router.post("/logout")
+def logout(response: Response, session: Session = Depends(get_session),
+           principal: Principal = Depends(current_principal)) -> dict:
+    """End this session, on the server.
+
+    Signing out used to be `localStorage.removeItem`, which ended nothing: the
+    token stayed valid for its full life, so a session signed out on a shared
+    machine was still a working credential to anyone who had copied it.
+    """
+    if principal.session_id:
+        revoke_session(session, principal.session_id)
+    session.commit()
+    clear_session_cookie(response)
+    return {"ok": True}
+
+
+@router.post("/logout-all")
+def logout_all(response: Response, session: Session = Depends(get_session),
+               principal: Principal = Depends(current_principal)) -> dict:
+    """End every session for this account, including this one.
+
+    The button for "I think someone else has my session". It ends this device
+    too, deliberately: a person reaching for this wants a clean slate, and one
+    surviving session they forgot about is the thing they were trying to remove.
+    """
+    ended = revoke_all_sessions(session, principal.user_id)
+    session.commit()
+    clear_session_cookie(response)
+    return {"ok": True, "ended": ended}
+
+
+@router.get("/sessions", response_model=list[SessionView])
+def list_sessions(session: Session = Depends(get_session),
+                  principal: Principal = Depends(current_principal)) -> list[SessionView]:
+    """This account's live sessions, newest first."""
+    rows = session.scalars(
+        select(models.UserSession)
+        .where(models.UserSession.user_id == principal.user_id,
+               models.UserSession.revoked_at.is_(None))
+        .order_by(models.UserSession.issued_at.desc())
+    ).all()
+    return [
+        SessionView(
+            session_id=r.session_id,
+            issued_at=clock.aware(r.issued_at),
+            last_seen_at=clock.aware(r.last_seen_at),
+            user_agent=r.user_agent or "",
+            current=(r.session_id == principal.session_id),
+        )
+        for r in rows
+    ]
+
+
+@router.delete("/sessions/{session_id}")
+def revoke_one(session_id: str, session: Session = Depends(get_session),
+               principal: Principal = Depends(current_principal)) -> dict:
+    """End one named session — "sign out that other laptop"."""
+    row = session.get(models.UserSession, session_id)
+    # Ownership is checked, and a session belonging to somebody else answers the
+    # same 404 as one that does not exist. Distinguishing them would turn this
+    # endpoint into a way to ask whether a given session id is live.
+    if row is None or row.user_id != principal.user_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such session")
+    revoke_session(session, session_id)
+    session.commit()
+    return {"ok": True}

@@ -23,7 +23,20 @@ import { z } from "zod";
  * salesperson's view to an owner.
  */
 export const platformSessionSchema = z.object({
-  token: z.string().min(1),
+  // Empty is the normal, expected value: the token moved to an httpOnly cookie
+  // the page cannot read, and what is stored here is only the non-secret profile
+  // the shell draws its first frame from.
+  //
+  // This was `min(1)`, and the reason was sound at the time — a stored session
+  // with no token booted the shell looking signed in and then failed every
+  // request with a 401 nobody could explain. That failure is now impossible from
+  // this direction: the credential is not in this object at all, so its absence
+  // says nothing about whether the session is live. `/auth/me` on boot is what
+  // answers that, and a dead cookie routes through the ordinary auth-loss path.
+  // Kept required-but-possibly-empty rather than dropped, because every call
+  // site still passes `session.token` and `req` reads an empty one as "no
+  // Authorization header, use the cookie".
+  token: z.string(),
   role: z.enum(["SALESPERSON", "SALES_MANAGER", "OWNER"]),
   name: z.string(),
   user_id: z.string().min(1),

@@ -8,6 +8,7 @@ import {
   clearPlatformSession,
   isAuthError,
   loadPlatformSession,
+  onSessionChangedElsewhere,
   papi,
   savePlatformSession,
   setAuthLossHandler,
@@ -400,7 +401,8 @@ export default function PlatformApp() {
     });
   }, [enqueueSnackbar, closeSnackbar]);
 
-  const signOut = useCallback(() => {
+  /** Drop this browser's view of the session. Local only — see `signOut`. */
+  const forgetSession = useCallback(() => {
     clearPlatformSession();
     setSession(null);
     setSummaries(null);
@@ -410,17 +412,55 @@ export default function PlatformApp() {
     setDoor("landing");
   }, []);
 
+  const signOut = useCallback(() => {
+    // Tell the server first, and do not wait for it or let it fail the sign-out:
+    // the local half must happen whether or not the network does, or a person on
+    // a flaky connection is left signed in by an error they cannot act on. The
+    // server call is what actually ends the session — clearing storage alone was
+    // the old behaviour, and it ended nothing.
+    void papi.logout().catch(() => { /* already invalid, or offline — leave anyway */ });
+    forgetSession();
+  }, [forgetSession]);
+
   /** A dead session must return the user to sign-in, not strand them inside
    *  application chrome that looks live but can load nothing. */
   const handleAuthLoss = useCallback(() => {
     // Where they were, so signing back in returns them there rather than to
     // home. Captured before signOut swaps the shell for the landing page.
     intended.current = location.pathname + location.search;
-    signOut();
+    // `forgetSession`, not `signOut`: the session is already gone, and posting
+    // to /auth/logout with a dead credential answers 401, which is an auth loss,
+    // which calls this again. Local cleanup only.
+    forgetSession();
     // The toast lives inside the signed-in shell, which is about to unmount —
     // the message has to survive onto the sign-in screen to be seen at all.
     setNotice("Your session expired. Please sign in again.");
-  }, [signOut, location.pathname, location.search]);
+  }, [forgetSession, location.pathname, location.search]);
+
+  /** One session per browser, and now every tab agrees which one it is.
+   *
+   *  Without this the tabs drifted: a sign-out in one left the others drawing a
+   *  live-looking shell over a dead session, and a sign-in as somebody else left
+   *  the first tab showing the previous person's name and role until something
+   *  happened to reload it. */
+  useEffect(() => onSessionChangedElsewhere((next) => {
+    if (!next) {
+      forgetSession();
+      setNotice("You signed out in another tab.");
+      return;
+    }
+    setSession((prev) => {
+      if (prev && prev.user_id === next.user_id) return prev;   // same person; nothing to do
+      // A different account signed in elsewhere. Adopt it and drop everything
+      // loaded for the previous one rather than showing one person's data under
+      // another's name.
+      setSummaries(null);
+      setDetails({});
+      setError(null);
+      setNotice(`Signed in as ${next.name} in another tab.`);
+      return next;
+    });
+  }), [forgetSession]);
 
   // Registered once for the whole app. Before this, a 401 was recognised only
   // where a screen remembered to ask `isAuthError` — three call sites, all on
@@ -430,6 +470,31 @@ export default function PlatformApp() {
     setAuthLossHandler(handleAuthLoss);
     return () => setAuthLossHandler(null);
   }, [handleAuthLoss]);
+
+  /** Confirm the stored profile against the cookie, once, on boot.
+   *
+   *  What is in `localStorage` is a cache so the shell can draw immediately; the
+   *  cookie is the credential and the server is the authority on what it means.
+   *  Asking closes the gap between them — a session revoked from another device,
+   *  or a role changed by an owner, is reflected on load instead of at whichever
+   *  request happens to fail first. A 401 here routes through the normal
+   *  auth-loss path, so a stale profile cannot leave a signed-out person looking
+   *  signed in. */
+  const booted = useRef(false);
+  useEffect(() => {
+    if (booted.current || !session) return;
+    booted.current = true;
+    void papi.me()
+      .then((me) => {
+        const next: PlatformSession = { ...session, ...me, token: "" };
+        savePlatformSession(next);
+        setSession(next);
+      })
+      // Swallowed on purpose: a 401 has already been turned into an auth loss by
+      // the transport, and anything else (offline, a 502 from the proxy) is not
+      // a reason to throw someone out of a shell that is otherwise working.
+      .catch(() => { /* handled by the auth-loss path, or transient */ });
+  }, [session]);
 
   const load = useCallback(async () => {
     if (!session) return;
@@ -978,7 +1043,8 @@ export default function PlatformApp() {
             <Route path={PATH.identity} element={<IdentityScreen token={session.token} />} />
             <Route path={PATH.trust} element={<TrustScreen session={session} />} />
             <Route path={PATH.settings} element={
-              <SettingsScreen session={session} onToken={adoptToken} />} />
+              <SettingsScreen session={session} onToken={adoptToken}
+                              onSignedOutEverywhere={forgetSession} />} />
 
             {/* ── AI STATES (reference) ── */}
             <Route path={PATH.states} element={<StatesScreen />} />

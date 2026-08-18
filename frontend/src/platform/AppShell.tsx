@@ -145,51 +145,48 @@ export interface NavItem {
 
 const ORDER: NavGroup[] = ["decide", "understand", "book", "setup"];
 
-/** The two groups that fold, and the reason there are two rather than four.
+/** The two groups a reader may fold away, and why nothing is folded for them.
  *
  *  This nav carries thirty-four items and its own grouping admits the shape:
- *  seven ways to act, twenty to read. To somebody who has already decided that
- *  dashboards are things nobody opens, that is the verdict confirmed on first
- *  login — directly after a landing page that spent its whole argument saying
- *  this is not one.
+ *  seven ways to act, twenty to read. The first attempt at that treated the
+ *  length as the problem and reduced it two ways — collapsing these groups by
+ *  default, and withholding them entirely until an organization had synced
+ *  books.
  *
- *  Folding rather than removing, because every one of those screens is used by
- *  somebody. `Decide` is the working day and never folds; `Setup` is short and
- *  is where you go when something is wrong, so folding it would hide the exits.
- *  The two analysis groups fold, which takes the default from thirty-four
- *  visible rows to about thirteen and removes nothing.
+ *  Both were wrong, and the withholding was wrong in the way that matters: the
+ *  analysis screens are where this product's visualisations live, and they are
+ *  the best argument it makes for itself. Hiding them from somebody who has not
+ *  seen the product yet removes the case exactly when it would have landed. A
+ *  long nav is a much smaller problem than a nav missing the thing worth
+ *  looking at.
  *
- *  Collapsed only until the reader says otherwise: the choice persists, and a
- *  group holding the current screen is always open regardless. So the cost to
- *  somebody who lives in `Understand` is one click, once, ever. */
+ *  So nothing folds unless the reader folds it. `Decide` is the working day and
+ *  never folds; `Setup` is where you go when something is wrong, so folding it
+ *  would hide the exits. The two analysis groups *can* be folded by somebody who
+ *  has decided they do not use them, that choice persists, and a group holding
+ *  the current screen stays open regardless — a nav that hides the page you are
+ *  reading has lost you.
+ *
+ *  The affordance is for the reader who wants a shorter list. It is not a
+ *  judgement about what they should be looking at. */
 const FOLDABLE: ReadonlySet<NavGroup> = new Set<NavGroup>(["understand", "book"]);
 
-const FOLD_KEY = "pie.nav.open-groups";
+//: Which foldable groups this reader has *collapsed*. Stored the way round it
+//: is because the default is open: an empty preference must mean "show me
+//: everything", so the thing worth persisting is the exception.
+//:
+//: A new key rather than reusing the old one. The previous release stored the
+//: opposite list under `pie.nav.open-groups`, and reading that as a collapse
+//: list would fold exactly the groups somebody had chosen to open — the worst
+//: possible misreading of a stored preference.
+const FOLD_KEY = "pie.nav.collapsed-groups";
 
-/** The nav a reader should actually see, given what their organization has.
- *
- *  Until the books have arrived the analysis groups are doors to empty rooms —
- *  every screen in them reads persisted trading rows, and there are none.
- *  Twenty of those on a first login is how a product that is not a dashboard
- *  introduces itself as one.
- *
- *  `Decide` and `Setup` survive, which between them are the whole of what a new
- *  organization can do: quote, and finish connecting.
- *
- *  A pure function and exported so the rule is pinned by a test rather than
- *  living inline in a nine-hundred-line component — it is four lines, and §7
- *  would say leave it alone, except that "which screens does a stranger see"
- *  is exactly the kind of rule that changes silently. */
-export function visibleNavItems(items: NavItem[], booksReady: boolean): NavItem[] {
-  if (booksReady) return items;
-  return items.filter((i) => i.group === "decide" || i.group === "setup");
-}
 
 /** Which foldable groups this reader has opened. Persisted so the answer
  *  survives a reload; a failure to read or write it is not worth a broken nav,
  *  so both sides degrade to the default rather than throwing (private-mode
  *  browsers make `localStorage` throw on access, not merely return null). */
-function loadOpenGroups(): Set<NavGroup> {
+function loadCollapsedGroups(): Set<NavGroup> {
   try {
     const raw = window.localStorage.getItem(FOLD_KEY);
     if (!raw) return new Set();
@@ -199,7 +196,7 @@ function loadOpenGroups(): Set<NavGroup> {
   }
 }
 
-function saveOpenGroups(groups: Set<NavGroup>): void {
+function saveCollapsedGroups(groups: Set<NavGroup>): void {
   try {
     window.localStorage.setItem(FOLD_KEY, JSON.stringify([...groups]));
   } catch {
@@ -225,16 +222,17 @@ export default function AppShell({
   const theme = useTheme();
   const wide = useMediaQuery(theme.breakpoints.up("md"));
   const [open, setOpen] = useState(false);
-  const [openGroups, setOpenGroups] = useState<Set<NavGroup>>(loadOpenGroups);
+  const [collapsedGroups, setCollapsedGroups] =
+    useState<Set<NavGroup>>(loadCollapsedGroups);
 
   const isCurrent = (it: NavItem) =>
     current === it.key || (it.alsoCurrentFor || []).includes(current);
 
   const toggleGroup = (group: NavGroup) => {
-    setOpenGroups((prev) => {
+    setCollapsedGroups((prev) => {
       const next = new Set(prev);
       if (next.has(group)) next.delete(group); else next.add(group);
-      saveOpenGroups(next);
+      saveCollapsedGroups(next);
       return next;
     });
   };
@@ -249,7 +247,7 @@ export default function AppShell({
         // that has lost you.
         const holdsCurrent = inGroup.some(isCurrent);
         const foldable = FOLDABLE.has(group);
-        const expanded = !foldable || holdsCurrent || openGroups.has(group);
+        const expanded = !foldable || holdsCurrent || !collapsedGroups.has(group);
         return (
           <List
             key={group}
@@ -300,9 +298,10 @@ export default function AppShell({
                         transform: expanded ? "none" : "rotate(-90deg)",
                       }} />
                     {GROUP_LABEL[group]}
-                    {/* The count is what makes a folded group legible: without
-                        it the row reads as a heading with nothing under it
-                        rather than as eleven screens put away. */}
+                    {/* The count is what makes a folded group legible: a
+                        reader who collapsed this a month ago needs the row to
+                        read as eleven screens put away, not as a heading with
+                        nothing under it. */}
                     {!expanded && (
                       <Box component="span" sx={{ opacity: 0.7, ml: 0.25 }}>
                         ({inGroup.length})

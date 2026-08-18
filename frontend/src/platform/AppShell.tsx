@@ -255,19 +255,7 @@ export default function AppShell({
               <MenuIcon />
             </IconButton>
           )}
-          <Typography
-            component="span"
-            sx={{
-              fontFamily: "var(--font-heading)",
-              fontWeight: 700,
-              letterSpacing: "0.04em",
-              textTransform: "uppercase",
-              fontSize: 15,
-              whiteSpace: "nowrap",
-            }}
-          >
-            PIE · Decisions
-          </Typography>
+          <PieLogo size={30} />
           <Box sx={{ flex: 1 }} />
           {/* No role switcher. A user has exactly one role, it comes from their
               account, and a control that swapped it would be a control that lets
@@ -327,20 +315,33 @@ export default function AppShell({
 
 /** The tooltip-wrapped brand mark, exported for the sign-in screen so the two
  *  surfaces agree on how the product names itself. */
-export function BrandMark({ tip }: { tip?: string }) {
-  const mark = (
-    <Typography
-      component="span"
-      sx={{
-        fontFamily: "var(--font-heading)",
-        fontWeight: 700,
-        letterSpacing: "0.04em",
-        textTransform: "uppercase",
-        fontSize: 15,
-      }}
+/** The product logo: the `PIE` wordmark set in the accent tile — the same mark
+ *  the browser tab carries (public/favicon.svg), redrawn here with theme tokens
+ *  and the bundled heading font so it tracks the palette instead of the
+ *  favicon's frozen hex. One in-app copy, used by the top bar and by BrandMark,
+ *  so the two never drift. `textLength` pins the advance width so the wordmark
+ *  stays centred in the tile even in the instant before Barlow Condensed
+ *  finishes loading and a wider fallback is briefly substituted. */
+export function PieLogo({ size = 30 }: { size?: number }) {
+  return (
+    <svg
+      width={size} height={size} viewBox="0 0 32 32"
+      role="img" aria-label="PIE" style={{ display: "block", flex: "none" }}
     >
-      PIE · Decisions
-    </Typography>
+      <rect width="32" height="32" rx="6" fill="var(--color-accent-700)" />
+      <text
+        x="16" y="22.5" textAnchor="middle"
+        textLength="23" lengthAdjust="spacingAndGlyphs"
+        fontFamily="var(--font-heading)" fontSize="16" fontWeight="700"
+        fill="var(--color-bg)"
+      >
+        PIE<tspan fill="var(--color-accent-400)">.</tspan>
+      </text>
+    </svg>
   );
+}
+
+export function BrandMark({ tip }: { tip?: string }) {
+  const mark = <PieLogo size={30} />;
   return tip ? <Tooltip title={tip}>{mark}</Tooltip> : mark;
 }

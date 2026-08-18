@@ -13,7 +13,7 @@ import {
   savePlatformSession,
   setAuthLossHandler,
 } from "./api";
-import type { Account, DecisionDetail, DecisionSummary, DecisionTrace, PlatformSession, Role, StatusFilter } from "./types";
+import type { Account, DecisionDetail, DecisionSummary, DecisionTrace, PlatformSession, Role, SignupOffer, StatusFilter } from "./types";
 import { aiState, factLabel, factValue, isPrimaryFact, stateFieldLabel, ROLE_LABEL } from "./format";
 import { ActionsPanel, Bp, Conf, DecisionCard, ImpactPanel, Interpretation, Labelled,
          Pri, RankingPanel, Tip, WhyPanel, typeLabel } from "./ui";
@@ -158,9 +158,16 @@ const ROLE_HOME: Record<Role, { title: string; sub: string; nav: string }> = {
 /** The platform's door. The card itself is `src/SignInCard.tsx`, shared with
  *  the Quote Builder — the two forms had drifted, and the copy that drifted was
  *  the one still telling people any password worked. */
-function SignIn({ onIn, notice }: { onIn: (s: PlatformSession) => void; notice?: string | null }) {
+function SignIn({ onIn, notice, onSignUp }: {
+  onIn: (s: PlatformSession) => void;
+  notice?: string | null;
+  /** Passed straight through; the sentence is the card's, for the reason its
+   *  own prop docstring gives. Absent where sign-up is off. */
+  onSignUp?: () => void;
+}) {
   return (
     <SignInCard
+      onSignUp={onSignUp}
       title="Commercial Decisions"
       blurb="One product, three doors. Your account decides what you see first and what you may act on."
       submitLabel="Sign in"
@@ -192,15 +199,20 @@ function SignIn({ onIn, notice }: { onIn: (s: PlatformSession) => void; notice?:
  *  response is the login response, so this hands the session on through exactly
  *  the same `onIn` the sign-in card uses; a second way to become signed in is a
  *  second place to forget the currency. */
-function SignUp({ onIn, onSignIn }: {
+function SignUp({ onIn, onSignIn, offer, defaultPlan }: {
   onIn: (s: PlatformSession) => void;
   onSignIn: () => void;
+  offer: SignupOffer | null;
+  defaultPlan?: string;
 }) {
   return (
     <SignUpCard
       onSignIn={onSignIn}
+      offer={offer}
+      defaultPlan={defaultPlan}
       onSubmit={async (d) => {
         const r = await papi.signUp(d);
+        // Same field-by-field copy as sign-in, for the reason given there.
         onIn({ token: r.token, role: r.role, name: r.name, email: r.email,
                user_id: r.user_id,
                organization_id: r.organization_id, currency: r.currency,
@@ -211,23 +223,27 @@ function SignUp({ onIn, onSignIn }: {
   );
 }
 
-/** Whether this deployment accepts sign-ups.
+/** What this deployment offers a stranger: sign-up or not, and on what terms.
  *
- *  Asked once, before the door is drawn, and answered `false` on any failure —
+ *  Asked once, before the door is drawn, and answered `null` on any failure —
  *  an older backend has no such endpoint and 404s, and the right reading of
  *  "this deployment did not answer" is that it does not offer sign-up, not that
- *  it does. Never fetched while signed in: the answer changes nothing then. */
-function useSignupOffer(signedOut: boolean): boolean {
-  const [offered, setOffered] = useState(false);
+ *  it does. Never fetched while signed in: the answer changes nothing then.
+ *
+ *  The whole object rather than a boolean, because the sign-up card needs the
+ *  plan ladder and the trial length and neither should be written a second time
+ *  in the browser. `signupOffered` below is still the boolean the doors key off. */
+function useSignupOffer(signedOut: boolean): SignupOffer | null {
+  const [offer, setOffer] = useState<SignupOffer | null>(null);
   useEffect(() => {
     if (!signedOut) return;
     let live = true;
     papi.signupOffer()
-      .then((o) => { if (live) setOffered(!!o.enabled); })
-      .catch(() => { if (live) setOffered(false); });
+      .then((o) => { if (live) setOffer(o.enabled ? o : null); })
+      .catch(() => { if (live) setOffer(null); });
     return () => { live = false; };
   }, [signedOut]);
-  return offered;
+  return offer;
 }
 
 // ── action modal ─────────────────────────────────────────────────────────────
@@ -344,6 +360,10 @@ export default function PlatformApp() {
   // deep-linked to any screen should land on the landing page, not on a bare
   // form, and the URL they wanted is preserved for after sign-in.
   const [door, setDoor] = useState<"landing" | "signin" | "signup">("landing");
+  // Which pricing panel they came through, so the sign-up form opens on the
+  // plan they were reading about. Only a preselection: the account it creates
+  // is the free one whatever this says, which is `SignUpCard`'s whole header.
+  const [wantedPlan, setWantedPlan] = useState<string | undefined>(undefined);
   // The URL is the screen, so Back, reload and shareable links all work. React
   // Router owns the matching; `screen` is only what the nav highlights, which is
   // a different question — a decision detail has no nav item of its own.
@@ -645,7 +665,8 @@ export default function PlatformApp() {
   );
 
   // Before the early returns below: hooks run in the same order every render.
-  const signupOffered = useSignupOffer(!session);
+  const signupOffer = useSignupOffer(!session);
+  const signupOffered = signupOffer !== null;
 
   if (!session) {
     // The landing page is the public front; the two cards are one click behind
@@ -661,7 +682,9 @@ export default function PlatformApp() {
           // That was the state of it until now: the landing page has always
           // offered it, and the only account anybody could have was one an
           // operator made with a shell on the box.
-          onSignUp={signupOffered ? () => setDoor("signup") : undefined}
+          onSignUp={signupOffered
+            ? (plan?: string) => { setWantedPlan(plan); setDoor("signup"); }
+            : undefined}
         />
       );
     }
@@ -677,14 +700,23 @@ export default function PlatformApp() {
       return (
         <>
           {back}
-          <SignUp onIn={signIn} onSignIn={() => setDoor("signin")} />
+          <SignUp
+            onIn={signIn}
+            onSignIn={() => setDoor("signin")}
+            offer={signupOffer}
+            defaultPlan={wantedPlan}
+          />
         </>
       );
     }
     return (
       <>
         {back}
-        <SignIn onIn={signIn} notice={notice} />
+        <SignIn
+          onIn={signIn}
+          notice={notice}
+          onSignUp={signupOffered ? () => setDoor("signup") : undefined}
+        />
       </>
     );
   }

@@ -29,12 +29,13 @@ from __future__ import annotations
 import logging
 import time
 from collections import deque
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from .. import clock, onboarding
+from .. import clock, entitlements, onboarding
 from ..authz import Principal, current_principal, open_session, set_session_cookie
 from ..config import settings
 from ..db import get_session
@@ -92,6 +93,12 @@ def signup_offered() -> dict:
         "note": ("A free Quote Desk account. Connecting your first Zoho Books "
                  f"company starts a {settings.INTELLIGENCE_TRIAL_DAYS}-day trial "
                  "of Commercial Intelligence."),
+        # The ladder, so the form can ask which plan a business wants without
+        # holding its own copy of what the plans are. `plan` above is still the
+        # one every sign-up lands on, whichever of these they pick — the answer
+        # is recorded for the operator, never granted. Saying both here is what
+        # stops the form from implying it sells anything.
+        "plans": entitlements.ladder(),
     }
 
 
@@ -101,6 +108,11 @@ class SignUpRequest(BaseModel):
     email: str = Field(min_length=3, max_length=255)
     password: str = Field(min_length=1, max_length=1024)
     currency: str = Field(default="INR", max_length=8)
+    #: Which plan this business wants. Optional, constrained to the ladder by
+    #: ``onboarding.parse_requested_plan``, and **granted by nothing** — every
+    #: sign-up lands on ``onboarding.SIGNUP_PLAN``. It is a field on a form, not
+    #: an order: there is no billing here and no API that sets a plan.
+    plan: Optional[str] = Field(default=None, max_length=32)
 
 
 class SignUpResponse(BaseModel):
@@ -147,7 +159,7 @@ def sign_up(body: SignUpRequest, request: Request, response: Response,
         org_id, owner = onboarding.sign_up(
             session, company=body.company, owner_name=body.name,
             owner_email=body.email, password=body.password,
-            currency=body.currency)
+            currency=body.currency, wants_plan=body.plan)
     except onboarding.SignupDisabled as e:            # pragma: no cover — guarded above
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e)) from e
     except onboarding.SignupRefused as e:

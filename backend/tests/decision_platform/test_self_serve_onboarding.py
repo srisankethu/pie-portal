@@ -106,6 +106,78 @@ def test_the_offer_says_what_a_signup_gets(client, on):
     assert body["trial_days"] == settings.INTELLIGENCE_TRIAL_DAYS
 
 
+def test_the_offer_carries_the_plan_ladder(client, on):
+    """So the form can ask which plan a business wants without holding its own
+    copy of what the plans are — the copy goes stale the first time a feature
+    moves between tiers."""
+    plans = client.get("/api/v1/signup").json()["plans"]
+    assert [p["plan"] for p in plans] == [p.value for p in PlanTier]
+    assert all(p["label"] and p["summary"] for p in plans)
+    # No prices. They are marketing copy and live on the landing page only;
+    # a second copy of a price is worse than a second copy of a feature list.
+    assert not any("₹" in p["summary"] for p in plans)
+
+
+# ── the plan question, which is a question and not a purchase ────────────────
+def test_asking_for_the_top_plan_still_creates_a_free_account(client, on):
+    """The whole safety property of putting a plan picker on an unauthenticated
+    form. `entitlements` is explicit that plans are set by the operator and
+    never by a tenant, so the form must record the answer and grant nothing —
+    a sign-up that honoured this field would be the plan-setting API that
+    deliberately does not exist."""
+    org_id = client.post(
+        "/api/v1/signup",
+        json={**GOOD, "plan": "platform"}).json()["organization_id"]
+
+    with client.maker() as s:
+        org = s.get(models.Organization, org_id)
+        assert org.plan == PlanTier.FREE.value
+        assert org.requested_plan == PlanTier.PLATFORM.value
+        # And the resolution path has not heard of the request.
+        assert entitlements.effective_plan(s, org_id) is PlanTier.FREE
+        assert entitlements.allows(
+            entitlements.effective_plan(s, org_id), "multi_company") is False
+        assert entitlements.licensed_plan(org) is PlanTier.FREE
+
+
+def test_a_request_is_findable_by_the_operator_who_can_act_on_it(client, on):
+    """Recorded so somebody can answer "who asked for Commercial Intelligence".
+    A form that discards its own answer is worse than one that never asked."""
+    org_id = client.post(
+        "/api/v1/signup",
+        json={**GOOD, "plan": "intelligence"}).json()["organization_id"]
+
+    with client.maker() as s:
+        org = s.get(models.Organization, org_id)
+        assert entitlements.wants_more(org) is PlanTier.INTELLIGENCE
+        # Once granted, the request stops being reported: a standing "you asked
+        # for this" on a plan you already have reads as a request ignored.
+        entitlements.set_plan(s, org_id, PlanTier.INTELLIGENCE)
+        assert entitlements.wants_more(s.get(models.Organization, org_id)) is None
+
+
+def test_not_choosing_a_plan_records_nothing(client, on):
+    org_id = client.post("/api/v1/signup", json=GOOD).json()["organization_id"]
+    with client.maker() as s:
+        org = s.get(models.Organization, org_id)
+        assert org.requested_plan is None
+        assert entitlements.wants_more(org) is None
+
+
+def test_a_plan_the_server_does_not_know_is_refused_before_anything_is_written(
+        client, on):
+    """Unlike `entitlements.parse_plan`, which reads config and degrades to free.
+    This reads a form: an unrecognised value means the client and the server
+    disagree about what the plans are, and recording the wrong answer to the one
+    question this endpoint asks is worse than saying so."""
+    r = client.post("/api/v1/signup", json={**GOOD, "plan": "enterprise"})
+    assert r.status_code == 400, r.text
+    assert "not one of the plans" in r.json()["detail"]
+    with client.maker() as s:
+        assert s.scalars(select(models.Organization)).all() == []
+        assert s.scalars(select(models.User)).all() == []
+
+
 # ── what a sign-up creates ───────────────────────────────────────────────────
 def test_signup_creates_a_tenant_and_signs_its_owner_in(client, on):
     r = client.post("/api/v1/signup", json=GOOD)

@@ -96,10 +96,10 @@ fallback (see `docs/operations.md`).
 
 3. Deploy. Railway will give the service a public URL
    (`https://<something>.up.railway.app`) — copy it, you need it in step 3.
-4. **Run the release step once — before trusting the deploy.** Migrations and
-   seed, the same deliberate step `hosting.md` uses and never folded into the
-   boot command. Run it from your workstation: Neon is reachable from
-   anywhere, so nothing has to happen inside the container.
+4. **Run the release step once — before trusting the first deploy.** Migrations
+   and seed, the same deliberate step `hosting.md` uses. Run it from your
+   workstation: Neon is reachable from anywhere, so nothing has to happen
+   inside the container.
 
    ```bash
    cd backend && pip install -r requirements.txt      # once
@@ -109,11 +109,37 @@ fallback (see `docs/operations.md`).
      bash deploy/release.sh
    ```
 
-   Re-running it after a later schema change is the same command — it is
-   idempotent and reports `BEFORE`/`AFTER` migration state exactly as it does
-   in the self-hosted flow.
+   **Later schema changes migrate themselves.** `railway.json` sets a
+   `preDeployCommand` of `alembic upgrade head`, which Railway runs in the new
+   container, with the service's variables, *before* any traffic moves to it —
+   and fails the deploy without cutting over if it errors. That is the same
+   ordering `release.sh` has always had (migrate, then start), and the same one
+   Compose gets from running `release.sh` before `up`.
 
-   Note that `railway run` is *not* the way to do this: it executes the
+   It is one command with no `cd` and no `&&`, and that is deliberate. The
+   image's working directory is already `/app/backend` — which is also the only
+   reason the container's own `uvicorn app.main:app` can import `app` — so
+   `alembic.ini` and its relative `script_location` resolve from there without
+   help. A `cd X && …` prefix would additionally require Railway to run the
+   value through a shell, and if it does not, the stage dies looking for a
+   binary named `cd`: a failure that produces no Alembic output at all, which
+   is indistinguishable from a database that refused the migration.
+
+   It was not always so, and the reason it is now is worth keeping. Nothing in
+   the pipeline ran migrations, so every schema change needed somebody to
+   remember this command — and when it was forgotten the symptom arrived one
+   deploy later, as a healthy-looking build whose every request 503'd. It went
+   two revisions behind that way. A deploy step that is required, manual, and
+   invisible until it is skipped is not a safety property; it is a trap that
+   happens to have documentation.
+
+   What stays manual is **seeding**, which is why step 4 still exists: it
+   creates an owner account, it is a first-deploy act rather than a per-deploy
+   one, and `release.sh` refuses to do it in production without a real
+   `SEED_PASSWORD`. Migrating is idempotent and safe to repeat; seeding is not
+   the kind of thing a pipeline should do behind you.
+
+   Note that `railway run` is *not* the way to run this by hand: it executes the
    command on your machine with Railway's variables injected, not inside the
    container, so it buys nothing here and obscures which database is being
    migrated. Use `railway ssh` if you genuinely want to run it in the
@@ -132,12 +158,17 @@ fallback (see `docs/operations.md`).
    request until it finishes, and a window shorter than the migration kills
    a deploy that was succeeding. Steady-state boots never approach it.
 
-   **Until step 4 has run, this endpoint returns 503 and the Railway
-   healthcheck fails the deployment.** That is correct behaviour, not a
-   misconfiguration: an empty database is `EMPTY`, not healthy (CLAUDE.md §4),
-   and `AUTO_BOOTSTRAP` is ignored in production so the app will never migrate
-   itself. Pointing `DATABASE_URL` at a fresh database *always* means migrating
-   it before the next deploy can go green.
+   **A 503 here means the schema is not able to serve the code**, and the body
+   names the gap. That is correct behaviour rather than a misconfiguration: an
+   empty or behind database is not healthy (CLAUDE.md §4), and `AUTO_BOOTSTRAP`
+   is ignored in production, so the *application process* still never migrates
+   itself — the `preDeployCommand` above is a separate, ordered step in the
+   deploy, not the app reaching for its own schema at boot.
+
+   If a deploy goes red here, read the health body before acting: `BEHIND`
+   means the pre-deploy step failed or was skipped (Railway logs it as its own
+   deployment phase), while `UNSTAMPED` or `UNKNOWN_REV` are different states
+   with different fixes, and the table in CLAUDE.md §4 is the one to use.
 
 ## 3. Vercel (frontend)
 

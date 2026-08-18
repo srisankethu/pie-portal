@@ -10,14 +10,23 @@ CLAUDE.md §4: this migration runs against schemas from months ago and the model
 describe today.
 
 Revision ID: t13plan_requests
-Revises: c1f4a80b73e2
+Revises: x4rekey
 Create Date: 2026-08-18
+
+Re-pointed from ``c1f4a80b73e2`` to ``x4rekey`` when this branch merged main:
+both had added a revision on the same parent, which is the two-heads case
+CLAUDE.md §4 describes. Re-pointing rather than an ``alembic merge`` because
+this revision had not been released — it existed only on this branch and had
+run nowhere but a scratch database — so moving it leaves one linear chain
+instead of a merge node that exists only to record a collision. The id keeps
+its ``t13`` prefix and now sorts before its own parent; the chain is what
+alembic reads, and renaming a revision is a worse trade than an odd sort.
 """
 from alembic import op
 import sqlalchemy as sa
 
 revision = "t13plan_requests"
-down_revision = "c1f4a80b73e2"
+down_revision = "x4rekey"
 branch_labels = None
 depends_on = None
 

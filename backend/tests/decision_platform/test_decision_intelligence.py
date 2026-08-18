@@ -137,7 +137,11 @@ class _Source:
                              "quantity": 30, "rate": "90", "item_total": "2700"}]},
             # Recent trade, so these lines are healthy rather than idle. Owed,
             # but not yet due — it belongs in the exposure and not in the
-            # collection.
+            # collection. The due date is derived from TODAY because "not yet
+            # due" is a claim about the clock: a hardcoded date here was true
+            # when written and started failing the week the calendar caught it.
+            # Two weeks out keeps it off week one of the cash timeline and past
+            # a one-week horizon, which is what the projection tests rely on.
             {"invoice_id": "inv3", "invoice_number": "INV-3", "customer_id": "c1",
              "date": "2026-07-20", "due_date": DUE_NEXT_WEEK.isoformat(),
              "status": "sent", "total": "85200", "balance": "85200",

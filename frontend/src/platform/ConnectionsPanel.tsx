@@ -1,3 +1,4 @@
+import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Chip from "@mui/material/Chip";
 import MenuItem from "@mui/material/MenuItem";
@@ -35,10 +36,13 @@ import { Bp, Labelled, Tip } from "./ui";
  * checked and one that failed an hour ago look identical otherwise, and only
  * one of them is a problem.
  *
- * **Scopes.** A half-granted scope is the most common reason a connection
- * authenticates and then returns nothing: the token works, one endpoint 401s,
- * and the sync reports zero rows with no visible cause. They are listed with
- * what each one buys, so the failure is diagnosable before it happens.
+ * **What the sign-in must be granted.** A half-granted sign-in is the most
+ * common reason a connection authenticates and then returns nothing: the
+ * credential works, one endpoint refuses, and the sync reports zero rows with
+ * no visible cause. Every system's grants are listed with what each one buys,
+ * so the failure is diagnosable before it happens — inside the add panel and
+ * under the connector the tabs selected, because Zoho's scope strings mean
+ * nothing to somebody connecting NetSuite.
  *
  * **What pooling costs.** Rows from every enabled connection on an
  * organization are analysed together — revenue and margin roll up across all
@@ -746,8 +750,6 @@ function ErpConnectForm({
 
   return (
     <form onSubmit={submit}>
-      <p className="st-help">{entry.setup_note}</p>
-
       {entry.credential_fields.map((f) => (
         <FieldInput key={f.name} field={f} idPrefix={`cx-erp-${entry.key}`}
                     value={values[f.name] ?? ""}
@@ -924,13 +926,11 @@ function AddConnection({
         </Labelled>
       </h3>
 
-      {catalog.length > 0 && (
+      {/* One strip, every system, Zoho included — it is a row in the catalog
+          now rather than a button written out here, so the tab and the access
+          list below it cannot describe different systems. */}
+      {catalog.length > 1 && (
         <div className="cx-tabs" role="group" aria-label="Which system">
-          <button type="button" className="cx-tab"
-                  aria-pressed={connector === "zoho"}
-                  onClick={() => setConnector("zoho")}>
-            Zoho Books
-          </button>
           {catalog.map((c) => (
             <button key={c.key} type="button" className="cx-tab"
                     aria-pressed={connector === c.key}
@@ -940,6 +940,8 @@ function AddConnection({
           ))}
         </div>
       )}
+
+      {entry && <p className="st-help">{entry.setup_note}</p>}
 
       {connector !== "zoho" && entry && (
         <ErpConnectForm entry={entry} token={token} onAdded={onAdded} />
@@ -1127,50 +1129,75 @@ function AddConnection({
       </form>
       </>
       )}
+
+      {entry && <Access entry={entry} />}
     </Bp>
   );
 }
 
-/* ── scopes ───────────────────────────────────────────────────────────────── */
+/* ── what the selected system must let it read ─────────────────────────────── */
 
-function Scopes({ view }: { view: ConnectionsView }) {
+/**
+ * The access requirements of *the connector the tabs above have selected*.
+ *
+ * This lived in its own panel below the form and rendered Zoho's ten scope
+ * strings whichever system was picked — so choosing NetSuite left a set of
+ * `ZohoBooks.*.READ` strings on screen under the heading "Scopes this platform
+ * needs", naming grants that do not exist in NetSuite and omitting every one
+ * that does. Two panels about one decision, and only one of them was listening
+ * to the tabs.
+ *
+ * It is inside the add-a-company panel now, under the connector's own name, for
+ * that reason: the thing that changes the form has to change this too, and the
+ * cheapest way to guarantee it is to leave them nowhere to disagree.
+ */
+function Access({ entry }: { entry: ConnectorCatalogEntry }) {
   const [copied, setCopied] = useState(false);
+  // Reset when the tabs move: "Copied" left standing under a different
+  // system's list claims something that was never put on the clipboard.
+  useEffect(() => setCopied(false), [entry.key]);
+  if (entry.permissions.length === 0) return null;
   return (
-    <Bp className="st-section">
-      <h3>
-        <Labelled tip="Zoho grants scopes individually. A token missing one still authenticates — the failing endpoint returns 401 and the sync reports zero rows for that kind of record with nothing obviously wrong.">
-          Scopes this platform needs
+    <div className="cx-access">
+      <div className="section-h">
+        <Labelled tip="Access is granted per grant, and a sign-in missing one still authenticates — the endpoint it needed refuses, and the sync reports zero rows of that kind with nothing obviously wrong. Granting fewer does not fail loudly; it fails quietly, later.">
+          What {entry.label} must let it read
         </Labelled>
-      </h3>
-      <p className="st-help">
-        Paste this into the scope field when you generate the token in the Zoho API
-        console. Granting fewer does not fail loudly; it fails quietly, later.
-      </p>
-      <table className="cx-scopes">
-        <tbody>
-          {view.required_scopes.map((s) => (
-            <tr key={s.scope}>
-              <td className="mono">{s.scope}</td>
-              <td>{s.why}</td>
-              <td className="req">{s.required ? "required" : "optional"}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      <div className="cx-scopestring">
-        <code>{view.scope_string}</code>
-        <Button
-          variant="text" size="small"
-          onClick={() => {
-            navigator.clipboard?.writeText(view.scope_string);
-            setCopied(true);
-            window.setTimeout(() => setCopied(false), 2000);
-          }}
-        >
-          {copied ? "Copied" : "Copy"}
-        </Button>
       </div>
-    </Bp>
+      {entry.permission_note && <p className="st-help">{entry.permission_note}</p>}
+      <Box sx={{ overflowX: "auto" }}>
+        {/* A fact list, not a business table: its length is set by this
+            connector, not by the size of the business. */}
+        <table className="cx-scopes">
+          <tbody>
+            {entry.permissions.map((perm) => (
+              <tr key={perm.name}>
+                <td className="mono">{perm.name}</td>
+                <td>{perm.why}</td>
+                <td className="req">{perm.required ? "required" : "optional"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Box>
+      {/* Only where the system takes one. Every ERP in the registry is clicked
+          rather than typed, and an empty box to copy would be worse than none. */}
+      {entry.permission_string && (
+        <div className="cx-scopestring">
+          <code>{entry.permission_string}</code>
+          <Button
+            variant="text" size="small"
+            onClick={() => {
+              navigator.clipboard?.writeText(entry.permission_string);
+              setCopied(true);
+              window.setTimeout(() => setCopied(false), 2000);
+            }}
+          >
+            {copied ? "Copied" : "Copy"}
+          </Button>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -1377,7 +1404,6 @@ export function ConnectionsPanel({
         <AddConnection view={view} catalog={catalog} token={session.token}
                        onAdded={load} />
       )}
-      {view.can_manage && <Scopes view={view} />}
     </>
   );
 }

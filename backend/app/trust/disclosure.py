@@ -210,11 +210,23 @@ def payloads_for(session: Session, organization_id: str,
 
 
 def reveal(session: Session, row: models.ModelPayload) -> str:
-    """The plaintext of one logged payload, for the tenant that owns it."""
+    """The plaintext of one logged payload, for the tenant that owns it.
+
+    The two unreadable states are reported apart. Both look identical from
+    here — ciphertext that will not open — and saying "destroyed" for either
+    tells a customer their erasure completed when what actually happened is
+    that a master key was rotated out from under a key row. One of those is a
+    finished promise; the other is an operational fault with a remedy, and
+    printing the first over the second is how a fault stays unreported.
+    """
     try:
         return keys.decrypt_for(session, row.organization_id, row.payload_ciphertext)
-    except (keys.KeyDestroyed, keys.KeyUnavailable):
+    except keys.KeyDestroyed:
         return "(unavailable — this organization's data key has been destroyed)"
+    except keys.KeyUnavailable:
+        return ("(unavailable — this payload was encrypted under a data key "
+                "that can no longer be read; the record survives, its contents "
+                "do not)")
 
 
 def findings_summary(rows: Iterable[models.ModelPayload]) -> dict[str, int]:

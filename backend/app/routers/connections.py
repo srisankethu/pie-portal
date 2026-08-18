@@ -246,11 +246,6 @@ def list_connections(
              "used_by": len(conn.connections_using(session, c.credential_id))}
             for c in credentials
         ],
-        "required_scopes": [
-            {"scope": s, "why": why, "required": required}
-            for s, why, required in conn.REQUIRED_SCOPES
-        ],
-        "scope_string": conn.SCOPE_STRING,
         "can_manage": principal.role is Role.OWNER,
         "source_mode": settings.ZOHO_SOURCE,
         # Said on the screen rather than left to be discovered.
@@ -486,7 +481,7 @@ def _scope_note(scopes: list[dict]) -> tuple[list[str], list[str], str]:
     sentence and returned in ``untested_scopes``, so nothing claims to have
     checked what it did not.
     """
-    required = {s for s, _, req in conn.REQUIRED_SCOPES if req}
+    required = {p.name for p in conn.REQUIRED_SCOPES if p.required}
     refused = [r["scope"] for r in scopes if r["granted"] is False]
     untested = [r["scope"] for r in scopes if r["granted"] is None]
     missing_required = [s for s in refused if s in required]
@@ -609,7 +604,7 @@ def _check(session: Session, row: models.ZohoConnection) -> dict:
             # untested grant rather than a failed connection: saying "not
             # reachable" about a company we just reached sends somebody to look
             # at the one thing that is fine.
-            untested = [s for s, _, _ in conn.REQUIRED_SCOPES]
+            untested = [p.name for p in conn.REQUIRED_SCOPES]
             scope_note = f" Permissions could not be tested ({type(e).__name__}: {e})."
         else:
             missing_required, untested, scope_note = _scope_note(scopes)
@@ -689,21 +684,58 @@ def _check_erp(session: Session, row: models.ZohoConnection) -> dict:
 # ── Registered ERP connectors (NetSuite, Business Central, Acumatica, P21,
 #    Sage) ──────────────────────────────────────────────────────────────────
 
+def _zoho_catalog_entry() -> dict:
+    """Zoho's row in the same list as the registered connectors.
+
+    It is not in ``ingestion/erp``'s registry — its connect flow predates that
+    and is richer than a field list (browser OAuth, a data-centre picker,
+    per-scope probing), which is why its form is written out on the screen
+    rather than rendered from fields. But *what it must be granted* is the same
+    fact every other connector states, so it is published in the same list
+    rather than beside it: the panel that names the access requirements is the
+    panel that picks the system, and one list is what stops the two disagreeing.
+    """
+    from ..domain.origin import CONNECTORS
+    return {
+        "key": conn.ZOHO_CONNECTOR,
+        "label": CONNECTORS[conn.ZOHO_CONNECTOR]["label"],
+        "company_term": "organization",
+        "icon": CONNECTORS[conn.ZOHO_CONNECTOR]["icon"],
+        "setup_note": (
+            "Reads Zoho Books over its v3 API with an OAuth refresh token. One "
+            "sign-in reaches every company that Zoho user can see, so a second "
+            "and third company reuse it rather than needing their own."),
+        # Empty because this form is not rendered from a field list. A reader
+        # who takes that as "asks for nothing" has it backwards.
+        "credential_fields": [],
+        "connection_fields": [],
+        "external_id_field": "zoho_organization_id",
+        "can_discover": True,
+        "permissions": [p.to_dict() for p in conn.REQUIRED_SCOPES],
+        "permission_note": conn.ZOHO_PERMISSION_NOTE,
+        "permission_string": conn.SCOPE_STRING,
+    }
+
+
 @router.get("/catalog")
 def connector_catalog(
     principal: Principal = Depends(require_manager_or_owner),
 ) -> dict:
-    """Every system a company can be connected from, with the form to render.
+    """Every system a company can be connected from: the form to render, and
+    the access its sign-in must already hold.
 
-    The field lists come from each connector's own spec, so the UI never
-    hardcodes what NetSuite needs — connector number seven appears here the
-    day its module registers.
+    Both come from each connector's own spec, so the UI never hardcodes what
+    NetSuite needs — connector number seven appears here the day its module
+    registers, permissions included.
+
+    Zoho leads because it is the incumbent, and because a list that opens on
+    the system most owners want spares them a click.
     """
     from ..domain.origin import CONNECTORS
     from ..ingestion import erp
 
     return {
-        "connectors": [
+        "connectors": [_zoho_catalog_entry()] + [
             {
                 "key": spec.key,
                 "label": spec.label,
@@ -714,6 +746,9 @@ def connector_catalog(
                 "connection_fields": [f.to_dict() for f in spec.connection_fields],
                 "external_id_field": spec.external_id_field,
                 "can_discover": spec.discover is not None,
+                "permissions": [p.to_dict() for p in spec.permissions],
+                "permission_note": spec.permission_note,
+                "permission_string": spec.permission_string,
             }
             for spec in erp.catalog()
         ],

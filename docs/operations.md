@@ -23,7 +23,7 @@ always wins over it**. All values have defaults that work for local development.
 |---|---|---|
 | `APP_ENV` | `development` | `production` enables the hard guards below. |
 | `AUTH_SECRET` | `dev-secret-change-me` | Signs bearer tokens. **The app refuses to boot in production while this is the default** — the value is public, so a stale default would let anyone forge a token for any user and role. |
-| `CREDENTIAL_ENCRYPTION_KEY` | *(fixed dev key)* | Encrypts every organization's Zoho client secret and refresh token at rest (see `app/crypto.py`). **The app refuses to boot in production while this is the default** — same reasoning as `AUTH_SECRET`: the value is public. Generate one with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. Rotating it makes every stored connection undecryptable — reconnect them afterward. |
+| `CREDENTIAL_ENCRYPTION_KEY` | *(fixed dev key)* | Encrypts every organization's Zoho client secret and refresh token at rest (see `app/crypto.py`). **The app refuses to boot in production while this is the default** — same reasoning as `AUTH_SECRET`: the value is public. Generate one with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. Rotating it makes every stored connection undecryptable — reconnect them afterward. It also unreads every organization's data key, and reconnecting does **not** fix that half: see [the runbook entry](#could-not-unwrap-this-organizations-data-key) before rotating. |
 
 ### Database
 
@@ -61,6 +61,28 @@ A self-serve sign-up lands on **free**, whatever `DEFAULT_PLAN` says — pinned 
 `onboarding.SIGNUP_PLAN`, because `DEFAULT_PLAN` defaults to `platform` and
 inheriting it would hand the top tier to anyone who can reach the form. There
 is deliberately no API that changes a plan; that stays an operator command.
+
+**The sign-up form asks which plan a business wants, and the answer grants
+nothing.** It is stored on `organizations.requested_plan`, a column no
+resolution path reads — `licensed_plan` still reads `plan` alone — so the
+picker cannot become the plan-setting API that does not exist. What it buys is
+that the question has an answer somebody can find:
+
+```bash
+python -m app.entitlements requests                  # who is asking for more
+python -m app.entitlements set-plan <org_id> intelligence   # the only thing that grants it
+```
+
+The form says as much where it is asked: an account starts on the free Quote
+Desk the same day whichever plan is selected, and nothing is charged at sign-up.
+There is no billing in this product.
+
+**Turning sign-up on is what makes registration reachable at all.** With
+`SELF_SERVE_SIGNUP=0` the sign-in card offers no way to create an organization,
+and that is correct for a single-tenant install — the only accounts are the ones
+an owner creates from Settings. With it on, the card carries a "Create your
+organization" link and the landing page's pricing panels open the sign-up form
+on the plan that was being read about.
 
 ### Zoho
 
@@ -543,6 +565,38 @@ The database holds two very different kinds of data:
 
 Standard `pg_dump` on the Postgres database covers both. Restore, then re-run
 the sync to bring the read model current.
+
+### "Could not unwrap this organization's data key"
+
+A sync that reads the customers and items, then stops before the first month of
+documents with `KeyUnavailable`, has a tenant data key that no longer opens
+under the current `CREDENTIAL_ENCRYPTION_KEY`. The pull no longer dies on it —
+it records an unresolved item and reads the documents — but the encrypted copy
+of names is not being written until this is settled.
+
+Two states look identical and have **opposite** remedies. Find out which one
+this is before doing anything:
+
+```bash
+cd backend && python3 -m app.trust.rekey
+```
+
+It reports whether the stored connection credentials still decrypt. They are
+encrypted under the same master key, so:
+
+| What it says | What happened | What to do |
+|---|---|---|
+| Credentials **decrypt** | The master key in force is the right one; the key row is older than a rotation the rest of the database already went through — typically an organization connected under the dev default, then given a real key, then reconnected. | The old value is what would read it. If it still exists, restore it and re-run a sync. If it does not, `python3 -m app.trust.rekey --reissue --reason "…"` issues a fresh key. |
+| Credentials do **not** decrypt | `CREDENTIAL_ENCRYPTION_KEY` itself changed. | Restore the previous value — nothing is lost. Do not reissue; the tool refuses anyway. |
+
+Reissuing is irreversible and costs exactly what was written under the old key.
+The name vault is rebuilt by the next sync (the names are also held plaintext
+as a display cache), so the real cost is the model-payload log: what was sent to
+an AI provider before the reissue can never be read again. The tool prints those
+row counts before it acts, and the reason is recorded on the key row.
+
+It will not touch a key that was **destroyed** — that is an erasure, and it
+stays irreversible.
 
 ### Cost control
 

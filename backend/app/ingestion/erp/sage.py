@@ -35,7 +35,8 @@ import xml.etree.ElementTree as ET
 from ..errors import SourceAuthError
 from ..source import SkipPredicate
 from .base import (ConnectorSpec, CredentialMaterial, DocumentTally, Field,
-                   first, group_lines, in_window, iso_date, register)
+                   Permission, first, group_lines, in_window, iso_date,
+                   register)
 from .transport import RestTransport
 
 X3_SYSTEM = "sagex3"
@@ -338,6 +339,40 @@ register(ConnectorSpec(
         "integration user: customers, suppliers, the item master, sales and "
         "purchase invoices with lines, and orders. Unchanged documents are "
         "skipped on re-sync using X3's own update stamps."),
+    permission_note=(
+        "Granted on the integration user's role in Syracuse: the SData web "
+        "service itself, and read access to each X3 table below in the "
+        "connected folder."),
+    permissions=(
+        Permission("SData web service access on the user",
+                   "The service this reads through. Without it the sign-in "
+                   "works and every entity answers 401."),
+        Permission("BPCUSTOMER",
+                   "Customers — who was sold to.", reads=("contacts",)),
+        Permission("ITMMASTER",
+                   "The item master.", reads=("items",)),
+        Permission("SINVOICE",
+                   "Sales invoices with their lines — what was sold, and for "
+                   "how much.",
+                   reads=("invoices",)),
+        Permission("PINVOICE",
+                   "Purchase invoices with their lines — what it cost. Without "
+                   "this there is no margin anywhere in the platform, only "
+                   "revenue.",
+                   reads=("bills",)),
+        Permission("BPSUPPLIER",
+                   "Suppliers. Optional: purchase invoices still land without "
+                   "it, with the supplier known only by its code.",
+                   required=False, reads=("vendors",)),
+        Permission("SORDER",
+                   "Sales orders — demand promised but not yet invoiced. "
+                   "Optional.",
+                   required=False, reads=("sales_orders",)),
+        Permission("PORDER",
+                   "Purchase orders — what is on the way from suppliers. "
+                   "Optional: feeds the Supply screen.",
+                   required=False, reads=("purchase_orders",)),
+    ),
     build_source=_x3_build_source,
 ))
 
@@ -610,5 +645,35 @@ register(ConnectorSpec(
         "history carries GL distributions rather than item lines, so "
         "purchase costs are not read — margin stays unknown for this book "
         "and the screens say so rather than estimate."),
+    permission_note=(
+        "Granted on the Sage 100 user's role (Library Master → Main → Role "
+        "Maintenance): SData access, plus inquiry rights on each module "
+        "below."),
+    permissions=(
+        Permission("SData access on the user",
+                   "The feed this reads through. Without it the credential is "
+                   "accepted and no resource is served."),
+        Permission("AR_Customer",
+                   "Customers — who was sold to.", reads=("contacts",)),
+        Permission("CI_Item",
+                   "The item master.", reads=("items",)),
+        Permission("AR_InvoiceHistoryHeader and AR_InvoiceHistoryDetail",
+                   "Invoice history with its lines — what was sold, and for "
+                   "how much. Both resources: headers alone import totals with "
+                   "nothing under them.",
+                   reads=("invoices",)),
+        Permission("AP_Vendor",
+                   "Suppliers. Optional: without it a purchase order names its "
+                   "supplier only by code.",
+                   required=False, reads=("vendors",)),
+        Permission("SO_SalesOrderHeader",
+                   "Sales orders — demand promised but not yet invoiced. "
+                   "Optional.",
+                   required=False, reads=("sales_orders",)),
+        Permission("PO_PurchaseOrderHeader",
+                   "Purchase orders — what is on the way from suppliers. "
+                   "Optional: feeds the Supply screen.",
+                   required=False, reads=("purchase_orders",)),
+    ),
     build_source=_sage100_build_source,
 ))

@@ -31,7 +31,8 @@ from typing import Any, Iterable, Iterator, Optional
 from ..errors import SourceAuthError
 from ..source import SkipPredicate
 from .base import (ConnectorSpec, CredentialMaterial, DocumentTally, Field,
-                   first, group_lines, in_window, iso_date, register)
+                   Permission, first, group_lines, in_window, iso_date,
+                   register)
 from .transport import RestTransport
 
 SYSTEM = "prophet21"
@@ -392,5 +393,40 @@ SPEC = register(ConnectorSpec(
         "orders — with the token sign-in of a dedicated API user. AP "
         "invoices booked against receipts rather than item lines import as "
         "payables without cost lines, and the sync report names each one."),
+    permission_note=(
+        "Two halves: the API user is enabled for API access in P21 (Maintain "
+        "Users → API), and each OData view below is exposed on the middleware "
+        "and readable by that user. A view that is not exposed answers 404, "
+        "which reads like a wrong URL rather than a missing grant."),
+    permissions=(
+        Permission("API access on the user",
+                   "The token sign-in itself. Without it nothing below is "
+                   "reachable."),
+        Permission("customer",
+                   "Customers — who was sold to.", reads=("contacts",)),
+        Permission("inv_mast",
+                   "The item master.", reads=("items",)),
+        Permission("invoice_hdr and invoice_line",
+                   "Invoices with their lines — what was sold, and for how "
+                   "much. Both views: headers alone import totals with nothing "
+                   "under them.",
+                   reads=("invoices",)),
+        Permission("apinv_hdr and apinv_line",
+                   "AP invoices with their lines — what it cost. Without these "
+                   "there is no margin anywhere in the platform, only revenue.",
+                   reads=("bills",)),
+        Permission("supplier",
+                   "Suppliers. Optional: AP invoices still land without it, "
+                   "with the supplier known only by its id.",
+                   required=False, reads=("vendors",)),
+        Permission("oe_hdr",
+                   "Sales orders — demand promised but not yet invoiced. "
+                   "Optional.",
+                   required=False, reads=("sales_orders",)),
+        Permission("po_hdr",
+                   "Purchase orders — what is on the way from suppliers. "
+                   "Optional: feeds the Supply screen.",
+                   required=False, reads=("purchase_orders",)),
+    ),
     build_source=_build_source,
 ))

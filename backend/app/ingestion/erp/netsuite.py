@@ -41,7 +41,7 @@ from urllib.parse import quote, urlsplit
 from ..errors import SourceAuthError
 from ..source import SkipPredicate
 from .base import (ConnectorSpec, CredentialMaterial, DocumentTally, Field,
-                   first, group_lines, iso_date, register)
+                   Permission, first, group_lines, iso_date, register)
 from .transport import RestTransport
 
 SYSTEM = "netsuite"
@@ -435,5 +435,49 @@ SPEC = register(ConnectorSpec(
         "one access token; the four values it mints are entered here once. "
         "Item stock levels and payment-to-invoice applications are not read "
         "in this version and their screens will say so rather than estimate."),
+    permission_note=(
+        "Granted on the role the access token is issued for, at Setup → "
+        "Users/Roles → Manage Roles. NetSuite needs View level on each — the "
+        "platform never writes to NetSuite."),
+    permissions=(
+        Permission("Setup → Log in using Access Tokens",
+                   "The token-based sign-in itself. Without it the four values "
+                   "are refused before any record is asked for."),
+        Permission("Setup → REST Web Services",
+                   "SuiteQL is served over the REST endpoint, so this gates "
+                   "every read below."),
+        Permission("Reports → SuiteAnalytics Workbook",
+                   "The permission SuiteQL queries themselves run under. A role "
+                   "with every list below and not this one authenticates and "
+                   "then answers nothing."),
+        Permission("Lists → Customers (View)",
+                   "Customers — who was sold to.", reads=("contacts",)),
+        Permission("Lists → Items (View)",
+                   "Items — the product master.", reads=("items",)),
+        Permission("Transactions → Invoice (View)",
+                   "Invoices — what was sold, and for how much.",
+                   reads=("invoices",)),
+        Permission("Transactions → Bill (View)",
+                   "Vendor bills — what it cost. Without this there is no "
+                   "margin anywhere in the platform, only revenue.",
+                   reads=("bills",)),
+        Permission("Transactions → Customer Payment (View)",
+                   "Payments — when money actually arrived. Without it an "
+                   "invoice looks paid the day it was raised.",
+                   reads=("customer_payments",)),
+        Permission("Lists → Vendors (View)",
+                   "Suppliers. Optional: bills still land without it, with the "
+                   "supplier known only by its internal id.",
+                   required=False, reads=("vendors",)),
+        Permission("Transactions → Sales Order (View)",
+                   "Sales orders — demand promised but not yet invoiced. "
+                   "Optional: without it the platform sees only what has "
+                   "already been billed.",
+                   required=False, reads=("sales_orders",)),
+        Permission("Transactions → Purchase Order (View)",
+                   "Purchase orders — what is on the way from suppliers, and "
+                   "how late. Optional: feeds the Supply screen.",
+                   required=False, reads=("purchase_orders",)),
+    ),
     build_source=_build_source,
 ))

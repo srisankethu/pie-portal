@@ -136,7 +136,7 @@ function WatchPicker({
             {o.label} <span className="viz-muted">· {money(o.money)}</span>
           </li>
         )}
-        sx={{ minWidth: 340, flex: "1 1 340px" }}
+        sx={{ minWidth: 0, flex: "1 1 340px" }}
       />
       {/* "Not all of them are important" usually means "show me the ones that
           are", and typing ten names is a worse answer than a button. */}

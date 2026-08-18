@@ -1387,6 +1387,13 @@ function AiLayerSection({ token }: { token: string }) {
 
   const w = metrics?.windows?.["7d"];
   const p = ready.provider;
+  // "Live" is a claim about configuration; whether calls succeed is a fact the
+  // telemetry holds. A green chip over a key that fails every call is exactly
+  // the green-chip-over-a-loss defect this codebase has been burned by, so the
+  // chip and the banner below read the failure rate rather than assuming it.
+  const failedCalls = w ? Math.round((w.rates.failed ?? 0) * w.calls) : 0;
+  const allProviderCallsFailed =
+    w != null && w.provider_calls > 0 && failedCalls >= w.provider_calls;
 
   return (
     <Bp className="st-section">
@@ -1398,10 +1405,14 @@ function AiLayerSection({ token }: { token: string }) {
 
       <Stack direction="row" spacing={1} sx={{ flexWrap: "wrap", rowGap: 1, mb: 1 }}>
         <StatusChip
-          label={p.live ? `Live · ${p.model}` : "Offline stand-in"}
-          tone={p.live ? "good" : "warn"}
+          label={p.live
+            ? (allProviderCallsFailed ? `Live · ${p.model} — calls failing` : `Live · ${p.model}`)
+            : "Offline stand-in"}
+          tone={p.live ? (failedCalls > 0 ? "warn" : "good") : "warn"}
           tip={p.live
-            ? "Decision narratives are written by a model, from the computed facts."
+            ? (failedCalls > 0
+              ? "A real provider is configured, but recent calls to it have failed — see the notice below."
+              : "Decision narratives are written by a model, from the computed facts.")
             : "Decision narratives are deterministic text, not model output."}
         />
         <StatusChip label={`configured: ${p.configured}`} tone="neutral" />
@@ -1449,7 +1460,25 @@ function AiLayerSection({ token }: { token: string }) {
           sub="model output the gate refused"
           tip="A refused reading still surfaces the decision, with the signal's own numbers. Consistently high points at the prompt or the model; consistently zero means the gate is not doing anything."
         />
+        <MetricCard
+          label="Failed, 7 days"
+          value={pct(w?.rates.failed ?? 0)}
+          sub="provider calls that errored"
+          tip="The call itself failed — a bad key, an exhausted account, a network fault. The decision still surfaced with its deterministic signal, but nothing was phrased. Anything above zero deserves a look."
+        />
       </Box>
+
+      {failedCalls > 0 && (
+        <Alert severity={allProviderCallsFailed ? "error" : "warning"} sx={{ mt: 2 }}>
+          {failedCalls} of the last {w!.calls} AI-layer calls failed
+          ({Object.entries(w!.failure_reasons)
+            .map(([reason, n]) => `${reason} ×${n}`).join(", ")}).
+          Those decisions fell back to their deterministic signals — nothing was
+          hidden, but nothing was phrased. If an organization key is active
+          below, test it; otherwise check the deployment&apos;s provider
+          configuration.
+        </Alert>
+      )}
 
       <p className="st-help">
         Rates: {usd(ready.rates.per_mtok_input)} per million input tokens,{" "}
@@ -1513,6 +1542,18 @@ function ByokPanel({ token, onChanged }: { token: string; onChanged: () => void 
       <TextField
         select size="small" sx={{ minWidth: 280, mb: 2 }}
         label="Runs the AI layer"
+        // The empty string IS a real choice — the deployment default — and it
+        // must read as one. MUI renders an empty value as a blank box even
+        // with `displayEmpty`, so the text is supplied explicitly.
+        slotProps={{
+          select: {
+            displayEmpty: true,
+            renderValue: (v: unknown) => ((v as string)
+              ? (PROVIDER_LABEL[v as string] ?? String(v))
+              : `Deployment default (${view.environment_provider})`),
+          },
+          inputLabel: { shrink: true },
+        }}
         value={view.active}
         onChange={(e) => {
           papi.setActiveAiProvider(token, e.target.value)
@@ -1547,6 +1588,11 @@ function ByokProviderRow({ token, row, active, onView }: {
   const [model, setModel] = useState(row.model);
   const [msg, setMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Removing a key cannot be undone — the key is write-only, so there is
+  // nothing to restore it from — and if this provider runs the decisions,
+  // removal also silently reverts the AI layer to the deployment default.
+  // One misclick next to "Test" must not do that, so the button arms first.
+  const [armed, setArmed] = useState(false);
 
   async function run(work: () => Promise<void>) {
     setBusy(true);
@@ -1572,12 +1618,22 @@ function ByokProviderRow({ token, row, active, onView }: {
     setMsg(r.ok ? `Works — ${r.model} answered.` : `Failed: ${r.detail}`);
   });
 
-  const remove = () => run(async () => {
-    const v = await papi.removeAiKey(token, row.provider);
-    onView(v);
-    setModel("");
-    setMsg("Key removed.");
-  });
+  const remove = () => {
+    if (!armed) {
+      setArmed(true);
+      setMsg(active
+        ? "Removing this key also puts decisions back on the deployment default. Click again to confirm."
+        : "The key cannot be shown again once removed. Click again to confirm.");
+      return;
+    }
+    setArmed(false);
+    run(async () => {
+      const v = await papi.removeAiKey(token, row.provider);
+      onView(v);
+      setModel("");
+      setMsg("Key removed.");
+    });
+  };
 
   return (
     <Box sx={{ py: 1.5, borderTop: 1, borderColor: "divider" }}>
@@ -1620,8 +1676,10 @@ function ByokProviderRow({ token, row, active, onView }: {
           Test
         </Button>
         {row.key_on_file && (
-          <Button variant="text" size="small" color="error" disabled={busy} onClick={remove}>
-            Remove
+          <Button variant={armed ? "outlined" : "text"} size="small" color="error"
+                  disabled={busy} onClick={remove}
+                  onBlur={() => { if (armed) { setArmed(false); setMsg(null); } }}>
+            {armed ? "Confirm removal" : "Remove"}
           </Button>
         )}
       </Stack>

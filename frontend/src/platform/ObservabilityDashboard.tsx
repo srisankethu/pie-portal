@@ -127,7 +127,8 @@ export function ObservabilityDashboard({ session }: { session: PlatformSession }
         PIE Operations Dashboard
       </Typography>
 
-      <Tabs value={tabValue} onChange={(_, v) => setTabValue(v)} sx={{ mb: 2 }}>
+      <Tabs value={tabValue} onChange={(_, v) => setTabValue(v)} sx={{ mb: 2 }}
+            variant="scrollable" scrollButtons="auto" allowScrollButtonsMobile>
         <Tab label="Health & Capacity" />
         <Tab label="Load & Performance" />
         <Tab label="Background Jobs" />

@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, asdict
+from typing import Optional
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -81,14 +82,45 @@ def _clean_email(raw: str) -> str:
     return email
 
 
+def parse_requested_plan(raw: Optional[str]) -> Optional[PlanTier]:
+    """The plan a sign-up says it wants, or None for "did not say".
+
+    Refuses an unknown value rather than resolving it to free the way
+    ``entitlements.parse_plan`` does, and the difference is deliberate: that
+    function reads config and a stored row, where degrading quietly to the
+    narrowest plan is the safe direction. This reads a form somebody just filled
+    in, where a value that is not one of the three means the client and the
+    server disagree about what the plans are — and silently recording the wrong
+    answer to the only question this endpoint asks is worse than saying so.
+
+    It grants nothing either way. See ``Organization.requested_plan``.
+    """
+    if raw is None or not raw.strip():
+        return None
+    try:
+        return PlanTier(raw.strip().lower())
+    except ValueError:
+        raise SignupRefused(
+            "That is not one of the plans. Choose "
+            + ", ".join(p.value for p in PlanTier) + ".") from None
+
+
 def sign_up(session: Session, *, company: str, owner_name: str,
             owner_email: str, password: str,
-            currency: str = "INR") -> tuple[str, models.User]:
+            currency: str = "INR",
+            wants_plan: Optional[str] = None) -> tuple[str, models.User]:
     """Create a tenant for somebody who is signing themselves up.
 
     Returns ``(organization_id, owner)``. Raises ``SignupDisabled`` when the
     deployment does not offer this at all, and ``SignupRefused`` with a sentence
     a person can act on for anything wrong with the details.
+
+    ``wants_plan`` is recorded and **not granted**. Every sign-up lands on
+    ``SIGNUP_PLAN`` whatever it says, which is what keeps the sign-up form from
+    being the plan-setting API that deliberately does not exist. The value is
+    kept so an operator can find out who asked (``python -m app.entitlements
+    requests``) instead of the question being asked and then thrown away — a
+    form that discards its own answer is worse than one that never asked.
 
     The caller commits. Nothing here sends mail or verifies the address: the
     owner is signed straight in, which is what makes this self-serve, and the
@@ -109,6 +141,9 @@ def sign_up(session: Session, *, company: str, owner_name: str,
     if not owner_name:
         raise SignupRefused("Your name is required")
     email = _clean_email(owner_email)
+    # Before anything is written, with the other refusals: a plan the server does
+    # not recognise must not cost a tenant that then has to be deleted.
+    wanted = parse_requested_plan(wants_plan)
 
     # Checked here as well as inside `provision_organization`, because the
     # password is the one field whose refusal has to arrive before anything is
@@ -148,7 +183,14 @@ def sign_up(session: Session, *, company: str, owner_name: str,
     owner = session.scalar(select(models.User).where(models.User.email == email))
     if owner is None:  # pragma: no cover — provision_organization just wrote it
         raise SignupRefused("The account could not be created")
-    log.info("self-serve signup org=%s plan=%s", org_id, SIGNUP_PLAN.value)
+    if wanted is not None:
+        # A different column from `plan`, written here and read by no resolution
+        # path. If these two were ever the same column this function would be
+        # the API that lets a stranger pick their own tier.
+        session.get(models.Organization, org_id).requested_plan = wanted.value
+        session.flush()
+    log.info("self-serve signup org=%s plan=%s wants=%s", org_id,
+             SIGNUP_PLAN.value, wanted.value if wanted else "-")
     return org_id, owner
 
 

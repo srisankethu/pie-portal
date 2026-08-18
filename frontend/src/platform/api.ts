@@ -183,6 +183,9 @@ interface SignUpBody {
   name: string;
   email: string;
   password: string;
+  /** Which plan this business wants. Recorded for the operator, granted by
+   *  nothing — every sign-up lands on the free plan whatever this says. */
+  plan?: string;
 }
 
 interface LoginResp {

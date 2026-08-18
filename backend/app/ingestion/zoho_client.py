@@ -263,6 +263,13 @@ class ZohoTransport:
         self._last_call_at: float = 0.0
         # Observable so a sync run can report what the pull actually cost.
         self.calls = 0
+        # Fetch-time SSRF guard over the two owner-supplied hosts this talks to
+        # (accounts_base for tokens, api_base for data). Storage-time validation
+        # proved them public when saved; this re-checks just before egress, so a
+        # host repointed at an internal address since is refused. Only when we
+        # own the socket — an injected transport (a test) has none to protect.
+        from .url_safety import FetchGuard
+        self._fetch_guard = FetchGuard() if http is None else None
 
     # ── transport ────────────────────────────────────────────────────────────
     def _client(self):
@@ -271,6 +278,17 @@ class ZohoTransport:
 
             self._http = httpx.Client(timeout=settings.ZOHO_TIMEOUT_SECONDS)
         return self._http
+
+    def _guard_fetch(self, url: str) -> None:
+        """Refuse egress to an internal address, re-checked at request time."""
+        if self._fetch_guard is None:
+            return
+        from .url_safety import UnsafeSourceUrl
+
+        try:
+            self._fetch_guard.check(url, field="Zoho URL")
+        except UnsafeSourceUrl as e:
+            raise ZohoError(str(e)) from e
 
     def _require_credentials(self) -> None:
         missing = [
@@ -296,6 +314,7 @@ class ZohoTransport:
         if self._token and time.time() < self._token_expires_at:
             return self._token
         self._require_credentials()
+        self._guard_fetch(f"{self._accounts}/oauth/v2/token")
         resp = self._client().post(
             f"{self._accounts}/oauth/v2/token",
             params={
@@ -352,6 +371,7 @@ class ZohoTransport:
                  **params: Any) -> dict[str, Any]:
         """One authenticated call, with retry bounded by what the method allows."""
         url = f"{self._base}/{path.lstrip('/')}"
+        self._guard_fetch(url)
         params = {k: v for k, v in params.items() if v is not None}
         params["organization_id"] = self._org
         verb = method.upper()

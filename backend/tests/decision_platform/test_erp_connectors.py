@@ -353,6 +353,19 @@ def test_sage100_a_sign_in_page_reads_as_an_auth_failure_not_an_empty_book():
         list(sage._atom_records("<html>login</html>...", 200, "AR_Customer"))
 
 
+def test_sage100_refuses_an_entity_expansion_bomb():
+    # A hostile source that puts a DTD in front of the feed is aiming an
+    # entity-expansion bomb at ElementTree; the parser must refuse the DTD
+    # rather than expand a 1 KB body into gigabytes of resident text.
+    bomb = ('<?xml version="1.0"?><!DOCTYPE r ['
+            '<!ENTITY a "AAAAAAAAAA">'
+            '<!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;">'
+            '<!ENTITY c "&b;&b;&b;&b;&b;&b;&b;&b;&b;&b;">'
+            ']><r>&c;</r>')
+    with pytest.raises(SourceAuthError):
+        list(sage._atom_records(bomb, 200, "AR_Customer"))
+
+
 # ── the shared transport ────────────────────────────────────────────────────
 class _Resp:
     def __init__(self, status_code, body=None, headers=None):

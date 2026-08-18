@@ -415,6 +415,17 @@ class Sage100Client(RestTransport):
                 "organization_name": self._company}
 
 
+def _has_doctype(text: str) -> bool:
+    """Whether the XML prolog declares a DTD (``<!DOCTYPE`` / ``<!ENTITY``).
+
+    Scans only the head of the document — a DTD is legal only before the root
+    element — so a payload that merely mentions the token in element text is
+    not mistaken for one.
+    """
+    head = (text or "").lstrip("﻿ \t\r\n")[:4096].upper()
+    return "<!DOCTYPE" in head or "<!ENTITY" in head
+
+
 def _atom_records(text: str, status: int, name: str) -> Iterator[dict[str, str]]:
     """Atom entries → flat records, namespace-blind.
 
@@ -422,6 +433,16 @@ def _atom_records(text: str, status: int, name: str) -> Iterator[dict[str, str]]
     is the record; that element's children are the columns. Matching on local
     names keeps a provider's namespace revision from reading as an empty book.
     """
+    # Refuse a document type definition before parsing. A genuine SData/Atom
+    # feed never carries one; a hostile source that does is aiming an entity-
+    # expansion bomb ("billion laughs") at this parser — stdlib ElementTree
+    # expands nested internal entities, turning a 1 KB body into gigabytes of
+    # resident text and taking the sync worker down with it. Cheap to spot
+    # (the token has to be in the prolog) and cheaper than a new dependency.
+    if _has_doctype(text):
+        raise SourceAuthError(
+            f"Sage 100 returned an XML document type declaration for {name}, "
+            "which an SData feed never does — refusing to parse it.")
     try:
         root = ET.fromstring(text)
     except ET.ParseError:

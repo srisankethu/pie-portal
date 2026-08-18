@@ -38,6 +38,9 @@ from sqlalchemy.orm import Session
 
 from .. import crypto
 from ..domain import models
+# The type Zoho's scope list shares with every registered connector's — one
+# declaration of "what this sign-in must be granted", read by one screen.
+from .erp.base import Permission
 from .zoho_client import ZohoCredentials
 
 log = logging.getLogger("pie_portal.connections")
@@ -66,41 +69,62 @@ class ConnectionNotFound(LookupError):
 # because the credit-note stage degrades gracefully the only symptom was one
 # skip line in a sync report. ``test_every_scope_the_pull_uses_is_declared``
 # pins the two lists together in both directions.
-REQUIRED_SCOPES: tuple[tuple[str, str, bool], ...] = (
-    ("ZohoBooks.contacts.READ", "Customers and vendors", True),
-    ("ZohoBooks.settings.READ", "Items — the product master", True),
-    ("ZohoBooks.invoices.READ", "Invoices — what was sold, and for how much", True),
-    ("ZohoBooks.bills.READ",
-     "Bills — what it cost. Without this there is no margin anywhere in the "
-     "platform, only revenue.", True),
-    ("ZohoBooks.customerpayments.READ",
-     "Payments — when money actually arrived. The Cash screen, every payment "
-     "pattern, and the collection factor the incentive is earned on all read "
-     "this. Without it an invoice looks paid the day it was raised.", True),
-    ("ZohoBooks.creditnotes.READ",
-     "Credit notes — credit given back. Optional because Zoho already nets "
-     "applied credit into an invoice's balance, so today's receivable is right "
-     "without it; what it buys is the ability to reconstruct a *past* "
-     "position.", False),
-    ("ZohoBooks.salesorders.READ",
-     "Sales orders — what customers have ordered and we have not yet shipped or "
-     "billed. This is demand and a promise, before any accounting entry exists; "
-     "without it the platform sees only what has already been invoiced.", False),
-    ("ZohoBooks.vendorpayments.READ",
-     "Money out. Receipts alone are not cash — they are revenue collected — so "
-     "without this, liquidity and working capital cannot be computed from one "
-     "side of the ledger.", False),
-    ("ZohoBooks.purchaseorders.READ",
-     "Purchase orders — what is on the way from suppliers, and how late. Feeds "
-     "the Supply screen. Optional: without it, stock on hand is still read, "
-     "but nothing knows what has been ordered against it.", False),
-    ("ZohoBooks.users.READ",
-     "Users — maps a Zoho salesperson to a platform account. Optional: without "
-     "it accounts stay unassigned and every decision routes to management.",
-     False),
+#
+# Same type as every other connector's list (``erp.Permission``), because it is
+# the same fact — what this sign-in must be granted before it can read — and it
+# is read by the same screen. It was its own tuple shape once, and the screen
+# that rendered it showed *these* scopes whichever system was selected: a
+# NetSuite connect form above ten Zoho scope strings nobody could grant.
+REQUIRED_SCOPES: tuple[Permission, ...] = (
+    Permission("ZohoBooks.contacts.READ", "Customers and vendors",
+               reads=("contacts", "vendors")),
+    Permission("ZohoBooks.settings.READ", "Items — the product master",
+               reads=("items",)),
+    Permission("ZohoBooks.invoices.READ",
+               "Invoices — what was sold, and for how much", reads=("invoices",)),
+    Permission("ZohoBooks.bills.READ",
+               "Bills — what it cost. Without this there is no margin anywhere "
+               "in the platform, only revenue.", reads=("bills",)),
+    Permission("ZohoBooks.customerpayments.READ",
+               "Payments — when money actually arrived. The Cash screen, every "
+               "payment pattern, and the collection factor the incentive is "
+               "earned on all read this. Without it an invoice looks paid the "
+               "day it was raised.", reads=("customer_payments",)),
+    Permission("ZohoBooks.creditnotes.READ",
+               "Credit notes — credit given back. Optional because Zoho already "
+               "nets applied credit into an invoice's balance, so today's "
+               "receivable is right without it; what it buys is the ability to "
+               "reconstruct a *past* position.", required=False),
+    Permission("ZohoBooks.salesorders.READ",
+               "Sales orders — what customers have ordered and we have not yet "
+               "shipped or billed. This is demand and a promise, before any "
+               "accounting entry exists; without it the platform sees only what "
+               "has already been invoiced.",
+               required=False, reads=("sales_orders",)),
+    Permission("ZohoBooks.vendorpayments.READ",
+               "Money out. Receipts alone are not cash — they are revenue "
+               "collected — so without this, liquidity and working capital "
+               "cannot be computed from one side of the ledger.",
+               required=False, reads=("vendor_payments",)),
+    Permission("ZohoBooks.purchaseorders.READ",
+               "Purchase orders — what is on the way from suppliers, and how "
+               "late. Feeds the Supply screen. Optional: without it, stock on "
+               "hand is still read, but nothing knows what has been ordered "
+               "against it.", required=False, reads=("purchase_orders",)),
+    Permission("ZohoBooks.users.READ",
+               "Users — maps a Zoho salesperson to a platform account. "
+               "Optional: without it accounts stay unassigned and every "
+               "decision routes to management.",
+               required=False, reads=("users",)),
 )
 
-SCOPE_STRING = ",".join(s for s, _, _ in REQUIRED_SCOPES)
+SCOPE_STRING = ",".join(p.name for p in REQUIRED_SCOPES)
+
+#: Where the scopes above are granted, said once and rendered above the list.
+ZOHO_PERMISSION_NOTE = (
+    "Paste the string below into the scope field when you generate the token "
+    "in the Zoho API console. Granting fewer does not fail loudly; it fails "
+    "quietly, later.")
 
 
 # ── resolution ──────────────────────────────────────────────────────────────

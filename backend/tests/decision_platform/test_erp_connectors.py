@@ -73,6 +73,58 @@ def test_specs_keep_secrets_off_the_connection():
         assert any(f.secret for f in spec.credential_fields), spec.key
 
 
+# The source class each spec's ``build_source`` produces. Named here rather
+# than built, because building one needs a live credential — and what this
+# checks is a class-level fact.
+_SOURCE_OF = {
+    "netsuite": netsuite.NetSuiteSource,
+    "dynamics365": dynamics365.BusinessCentralSource,
+    "acumatica": acumatica.AcumaticaSource,
+    "prophet21": prophet21.Prophet21Source,
+    "sagex3": sage.SageX3Source,
+    "sage100": sage.Sage100Source,
+}
+
+
+def test_connector_permissions():
+    """Every connector declares what its sign-in must be granted, and the
+    declaration is held against what the connector actually reads.
+
+    The screen used to publish Zoho's ten scope strings whichever system was
+    selected, so a NetSuite connection was set up against a list of grants that
+    do not exist in NetSuite. Per-connector lists fix that only while they stay
+    true, and a list of permissions is exactly the kind of prose that rots
+    silently — nothing fails when it is wrong, an owner simply grants the wrong
+    things. So it is pinned in both directions, like ``REQUIRED_SCOPES`` is for
+    Zoho: a stage the source reads and the list omits is a grant *nobody can
+    ever have asked for*, and a stage the list names and the source never reads
+    is access requested for no reason.
+    """
+    for spec in erp.catalog():
+        assert spec.permissions, spec.key
+        assert spec.permission_note, spec.key
+        names = [p.name for p in spec.permissions]
+        assert len(names) == len(set(names)), spec.key
+        assert any(p.required for p in spec.permissions), spec.key
+
+        source = _SOURCE_OF[spec.key]
+        reads = {stage for p in spec.permissions for stage in p.reads}
+        implemented = {stage for stage in erp.READ_STAGES
+                       if hasattr(source, f"list_{stage}")}
+        assert reads == implemented, (
+            f"{spec.key}: reads but never asks for "
+            f"{sorted(implemented - reads)}; asks for but never reads "
+            f"{sorted(reads - implemented)}")
+
+
+def test_a_permission_cannot_name_a_stage_that_is_not_a_sync_stage():
+    """A typo in ``reads`` would make the pin above pass by describing a stage
+    nothing runs. Refused where it is written instead."""
+    with pytest.raises(ValueError) as e:
+        erp.Permission("Lists → Customers", "why", reads=("custmoers",))
+    assert "custmoers" in str(e.value)
+
+
 def test_split_inputs_refuses_missing_fields_by_label():
     with pytest.raises(ValueError) as e:
         erp.split_inputs(erp.get_spec("acumatica"), {"base_url": "https://x"})
@@ -606,8 +658,12 @@ def test_the_catalog_declares_every_form_a_client_can_render(client):
     r = client.get("/api/v1/connections/catalog", headers=_hdr(client, OWNER))
     assert r.status_code == 200, r.text
     by_key = {c["key"]: c for c in r.json()["connectors"]}
-    assert set(by_key) == {"netsuite", "dynamics365", "acumatica",
+    # Zoho leads the same list rather than being written out on the screen —
+    # the tab strip and the access list below it come from one place, which is
+    # what stops them describing different systems.
+    assert set(by_key) == {"zoho", "netsuite", "dynamics365", "acumatica",
                            "prophet21", "sagex3", "sage100"}
+    assert r.json()["connectors"][0]["key"] == "zoho"
     ns = by_key["netsuite"]
     secret_flags = {f["name"]: f["secret"] for f in ns["credential_fields"]}
     assert secret_flags["consumer_secret"] and secret_flags["token_secret"]

@@ -24,7 +24,7 @@ from typing import Any, Iterable, Iterator, Optional
 from ..errors import SourceAuthError
 from ..source import SkipPredicate
 from .base import (ConnectorSpec, CredentialMaterial, DocumentTally, Field,
-                   first, in_window, iso_date, register)
+                   Permission, first, in_window, iso_date, register)
 from .transport import RestTransport
 
 SYSTEM = "acumatica"
@@ -438,5 +438,42 @@ SPEC = register(ConnectorSpec(
         "dedicated integration user. The session is signed out after every "
         "pull so it never holds one of Acumatica's licensed seats. Only "
         "reads are ever issued."),
+    permission_note=(
+        "Granted on the integration user's role, at User Security → Access "
+        "Rights by Role. View Only is enough everywhere — the platform never "
+        "writes to Acumatica."),
+    permissions=(
+        Permission("API access on the user (Web Service Endpoints → Default)",
+                   "The contract-based REST endpoint this reads through. "
+                   "Without it the sign-in succeeds and every request 403s."),
+        Permission("Customer (AR303000) — View Only",
+                   "Customers — who was sold to.", reads=("contacts",)),
+        Permission("Stock Items (IN202500) — View Only",
+                   "Items — the product master.", reads=("items",)),
+        Permission("Invoices (AR301000) — View Only",
+                   "Invoices — what was sold, and for how much.",
+                   reads=("invoices",)),
+        Permission("Bills and Adjustments (AP301000) — View Only",
+                   "Bills — what it cost. Without this there is no margin "
+                   "anywhere in the platform, only revenue.",
+                   reads=("bills",)),
+        Permission("Payments and Applications (AR302000) — View Only",
+                   "Payments — when money actually arrived, and which invoices "
+                   "each one settled. Without it an invoice looks paid the day "
+                   "it was raised.",
+                   reads=("customer_payments",)),
+        Permission("Vendors (AP303000) — View Only",
+                   "Suppliers. Optional: bills still land without it, with the "
+                   "supplier known only by its id.",
+                   required=False, reads=("vendors",)),
+        Permission("Sales Orders (SO301000) — View Only",
+                   "Sales orders — demand promised but not yet invoiced. "
+                   "Optional.",
+                   required=False, reads=("sales_orders",)),
+        Permission("Purchase Orders (PO301000) — View Only",
+                   "Purchase orders — what is on the way from suppliers. "
+                   "Optional: feeds the Supply screen.",
+                   required=False, reads=("purchase_orders",)),
+    ),
     build_source=_build_source,
 ))

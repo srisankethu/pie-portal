@@ -955,13 +955,6 @@ export interface ConnectionCheck extends ZohoConnection {
   untested_scopes?: string[];
 }
 
-/** A scope, and what the platform loses without it. */
-export interface RequiredScope {
-  scope: string;
-  why: string;
-  required: boolean;
-}
-
 /** The credential summary carried by the connections view — `used_by` here is
  *  a count, unlike the fuller `ZohoCredential` returned by the credentials
  *  endpoint. */
@@ -978,8 +971,6 @@ export interface ConnectionCredential {
 export interface ConnectionsView {
   connections: ZohoConnection[];
   credentials: ConnectionCredential[];
-  required_scopes: RequiredScope[];
-  scope_string: string;
   can_manage: boolean;
   source_mode: string;
   /** The consequence of sharing an organization between companies, said out loud. */
@@ -1026,6 +1017,25 @@ export interface ConnectorCatalogEntry {
   external_id_field: string;
   /** Whether entered credentials can list visible companies to pick from. */
   can_discover: boolean;
+  /** What this system's sign-in must already be granted — named the way that
+   *  system's own admin console names it. Per connector, because the answer is:
+   *  a screen showing Zoho scope strings while NetSuite is selected is telling
+   *  an owner to grant something that does not exist where they are looking. */
+  permissions: ConnectorPermission[];
+  /** Where those grants are made, in that console's own navigation. */
+  permission_note: string;
+  /** The grants as one pasteable string, for the systems that take one (Zoho's
+   *  scope field). Empty where access is clicked rather than typed. */
+  permission_string: string;
+}
+
+/** One grant a connector's sign-in needs, and what the platform loses without it. */
+export interface ConnectorPermission {
+  name: string;
+  why: string;
+  required: boolean;
+  /** The sync stages it feeds — empty for one that gates the sign-in itself. */
+  reads: string[];
 }
 
 export interface ConnectorCatalog {

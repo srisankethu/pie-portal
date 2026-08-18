@@ -1,0 +1,118 @@
+// The access list has to follow the connector tabs.
+//
+// It did not. "Scopes this platform needs" was its own panel below the add
+// form, fed by the connections view rather than by the tab strip, so it listed
+// Zoho's ten `ZohoBooks.*.READ` strings whichever system was selected —
+// telling somebody connecting NetSuite to grant scopes that do not exist in
+// NetSuite, and telling them nothing about the role permissions that do. The
+// two panels were about one decision and only one of them was listening.
+//
+// So this pins the behaviour rather than the arrangement: pick a system, and
+// what the screen says must be granted is *that system's* list.
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import { ConnectionsPanel } from "./ConnectionsPanel";
+import { papi } from "./api";
+import type { ConnectorCatalogEntry, PlatformSession } from "./types";
+
+const SESSION: PlatformSession = {
+  token: "t", role: "OWNER", name: "S. Menon", user_id: "u1",
+  organization_id: "org_pie", currency: "INR", timezone: "Asia/Kolkata",
+};
+
+function entry(over: Partial<ConnectorCatalogEntry>): ConnectorCatalogEntry {
+  return {
+    key: "x", label: "X", company_term: "company", icon: "◇",
+    setup_note: "", credential_fields: [], connection_fields: [],
+    external_id_field: "company_id", can_discover: false,
+    permissions: [], permission_note: "", permission_string: "",
+    ...over,
+  };
+}
+
+const CATALOG: ConnectorCatalogEntry[] = [
+  entry({
+    key: "zoho", label: "Zoho Books", company_term: "organization",
+    setup_note: "Reads Zoho Books over its v3 API.",
+    permissions: [
+      { name: "ZohoBooks.bills.READ", why: "Bills — what it cost.",
+        required: true, reads: ["bills"] },
+    ],
+    permission_note: "Paste this into the scope field in the Zoho API console.",
+    permission_string: "ZohoBooks.bills.READ",
+  }),
+  entry({
+    key: "netsuite", label: "Oracle NetSuite", company_term: "account",
+    setup_note: "Reads NetSuite through SuiteQL.",
+    credential_fields: [
+      { name: "consumer_key", label: "Consumer key", secret: false,
+        required: true, placeholder: "", help: "" },
+    ],
+    connection_fields: [
+      { name: "company_id", label: "Account ID", secret: false,
+        required: true, placeholder: "", help: "" },
+    ],
+    permissions: [
+      { name: "Setup → REST Web Services", why: "SuiteQL is served over REST.",
+        required: true, reads: [] },
+      { name: "Transactions → Bill (View)", why: "Vendor bills — what it cost.",
+        required: false, reads: ["bills"] },
+    ],
+    permission_note: "Granted on the role the access token is issued for.",
+    permission_string: "",
+  }),
+];
+
+function mountPanel() {
+  vi.spyOn(papi, "listConnections").mockResolvedValue({
+    connections: [], credentials: [], can_manage: true,
+    source_mode: "api", pooling_note: "Everything pools.",
+  });
+  vi.spyOn(papi, "connectorCatalog").mockResolvedValue({ connectors: CATALOG });
+  return render(
+    <ConnectionsPanel
+      session={SESSION}
+      canSync
+      onSync={vi.fn()}
+      busyConnections={[]}
+      starting={false}
+    />);
+}
+
+describe("ConnectionsPanel — the access list", () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  it("opens on Zoho and lists Zoho's scopes, with the string to paste", async () => {
+    mountPanel();
+    expect(await screen.findByText(/What Zoho Books must let it read/))
+      .toBeInTheDocument();
+    // Twice, deliberately: once in the list with what it buys, once inside
+    // the string an owner pastes into the Zoho console.
+    expect(screen.getAllByText("ZohoBooks.bills.READ")).toHaveLength(2);
+    expect(screen.getByRole("button", { name: "Copy" })).toBeInTheDocument();
+  });
+
+  it("swaps the whole list when another system is picked", async () => {
+    mountPanel();
+    fireEvent.click(await screen.findByRole("button", { name: "Oracle NetSuite" }));
+
+    expect(await screen.findByText("Setup → REST Web Services")).toBeInTheDocument();
+    expect(screen.getByText(/What Oracle NetSuite must let it read/)).toBeInTheDocument();
+    // The defect, stated as an assertion: no Zoho scope survives the switch.
+    await waitFor(() =>
+      expect(screen.queryAllByText("ZohoBooks.bills.READ")).toHaveLength(0));
+    // NetSuite's grants are clicked in a console, not pasted, so there is
+    // nothing to copy — an empty box would be worse than none.
+    expect(screen.queryByRole("button", { name: "Copy" })).not.toBeInTheDocument();
+  });
+
+  it("says required and optional apart, per system", async () => {
+    mountPanel();
+    fireEvent.click(await screen.findByRole("button", { name: "Oracle NetSuite" }));
+    const row = (await screen.findByText("Transactions → Bill (View)")).closest("tr");
+    expect(row).toHaveTextContent("optional");
+    expect((await screen.findByText("Setup → REST Web Services")).closest("tr"))
+      .toHaveTextContent("required");
+  });
+});

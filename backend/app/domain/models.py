@@ -1212,7 +1212,14 @@ class Signal(Base):
     organization_id: Mapped[str] = mapped_column(String(64), index=True)
     signal_type: Mapped[str] = mapped_column(String(48), index=True)
     subject_entity_type: Mapped[str] = mapped_column(String(32))
-    subject_entity_id: Mapped[str] = mapped_column(String(64), index=True)
+    #: One id, or a **composite** one. A Customer × Item signal's subject is a
+    #: pair — ``commercial.subject.encode`` joins two 36-char UUIDs with "::",
+    #: which is 74 characters and does not fit in 64. SQLite enforces no
+    #: declared length so it stored them happily; Postgres rejected the whole
+    #: batch, and the failed flush poisoned the session that was writing the
+    #: sync's own record. Sized like `business_states.key`, which was widened
+    #: for exactly this reason one migration earlier — see `v2state_key_width`.
+    subject_entity_id: Mapped[str] = mapped_column(String(160), index=True)
     detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     detector_version: Mapped[str] = mapped_column(String(32))
     threshold_config_version: Mapped[str] = mapped_column(String(32))
@@ -1235,7 +1242,9 @@ class Decision(Base):
     decision_type: Mapped[str] = mapped_column(String(48), index=True)
     decision_key: Mapped[str] = mapped_column(String(128), index=True)  # idempotency (§17)
     subject_entity_type: Mapped[str] = mapped_column(String(32))
-    subject_entity_id: Mapped[str] = mapped_column(String(64), index=True)
+    #: Composite for a Customer × Item subject, exactly as on `Signal` — a
+    #: decision carries its signal's subject through unchanged.
+    subject_entity_id: Mapped[str] = mapped_column(String(160), index=True)
     assigned_user_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
     assigned_role: Mapped[str] = mapped_column(String(32))
     detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
@@ -1298,7 +1307,9 @@ class AiCallLog(Base):
     ai_call_log_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
     organization_id: Mapped[str] = mapped_column(String(64), index=True)
     decision_type: Mapped[str] = mapped_column(String(48), index=True)
-    subject_entity_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    #: The subject the call was about, composite or not — same values as
+    #: `Decision.subject_entity_id`, so the same width.
+    subject_entity_id: Mapped[Optional[str]] = mapped_column(String(160), index=True)
     recipient_role: Mapped[Optional[str]] = mapped_column(String(32))
     provider: Mapped[str] = mapped_column(String(32), default="")
     model: Mapped[str] = mapped_column(String(64), default="")
@@ -1953,7 +1964,8 @@ class OutcomeSnapshot(Base):
     #: what selects the evaluator and the default horizon.
     category: Mapped[str] = mapped_column(String(48), index=True)
     subject_entity_type: Mapped[str] = mapped_column(String(32))
-    subject_entity_id: Mapped[str] = mapped_column(String(64), index=True)
+    #: Copied verbatim from the signal, so it inherits the signal's width.
+    subject_entity_id: Mapped[str] = mapped_column(String(160), index=True)
     #: The signal's ``metrics``, copied whole. This is the baseline later
     #: evaluation compares against, kept even if the signal row is ever erased.
     baseline_metrics: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)

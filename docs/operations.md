@@ -571,6 +571,30 @@ The database holds two very different kinds of data:
 Standard `pg_dump` on the Postgres database covers both. Restore, then re-run
 the sync to bring the read model current.
 
+### "value too long for type character varying" in a sync
+
+A column narrower than the value the code writes. SQLite ignores a declared
+`String(n)` and Postgres does not, so this class of defect passes the whole
+suite and fails on the first flush in production. It has happened twice —
+`business_states.key` (`v2state_key_width`) and the four `subject_entity_id`
+columns (`z6subject`), both of them composite keys that outgrew `String(64)`.
+
+`backend/tests/decision_platform/test_column_widths.py` is the guard: it
+compares the values the real detectors produce against the **declared** length,
+so it catches the next one on SQLite. Add to it when a new composite key
+appears.
+
+If you meet a new one, the fix is a widening migration, and check the whole
+chain — a subject id is copied from `signals` to `decisions` to
+`outcome_snapshots` to `ai_call_logs`, and widening only the first moves the
+failure one table along.
+
+The **blast radius** is fixed independently: each phase of the derived analysis
+runs in its own SAVEPOINT and flushes inside it, so a rejected row costs that
+phase and is reported on the run as `ANALYSIS_PHASE_FAILED` rather than
+poisoning the session that records the pull. Before that, one bad row ended an
+hour-long sync with no counters at all.
+
 ### Where the logs are
 
 Three places, and they answer different questions.

@@ -42,10 +42,11 @@ from __future__ import annotations
 import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
-from typing import Callable, Optional
+from typing import Callable, Iterator, Optional
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -301,7 +302,14 @@ def persist_log(session: Session, run: models.SyncRun,
         # Deliberately not `log.exception`: this thread's log handler would
         # capture that record into the very buffer that just failed to store,
         # and the next flush would try to write it again.
-        run_log.written += len(pending)
+        #
+        # The lines go back on the front of the buffer rather than being
+        # dropped. This path is reached exactly when the session has been
+        # poisoned by somebody else's failed write — which is when the lines
+        # explaining that failure are worth the most — and `run_job` closes by
+        # flushing what is left through a session of its own. `written` is not
+        # advanced, so they keep the sequence numbers they were going to have.
+        run_log.lines[:0] = pending
         return 0
 
 
@@ -432,6 +440,32 @@ def _window_label(start: date, end: date) -> str:
 
 
 # ── the work itself ─────────────────────────────────────────────────────────
+def _revive(session: Session, run: models.SyncRun) -> models.SyncRun:
+    """Make the session usable again if a rejected write left it dead.
+
+    A failed flush puts the transaction in a state where *every* later
+    statement raises ``PendingRollbackError`` until somebody rolls back — and
+    that includes reloading an expired attribute, which is how the block whose
+    only job is to record the run died on ``run.sync_run_id``. An hour-long
+    pull that had already imported every customer, item and invoice ended with
+    no counters, no skips and no phase, because a derived signal would not fit
+    in a column.
+
+    Rolling back discards nothing that was not already lost: the last
+    successful commit was the previous phase boundary, and everything after it
+    is what the database has already refused. The run row is re-read because a
+    rollback expires it.
+
+    A no-op on a healthy session, which is why it is safe to call twice.
+    """
+    if session.is_active:
+        return run
+    log.warning("the sync session was left unusable by a refused write; rolling "
+                "back so this run can still record what it did")
+    session.rollback()
+    return session.get(models.SyncRun, run.sync_run_id) or run
+
+
 def execute_sync(session: Session, run: models.SyncRun, *,
                  since: Optional[date] = None, full: bool = False,
                  connection_id: Optional[str] = None,
@@ -499,6 +533,9 @@ def execute_sync(session: Session, run: models.SyncRun, *,
 
     demo_removed: dict[str, int] = {}
     analysis_notes: dict = {}
+    # Held so the `finally` can restate it after a rollback: rolling the session
+    # back expires the run row, and the assignments made in `except` go with it.
+    failure: Optional[BaseException] = None
     svc: Optional[SyncService] = None
     report = SyncReport(organization_id=org)   # placeholder until a source resolves
     # Declared out here so the `finally` can persist the skips of a run that
@@ -626,9 +663,21 @@ def execute_sync(session: Session, run: models.SyncRun, *,
         log.exception("sync failed")
         if svc is not None:
             report = svc.report
+        failure = e
+        # Before writing anything onto the row: a rejected flush leaves the
+        # transaction unusable, and assignments made on it are discarded.
+        run = _revive(session, run)
         run.status = "PARTIAL" if report.wrote_anything else "FAILED"
         run.error = f"{type(e).__name__}: {e}"[:1000]
     finally:
+        # Again here, and not only in `except`, because a write can be refused
+        # without an exception reaching this far — a stage that swallows its own
+        # failure leaves the same unusable session behind, and everything below
+        # this line would then raise on the first attribute it read.
+        run = _revive(session, run)
+        if failure is not None and not run.error:
+            run.status = "PARTIAL" if report.wrote_anything else "FAILED"
+            run.error = f"{type(failure).__name__}: {failure}"[:1000]
         # Counters come from the report either way: a run that wrote 336 sales
         # lines and then died wrote 336 sales lines, and saying zero would make
         # the database unreadable from its own audit trail.
@@ -669,7 +718,12 @@ def execute_sync(session: Session, run: models.SyncRun, *,
         _persist_skips(session, run, pulls)
         # Capped, but on *distinct problems* rather than on rows: forty things
         # to fix is a long afternoon, four hundred identical lines is one.
-        run.unresolved = report.unresolved()[:40]
+        #
+        # A phase of the derived analysis that failed is one of those problems,
+        # and it belongs on the same list rather than in a notes blob nobody
+        # opens: a pull whose signals silently stopped being detected looks
+        # exactly like a book with nothing to say about it.
+        run.unresolved = (analysis_gaps(analysis_notes) + report.unresolved())[:40]
         run.phase = None
         run.finished_at = _now()
         run.heartbeat_at = _now()
@@ -693,6 +747,74 @@ def execute_sync(session: Session, run: models.SyncRun, *,
         session.flush()
 
     return dict(run.notes or {})
+
+
+@contextmanager
+def _isolated(session: Session, label: str, notes: dict) -> Iterator[None]:
+    """Run one derived-analysis phase so a failure costs that phase and no more.
+
+    Two things, and the codebase already believed it had both.
+
+    **A SAVEPOINT.** ``execute_analysis`` called its phases "best-effort" and
+    wrapped them in ``try/except``, which is not the same thing on a database
+    that fails a whole transaction. When a row Postgres rejects is written here,
+    the flush poisons the session; every later statement — including the
+    ``finally`` that records how the pull went — raises ``PendingRollbackError``
+    on a session nobody rolled back. An hour-long pull that had already imported
+    every invoice ended as a crash with no counters, because a *derived* signal
+    would not fit in a column.
+
+    **A flush inside it.** The ``try`` caught nothing, because nothing failed
+    inside it: ORM writes go out at the next commit, which is the *next phase*.
+    So the exception was raised in the phase after the one that caused it, from
+    a block with no handler. Flushing here forces the failure to happen where it
+    can be attributed and rolled back.
+
+    Reported, not swallowed. The pull's own rows are the expensive thing and are
+    kept; the gap is named in ``notes`` and surfaces on the run as an unresolved
+    item, because an analysis that quietly stops running looks exactly like an
+    analysis with nothing to say.
+    """
+    try:
+        with session.begin_nested():
+            yield
+            # Inside the SAVEPOINT deliberately: this is what makes the failure
+            # land here rather than at the next phase's commit.
+            session.flush()
+    except Exception as exc:  # noqa: BLE001 — the pull's own rows matter more
+        log.exception("%s failed; the pull itself is kept", label)
+        notes.setdefault("analysis_failures", []).append({
+            "phase": label,
+            "error": f"{type(exc).__name__}: {exc}"[:500],
+        })
+
+
+def analysis_gaps(notes: dict) -> list[dict]:
+    """Failed analysis phases, in the shape the run's unresolved list uses.
+
+    So a gap in the derived half appears on the same screen as everything else
+    that could not be completed, rather than only in a notes blob nobody opens.
+    """
+    return [
+        {
+            "kind": "analysis",
+            "code": "ANALYSIS_PHASE_FAILED",
+            "missing_id": None,
+            "label": failure.get("phase"),
+            "sku": None,
+            "lines": 1,
+            "value": 0.0,
+            "first_seen": None,
+            "last_seen": None,
+            "examples": [],
+            "fix": ("The pull itself completed and its rows are kept — this is "
+                    "the derived analysis on top of them. It is rebuilt from "
+                    "scratch on the next sync, so a one-off failure costs "
+                    "nothing permanent. The detail here is what to send on if "
+                    "it repeats: " + str(failure.get("error", ""))),
+        }
+        for failure in (notes.get("analysis_failures") or [])
+    ]
 
 
 def execute_analysis(session: Session, run: models.SyncRun, organization_id: str, *,
@@ -735,27 +857,26 @@ def execute_analysis(session: Session, run: models.SyncRun, organization_id: str
     notes: dict = {}
 
     phase("Detecting signals")
-    detected = run_detectors(session, org)
-    run.signals_emitted = detected.get("signals_emitted", 0)
+    with _isolated(session, "Detecting signals", notes):
+        detected = run_detectors(session, org)
+        run.signals_emitted = detected.get("signals_emitted", 0)
 
     # Customer × Item metrics are derived from what just landed, so they are
     # rebuilt here rather than on the next page load. Targeted at the
     # relationships the pull actually moved — a full rebuild would scan the
     # organization's entire history to re-derive rows nothing changed.
     phase("Recomputing customer × item metrics")
-    try:
+    with _isolated(session, "Recomputing customer × item metrics", notes):
         from ..commercial.compute import recompute as recompute_commercial
 
         ci = recompute_commercial(session, org, customer_ids=customer_ids)
         run.signals_emitted += sum(ci.signals_by_type.values())
         notes["commercial"] = ci.to_dict()
-    except Exception:  # noqa: BLE001
-        log.exception("customer-item recompute failed; the pull itself is kept")
 
     # Business state, folded from the events the pull recorded. After the
     # metrics, and inside one try with the queue built from it.
     phase("Building business state")
-    try:
+    with _isolated(session, "Building business state", notes):
         from ..commercial.policy import load_for_org
         from ..state.engine import build as build_state
 
@@ -772,12 +893,11 @@ def execute_analysis(session: Session, run: models.SyncRun, organization_id: str
         opportunities = generate_from_state(session, org, thresholds=th)
         notes["opportunities"] = opportunities
         run.decisions_created += opportunities.get("created", 0)
-    except Exception:  # noqa: BLE001
-        log.exception("state build failed; the pull itself is kept")
 
     phase("Generating decisions")
-    generated = DecisionService(session, org).generate()
-    run.decisions_created = generated.get("created", 0)
+    with _isolated(session, "Generating decisions", notes):
+        generated = DecisionService(session, org).generate()
+        run.decisions_created = generated.get("created", 0)
 
     phase("Measuring what PIE changed")
     notes["attribution"] = _run_attribution(session, org)

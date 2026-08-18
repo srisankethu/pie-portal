@@ -733,6 +733,19 @@ function ValueLedger({ session }: { session: PlatformSession }) {
           <LoadingState rows={4} height={44} label="Reading the ledger…" />
         ) : (
           <>
+            {events.frozen_reason && (
+              /* The plan lapsed, so the ledger stops at the end of the window
+                 this organization was entitled to. Said plainly and *above* the
+                 rows, because a reader who scrolls a short ledger without being
+                 told it is capped concludes PIE stopped finding things — which
+                 is the benign default this whole screen refuses everywhere
+                 else. Detection did not stop; reading past that point is what
+                 the plan restores. */
+              <Alert severity="warning" sx={{ mb: 2 }}>
+                <AlertTitle>This ledger stops at the end of your trial</AlertTitle>
+                {events.frozen_reason}
+              </Alert>
+            )}
             <Alert severity="info" icon={false} sx={{ mb: 2 }}>
               {events.page_is_not_a_total}
             </Alert>

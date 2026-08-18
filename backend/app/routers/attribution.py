@@ -22,12 +22,36 @@ empty screen. So a salesperson gets no amount from any route here because they
 get no response body from any route here — the strongest available reading of
 "absent, not hidden in the browser".
 
-Plan gating is not repeated in this file. ``main.py`` applies
-``require_feature("intelligence")`` at ``include_router``, the same single visible
-declaration the decisions and insight surfaces use.
+**Plan gating is per route here, and this surface is the one exception to the
+single-declaration rule** the decisions and insight surfaces follow in
+``main.py``. It used to be gated at ``include_router`` with them, and the
+consequence was that the screen a renewal is argued from went dark on the day
+the trial ended: the organization dropped to free, ``/attribution`` began
+answering 403, and the owner deciding whether to pay could no longer see what
+had been done for them. The evidence was still being written — ``jobs.py`` runs
+the detectors on every sync, ungated by plan — so the ledger held the answer and
+refused to show it.
+
+The rule that replaced it: **an organization always keeps the window it was
+entitled to.** A live intelligence plan reads the ledger unbounded; a lapsed one
+reads up to its trial's ``ends_at`` and no further. Rolling detection past that
+moment is what the plan buys.
+
+None of this weakens the disclosure invariant, because that was never the plan's
+job. Cost non-disclosure is a *role* rule (§1) and ``require_manager_or_owner``
+on every route below is what enforces it — a salesperson was refused under the
+old arrangement by their role, not by their organization's plan, and still is.
+Gating by plan as well conflated a commercial boundary with a confidentiality
+one and only the commercial half was ever doing work here.
+
+Two of the three routes need no cap at all: ``/summary`` and ``/evaluation`` are
+windowed to the trial by construction (``min(now, ends_at)`` in the evaluator),
+so they cannot reach past it however they are called. ``/events`` is the
+unwindowed read, and it is the one that carries the rule.
 """
 from __future__ import annotations
 
+from datetime import datetime
 from decimal import Decimal
 from enum import Enum
 from typing import Any, Optional, TypeVar
@@ -35,7 +59,7 @@ from typing import Any, Optional, TypeVar
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
-from .. import attribution
+from .. import attribution, clock, entitlements
 from ..attribution.evaluator import NO_EVENTS_RECORDED, NO_TRIAL_ON_RECORD
 from ..authz import Principal, require_manager_or_owner, require_owner
 from ..db import get_session
@@ -69,6 +93,36 @@ def _enum(raw: Optional[str], enum_type: type[_E], field: str) -> Optional[_E]:
             status.HTTP_400_BAD_REQUEST,
             f"Unknown {field} {raw!r}. Expected one of: "
             + ", ".join(m.value for m in enum_type)) from None
+
+
+def _readable_until(session: Session, org: str) -> Optional[datetime]:
+    """How far into the ledger this organization's plan lets it read.
+
+    ``None`` for a live intelligence plan — unbounded. For a lapsed one, the
+    moment its trial ended: what PIE did during the window it was entitled to
+    stays readable for good, and that is deliberate rather than lenient. It is
+    the only evidence an owner has when deciding whether to pay, it is arithmetic
+    over their own rows, and withholding it does not sell a plan — it removes the
+    one argument for buying one.
+
+    An organization with no trial at all and no plan has no window, and the
+    honest answer there is a refusal naming the plan. Returning an empty ledger
+    instead would say "PIE has done nothing for you", which is a benign default
+    standing in for "you are not entitled to look" — the §1 failure this whole
+    module is written against.
+
+    Reuses ``attribution.current_trial`` rather than ``entitlements.trial_for``:
+    the latter answers "is a trial *running*", and every caller here is asking
+    about one that has already finished.
+    """
+    plan = entitlements.effective_plan(session, org)
+    if entitlements.allows(plan, "intelligence"):
+        return None
+    trial = attribution.current_trial(session, org)
+    if trial is None:
+        raise HTTPException(status.HTTP_403_FORBIDDEN,
+                            str(entitlements.PlanRefused("intelligence", plan)))
+    return clock.aware(trial.ends_at)
 
 
 def _empty_reason(gaps: list[dict[str, Any]]) -> Optional[str]:
@@ -124,11 +178,12 @@ def events(event_type: Optional[str] = Query(None),
     ``event_type`` and ``value_class`` are validated against the enums — see
     ``_enum`` for why an unknown filter is a 400 and not an empty list.
     """
+    until = _readable_until(session, principal.organization_id)
     result = attribution.list_events(
         session, principal.organization_id,
         event_type=_enum(event_type, ValueEventType, "event_type"),
         value_class=_enum(value_class, ValueClass, "value_class"),
-        limit=limit, offset=offset)
+        readable_until=until, limit=limit, offset=offset)
     return {
         **result,
         "filters": {"event_type": event_type, "value_class": value_class},
@@ -137,10 +192,23 @@ def events(event_type: Optional[str] = Query(None),
         # then drifts when a sixth event type lands.
         "event_types": [m.value for m in ValueEventType],
         "value_classes": [m.value for m in ValueClass],
-        "empty_reason": (None if result["total"] else
-                         "No value event matches this filter. An empty ledger is "
-                         "not a measured zero — check the summary's evidence gaps "
-                         "for whether detection has run at all."),
+        # Two different empty states, and the frozen one must not borrow the
+        # other's sentence: "detection may never have run" is the wrong thing to
+        # tell somebody whose view simply stops at their trial.
+        "empty_reason": (
+            None if result["total"] else
+            ("No value event was recorded before this organization's trial ended, "
+             "which is where this view stops. Later events are not shown here.")
+            if until is not None else
+            ("No value event matches this filter. An empty ledger is not a "
+             "measured zero — check the summary's evidence gaps for whether "
+             "detection has run at all.")),
+        # Present whether or not the cap bit, so a screen never has to infer it.
+        "frozen_reason": (
+            None if until is None else
+            ("This organization is on the free Quote Desk, so the ledger is shown "
+             "up to the end of its Commercial Intelligence trial. Detection has "
+             "kept running; reading past that point is what the plan restores.")),
     }
 
 

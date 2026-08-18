@@ -260,11 +260,18 @@ app.include_router(connections.router)
 app.include_router(trust.router)
 app.include_router(insight.router,
                    dependencies=[Depends(plan.require_feature("intelligence"))])
-# What the intelligence layer was worth, measured. Gated with the surfaces it
-# measures rather than left open: the ledger is gross-profit arithmetic over the
-# same rows, so it cannot be the one intelligence screen a free plan can read.
-app.include_router(attribution.router,
-                   dependencies=[Depends(plan.require_feature("intelligence"))])
+# What the intelligence layer was worth, measured. **Deliberately not gated
+# here**, unlike every other intelligence surface, and the exception is argued in
+# full at the top of `routers/attribution.py`.
+#
+# In short: gating it at inclusion meant the screen a renewal is argued from went
+# dark on the day the trial ended, while the detectors kept writing the evidence
+# it would have shown (`jobs.py` runs them on every sync, ungated). The router
+# now applies the rule per route — an organization reads the ledger up to the end
+# of the window it was entitled to, and rolling detection past that is what the
+# plan buys. Role scoping is unchanged and is what keeps cost away from a
+# salesperson; that was never the plan gate's job.
+app.include_router(attribution.router)
 app.include_router(ai_settings.router)
 app.include_router(entitlements.router)
 

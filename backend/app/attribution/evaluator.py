@@ -193,6 +193,7 @@ def _by_event_type(session: Session, org: str,
 def list_events(session: Session, org: str, *,
                 event_type: Optional[ValueEventType] = None,
                 value_class: Optional[ValueClass] = None,
+                readable_until: Optional[datetime] = None,
                 limit: int = 100, offset: int = 0) -> dict[str, Any]:
     """One page of the ledger itself, newest business fact first.
 
@@ -211,6 +212,17 @@ def list_events(session: Session, org: str, *,
     Ordered by ``occurred_at`` with ``value_event_id`` as the tie-break, because
     several events can share a timestamp to the second and a paged list whose
     order is not total will show one row twice and skip another.
+
+    ``readable_until`` caps the window at a moment the caller is entitled to see
+    up to, and is the one filter that is *not* a user choice: an organization
+    whose intelligence plan has lapsed keeps its trial on record, and the rule
+    the router applies is that it may still read what PIE did for it *then*.
+    ``None`` means unbounded. The bound is applied to ``total`` as well as to the
+    page, so the count and the rows agree — a total counted past a cap the reader
+    cannot page to is a number that cannot be opened, which is the one thing this
+    surface exists to avoid. It is echoed back as ``readable_until`` so a screen
+    can say the view is frozen rather than leaving a truncated ledger looking
+    like the whole one.
     """
     where = [models.ValueEvent.organization_id == org,
              models.ValueEvent.superseded_at.is_(None)]
@@ -218,6 +230,8 @@ def list_events(session: Session, org: str, *,
         where.append(models.ValueEvent.event_type == event_type.value)
     if value_class is not None:
         where.append(models.ValueEvent.value_class == value_class.value)
+    if readable_until is not None:
+        where.append(models.ValueEvent.occurred_at <= readable_until)
 
     total = int(session.scalar(
         select(func.count()).select_from(models.ValueEvent).where(*where)) or 0)
@@ -252,6 +266,9 @@ def list_events(session: Session, org: str, *,
         "limit": limit,
         "offset": offset,
         "has_more": offset + len(rows) < total,
+        # Named even when it is ``None``, so a client reads "unbounded" from the
+        # payload rather than from the key being absent.
+        "readable_until": clock.iso(readable_until) if readable_until else None,
         "currency": "INR",
         "page_is_not_a_total": (
             "These are ledger rows, not a rollup. Summing them adds POTENTIAL "

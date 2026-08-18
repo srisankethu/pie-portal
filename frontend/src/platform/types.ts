@@ -1403,6 +1403,16 @@ export interface AttributionEvents {
   event_types: string[];
   value_classes: string[];
   empty_reason: string | null;
+  /** How far into the ledger this organization's plan lets it read, or `null`
+   *  for unbounded. An organization whose intelligence plan has lapsed keeps
+   *  the window it was entitled to — it reads up to the end of its trial and no
+   *  further. */
+  readable_until: string | null;
+  /** Why the view stops where it does, when it stops. `null` when unbounded.
+   *  Rendered rather than inferred: a truncated ledger that does not say it is
+   *  truncated reads as the whole one, which is the same benign-default failure
+   *  the rest of this surface is built to refuse. */
+  frozen_reason: string | null;
 }
 
 /** What the book looked like before the trial, and what it looks like during. */

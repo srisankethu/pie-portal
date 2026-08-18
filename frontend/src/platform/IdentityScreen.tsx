@@ -1,3 +1,4 @@
+import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import { useCallback, useEffect, useState } from "react";
 import { since } from "../when";
@@ -139,28 +140,30 @@ function IdentityCard({
         </span>
       </div>
 
-      <table className="id-table">
-        <thead>
-          <tr>
-            <th>
-              <Labelled tip="Which connected company this row came from, and which system it came through. It is never rewritten from another record's values — that is what makes a number on any screen traceable.">
-                Source
-              </Labelled>
-            </th>
-            <th>External ID</th>
-            <th>{kind === "customers" ? "Customer name" : "Description"}</th>
-            <th>{kind === "customers" ? "GSTIN" : "SKU"}</th>
-            <th>Last synced</th>
-            {canManage && <th></th>}
-          </tr>
-        </thead>
-        <tbody>
-          {identity.records.map((r) => (
-            <RecordRow key={r.record_id} r={r} kind={kind} canManage={canManage}
-                       onUnlink={onUnlink} lonely={identity.records.length === 1} />
-          ))}
-        </tbody>
-      </table>
+      <Box sx={{ overflowX: "auto" }}>
+        <table className="id-table">
+          <thead>
+            <tr>
+              <th>
+                <Labelled tip="Which connected company this row came from, and which system it came through. It is never rewritten from another record's values — that is what makes a number on any screen traceable.">
+                  Source
+                </Labelled>
+              </th>
+              <th>External ID</th>
+              <th>{kind === "customers" ? "Customer name" : "Description"}</th>
+              <th>{kind === "customers" ? "GSTIN" : "SKU"}</th>
+              <th>Last synced</th>
+              {canManage && <th></th>}
+            </tr>
+          </thead>
+          <tbody>
+            {identity.records.map((r) => (
+              <RecordRow key={r.record_id} r={r} kind={kind} canManage={canManage}
+                         onUnlink={onUnlink} lonely={identity.records.length === 1} />
+            ))}
+          </tbody>
+        </table>
+      </Box>
     </Bp>
   );
 }

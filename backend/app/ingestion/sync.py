@@ -38,7 +38,7 @@ from ..domain import models
 from ..repositories import ReadModelRepository
 from ..state import events as ev
 from ..state.events import EventLog, Source
-from ..trust import vault
+from ..trust import keys, vault
 from .normalize import (
     NormalizationError,
     normalize_bill,
@@ -409,9 +409,54 @@ class SyncService:
         # Names go into the tenant's vault here rather than in a separate job:
         # a name changed in the ERP has to reach the vault on the same pull that
         # changed it, or the vault becomes a stale second source of truth.
+        self._secure_names()
+
+    def _secure_names(self) -> None:
+        """Vault the display names, degrading if the tenant key cannot be used.
+
+        **A key problem must not cost the pull.** This phase sits between the
+        masters and the first document window, so a tenant whose DEK no longer
+        unwraps under the current ``CREDENTIAL_ENCRYPTION_KEY`` had every sync
+        die here having read zero months of trade — and every retry died in the
+        same place, because nothing about a retry changes a key. Five months of
+        invoices were being withheld by a name cache.
+
+        A cache is what it is. Every name the vault holds was copied from the
+        plaintext display column read moments earlier, ``vault.resolve`` already
+        falls back to a pseudonym when the key cannot produce one, and the next
+        successful pull rewrites the lot. So the honest cost of skipping this is
+        that the encrypted copy is stale — priced against losing the documents,
+        that is not a trade worth making.
+
+        Reported, never swallowed: the run carries an unresolved entry naming
+        both remedies, so a screen says which one applies rather than a sync
+        quietly running without a vault.
+
+        Narrow on purpose. Only the two key states no retry can fix are caught.
+        Anything else here — a database error mid-write — is a real failure and
+        still stops the pull, because the point is to keep the pull alive for a
+        problem that is genuinely not the pull's, not to make this phase
+        incapable of failing.
+        """
         self._phase("Securing names")
-        vault.backfill(self.s, self.org)
-        self.s.flush()
+        try:
+            vault.backfill(self.s, self.org)
+            self.s.flush()
+        except (keys.KeyDestroyed, keys.KeyUnavailable) as e:
+            # Not rolled back, for the reason `_supply_phase` gives: the
+            # customers and items this pull already wrote are real data.
+            self.s.flush()
+            self.report.skip(
+                "name_vault", "display names", "NAME_VAULT_UNAVAILABLE",
+                f"{type(e).__name__}: {e}",
+                context={"fix": (
+                    "The pull continued and the documents are being read; only "
+                    "the encrypted copy of customer, item and supplier names "
+                    "was not written, and the next sync writes it once the key "
+                    "works. Names still render on screen from the plaintext "
+                    "columns. See the detail here for which of the two key "
+                    "states this deployment is in — they have opposite "
+                    "remedies.")})
 
     def run_documents(self, source: Optional[ZohoSource] = None,
                       label: str = "") -> None:

@@ -52,8 +52,11 @@ class KeyDestroyed(RuntimeError):
 
 
 class KeyUnavailable(RuntimeError):
-    """The DEK could not be unwrapped — almost always the master key changing
-    since the DEK was written."""
+    """The DEK could not be unwrapped, or ciphertext did not decrypt under it.
+
+    A different failure from ``KeyDestroyed`` in the way that matters: nobody
+    chose this, and it has a remedy. ``UNREADABLE_EXPLANATION`` carries it.
+    """
 
 
 def _kek() -> Fernet:
@@ -116,6 +119,62 @@ def ensure_key(session: Session, organization_id: str) -> models.TenantKey:
     return row
 
 
+#: Why an unwrap fails, and what to do about it — one text, because this is the
+#: sentence an operator acts on and it was wrong in a way that made things worse.
+#:
+#: It used to assert a single cause ("CREDENTIAL_ENCRYPTION_KEY has almost
+#: certainly changed; restore the previous value"). That is one of two states,
+#: and prescribing it in the other one breaks a working deployment: a database
+#: whose stored Zoho credentials still decrypt is a database whose master key is
+#: the *right* one, and rolling it back to make an old key row readable would
+#: make every credential unreadable instead. A key row can be older than the
+#: rotation the rest of the database already went through — an organization
+#: connected under the dev default, then given a real key, then reconnected —
+#: and that row is stale rather than the environment being wrong.
+#:
+#: So this names both states and the test that tells them apart, rather than
+#: guessing at one. Absence of the old key is not evidence that the current one
+#: is wrong.
+UNREADABLE_EXPLANATION = (
+    "This organization's data key does not unwrap under the current "
+    "CREDENTIAL_ENCRYPTION_KEY. Two states look identical here and have "
+    "opposite remedies. If the master key was rotated and the previous value "
+    "still exists, restore it: nothing is lost. If the current value is the "
+    "right one — which is what it means when stored connection credentials "
+    "still decrypt — then this key row predates that rotation and no value "
+    "will read it. `python -m app.trust.rekey` reports which state a "
+    "deployment is in and can issue a fresh key for the second one.")
+
+#: The four states a tenant's key can be found in. Names rather than booleans
+#: because "usable?" collapses the two unusable states, and they need
+#: completely different handling: one is a deliberate erasure that must stay
+#: irreversible, the other is an accident with a way out.
+KEY_ABSENT = "ABSENT"          #: no row — the next write creates one
+KEY_READY = "READY"            #: unwraps under the current master key
+KEY_DESTROYED = "DESTROYED"    #: erased on purpose; never resurrect it
+KEY_UNREADABLE = "UNREADABLE"  #: wrapped under a master key nobody has
+
+
+def inspect(session: Session, organization_id: str) -> str:
+    """Which state this tenant's key is in, **without creating one**.
+
+    ``_dek`` cannot answer this question: it goes through ``ensure_key``, so
+    asking it "is this tenant's key usable?" writes a key for a tenant that has
+    never had one. A report has to be able to look without touching, and so
+    does anything deciding whether a recovery is even applicable.
+    """
+    row = _row(session, organization_id)
+    if row is None:
+        return KEY_ABSENT
+    if row.destroyed_at is not None or not row.wrapped_dek:
+        return KEY_DESTROYED
+    try:
+        _kek().decrypt(row.wrapped_dek.encode())
+    except InvalidToken:
+        return KEY_UNREADABLE
+    return KEY_READY
+
+
 def _dek(session: Session, organization_id: str) -> Fernet:
     row = ensure_key(session, organization_id)
     if row.destroyed_at is not None or not row.wrapped_dek:
@@ -127,11 +186,7 @@ def _dek(session: Session, organization_id: str) -> Fernet:
     try:
         return Fernet(_kek().decrypt(row.wrapped_dek.encode()))
     except InvalidToken as e:
-        raise KeyUnavailable(
-            "Could not unwrap this organization's data key. CREDENTIAL_ENCRYPTION_KEY "
-            "has almost certainly changed since it was written; restore the previous "
-            "value — the data is not lost, it is unreadable under the current master "
-            "key.") from e
+        raise KeyUnavailable(UNREADABLE_EXPLANATION) from e
 
 
 def encrypt_for(session: Session, organization_id: str, plaintext: str) -> str:
@@ -177,5 +232,62 @@ def destroy(session: Session, organization_id: str, *, reason: str,
     row.destroyed_at = datetime.now(timezone.utc)
     row.destroyed_by_user_id = actor_user_id
     row.destroy_reason = reason.strip()
+    session.flush()
+    return row
+
+
+def reissue(session: Session, organization_id: str, *, reason: str,
+            actor_user_id: Optional[str]) -> models.TenantKey:
+    """Replace a data key that can no longer be unwrapped. Costly, and guarded.
+
+    The state this exists for: the wrapped DEK was written under a master key
+    nobody still has, so every ciphertext under it is unreadable and no retry
+    will ever change that. Left alone, the tenant is stuck — the name vault
+    cannot be written, and each sync reports the same problem for ever.
+
+    What it costs is exactly the two ciphertext classes ``erasure.DESTROYED``
+    enumerates, and they are not equal. The name vault is *derived*: every name
+    in it was copied from a plaintext display column, so the next sync rebuilds
+    it. The model-payload log is not derived and is not rebuildable — replacing
+    the key ends the ability to answer "what was sent to a model about my
+    business?" for everything logged before today. So this demands a reason,
+    records it, and the CLI counts those rows before it acts. It is never
+    called automatically, and nothing in the request path calls it at all.
+
+    Three refusals, each of which is the whole point:
+
+    * **A destroyed key is never resurrected.** Erasure is meant to be
+      irreversible, and an operation that hands an erased tenant a working key
+      would make every receipt already issued a lie. ``KeyDestroyed``, the
+      same answer every other read of that row gives.
+    * **A key that works is never replaced.** Shredding a readable key would
+      destroy live data to fix nothing. This is why the guard is a positive
+      check for ``KEY_UNREADABLE`` rather than "not READY".
+    * **A tenant with no key is not a candidate.** There is nothing broken to
+      recover; the next write creates one.
+    """
+    if not (reason or "").strip():
+        raise ValueError("Reissuing a tenant's data key requires a stated reason.")
+
+    state = inspect(session, organization_id)
+    if state == KEY_DESTROYED:
+        raise KeyDestroyed(
+            f"The data key for {organization_id} was destroyed. That is "
+            f"deliberate and irreversible — issuing a new one here would not "
+            f"recover a byte of what was written under the old one, and would "
+            f"contradict the erasure receipt that says it is gone.")
+    if state != KEY_UNREADABLE:
+        raise ValueError(
+            f"The data key for {organization_id} is {state}, not "
+            f"{KEY_UNREADABLE}. Reissuing only ever applies to a key that "
+            f"cannot be unwrapped; replacing any other one destroys readable "
+            f"data to fix nothing.")
+
+    row = _row(session, organization_id)
+    assert row is not None            # KEY_UNREADABLE implies a row
+    row.wrapped_dek = _kek().encrypt(_new_dek()).decode()
+    row.reissued_at = datetime.now(timezone.utc)
+    row.reissued_by_user_id = actor_user_id
+    row.reissue_reason = reason.strip()
     session.flush()
     return row

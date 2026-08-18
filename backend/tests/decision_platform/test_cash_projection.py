@@ -76,7 +76,6 @@ def test_an_obligation_lands_in_the_week_its_own_document_names(book):
     """Not the week it was raised, not an average — the due date's week."""
     rows = _schedule(book)
 
-<<<<<<< HEAD
     # INV-2: ₹16,700 due 2026-02-04. INV-3: ₹85,200 due next Wednesday.
     assert _amount(rows, f"in:{week_key(date(2026, 2, 4))}:") == Decimal("16700")
     assert _amount(rows, f"in:{week_key(DUE_NEXT_WEEK)}:") == Decimal("85200")

@@ -67,7 +67,40 @@ if config.config_file_name is not None and not logs.is_configured():
 target_metadata = Base.metadata
 
 
+def _explain_multiple_heads() -> None:
+    """Say what two heads mean and how to end them, before alembic's own error.
+
+    ``upgrade head`` refuses to guess between two heads, which is correct —
+    picking one would leave the other branch's table or column missing — but its
+    message ("please specify a specific target revision, '<branchname>@head'…")
+    describes the API rather than the situation. What actually happened is that
+    two branches each added a revision on the same parent and both were merged,
+    and the fix is one command.
+
+    Raised from here because both callers reach it: ``deploy/release.sh`` for
+    the compose stack, and ``railway.json``'s ``preDeployCommand``, which runs
+    ``python -m alembic upgrade head`` with no shell to wrap it in. A pre-deploy
+    that stops the container should say why in the log the operator is already
+    reading.
+    """
+    from alembic.script import ScriptDirectory
+
+    heads = ScriptDirectory.from_config(config).get_heads()
+    if len(heads) < 2:
+        return
+    raise RuntimeError(
+        "This checkout has {n} migration heads: {heads}. Two branches each "
+        "added a revision on the same parent and both were merged, so there is "
+        "no single 'head' to upgrade to — and applying one of them would leave "
+        "the other branch's schema missing. Join them with:\n"
+        "    cd backend && python -m alembic merge -m 'merge' {heads_args}\n"
+        "then verify on an empty database (`make verify`). Do NOT resolve it by "
+        "editing down_revision on a released revision — see CLAUDE.md §4.".format(
+            n=len(heads), heads=", ".join(heads), heads_args=" ".join(heads)))
+
+
 def run_migrations_offline() -> None:
+    _explain_multiple_heads()
     context.configure(url=_database_url(), target_metadata=target_metadata,
                       literal_binds=True, render_as_batch=True)
     with context.begin_transaction():
@@ -75,6 +108,7 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
+    _explain_multiple_heads()
     section = config.get_section(config.config_ini_section) or {}
     section["sqlalchemy.url"] = _database_url()
     connectable = engine_from_config(section, prefix="sqlalchemy.",

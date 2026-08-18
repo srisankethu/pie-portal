@@ -72,6 +72,7 @@ import GavelOutlined from "@mui/icons-material/GavelOutlined";
 import ShieldOutlined from "@mui/icons-material/ShieldOutlined";
 import TuneOutlined from "@mui/icons-material/TuneOutlined";
 import InsightsOutlined from "@mui/icons-material/InsightsOutlined";
+import ExpandMoreOutlined from "@mui/icons-material/ExpandMoreOutlined";
 
 import { Link as RouterLink } from "react-router-dom";
 
@@ -145,6 +146,68 @@ export interface NavItem {
 
 const ORDER: NavGroup[] = ["decide", "understand", "book", "setup"];
 
+/** The two groups that fold, and the reason there are two rather than four.
+ *
+ *  This nav carries thirty-four items and its own grouping admits the shape:
+ *  seven ways to act, twenty to read. To somebody who has already decided that
+ *  dashboards are things nobody opens, that is the verdict confirmed on first
+ *  login — directly after a landing page that spent its whole argument saying
+ *  this is not one.
+ *
+ *  Folding rather than removing, because every one of those screens is used by
+ *  somebody. `Decide` is the working day and never folds; `Setup` is short and
+ *  is where you go when something is wrong, so folding it would hide the exits.
+ *  The two analysis groups fold, which takes the default from thirty-four
+ *  visible rows to about thirteen and removes nothing.
+ *
+ *  Collapsed only until the reader says otherwise: the choice persists, and a
+ *  group holding the current screen is always open regardless. So the cost to
+ *  somebody who lives in `Understand` is one click, once, ever. */
+const FOLDABLE: ReadonlySet<NavGroup> = new Set<NavGroup>(["understand", "book"]);
+
+const FOLD_KEY = "pie.nav.open-groups";
+
+/** The nav a reader should actually see, given what their organization has.
+ *
+ *  Until the books have arrived the analysis groups are doors to empty rooms —
+ *  every screen in them reads persisted trading rows, and there are none.
+ *  Twenty of those on a first login is how a product that is not a dashboard
+ *  introduces itself as one.
+ *
+ *  `Decide` and `Setup` survive, which between them are the whole of what a new
+ *  organization can do: quote, and finish connecting.
+ *
+ *  A pure function and exported so the rule is pinned by a test rather than
+ *  living inline in a nine-hundred-line component — it is four lines, and §7
+ *  would say leave it alone, except that "which screens does a stranger see"
+ *  is exactly the kind of rule that changes silently. */
+export function visibleNavItems(items: NavItem[], booksReady: boolean): NavItem[] {
+  if (booksReady) return items;
+  return items.filter((i) => i.group === "decide" || i.group === "setup");
+}
+
+/** Which foldable groups this reader has opened. Persisted so the answer
+ *  survives a reload; a failure to read or write it is not worth a broken nav,
+ *  so both sides degrade to the default rather than throwing (private-mode
+ *  browsers make `localStorage` throw on access, not merely return null). */
+function loadOpenGroups(): Set<NavGroup> {
+  try {
+    const raw = window.localStorage.getItem(FOLD_KEY);
+    if (!raw) return new Set();
+    return new Set(JSON.parse(raw) as NavGroup[]);
+  } catch {
+    return new Set();
+  }
+}
+
+function saveOpenGroups(groups: Set<NavGroup>): void {
+  try {
+    window.localStorage.setItem(FOLD_KEY, JSON.stringify([...groups]));
+  } catch {
+    /* A nav that cannot remember is still a nav. */
+  }
+}
+
 export default function AppShell({
   items,
   current,
@@ -163,15 +226,31 @@ export default function AppShell({
   const theme = useTheme();
   const wide = useMediaQuery(theme.breakpoints.up("md"));
   const [open, setOpen] = useState(false);
+  const [openGroups, setOpenGroups] = useState<Set<NavGroup>>(loadOpenGroups);
 
   const isCurrent = (it: NavItem) =>
     current === it.key || (it.alsoCurrentFor || []).includes(current);
+
+  const toggleGroup = (group: NavGroup) => {
+    setOpenGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(group)) next.delete(group); else next.add(group);
+      saveOpenGroups(next);
+      return next;
+    });
+  };
 
   const nav = (
     <Box sx={{ overflowY: "auto", height: "100%", pb: 2 }}>
       {ORDER.map((group) => {
         const inGroup = items.filter((i) => i.group === group);
         if (!inGroup.length) return null;
+        // A group holding the screen you are on is open whatever the stored
+        // preference says — a nav that hides the page you are reading is a nav
+        // that has lost you.
+        const holdsCurrent = inGroup.some(isCurrent);
+        const foldable = FOLDABLE.has(group);
+        const expanded = !foldable || holdsCurrent || openGroups.has(group);
         return (
           <List
             key={group}
@@ -192,12 +271,51 @@ export default function AppShell({
                   mt: 1,
                 }}
               >
-                {GROUP_LABEL[group]}
+                {foldable ? (
+                  <Box
+                    component="button"
+                    type="button"
+                    onClick={() => toggleGroup(group)}
+                    aria-expanded={expanded}
+                    aria-label={`${GROUP_LABEL[group]}, ${inGroup.length} screens`}
+                    sx={{
+                      all: "unset",
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 0.5,
+                      width: "100%",
+                      font: "inherit",
+                      letterSpacing: "inherit",
+                      "&:focus-visible": {
+                        outline: "2px solid",
+                        outlineColor: "primary.main",
+                        outlineOffset: 2,
+                      },
+                    }}
+                  >
+                    <ExpandMoreOutlined
+                      sx={{
+                        fontSize: 16,
+                        transition: "transform 120ms",
+                        transform: expanded ? "none" : "rotate(-90deg)",
+                      }} />
+                    {GROUP_LABEL[group]}
+                    {/* The count is what makes a folded group legible: without
+                        it the row reads as a heading with nothing under it
+                        rather than as eleven screens put away. */}
+                    {!expanded && (
+                      <Box component="span" sx={{ opacity: 0.7, ml: 0.25 }}>
+                        ({inGroup.length})
+                      </Box>
+                    )}
+                  </Box>
+                ) : GROUP_LABEL[group]}
               </ListSubheader>
             }
             sx={{ px: 1 }}
           >
-            {inGroup.map((it) => {
+            {(expanded ? inGroup : []).map((it) => {
               const Icon = ICON[it.key];
               const selected = isCurrent(it);
               return (

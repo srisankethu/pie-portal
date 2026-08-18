@@ -1,5 +1,4 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
 import { DataGrid, numeric } from "./DataGrid";
 import { EntityName, EntitySource } from "./EntityName";
 import { CompanyFilter, useCompanyFilter } from "./CompanyFilter";
@@ -37,7 +36,7 @@ import { Navigate, Route, Routes, useLocation, useNavigate, useParams } from "re
 import {
   LEGACY_ACCOUNTS, PATH, PATTERN, pathFor, screenAt, vizPath, type Screen,
 } from "./route";
-import AppShell, { visibleNavItems, type NavItem } from "./AppShell";
+import AppShell, { type NavItem } from "./AppShell";
 import { SetupChecklist } from "./SetupChecklist";
 import { TrialNotice } from "./TrialNotice";
 import { SignInCard } from "../SignInCard";
@@ -248,32 +247,6 @@ function useSignupOffer(signedOut: boolean): SignupOffer | null {
     return () => { live = false; };
   }, [signedOut]);
   return offer;
-}
-
-/** Whether this organization's books have actually arrived yet.
- *
- *  `complete` is every *required* onboarding step — a connection, and a pull
- *  that read something — derived server-side from rows on every request rather
- *  than from a stored flag, for the reason `onboarding.py` gives: a "setup
- *  done" column is one more thing that can disagree with reality.
- *
- *  Shares `SetupChecklist`'s query key deliberately, so the two read one answer
- *  and cannot disagree about whether this organization has a book. A second
- *  fetch would also be a second chance to show a nav that contradicts the
- *  panel directly beneath it.
- *
- *  Answered `true` on failure, and that is the safe direction here: an
- *  organization whose checklist will not load should see its whole nav, not a
- *  truncated one. Hiding screens is only defensible when we positively know
- *  there is nothing behind them. */
-function useBooksReady(session: PlatformSession | null): boolean {
-  const { data, isError } = useQuery({
-    queryKey: ["onboarding", session?.organization_id],
-    queryFn: () => papi.onboarding(session!.token),
-    enabled: !!session,
-  });
-  if (!session || isError) return true;
-  return data ? !!data.complete : true;
 }
 
 /** Whether this deployment has a demonstration workspace, asked the same way
@@ -721,7 +694,6 @@ export default function PlatformApp() {
   const signupOffer = useSignupOffer(!session);
   const signupOffered = signupOffer !== null;
   const demoOffered = useDemoOffer(!session);
-  const booksReady = useBooksReady(session);
 
   if (!session) {
     // The landing page is the public front; the two cards are one click behind
@@ -969,21 +941,11 @@ export default function PlatformApp() {
     { key: "settings", label: "Settings", group: "setup" },
   ];
 
-  // Until this organization's books have arrived, the analysis groups are
-  // doors to empty rooms — every screen in them reads persisted trading rows,
-  // and there are none. Showing twenty of them on the first login is how a
-  // product that is not a dashboard introduces itself as one.
-  //
-  // Withheld rather than shown-and-empty, and only while we positively know
-  // there is nothing behind them: `useBooksReady` answers true whenever it
-  // cannot tell. `Decide` and `Setup` stay, which is the whole of what a new
-  // organization can actually do — quote, and finish connecting — and the
-  // checklist directly below says which of the two is next.
-  const shownNavItems = visibleNavItems(navItems, booksReady);
+
 
   return (
     <AppShell
-      items={shownNavItems}
+      items={navItems}
       current={screen}
       userName={session.name}
       roleLabel={roleShort}

@@ -44,10 +44,16 @@ old arrangement by their role, not by their organization's plan, and still is.
 Gating by plan as well conflated a commercial boundary with a confidentiality
 one and only the commercial half was ever doing work here.
 
-Two of the three routes need no cap at all: ``/summary`` and ``/evaluation`` are
-windowed to the trial by construction (``min(now, ends_at)`` in the evaluator),
-so they cannot reach past it however they are called. ``/events`` is the
-unwindowed read, and it is the one that carries the rule.
+All three routes carry the rule, and uniformly. ``/evaluation`` is pinned to the
+trial by construction and could not reach past it however it is called, so the
+cap is redundant there — it is applied anyway because one rule stated once is
+worth more than a route that is safe for a reason the next reader has to
+reconstruct.
+
+``/summary`` genuinely needs it. Its window is no longer the trial: once a trial
+has finished the summary measures a trailing period so a paying customer's
+headline keeps advancing, and without the cap that trailing window would hand a
+lapsed organization exactly the rolling figure the plan is meant to sell.
 """
 from __future__ import annotations
 
@@ -147,7 +153,11 @@ def _empty_reason(gaps: list[dict[str, Any]]) -> Optional[str]:
 @router.get("/summary")
 def summary(principal: Principal = Depends(require_manager_or_owner),
             session: Session = Depends(get_session)) -> dict:
-    """The "What PIE Changed" figures for the live trial window.
+    """The "What PIE Changed" figures for the window this organization is measured over.
+
+    The window is the trial while one is running and a trailing period after it,
+    so the headline keeps advancing for a customer who is paying. It is reported
+    in the payload rather than assumed — see ``summary_window``.
 
     The headline is ATTRIBUTED alone. POTENTIAL and REALIZED come back in their
     own fields and the payload carries the evaluator's own note saying they must
@@ -157,7 +167,9 @@ def summary(principal: Principal = Depends(require_manager_or_owner),
     Passed through unchanged apart from the empty-state sentence. Re-shaping the
     rollup here would put a second opinion about the headline in a router.
     """
-    result = attribution.trial_progress(session, principal.organization_id)
+    result = attribution.value_summary(
+        session, principal.organization_id,
+        readable_until=_readable_until(session, principal.organization_id))
     return {**result,
             "empty_reason": _empty_reason(result.get("evidence_gaps") or [])}
 
@@ -226,6 +238,7 @@ def evaluation(pie_cost: Optional[Decimal] = Query(None, ge=0),
     true — **render that as UNKNOWN, never as 0x**. A default cost here would put
     a return figure nobody entered on a screen somebody signs against.
     """
+    _readable_until(session, principal.organization_id)
     result = attribution.thirty_day_report(
         session, principal.organization_id, pie_cost=pie_cost)
     return {**result,

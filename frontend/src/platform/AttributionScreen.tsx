@@ -542,15 +542,29 @@ function ValueLedger({ session }: { session: PlatformSession }) {
         <LoadingState rows={3} height={110} label="Reading the value ledger…" />
       ) : (
         <>
-          {data.trial && (
+          {/* The window, named. Two figures over different periods look
+              identical on a screen, and while the window was implicitly the
+              trial a frozen headline looked exactly like a live one — which is
+              how a paying customer's value screen sat at their trial month
+              without anyone noticing. The countdown chip appears only while a
+              trial is actually running; after that "day 30 of 30" is a caption
+              on a window that has moved on. */}
+          {data.window && (
             <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: "wrap" }}>
+              <StatusChip label={data.window.label} tone="neutral" />
               <StatusChip
-                label={`Window ${formatDate(data.trial.started_at)} – ${formatDate(data.trial.ends_at)}`}
-                tone="neutral" />
-              <StatusChip label={`Day ${data.trial.days_elapsed}`} tone="info"
-                          tip={`Measured to ${formatDateTime(data.trial.measured_to)}.`} />
-              <StatusChip label={`${data.trial.days_remaining} day(s) left`}
-                          tone="neutral" />
+                label={`${formatDate(data.window.start)} – ${formatDate(data.window.end)}`}
+                tone="neutral"
+                tip={`Measured to ${formatDateTime(data.measured_to ?? data.window.end)}.`} />
+              {data.trial?.is_running && (
+                <StatusChip label={`${data.trial.days_remaining} day(s) left`}
+                            tone="info" />
+              )}
+              {data.window.frozen_at && (
+                <StatusChip
+                  label="Frozen at trial end" tone="warn"
+                  tip="This organization is on the free Quote Desk. Detection has kept running; reading past the trial is what the plan restores." />
+              )}
             </Stack>
           )}
 
@@ -558,13 +572,15 @@ function ValueLedger({ session }: { session: PlatformSession }) {
               screen says so before it says anything favourable. */}
           <EvidenceGaps gaps={gaps} title="What this window could not measure" />
 
-          {/* No trial on record is a different empty state from an empty
-              window, and the two want different answers: one is "wait", the
-              other is "connect your books". The server distinguishes them in
-              `empty_reason`, so the screen shows that instead of a headline
-              made of blanks — a row of "Not measured" tiles would read as a
-              window that was measured and came to nothing. */}
-          {!data.trial ? (
+          {/* Gated on the *window*, not on the trial. It was the trial, and
+              that turned an organization an operator provisioned — no trial
+              row, and never will have one — into a permanent "connect your
+              books", which is a dead end for a book connected a year ago. Only
+              the evaluation report legitimately has no window, and it says so
+              in `empty_reason`; the screen shows that sentence rather than a
+              headline made of blanks, because a row of "Not measured" tiles
+              reads as a window that was measured and came to nothing. */}
+          {!data.window ? (
             <EmptyState
               title="There is no window to measure"
               reason={data.empty_reason

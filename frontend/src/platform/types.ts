@@ -1317,13 +1317,31 @@ export interface EvidenceGap {
   detail: string;
 }
 
+/** The trial's own facts. Separate from the window that was measured, because
+ *  the two are only the same period while the trial is running — and while they
+ *  were one object, a window frozen at a finished trial was indistinguishable
+ *  from a live one. */
 export interface AttributionTrial {
   trial_id: string;
   started_at: string | null;
   ends_at: string | null;
-  measured_to: string | null;
-  days_elapsed: number;
+  /** Only while this is true do the countdown chips mean anything. */
+  is_running: boolean;
   days_remaining: number;
+}
+
+/** The period a summary measured, and what put it there. `TRIAL` while a trial
+ *  frames it (or while a lapsed plan holds the reader there), `RECENT` for the
+ *  trailing window a paying customer's headline advances over. */
+export interface AttributionWindow {
+  basis: "TRIAL" | "RECENT";
+  label: string;
+  start: string | null;
+  end: string | null;
+  days: number;
+  /** Set when the window was cut short by what the plan entitles this
+   *  organization to read, rather than by the clock. */
+  frozen_at: string | null;
 }
 
 /** One (event type × value class) cell of the window. Never added across
@@ -1350,7 +1368,12 @@ export interface AttributionProductivity {
  *  trial on record gets a three-field payload: the trial, a null headline and
  *  the gap that says why. */
 export interface AttributionSummary {
+  /** What was measured. `null` only on the evaluation report, which needs a
+   *  trial and says so rather than drawing a comparison without a "before". */
+  window: AttributionWindow | null;
   trial: AttributionTrial | null;
+  /** The far end of the window, to the second. */
+  measured_to?: string | null;
   /** ATTRIBUTED only. `null` means no detection run is on record — which is
    *  **not** a measured zero, and the screen must not render it as one. */
   attributed_value: MoneyString | null;

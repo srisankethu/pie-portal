@@ -437,7 +437,7 @@ def test_the_headline_never_includes_potential_or_estimated(session, trial):
     quietly folded in to make a renewal look better.
     """
     _seed_ledger(session)
-    progress = ev.trial_progress(session, ORG)
+    progress = ev.value_summary(session, ORG)
 
     assert progress["attributed_value"] == ATTRIBUTED_AMOUNT
     assert progress["attributed_events"] == 1
@@ -483,13 +483,13 @@ def test_an_empty_window_and_a_measured_zero_stay_distinguishable(session, trial
     Collapsing them would turn "we have not looked" into "we looked and it was
     worth nothing".
     """
-    empty = ev.trial_progress(session, ORG)
+    empty = ev.value_summary(session, ORG)
     assert empty["attributed_value"] is None
     assert ev.NO_EVENTS_RECORDED in {g["reason"] for g in empty["evidence_gaps"]}
 
     # Now the window holds evidence — just none of it ATTRIBUTED.
     led.record(session, ORG, _draft(ValueClass.POTENTIAL, POTENTIAL_AMOUNT))
-    measured = ev.trial_progress(session, ORG)
+    measured = ev.value_summary(session, ORG)
 
     assert measured["attributed_value"] is not None
     assert measured["attributed_value"] == Decimal("0")
@@ -619,7 +619,7 @@ def test_every_unmeasurable_event_type_is_a_named_gap_not_a_measured_zero(
     _protected_line(session, quote_id="q_flag")
     _run_and_record(session)
 
-    progress = ev.trial_progress(session, ORG)
+    progress = ev.value_summary(session, ORG)
     measured = {row["event_type"] for row in progress["by_event_type"]}
     named = {gap["subject"] for gap in progress["evidence_gaps"]}
 
@@ -661,6 +661,127 @@ def test_the_named_gaps_survive_to_the_screen(client):
                        ValueEventType.PROCUREMENT_OPPORTUNITY,
                        ValueEventType.EQUIVALENT_SAVING):
         assert event_type.value in named
+
+
+# ── the window the summary measures ──────────────────────────────────────────
+# The summary used to be the trial window and only ever the trial window, while
+# the screen used it as the general "what PIE changed" figure. So a customer's
+# headline froze on the day their trial ended: value attributed months later
+# fell outside the window and the screen reported the "no detection run is on
+# record" gap — not a measured zero — while the ledger held the events. These
+# pin the window to the question being asked rather than to the trial.
+def _org_with_a_recent_event(s, org: str, *, plan: str, trial: bool,
+                             amount: Decimal = Decimal("50000.0000")):
+    """An organization whose only value event is from *yesterday*.
+
+    Yesterday is the point: it is comfortably outside any trial that ended
+    months ago, so a summary still pinned to the trial cannot see it and the
+    assertion fails for the reason it names.
+    """
+    s.add(models.Organization(organization_id=org, name=org, plan=plan))
+    s.flush()
+    now = clock.now()
+    if trial:
+        ended = now - timedelta(days=90)
+        s.add(models.IntelligenceTrial(
+            organization_id=org, zoho_organization_id=f"z{org}",
+            started_at=ended - timedelta(days=30), ends_at=ended))
+        s.flush()
+    led.record(s, org, led.ValueEventDraft(
+        event_type=ValueEventType.MARGIN_PROTECTED,
+        value_class=ValueClass.ATTRIBUTED,
+        event_key=led.event_key(org, ValueEventType.MARGIN_PROTECTED,
+                                ValueClass.ATTRIBUTED, ("q_recent", "L1")),
+        amount=amount, basis={"formula": "recent"},
+        evidence_refs=[{"record_type": "quote_decision", "record_id": "qd_recent",
+                        "quote_id": "q_recent"}],
+        occurred_at=now - timedelta(days=1),
+        thresholds_version=THRESHOLDS_VERSION))
+    s.flush()
+
+
+def test_a_paying_customers_headline_advances_past_their_trial(session):
+    """The defect this rename exists to fix.
+
+    An organization on the intelligence plan whose trial ended ninety days ago,
+    with value attributed yesterday. Pinned to the trial this reported ``None``
+    and "no detection run has been recorded" — the platform telling a paying
+    customer it had found nothing, while the ledger held ₹50,000.
+    """
+    _org_with_a_recent_event(session, "org_paying",
+                             plan=PlanTier.INTELLIGENCE.value, trial=True)
+    result = ev.value_summary(session, "org_paying")
+
+    assert result["attributed_value"] == Decimal("50000.0000")
+    assert result["window"]["basis"] == ev.WINDOW_RECENT
+    reasons = {g["reason"] for g in result["evidence_gaps"]}
+    assert ev.NO_EVENTS_RECORDED not in reasons
+
+
+def test_an_organization_that_never_had_a_trial_is_measured_not_refused(session):
+    """A tenant an operator provisioned has no trial row and never will.
+
+    It used to get "connect a Zoho company to start one", which is a dead end
+    for a book that has been connected for a year.
+    """
+    _org_with_a_recent_event(session, "org_no_trial",
+                             plan=PlanTier.PLATFORM.value, trial=False)
+    result = ev.value_summary(session, "org_no_trial")
+
+    assert result["trial"] is None
+    assert result["attributed_value"] == Decimal("50000.0000")
+    reasons = {g["reason"] for g in result["evidence_gaps"]}
+    assert ev.NO_TRIAL_ON_RECORD not in reasons
+
+
+def test_a_lapsed_plan_keeps_the_trial_window_rather_than_a_trailing_one(session):
+    """Where the two rules meet.
+
+    A trailing window capped by entitlement would be capped to nothing and
+    report an emptiness that is an entitlement, not a fact about the business.
+    The window a lapsed organization may see is the one it is shown.
+    """
+    _org_with_a_recent_event(session, "org_lapsed_w",
+                             plan=PlanTier.FREE.value, trial=True)
+    trial = ev.current_trial(session, "org_lapsed_w")
+    result = ev.value_summary(session, "org_lapsed_w",
+                              readable_until=clock.aware(trial.ends_at))
+
+    assert result["window"]["basis"] == ev.WINDOW_TRIAL
+    assert result["window"]["frozen_at"] is not None
+    assert result["attributed_value"] is None, \
+        "yesterday's event is past what this plan entitles them to read"
+
+
+def test_the_evaluation_report_stays_pinned_to_the_trial(session):
+    """The summary moved; the before-and-after must not follow it.
+
+    A report that measured a trailing window would compare the pre-trial
+    baseline against a period the trial had nothing to do with.
+    """
+    _org_with_a_recent_event(session, "org_report",
+                             plan=PlanTier.INTELLIGENCE.value, trial=True)
+    report = ev.thirty_day_report(session, "org_report")
+
+    assert report["window"]["basis"] == ev.WINDOW_TRIAL
+    assert report["attributed_value"] is None, \
+        "an event from yesterday is outside a trial that ended 90 days ago"
+
+
+def test_the_summary_says_which_window_it_measured(session):
+    """Carried, never implied.
+
+    Two figures over different periods look identical on a screen, and the one
+    that froze looked exactly like the one that was live — which is why the
+    defect survived as long as it did.
+    """
+    _org_with_a_recent_event(session, "org_window",
+                             plan=PlanTier.INTELLIGENCE.value, trial=False)
+    window = ev.value_summary(session, "org_window")["window"]
+
+    assert window["basis"] in (ev.WINDOW_TRIAL, ev.WINDOW_RECENT)
+    assert window["start"] and window["end"] and window["label"]
+    assert window["days"] == ev.SUMMARY_DAYS
 
 
 # ── the window a lapsed plan keeps ───────────────────────────────────────────
@@ -960,7 +1081,7 @@ def _attributed_total(s) -> Decimal:
     this helper made, quietly turning a corrected ₹3,000 claim into ₹6,000 by
     adding the two measurements it replaced.
     """
-    total = ev.trial_progress(s, ORG)["attributed_value"]
+    total = ev.value_summary(s, ORG)["attributed_value"]
     return Decimal(0) if total is None else Decimal(str(total))
 
 
@@ -1249,7 +1370,7 @@ def test_a_class_the_system_cannot_produce_never_reaches_the_breakdown(session, 
     been deleted to keep it out.
     """
     led.record(session, ORG, _draft(ValueClass.ESTIMATED, ESTIMATED_AMOUNT))
-    progress = ev.trial_progress(session, ORG)
+    progress = ev.value_summary(session, ORG)
 
     classes = {row["value_class"] for row in progress["by_event_type"]}
     assert ValueClass.ESTIMATED.value not in classes, (

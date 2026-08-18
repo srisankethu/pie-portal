@@ -56,6 +56,14 @@ class RestTransport:
         self._last_call_at = 0.0
         #: Observable so a sync run can report what the pull actually cost.
         self.calls = 0
+        # Re-check the target host is public just before we fetch it — the
+        # fetch-time half of the SSRF guard, closing a base URL that was public
+        # when it was stored and answers an internal address now. Only when we
+        # own the socket: an injected transport (a test double) has none to
+        # protect, and running a real DNS lookup for it would only make the
+        # unit tests non-hermetic.
+        from ..url_safety import FetchGuard
+        self._fetch_guard = FetchGuard() if http is None else None
 
     # ── hooks ────────────────────────────────────────────────────────────────
     def _auth_headers(self) -> dict[str, str]:
@@ -118,6 +126,14 @@ class RestTransport:
         """
         verb = method.upper()
         may_replay = (verb in self._REPLAYABLE) if replayable is None else replayable
+
+        if self._fetch_guard is not None:
+            from ..url_safety import UnsafeSourceUrl
+
+            try:
+                self._fetch_guard.check(url, field=f"{self.system} URL")
+            except UnsafeSourceUrl as e:
+                raise IngestionError(str(e)) from e
 
         last: Optional[str] = None
         throttled = False

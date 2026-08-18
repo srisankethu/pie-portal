@@ -133,3 +133,63 @@ def test_api_refuses_an_erp_connection_aimed_at_loopback(client):
                    "password": "p", "company_id": "PIE"}})
     assert r.status_code == 400, r.text
 
+
+
+# ── fetch-time guard: DNS rebinding / repointed hosts ────────────────────────
+#
+# Storage validation proves a base URL was public when it was saved. These pin
+# the second half of the guard: a host that answers an internal address at the
+# moment of the request is refused before egress, and the check is memoised so a
+# long pull does not re-resolve on every call.
+from app.ingestion.errors import IngestionError                    # noqa: E402
+from app.ingestion.erp.transport import RestTransport              # noqa: E402
+from app.ingestion.url_safety import FetchGuard                    # noqa: E402
+from app.ingestion import url_safety as _url_safety                # noqa: E402
+from app.ingestion.zoho_client import (ZohoCredentials, ZohoError,  # noqa: E402
+                                       ZohoTransport)
+
+
+def test_a_host_that_flips_to_internal_at_fetch_time_is_refused():
+    def public(host, port):
+        return ["93.184.216.34"]                 # stored public
+
+    def rebind(host, port):
+        return ["169.254.169.254"]               # answers metadata now
+
+    url = "https://books.attacker.example/books/v3"
+    require_safe_source_url(url, resolver=public)                   # save: allowed
+    with pytest.raises(UnsafeSourceUrl):
+        require_safe_source_url(url, resolver=rebind)               # fetch: refused
+
+
+def test_the_fetch_guard_resolves_each_host_once():
+    seen = {"n": 0}
+
+    def counting(host, port):
+        seen["n"] += 1
+        return ["8.8.8.8"]
+
+    guard = FetchGuard(resolver=counting)
+    for _ in range(5):
+        guard.check("https://api.example.com/books/v3/x")
+    assert seen["n"] == 1
+
+
+def test_erp_transport_refuses_egress_to_an_internal_host(monkeypatch):
+    monkeypatch.setattr(_url_safety, "_default_resolver",
+                        lambda h, p: ["10.1.2.3"])
+    transport = RestTransport()                  # http=None → guards its own egress
+    with pytest.raises(IngestionError):
+        transport.get("https://p21.example/records")
+
+
+def test_zoho_transport_refuses_egress_to_an_internal_host(monkeypatch):
+    monkeypatch.setattr(_url_safety, "_default_resolver",
+                        lambda h, p: ["127.0.0.1"])
+    creds = ZohoCredentials(
+        organization_id="1", client_id="c", client_secret="s", refresh_token="r",
+        accounts_base="https://accounts.zoho.in",
+        api_base="https://books.attacker.example/books/v3")
+    transport = ZohoTransport(credentials=creds)  # http=None → guards its own egress
+    with pytest.raises(ZohoError):
+        transport._request("GET", "contacts")

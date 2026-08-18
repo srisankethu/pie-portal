@@ -2254,6 +2254,14 @@ class TenantKey(Base):
     destroyed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     destroyed_by_user_id: Mapped[Optional[str]] = mapped_column(String(64))
     destroy_reason: Mapped[Optional[str]] = mapped_column(String(512))
+    # Set when a key that could no longer be unwrapped was replaced with a
+    # fresh one (``keys.reissue``). Recorded for the same reason the
+    # destruction tombstone is: replacing a key makes everything written under
+    # the old one permanently unreadable, and an operation with that
+    # consequence must not be inferable only from a shell history.
+    reissued_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    reissued_by_user_id: Mapped[Optional[str]] = mapped_column(String(64))
+    reissue_reason: Mapped[Optional[str]] = mapped_column(String(512))
 
 
 class NameVaultEntry(Base):

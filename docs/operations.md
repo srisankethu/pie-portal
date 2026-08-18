@@ -23,7 +23,7 @@ always wins over it**. All values have defaults that work for local development.
 |---|---|---|
 | `APP_ENV` | `development` | `production` enables the hard guards below. |
 | `AUTH_SECRET` | `dev-secret-change-me` | Signs bearer tokens. **The app refuses to boot in production while this is the default** — the value is public, so a stale default would let anyone forge a token for any user and role. |
-| `CREDENTIAL_ENCRYPTION_KEY` | *(fixed dev key)* | Encrypts every organization's Zoho client secret and refresh token at rest (see `app/crypto.py`). **The app refuses to boot in production while this is the default** — same reasoning as `AUTH_SECRET`: the value is public. Generate one with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. Rotating it makes every stored connection undecryptable — reconnect them afterward. |
+| `CREDENTIAL_ENCRYPTION_KEY` | *(fixed dev key)* | Encrypts every organization's Zoho client secret and refresh token at rest (see `app/crypto.py`). **The app refuses to boot in production while this is the default** — same reasoning as `AUTH_SECRET`: the value is public. Generate one with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. Rotating it makes every stored connection undecryptable — reconnect them afterward. It also unreads every organization's data key, and reconnecting does **not** fix that half: see [the runbook entry](#could-not-unwrap-this-organizations-data-key) before rotating. |
 
 ### Database
 
@@ -513,6 +513,38 @@ The database holds two very different kinds of data:
 
 Standard `pg_dump` on the Postgres database covers both. Restore, then re-run
 the sync to bring the read model current.
+
+### "Could not unwrap this organization's data key"
+
+A sync that reads the customers and items, then stops before the first month of
+documents with `KeyUnavailable`, has a tenant data key that no longer opens
+under the current `CREDENTIAL_ENCRYPTION_KEY`. The pull no longer dies on it —
+it records an unresolved item and reads the documents — but the encrypted copy
+of names is not being written until this is settled.
+
+Two states look identical and have **opposite** remedies. Find out which one
+this is before doing anything:
+
+```bash
+cd backend && python3 -m app.trust.rekey
+```
+
+It reports whether the stored connection credentials still decrypt. They are
+encrypted under the same master key, so:
+
+| What it says | What happened | What to do |
+|---|---|---|
+| Credentials **decrypt** | The master key in force is the right one; the key row is older than a rotation the rest of the database already went through — typically an organization connected under the dev default, then given a real key, then reconnected. | The old value is what would read it. If it still exists, restore it and re-run a sync. If it does not, `python3 -m app.trust.rekey --reissue --reason "…"` issues a fresh key. |
+| Credentials do **not** decrypt | `CREDENTIAL_ENCRYPTION_KEY` itself changed. | Restore the previous value — nothing is lost. Do not reissue; the tool refuses anyway. |
+
+Reissuing is irreversible and costs exactly what was written under the old key.
+The name vault is rebuilt by the next sync (the names are also held plaintext
+as a display cache), so the real cost is the model-payload log: what was sent to
+an AI provider before the reissue can never be read again. The tool prints those
+row counts before it acts, and the reason is recorded on the key row.
+
+It will not touch a key that was **destroyed** — that is an erasure, and it
+stays irreversible.
 
 ### Cost control
 

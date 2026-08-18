@@ -1151,11 +1151,46 @@ function AddConnection({
  * that reason: the thing that changes the form has to change this too, and the
  * cheapest way to guarantee it is to leave them nowhere to disagree.
  */
-function Access({ entry }: { entry: ConnectorCatalogEntry }) {
+/** One pasteable scope string, with its own Copy button and its own label.
+ *
+ * A component rather than the markup twice: the connector offers two strings —
+ * everything, and the minimum that still runs a sync — and the "Copied" flag
+ * belongs to whichever button was actually pressed. One shared flag would light
+ * up under both.
+ */
+function ScopeString({
+  value,
+  label,
+  connectorKey,
+}: {
+  value: string;
+  label: string;
+  connectorKey: string;
+}) {
   const [copied, setCopied] = useState(false);
   // Reset when the tabs move: "Copied" left standing under a different
   // system's list claims something that was never put on the clipboard.
-  useEffect(() => setCopied(false), [entry.key]);
+  useEffect(() => setCopied(false), [connectorKey]);
+  if (!value) return null;
+  return (
+    <div className="cx-scopestring">
+      <span className="st-help">{label}</span>
+      <code>{value}</code>
+      <Button
+        variant="text" size="small"
+        onClick={() => {
+          navigator.clipboard?.writeText(value);
+          setCopied(true);
+          window.setTimeout(() => setCopied(false), 2000);
+        }}
+      >
+        {copied ? "Copied" : "Copy"}
+      </Button>
+    </div>
+  );
+}
+
+function Access({ entry }: { entry: ConnectorCatalogEntry }) {
   if (entry.permissions.length === 0) return null;
   return (
     <div className="cx-access">
@@ -1181,22 +1216,19 @@ function Access({ entry }: { entry: ConnectorCatalogEntry }) {
         </table>
       </Box>
       {/* Only where the system takes one. Every ERP in the registry is clicked
-          rather than typed, and an empty box to copy would be worse than none. */}
-      {entry.permission_string && (
-        <div className="cx-scopestring">
-          <code>{entry.permission_string}</code>
-          <Button
-            variant="text" size="small"
-            onClick={() => {
-              navigator.clipboard?.writeText(entry.permission_string);
-              setCopied(true);
-              window.setTimeout(() => setCopied(false), 2000);
-            }}
-          >
-            {copied ? "Copied" : "Copy"}
-          </Button>
-        </div>
-      )}
+          rather than typed, and an empty box to copy would be worse than none.
+          The full set leads, and the minimum sits under it — that order is the
+          recommendation, and it is the one the note above argues for. */}
+      <ScopeString
+        value={entry.permission_string}
+        label="Everything this platform reads — recommended"
+        connectorKey={entry.key}
+      />
+      <ScopeString
+        value={entry.permission_string_minimum}
+        label="The least that still runs a sync"
+        connectorKey={entry.key}
+      />
     </div>
   );
 }

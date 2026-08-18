@@ -94,11 +94,11 @@ class _Router(APIRouter):
 router = _Router(prefix="/api/v1/connections", tags=["connections"])
 
 
-#: How far back a first pull reads when nobody has said otherwise. Eighteen
-#: months gives the detectors a full recent window, a full comparison window,
-#: and room above the six-month history floor — so the first sync produces an
-#: analysis rather than a screen full of "not enough history".
-DEFAULT_HISTORY_MONTHS = 18
+#: How far back a first pull reads when nobody has said otherwise. Owned by
+#: ``ingestion.connections`` because the onboarding checklist states the same
+#: figure to a new owner in words; re-exported under the name this module has
+#: always used it by.
+DEFAULT_HISTORY_MONTHS = conn.DEFAULT_HISTORY_MONTHS
 
 
 def _default_since() -> date:
@@ -714,6 +714,11 @@ def _zoho_catalog_entry() -> dict:
         "permissions": [p.to_dict() for p in conn.REQUIRED_SCOPES],
         "permission_note": conn.ZOHO_PERMISSION_NOTE,
         "permission_string": conn.SCOPE_STRING,
+        # The subset that still runs a sync, for the owner whose policy is to
+        # grant the least that works. Served beside the full set rather than
+        # instead of it: the screen leads with everything, because a scope
+        # ungranted fails quietly and later.
+        "permission_string_minimum": conn.MINIMUM_SCOPE_STRING,
     }
 
 
@@ -749,6 +754,11 @@ def connector_catalog(
                 "permissions": [p.to_dict() for p in spec.permissions],
                 "permission_note": spec.permission_note,
                 "permission_string": spec.permission_string,
+                # Empty for every registered ERP, because access in each of
+                # their consoles is clicked rather than typed — a system with
+                # no pasteable string has no smaller one either. A connector
+                # that ever gains the first should gain the second with it.
+                "permission_string_minimum": "",
             }
             for spec in erp.catalog()
         ],

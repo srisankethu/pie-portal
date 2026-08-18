@@ -27,6 +27,7 @@ function entry(over: Partial<ConnectorCatalogEntry>): ConnectorCatalogEntry {
     setup_note: "", credential_fields: [], connection_fields: [],
     external_id_field: "company_id", can_discover: false,
     permissions: [], permission_note: "", permission_string: "",
+    permission_string_minimum: "",
     ...over,
   };
 }
@@ -40,7 +41,8 @@ const CATALOG: ConnectorCatalogEntry[] = [
         required: true, reads: ["bills"] },
     ],
     permission_note: "Paste this into the scope field in the Zoho API console.",
-    permission_string: "ZohoBooks.bills.READ",
+    permission_string: "ZohoBooks.bills.READ,ZohoBooks.users.READ",
+    permission_string_minimum: "ZohoBooks.bills.READ",
   }),
   entry({
     key: "netsuite", label: "Oracle NetSuite", company_term: "account",
@@ -87,10 +89,39 @@ describe("ConnectionsPanel — the access list", () => {
     mountPanel();
     expect(await screen.findByText(/What Zoho Books must let it read/))
       .toBeInTheDocument();
-    // Twice, deliberately: once in the list with what it buys, once inside
-    // the string an owner pastes into the Zoho console.
-    expect(screen.getAllByText("ZohoBooks.bills.READ")).toHaveLength(2);
-    expect(screen.getByRole("button", { name: "Copy" })).toBeInTheDocument();
+    // Three times, deliberately: once in the list with what it buys, and once
+    // in each of the two strings an owner can paste into the Zoho console —
+    // the full grant and the minimum. A required scope appears in both.
+    expect(screen.getAllByText(/^ZohoBooks\.bills\.READ/)).toHaveLength(3);
+    expect(screen.getAllByRole("button", { name: "Copy" })).toHaveLength(2);
+  });
+
+  it("offers the minimum grant beside the full one, each copyable on its own",
+     async () => {
+    // `Permission.required` already separates two different days — without a
+    // required grant no sync runs at all, without an optional one a screen
+    // stays empty. Until both strings existed, an owner whose policy is to
+    // grant the least that works had to assemble it by hand from the table.
+    mountPanel();
+    expect(await screen.findByText(/Everything this platform reads/))
+      .toBeInTheDocument();
+    expect(screen.getByText(/The least that still runs a sync/))
+      .toBeInTheDocument();
+
+    // The full set leads, and it is the one that carries the optional scope.
+    expect(screen.getByText("ZohoBooks.bills.READ,ZohoBooks.users.READ"))
+      .toBeInTheDocument();
+
+    // Two buttons, two clipboards: one shared "Copied" flag would light up
+    // under both and claim something that was never copied.
+    const writeText = vi.fn();
+    Object.assign(navigator, { clipboard: { writeText } });
+    const [full, minimum] = screen.getAllByRole("button", { name: "Copy" });
+
+    fireEvent.click(minimum);
+    expect(writeText).toHaveBeenCalledWith("ZohoBooks.bills.READ");
+    await waitFor(() => expect(minimum).toHaveTextContent("Copied"));
+    expect(full).toHaveTextContent("Copy");
   });
 
   it("swaps the whole list when another system is picked", async () => {

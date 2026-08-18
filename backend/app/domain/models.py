@@ -35,6 +35,7 @@ from sqlalchemy import (
     UniqueConstraint,
     text,
 )
+from sqlalchemy.ext.mutable import MutableDict
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from ..db import Base
@@ -83,7 +84,28 @@ class Organization(Base):
     # more as a row an operator can list (``python -m app.entitlements
     # requests``) than as an email nobody kept. NULL means never asked.
     requested_plan: Mapped[Optional[str]] = mapped_column(String(32))
-    config: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    # ``MutableDict``, not a bare ``JSON``, and the wrapper is the whole point.
+    # SQLAlchemy notices a change by *assignment*: ``org.config = {...}`` marks
+    # the row dirty, ``org.config["k"] = v`` does not, so an in-place write is
+    # flushed as nothing at all and the next read returns what was there before.
+    # Silently — no error, no warning, a commit that reports success.
+    #
+    # Every writer today happens to assign a whole new dict (``ai/byok.py``,
+    # ``routers/data_status.py``), so there is no live defect here. This is the
+    # guardrail rather than the repair: a column read and written by four
+    # modules across three layers will eventually meet somebody who reaches for
+    # the obvious idiom, and the failure it produces is invisible.
+    #
+    # The column type is unchanged — this is a Python-side wrapper, so it needs
+    # no migration and produces no schema drift.
+    #
+    # What it does **not** cover, stated because a guardrail believed to be
+    # wider than it is, is worse than none: it tracks writes to *this* dict's
+    # own keys. ``org.config["a"]["b"] = 1`` mutates a plain nested dict and is
+    # still lost — verified, not assumed. Nothing here nests today; a writer who
+    # needs to should assign the whole sub-dict back.
+    config: Mapped[dict[str, Any]] = mapped_column(
+        MutableDict.as_mutable(JSON), default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
@@ -146,7 +168,8 @@ class ZohoCredential(Base):
     # object of the connector's secret fields; ``config`` carries the values
     # that are identifying rather than secret. Zoho rows leave both NULL.
     secrets_encrypted: Mapped[Optional[str]] = mapped_column(String(4096))
-    config: Mapped[Optional[dict]] = mapped_column(JSON)
+    # ``MutableDict`` for the reason ``Organization.config`` gives at length.
+    config: Mapped[Optional[dict]] = mapped_column(MutableDict.as_mutable(JSON))
 
     # Other platform organizations allowed to connect through this grant.
     # Explicit rather than implicit: a credential reachable by every tenant in
@@ -232,7 +255,8 @@ class ZohoConnection(Base):
     # Non-Zoho connectors only: per-company settings the credential does not
     # carry — a Business Central company GUID is here, its tenant id is on the
     # credential. Shapes are declared per connector in ``ingestion/erp``.
-    config: Mapped[Optional[dict]] = mapped_column(JSON)
+    # ``MutableDict`` for the reason ``Organization.config`` gives at length.
+    config: Mapped[Optional[dict]] = mapped_column(MutableDict.as_mutable(JSON))
 
     # Legacy inline credentials. Rows created before credentials were separated
     # keep working from these until the migration backfills them; nothing new is

@@ -1083,6 +1083,10 @@ export interface ConnectorCatalogEntry {
   /** The grants as one pasteable string, for the systems that take one (Zoho's
    *  scope field). Empty where access is clicked rather than typed. */
   permission_string: string;
+  /** The subset of that string without which no sync runs at all. Offered
+   *  beside the full set, never instead of it: a scope ungranted does not fail
+   *  loudly, it fails quietly and later. Empty wherever `permission_string` is. */
+  permission_string_minimum: string;
 }
 
 /** One grant a connector's sign-in needs, and what the platform loses without it. */

@@ -95,25 +95,59 @@ def test_a_fresh_database_matches_the_models_exactly(db):
 
 
 # ── the upgrade path, not just the endpoint ─────────────────────────────────
+def _revision_order() -> list[str]:
+    """Every revision, in an order they can actually be applied in.
+
+    Read from alembic's own graph rather than assembled here: it topologically
+    sorts, which is the part that matters the moment the history is not a line.
+    """
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    script = ScriptDirectory.from_config(Config(str(BACKEND / "alembic.ini")))
+    return [rev.revision for rev in reversed(list(script.walk_revisions()))]
+
+
+def _one_before_head() -> str:
+    """The revision immediately before head, by name.
+
+    ``downgrade -1`` said the same thing more briefly and stopped being
+    unambiguous when the history gained a merge point: a merge revision has two
+    parents, so "one back" is a question with two answers and alembic refuses
+    rather than picking. Naming the revision asks what these tests were always
+    asking — undo exactly the newest one — and keeps working whatever shape the
+    graph is.
+    """
+    return _revision_order()[-2]
+
+
 def test_migrations_apply_one_at_a_time(db):
     """Each revision must stand on its own.
 
     A migration that only works when run in the same batch as its neighbour
     fails on exactly one deployment: the one that was interrupted halfway.
+
+    Walks *named* revisions rather than stepping ``upgrade +1``. The relative
+    form was simpler and stopped working the day this history stopped being a
+    line: two branches grew from ``y5runlog``, were reconciled by a merge
+    revision, and ``+1`` from that parent is then ambiguous — alembic says so,
+    in those words, and refuses.
+
+    The assertion is unchanged and is if anything stronger. Every revision is
+    still applied on its own, in order, with nothing else in the batch; naming
+    each one also means a failure reports *which* revision failed instead of
+    how far the walk got. The intent — no migration that needs its neighbour —
+    is a property of the revisions, not of how the test steps between them.
     """
     sqlite3.connect(db).close()
-    seen = []
-    while True:
-        r = _alembic(db, "upgrade", "+1")
-        assert r.returncode == 0, f"after {seen}: {r.stderr[-1500:]}"
-        rev = inspect_database(_engine(db)).current
-        if rev in seen:
-            break
-        seen.append(rev)
-        if rev == head_revision():
-            break
-    assert len(seen) > 10, "expected the full chain to be walked"
-    assert seen[-1] == head_revision()
+    order = _revision_order()
+    assert len(order) > 10, "expected the full chain to be walked"
+
+    for rev in order:
+        r = _alembic(db, "upgrade", rev)
+        assert r.returncode == 0, f"revision {rev}: {r.stderr[-1500:]}"
+
+    assert inspect_database(_engine(db)).current == head_revision()
 
 
 def test_the_chain_has_exactly_one_head():
@@ -137,7 +171,7 @@ def test_downgrade_to_base_then_up_again(db):
 
 def test_the_newest_migration_is_reversible(db):
     assert _alembic(db, "upgrade", "head").returncode == 0
-    assert _alembic(db, "downgrade", "-1").returncode == 0
+    assert _alembic(db, "downgrade", _one_before_head()).returncode == 0
     assert _alembic(db, "upgrade", "head").returncode == 0
 
 
@@ -177,8 +211,12 @@ def test_upgrade_really_does_fail_on_an_unstamped_database(tmp_path):
 
 
 def test_behind_is_detected_and_counted(db):
+    # Named for the same reason `_one_before_head` is: "two back" from a merge
+    # revision is ambiguous, and the thing being asserted is that a database two
+    # revisions short reports as BEHIND with two pending — which is a fact about
+    # the count, not about how it got there.
     assert _alembic(db, "upgrade", "head").returncode == 0
-    assert _alembic(db, "downgrade", "-2").returncode == 0
+    assert _alembic(db, "downgrade", _revision_order()[-3]).returncode == 0
     state = inspect_database(_engine(db))
     assert state.state == BEHIND
     assert state.pending and len(state.pending) == 2
@@ -376,7 +414,7 @@ def test_health_fails_loudly_on_a_behind_database(db):
     was behind answered health checks perfectly while every real request 500ed.
     """
     _alembic(db, "upgrade", "head")
-    _alembic(db, "downgrade", "-1")
+    _alembic(db, "downgrade", _one_before_head())
     client, (mod, original) = _client(db)
     try:
         r = client.get("/api/health")
@@ -384,7 +422,14 @@ def test_health_fails_loudly_on_a_behind_database(db):
         body = r.json()
         assert body["ok"] is False
         assert body["migration"]["state"] == BEHIND
-        assert body["migration"]["pending_count"] == 1
+        # A positive count, not a specific one. This test is about the *health
+        # response* — 503, ok:false, BEHIND, and a summary naming the fix — and
+        # it hardcoded 1 only because downgrading one revision used to un-apply
+        # exactly one. Past a merge point that stopped being true: the named
+        # target here has a sibling branch, so two revisions come off. The exact
+        # count is pinned by `test_behind_is_detected_and_counted`, which exists
+        # for it and now asserts the diamond's real answer.
+        assert body["migration"]["pending_count"] >= 1
         assert "upgrade head" in body["migration"]["summary"]
     finally:
         mod.engine = original

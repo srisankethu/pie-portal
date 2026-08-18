@@ -149,29 +149,10 @@ def inspect_database(engine: Engine) -> MigrationState:
 
     try:
         script = _script_directory()
-        # Everything between where this database is and where it should be.
-        #
-        # ``iterate_revisions(head, current)`` walks *one* path back, which is
-        # the right answer for a linear history and an undercount the moment
-        # there is a merge point: a database sitting on one branch of a diamond
-        # is told about the revisions on its own path and not about the sibling
-        # branch, which it must also apply. The first merge revision in this
-        # project made ``/api/health`` report one pending migration where two
-        # were outstanding.
-        #
-        # The set difference is the honest question — *which revisions has this
-        # database not run* — and it does not care what shape the graph is.
-        # Ancestors are resolved from the head rather than assumed, so a stamp
-        # from a branch this code does not contain still raises and is reported
-        # as UNKNOWN_REV below, exactly as before.
-        reachable = {rev.revision
-                     for rev in script.iterate_revisions(head, "base")}
-        applied = {rev.revision
-                   for rev in script.iterate_revisions(current, "base")}
-        # Ordered oldest-first, in an order they can actually be applied in.
-        pending = tuple(rev.revision
-                        for rev in reversed(list(script.walk_revisions()))
-                        if rev.revision in reachable - applied)
+        pending = tuple(reversed([
+            rev.revision for rev in script.iterate_revisions(head, current)
+            if rev.revision != current
+        ]))
     except Exception:  # noqa: BLE001 — the revision is not in this graph
         return MigrationState(state=UNKNOWN_REV, current=current, head=head,
                               tables=len(tables))

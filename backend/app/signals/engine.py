@@ -65,8 +65,13 @@ def compute_drafts(snapshot: Snapshot, th: SignalThresholds,
             for d in coverage.drafts]
 
 
-def _thresholds_for_org(session: Session, organization_id: str) -> SignalThresholds:
+def thresholds_for_org(session: Session, organization_id: str) -> SignalThresholds:
     """Environment detector thresholds, with the owner-editable margin drop applied.
+
+    Public because ``retrospective`` needs the same thresholds the queue runs on.
+    Two resolutions would mean a look-back that judged the book against a
+    different margin-drop threshold from the one raising the signals, and the
+    difference would show as a retrospective disagreeing with the queue.
 
     Imported here rather than at module scope: ``commercial.quote_service`` imports
     ``signals.base``, so a module-level import of ``commercial`` from this package
@@ -99,7 +104,7 @@ def run_detectors(session: Session, organization_id: str,
     passing one is a deliberate act, and tests and one-off scripts rely on it
     meaning what it says.
     """
-    th = thresholds if thresholds is not None else _thresholds_for_org(
+    th = thresholds if thresholds is not None else thresholds_for_org(
         session, organization_id)
     snapshot = load_snapshot(session, organization_id)
     drafts = compute_drafts(snapshot, th, as_of)

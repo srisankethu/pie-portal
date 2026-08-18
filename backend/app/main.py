@@ -23,7 +23,8 @@ from .routers import (accounts, admin, ai_settings, approvals, attribution,
                       commercial, connections, data_status,
                       decisions, entitlements, identity, internal,
                       onboarding, outcomes, platform_auth, quote,
-                      insight, quote_intelligence, quote_support, trust)
+                      insight, quote_intelligence, quote_support,
+                      retrospective, trust)
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("pie_portal")
@@ -259,6 +260,12 @@ app.include_router(identity.router)
 app.include_router(connections.router)
 app.include_router(trust.router)
 app.include_router(insight.router,
+                   dependencies=[Depends(plan.require_feature("intelligence"))])
+# The first-run look-back: what a newly connected book already contains, and how
+# much of it the detectors could judge. Gated with the queue whose detectors it
+# runs — and the reader it exists for has that plan, because connecting books
+# starts the free month.
+app.include_router(retrospective.router,
                    dependencies=[Depends(plan.require_feature("intelligence"))])
 # What the intelligence layer was worth, measured. **Deliberately not gated
 # here**, unlike every other intelligence surface, and the exception is argued in

@@ -70,6 +70,7 @@ import GavelOutlined from "@mui/icons-material/GavelOutlined";
 import ShieldOutlined from "@mui/icons-material/ShieldOutlined";
 import TuneOutlined from "@mui/icons-material/TuneOutlined";
 import InsightsOutlined from "@mui/icons-material/InsightsOutlined";
+import HistoryOutlined from "@mui/icons-material/HistoryOutlined";
 import ExpandMoreOutlined from "@mui/icons-material/ExpandMoreOutlined";
 
 import { Link as RouterLink } from "react-router-dom";
@@ -122,6 +123,10 @@ const ICON: Partial<Record<Screen, typeof MenuIcon>> = {
   cashCycle: CurrencyExchangeOutlined,
   statutory: GavelOutlined,
 
+  // The before-and-after pair, and the icons say which is which: a clock hand
+  // for what the book already held, an upward line for what the platform
+  // changed about it.
+  retrospective: HistoryOutlined,
   attribution: InsightsOutlined,
 
   data: StorageOutlined,

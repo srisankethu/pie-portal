@@ -1410,6 +1410,54 @@ export interface ValueEventRow {
   created_at: string | null;
 }
 
+/** One reason a detector could not judge a subject, with how many it hit and
+ *  the sentence that names the missing evidence. */
+export interface RetrospectiveWithheld {
+  reason: string;
+  count: number;
+  detail: string;
+}
+
+/** One detector's reach over the book, never its findings alone. */
+export interface RetrospectiveDetector {
+  detector: string;
+  considered: number;
+  found: number;
+  clear: number;
+  judged: number;
+  /** `null` where nothing was considered — no share exists, and a 0% there
+   *  would read as "judged none of many". */
+  judged_share: number | null;
+  withheld: RetrospectiveWithheld[];
+}
+
+/** How far back the record goes, read from the rows rather than from the
+ *  configured history window. */
+export interface RetrospectiveHistory {
+  first_document: string | null;
+  last_document: string | null;
+  months: number | null;
+  sales_lines: number;
+  cost_lines: number;
+  detail: string | null;
+}
+
+/** `GET /api/v1/retrospective`. What a book already held, and how much of it
+ *  could be judged. Coverage before findings — the verdict turns on what was
+ *  examined, never on what turned up. */
+export interface Retrospective {
+  as_of: string | null;
+  history: RetrospectiveHistory;
+  verdict: "UNEXAMINED" | "PARTIAL" | "EXAMINED";
+  verdict_detail: string;
+  considered: number;
+  judged: number;
+  judged_share: number | null;
+  found: number;
+  detectors: RetrospectiveDetector[];
+  thresholds_version: string;
+}
+
 /** `GET /api/attribution/events`. A page of the ledger — never a rollup. */
 export interface AttributionEvents {
   events: ValueEventRow[];

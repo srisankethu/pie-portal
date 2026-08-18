@@ -78,6 +78,8 @@ const TrustScreen = lazy(() =>
   import("./TrustScreen").then((m) => ({ default: m.TrustScreen })));
 const AttributionScreen = lazy(() =>
   import("./AttributionScreen").then((m) => ({ default: m.AttributionScreen })));
+const RetrospectiveScreen = lazy(() =>
+  import("./RetrospectiveScreen").then((m) => ({ default: m.RetrospectiveScreen })));
 const DataScreen = lazy(() =>
   import("./DataScreen").then((m) => ({ default: m.DataScreen })));
 const CustomerCommercial = lazy(() =>
@@ -791,8 +793,13 @@ export default function PlatformApp() {
     // screen with the economics taken out. The owner-only half of it (the
     // report against the pre-trial baseline) is a panel gate inside the screen,
     // not a second nav item.
+    // The look-back and the ledger are a before-and-after pair and sit in that
+    // order: what the book already held, then what the platform changed about
+    // it. Same gate — both are margin-shaped, so both are manager and above.
     ...(ability.can("read", "economics")
-      ? ([{ key: "attribution", label: "What PIE changed",
+      ? ([{ key: "retrospective", label: "What your books hold",
+            group: "understand" },
+          { key: "attribution", label: "What PIE changed",
             group: "understand" }] as NavItem[])
       : []),
 
@@ -1028,6 +1035,11 @@ export default function PlatformApp() {
                 a salesperson cannot read it, which is a closed door rather
                 than a broken link for anyone who follows one. */}
             <Route path={PATH.attribution} element={<AttributionScreen session={session} />} />
+
+            {/* The other half of that pair, and the earlier one: what the book
+                already held when it arrived. Same role gate — a count of margin
+                findings is a count of products whose margin fell. */}
+            <Route path={PATH.retrospective} element={<RetrospectiveScreen session={session} />} />
 
             {/* ── QUOTES ──
                 The Quote Builder itself, not a door in front of it. It used to

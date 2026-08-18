@@ -245,3 +245,116 @@ def test_the_backtest_writes_nothing(session):
     backtest.run(session, ORG, min_margin=0.14)
 
     assert not session.new and not session.dirty and not session.deleted
+
+
+# ── over HTTP ────────────────────────────────────────────────────────────────
+# The replay was reachable only as `python -m app.commercial.backtest`, so the
+# one edit on the settings screen with a blast radius across every future quote
+# was also the one edit nobody could model first. These pin the surface that
+# fixed that, and the role boundary it has to hold to be allowed to exist.
+import pytest  # noqa: E402
+from fastapi import FastAPI  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
+from sqlalchemy.orm import sessionmaker  # noqa: E402
+
+import dbsupport  # noqa: E402
+from app.db import get_session  # noqa: E402
+from app.routers import admin as admin_router  # noqa: E402
+from app.routers import platform_auth  # noqa: E402
+from app.seed import SEED_PASSWORD, ensure_org_and_users  # noqa: E402
+
+SEEDED_ORG = "org_pie"
+OWNER = "s.menon@pie.example"
+MANAGER = "m.rao@pie.example"
+SALESPERSON = "r.nair@pie.example"
+PATH = "/api/v1/admin/margin-policy/backtest"
+
+
+@pytest.fixture()
+def client():
+    engine = dbsupport.fresh_engine()
+    Maker = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False,
+                         future=True)
+    s = Maker()
+    ensure_org_and_users(s)
+    # One line comfortably above a 12% floor and under a 25% one, so raising
+    # the floor has something to gate and the assertions are about the surface
+    # rather than about whether anything was found.
+    s.add(models.QuoteDecision(
+        organization_id=SEEDED_ORG, quote_id="q1", quote_line_id="l1",
+        customer_ref="Acme", product_ref="EM-6", quantity=Decimal("10"),
+        quoted_unit_price=Decimal("115"), unit_cost=Decimal("100"),
+        requires_approval=False, as_of=DAY,
+        thresholds_version=CommercialThresholds().version))
+    s.commit()
+    s.close()
+
+    app = FastAPI()
+    app.include_router(platform_auth.router)
+    # Mirrors main.py: /admin is not plan-gated, and the roles are per route.
+    app.include_router(admin_router.router)
+
+    def _override():
+        sess = Maker()
+        try:
+            yield sess
+            sess.commit()
+        finally:
+            sess.close()
+
+    app.dependency_overrides[get_session] = _override
+    return TestClient(app)
+
+
+def _hdr(c, email):
+    r = c.post("/api/v1/auth/login", json={"email": email, "password": SEED_PASSWORD})
+    assert r.status_code == 200, r.text
+    return {"Authorization": f"Bearer {r.json()['token']}"}
+
+
+def test_an_owner_can_model_a_floor_change_before_making_it(client):
+    r = client.get(PATH, params={"min_margin": 0.25},
+                   headers=_hdr(client, OWNER))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["lines_examined"] == 1
+    assert body["newly_requires_approval"] == 1
+    assert body["policy"]["variant_min_margin"] == 0.25
+    assert body["policy"]["baseline_version"] != body["policy"]["variant_version"]
+
+
+@pytest.mark.parametrize("email", [MANAGER, SALESPERSON])
+def test_nobody_but_the_owner_reads_the_replay(client, email):
+    """Cost falls out of this response in closed form, not by walking it.
+
+    ``shortfall_to_new_floor`` is ``(floor − price) × quantity`` and the caller
+    supplies the margin, so ``cost = (price + shortfall/qty) × (1 − min_margin)``
+    — exact, from a single response. It is correct to serve that to an owner,
+    who may see cost outright, and to nobody else. The manager half of this is
+    a deliberate tightening rather than a §1 requirement: a manager may read
+    economics, but only an owner can change a floor, so only an owner has a use
+    for modelling one.
+    """
+    r = client.get(PATH, params={"min_margin": 0.25}, headers=_hdr(client, email))
+    assert r.status_code == 403
+    assert "shortfall" not in r.text
+
+
+def test_a_margin_passed_as_a_percentage_is_refused_not_replayed(client):
+    """14 for 14% would gate every line in the book and look like a finding.
+
+    The bound is structural rather than a policy choice — the floor is
+    ``cost / (1 - margin)``, so 1.0 divides by zero — and it happens to catch
+    the mistake the CLI help has always warned about.
+    """
+    r = client.get(PATH, params={"min_margin": 14}, headers=_hdr(client, OWNER))
+    assert r.status_code == 422
+
+
+def test_modelling_a_floor_does_not_change_the_saved_policy(client):
+    """The whole point is asking before committing. Asking must not commit."""
+    hdr = _hdr(client, OWNER)
+    before = client.get("/api/v1/admin/policy", headers=hdr)
+    client.get(PATH, params={"min_margin": 0.25}, headers=hdr)
+    after = client.get("/api/v1/admin/policy", headers=hdr)
+    assert before.status_code == 200 and before.json() == after.json()

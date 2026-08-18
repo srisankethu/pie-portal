@@ -1458,6 +1458,30 @@ export interface Retrospective {
   thresholds_version: string;
 }
 
+/** `GET /api/v1/admin/margin-policy/backtest`. What a different approval floor
+ *  would have done to quotes already priced. Owner only — `shortfall` plus the
+ *  margin the caller supplied yields cost in closed form. */
+export interface FloorBacktest {
+  policy: {
+    baseline_version: string;
+    variant_version: string;
+    baseline_min_margin: number;
+    variant_min_margin: number;
+  };
+  lines_examined: number;
+  newly_requires_approval: number;
+  no_longer_requires_approval: number;
+  revenue_newly_gated: MoneyString | null;
+  shortfall_newly_gated: MoneyString | null;
+  /** Lines with no usable cost. Never counted as passing — a line whose
+   *  economics are unknown has an UNKNOWN verdict, not a clean one. */
+  unjudgeable_no_cost_on_record: number;
+  /** Rows priced under a policy this replay cannot rebuild, so their baseline
+   *  verdict does not match what was recorded. */
+  baseline_disagreements: number;
+  by_customer: { name: string; lines: number; revenue: MoneyString | null }[];
+}
+
 /** `GET /api/attribution/events`. A page of the ledger — never a rollup. */
 export interface AttributionEvents {
   events: ValueEventRow[];

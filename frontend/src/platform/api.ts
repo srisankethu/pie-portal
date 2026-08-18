@@ -1,4 +1,4 @@
-import type { AccessReport, Account, AccountItem, AiByokView, AiKeyTestResult, AiMetricsReport, AiReadiness, ApprovalRequest, AttributionEvaluation, AttributionEvents, AttributionSummary, ConnectionCheck, ConnectionsView, ConnectorCatalog, ErpConnectInput, ErpDiscoveredCompany, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, DecisionTrace, DisclosureStatement, Entitlements, EntityKind, ErasureState, FixedThresholds, Identity, IdentityCoverage, IdentityPolicy, IdentitySuggestion, MarginPolicy, MarginPolicyPatch, NewConnectionInput, OnboardingView, OrgPolicy, PayloadsReport, PlatformSession, PlatformUser, QuoteGate, Retrospective, Role, SignupOffer, SkippedRows, StatusFilter, SyncOptions, SyncStartResponse, SyncState, ThresholdView, ZohoConnection, ZohoConnectionInput, ZohoCredential, ZohoVisibleOrg } from "./types";
+import type { AccessReport, Account, AccountItem, AiByokView, AiKeyTestResult, AiMetricsReport, AiReadiness, ApprovalRequest, AttributionEvaluation, AttributionEvents, AttributionSummary, ConnectionCheck, ConnectionsView, ConnectorCatalog, ErpConnectInput, ErpDiscoveredCompany, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, DecisionTrace, DisclosureStatement, Entitlements, EntityKind, ErasureState, FixedThresholds, FloorBacktest, Identity, IdentityCoverage, IdentityPolicy, IdentitySuggestion, MarginPolicy, MarginPolicyPatch, NewConnectionInput, OnboardingView, OrgPolicy, PayloadsReport, PlatformSession, PlatformUser, QuoteGate, Retrospective, Role, SignupOffer, SkippedRows, StatusFilter, SyncOptions, SyncStartResponse, SyncState, ThresholdView, ZohoConnection, ZohoConnectionInput, ZohoCredential, ZohoVisibleOrg } from "./types";
 
 import { setMoneyCurrency } from "../money";
 import { setBusinessTimezone } from "../when";
@@ -588,6 +588,18 @@ export const papi = {
   simulate: (t: string, body: Record<string, unknown>) =>
     req<Record<string, unknown>>("/api/v1/insight/simulate",
       { method: "POST", body: JSON.stringify(body) }, t),
+
+  // ── what a different approval floor would have done ───────────────────────
+  // Owner only, and asked for explicitly rather than on every keystroke: each
+  // call replays every recorded quote line twice.
+  floorBacktest: (t: string, minMargin: number, marginFloor?: number | null) => {
+    const q = new URLSearchParams({ min_margin: String(minMargin) });
+    if (marginFloor !== undefined && marginFloor !== null) {
+      q.set("margin_floor", String(marginFloor));
+    }
+    return req<FloorBacktest>(
+      `/api/v1/admin/margin-policy/backtest?${q.toString()}`, {}, t);
+  },
 
   // ── what the books already held, before PIE did anything ──────────────────
   retrospective: (t: string) => req<Retrospective>("/api/v1/retrospective", {}, t),

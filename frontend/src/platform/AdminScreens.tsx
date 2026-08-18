@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { ROLE_LABEL } from "./format";
-import { formatDateTime } from "../when";
+import { formatDateTime, since } from "../when";
 import { papi } from "./api";
+import type { PlatformSessionRow } from "./api";
 import type {
   AiByokProvider,
   AiByokView,
@@ -22,6 +23,9 @@ import type {
 import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
+import List from "@mui/material/List";
+import ListItem from "@mui/material/ListItem";
+import ListItemText from "@mui/material/ListItemText";
 import MenuItem from "@mui/material/MenuItem";
 import Stack from "@mui/material/Stack";
 import Switch from "@mui/material/Switch";
@@ -1550,7 +1554,186 @@ function ByokProviderRow({ token, row, active, onView }: {
   );
 }
 
-export function SettingsScreen({ session }: { session: PlatformSession }) {
+/** Turn a User-Agent into something a person can recognise their own device in.
+ *
+ *  Deliberately crude. The goal is "is this the laptop or the phone?", which two
+ *  words answer; anything more precise means parsing a string that browsers have
+ *  spent thirty years making unparseable, and a wrong-but-confident "Safari on
+ *  iPhone" is worse than an honest "Unknown device" next to a sign-in time. */
+export function describeDevice(ua: string): string {
+  if (!ua.trim()) return "Unknown device";
+  const browser =
+    /\bEdg\//.test(ua) ? "Edge"
+    : /\bOPR\/|\bOpera\b/.test(ua) ? "Opera"
+    // Chrome's UA contains "Safari", so Safari is only Safari when Chrome is absent.
+    : /\bChrome\/|\bCriOS\//.test(ua) ? "Chrome"
+    : /\bFirefox\/|\bFxiOS\//.test(ua) ? "Firefox"
+    : /\bSafari\//.test(ua) ? "Safari"
+    : null;
+  const platform =
+    /\bAndroid\b/.test(ua) ? "Android"
+    : /\biPhone\b|\biPad\b|\biOS\b/.test(ua) ? "iOS"
+    : /\bWindows\b/.test(ua) ? "Windows"
+    : /\bMac OS X\b|\bMacintosh\b/.test(ua) ? "macOS"
+    : /\bLinux\b/.test(ua) ? "Linux"
+    : null;
+  if (browser && platform) return `${browser} on ${platform}`;
+  return browser ?? platform ?? "Unknown device";
+}
+
+/** Where this account is signed in, and how to end any of it.
+ *
+ *  Exists because signing out became a real thing the server does. Before, the
+ *  token was valid for its full thirty days whatever the browser did with its
+ *  copy, so there was nothing true to put on a screen — a list of sessions none
+ *  of which could be ended would have been decoration. Now each row is a
+ *  revocable record, and this is the control for it.
+ *
+ *  A `List` rather than a `DataGrid`, per ui-standards §3: the row count here is
+ *  set by how many devices one person signs in from, not by the size of the
+ *  business. Three rows and an action each is not a grid. */
+function SessionsSection({ onSignedOutEverywhere }: { onSignedOutEverywhere: () => void }) {
+  const [rows, setRows] = useState<PlatformSessionRow[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      setRows(await papi.sessions());
+      setError(null);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }, []);
+
+  useEffect(() => { void load(); }, [load]);
+
+  async function revoke(sessionId: string) {
+    setBusy(sessionId);
+    try {
+      await papi.revokeSession(sessionId);
+      await load();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function signOutEverywhere() {
+    setBusy("all");
+    try {
+      await papi.logoutAll();
+      // Ends this session too, by design — so the shell has to be told rather
+      // than left drawing a signed-in frame over a dead cookie.
+      onSignedOutEverywhere();
+    } catch (e) {
+      setError((e as Error).message);
+      setBusy(null);
+    }
+  }
+
+  return (
+    <Bp className="st-section">
+      <h3>
+        <Labelled
+          tip={
+            <>
+              Each row is a session on the server, not a browser's memory of one.
+              Ending one here stops the credential working immediately, on that
+              device, whether or not anybody still has the browser open.
+            </>
+          }
+        >
+          Where you are signed in
+        </Labelled>
+      </h3>
+      <p className="st-help">
+        Sessions end on their own after 12 hours unused, and after 30 days however
+        much they are used. End one early if you do not recognise it.
+      </p>
+
+      {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
+
+      {rows === null && !error && <LoadingState rows={2} />}
+
+      {rows !== null && rows.length === 0 && (
+        <EmptyState
+          title="No other sessions"
+          reason="This is the only device signed in to this account."
+        />
+      )}
+
+      {rows !== null && rows.length > 0 && (
+        <>
+          <List dense disablePadding>
+            {rows.map((r) => (
+              <ListItem
+                key={r.session_id}
+                disableGutters
+                secondaryAction={
+                  r.current ? null : (
+                    <Button
+                      size="small"
+                      variant="text"
+                      disabled={busy !== null}
+                      onClick={() => void revoke(r.session_id)}
+                    >
+                      {busy === r.session_id ? "Ending…" : "Sign out"}
+                    </Button>
+                  )
+                }
+              >
+                <ListItemText
+                  primary={
+                    <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
+                      <Typography component="span" variant="body2">
+                        {describeDevice(r.user_agent)}
+                      </Typography>
+                      {/* A chip, not coloured text — ui-standards §6. */}
+                      {r.current && <StatusChip label="this device" tone="info" dense />}
+                    </Stack>
+                  }
+                  secondary={
+                    <>
+                      Last used {since(r.last_seen_at)} · signed in{" "}
+                      {formatDateTime(r.issued_at)}
+                    </>
+                  }
+                />
+              </ListItem>
+            ))}
+          </List>
+
+          <Box sx={{ mt: 2 }}>
+            <Button
+              variant="outlined"
+              color="error"
+              disabled={busy !== null}
+              onClick={() => void signOutEverywhere()}
+            >
+              {busy === "all" ? "Signing out…" : "Sign out everywhere"}
+            </Button>
+            <p className="st-help">
+              Ends every session including this one, so you will be asked to sign in
+              again. Changing your password does the same thing.
+            </p>
+          </Box>
+        </>
+      )}
+    </Bp>
+  );
+}
+
+export function SettingsScreen(
+  { session, onToken, onSignedOutEverywhere }: {
+    session: PlatformSession;
+    onToken: (token: string) => void;
+    /** "Sign out everywhere" ends this session too, so the shell must be told
+     *  rather than left drawing a signed-in frame over a dead cookie. */
+    onSignedOutEverywhere: () => void;
+  },
+) {
   const [users, setUsers] = useState<PlatformUser[]>([]);
   const [canManage, setCanManage] = useState(false);
   const [policy, setPolicy] = useState<OrgPolicy | null>(null);
@@ -1620,7 +1803,14 @@ export function SettingsScreen({ session }: { session: PlatformSession }) {
     e.preventDefault();
     setPwMsg(null);
     try {
-      await papi.changeOwnPassword(session.token, pw.current, pw.next);
+      // The new token must replace the one in the session, not be discarded.
+      // Changing a password stamps `password_changed_at`, and the server then
+      // rejects every token minted before it — so keeping the old one signs the
+      // user out by their own success, into a shell that still looks live
+      // because nothing here tells it otherwise. `ForcedPasswordChange` has
+      // always done this; only this screen forgot.
+      const { token } = await papi.changeOwnPassword(session.token, pw.current, pw.next);
+      onToken(token);
       setPwMsg("Password changed.");
       setPw({ current: "", next: "" });
     } catch (err) {
@@ -1691,6 +1881,14 @@ export function SettingsScreen({ session }: { session: PlatformSession }) {
           {pwMsg && <div className="st-span st-help">{pwMsg}</div>}
         </form>
       </Bp>
+
+      {/* ── where you are signed in ──
+          Directly under the account panel because it belongs to the same
+          question — this is your account and what is currently holding it — and
+          because the password form above is the other half of the same answer:
+          changing a password ends every session too. Shown to every role: a
+          salesperson's sessions are as much theirs to end as an owner's. */}
+      <SessionsSection onSignedOutEverywhere={onSignedOutEverywhere} />
 
       {/* ── users and roles ── */}
       {!isSales && (

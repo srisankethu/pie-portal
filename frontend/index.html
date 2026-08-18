@@ -7,7 +7,28 @@
          from the Google Fonts CDN. The app has to render on a network that
          cannot reach fonts.gstatic.com. -->
     <meta name="theme-color" content="#f2f2f3" />
-    <title>PIE · Commercial Decisions</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>PIE · Commercial intelligence for distributors</title>
+    <!-- What a crawler that runs no JavaScript gets to read. The description
+         mirrors the landing page's audited copy (src/landing/Landing.tsx keeps
+         the honesty rule; every claim below is a checkable product property).
+         Origin-dependent head tags — canonical, og:url, JSON-LD — are injected
+         at build time by scripts/prerender.mjs from one SITE_ORIGIN setting,
+         so a future custom domain is a one-line change, not an edit here. -->
+    <meta
+      name="description"
+      content="The commercial intelligence layer for B2B distributors: PIE checks every quote line against your own margin policy, routes breaches for approval, and spots customers quietly buying less — reading the ERP books you already keep."
+    />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="PIE" />
+    <meta property="og:title" content="PIE · Commercial intelligence for distributors" />
+    <meta
+      property="og:description"
+      content="The commercial intelligence layer for B2B distributors: PIE checks every quote line against your own margin policy, routes breaches for approval, and spots customers quietly buying less — reading the ERP books you already keep."
+    />
+    <!-- summary, not summary_large_image: no social image exists, and the tag
+         must not promise one. X falls back to og:title/og:description. -->
+    <meta name="twitter:card" content="summary" />
   </head>
   <body>
     <div id="root"></div>

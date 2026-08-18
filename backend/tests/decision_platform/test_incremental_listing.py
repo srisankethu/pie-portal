@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from datetime import date
 
+import dbsupport
 from app.ingestion.zoho_client import ZohoApiSource
 
 
@@ -235,6 +236,64 @@ def test_a_row_with_no_stamp_never_stops_the_listing():
     assert [d["invoice_id"] for d in got] == ["new-1", "odd", "new-2"]
 
 
+# ── the mark and the stamps are compared on the UTC line ────────────────────
+#
+# `mark_ingested` stores stamps rewritten to `YYYY-MM-DDTHH:MM:SSZ` and
+# `ingested_high_water` maxes over only that shape, so the mark arrives in UTC
+# dress while Zoho lists in the book's own offset. Compared raw, the two
+# dialects order by their first differing character, not by time.
+
+
+def test_the_short_circuit_compares_instants_not_strings():
+    """The mark is 19:00 UTC. The stale row's raw stamp
+    ``2026-07-02T00:30:00+0530`` is the *same instant* — lexicographically far
+    above the mark, so a raw comparison would keep paying for the listing this
+    exists to stop."""
+    src = _source([
+        _row("new", "2026-07-02T09:00:00+0530"),      # 03:30Z Jul 2 — after the mark
+        _row("stale", "2026-07-02T00:30:00+0530"),    # 19:00Z Jul 1 — at the mark
+        _row("older", "2026-07-01T10:00:00+0530"),
+    ])
+    src.modified_since = {"invoice": "2026-07-01T19:00:00Z"}
+
+    got = _documents(src)
+
+    assert [d["invoice_id"] for d in got] == ["new"]
+    assert src.listings_short_circuited == 1
+
+
+def test_a_truly_newer_edit_is_not_skipped_for_wearing_another_offset():
+    """The data-loss direction. Raw, ``…T18:00:00-0700`` compares below a
+    ``…T19:00:00Z`` mark — hour 18 < 19 — but it is 01:00 UTC the *next day*.
+    Stopping there would skip a real edit, and asking again never helps,
+    because the mark only moves forward."""
+    src = _source([
+        _row("edited", "2026-07-01T18:00:00-0700"),   # 01:00Z Jul 2 — newer
+    ])
+    src.modified_since = {"invoice": "2026-07-01T19:00:00Z"}
+
+    got = _documents(src)
+
+    assert [d["invoice_id"] for d in got] == ["edited"]
+    assert src.listings_short_circuited == 0
+
+
+def test_an_unplaceable_stamp_never_stops_the_listing():
+    """Extends the no-stamp rule above: a stamp that cannot be put on the UTC
+    line cannot be compared to a mark that lives there, and guessing would
+    truncate the listing at the first oddity Zoho returned."""
+    src = _source([
+        _row("new-1", "2026-08-07T10:00:00+0530"),
+        _row("odd", "not-a-time"),
+        _row("new-2", "2026-08-05T10:00:00+0530"),
+    ])
+    src.modified_since = {"invoice": "2026-01-01T10:00:00+0530"}
+
+    got = _documents(src)
+
+    assert [d["invoice_id"] for d in got] == ["new-1", "odd", "new-2"]
+
+
 # ── the window the mark is allowed to speak for ─────────────────────────────
 #
 # The mark is `max(modified_at)` over everything held, with no notion of which
@@ -316,17 +375,12 @@ def test_coverage_reads_finished_runs_only(tmp_path):
     """
     from datetime import datetime, timezone
 
-    from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
-    from sqlalchemy.pool import StaticPool
 
-    from app.db import Base
     from app.domain import models
     from app.repositories import ReadModelRepository
 
-    engine = create_engine("sqlite://", connect_args={"check_same_thread": False},
-                           poolclass=StaticPool, future=True)
-    Base.metadata.create_all(engine)
+    engine = dbsupport.fresh_engine()
     s = sessionmaker(bind=engine, future=True)()
 
     def _run(since, status):

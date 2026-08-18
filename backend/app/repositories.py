@@ -16,6 +16,7 @@ from typing import Any, Optional, Sequence
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
+from . import clock
 from .domain import models
 from .domain.enums import DecisionStatus, HumanAction
 from .domain.schemas import (BillIn, CostRecordIn, CreditNoteApplicationIn,
@@ -24,6 +25,15 @@ from .domain.schemas import (BillIn, CostRecordIn, CreditNoteApplicationIn,
                             PurchaseOrderIn, SalesOrderIn, SalesTxnIn,
                             StockLocationSnapshotIn, StockSnapshotIn, VendorIn,
                             VendorPaymentIn)
+
+
+#: The shape ``clock.utc_stamp`` writes — ``2026-07-02T04:30:00Z``. In SQL LIKE,
+#: ``_`` is any single character, which is as precise as portable SQL gets; it
+#: is precise enough, because the only writer of a ``Z``-suffixed stamp of this
+#: exact width is the rewrite itself. Stamps kept verbatim (unparseable, or
+#: carrying no offset) do not match, which is what keeps them out of the
+#: high-water max below.
+_CANONICAL_STAMP_LIKE = "____-__-__T__:__:__Z"
 
 
 class ReadModelRepository:
@@ -471,11 +481,22 @@ class ReadModelRepository:
 
         Returns None when nothing has been pulled yet, which correctly means
         "there is no floor; list everything".
+
+        The max is a *string* max, and that is only a time max because every
+        stamp taking part is in the one canonical UTC form ``mark_ingested``
+        writes. A stamp kept verbatim (one ``clock.utc_stamp`` could not place)
+        is excluded by shape: it still resumes its own document by equality,
+        but it may not be the cursor — a verbatim ``+0530`` stamp sorts above
+        the same instant written as ``Z``, and a floor that is lexicographic
+        junk silently stops the listing in the wrong place. When *nothing* held
+        is canonical this returns None, which degrades to a full listing:
+        paying list calls is the cost, skipping edits would be the hole.
         """
         stmt = select(func.max(models.IngestedDocument.modified_at)).where(
             models.IngestedDocument.organization_id == self.org,
             models.IngestedDocument.doc_type == doc_type,
             models.IngestedDocument.connection_id == self.connection_id,
+            models.IngestedDocument.modified_at.like(_CANONICAL_STAMP_LIKE),
         )
         return self.s.scalar(stmt) or None
 
@@ -487,6 +508,16 @@ class ReadModelRepository:
         detail payload's stamp instead is what made every document look changed
         on every run; ``zoho_client._documents`` now guarantees the two are the
         same string.
+
+        Stored rewritten onto the UTC line (``clock.utc_stamp``) so that
+        ``ingested_high_water``'s string max is a time max even when Zoho's
+        offset dress varies between rows — and kept **verbatim** when the stamp
+        cannot be placed there. Verbatim rather than None, because dropping the
+        stamp would make ``already_have`` re-fetch that document on every run
+        forever; verbatim rather than a guessed UTC, because a naive stamp's
+        offset is evidence we do not have. The comparisons stay honest either
+        way: the resume check rewrites its own side identically, and the
+        high-water max excludes non-canonical stamps by shape.
         """
         row = self.s.scalar(
             select(models.IngestedDocument).where(
@@ -501,7 +532,7 @@ class ReadModelRepository:
                                           doc_id=doc_id,
                                           connection_id=self.connection_id)
             self.s.add(row)
-        row.modified_at = modified_at or None
+        row.modified_at = clock.utc_stamp(modified_at) or modified_at or None
         row.fetched_at = datetime.now(timezone.utc)
 
     def ingested_in_window(self, doc_type: str, start: date,
@@ -1204,6 +1235,18 @@ class DecisionRepository:
                 decision.status = DecisionStatus.VIEWED.value
         elif action is HumanAction.ACT:
             decision.status = DecisionStatus.ACTIONED.value
+            # Snapshot-on-accept: freeze the signal's own evidence as the
+            # baseline the Outcome Tracker will later measure against. Here
+            # rather than in the router because this method *is* the decision
+            # lifecycle — every acceptance path flows through it or through
+            # `approvals._settle_escalated_decision`, and both call the one
+            # capture function. Function-level import: this module is imported
+            # before `commercial/` in several chains, and capture is only
+            # needed on the one transition.
+            from .commercial.outcome_tracker import capture_on_accept
+
+            capture_on_accept(self.s, decision,
+                              accepted_by_user_id=actor_user_id)
         elif action is HumanAction.DISMISS:
             decision.status = DecisionStatus.DISMISSED.value
             decision.override_reason = reason

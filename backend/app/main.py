@@ -17,11 +17,12 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from . import entitlements as plan
 from .config import settings
+from .observability.instrumentation import api_instrumentation_middleware
 from .pie_service import pie_service
-from .routers import (accounts, admin, ai_settings, approvals, commercial,
-                      connections, data_status,
+from .routers import (accounts, admin, ai_settings, approvals, attribution,
+                      commercial, connections, data_status,
                       decisions, entitlements, identity, internal,
-                      platform_auth, quote,
+                      onboarding, outcomes, platform_auth, quote,
                       insight, quote_intelligence, quote_support, trust)
 
 logging.basicConfig(level=logging.INFO)
@@ -96,9 +97,16 @@ async def lifespan(_app: FastAPI):
     # serve the code. A database at head with a hand-edited table fails only the
     # second; a database built by ``create_all`` fails only the first.
     try:
-        from .db import engine
+        from .db import engine, SessionLocal
         from .migration_state import inspect_database
         from .schema_check import check_at_startup
+        from .observability.instrumentation import instrument_database
+        from .observability.health import register_health_checks
+
+        # Initialize observability infrastructure
+        instrument_database(engine)
+        register_health_checks(engine, SessionLocal)
+        log.info("observability infrastructure initialized")
 
         state = inspect_database(engine)
         SCHEMA_GAP["migration"] = state.to_dict()
@@ -128,8 +136,19 @@ async def lifespan(_app: FastAPI):
     yield
 
 
+# The interactive docs and the schema behind them are development affordances,
+# and in production they are an unauthenticated index of every route and model
+# in the platform — including the trust, admin and margin-policy surfaces. On a
+# managed host the API has a public hostname of its own, so "internal" is not a
+# property anything enforces. They stay on outside production, where they are
+# how people read the API.
+_docs = None if settings.is_production else "/docs"
+_redoc = None if settings.is_production else "/redoc"
+_openapi = None if settings.is_production else "/openapi.json"
+
 app = FastAPI(title="PIE — Commercial Decision Platform", version="0.1.0",
-              lifespan=lifespan)
+              lifespan=lifespan,
+              docs_url=_docs, redoc_url=_redoc, openapi_url=_openapi)
 
 @app.exception_handler(Exception)
 async def unhandled_error(request: Request, exc: Exception) -> JSONResponse:
@@ -179,8 +198,28 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Observability instrumentation: metrics, logging, health checks.
+#
+# `app.middleware("http")`, not `add_middleware`. The latter takes a middleware
+# *class* and instantiates it as `cls(app, **kwargs)`; this is a function of
+# `(request, call_next)`, so registering it that way raised
+# `api_instrumentation_middleware() missing 1 required positional argument:
+# 'call_next'` when Starlette built the middleware stack.
+#
+# That happens on the first request rather than at import, which is why the app
+# still started and why the breakage showed up as nine unrelated-looking test
+# failures — a 500 with an empty body, a health check that returned nothing —
+# rather than as anything naming this line. The instrumentation had never
+# actually run.
+app.middleware("http")(api_instrumentation_middleware)
+
 # Commercial Decision Platform (Phase 1 foundation).
 app.include_router(platform_auth.router)
+# The way in for a tenant nobody has provisioned by hand. Beside the sign-in
+# router because it answers the same question — how does a person get a session
+# — and no plan gate for the same reason: a plan is something an organization
+# has, and this runs before there is one.
+app.include_router(onboarding.router)
 
 # The Quote Builder. One surface of the same product, and — since the demo login
 # beside it was removed — one identity: `/api/quotes` authenticates the same
@@ -193,6 +232,22 @@ app.include_router(internal.router)
 # routes inside stay role-scoped exactly as before.
 app.include_router(decisions.router,
                    dependencies=[Depends(plan.require_feature("intelligence"))])
+# The afterlife of an accepted decision card — realised outcomes. Gated with
+# the queue it measures: an outcome is derived from a decision, so it cannot be
+# the one intelligence surface a free plan can read.
+app.include_router(outcomes.router,
+                   dependencies=[Depends(plan.require_feature("intelligence"))])
+# Deliberately *not* gated, unlike the four intelligence surfaces above and
+# below it. Quote-support is the free Quote Builder's own inline recommendation
+# on a line a salesperson is actively quoting (it renders in the supply drawer):
+# it phrases the deterministic facts and returns no RESTRICTED cost/margin data,
+# which is quoting — the free Quote Desk — not the paid decision layer. It does
+# persist a QUOTE_CONTEXT decision, but the surfaces that *read* the decision
+# store (decisions, outcomes, insight, attribution) are all gated, so a free
+# org can write one and never read it back. Gating this instead would 403 a
+# working panel inside the free desk. Left ungated on purpose; stated here so
+# the next audit finds a decision rather than an oversight (the absence of both
+# a gate and this note is what flagged it once).
 app.include_router(quote_support.router)
 app.include_router(accounts.router)
 app.include_router(data_status.router)
@@ -204,6 +259,11 @@ app.include_router(identity.router)
 app.include_router(connections.router)
 app.include_router(trust.router)
 app.include_router(insight.router,
+                   dependencies=[Depends(plan.require_feature("intelligence"))])
+# What the intelligence layer was worth, measured. Gated with the surfaces it
+# measures rather than left open: the ledger is gross-profit arithmetic over the
+# same rows, so it cannot be the one intelligence screen a free plan can read.
+app.include_router(attribution.router,
                    dependencies=[Depends(plan.require_feature("intelligence"))])
 app.include_router(ai_settings.router)
 app.include_router(entitlements.router)
@@ -237,6 +297,12 @@ def health(response: Response) -> dict:
         body["migration"] = state.to_dict()
         gap = describe(missing_columns(engine))
         body["schema_gap"] = gap
+        # Which dialect this process is actually serving, and how full its
+        # pool is. Informational, never part of `ok`: a busy pool is load, not
+        # ill health — but when requests start timing out with "QueuePool
+        # limit reached", this is the line that says so without a debugger.
+        body["database"] = {"dialect": engine.dialect.name,
+                            "pool": engine.pool.status()}
         body["ok"] = state.healthy and gap is None
     except Exception as exc:  # noqa: BLE001
         log.exception("health check could not read the database")

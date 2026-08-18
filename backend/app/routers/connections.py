@@ -32,6 +32,7 @@ from sqlalchemy.orm import Session
 
 from .. import clock, entitlements
 from ..authz import Principal, require_manager_or_owner, require_owner
+from ..commercial import jurisdiction
 from ..config import settings
 from ..db import get_session
 from ..domain import models
@@ -53,12 +54,27 @@ def _schema_guard(call):
     to one of them: a bare 500 with an empty body is what a browser console
     shows, and it names neither the cause nor the fix.
     """
-    def wrapper(*args, **kwargs):
-        try:
-            return call(*args, **kwargs)
-        except SchemaBehind as e:
-            log.error("schema behind: %s", e)
-            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(e)) from e
+    # The wrapper must match the endpoint's sync/async nature. A plain `def`
+    # wrapper around an `async def` endpoint returns an un-awaited coroutine;
+    # FastAPI runs the sync wrapper in a threadpool and tries to serialize that
+    # coroutine as the body — a ResponseValidationError (500), the real handler
+    # never executing. So await when the wrapped call is a coroutine function and
+    # stay synchronous otherwise. Every endpoint here is sync today; this keeps
+    # the guard correct if that ever changes.
+    if inspect.iscoroutinefunction(call):
+        async def wrapper(*args, **kwargs):
+            try:
+                return await call(*args, **kwargs)
+            except SchemaBehind as e:
+                log.error("schema behind: %s", e)
+                raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(e)) from e
+    else:
+        def wrapper(*args, **kwargs):
+            try:
+                return call(*args, **kwargs)
+            except SchemaBehind as e:
+                log.error("schema behind: %s", e)
+                raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(e)) from e
     wrapper.__name__ = call.__name__
     wrapper.__doc__ = call.__doc__
     # FastAPI reads the signature to build the dependency graph, so it has to
@@ -147,9 +163,15 @@ def _last_run(session: Session, row: models.ZohoConnection) -> Optional[models.S
 
 
 def _dict(session: Session, row: models.ZohoConnection) -> dict:
+    from ..domain.origin import CONNECTORS, fallback_company_label
+
     cred = row.credential
     last = _last_run(session, row)
+    connector = getattr(row, "connector", None) or conn.ZOHO_CONNECTOR
+    connector_label = CONNECTORS.get(connector, {}).get("label") or connector
     return {
+        "connector": connector,
+        "connector_label": connector_label,
         # The date this company was last read from, and the date to offer next
         # time. Carried per connection because the answer genuinely differs:
         # one entity may have four years of books worth reading and another
@@ -175,13 +197,19 @@ def _dict(session: Session, row: models.ZohoConnection) -> dict:
         # full. The screen says which before the button is pressed.
         "covered_from": _covered_from(session, row),
         "connection_id": row.connection_id,
-        "label": row.label or f"Zoho org {row.zoho_organization_id}",
+        "label": row.label or fallback_company_label(connector,
+                                                     row.zoho_organization_id),
         "zoho_organization_id": row.zoho_organization_id,
         "enabled": row.enabled,
         "credential_id": row.credential_id,
         # An identifier, not a secret — it is what tells two grants apart in a list.
         "client_id": cred.client_id if cred else row.client_id,
-        "credential_label": (cred.label or "Zoho connection") if cred else "inline (legacy)",
+        "credential_label": ((cred.label or f"{connector_label} connection")
+                             if cred else "inline (legacy)"),
+        # The connection's own non-secret settings (company GUID, branch,
+        # endpoint …) so an owner can see what was entered. Secrets are not
+        # here and are not anywhere else in a response either.
+        "config": dict(row.config or {}) or None,
         "credential_rotated_at": (clock.iso(cred.rotated_at)
                                   if cred and cred.rotated_at else None),
         "accounts_base": row.accounts_base,
@@ -210,6 +238,7 @@ def list_connections(
         "connections": [_dict(session, r) for r in rows],
         "credentials": [
             {"credential_id": c.credential_id,
+             "connector": getattr(c, "connector", None) or conn.ZOHO_CONNECTOR,
              "label": c.label or "Zoho connection",
              "client_id": c.client_id,
              "is_owner": c.owner_organization_id == org,
@@ -380,6 +409,13 @@ def rotate_connection_token(
         row = conn.get_connection(session, principal.organization_id, connection_id)
     except conn.ConnectionNotFound as e:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e)) from e
+    if (getattr(row, "connector", None) or conn.ZOHO_CONNECTOR) != conn.ZOHO_CONNECTOR:
+        # Writing a refresh token onto another connector's credential would
+        # corrupt a working sign-in with a value its client never reads.
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "This connection does not sign in with a Zoho refresh token — "
+            "rotate it with /rotate-erp, which takes its own fields.")
     if not row.credential_id:
         raise HTTPException(
             status.HTTP_409_CONFLICT,
@@ -488,6 +524,9 @@ def _check(session: Session, row: models.ZohoConnection) -> dict:
         conn.record_check(session, row, ok=False, detail=detail)
         return {**_dict(session, row), "checked": False, "detail": detail}
 
+    if (getattr(row, "connector", None) or conn.ZOHO_CONNECTOR) != conn.ZOHO_CONNECTOR:
+        return _check_erp(session, row)
+
     try:
         creds = conn.credentials_for(session, row)
         source = ZohoApiSource(credentials=creds)
@@ -510,6 +549,20 @@ def _check(session: Session, row: models.ZohoConnection) -> dict:
         org = session.get(models.Organization, row.organization_id)
         if org is not None and not (org.timezone or "").strip():
             org.timezone = zone
+            session.flush()
+
+    # Same treatment for the country the books are kept in: Zoho states it on
+    # the organization profile, and the statutory screens gate on it
+    # (``commercial/jurisdiction``) — without this fill there is no path in
+    # the product that records it at all, and the gate's refusal would name a
+    # fix nobody can perform. Filled in only when unset, like the zone, and
+    # only when the label places *exactly* — a mis-placed country would turn
+    # the gate's refusal into a confidently wrong answer.
+    code = jurisdiction.alpha2_from_label(info.get("country"))
+    if found and code:
+        org = session.get(models.Organization, row.organization_id)
+        if org is not None and not (org.country or "").strip():
+            org.country = code
             session.flush()
 
     # The currency this company keeps its books in, recorded on the connection.
@@ -587,3 +640,233 @@ def _check(session: Session, row: models.ZohoConnection) -> dict:
         # credential for the next entity?", which is almost always no.
         "visible_organizations": info.get("visible_organizations", []),
     }
+
+
+def _check_erp(session: Session, row: models.ZohoConnection) -> dict:
+    """The check for a registered connector: sign in, reach the company,
+    record the outcome.
+
+    No scope probe — none of the five speaks Zoho's per-scope grant model, and
+    a probe list that is always empty would read as "all permissions verified".
+    What their APIs *do* refuse per-permission arrives as a
+    ``SourceScopeError`` at sync time and is reported per stage there.
+    """
+    from ..ingestion.errors import IngestionError
+
+    try:
+        source = conn.build_erp_source(session, row)
+        info = source.ping()
+    except (IngestionError, conn.CredentialNotUsable, ValueError) as e:
+        conn.record_check(session, row, ok=False, detail=str(e))
+        return {**_dict(session, row), "checked": True, "ok": False,
+                "detail": str(e)}
+    except Exception as e:  # noqa: BLE001 — a check must report, not 500
+        conn.record_check(session, row, ok=False,
+                          detail=f"{type(e).__name__}: {e}")
+        return {**_dict(session, row), "checked": True, "ok": False,
+                "detail": f"{type(e).__name__}: {e}"}
+
+    found = bool(info.get("organization_found"))
+    detail = ("Reached this company." if found else
+              f"Authenticated, but company {row.zoho_organization_id} was not "
+              "found by this sign-in.")
+    conn.record_check(session, row, ok=found, detail=detail)
+    return {
+        **_dict(session, row),
+        "checked": True,
+        "ok": found,
+        "detail": detail,
+        "scopes": [],
+        "missing_required_scopes": [],
+        "untested_scopes": [],
+        "organization_name": info.get("organization_name"),
+        "currency": info.get("currency"),
+        "time_zone": info.get("time_zone"),
+        "visible_organizations": info.get("visible_organizations", []),
+    }
+
+
+# ── Registered ERP connectors (NetSuite, Business Central, Acumatica, P21,
+#    Sage) ──────────────────────────────────────────────────────────────────
+
+@router.get("/catalog")
+def connector_catalog(
+    principal: Principal = Depends(require_manager_or_owner),
+) -> dict:
+    """Every system a company can be connected from, with the form to render.
+
+    The field lists come from each connector's own spec, so the UI never
+    hardcodes what NetSuite needs — connector number seven appears here the
+    day its module registers.
+    """
+    from ..domain.origin import CONNECTORS
+    from ..ingestion import erp
+
+    return {
+        "connectors": [
+            {
+                "key": spec.key,
+                "label": spec.label,
+                "company_term": spec.company_term,
+                "icon": CONNECTORS.get(spec.key, {}).get("icon", "◇"),
+                "setup_note": spec.setup_note,
+                "credential_fields": [f.to_dict() for f in spec.credential_fields],
+                "connection_fields": [f.to_dict() for f in spec.connection_fields],
+                "external_id_field": spec.external_id_field,
+                "can_discover": spec.discover is not None,
+            }
+            for spec in erp.catalog()
+        ],
+    }
+
+
+class ErpConnect(BaseModel):
+    """One registered connector's entered form values, verbatim.
+
+    ``values`` is keyed by the field names the catalog declared — validation
+    happens against the spec, so a missing secret is refused by its label
+    before anything is stored.
+    """
+
+    connector: str = Field(min_length=1, max_length=32)
+    values: dict = Field(default_factory=dict)
+    label: str = ""
+    credential_label: str = ""
+
+
+@router.post("/erp", status_code=status.HTTP_201_CREATED)
+def add_erp_connection(
+    body: ErpConnect,
+    principal: Principal = Depends(require_owner),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Connect one company of a registered ERP.
+
+    The same lifecycle as adding a Zoho company: identical secrets attach to
+    the credential already on file, the multi-company plan gate applies to a
+    second distinct company whichever system it lives in, and the connection
+    is checked immediately so a typo fails here rather than on the first
+    nightly sync.
+    """
+    from ..ingestion import erp
+
+    org = principal.organization_id
+    try:
+        row = conn.connect_erp(session, org, connector=body.connector.strip(),
+                               values=body.values, label=body.label,
+                               credential_label=body.credential_label)
+    except erp.UnknownConnectorError as e:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from e
+    except conn.CredentialNotUsable as e:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(e)) from e
+    except entitlements.PlanRefused as e:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(e)) from e
+
+    return _check(session, row)
+
+
+class ErpDiscover(BaseModel):
+    """Credential fields only — enough to sign in and ask what is visible."""
+
+    connector: str = Field(min_length=1, max_length=32)
+    values: dict = Field(default_factory=dict)
+
+
+@router.post("/erp/discover")
+def discover_erp_companies(
+    body: ErpDiscover,
+    principal: Principal = Depends(require_owner),
+    session: Session = Depends(get_session),
+) -> dict:
+    """The companies a credential can see, before anything is stored.
+
+    For the connectors whose company identity is a GUID nobody knows by heart
+    (Business Central): enter the sign-in, get the list, pick by name.
+    Nothing is persisted — the values are used for this one call and dropped.
+    """
+    from ..ingestion import erp
+    from ..ingestion.errors import IngestionError
+
+    try:
+        spec = erp.get_spec(body.connector.strip())
+    except erp.UnknownConnectorError as e:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(e)) from e
+    if spec.discover is None:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"{spec.label} sign-ins are already scoped to one "
+            f"{spec.company_term}; there is no list to discover.")
+    try:
+        secrets, config = erp.split_credential_inputs(spec, body.values)
+        companies = spec.discover(erp.CredentialMaterial(
+            connector=spec.key, secrets=secrets, config=config))
+    except ValueError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from e
+    except IngestionError as e:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(e)) from e
+    return {"connector": spec.key, "companies": companies}
+
+
+class ErpRotate(BaseModel):
+    """A registered connector's fresh credential values, all of them — which
+    fields exist comes from the catalog, same as connecting."""
+
+    values: dict = Field(default_factory=dict)
+
+
+@router.post("/{connection_id}/rotate-erp")
+def rotate_erp_connection(
+    connection_id: str,
+    body: ErpRotate,
+    principal: Principal = Depends(require_owner),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Replace the sign-in behind a registered connector's connection.
+
+    The sibling of ``/rotate``, which is Zoho's refresh-token shape. One
+    credential can serve several companies here too, so the response names
+    every connection that just changed underneath — the same disclosure, for
+    the same reason.
+    """
+    try:
+        row = conn.get_connection(session, principal.organization_id, connection_id)
+    except conn.ConnectionNotFound as e:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(e)) from e
+    if (getattr(row, "connector", None) or conn.ZOHO_CONNECTOR) == conn.ZOHO_CONNECTOR:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "This is a Zoho connection — rotate it with /rotate, which takes "
+            "the refresh token.")
+    if not row.credential_id:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "This connection has no stored credential to rotate. Reconnect "
+            "it with the sign-in details instead.")
+
+    also = [c for c in conn.connections_using(session, row.credential_id)
+            if c.connection_id != row.connection_id]
+    try:
+        conn.rotate_erp_credential(session, principal.organization_id,
+                                   row.credential_id, values=body.values)
+    except ValueError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from e
+    except conn.CredentialNotUsable as e:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(e)) from e
+
+    checked = _check(session, row)
+    return {
+        **checked,
+        "rotated": True,
+        "also_rotated": [
+            {"connection_id": c.connection_id, "label": c.label,
+             "zoho_organization_id": c.zoho_organization_id}
+            for c in also
+        ],
+        "note": ("Rotated." if not also else
+                 f"Rotated. {len(also)} other compan"
+                 f"{'y' if len(also) == 1 else 'ies'} sign in through the same "
+                 f"credential and now use the new values too."),
+    }
+

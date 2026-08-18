@@ -12,13 +12,12 @@ from datetime import timedelta
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
+import dbsupport
 from app.clock import now as utc_now
 from app.config import settings
-from app.db import Base, get_session
+from app.db import get_session
 from app.decisions.outcomes import dismissal_band, report, summarize
 from app.domain import models
 from app.repositories import DecisionRepository, SignalRepository
@@ -194,9 +193,7 @@ def test_the_report_is_a_pure_function_of_the_rows(session):
 # ── the endpoint ─────────────────────────────────────────────────────────────
 @pytest.fixture()
 def client():
-    engine = create_engine("sqlite://", connect_args={"check_same_thread": False},
-                           poolclass=StaticPool, future=True)
-    Base.metadata.create_all(engine)
+    engine = dbsupport.fresh_engine()
     Maker = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False,
                          future=True)
     s = Maker()

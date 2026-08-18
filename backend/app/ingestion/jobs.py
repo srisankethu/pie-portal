@@ -439,7 +439,7 @@ def execute_sync(session: Session, run: models.SyncRun, *,
             except Exception:  # noqa: BLE001
                 log.exception("demo-data purge failed; continuing with the sync")
 
-        phase("Connecting to Zoho")
+        phase("Connecting to the books")
 
         def source_for(start: date, end: Optional[date], conn: Optional[str]):
             """One source per window, each asking Zoho only for its own months."""
@@ -692,7 +692,68 @@ def execute_analysis(session: Session, run: models.SyncRun, organization_id: str
     phase("Generating decisions")
     generated = DecisionService(session, org).generate()
     run.decisions_created = generated.get("created", 0)
+
+    phase("Measuring what PIE changed")
+    notes["attribution"] = _run_attribution(session, org)
+    # `phase` commits on the way *in*, which closes the previous phase rather
+    # than this one — so without this the ledger rows would ride to whichever
+    # commit the caller happens to make, holding a write transaction open past
+    # the end of the work that produced them. §4 asks for a commit at the
+    # boundary, and this is the boundary.
+    session.commit()
     return notes
+
+
+def _run_attribution(session: Session, org: str) -> dict:
+    """Turn the quote evidence this run refreshed into ledger rows.
+
+    Last phase on purpose: it reads ``QuoteDecision`` and ``QuoteOutcome``, and
+    an outcome that arrived in this pull should be classified in this run rather
+    than waiting a day for the next one.
+
+    Best-effort, like the demo purge above. A detection problem must not fail a
+    sync that has already written the customers, invoices and metrics — the
+    ledger is derived state and the next run rebuilds it from the same evidence.
+    The failure is logged and named in the notes rather than swallowed, because
+    a report that silently stops being updated is the absence-of-evidence
+    failure this whole module exists to avoid.
+
+    Also recomputes the trial baseline. ``capture_baseline`` runs once at first
+    connect, before any sync has happened, so the 90 days before the trial
+    started held no rows and the "before" half of the comparison was empty —
+    always, not merely usually, which made the central evaluation claim
+    unproducible. Here the history has been pulled, so the same window can
+    finally be measured. It is derived state and rewriting it is what it is for.
+    """
+    from ..attribution import detectors, ledger
+    from ..attribution import evaluator as attribution_evaluator
+    from ..domain.enums import ValueClass
+
+    out: dict = {}
+    try:
+        results = detectors.run_all(session, org)
+        drafts = [d for result in results.values() for d in result.events]
+        _, created = ledger.record_all(session, org, drafts)
+        # A full run over the whole window, so anything POTENTIAL that this run
+        # did not re-find is an opportunity that has closed — most often a quote
+        # the customer declined. Only correct because the run above is unscoped;
+        # doing this after a windowed run would retire live rows outside it.
+        retired = ledger.supersede_closed_opportunities(
+            session, org,
+            [d.event_key for d in drafts
+             if d.value_class is ValueClass.POTENTIAL])
+        out = {"events_recorded": created,
+               "opportunities_closed": retired,
+               "gaps": detectors.skip_summary(results)}
+
+        trial = attribution_evaluator.current_trial(session, org)
+        if trial is not None:
+            attribution_evaluator.capture_baseline(session, org, trial)
+            out["baseline_recomputed"] = True
+    except Exception as exc:  # noqa: BLE001
+        log.exception("attribution failed for %s; the ledger is unchanged", org)
+        out = {"failed": str(exc)}
+    return out
 
 
 # ── dispatch ────────────────────────────────────────────────────────────────
@@ -750,14 +811,13 @@ class _Target:
     """One connected company a run will read, and what to call it on screen."""
     connection_id: Optional[str]
     label: str
-    #: Which system this book is read from. Every target below is built from a
-    #: ``ZohoConnection`` row, so "zoho" is not an assumption here — it is what
-    #: the table means. It is carried explicitly all the same, because the
-    #: alternative is a caller that omits it and silently takes a default: a
-    #: pull that labels its rows with the wrong connector has them adopted into
-    #: that connector's id space by ``repositories._for_upsert``, and no test
-    #: in the tree would notice. When connections gain a discriminator this
-    #: field is where it lands, and the call site is already correct.
+    #: Which system this book is read from — the connection row's own
+    #: discriminator, carried explicitly because the alternative is a caller
+    #: that omits it and silently takes a default: a pull that labels its rows
+    #: with the wrong connector has them adopted into that connector's id
+    #: space by ``repositories._for_upsert``, and no test in the tree would
+    #: notice. The default exists only for the connectionless legacy pull,
+    #: which is Zoho by definition (it reads the ``ZOHO_*`` environment).
     connector: str = "zoho"
 
 
@@ -774,17 +834,20 @@ def _sync_targets(session: Session, organization_id: str,
     """
     from .connections import get_connection, list_connections
 
+    def target(conn) -> _Target:
+        return _Target(conn.connection_id,
+                       conn.label or conn.zoho_organization_id or "",
+                       connector=getattr(conn, "connector", None) or "zoho")
+
     if connection_id is not None:
         try:
-            conn = get_connection(session, organization_id, connection_id)
-            return [_Target(connection_id, conn.label or conn.zoho_organization_id or "")]
+            return [target(get_connection(session, organization_id, connection_id))]
         except Exception:  # noqa: BLE001 — a label is never a reason to refuse a pull
             return [_Target(connection_id, "")]
 
     rows = list_connections(session, organization_id, enabled_only=True)
     if rows:
-        return [_Target(r.connection_id, r.label or r.zoho_organization_id or "")
-                for r in rows]
+        return [target(r) for r in rows]
     return [_Target(None, "")]
 
 

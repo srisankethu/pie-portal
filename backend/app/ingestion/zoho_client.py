@@ -31,7 +31,10 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any, Callable, Iterable, Iterator, Optional
 
+from ..clock import utc_stamp
 from ..config import settings
+from .errors import (IngestionError, SourceAuthError, SourceScopeError,
+                     SourceThrottleError)
 
 log = logging.getLogger("pie_portal.zoho")
 
@@ -65,29 +68,12 @@ class ZohoCredentials:
     accounts_base: str = "https://accounts.zoho.in"
     api_base: str = "https://www.zohoapis.in/books/v3"
     #: Where these values were configured, in words, for the one message that
-    #: has to send somebody to the right screen. A stored connection and the
-    #: environment fallback fail identically at the token endpoint and are
-    #: fixed in completely different places — an owner told to check
-    #: ``ZOHO_ACCOUNTS_BASE`` about a connection they typed into a form goes
-    #: looking for a variable that has no bearing on it and cannot be edited
-    #: from where they are.
+    #: has to send somebody to the right screen. Always a stored connection now
+    #: (there is no environment fallback): an owner told to check
+    #: ``ZOHO_ACCOUNTS_BASE`` — a variable — about a connection they typed into a
+    #: form would go looking for something that has no bearing on it and cannot
+    #: be edited from where they are, so the message names the connection.
     configured_in: str = "this connection"
-
-    @classmethod
-    def from_settings(cls) -> "ZohoCredentials":
-        """The pre-multi-tenant configuration path: one connection, from
-        environment variables. Used only as the fallback for the platform's
-        default organization when it has no stored connection of its own —
-        every other organization must configure its own."""
-        return cls(
-            organization_id=settings.ZOHO_ORGANIZATION_ID,
-            client_id=settings.ZOHO_CLIENT_ID,
-            client_secret=settings.ZOHO_CLIENT_SECRET,
-            refresh_token=settings.ZOHO_REFRESH_TOKEN,
-            accounts_base=settings.ZOHO_ACCOUNTS_BASE,
-            api_base=settings.ZOHO_API_BASE,
-            configured_in="the ZOHO_* environment variables",
-        )
 
 
 # ── what Zoho's token endpoint is actually telling you ──────────────────────
@@ -136,15 +122,20 @@ def token_error_help(error: Any, *, accounts_base: str, configured_in: str) -> s
     return template.format(accounts=accounts_base, configured_in=configured_in)
 
 
-class ZohoError(RuntimeError):
-    """A Zoho call failed. Carries the API's own message where there is one."""
+class ZohoError(IngestionError):
+    """A Zoho call failed. Carries the API's own message where there is one.
+
+    Subclasses of the neutral taxonomy in ``ingestion/errors.py``, so the sync
+    layer reacts to the *kind* of failure without knowing which system raised
+    it; the Zoho names stay because callers and tests already catch them.
+    """
 
 
-class ZohoAuthError(ZohoError):
+class ZohoAuthError(ZohoError, SourceAuthError):
     """Credentials were rejected — wrong DC, revoked token, or bad client."""
 
 
-class ZohoThrottleError(ZohoError):
+class ZohoThrottleError(ZohoError, SourceThrottleError):
     """The rate limiter won. Distinct from other failures because the remedy is
     different: wait and resume, rather than fix a credential."""
 
@@ -160,7 +151,7 @@ class ZohoWriteUncertain(ZohoError):
     """
 
 
-class ZohoScopeError(ZohoAuthError):
+class ZohoScopeError(ZohoAuthError, SourceScopeError):
     """The credentials are fine; this *endpoint* was not granted.
 
     A subclass of ``ZohoAuthError`` so nothing that already handles an auth
@@ -176,9 +167,7 @@ class ZohoScopeError(ZohoAuthError):
     """
 
     def __init__(self, message: str, *, path: str, scope: Optional[str]) -> None:
-        super().__init__(message)
-        self.path = path
-        self.scope = scope
+        super().__init__(message, path=path, scope=scope)
 
 
 #: Which OAuth scope each list endpoint needs, so a 401 can name the missing
@@ -253,7 +242,17 @@ class ZohoTransport:
 
     def __init__(self, http: Any = None,
                  credentials: Optional[ZohoCredentials] = None) -> None:
-        creds = credentials or ZohoCredentials.from_settings()
+        # Credentials are required and come from the stored, per-organization
+        # connection (``connections.credentials_for``). There is no environment
+        # fallback: a multi-tenant platform cannot read one tenant's Zoho grant
+        # from a process-wide ``ZOHO_*`` variable, and every real caller already
+        # passes the decrypted credential for the connection it means.
+        if credentials is None:
+            raise ValueError(
+                "ZohoTransport requires credentials for a specific connection. "
+                "Add the company under Settings → Connections; there is no "
+                "environment-variable fallback.")
+        creds = credentials
         self._creds = creds
         self._base = creds.api_base.rstrip("/")
         self._accounts = creds.accounts_base.rstrip("/")
@@ -471,6 +470,10 @@ class ZohoTransport:
             # Zoho knows which zone the books are kept in; asking the operator
             # to type it again is asking them to get it wrong.
             "time_zone": (match or {}).get("time_zone"),
+            # And which country they are kept in — the statutory screens gate
+            # on it (commercial/jurisdiction), and Zoho states it on the same
+            # organization profile the zone comes from.
+            "country": (match or {}).get("country"),
             "visible_organizations": [
                 {"organization_id": str(o.get("organization_id")), "name": o.get("name")}
                 for o in orgs
@@ -872,14 +875,25 @@ class ZohoApiSource(ZohoTransport):
         # the periodic full pass, not by this one. See `modified_since`.
         high_water = None if self._full_listing else self.modified_since.get(kind)
         sort_column = "last_modified_time" if high_water else "date"
+        # The mark arrives canonical — `mark_ingested` rewrites every stamp it
+        # can onto the UTC line (`clock.utc_stamp`) and `ingested_high_water`
+        # maxes over only those — so the listed stamps below must be rewritten
+        # the same way before comparing. Zoho lists in the book's own offset
+        # dress; compared raw against a `Z` mark, a truly-newer edit can read
+        # as at-or-below it and the listing stops before fetching it. The
+        # fallback keeps a mark set verbatim (fixtures) comparing as before.
+        high_water = utc_stamp(high_water) or high_water
         stopped_early = False
 
         for row in self._paginate(path, list_key, sort_column=sort_column,
                                   sort_order="D", **self._window()):
             if high_water:
-                stamp = str(row.get("last_modified_time") or "")
+                stamp = utc_stamp(str(row.get("last_modified_time") or ""))
                 # Sorted newest-modified first, so the first row at or below the
-                # high-water mark means every row after it is too.
+                # high-water mark means every row after it is too. A stamp that
+                # cannot be placed on the UTC line cannot be compared and never
+                # stops the listing: listing too much is a cost, stopping on a
+                # guess is a hole.
                 if stamp and stamp <= high_water:
                     stopped_early = True
                     self.listings_short_circuited += 1

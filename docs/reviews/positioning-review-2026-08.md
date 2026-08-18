@@ -147,6 +147,17 @@ live.
 security review, and the rest of `trust/` is sound enough that closing this one
 gap would validate it.
 
+*Status note, 2026-08-16 — closed since this review.* The receipt no longer
+claims crypto-shredding: it names the DEK destruction as the method and
+enumerates both what the key loss reached (`erasure.DESTROYED` — the two
+DEK-encrypted field classes) and what stays readable in plaintext
+(`erasure.SURVIVES_PLAINTEXT`, `customers.name` and `products.name` included,
+each with its reason). The attestation is stamped on the receipt row and
+covered by the signature, and `test_trust_controls.py` fails if the
+surviving-plaintext enumeration is removed. Erasure behaviour itself is
+unchanged — encrypting the plaintext columns remains the separate project this
+finding said it was.
+
 ### 3.6 Smaller, still real — **[R]**
 
 - **`config.target_margin_by_family` keys are parser vocabulary with nothing binding them.** A pack rename silently drops every line to `target_margin_default`. `test_floor_families.py:68` already does exactly this job for `m_floor_by_family`; the counterpart test was never written.

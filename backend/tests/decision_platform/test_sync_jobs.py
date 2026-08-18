@@ -16,12 +16,11 @@ from datetime import date, datetime, timedelta, timezone
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
+import dbsupport
 from app.config import settings
-from app.db import Base, get_session
+from app.db import get_session
 from app.domain import models
 from app.ingestion import jobs
 from app.routers import data_status, platform_auth
@@ -44,9 +43,7 @@ class Empty:
 
 @pytest.fixture()
 def client(monkeypatch):
-    engine = create_engine("sqlite://", connect_args={"check_same_thread": False},
-                           poolclass=StaticPool, future=True)
-    Base.metadata.create_all(engine)
+    engine = dbsupport.fresh_engine()
     Maker = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False,
                          future=True)
     s = Maker()

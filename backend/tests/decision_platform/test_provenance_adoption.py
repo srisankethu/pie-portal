@@ -10,10 +10,10 @@ item beside it. In the field that produced two of everything — one row reading
 from __future__ import annotations
 
 import pytest
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import sessionmaker
 
-from app.db import Base
+import dbsupport
 from app.domain import models
 from app.ingestion.mock_source import FixtureZohoSource
 from app.ingestion.sync import SyncService
@@ -23,8 +23,7 @@ ORG = "org_prov"
 
 @pytest.fixture()
 def session():
-    engine = create_engine("sqlite://")
-    Base.metadata.create_all(engine)
+    engine = dbsupport.fresh_engine()
     s = sessionmaker(bind=engine)()
     s.add(models.Organization(organization_id=ORG, name="Provenance"))
     s.commit()

@@ -13,6 +13,7 @@ from app.config import settings
 from app.ingestion.zoho_client import (
     ZohoApiSource,
     ZohoAuthError,
+    ZohoCredentials,
     ZohoError,
     ZohoThrottleError,
     configured_since,
@@ -54,12 +55,23 @@ class FakeHttp:
         return FakeResponse({"code": 0, "page_context": {"has_more_page": False}})
 
 
+# One tenant's Zoho grant, for the tests that build a source directly. The
+# environment credential fallback is gone, so every source is constructed with
+# credentials; `_src` supplies these unless a test passes its own.
+_TEST_CREDS = ZohoCredentials(
+    organization_id="60036630487", client_id="cid",
+    client_secret="csec", refresh_token="rtok")
+
+
+def _src(http=None, **kw):
+    kw.setdefault("credentials", _TEST_CREDS)
+    return ZohoApiSource(http=http, **kw)
+
+
 @pytest.fixture(autouse=True)
-def _creds(monkeypatch):
-    monkeypatch.setattr(settings, "ZOHO_ORGANIZATION_ID", "60036630487")
-    monkeypatch.setattr(settings, "ZOHO_CLIENT_ID", "cid")
-    monkeypatch.setattr(settings, "ZOHO_CLIENT_SECRET", "csec")
-    monkeypatch.setattr(settings, "ZOHO_REFRESH_TOKEN", "rtok")
+def _tuning(monkeypatch):
+    # Pull tuning only — the ZOHO_* credential settings were removed with the
+    # environment fallback; a source carries its own credentials now.
     monkeypatch.setattr(settings, "ZOHO_HISTORY_DAYS", 730)
     monkeypatch.setattr(settings, "ZOHO_SYNC_FROM", "")
 
@@ -79,17 +91,18 @@ def _today(offset_days: int = 0) -> str:
 
 
 # ── credentials ─────────────────────────────────────────────────────────────
-def test_missing_credentials_name_what_is_missing(monkeypatch):
-    monkeypatch.setattr(settings, "ZOHO_REFRESH_TOKEN", "")
+def test_missing_credentials_name_what_is_missing():
+    creds = ZohoCredentials(organization_id="999999", client_id="cid",
+                            client_secret="csec", refresh_token="")
     with pytest.raises(ZohoAuthError) as e:
-        ZohoApiSource(http=FakeHttp({})).list_items().__iter__().__next__()
+        _src(http=FakeHttp({}), credentials=creds).list_items().__iter__().__next__()
     assert "refresh_token" in str(e.value)
 
 
 def test_a_rejected_refresh_token_points_at_the_token_and_the_data_centre():
     http = FakeHttp({}, token_body={"error": "invalid_code"})
     with pytest.raises(ZohoAuthError) as e:
-        list(ZohoApiSource(http=http).list_items())
+        list(_src(http=http).list_items())
     assert "data centre" in str(e.value)
     assert "refresh token" in str(e.value)
 
@@ -106,7 +119,7 @@ def test_a_rejected_client_secret_does_not_blame_the_data_centre():
     """
     http = FakeHttp({}, token_body={"error": "invalid_client_secret"})
     with pytest.raises(ZohoAuthError) as e:
-        list(ZohoApiSource(http=http).list_items())
+        list(_src(http=http).list_items())
     message = str(e.value)
 
     assert "invalid_client_secret" in message, "Zoho's own code stays in the message"
@@ -121,23 +134,17 @@ def test_a_stored_connection_is_not_told_to_check_an_environment_variable():
     """Whoever sees this typed the data centre into a form on the same screen.
 
     Naming ``ZOHO_ACCOUNTS_BASE`` at them sends an owner looking for a variable
-    that has no bearing on their connection and that they cannot edit from
-    where they are standing — while the environment fallback, which *is* fixed
-    that way, gets the same sentence and is equally unserved by it.
+    that has no bearing on their connection and that they cannot edit from where
+    they are standing. Every connection is a stored one now, so the message
+    always points at the connection rather than at a variable.
     """
-    from app.ingestion.zoho_client import ZohoCredentials
-
     stored = ZohoCredentials(organization_id="999999", client_id="cid",
                              client_secret="csec", refresh_token="rtok")
     http = FakeHttp({}, token_body={"error": "invalid_code"})
     with pytest.raises(ZohoAuthError) as e:
-        list(ZohoApiSource(http=http, credentials=stored).list_items())
+        list(_src(http=http, credentials=stored).list_items())
     assert "ZOHO_ACCOUNTS_BASE" not in str(e.value)
     assert "this connection" in str(e.value)
-
-    with pytest.raises(ZohoAuthError) as e:
-        list(ZohoApiSource(http=FakeHttp({}, token_body={"error": "invalid_code"})).list_items())
-    assert "ZOHO_* environment variables" in str(e.value)
 
 
 def test_an_unrecognised_token_error_names_all_three_parts_rather_than_guessing():
@@ -150,7 +157,7 @@ def test_an_unrecognised_token_error_names_all_three_parts_rather_than_guessing(
     """
     http = FakeHttp({}, token_body={"error": "some_new_zoho_code"})
     with pytest.raises(ZohoAuthError) as e:
-        list(ZohoApiSource(http=http).list_items())
+        list(_src(http=http).list_items())
     message = str(e.value)
     assert "some_new_zoho_code" in message
     for part in ("client id", "client secret", "refresh token"):
@@ -160,7 +167,7 @@ def test_an_unrecognised_token_error_names_all_three_parts_rather_than_guessing(
 def test_access_token_is_reused_across_calls():
     http = FakeHttp({"/items": {"code": 0, "items": [], "page_context": {"has_more_page": False}},
                      "/contacts": {"code": 0, "contacts": [], "page_context": {"has_more_page": False}}})
-    src = ZohoApiSource(http=http)
+    src = _src(http=http)
     list(src.list_items())
     list(src.list_contacts())
     assert http.token_calls == 1, "the hourly token must not be re-fetched per call"
@@ -168,17 +175,16 @@ def test_access_token_is_reused_across_calls():
 
 def test_organization_id_is_sent_on_every_call():
     http = FakeHttp({"/items": {"code": 0, "items": [], "page_context": {"has_more_page": False}}})
-    list(ZohoApiSource(http=http).list_items())
+    list(_src(http=http).list_items())
     assert all(p.get("organization_id") == "60036630487" for _, p in http.gets)
 
 
-# ── explicit credentials (multi-tenant) ─────────────────────────────────────
-def test_explicit_credentials_are_used_instead_of_settings():
-    """The multi-tenant contract: passing credentials must fully override the
-    process-wide settings, not merely supplement them — two tenants running in
-    the same process must never blend into one another's Zoho account."""
-    from app.ingestion.zoho_client import ZohoCredentials
-
+# ── credentials are per-source (multi-tenant) ───────────────────────────────
+def test_each_source_uses_the_credentials_it_was_given():
+    """The multi-tenant contract: a source reads exactly the credential it was
+    constructed with — two tenants running in the same process must never blend
+    into one another's Zoho account. There is no process-wide credential to
+    leak between them."""
     creds = ZohoCredentials(organization_id="999999", client_id="other-cid",
                             client_secret="other-csec", refresh_token="other-rtok",
                             accounts_base="https://accounts.zoho.eu",
@@ -191,15 +197,13 @@ def test_explicit_credentials_are_used_instead_of_settings():
     assert all(u.startswith("https://www.zohoapis.eu/books/v3") for u, _ in http.gets)
 
 
-def test_omitted_credentials_still_fall_back_to_settings():
-    """Backward compatibility: existing single-tenant deployments and every
-    test in this file that constructs ZohoApiSource(http=...) with no
-    credentials argument must keep reading from settings unchanged."""
-    from app.ingestion.zoho_client import ZohoCredentials
-
-    src = ZohoApiSource(http=FakeHttp({}))
-    assert src._creds == ZohoCredentials.from_settings()
-    assert src._org == "60036630487"
+def test_omitting_credentials_is_an_error_not_an_environment_fallback():
+    """The environment fallback is gone: a source built with no credentials
+    cannot silently borrow a process-wide ZOHO_* grant — that is exactly the
+    cross-tenant leak a multi-tenant platform must not have. It refuses instead,
+    naming where a connection is configured."""
+    with pytest.raises(ValueError, match="requires credentials"):
+        ZohoApiSource(http=FakeHttp({}))
 
 
 # ── shapes the normalizer expects ───────────────────────────────────────────
@@ -208,7 +212,7 @@ def test_contacts_are_mapped_to_the_normalizer_shape():
         "code": 0,
         "contacts": [{"contact_id": 123, "contact_name": "4U Customer", "status": "active"}],
         "page_context": {"has_more_page": False}}})
-    rows = list(ZohoApiSource(http=http).list_contacts())
+    rows = list(_src(http=http).list_contacts())
     # gst_no rides along for the identity layer. Present as None rather than
     # absent when the edition has no such field, so a caller never has to guess
     # whether the key was missing or the value was.
@@ -224,7 +228,7 @@ def test_a_contacts_gstin_reaches_the_identity_layer():
         "contacts": [{"contact_id": 1, "contact_name": "ABC",
                       "gst_no": "29ABCDE1234F1Z5", "status": "active"}],
         "page_context": {"has_more_page": False}}})
-    assert list(ZohoApiSource(http=http).list_contacts())[0]["gst_no"] == "29ABCDE1234F1Z5"
+    assert list(_src(http=http).list_contacts())[0]["gst_no"] == "29ABCDE1234F1Z5"
 
 
 def test_an_items_sku_reaches_the_identity_layer():
@@ -233,7 +237,7 @@ def test_an_items_sku_reaches_the_identity_layer():
         "items": [{"item_id": 7, "name": "KCMT 090304 LF", "sku": "KCMT090304LF",
                    "status": "active"}],
         "page_context": {"has_more_page": False}}})
-    assert list(ZohoApiSource(http=http).list_items())[0]["sku"] == "KCMT090304LF"
+    assert list(_src(http=http).list_items())[0]["sku"] == "KCMT090304LF"
 
 
 def test_invoice_detail_is_fetched_for_line_items():
@@ -247,7 +251,7 @@ def test_invoice_detail_is_fetched_for_line_items():
             {"line_item_id": 2, "item_id": None, "quantity": 1, "rate": 100},  # comment row
         ]}}
     http = FakeHttp({"/invoices/INV1": detail, "/invoices": listing})
-    rows = list(ZohoApiSource(http=http).list_invoices())
+    rows = list(_src(http=http).list_invoices())
     assert len(rows) == 1
     assert rows[0]["customer_id"] == "55"
     # the comment row (no item_id) is not a product line
@@ -268,7 +272,7 @@ def test_bill_discount_fields_are_passed_through_raw():
         "line_items": [{"line_item_id": 1, "item_id": 9, "quantity": 1, "rate": 3166,
                         "discount": "50%", "discount_amount": 1583, "item_total": 1583}]}}
     http = FakeHttp({"/bills/B1": detail, "/bills": listing})
-    row = list(ZohoApiSource(http=http).list_bills())[0]
+    row = list(_src(http=http).list_bills())[0]
     line = row["line_items"][0]
     assert line["rate"] == 3166
     assert line["discount"] == "50%"
@@ -291,7 +295,7 @@ def test_the_currency_a_document_is_denominated_in_survives_the_projection():
         "currency_code": "EUR", "exchange_rate": 90.5,
         "line_items": [{"line_item_id": 1, "item_id": 9, "quantity": 1,
                         "rate": 100, "item_total": 100}]}}
-    row = list(ZohoApiSource(http=FakeHttp(
+    row = list(_src(http=FakeHttp(
         {"/invoices/I1": inv_detail, "/invoices": inv_listing})).list_invoices())[0]
     assert row["currency_code"] == "EUR"
     assert row["exchange_rate"] == 90.5
@@ -304,7 +308,7 @@ def test_the_currency_a_document_is_denominated_in_survives_the_projection():
         "exchange_rate": 83.2,
         "line_items": [{"line_item_id": 1, "item_id": 9, "quantity": 1,
                         "rate": 100, "item_total": 100}]}}
-    row = list(ZohoApiSource(http=FakeHttp(
+    row = list(_src(http=FakeHttp(
         {"/bills/B1": bill_detail, "/bills": bill_listing})).list_bills())[0]
     assert row["currency_code"] == "USD"
     assert row["exchange_rate"] == 83.2
@@ -322,7 +326,7 @@ def test_live_rows_normalize_without_error():
     http = FakeHttp({"/invoices/INV1": detail, "/invoices": listing,
                      "/contacts": {"code": 0, "contacts": [{"contact_id": 1, "contact_name": "A"}],
                                    "page_context": {"has_more_page": False}}})
-    src = ZohoApiSource(http=http)
+    src = _src(http=http)
     assert normalize_customer(list(src.list_contacts())[0]).external_id == "1"
     txns = normalize_invoice(list(src.list_invoices())[0])
     assert txns[0].external_ref == "INV1:1" and float(txns[0].line_revenue) == 200.0
@@ -335,7 +339,7 @@ def test_draft_and_void_documents_are_not_trade():
         {"invoice_id": "V1", "date": _today(1), "status": "void"},
     ], "page_context": {"has_more_page": False}}
     http = FakeHttp({"/invoices": listing})
-    assert list(ZohoApiSource(http=http).list_invoices()) == []
+    assert list(_src(http=http).list_invoices()) == []
     assert not any("/invoices/" in u for u, _ in http.gets), "no detail call for excluded docs"
 
 
@@ -344,7 +348,7 @@ def test_history_older_than_the_window_is_not_pulled(monkeypatch):
     listing = {"code": 0, "invoices": [{"invoice_id": "OLD", "date": _today(400), "status": "paid"}],
                "page_context": {"has_more_page": False}}
     http = FakeHttp({"/invoices": listing})
-    assert list(ZohoApiSource(http=http).list_invoices()) == []
+    assert list(_src(http=http).list_invoices()) == []
 
 
 # ── pagination + errors ─────────────────────────────────────────────────────
@@ -357,7 +361,7 @@ def test_pagination_follows_has_more_page():
         return {"code": 0, "items": [{"item_id": 2, "name": "two"}],
                 "page_context": {"has_more_page": False}}
 
-    rows = list(ZohoApiSource(http=FakeHttp({"/items": items})).list_items())
+    rows = list(_src(http=FakeHttp({"/items": items})).list_items())
     assert [r["item_id"] for r in rows] == ["1", "2"]
 
 
@@ -366,13 +370,13 @@ def test_pagination_is_bounded(monkeypatch):
     endless = {"code": 0, "items": [{"item_id": 1, "name": "x"}],
                "page_context": {"has_more_page": True}}
     http = FakeHttp({"/items": endless})
-    assert len(list(ZohoApiSource(http=http).list_items())) == 3
+    assert len(list(_src(http=http).list_items())) == 3
 
 
 def test_api_error_body_is_surfaced():
     http = FakeHttp({"/items": {"code": 1005, "message": "scope is not permitted"}})
     with pytest.raises(ZohoError) as e:
-        list(ZohoApiSource(http=http).list_items())
+        list(_src(http=http).list_items())
     assert "scope is not permitted" in str(e.value)
 
 
@@ -381,7 +385,7 @@ def test_ping_reports_when_the_org_is_not_visible():
         "code": 0,
         "organizations": [{"organization_id": "999", "name": "Some Other Co",
                            "currency_code": "INR"}]}})
-    out = ZohoApiSource(http=http).ping()
+    out = _src(http=http).ping()
     assert out["authenticated"] is True
     assert out["organization_found"] is False
     assert out["visible_organizations"][0]["organization_id"] == "999"
@@ -411,7 +415,7 @@ def test_a_429_is_waited_out_in_tens_of_seconds_not_one(waits):
                 return FakeResponse({"message": "too many requests"}, status=429)
             return FakeResponse(body)
 
-    rows = list(ZohoApiSource(http=Throttling({})).list_items())
+    rows = list(_src(http=Throttling({})).list_items())
     assert [r["item_id"] for r in rows] == ["1"], "it must recover, not give up"
     backoffs = [w for w in waits if w >= 1]      # the rest is ordinary pacing
     assert len(backoffs) == 2 and min(backoffs) >= 10, \
@@ -432,7 +436,7 @@ def test_zoho_s_own_retry_after_beats_our_guess(waits):
             return FakeResponse({"code": 0, "items": [],
                                  "page_context": {"has_more_page": False}})
 
-    list(ZohoApiSource(http=Throttling()).list_items())
+    list(_src(http=Throttling()).list_items())
     assert 7 in waits, f"Retry-After was ignored: {waits}"
 
 
@@ -446,7 +450,7 @@ def test_being_throttled_out_says_the_work_so_far_is_kept(monkeypatch, waits):
             return FakeResponse({"message": "too many requests"}, status=429)
 
     with pytest.raises(ZohoThrottleError) as e:
-        list(ZohoApiSource(http=AlwaysThrottled({})).list_items())
+        list(_src(http=AlwaysThrottled({})).list_items())
     assert "resume" in str(e.value) and "kept" in str(e.value)
 
 
@@ -461,7 +465,7 @@ def test_calls_are_paced_to_stay_under_the_limit(monkeypatch):
         return {"code": 0, "items": [{"item_id": page, "name": "x"}],
                 "page_context": {"has_more_page": page < 3}}
 
-    list(ZohoApiSource(http=FakeHttp({"/items": items})).list_items())
+    list(_src(http=FakeHttp({"/items": items})).list_items())
     # three calls, so two gaps to hold: 60rpm ⇒ one second apart
     assert len([w for w in waited if w > 0.5]) == 2, waited
 
@@ -480,7 +484,7 @@ def test_documents_already_held_are_not_fetched_again():
                                      "date": _today(2), "line_items": []}}
     http = FakeHttp({"/invoices/NEW": detail, "/invoices": listing})
 
-    src = ZohoApiSource(http=http)
+    src = _src(http=http)
     rows = list(src.list_invoices(skip=lambda doc_id, mod: doc_id == "OLD"))
 
     assert [r["invoice_id"] for r in rows] == ["NEW"]
@@ -500,7 +504,7 @@ def test_a_document_edited_in_zoho_is_pulled_again():
     http = FakeHttp({"/invoices/INV1": detail, "/invoices": listing})
 
     held = {"INV1": "2026-07-01T10:00:00+0530"}       # an older stamp
-    rows = list(ZohoApiSource(http=http).list_invoices(
+    rows = list(_src(http=http).list_invoices(
         skip=lambda doc_id, mod: doc_id in held and mod == held[doc_id]))
     assert [r["invoice_id"] for r in rows] == ["INV1"]
 
@@ -514,7 +518,7 @@ def test_an_explicit_start_date_overrides_the_rolling_window():
     detail = {"code": 0, "invoice": {"invoice_id": "IN", "customer_id": "9",
                                      "date": "2025-06-01", "line_items": []}}
     http = FakeHttp({"/invoices/IN": detail, "/invoices": listing})
-    rows = list(ZohoApiSource(http=http, since=date(2025, 1, 1)).list_invoices())
+    rows = list(_src(http=http, since=date(2025, 1, 1)).list_invoices())
     assert [r["invoice_id"] for r in rows] == ["IN"]
 
 
@@ -531,7 +535,7 @@ def test_the_salesperson_on_an_invoice_is_carried_through():
     detail = {"code": 0, "invoice": {
         "invoice_id": "INV1", "customer_id": "9", "date": _today(3),
         "salesperson_id": 4455, "salesperson_name": "R. Nair", "line_items": []}}
-    row = list(ZohoApiSource(http=FakeHttp({"/invoices/INV1": detail,
+    row = list(_src(http=FakeHttp({"/invoices/INV1": detail,
                                             "/invoices": listing})).list_invoices())[0]
     assert row["salesperson_id"] == "4455" and row["salesperson_name"] == "R. Nair"
 
@@ -541,7 +545,7 @@ def test_ping_confirms_the_configured_org():
         "code": 0,
         "organizations": [{"organization_id": "60036630487", "name": "4U Precision",
                            "currency_code": "INR"}]}})
-    out = ZohoApiSource(http=http).ping()
+    out = _src(http=http).ping()
     assert out["organization_found"] is True and out["organization_name"] == "4U Precision"
 
 
@@ -555,7 +559,7 @@ def test_the_item_master_is_read_including_inactive_items():
     missing item."""
     http = FakeHttp({"items": {"code": 0, "items": [],
                                "page_context": {"has_more_page": False}}})
-    list(ZohoApiSource(http=http).list_items())
+    list(_src(http=http).list_items())
     _url, params = http.gets[0]
     assert params.get("filter_by") == "Status.All"
 
@@ -565,7 +569,7 @@ def test_contacts_are_read_including_inactive_ones():
     cannot quietly start dropping dormant accounts the way /items does."""
     http = FakeHttp({"contacts": {"code": 0, "contacts": [],
                                   "page_context": {"has_more_page": False}}})
-    src = ZohoApiSource(http=http)
+    src = _src(http=http)
     list(src.list_contacts())
     list(src.list_vendors())
     assert [p.get("filter_by") for _u, p in http.gets] == ["Status.All", "Status.All"]
@@ -585,7 +589,7 @@ def test_a_scope_refusal_names_the_scope_and_not_the_credentials():
     http.get = lambda url, params=None, headers=None, **kw: refusal   # type: ignore[assignment]
 
     with pytest.raises(ZohoScopeError) as caught:
-        list(ZohoApiSource(http=http).list_customer_payments())
+        list(_src(http=http).list_customer_payments())
     assert caught.value.scope == "ZohoBooks.customerpayments.READ"
     message = str(caught.value)
     assert "ZohoBooks.customerpayments.READ" in message
@@ -603,7 +607,7 @@ def test_a_genuine_token_rejection_is_still_reported_as_one():
     http.get = lambda url, params=None, headers=None, **kw: refusal   # type: ignore[assignment]
 
     with pytest.raises(ZohoAuthError) as caught:
-        list(ZohoApiSource(http=http).list_customer_payments())
+        list(_src(http=http).list_customer_payments())
     assert not isinstance(caught.value, ZohoScopeError)
     assert "data centre" in str(caught.value)
 
@@ -686,7 +690,7 @@ def test_the_probe_separates_a_refused_scope_from_the_granted_ones():
     """What ``ping`` could never answer. ``organizations`` sits behind no scope,
     so a connection granted nothing else still pings green — the probe is the
     only thing that tells a whole grant from a login."""
-    source = ZohoApiSource(http=_probe_http(refused={"customerpayments"}))
+    source = _src(http=_probe_http(refused={"customerpayments"}))
 
     by_scope = {r["scope"]: r for r in source.probe_scopes()}
     assert by_scope["ZohoBooks.customerpayments.READ"]["granted"] is False
@@ -700,7 +704,7 @@ def test_an_endpoint_the_probe_could_not_reach_is_unknown_and_not_granted():
     """Absence of evidence is not a pass (§1). A 5xx, a timeout or a body that
     will not parse says nothing about the grant, and recording it as granted
     would hand back a green check built out of a question nobody answered."""
-    source = ZohoApiSource(http=_probe_http(broken={"bills"}))
+    source = _src(http=_probe_http(broken={"bills"}))
 
     by_scope = {r["scope"]: r for r in source.probe_scopes()}
     assert by_scope["ZohoBooks.bills.READ"]["granted"] is None
@@ -712,7 +716,7 @@ def test_a_dead_token_stops_the_probe_rather_than_blaming_every_scope():
     """A revoked credential refuses all ten endpoints. Reporting that as ten
     missing permissions would send somebody to the Zoho console to re-grant
     scopes they already have, when the token is the thing that died."""
-    source = ZohoApiSource(http=_probe_http(token_refusal=True))
+    source = _src(http=_probe_http(token_refusal=True))
 
     with pytest.raises(ZohoAuthError) as caught:
         source.probe_scopes()
@@ -729,7 +733,7 @@ def test_a_draft_order_is_not_a_commitment():
         {"salesorder_id": "S1", "date": _today(1), "status": "open",
          "customer_id": "c1", "total": 1000},
     ], "page_context": {"has_more_page": False}}
-    rows = list(ZohoApiSource(http=FakeHttp({"/salesorders": listing})).list_sales_orders())
+    rows = list(_src(http=FakeHttp({"/salesorders": listing})).list_sales_orders())
     assert [r["salesorder_id"] for r in rows] == ["S1"]
 
 
@@ -743,7 +747,7 @@ def test_an_order_is_read_from_the_list_row_alone():
          "total": 1000, "salesperson_id": "u9"},
     ], "page_context": {"has_more_page": False}}
     http = FakeHttp({"/salesorders": listing})
-    row = list(ZohoApiSource(http=http).list_sales_orders())[0]
+    row = list(_src(http=http).list_sales_orders())[0]
     assert not any("/salesorders/" in u for u, _ in http.gets)
     assert row["salesorder_number"] == "SO-1" and row["shipped_status"] == "pending"
 
@@ -758,7 +762,7 @@ def test_orders_and_payments_older_than_the_window_are_not_pulled(monkeypatch):
             {"payment_id": "OLD", "date": _today(400), "amount": 100}],
             "page_context": {"has_more_page": False}},
     })
-    src = ZohoApiSource(http=http)
+    src = _src(http=http)
     assert list(src.list_sales_orders()) == []
     assert list(src.list_vendor_payments()) == []
 
@@ -769,7 +773,7 @@ def test_a_payment_out_keeps_its_amount_and_reference():
          "amount": 80000.25, "payment_mode": "banktransfer",
          "reference_number": "NEFT-8891"},
     ], "page_context": {"has_more_page": False}}
-    row = list(ZohoApiSource(http=FakeHttp({"/vendorpayments": listing})).list_vendor_payments())[0]
+    row = list(_src(http=FakeHttp({"/vendorpayments": listing})).list_vendor_payments())[0]
     assert row["payment_id"] == "P1" and row["vendor_id"] == "v1"
     assert row["reference_number"] == "NEFT-8891"
 
@@ -798,7 +802,7 @@ def test_the_stamp_stored_is_the_stamp_the_next_run_compares():
         "line_items": []}}
     http = FakeHttp({"/invoices/A": detail, "/invoices": listing})
 
-    (row,) = list(ZohoApiSource(http=http).list_invoices())
+    (row,) = list(_src(http=http).list_invoices())
     assert row["last_modified_time"] == "2026-07-02T10:00:00+0530", (
         "the stamp handed to the sync must be the one the resume check will "
         "see next time, or nothing is ever skipped")
@@ -823,7 +827,7 @@ def test_a_second_run_skips_everything_when_nothing_changed():
             "last_modified_time": "ALSO DIFFERENT", "line_items": []}},
     }
 
-    first = ZohoApiSource(http=FakeHttp({**details, "/invoices": listing}))
+    first = _src(http=FakeHttp({**details, "/invoices": listing}))
     held = {r["invoice_id"]: r["last_modified_time"] for r in first.list_invoices()}
     assert len(held) == 2
 
@@ -834,7 +838,7 @@ def test_a_second_run_skips_everything_when_nothing_changed():
         return not modified_at or modified_at == held[doc_id]
 
     http = FakeHttp({**details, "/invoices": listing})
-    second = ZohoApiSource(http=http)
+    second = _src(http=http)
     rows = list(second.list_invoices(skip=already_have))
 
     assert rows == [], "an unchanged book must cost no detail calls at all"
@@ -852,7 +856,7 @@ def test_an_edited_document_is_still_re_read():
     ], "page_context": {"has_more_page": False}}
     detail = {"code": 0, "invoice": {"invoice_id": "A", "customer_id": "9",
                                      "date": _today(2), "line_items": []}}
-    src = ZohoApiSource(http=FakeHttp({"/invoices/A": detail, "/invoices": listing}))
+    src = _src(http=FakeHttp({"/invoices/A": detail, "/invoices": listing}))
     rows = list(src.list_invoices(
         skip=lambda d, m: d in held and (not m or m == held[d])))
     assert [r["invoice_id"] for r in rows] == ["A"]
@@ -871,7 +875,7 @@ def test_the_invoice_header_reaches_the_receivables_fold():
         "invoice_id": "A", "invoice_number": "INV-1", "customer_id": "9",
         "date": _today(2), "due_date": _today(1), "status": "overdue",
         "total": "16700", "balance": "16700", "line_items": []}}
-    (row,) = list(ZohoApiSource(
+    (row,) = list(_src(
         http=FakeHttp({"/invoices/A": detail, "/invoices": listing})).list_invoices())
 
     assert row["balance"] == "16700"
@@ -954,7 +958,7 @@ def _one_invoice_routes():
 
 
 def test_the_invoice_projection_keeps_the_names_the_skip_report_reads():
-    src = ZohoApiSource(http=FakeHttp(_one_invoice_routes()))
+    src = _src(http=FakeHttp(_one_invoice_routes()))
     [inv] = list(src.list_invoices())
 
     assert inv["customer_name"] == "Sandvik Mining"
@@ -976,7 +980,7 @@ def test_the_bill_projection_keeps_the_names_the_skip_report_reads():
             {"line_item_id": "l1", "item_id": "i1",
              "name": "CNMG 120408 KCP25", "sku": "K-1204",
              "description": "insert", "quantity": 40, "rate": 512}]}}
-    src = ZohoApiSource(http=FakeHttp({"bills/71": detail, "bills": listing}))
+    src = _src(http=FakeHttp({"bills/71": detail, "bills": listing}))
     [bill] = list(src.list_bills())
 
     [line] = bill["line_items"]
@@ -998,13 +1002,13 @@ def test_get_item_matches_the_listing_shape_exactly():
         "items": {"code": 0, "items": [item],
                   "page_context": {"has_more_page": False}},
     }
-    src = ZohoApiSource(http=FakeHttp(routes))
+    src = _src(http=FakeHttp(routes))
 
     assert src.get_item("i9") == list(src.list_items())[0]
 
 
 def test_get_item_answers_none_for_a_dead_id_and_raises_for_a_throttle(waits):
-    src = ZohoApiSource(http=FakeHttp({
+    src = _src(http=FakeHttp({
         "items/gone": {"code": 1002, "message": "Resource does not exist"}}))
     assert src.get_item("gone") is None, "a 404 is an answer, not an error"
 
@@ -1016,7 +1020,7 @@ def test_get_item_answers_none_for_a_dead_id_and_raises_for_a_throttle(waits):
             return FakeResponse({"message": "rate limited"}, status=429)
 
     with pytest.raises(ZohoThrottleError):
-        ZohoApiSource(http=Throttling()).get_item("i1")
+        _src(http=Throttling()).get_item("i1")
 
 
 # ── one dead id must not cost the whole stock stage ──────────────────────────
@@ -1037,7 +1041,7 @@ def test_a_dead_id_in_an_itemdetails_batch_is_isolated_not_fatal():
         return {"code": 0, "items": [
             {"item_id": i, "locations": live[i]} for i in ids]}
 
-    src = ZohoApiSource(http=FakeHttp({"itemdetails": itemdetails}))
+    src = _src(http=FakeHttp({"itemdetails": itemdetails}))
     rows = list(src.list_item_locations(["i1", "dead", "i3"]))
 
     assert {r["item_id"] for r in rows} == {"i1", "i3"}, (
@@ -1060,7 +1064,7 @@ def test_a_throttled_itemdetails_batch_is_not_bisected(waits):
             return FakeResponse({"message": "rate limited"}, status=429)
 
     http = Throttling()
-    src = ZohoApiSource(http=http)
+    src = _src(http=http)
     with pytest.raises(ZohoThrottleError):
         list(src.list_item_locations(["i1", "i2", "i3", "i4"]))
     assert http.gets <= settings.ZOHO_MAX_RETRIES, "no bisection storm"

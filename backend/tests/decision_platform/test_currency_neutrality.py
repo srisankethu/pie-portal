@@ -47,7 +47,7 @@ def test_version_is_still_stable_for_identical_policy():
 # ── the tenant's currency, not the deployment's ─────────────────────────────
 def _org(session, org_id="org_x", currency="INR"):
     session.add(models.Organization(organization_id=org_id, name="X",
-                                    erp="zoho", currency=currency, config={}))
+                                    currency=currency, config={}))
     session.flush()
     return org_id
 

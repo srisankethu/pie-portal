@@ -198,7 +198,7 @@ def test_a_written_agreement_with_days_is_accepted(session):
 def test_capturing_against_another_organizations_supplier_is_a_404(session):
     client, token = _api(session)
     session.add(models.Organization(organization_id="org_other", name="Other",
-                                    erp="zoho", currency="INR", config={}))
+                                    currency="INR", config={}))
     other = models.Vendor(organization_id="org_other", external_id="v-x",
                           name="Someone Else", connector="zoho")
     session.add(other)

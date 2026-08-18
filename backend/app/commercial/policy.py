@@ -24,7 +24,7 @@ from __future__ import annotations
 import re
 from dataclasses import replace
 from decimal import Decimal, InvalidOperation
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
 
 from sqlalchemy.orm import Session
 
@@ -324,6 +324,40 @@ def _coerce(field: str, value: Any) -> Any:
     return float(value)
 
 
+def require_known_families(field: str, configured: Iterable[str],
+                           vocabulary: Iterable[str], *, source: str) -> None:
+    """Refuse a key that its bound vocabulary does not declare.
+
+    The one validator for every map whose keys are somebody else's vocabulary
+    (CLAUDE.md §2 — extend, never a sibling). ``target_margin_by_family``,
+    whose keys are the loaded PIE pack's family names, runs through it on the
+    policy write path below; ``m_floor_by_family``, whose keys are
+    ``floor_families``' plus ``default``, is pinned against it in
+    ``tests/decision_platform/test_target_margin_families.py``.
+
+    The write boundary is the only place a bad key is visible at all: both
+    lookups fall through to a default for a name they do not recognise
+    (``config.target_margin`` matches exactly; ``m_floor_for_family`` is
+    lenient over recorded lines), so a typo or a pack rename never errors —
+    it silently reprices every line in that family at the blended default,
+    which is the outcome the per-family map exists to prevent.
+
+    The refusal names the bad keys *and* the vocabulary, the same shape as
+    ``incentive_engine.floor.UnknownFamily``: "invalid" without the valid
+    answers is a puzzle, not an error a person can act on.
+    """
+    known = list(vocabulary)
+    bad = sorted(set(configured) - set(known))
+    if bad:
+        names = ", ".join(repr(b) for b in bad)
+        raise PolicyError(
+            f"{names} {'is' if len(bad) == 1 else 'are'} not in {source}, so "
+            f"no line would ever match — {field.replace('_', ' ')} would look "
+            f"set while every line in "
+            f"{'that family' if len(bad) == 1 else 'those families'} quietly "
+            f"priced at the default. Valid families: {', '.join(known)}.")
+
+
 def validate(th: CommercialThresholds) -> None:
     """Refuse a policy that cannot be satisfied.
 
@@ -350,6 +384,13 @@ def validate(th: CommercialThresholds) -> None:
             f"target margin ({th.target_margin_default:.0%}) — every quote at "
             f"target would be flagged.")
 
+    # The *keys* of the family map are deliberately not checked here. They are
+    # the PIE pack's vocabulary, and this function runs on the whole merged
+    # policy for every save — checking them here would let one stale stored
+    # key (a pack renamed a family after the override was written) block an
+    # owner's edit of an unrelated field. ``load_for_org`` tolerates the stale
+    # key on the read path for the same reason; the binding fires in
+    # ``save_for_org``, only for an edit that touches the map itself.
     for family, margin in th.target_margin_by_family:
         if not (0 <= margin < 1):
             raise PolicyError(f"Target margin for {family} must be between 0 and 1")
@@ -495,6 +536,36 @@ def save_for_org(session: Session, organization_id: str, updates: dict,
 
     candidate = replace(base, **{k: _coerce(k, v) for k, v in current.items()})
     validate(candidate)
+
+    # ``validate`` checked the family names against the PIE pack's declared
+    # vocabulary — when there was a pack to read. Without one there is no
+    # vocabulary, and saving the edit anyway would be the benign default §1
+    # forbids: a key nothing verified, silently pricing its lines at the
+    # blended default. So a family edit is refused, naming what is missing.
+    # *After* ``validate`` on purpose, so a value error (a target below the
+    # approval floor) gets its own, more specific answer whether or not the
+    # pack is present; and only for an edit that touches this map — every
+    # other field's validity owes nothing to the pack, and a missing engine
+    # must not lock an owner out of the rest of their margin policy.
+    if updates.get("target_margin_by_family") is not None:
+        from ..pie_service import pack_families
+        vocabulary = pack_families()
+        if vocabulary is None:
+            from ..config import settings
+            raise PolicyError(
+                "Family targets cannot be edited right now: the PIE pack at "
+                f"{settings.PIE_PACK} is not readable, so there is no family "
+                "vocabulary to check these names against. Fetch pie-parser "
+                "(scripts/setup_pie_parser.sh) or point PIE_PACK at a pack, "
+                "then retry.")
+        # The edit replaces the whole map, so the candidate's map *is* the
+        # incoming one — checking it checks exactly what this save asserts,
+        # and a stale key in some *other* field's save never gets here.
+        require_known_families(
+            "target_margin_by_family",
+            (family for family, _ in candidate.target_margin_by_family),
+            vocabulary,
+            source="the family vocabulary the loaded PIE pack declares")
 
     if row is None:
         row = models.CommercialPolicy(organization_id=organization_id)

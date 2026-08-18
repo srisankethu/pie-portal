@@ -32,8 +32,8 @@ from ..authz import (Principal, can_view_customer, current_principal,
                      require_owner)
 from ..repositories import DecisionRepository
 from .. import approvals, clock
-from ..commercial import (economics, floor, incentive, ownership, policy,
-                          portfolio, principals, quote_service)
+from ..commercial import (economics, floor, incentive, jurisdiction, ownership,
+                          policy, portfolio, principals, quote_service)
 from ..commercial import categories as cat
 from ..commercial.insight import (absence, bonds, cadence, cashflow, cohorts,
                                   composition, credit, cycle,
@@ -2004,9 +2004,12 @@ def _companies(session: Session, org: str) -> list[dict]:
         .where(models.Customer.organization_id == org,
                models.Customer.connection_id.is_not(None))
         .group_by(models.Customer.connection_id)).all())
+    from ..domain.origin import fallback_company_label
+
     return [
         {"connection_id": c.connection_id,
-         "label": c.label or f"Zoho org {c.zoho_organization_id}",
+         "label": c.label or fallback_company_label(
+             getattr(c, "connector", None) or "zoho", c.zoho_organization_id),
          "customers": counts.get(c.connection_id, 0)}
         for c in session.scalars(
             select(models.ZohoConnection).where(
@@ -4078,28 +4081,43 @@ def _last_two_syncs(session: Session, org: str) -> tuple[Optional[dict], Optiona
 
 def _moved_since(session: Session, org: str, since: datetime,
                  companies: Companies,
-                 until: Optional[datetime] = None) -> dict[str, Any]:
-    """What the platform first saw after ``since``, by kind and by company.
+                 until: Optional[datetime] = None,
+                 on_document_dates: bool = False) -> dict[str, Any]:
+    """What moved in the window, by kind and by company — with two calendars.
 
-    Keyed on ``created_at`` — when PIE first wrote the row — not on the
-    document's own date. A purchase order dated last week that arrived in this
-    morning's sync belongs in this morning's briefing, because it is new to the
-    reader. That makes the band "what the platform learned", which is a
-    different claim from "what the business did", and the screen says so.
+    The default reading is keyed on ``created_at`` — when PIE first wrote the
+    row. A purchase order dated last week that arrived in this morning's sync
+    belongs in this morning's briefing, because it is new to the reader. That
+    makes the band "what the platform learned", a different claim from "what
+    the business did", and the screen says so.
+
+    ``on_document_dates`` switches to the document's own date, and exists
+    because the default reading is wrong for exactly the control that looks
+    most natural: somebody pressing **Today** the morning after a first sync
+    was shown the entire book, because every row the platform holds was
+    "first seen" that day. Technically true, useless, and — worse — it reads
+    as data. A person choosing a day means invoices *dated* that day and
+    payments *received* that day; the ingest calendar is only the right answer
+    when nobody chose one. Customers and items stay on ``created_at`` in both
+    modes — a master record has no business date to be counted by — and their
+    tiles say "first seen" either way.
 
     Counted per company here rather than split out of a builder's list: those
     lists are capped, so a breakdown taken from one would not add up to its own
     headline.
     """
-    spec: list[tuple[str, Any, Optional[str]]] = [
-        ("invoices", models.InvoiceDoc, "total"),
-        ("payments", models.PaymentApplication, "amount"),
-        ("purchase_orders", models.PurchaseOrderDoc, "total"),
-        ("customers", models.Customer, None),
-        ("products", models.Product, None),
+    spec: list[tuple[str, Any, Optional[str], Optional[str]]] = [
+        ("invoices", models.InvoiceDoc, "total", "date"),
+        # `amount_applied`, not `amount` — the column check below silently
+        # dropped the sum for years because the name was guessed wrong, so the
+        # "Payments received" tile counted receipts and never said how much.
+        ("payments", models.PaymentApplication, "amount_applied", "paid_on"),
+        ("purchase_orders", models.PurchaseOrderDoc, "total", "date"),
+        ("customers", models.Customer, None, None),
+        ("products", models.Product, None, None),
     ]
     out: dict[str, Any] = {}
-    for key, model, amount_col in spec:
+    for key, model, amount_col, date_col in spec:
         if not hasattr(model, "created_at"):
             continue
         has_conn = hasattr(model, "connection_id")
@@ -4107,12 +4125,19 @@ def _moved_since(session: Session, org: str, since: datetime,
         if amount_col is not None and hasattr(model, amount_col):
             cols.append(func.sum(getattr(model, amount_col)))
         group = [model.connection_id] if has_conn else []
-        bounds = [model.organization_id == org, model.created_at >= since]
-        # Inclusive at the top: ``until`` already carries end-of-day when the
-        # caller chose a date, so a strict `<` here would drop everything that
-        # arrived on the last day of the range somebody asked for.
-        if until is not None:
-            bounds.append(model.created_at <= until)
+        bounds = [model.organization_id == org]
+        if on_document_dates and date_col is not None:
+            business_date = getattr(model, date_col)
+            bounds.append(business_date >= since.date())
+            if until is not None:
+                bounds.append(business_date <= until.date())
+        else:
+            bounds.append(model.created_at >= since)
+            # Inclusive at the top: ``until`` already carries end-of-day when
+            # the caller chose a date, so a strict `<` here would drop
+            # everything that arrived on the last day of the range asked for.
+            if until is not None:
+                bounds.append(model.created_at <= until)
         rows = session.execute(
             select(*group, *cols).where(*bounds).group_by(*group)).all()
 
@@ -4258,7 +4283,10 @@ def daily(moved_from: Optional[date] = Query(None),
     since, until = daily_view.window_since(last_sync, previous_sync,
                                            now=clock.now(),
                                            frm=moved_from, to=moved_to)
-    moved = (_moved_since(session, org, since, companies, until=until)
+    # A chosen day means business dates; no choice means "since the last
+    # sync", by ingest. See `_moved_since` for why the two calendars exist.
+    moved = (_moved_since(session, org, since, companies, until=until,
+                          on_document_dates=moved_from is not None)
              if since else {})
 
     return _envelope(
@@ -4285,6 +4313,36 @@ def daily(moved_from: Optional[date] = Query(None),
 # module in ``commercial/insight`` and map the result — there is no arithmetic
 # here, and the figures that come back are dates and amounts rather than a
 # position anybody should file a return on.
+#
+# All of them are gated on the tenant's jurisdiction before anything else,
+# including the "no bills yet" check: these statutes are Indian law, and for a
+# tenant whose country is not IN — or is not recorded at all — the honest
+# answer is a refusal naming that gap, not Indian deadlines with an
+# explanation attached and not advice to run a sync that would not help.
+
+
+def _statute_refusal(session: Session, org: str, rule) -> Optional[str]:
+    """Why this organization's country blocks a statutory screen, or ``None``.
+
+    ``rule`` is one of the ``commercial/jurisdiction`` refusal functions — the
+    reason text lives there, keyed by country and by statute, so the API and
+    any future caller cannot drift into two wordings of the same refusal.
+    """
+    row = session.get(models.Organization, org)
+    return rule(row.country if row is not None else None)
+
+
+def _statute_refused(reason: str, *, th: Any, empty: dict) -> dict:
+    """The refusal, in the shape the screen already understands.
+
+    The same choice ``selffunding._blocked`` and ``withholding.crossings``
+    make: the envelope of an answer, with the list keys empty, an explicit
+    ``jurisdiction_supported: False``, and ``blocked_by`` naming what is
+    missing — so a caller can never mistake "we are not allowed to say" for
+    "nothing is wrong".
+    """
+    return _envelope({"jurisdiction_supported": False, "blocked_by": reason,
+                      **empty}, th=th, empty_reason=reason)
 
 
 def _msme_statuses(session: Session, org: str) -> dict[str, msme.Status]:
@@ -4349,6 +4407,9 @@ def msme_watchlist(principal: Principal = Depends(require_manager_or_owner),
     be at risk — reported separately and never added to the confirmed total.
     """
     org, _snapshot, th = _labels_only(session, principal)
+    refusal = _statute_refusal(session, org, jurisdiction.msme_refusal)
+    if refusal is not None:
+        return _statute_refused(refusal, th=th, empty={"rows": []})
     as_of = clock.today(th.timezone)
 
     bills = _unpaid_bills(session, org)
@@ -4409,6 +4470,13 @@ def set_msme_status(body: MsmeStatusIn,
     fifteen-day limit to the forty-five-day one.
     """
     org = principal.organization_id
+    # Before the vendor lookup: whether the statute reaches this tenant at all
+    # is prior to which supplier is being classified under it. A 409 rather
+    # than a silent no-op — a captured status that was never stored is exactly
+    # the kind of quiet success §1 forbids.
+    refusal = _statute_refusal(session, org, jurisdiction.msme_refusal)
+    if refusal is not None:
+        raise HTTPException(status.HTTP_409_CONFLICT, refusal)
     vendor = session.get(models.Vendor, body.vendor_id)
     if vendor is None or vendor.organization_id != org:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "No such supplier")
@@ -4460,6 +4528,9 @@ def msme_capture_backlog(principal: Principal = Depends(require_manager_or_owner
     the limit.
     """
     org, _snapshot, th = _labels_only(session, principal)
+    refusal = _statute_refusal(session, org, jurisdiction.msme_refusal)
+    if refusal is not None:
+        return _statute_refused(refusal, th=th, empty={"suppliers": []})
     as_of = clock.today(th.timezone)
     limit_days = int(th.msme_default_days)
 
@@ -4512,6 +4583,12 @@ def withholding_crossings(principal: Principal = Depends(require_manager_or_owne
     gate asserts a duty nobody established applies.
     """
     org, _snapshot, th = _labels_only(session, principal)
+    refusal = _statute_refusal(session, org, jurisdiction.withholding_refusal)
+    if refusal is not None:
+        # Deliberately no ``gate_confirmed`` key here: that flag means "confirm
+        # your turnover in Settings", which is advice that cannot help a tenant
+        # the statute does not reach.
+        return _statute_refused(refusal, th=th, empty={"crossings": []})
     as_of = clock.today(th.timezone)
 
     purchases = [
@@ -4554,9 +4631,20 @@ def self_funding(principal: Principal = Depends(require_owner),
     answers the same question the lines do — the argument `insight/series` makes
     at length, and the reason there is no bucketing in this function.
     """
-    rows, _names, _as_of, _folded = _flow_rows(session, principal)
     org = principal.organization_id
     th = policy.load_for_org(session, org)
+
+    # The reading folds retained profit over *statutory* financial years —
+    # fy_of/fy_bounds, India's April calendar — so it is jurisdictional
+    # exactly like the statute screens above and gates the same way. The
+    # calendar is the dependency here, not the statutes themselves.
+    refusal = _statute_refusal(session, org, jurisdiction.calendar_refusal)
+    if refusal is not None:
+        return _statute_refused(refusal, th=th, empty={
+            "verdict": "UNKNOWN", "confirmed": False, "financial_year": None,
+            "missing_entities": [], "confirmed_years": []})
+
+    rows, _names, _as_of, _folded = _flow_rows(session, principal)
 
     # Only the companies that have actually traded. A connection added this
     # morning has no accounts to close and no revenue in the year, and waiting

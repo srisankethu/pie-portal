@@ -26,18 +26,21 @@ copies of a configuration reference is how one of them ends up wrong.
                           │  never enters the picture
                      ┌────▼──────────────────────────────┐
                      │  api   uvicorn · FastAPI          │
-                     └────┬──────────────────────────────┘
-                          │
-                     ┌────▼──────────────────────────────┐
-                     │  db    Postgres 17   (volume)     │
-                     └───────────────────────────────────┘
+                     └────┬──────────────┬───────────────┘
+                          │              │
+                     ┌────▼─────────┐ ┌──▼────────────────┐
+                     │  db          │ │  redis            │
+                     │  Postgres 17 │ │  provisioned; no  │
+                     │  (volume)    │ │  feature requires │
+                     └──────────────┘ │  it yet (volume)  │
+                                      └───────────────────┘
 
    release   one-shot: alembic upgrade head, then seed. Behind a profile,
              so `up` can never migrate anything.
 ```
 
-Only `web` publishes ports. Postgres is reachable on the compose network and
-nowhere else.
+Only `web` publishes ports. Postgres and Redis are reachable on the compose
+network and nowhere else.
 
 ### The files
 

@@ -11,14 +11,17 @@
  * the props are. The field layout, the busy state, the error announcement and
  * the autocomplete hints are the same in both because there is no reason for
  * them to differ.
+ *
+ * The surround — frame, heading, notice, error, submit — is `AuthCard.tsx`,
+ * because `SignUpCard.tsx` needs the identical one and a second copy of it is
+ * how the drift above starts again.
  */
 import { useState } from "react";
-import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
-import Button from "@mui/material/Button";
-import Paper from "@mui/material/Paper";
+import Link from "@mui/material/Link";
 import TextField from "@mui/material/TextField";
-import Typography from "@mui/material/Typography";
+
+import { AuthCard } from "./AuthCard";
 
 export function SignInCard({
   title,
@@ -27,6 +30,7 @@ export function SignInCard({
   onSubmit,
   notice,
   footer,
+  onSignUp,
   defaultEmail = "",
 }: {
   title: string;
@@ -35,100 +39,78 @@ export function SignInCard({
   /** Throws to show the message; resolves to hand control to the caller. */
   onSubmit: (email: string, password: string) => Promise<void>;
   notice?: string | null;
-  footer?: string;
+  footer?: React.ReactNode;
+  /** The way to the other door, where the deployment has one.
+   *
+   *  This card owns the sentence rather than the caller passing it in, because
+   *  every surface that shows a sign-in form needs the same one and a caller
+   *  that forgets it produces exactly the screen this prop was added to fix: a
+   *  form for an account you cannot get, whose only advice is to ask an owner
+   *  who does not exist. The sign-up form was reachable from a single button on
+   *  the landing page, so arriving here any other way — a shared link, an
+   *  expired session, the "Sign in" in the nav — was a dead end.
+   *
+   *  Absent where sign-up is off (`SELF_SERVE_SIGNUP`, the default), and then
+   *  the caller's footer stands alone: on a single-tenant install "ask whoever
+   *  runs this" is the whole truth. */
+  onSignUp?: () => void;
   defaultEmail?: string;
 }) {
   const [email, setEmail] = useState(defaultEmail);
   const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
-
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
-    setError("");
-    if (!password) return setError("Enter your password.");
-    setBusy(true);
-    try {
-      await onSubmit(email, password);
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  }
 
   return (
-    <Box
-      sx={{
-        minHeight: "100vh",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        p: 3,
+    <AuthCard
+      title={title}
+      blurb={blurb}
+      submitLabel={submitLabel}
+      busyLabel="Signing in…"
+      notice={notice}
+      footer={
+        onSignUp ? (
+          // Two blocks, not one paragraph. They answer different people — a
+          // business that has never used PIE, and somebody joining one that
+          // has — and run together they read as a single wall of small print
+          // that neither reader finishes.
+          <>
+            <Box>
+              New to PIE?{" "}
+              <Link component="button" type="button" onClick={onSignUp} underline="hover">
+                Create your organization
+              </Link>
+              {" — free, and you choose the plan you want."}
+            </Box>
+            {footer ? <Box sx={{ mt: 1.5 }}>{footer}</Box> : null}
+          </>
+        ) : (
+          footer
+        )
+      }
+      onSubmit={async () => {
+        if (!password) throw new Error("Enter your password.");
+        await onSubmit(email, password);
       }}
     >
-      <Paper
-        component="form"
-        onSubmit={submit}
-        variant="outlined"
-        sx={{
-          width: "min(430px, 94vw)",
-          p: 4,
-          borderRadius: "var(--radius-lg)",
-          boxShadow: "var(--shadow-md)",
-          background: "linear-gradient(135deg, var(--color-neutral-100), var(--color-bg))",
-        }}
-      >
-        <Typography variant="h6" color="text.secondary">PIE</Typography>
-        <Typography variant="h2" sx={{ mb: 1 }}>{title}</Typography>
-        <Typography color="text.secondary" sx={{ mb: 3, fontSize: 14 }}>
-          {blurb}
-        </Typography>
-
-        {notice && <Alert severity="info" sx={{ mb: 2 }}>{notice}</Alert>}
-
-        <TextField
-          name="email"
-          type="email"
-          label="Email"
-          autoComplete="username"
-          fullWidth
-          autoFocus
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          sx={{ mb: 2 }}
-        />
-        <TextField
-          name="password"
-          type="password"
-          label="Password"
-          autoComplete="current-password"
-          fullWidth
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-        />
-
-        {/* `role="alert"` so a failed sign-in is announced. The plain div this
-            replaces gave a screen-reader user no signal at all: focus stayed in
-            the field and nothing said why nothing had happened. */}
-        {error && <Alert severity="error" role="alert" sx={{ mt: 2 }}>{error}</Alert>}
-
-        <Button
-          type="submit"
-          variant="contained"
-          fullWidth
-          disabled={busy}
-          sx={{ mt: 3, minHeight: 40 }}
-        >
-          {busy ? "Signing in…" : submitLabel}
-        </Button>
-
-        {footer && (
-          <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 3 }}>
-            {footer}
-          </Typography>
-        )}
-      </Paper>
-    </Box>
+      <TextField
+        name="email"
+        type="email"
+        label="Email"
+        autoComplete="username"
+        fullWidth
+        autoFocus
+        value={email}
+        onChange={(e) => setEmail(e.target.value)}
+        sx={{ mb: 2 }}
+      />
+      <TextField
+        name="password"
+        type="password"
+        label="Password"
+        autoComplete="current-password"
+        fullWidth
+        value={password}
+        onChange={(e) => setPassword(e.target.value)}
+      />
+    </AuthCard>
   );
 }

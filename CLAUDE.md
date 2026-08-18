@@ -2,8 +2,11 @@
 
 An AI-native Commercial Decision Platform for a B2B cutting-tool distributor
 running on Zoho Books, across three legal entities (SLS Engineers, 4U Precision,
-UPS). Python 3.11 / FastAPI / SQLAlchemy 2.0 / Alembic on the backend; React 18 +
-Vite + TypeScript on the front.
+UPS) — and, for US clients, on NetSuite, Dynamics 365 Business Central,
+Acumatica, Epicor Prophet 21 and Sage through the connector registry in
+`ingestion/erp/` (see `docs/connectors.md`). Python 3.11 / FastAPI /
+SQLAlchemy 2.0 / Alembic on the backend; React 18 + Vite + TypeScript on the
+front.
 
 Read `docs/architecture.md` for the design and `docs/development.md` for the
 day-to-day loop. This file is the part that constrains how code gets *added*.
@@ -242,7 +245,10 @@ backend/app/
   decisions/     The seam: deterministic signal in, AI reading out. May import ai/.
   ai/            Providers, prompts, validation, telemetry. Receives facts;
                  never computes them. Never imports commercial/.
-  ingestion/     Zoho adapters, normalisation, connections, credentials.
+  ingestion/     Source adapters (Zoho + the erp/ connector registry),
+                 normalisation, connections, credentials. A new source's
+                 knowledge lives in its own erp/ module; the sync stays
+                 connector-blind.
   identity/      Cross-connector record linking. Never merges, only links.
   trust/         Tenant keys, name vault, pseudonyms, break-glass, disclosure,
                  erasure. Infrastructure — imports neither commercial/ nor ai/.
@@ -537,7 +543,11 @@ with it.
 What it runs, in order: `ruff check .` (rule set in `ruff.toml`, version pinned
 in `backend/requirements-dev.txt`) · the §1 layer invariants · the backend suite
 in parallel · `tsc -b` and the production build · `alembic upgrade head` **on an
-empty database**, then the drift test and the single-head check.
+empty database**, then the drift test and the single-head check — first on
+SQLite, then again on a disposable **PostgreSQL** (the dialect production runs;
+provisioned by `scripts/pg_sandbox.sh`, skipped with a visible note where no
+server binaries exist). To run the whole backend suite on Postgres instead of
+SQLite, set `PIE_TEST_DATABASE_URL` — `docs/postgres.md` has the loop.
 
 It runs every step and reports all failures at the end rather than stopping at
 the first, so one red build tells you everything that is wrong.

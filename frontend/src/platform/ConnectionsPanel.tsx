@@ -1,4 +1,6 @@
+import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
+import Chip from "@mui/material/Chip";
 import MenuItem from "@mui/material/MenuItem";
 import TextField from "@mui/material/TextField";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -9,6 +11,9 @@ import { ErrorState, LoadingState } from "./kit";
 import type {
   ConnectionCheck,
   ConnectionsView,
+  ConnectorCatalogEntry,
+  ConnectorField,
+  ErpDiscoveredCompany,
   NewConnectionInput,
   PlatformSession,
   ZohoConnection,
@@ -42,6 +47,10 @@ import { Bp, Labelled, Tip } from "./ui";
  * the wrong one for entities that must stay apart, so it is stated up front.
  */
 
+// The manual-credentials form stores `accounts_base` (and its paired `api_base`)
+// on the connection — the data centre the refresh token was issued in. A token
+// from one data centre is rejected by every other, so this is the one field a
+// manual connection cannot get wrong silently.
 const DC_PRESETS: { label: string; accounts_base: string; api_base: string }[] = [
   { label: "India (.in)", accounts_base: "https://accounts.zoho.in",
     api_base: "https://www.zohoapis.in/books/v3" },
@@ -93,6 +102,7 @@ function health(c: ZohoConnection, check?: ConnectionCheck | null):
 
 function ConnectionCard({
   conn,
+  catalogEntry,
   canManage,
   canSync,
   onCheck,
@@ -100,11 +110,15 @@ function ConnectionCard({
   onToggle,
   onDelete,
   onRotate,
+  onErpRotate,
   onSync,
   syncing,
   syncBusy,
 }: {
   conn: ZohoConnection;
+  /** The connector's catalog entry — the field list a non-Zoho rotation
+   *  renders from. Undefined for Zoho, whose rotation is the token flow. */
+  catalogEntry?: ConnectorCatalogEntry;
   canManage: boolean;
   canSync: boolean;
   onCheck: (id: string) => Promise<ConnectionCheck | null>;
@@ -113,6 +127,7 @@ function ConnectionCard({
   onDelete: (id: string) => Promise<void>;
   onRotate: (id: string, token: string,
              client?: { client_id: string; client_secret: string }) => Promise<string>;
+  onErpRotate: (id: string, values: Record<string, string>) => Promise<string>;
   onSync: (id: string, since: string, full: boolean) => Promise<void>;
   /** This card's own company is the one being pulled.
    *
@@ -128,6 +143,9 @@ function ConnectionCard({
    *  which company the click was for. */
   syncBusy: boolean;
 }) {
+  // Older cached payloads may predate the discriminator; a row with none is a
+  // Zoho row, because Zoho rows are the only ones that can predate it.
+  const isZoho = (conn.connector ?? "zoho") === "zoho";
   const [renaming, setRenaming] = useState(false);
   const [label, setLabel] = useState(conn.label);
   const [busy, setBusy] = useState(false);
@@ -205,21 +223,33 @@ function ConnectionCard({
             </>
           )}
         </div>
-        <span className={`cx-badge ${h.tone}`}>{h.label}</span>
+        <div className="cx-headright">
+          {/* Which system this book lives in. With every company on one
+              connector this repeats itself, but this is the screen where the
+              distinction is managed, so here it is information. */}
+          <Chip size="small" variant="outlined"
+                label={conn.connector_label ?? "Zoho Books"} />
+          <span className={`cx-badge ${h.tone}`}>{h.label}</span>
+        </div>
       </div>
 
       <dl className="cx-facts">
         <div>
           <dt>
-            <Labelled tip="The company id inside Zoho Books, from Settings → Organization Profile or the id in its URL. It is a request parameter on every call, not part of the login.">
-              Zoho company
+            <Labelled tip={isZoho
+              ? "The company id inside Zoho Books, from Settings → Organization Profile or the id in its URL. It is a request parameter on every call, not part of the login."
+              : `The ${catalogEntry?.company_term ?? "company"} this connection reads, by the id ${conn.connector_label ?? "the source system"} knows it under.`}>
+              {isZoho ? "Zoho company"
+                      : `${conn.connector_label ?? "Source"} ${catalogEntry?.company_term ?? "company"}`}
             </Labelled>
           </dt>
           <dd className="mono">{conn.zoho_organization_id}</dd>
         </div>
         <div>
           <dt>
-            <Labelled tip="The OAuth grant used to reach it. A refresh token belongs to a Zoho user, not a company, so one grant usually serves every company that user can see — and rotating it once covers all of them.">
+            <Labelled tip={isZoho
+              ? "The OAuth grant used to reach it. A refresh token belongs to a Zoho user, not a company, so one grant usually serves every company that user can see — and rotating it once covers all of them."
+              : "The stored sign-in used to reach it. One sign-in can serve several companies, and replacing it once covers all of them."}>
               Sign-in used
             </Labelled>
           </dt>
@@ -233,22 +263,38 @@ function ConnectionCard({
             {canManage && !rotating && (
               <Button variant="text" size="small" className="cx-rotate-open"
                       onClick={() => { setRotating(true); setRotateNote(null); }}>
-                Replace the token
+                {isZoho ? "Replace the token" : "Replace the sign-in"}
               </Button>
             )}
           </dd>
         </div>
-        <div>
-          <dt>
-            <Labelled tip="A refresh token issued in one Zoho data centre is rejected by every other. A mismatch here is the single most common setup failure.">
-              Data centre
-            </Labelled>
-          </dt>
-          <dd>
-            {DC_PRESETS.find((p) => p.accounts_base === conn.accounts_base)?.label ??
-              conn.accounts_base.replace("https://accounts.", "")}
-          </dd>
-        </div>
+        {isZoho ? (
+          <div>
+            <dt>
+              <Labelled tip="A refresh token issued in one Zoho data centre is rejected by every other. A mismatch here is the single most common setup failure.">
+                Data centre
+              </Labelled>
+            </dt>
+            <dd>
+              {DC_PRESETS.find((p) => p.accounts_base === conn.accounts_base)?.label ??
+                conn.accounts_base.replace("https://accounts.", "")}
+            </dd>
+          </div>
+        ) : (
+          conn.config && Object.keys(conn.config).length > 0 && (
+            <div>
+              <dt>
+                <Labelled tip="The non-secret settings this connection was entered with. Secrets are encrypted at rest and never shown again.">
+                  Settings
+                </Labelled>
+              </dt>
+              <dd className="mono">
+                {Object.entries(conn.config)
+                  .map(([k, v]) => `${k}: ${v}`).join(" · ")}
+              </dd>
+            </div>
+          )
+        )}
         <div>
           <dt>
             <Labelled tip="When this connection was last asked whether it still works. A connection that has never been checked and one that failed an hour ago look identical without this.">
@@ -259,7 +305,21 @@ function ConnectionCard({
         </div>
       </dl>
 
-      {rotating && (
+      {rotating && !isZoho && catalogEntry && (
+        <ErpRotateForm
+          entry={catalogEntry}
+          credentialLabel={conn.credential_label}
+          busy={busy}
+          onCancel={() => setRotating(false)}
+          onSubmit={(values) => run(async () => {
+            const note = await onErpRotate(conn.connection_id, values);
+            setRotating(false);
+            setRotateNote(note);
+          })}
+        />
+      )}
+
+      {rotating && isZoho && (
         <div className="cx-rotate">
           <label htmlFor={`cx-token-${conn.connection_id}`}>
             <Labelled tip="Generate a fresh refresh token in the Zoho API console for the same client, then paste it here. The client id and secret are left alone by default, because re-typing a secret that is already correct is how a working connection gets broken — but if the token came from a different app, replace them too or Zoho refuses the pair.">
@@ -533,17 +593,254 @@ function ConnectionCard({
   );
 }
 
+/* ── registered ERP connectors (NetSuite, Business Central, Acumatica, P21,
+      Sage) ─────────────────────────────────────────────────────────────────
+   These forms render from the catalog's field specs, so this file never
+   hardcodes what one system needs — connector number seven appears in the
+   picker the day its backend module registers. Zoho keeps its richer bespoke
+   flow (OAuth, data centres, scope probing) below. */
+
+function FieldInput({
+  field,
+  idPrefix,
+  value,
+  onChange,
+}: {
+  field: ConnectorField;
+  idPrefix: string;
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  const id = `${idPrefix}-${field.name}`;
+  return (
+    <>
+      <label htmlFor={id} style={{ marginTop: 10 }}>
+        {field.help
+          ? <Labelled tip={field.help}>{field.label}</Labelled>
+          : field.label}
+        {!field.required && <span className="st-help"> (optional)</span>}
+      </label>
+      <input
+        id={id}
+        className="input"
+        type={field.secret ? "password" : "text"}
+        autoComplete="off"
+        spellCheck={false}
+        required={field.required}
+        placeholder={field.placeholder || undefined}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      />
+    </>
+  );
+}
+
+function ErpRotateForm({
+  entry,
+  credentialLabel,
+  busy,
+  onCancel,
+  onSubmit,
+}: {
+  entry: ConnectorCatalogEntry;
+  credentialLabel: string;
+  busy: boolean;
+  onCancel: () => void;
+  onSubmit: (values: Record<string, string>) => void;
+}) {
+  const [values, setValues] = useState<Record<string, string>>({});
+  const ready = entry.credential_fields.every(
+    (f) => !f.required || (values[f.name] ?? "").trim() !== "");
+  return (
+    <div className="cx-rotate">
+      <p className="st-help">
+        Enter the fresh sign-in for {entry.label}. All of it — a half-replaced
+        credential is how a working connection gets broken.
+      </p>
+      {entry.credential_fields.map((f) => (
+        <FieldInput key={f.name} field={f} idPrefix="cx-erp-rotate"
+                    value={values[f.name] ?? ""}
+                    onChange={(v) => setValues((s) => ({ ...s, [f.name]: v }))} />
+      ))}
+      <p className="st-help">
+        This replaces the sign-in for every company using{" "}
+        <strong>{credentialLabel}</strong>, not only this one. The connection
+        is re-checked immediately afterwards.
+      </p>
+      <div className="cx-rotate-actions">
+        <Button variant="contained" size="small" disabled={busy || !ready}
+                onClick={() => onSubmit(values)}>
+          {busy ? "Rotating…" : "Rotate"}
+        </Button>
+        <Button variant="text" size="small" onClick={onCancel}>Cancel</Button>
+      </div>
+    </div>
+  );
+}
+
+function ErpConnectForm({
+  entry,
+  token,
+  onAdded,
+}: {
+  entry: ConnectorCatalogEntry;
+  token: string;
+  onAdded: () => Promise<void>;
+}) {
+  const [values, setValues] = useState<Record<string, string>>({});
+  const [label, setLabel] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<ConnectionCheck | null>(null);
+  const [companies, setCompanies] = useState<ErpDiscoveredCompany[] | null>(null);
+
+  // Discovery signs in with the credential half alone, so it is offered as
+  // soon as that half is complete — the company field is what it exists to
+  // fill in.
+  const credentialReady = entry.credential_fields.every(
+    (f) => !f.required || (values[f.name] ?? "").trim() !== "");
+
+  async function discover() {
+    setError(null);
+    setCompanies(null);
+    setBusy(true);
+    try {
+      const creds = Object.fromEntries(
+        entry.credential_fields
+          .map((f) => [f.name, (values[f.name] ?? "").trim()])
+          .filter(([, v]) => v !== ""));
+      const r = await papi.discoverErpCompanies(token, entry.key, creds);
+      setCompanies(r.companies);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    setResult(null);
+    try {
+      const entered = Object.fromEntries(
+        Object.entries(values)
+          .map(([k, v]) => [k, v.trim()])
+          .filter(([, v]) => v !== ""));
+      const r = await papi.addErpConnection(token, {
+        connector: entry.key,
+        values: entered,
+        label: label.trim(),
+      });
+      setResult(r);
+      setValues({});
+      setLabel("");
+      setCompanies(null);
+      await onAdded();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form onSubmit={submit}>
+      <p className="st-help">{entry.setup_note}</p>
+
+      {entry.credential_fields.map((f) => (
+        <FieldInput key={f.name} field={f} idPrefix={`cx-erp-${entry.key}`}
+                    value={values[f.name] ?? ""}
+                    onChange={(v) => setValues((s) => ({ ...s, [f.name]: v }))} />
+      ))}
+
+      {entry.can_discover && (
+        <div style={{ marginTop: 8 }}>
+          <Button type="button" variant="text" size="small"
+                  disabled={busy || !credentialReady}
+                  onClick={discover}>
+            List the {entry.company_term} choices this sign-in can see
+          </Button>
+          {companies && (
+            <ul className="cred-orgs">
+              {companies.length === 0 && (
+                <li className="st-help">
+                  {entry.label} returned nothing for this sign-in.
+                </li>
+              )}
+              {companies.map((c) => (
+                <li key={c.id}>
+                  <button type="button" className="cred-org"
+                          onClick={() => {
+                            setValues((s) => ({
+                              ...s, [entry.external_id_field]: c.id }));
+                            setLabel((l) => l || c.name);
+                          }}>
+                    {c.name} <span className="mono">{c.id}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+
+      {entry.connection_fields.map((f) => (
+        <FieldInput key={f.name} field={f} idPrefix={`cx-erp-${entry.key}`}
+                    value={values[f.name] ?? ""}
+                    onChange={(v) => setValues((s) => ({ ...s, [f.name]: v }))} />
+      ))}
+
+      <label htmlFor={`cx-erp-${entry.key}-label`} style={{ marginTop: 10 }}>
+        Name it
+        <span className="fsrc">
+          What you call this entity — a name, not an id. A list of three ids
+          is unreadable at the moment you need it.
+        </span>
+      </label>
+      <input
+        id={`cx-erp-${entry.key}-label`}
+        className="input"
+        value={label}
+        onChange={(e) => setLabel(e.target.value)}
+      />
+
+      {error && <p className="cx-detail bad">{error}</p>}
+      {result && (
+        <p className={`cx-detail ${result.ok ? "" : "bad"}`}>
+          {result.ok
+            ? `Connected. ${result.detail ?? ""}`
+            : `Added, but the check failed: ${result.detail ?? "no detail"}. ` +
+              "Fix the values and use Replace the sign-in on its card."}
+        </p>
+      )}
+      <div style={{ marginTop: 12 }}>
+        <Button type="submit" variant="contained" size="small" disabled={busy}>
+          {busy ? "Adding…" : `Add ${entry.company_term}`}
+        </Button>
+      </div>
+    </form>
+  );
+}
+
 /* ── adding one ───────────────────────────────────────────────────────────── */
 
 function AddConnection({
   view,
+  catalog,
   token,
   onAdded,
 }: {
   view: ConnectionsView;
+  catalog: ConnectorCatalogEntry[];
   token: string;
   onAdded: () => Promise<void>;
 }) {
+  // Which system the company lives in. Zoho first — it is the platform's
+  // richest flow and the incumbent — then every registered connector.
+  const [connector, setConnector] = useState("zoho");
+  const entry = catalog.find((c) => c.key === connector);
   const hasCredentials = view.credentials.length > 0;
   const [mode, setMode] = useState<"existing" | "new">(hasCredentials ? "existing" : "new");
   const [form, setForm] = useState(EMPTY_FORM);
@@ -575,6 +872,7 @@ function AddConnection({
       setCredentialId(view.credentials[0].credential_id);
     }
   }, [hasCredentials, view.credentials, credentialId]);
+
 
   async function listCompanies() {
     setError(null);
@@ -622,13 +920,36 @@ function AddConnection({
   return (
     <Bp className="st-section cx-add">
       <h3>
-        <Labelled tip="Each company you add is one Zoho Books organization. Adding a second does not create a second tenant here — the rows land together in this organization's analysis.">
+        <Labelled tip="Each company you add is one set of books in its own system — a Zoho Books organization, a NetSuite account, a Business Central company. Adding a second does not create a second tenant here: the rows land together in this organization's analysis.">
           Add a company
         </Labelled>
       </h3>
 
-      {hasCredentials && (
-        <div className="cx-tabs">
+      {catalog.length > 0 && (
+        <div className="cx-tabs" role="group" aria-label="Which system">
+          <button type="button" className="cx-tab"
+                  aria-pressed={connector === "zoho"}
+                  onClick={() => setConnector("zoho")}>
+            Zoho Books
+          </button>
+          {catalog.map((c) => (
+            <button key={c.key} type="button" className="cx-tab"
+                    aria-pressed={connector === c.key}
+                    onClick={() => setConnector(c.key)}>
+              {c.label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {connector !== "zoho" && entry && (
+        <ErpConnectForm entry={entry} token={token} onAdded={onAdded} />
+      )}
+
+      {connector === "zoho" && (
+      <>
+      <div className="cx-tabs">
+        {hasCredentials && (
           <button
             type="button"
             className="cx-tab"
@@ -637,16 +958,16 @@ function AddConnection({
           >
             Use a sign-in already on file
           </button>
-          <button
-            type="button"
-            className="cx-tab"
-            aria-pressed={mode === "new"}
-            onClick={() => setMode("new")}
-          >
-            Enter a different Zoho sign-in
-          </button>
-        </div>
-      )}
+        )}
+        <button
+          type="button"
+          className="cx-tab"
+          aria-pressed={mode === "new"}
+          onClick={() => setMode("new")}
+        >
+          Enter credentials manually
+        </button>
+      </div>
 
       <form onSubmit={submit}>
         {mode === "existing" ? (
@@ -800,15 +1121,13 @@ function AddConnection({
 
         {error && <p className="cx-detail bad">{error}</p>}
         <div style={{ marginTop: 12 }}>
-          {/* `type="submit"` is load-bearing, not decoration: MUI's Button
-              defaults to type="button", where a bare <button> in a form
-              defaults to submit. Without it this renders, enables, depresses
-              and does nothing at all. */}
           <Button type="submit" variant="contained" size="small" disabled={busy}>
             {busy ? "Adding…" : "Add company"}
           </Button>
         </div>
       </form>
+      </>
+      )}
     </Bp>
   );
 }
@@ -828,17 +1147,19 @@ function Scopes({ view }: { view: ConnectionsView }) {
         Paste this into the scope field when you generate the token in the Zoho API
         console. Granting fewer does not fail loudly; it fails quietly, later.
       </p>
-      <table className="cx-scopes">
-        <tbody>
-          {view.required_scopes.map((s) => (
-            <tr key={s.scope}>
-              <td className="mono">{s.scope}</td>
-              <td>{s.why}</td>
-              <td className="req">{s.required ? "required" : "optional"}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <Box sx={{ overflowX: "auto" }}>
+        <table className="cx-scopes">
+          <tbody>
+            {view.required_scopes.map((s) => (
+              <tr key={s.scope}>
+                <td className="mono">{s.scope}</td>
+                <td>{s.why}</td>
+                <td className="req">{s.required ? "required" : "optional"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Box>
       <div className="cx-scopestring">
         <code>{view.scope_string}</code>
         <Button
@@ -881,6 +1202,7 @@ export function ConnectionsPanel({
   starting: boolean;
 }) {
   const [view, setView] = useState<ConnectionsView | null>(null);
+  const [catalog, setCatalog] = useState<ConnectorCatalogEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
 
@@ -896,6 +1218,15 @@ export function ConnectionsPanel({
   useEffect(() => {
     load();
   }, [load]);
+
+  // Once, not per load: the catalog is the deployment's connector list and
+  // changes with releases, not with clicks. Its failure degrades to a
+  // Zoho-only add form rather than taking the whole panel down.
+  useEffect(() => {
+    papi.connectorCatalog(session.token)
+      .then((r) => setCatalog(r.connectors))
+      .catch(() => setCatalog([]));
+  }, [session.token]);
 
   async function check(id: string): Promise<ConnectionCheck | null> {
     try {
@@ -937,6 +1268,15 @@ export function ConnectionsPanel({
   ): Promise<string> {
     setError(null);
     const r = await papi.rotateConnectionToken(session.token, id, token, client);
+    await load();
+    return String(r.note ?? "Rotated.");
+  }
+
+  /** The registered-connector sibling: the whole credential, from the field
+   *  list its catalog entry declares. Same disclosure about shared grants. */
+  async function erpRotate(id: string, values: Record<string, string>): Promise<string> {
+    setError(null);
+    const r = await papi.rotateErpConnection(session.token, id, values);
     await load();
     return String(r.note ?? "Rotated.");
   }
@@ -1010,10 +1350,12 @@ export function ConnectionsPanel({
           <ConnectionCard
             key={c.connection_id}
             conn={c}
+            catalogEntry={catalog.find((e) => e.key === c.connector)}
             canManage={view.can_manage}
             canSync={canSync}
             onCheck={check}
             onRotate={rotate}
+            onErpRotate={erpRotate}
             onRename={rename}
             onToggle={toggle}
             onDelete={remove}
@@ -1028,13 +1370,16 @@ export function ConnectionsPanel({
         {view.connections.length === 0 && (
           <Bp className="cx-empty">
             {view.can_manage
-              ? "No Zoho company is connected, so every screen is showing sample data or nothing at all. Add one below."
-              : "No Zoho company is connected. Ask an owner to add one."}
+              ? "No company is connected, so every screen is showing sample data or nothing at all. Add one below."
+              : "No company is connected. Ask an owner to add one."}
           </Bp>
         )}
       </div>
 
-      {view.can_manage && <AddConnection view={view} token={session.token} onAdded={load} />}
+      {view.can_manage && (
+        <AddConnection view={view} catalog={catalog} token={session.token}
+                       onAdded={load} />
+      )}
       {view.can_manage && <Scopes view={view} />}
     </>
   );

@@ -2,6 +2,13 @@
 
 Configuration reference, production deployment, and the runbook.
 
+Non-Zoho ERP connections (NetSuite, Business Central, Acumatica, Prophet 21,
+Sage) need **no environment configuration**: their credentials are entered
+per organization in Data & connection and stored encrypted. Setup per system
+is in `docs/connectors.md`. The `ZOHO_*` variables below configure the Zoho
+client and the legacy single-tenant fallback only; `ZOHO_SOURCE=api` remains
+the process-wide switch that turns every connector's live client on.
+
 ---
 
 ## Configuration reference
@@ -22,8 +29,14 @@ always wins over it**. All values have defaults that work for local development.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `DATABASE_URL` | `sqlite:///backend/data/platform.db` | SQLAlchemy URL. Production: `postgresql+psycopg://user:pw@host/db`. |
+| `DATABASE_URL` | `sqlite:///backend/data/platform.db` | SQLAlchemy URL. Production: `postgresql+psycopg://user:pw@host/db` — see [postgres.md](postgres.md), including the data-move tool for an existing SQLite file. |
 | `SQL_ECHO` | `0` | Log every SQL statement. Debugging only. |
+| `DB_POOL_SIZE` | `5` | Postgres pool per process (ignored on SQLite). The sizing arithmetic is on the setting in `config.py`; redo it before raising. |
+| `DB_MAX_OVERFLOW` | `10` | Extra Postgres connections under burst, released when idle. |
+| `DB_POOL_TIMEOUT` | `30` | Seconds a request waits for a free connection before failing loudly. |
+| `DB_POOL_RECYCLE` | `1800` | Retire pooled connections before proxy/NAT idle cutoffs drop them first. |
+| `DB_SLOW_QUERY_MS` | `1000` | Log statements slower than this (0 = off; the compose stack sets 500). Statement text only — parameter values never reach the log. |
+| `REDIS_URL` | *(empty)* | Provisioned infrastructure (both compose stacks run one); no feature requires it yet, and nothing may refuse to serve because it is absent. |
 | `AUTO_BOOTSTRAP` | `1` | Create the DB, migrate, and seed users on startup. **Ignored in production.** |
 | `DEMO_SEED_ON_START` | `1` | Seed the demo dataset on startup. **Ignored in production, and ignored whenever `ZOHO_SOURCE=api`** — a live account means no fabricated customer should ever appear. |
 
@@ -34,6 +47,42 @@ always wins over it**. All values have defaults that work for local development.
 | `DEFAULT_ORG_ID` | `org_pie` | The organization seeded automatically at bootstrap. Every other one is provisioned explicitly — see `app/provision_org.py` and [zoho-setup.md](zoho-setup.md#multiple-organizations). Each organization is a fully separate tenant: its own users, its own Zoho connection, its own decisions. |
 | `DEFAULT_ORG_NAME` | `PIE` | Display name for the default organization. |
 | `DEFAULT_CURRENCY` | `INR` | Reporting currency. |
+
+### Plans and sign-up
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `DEFAULT_PLAN` | `platform` | The plan an organization is on when its own row does not say. Defaults to the widest so an existing single-tenant deployment keeps every feature it has; a hosted deployment sets `free` and upgrades explicitly with `python -m app.entitlements set-plan`. An unrecognised value resolves to `free` and logs. |
+| `INTELLIGENCE_TRIAL_DAYS` | `30` | Length of the free Commercial Intelligence month. Keyed to the **connected Zoho books**, not to the platform organization, so a second sign-up with a second address does not buy a second trial. |
+| `SELF_SERVE_SIGNUP` | `0` | Whether anyone who can reach this deployment may create a tenant for themselves (`POST /api/v1/signup`). **Off by default, deliberately** — it is the only unauthenticated endpoint here that writes, so an existing install that pulls new code must not silently start accepting strangers. Turning it on also makes the landing page's "Get started free" lead to a sign-up form instead of the sign-in card. |
+| `SIGNUP_RATE_LIMIT_PER_HOUR` | `5` | Sign-ups accepted per client address per hour. A speed bump, not a control: the counter is in one process's memory, does not survive a restart, is not shared between workers, and behind the reverse proxy in `deploy/` it sees the proxy rather than the client — so it limits globally there. What it buys is that hashing a password (240,000 PBKDF2 rounds, by design) cannot be used as a CPU amplifier. `0` disables it. Put a real limiter in front of the app if you expect real abuse. |
+
+A self-serve sign-up lands on **free**, whatever `DEFAULT_PLAN` says — pinned in
+`onboarding.SIGNUP_PLAN`, because `DEFAULT_PLAN` defaults to `platform` and
+inheriting it would hand the top tier to anyone who can reach the form. There
+is deliberately no API that changes a plan; that stays an operator command.
+
+**The sign-up form asks which plan a business wants, and the answer grants
+nothing.** It is stored on `organizations.requested_plan`, a column no
+resolution path reads — `licensed_plan` still reads `plan` alone — so the
+picker cannot become the plan-setting API that does not exist. What it buys is
+that the question has an answer somebody can find:
+
+```bash
+python -m app.entitlements requests                  # who is asking for more
+python -m app.entitlements set-plan <org_id> intelligence   # the only thing that grants it
+```
+
+The form says as much where it is asked: an account starts on the free Quote
+Desk the same day whichever plan is selected, and nothing is charged at sign-up.
+There is no billing in this product.
+
+**Turning sign-up on is what makes registration reachable at all.** With
+`SELF_SERVE_SIGNUP=0` the sign-in card offers no way to create an organization,
+and that is correct for a single-tenant install — the only accounts are the ones
+an owner creates from Settings. With it on, the card carries a "Create your
+organization" link and the landing page's pricing panels open the sign-up form
+on the plan that was being read about.
 
 ### Zoho
 

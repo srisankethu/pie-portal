@@ -45,6 +45,34 @@ def _path_env(name: str, default: Path) -> Path:
     return Path(raw).expanduser().resolve() if raw else default
 
 
+def _normalize_database_url(url: str) -> str:
+    """Name the driver this deployment actually ships: psycopg 3.
+
+    A bare ``postgresql://`` resolves to SQLAlchemy's *default* PostgreSQL
+    driver, which is psycopg2 — a package `requirements.txt` deliberately does
+    not install, because this codebase uses psycopg 3. The failure is
+    ``ModuleNotFoundError: No module named 'psycopg2'`` raised from
+    ``create_engine`` at import time, so the process dies before it can log
+    anything about the database, and the traceback names a library nobody put
+    in the URL.
+
+    That URL form is not a typo — it is what every managed provider hands you.
+    Neon, Railway's database linking, Render and Heroku all inject
+    ``postgresql://`` (Heroku still emits the older ``postgres://``), so the
+    fix cannot be "paste it correctly": the value arrives that way, and a
+    linked variable is re-injected over any hand-edit.
+
+    Only a URL that names *no* driver is rewritten. An explicit
+    ``postgresql+psycopg2://`` or ``postgresql+asyncpg://`` is someone stating
+    a deliberate choice, and it is left exactly as written.
+    """
+    if url.startswith("postgres://"):          # Heroku's legacy spelling
+        url = "postgresql://" + url[len("postgres://"):]
+    if url.startswith("postgresql://"):        # no driver named → psycopg 3
+        url = "postgresql+psycopg://" + url[len("postgresql://"):]
+    return url
+
+
 class Settings:
     """Process-wide settings (plain attributes; no external deps)."""
 
@@ -76,6 +104,21 @@ class Settings:
     # Demo auth secret (dev only). A real deployment injects this.
     AUTH_SECRET: str = os.environ.get("AUTH_SECRET", "dev-secret-change-me")
 
+    # ── session lifetime ─────────────────────────────────────────────────────
+    # Two limits, because they answer different questions. The idle timeout ends
+    # a session nobody is using: a browser left open on a shared desk stops being
+    # a way in overnight. The absolute age ends a session no matter how actively
+    # it is used, so a token that was captured and is being kept warm still dies
+    # on a known date. Only the absolute one existed before, which meant a
+    # forgotten sign-in stayed live for a month.
+    #
+    # 12 hours covers a long working day without asking anyone to sign in twice
+    # before dinner, and expires by the next morning.
+    SESSION_IDLE_TIMEOUT_SECONDS: int = int(
+        os.environ.get("SESSION_IDLE_TIMEOUT_SECONDS", str(12 * 60 * 60)))
+    SESSION_MAX_AGE_SECONDS: int = int(
+        os.environ.get("SESSION_MAX_AGE_SECONDS", str(30 * 24 * 60 * 60)))
+
     # Encrypts Zoho client secrets/refresh tokens stored per organization (see
     # app/crypto.py). A Fernet key: 32 url-safe base64 bytes. The default below
     # is fixed and public — fine for local dev, never for production, where a
@@ -92,10 +135,48 @@ class Settings:
     # ── Commercial Decision Platform (Phase 1 foundation) ────────────────────
     # Single primary database. Dev/test default to SQLite; production sets a
     # Postgres URL. SQLAlchemy URL form, e.g. postgresql+psycopg://user:pw@host/db
-    DATABASE_URL: str = os.environ.get(
+    DATABASE_URL: str = _normalize_database_url(os.environ.get(
         "DATABASE_URL", f"sqlite:///{REPO_ROOT / 'backend' / 'data' / 'platform.db'}"
-    )
+    ))
     SQL_ECHO: bool = os.environ.get("SQL_ECHO", "0") == "1"
+
+    # Postgres connection pool (ignored on SQLite). The defaults are sized for
+    # this deployment's actual shape — compose runs UVICORN_WORKERS=2, so the
+    # worst case is workers × (size + overflow) = 2 × 15 = 30 connections,
+    # comfortably inside stock Postgres' max_connections=100 with room for the
+    # release job, psql, and a second replica. Raise deliberately, with that
+    # arithmetic redone, not because a benchmark said bigger is faster.
+    #   POOL_TIMEOUT  how long a request waits for a free connection before
+    #                 failing loudly (better a named 30s failure than a silent
+    #                 pile-up);
+    #   POOL_RECYCLE  retire connections before typical NAT/proxy idle cutoffs
+    #                 (managed Postgres front-ends commonly drop at 30–60 min;
+    #                 30 min stays under all of them). pool_pre_ping catches
+    #                 what recycling misses.
+    DB_POOL_SIZE: int = int(os.environ.get("DB_POOL_SIZE", "5"))
+    DB_MAX_OVERFLOW: int = int(os.environ.get("DB_MAX_OVERFLOW", "10"))
+    DB_POOL_TIMEOUT: int = int(os.environ.get("DB_POOL_TIMEOUT", "30"))
+    DB_POOL_RECYCLE: int = int(os.environ.get("DB_POOL_RECYCLE", "1800"))
+
+    # Log any statement slower than this many milliseconds (0 = off). Read by
+    # observability/instrumentation.py — the one place query timing lives.
+    # 1000 keeps the threshold that module always had, now tunable; the
+    # compose stack tightens it to 500. The log line carries the statement and
+    # duration, never parameter values — bind parameters hold customer names
+    # and credentials, and trust/ exists so those never reach a log file.
+    DB_SLOW_QUERY_MS: int = int(os.environ.get("DB_SLOW_QUERY_MS", "1000"))
+
+    # ── Redis (provisioned infrastructure; no feature requires it yet) ──────
+    # Both compose stacks run a Redis next to the API for the state that must
+    # one day live outside a process: cross-replica rate limiting (the signup
+    # limiter in routers/onboarding.py is in-process and says so), cache, and
+    # background-job coordination if the thread-based sync ever needs to span
+    # replicas. Empty means "none configured", and nothing may *require* Redis
+    # to serve a request — a candidate consumer degrades to its in-process
+    # behaviour, the way the signup limiter behaves today. Kept honest on
+    # purpose: config that pretends a dependency is load-bearing before any
+    # code reads it teaches operators to ignore this file.
+    REDIS_URL: str = os.environ.get("REDIS_URL", "")
 
     # Create the database + schema + demo users on startup, so a fresh clone
     # runs without a separate migrate/seed step. Always disabled in production,
@@ -131,6 +212,24 @@ class Settings:
     # How long the one-per-books free month of Commercial Intelligence runs.
     INTELLIGENCE_TRIAL_DAYS: int = int(os.environ.get("INTELLIGENCE_TRIAL_DAYS", "30"))
 
+    # ── Self-serve sign-up (app/onboarding.py) ───────────────────────────────
+    # Whether anyone who can reach this deployment may create a tenant for
+    # themselves. **Off unless a deployment says otherwise**, and that default
+    # is the whole point rather than caution: this is the one endpoint here that
+    # writes rows without a token, so an existing single-tenant install that
+    # pulls new code must not silently start accepting strangers. A hosted
+    # deployment sets SELF_SERVE_SIGNUP=1 (and, almost certainly, DEFAULT_PLAN=free).
+    #
+    # It does not decide the *plan* a sign-up lands on — `onboarding.SIGNUP_PLAN`
+    # pins that to free explicitly, because DEFAULT_PLAN defaults to "platform"
+    # and inheriting it here would hand every stranger the top tier.
+    SELF_SERVE_SIGNUP: bool = os.environ.get("SELF_SERVE_SIGNUP", "0") == "1"
+    # Sign-ups accepted from one address per hour, across the process. A speed
+    # bump, not a control — see `routers/onboarding.py`, which says plainly what
+    # it does and does not stop.
+    SIGNUP_RATE_LIMIT_PER_HOUR: int = int(
+        os.environ.get("SIGNUP_RATE_LIMIT_PER_HOUR", "5"))
+
     # The single supported organization for V1 (one org, one ERP). organization_id
     # is carried on every record for future multi-org, but no cross-org logic exists.
     DEFAULT_ORG_ID: str = os.environ.get("DEFAULT_ORG_ID", "org_pie")
@@ -143,17 +242,15 @@ class Settings:
     SALES_TAX_RATE: float = float(os.environ.get("SALES_TAX_RATE", "0.18"))
     SALES_TAX_LABEL: str = os.environ.get("SALES_TAX_LABEL", "GST")
 
-    # Zoho connector credentials (read-only). Unused until live sync is enabled;
-    # the fixture source backs dev/test. Never commit real values (.env only).
-    ZOHO_ORGANIZATION_ID: str = os.environ.get("ZOHO_ORGANIZATION_ID", "")
-    ZOHO_CLIENT_ID: str = os.environ.get("ZOHO_CLIENT_ID", "")
-    ZOHO_CLIENT_SECRET: str = os.environ.get("ZOHO_CLIENT_SECRET", "")
-    ZOHO_REFRESH_TOKEN: str = os.environ.get("ZOHO_REFRESH_TOKEN", "")
-    ZOHO_API_BASE: str = os.environ.get("ZOHO_API_BASE", "https://www.zohoapis.in/books/v3")
-    # OAuth token endpoint host. MUST match the data centre the account lives in
-    # (.in for India, .com for US, .eu, .com.au, .jp) — a refresh token issued in
-    # one DC is rejected by every other.
-    ZOHO_ACCOUNTS_BASE: str = os.environ.get("ZOHO_ACCOUNTS_BASE", "https://accounts.zoho.in")
+    # There are deliberately no ZOHO_* credential settings. A Zoho grant (client
+    # id, secret, refresh token, data centre, organization id) belongs to one
+    # tenant and is stored per-connection in the database, encrypted at rest — a
+    # multi-tenant platform cannot resolve one tenant's credential from a
+    # process-wide environment variable. Connect a company under Settings →
+    # Connections. (A live contract test reads real values straight from the
+    # environment for the account it exercises; that is test scaffolding, not a
+    # runtime path.)
+
     # "fixture" (deterministic offline source) or "api" (live Zoho).
     ZOHO_SOURCE: str = os.environ.get("ZOHO_SOURCE", "fixture")
 
@@ -199,6 +296,15 @@ class Settings:
     ZOHO_THROTTLE_BACKOFF_SECONDS: float = float(
         os.environ.get("ZOHO_THROTTLE_BACKOFF_SECONDS", "15"))
     ZOHO_MAX_BACKOFF_SECONDS: float = float(os.environ.get("ZOHO_MAX_BACKOFF_SECONDS", "90"))
+
+    # Connecting a Zoho company is manual (a Self Client refresh token, entered
+    # on the connections screen — see docs/zoho-setup.md). There is deliberately
+    # no customer-facing browser OAuth authorize/callback flow: it was removed
+    # because a Self Client is the right grant for a business connecting its own
+    # books (no redirect URI to register, no consent round-trip), and a
+    # half-built redirect flow beside the working manual one was only a trap. The
+    # runtime auth that turns a stored refresh token into API access still lives
+    # in ingestion/zoho_client.py and is untouched by that removal.
 
     # Version stamped onto deterministic artifacts for provenance/reproducibility.
     # (Threshold-config version is carried by SignalThresholds.version, not here.)

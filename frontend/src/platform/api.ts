@@ -1,8 +1,9 @@
-import type { AccessReport, AiByokView, AiKeyTestResult, AiMetricsReport, AiReadiness, Account, AccountItem, StatusFilter, ApprovalRequest, DisclosureStatement, EntityKind, ErasureState, Identity, IdentityCoverage, IdentityPolicy, IdentitySuggestion, ConnectionCheck, ConnectionsView, FixedThresholds, MarginPolicy, MarginPolicyPatch, NewConnectionInput, PayloadsReport, ZohoConnection, ZohoCredential, ZohoVisibleOrg, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, DecisionTrace, OrgPolicy, PlatformSession, PlatformUser, QuoteGate, Role, SkippedRows, SyncOptions, SyncStartResponse, SyncState, ThresholdView, ZohoConnectionInput } from "./types";
+import type { AccessReport, Account, AccountItem, AiByokView, AiKeyTestResult, AiMetricsReport, AiReadiness, ApprovalRequest, AttributionEvaluation, AttributionEvents, AttributionSummary, ConnectionCheck, ConnectionsView, ConnectorCatalog, ErpConnectInput, ErpDiscoveredCompany, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, DecisionTrace, DisclosureStatement, Entitlements, EntityKind, ErasureState, FixedThresholds, Identity, IdentityCoverage, IdentityPolicy, IdentitySuggestion, MarginPolicy, MarginPolicyPatch, NewConnectionInput, OnboardingView, OrgPolicy, PayloadsReport, PlatformSession, PlatformUser, QuoteGate, Role, SignupOffer, SkippedRows, StatusFilter, SyncOptions, SyncStartResponse, SyncState, ThresholdView, ZohoConnection, ZohoConnectionInput, ZohoCredential, ZohoVisibleOrg } from "./types";
 
 import { setMoneyCurrency } from "../money";
 import { setBusinessTimezone } from "../when";
 import { parseStoredSession } from "./schemas";
+import { authInit } from "../authFetch";
 
 const KEY = "pie_platform_session";
 
@@ -32,7 +33,17 @@ export function loadPlatformSession(): PlatformSession | null {
   return parsed as PlatformSession;
 }
 export function savePlatformSession(s: PlatformSession) {
-  localStorage.setItem(KEY, JSON.stringify(s));
+  // The token is deliberately dropped on the way to storage. It lives in an
+  // httpOnly cookie now, which script on this page cannot read and therefore
+  // cannot leak — the whole reason for the move. What stays here is the part
+  // that is not a secret: who you are, what role, which currency and zone, so
+  // the shell can draw itself on the first frame instead of flashing empty
+  // while `/auth/me` answers.
+  //
+  // Kept as a field rather than removed from the type because `req` already
+  // treats an empty token as "no Authorization header", so every call site
+  // passes `session.token` unchanged and the cookie authenticates instead.
+  localStorage.setItem(KEY, JSON.stringify({ ...s, token: "" }));
   setMoneyCurrency(s.currency);
   setBusinessTimezone(s.timezone);
 }
@@ -40,10 +51,60 @@ export function clearPlatformSession() {
   localStorage.removeItem(KEY);
 }
 
+/** Watch for the session changing in *another* tab.
+ *
+ *  `localStorage` is shared across every tab of a profile, and one session per
+ *  browser is the intended model — but nothing propagated a change, so the tabs
+ *  disagreed. Signing out in one left the others drawing a full signed-in shell
+ *  whose every request would 401; signing in as somebody else left the first tab
+ *  showing the previous person's name and role until it happened to reload,
+ *  which on a shared machine is the wrong person's screen.
+ *
+ *  The `storage` event only fires in the *other* tabs, never the one that wrote,
+ *  so this cannot loop back on itself. Returns its own unsubscribe. */
+export function onSessionChangedElsewhere(fn: (next: PlatformSession | null) => void): () => void {
+  const handler = (e: StorageEvent) => {
+    if (e.key !== null && e.key !== KEY) return;   // null = storage cleared wholesale
+    fn(e.newValue ? loadPlatformSession() : null);
+  };
+  window.addEventListener("storage", handler);
+  return () => window.removeEventListener("storage", handler);
+}
+
+/** Told once, from the shell, what to do when the session stops being valid.
+ *
+ *  This is registered rather than thrown-and-caught because catching it was the
+ *  bug: `isAuthError` existed and exactly three call sites used it, all three on
+ *  the decision queue. Every other screen — Customers, Cash, Quotes, Settings —
+ *  turned a retired token into its ordinary "this did not load" panel, inside a
+ *  shell that still drew the user's name and role. The session was gone and the
+ *  app looked signed in, and the way out was to notice the pattern and press
+ *  Sign out.
+ *
+ *  A 401 is not a per-screen error. It is a statement about the session that
+ *  every request can make, so the transport is the only place that can hear all
+ *  of them. Screens keep their catch blocks and still get the throw; they no
+ *  longer have to remember to ask whether this particular failure ended the
+ *  session. */
+let onAuthLoss: (() => void) | null = null;
+
+export function setAuthLossHandler(fn: (() => void) | null): void {
+  onAuthLoss = fn;
+}
+
+/** Fired for any 401, before the error reaches the caller. Never throws: a
+ *  handler that fails must not replace the real error with its own. */
+function noteAuthLoss(status: number): void {
+  if (status !== 401 || !onAuthLoss) return;
+  try {
+    onAuthLoss();
+  } catch {
+    /* the throw below is the more useful signal */
+  }
+}
+
 async function req<T>(path: string, opts: RequestInit = {}, token?: string): Promise<T> {
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (token) headers.Authorization = `Bearer ${token}`;
-  const res = await fetch(path, { ...opts, headers: { ...headers, ...(opts.headers || {}) } });
+  const res = await fetch(path, authInit(opts, token));
   if (!res.ok) {
     // A crash that escapes FastAPI's handlers comes back as plain text, not
     // JSON — so parsing as JSON and giving up threw away the only description
@@ -77,6 +138,7 @@ async function req<T>(path: string, opts: RequestInit = {}, token?: string): Pro
     }
     const err = new Error(detail) as Error & { status?: number };
     err.status = res.status;
+    noteAuthLoss(res.status);
     throw err;
   }
   return (await res.json()) as T;
@@ -95,7 +157,7 @@ async function req<T>(path: string, opts: RequestInit = {}, token?: string): Pro
  *  the error message. */
 async function download(path: string, token: string, fallbackName: string):
     Promise<{ blob: Blob; filename: string }> {
-  const res = await fetch(path, { headers: { Authorization: `Bearer ${token}` } });
+  const res = await fetch(path, authInit({}, token));
   if (!res.ok) {
     const body = await res.text().catch(() => "");
     let detail = res.statusText;
@@ -108,11 +170,22 @@ async function download(path: string, token: string, fallbackName: string):
     }
     const err = new Error(detail) as Error & { status?: number };
     err.status = res.status;
+    noteAuthLoss(res.status);
     throw err;
   }
   const disposition = res.headers.get("Content-Disposition") || "";
   const match = /filename="?([^";]+)"?/.exec(disposition);
   return { blob: await res.blob(), filename: match?.[1] || fallbackName };
+}
+
+interface SignUpBody {
+  company: string;
+  name: string;
+  email: string;
+  password: string;
+  /** Which plan this business wants. Recorded for the operator, granted by
+   *  nothing — every sign-up lands on the free plan whatever this says. */
+  plan?: string;
 }
 
 interface LoginResp {
@@ -129,9 +202,69 @@ interface LoginResp {
   must_change_password: boolean;
 }
 
+/** One live session, as `/auth/sessions` returns it. */
+export interface PlatformSessionRow {
+  session_id: string;
+  issued_at: string;
+  last_seen_at: string;
+  user_agent: string;
+  /** The session this browser is reading the list with. */
+  current: boolean;
+}
+
 export const papi = {
   login: (email: string, password: string) =>
     req<LoginResp>("/api/v1/auth/login", { method: "POST", body: JSON.stringify({ email, password }) }),
+
+  /** Who the session cookie belongs to, asked on boot.
+   *
+   *  The stored profile is a cache for the first frame; this is the truth. It
+   *  is also how a session revoked from another device is noticed at load
+   *  rather than at whichever request happens to fail first. */
+  me: () => req<LoginResp>("/api/v1/auth/me"),
+
+  /** End this session on the server, not just in this browser. */
+  logout: () => req<{ ok: boolean }>("/api/v1/auth/logout", { method: "POST" }),
+
+  /** End every session for this account, this device included. */
+  logoutAll: () =>
+    req<{ ok: boolean; ended: number }>("/api/v1/auth/logout-all", { method: "POST" }),
+
+  /** Where this account is signed in. */
+  sessions: () => req<PlatformSessionRow[]>("/api/v1/auth/sessions"),
+
+  /** Sign out one other device. */
+  revokeSession: (sessionId: string) =>
+    req<{ ok: boolean }>(`/api/v1/auth/sessions/${encodeURIComponent(sessionId)}`,
+                         { method: "DELETE" }),
+
+  /** Whether this deployment lets a company create its own tenant.
+   *
+   *  Asked before the landing page offers the button, so a single-tenant
+   *  install — where sign-up is off, which is the default — never shows a "Get
+   *  started free" that leads to a form that always refuses. Public: no token.
+   */
+  signupOffer: () => req<SignupOffer>("/api/v1/signup"),
+
+  /** Create an organization and its owner, and come back signed in.
+   *
+   *  Types as `LoginResp` because the server returns exactly the login shape —
+   *  deliberately, so `signIn` stores a sign-up with the same code that stores
+   *  a sign-in rather than a second path that forgets the currency. */
+  signUp: (body: SignUpBody) =>
+    req<LoginResp>("/api/v1/signup", { method: "POST", body: JSON.stringify(body) }),
+
+  /** What this organization still has to do before the screens have anything
+   *  to say. Derived server-side from connections, sync runs, the policy row
+   *  and the user list — never a stored "setup complete" flag. */
+  onboarding: (t: string) => req<OnboardingView>("/api/v1/onboarding", {}, t),
+
+  /** This organization's plan, and how long any trial has left.
+   *
+   *  Any signed-in role, and the server decides what it says. Read by the
+   *  trial notice in the shell — before this the endpoint had no caller at
+   *  all, so a tenant's free month simply ran out one day with no warning. */
+  entitlements: (t: string) => req<Entitlements>("/api/v1/entitlements", {}, t),
 
   listDecisions: (t: string, q: { type?: string; status_filter?: string } = {}) => {
     const p = new URLSearchParams();
@@ -459,6 +592,44 @@ export const papi = {
     req<Record<string, unknown>>("/api/v1/insight/simulate",
       { method: "POST", body: JSON.stringify(body) }, t),
 
+  // ── what PIE changed: the value-attribution ledger ────────────────────────
+  // Manager and above for the first two, owner only for the report, and all
+  // three behind the `intelligence` plan — the same gate the insight surface
+  // sits behind, because every row of this ledger is gross-profit arithmetic
+  // over the rows those screens read.
+  //
+  // Not under `/api/v1/`: `routers/attribution.py` mounts at `/api/attribution`.
+  attributionSummary: (t: string) =>
+    req<AttributionSummary>("/api/attribution/summary", {}, t),
+
+  /** One page of the ledger. Rows, never a rollup — `page_is_not_a_total`
+   *  travels with them, and the headline comes from the summary. */
+  attributionEvents: (t: string, q: {
+    eventType?: string | null; valueClass?: string | null;
+    limit?: number; offset?: number;
+  } = {}) => {
+    const p = new URLSearchParams();
+    if (q.eventType) p.set("event_type", q.eventType);
+    if (q.valueClass) p.set("value_class", q.valueClass);
+    if (q.limit) p.set("limit", String(q.limit));
+    if (q.offset) p.set("offset", String(q.offset));
+    const qs = p.toString();
+    return req<AttributionEvents>(
+      `/api/attribution/events${qs ? "?" + qs : ""}`, {}, t);
+  },
+
+  /** The 30-day report. Owner only.
+   *
+   *  `pieCost` is passed because the platform holds no price for its own
+   *  plans — it is the owner's own figure. Omitted, `roi` comes back `null`
+   *  with `roi_is_unknown` true, which is UNKNOWN and never 0x. A default
+   *  here would put a return figure nobody entered on a screen somebody
+   *  signs against. */
+  attributionEvaluation: (t: string, pieCost?: string | null) =>
+    req<AttributionEvaluation>(
+      "/api/attribution/evaluation"
+      + (pieCost ? `?pie_cost=${encodeURIComponent(pieCost)}` : ""), {}, t),
+
   dataStatus: (t: string) => req<DataStatus>("/api/v1/data/status", {}, t),
 
   /** Choose the automatic pull's cadence, in hours; 0 switches it off. */
@@ -678,6 +849,25 @@ export const papi = {
 
   checkConnection: (t: string, id: string) =>
     req<ConnectionCheck>(`/api/v1/connections/${id}/check`, { method: "POST" }, t),
+
+  // ── registered ERP connectors (NetSuite, Business Central, Acumatica, P21,
+  //    Sage) — the form renders from this catalog, never from hardcoded fields
+  connectorCatalog: (t: string) =>
+    req<ConnectorCatalog>("/api/v1/connections/catalog", {}, t),
+
+  addErpConnection: (t: string, body: ErpConnectInput) =>
+    req<ConnectionCheck>("/api/v1/connections/erp",
+      { method: "POST", body: JSON.stringify(body) }, t),
+
+  discoverErpCompanies: (t: string, connector: string, values: Record<string, string>) =>
+    req<{ connector: string; companies: ErpDiscoveredCompany[] }>(
+      "/api/v1/connections/erp/discover",
+      { method: "POST", body: JSON.stringify({ connector, values }) }, t),
+
+  rotateErpConnection: (t: string, id: string, values: Record<string, string>) =>
+    req<ConnectionCheck & { rotated: boolean; note: string }>(
+      `/api/v1/connections/${id}/rotate-erp`,
+      { method: "POST", body: JSON.stringify({ values }) }, t),
 
   // ── the AI layer, from the outside (owner only) ───────────────────────────
   /** Which provider will really run, and what the next decision run would

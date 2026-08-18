@@ -33,6 +33,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -53,7 +54,6 @@ class Organization(Base):
 
     organization_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     name: Mapped[str] = mapped_column(String(255))
-    erp: Mapped[str] = mapped_column(String(32), default="zoho")
     currency: Mapped[str] = mapped_column(String(8), default="INR")
     # The zone the business's *day* is measured in. Storage stays UTC; this is
     # what decides which day a timestamp falls on, and it belongs to the tenant
@@ -61,6 +61,14 @@ class Organization(Base):
     # distributor and a Gulf one. Zoho reports it on the organization record, so
     # a connected company fills it in rather than being asked.
     timezone: Mapped[Optional[str]] = mapped_column(String(64))
+    # The country whose statutes reach this tenant (ISO 3166-1 alpha-2, e.g.
+    # "IN"). It belongs beside timezone and currency for the same reason they
+    # do — one instance can hold an Indian distributor and a Gulf one — but it
+    # gates rather than formats: ``commercial/jurisdiction.py`` decides from it
+    # whether the statutory screens (MSME payment timing, 194Q withholding) may
+    # answer at all. NULL means "not established", and unknown is not India —
+    # the statutory endpoints refuse rather than assume (CLAUDE.md §1).
+    country: Mapped[Optional[str]] = mapped_column(String(2))
     # Which plan this organization is licensed on ("free" | "intelligence" |
     # "platform" — domain.enums.PlanTier). NULL means "not decided here" and
     # resolves to settings.DEFAULT_PLAN, so an existing deployment keeps its
@@ -68,6 +76,13 @@ class Organization(Base):
     # CLI), never by a tenant — an owner who could set their own plan would
     # not have one.
     plan: Mapped[Optional[str]] = mapped_column(String(32))
+    # Which plan this organization *asked* for at sign-up. A request, never a
+    # licence: ``entitlements.licensed_plan`` reads ``plan`` above and has no
+    # idea this column exists, so writing "platform" here grants nothing. It is
+    # here because the sign-up form asks the question, and the answer is worth
+    # more as a row an operator can list (``python -m app.entitlements
+    # requests``) than as an email nobody kept. NULL means never asked.
+    requested_plan: Mapped[Optional[str]] = mapped_column(String(32))
     config: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
@@ -95,22 +110,43 @@ class ZohoCredential(Base):
     ``client_secret`` and ``refresh_token`` are encrypted at rest (see
     ``app/crypto.py``) — this table, unlike a ``.env`` file, can end up in a
     database backup or a read replica.
+
+    **The table now holds every connector's grants, not only Zoho's.** The name
+    is historical and deliberately kept: renaming a table every imported row's
+    provenance convention points at would churn the schema for a cosmetic gain.
+    ``connector`` says which system a grant signs into. Zoho rows keep using the
+    typed OAuth columns below; every other connector stores its secrets as one
+    encrypted JSON document in ``secrets_encrypted`` and its non-secret settings
+    (account id, tenant, environment …) in ``config``, because five ERPs have
+    five different auth shapes and a typed column per field would grow a
+    nullable column per connector per secret. The shape of both documents is
+    declared per connector in ``ingestion/erp`` — a credential is only ever
+    written through its connector's spec, never free-form.
     """
 
     __tablename__ = "zoho_credentials"
 
     credential_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    # Which system this grant signs into. The discriminator every credential
+    # consumer branches on — through the ``ingestion/erp`` registry, not an if.
+    connector: Mapped[str] = mapped_column(String(32), default="zoho",
+                                           server_default="zoho")
     # Who may rotate it and decide who else may use it.
     owner_organization_id: Mapped[str] = mapped_column(String(64), index=True)
     label: Mapped[str] = mapped_column(String(255), default="")
 
-    client_id: Mapped[str] = mapped_column(String(255))
-    client_secret_encrypted: Mapped[str] = mapped_column(String(2048))
-    refresh_token_encrypted: Mapped[str] = mapped_column(String(2048))
+    client_id: Mapped[Optional[str]] = mapped_column(String(255))
+    client_secret_encrypted: Mapped[Optional[str]] = mapped_column(String(2048))
+    refresh_token_encrypted: Mapped[Optional[str]] = mapped_column(String(2048))
     accounts_base: Mapped[str] = mapped_column(String(255),
                                                default="https://accounts.zoho.in")
     api_base: Mapped[str] = mapped_column(String(255),
                                           default="https://www.zohoapis.in/books/v3")
+    # Non-Zoho connectors only. ``secrets_encrypted`` is an encrypted JSON
+    # object of the connector's secret fields; ``config`` carries the values
+    # that are identifying rather than secret. Zoho rows leave both NULL.
+    secrets_encrypted: Mapped[Optional[str]] = mapped_column(String(4096))
+    config: Mapped[Optional[dict]] = mapped_column(JSON)
 
     # Other platform organizations allowed to connect through this grant.
     # Explicit rather than implicit: a credential reachable by every tenant in
@@ -154,11 +190,24 @@ class ZohoConnection(Base):
     explicitly connects it — until then it falls back to the ``ZOHO_*``
     environment variables, so an existing single-tenant deployment keeps working
     unchanged (see ``ingestion/connections.py``).
+
+    **The table now holds every connector's connections.** The name is
+    historical, kept for the reason ``ZohoCredential`` states; ``connector``
+    says which system a row reads, and ``zoho_organization_id`` is read as "the
+    company's id in that system" — a Zoho org id, a Business Central company
+    GUID, an Acumatica tenant, a NetSuite account. One shared table rather than
+    one per connector is what keeps every query that asks "how many companies
+    does this organization have" (the sole-connection adoption guard, the
+    multi-company plan gate, the sync-all fan-out, ``origin.Companies``)
+    correct without knowing connectors exist.
     """
 
     __tablename__ = "zoho_connections"
     __table_args__ = (
-        UniqueConstraint("organization_id", "zoho_organization_id",
+        # Identity is (connector, company-in-that-system): two systems may
+        # legitimately issue the same id string, and one system's company must
+        # still not be connected twice.
+        UniqueConstraint("organization_id", "connector", "zoho_organization_id",
                          name="uq_zoho_connection_org_company"),
     )
 
@@ -166,8 +215,12 @@ class ZohoConnection(Base):
                                                default=_uuid)
     organization_id: Mapped[str] = mapped_column(
         String(64), ForeignKey("organizations.organization_id"), index=True)
-    # What a person calls this company. The Zoho org id is the identity; this is
-    # what makes a list of three connections readable.
+    # Which system this connection reads. The value every imported row's
+    # ``connector`` column is stamped from.
+    connector: Mapped[str] = mapped_column(String(32), default="zoho",
+                                           server_default="zoho")
+    # What a person calls this company. The external org id is the identity;
+    # this is what makes a list of three connections readable.
     label: Mapped[str] = mapped_column(String(255), default="")
     # Off means "keep the credentials, skip it on a sync-all". Deleting is for
     # connections that are wrong; disabling is for ones that are simply quiet.
@@ -176,6 +229,10 @@ class ZohoConnection(Base):
     zoho_organization_id: Mapped[str] = mapped_column(String(64))
     credential_id: Mapped[Optional[str]] = mapped_column(
         String(64), ForeignKey("zoho_credentials.credential_id"), index=True)
+    # Non-Zoho connectors only: per-company settings the credential does not
+    # carry — a Business Central company GUID is here, its tenant id is on the
+    # credential. Shapes are declared per connector in ``ingestion/erp``.
+    config: Mapped[Optional[dict]] = mapped_column(JSON)
 
     # Legacy inline credentials. Rows created before credentials were separated
     # keep working from these until the migration backfills them; nothing new is
@@ -331,7 +388,69 @@ class User(Base):
     created_by_user_id: Mapped[Optional[str]] = mapped_column(String(64))
     role_changed_by_user_id: Mapped[Optional[str]] = mapped_column(String(64))
     role_changed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    # Login failure throttling: count resets on successful auth, locks account
+    # after 5 consecutive failures with exponential backoff (30s, 60s, 120s, 240s…).
+    login_failures_count: Mapped[int] = mapped_column(Integer, default=0)
+    login_failures_last_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class UserSession(Base):
+    """One sign-in, as a row — so it can be ended.
+
+    The token used to be the whole session: an HMAC over ``{uid, oid, iat}`` and
+    nothing else. That made signing out a client-side fiction. Clearing the
+    browser's copy left the token cryptographically valid for its full 30 days,
+    so a token captured from a shared machine outlived the "sign out" the person
+    clicked, and there was no way to end one session without changing the
+    password and ending all of them.
+
+    So the token now carries a ``sid`` naming a row here, and
+    ``authz.load_principal`` reads it on every request. Revoking is a write, not
+    a hope. The cost is one indexed lookup per request, which is not a new class
+    of cost: the same function already loads the ``User`` row to resolve role and
+    active status, and for the same reason — authority belongs in the database,
+    where it can be withdrawn, never in a bearer's copy of it.
+
+    ``revoked_at`` is set, never deleted. A signed-out session stays as evidence
+    that it existed and when it ended; ``authz.purge_expired_sessions`` is what
+    eventually reclaims the rows, long after they could matter.
+    """
+
+    __tablename__ = "user_sessions"
+    __table_args__ = (
+        # The session list and the revoke-all sweep both ask "live sessions for
+        # this user", which is this index. `revoked_at` is not in it on purpose:
+        # it is null for exactly the rows those queries want, and a null-heavy
+        # column adds nothing to the lookup.
+        Index("ix_user_sessions_user_live", "user_id", "revoked_at"),
+    )
+
+    #: Opaque and random, never derived from the user — it travels in a token
+    #: and, before the cookie, in `localStorage`. A guessable id would let a
+    #: caller name a session that is not theirs on the revoke endpoint; the
+    #: endpoint checks ownership anyway, and this makes the check redundant
+    #: rather than load-bearing.
+    session_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("users.user_id"), index=True)
+    #: Denormalised from the user so a revocation sweep never has to join. The
+    #: token carries an org too, and `load_principal` rejects a mismatch.
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+
+    issued_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, index=True)
+    #: Advanced lazily — see `authz.LAST_SEEN_RESOLUTION_SECONDS`. Writing it on
+    #: every request would put a write in front of every read, which on SQLite
+    #: means a write lock in front of every read.
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+    #: What the person should recognise in the session list — "Chrome on
+    #: Windows", roughly. Truncated, and deliberately the only thing recorded
+    #: about the client: an IP address would be a second, more sensitive
+    #: identifier for no gain over "is this device mine?".
+    user_agent: Mapped[Optional[str]] = mapped_column(String(256))
 
 
 class Customer(Base):
@@ -1338,7 +1457,12 @@ class IngestedDocument(Base):
     connection_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
     doc_type: Mapped[str] = mapped_column(String(16), index=True)   # invoice | bill
     doc_id: Mapped[str] = mapped_column(String(64), index=True)
-    modified_at: Mapped[Optional[str]] = mapped_column(String(64))  # Zoho's stamp, verbatim
+    #: Zoho's ``last_modified_time``, rewritten onto the UTC line
+    #: (``clock.utc_stamp``, ``YYYY-MM-DDTHH:MM:SSZ``) so the resume cursor's
+    #: string ``max()`` is a time max across offset formats — kept verbatim
+    #: only when the stamp cannot be placed there, and then excluded from the
+    #: max by shape. ``ReadModelRepository.mark_ingested`` is the one writer.
+    modified_at: Mapped[Optional[str]] = mapped_column(String(64))
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
@@ -1682,6 +1806,221 @@ class Outcome(Base):
     decision: Mapped["Decision"] = relationship()
 
 
+class OutcomeSnapshot(Base):
+    """What was true at the moment a recommendation was accepted — frozen.
+
+    Written once by ``commercial.outcome_tracker.capture_on_accept`` when a
+    signal-derived decision is accepted, and never updated: the baseline a
+    realised delta is measured against must be the one that was in force when
+    the human said yes, not whatever a later re-sync recomputed. Evaluation is
+    *derived* — ``commercial.outcome_tracker.evaluate`` recomputes the realised
+    position from ``SalesTxn``/``CostRecord`` rows on read — so nothing here
+    ever needs correcting in place.
+
+    Not a widening of ``Outcome`` above, deliberately. That table models a
+    recorded *measurement* (``measured_metrics``, ``impact``, a mutable
+    ``status``) and has never been written; this one models the *baseline* the
+    measurement will one day be made against. One table holding both would hold
+    two lifecycles — the same reason ``EvaluationBaseline`` is not columns on
+    ``IntelligenceTrial``.
+
+    ``thresholds_version`` is copied **verbatim** from the signal's own
+    ``threshold_config_version`` — ``th_…`` for engine signals, ``ci_…`` for
+    Customer × Item signals. The two stamps are different hashes over different
+    policies; this column records whichever one actually judged the signal and
+    must never be read as the other.
+
+    ``horizon_days`` stores the literal number of days, not a pointer into the
+    horizon config: the value in force at acceptance is what the evaluation
+    window is built from, and a later config edit must not move a window that
+    somebody's acceptance already anchored.
+
+    ``baseline_metrics`` for the restricted categories embeds cost and margin
+    figures. The router omits those fields server-side for a salesperson —
+    absent from the response, not hidden in the browser (§1).
+    """
+
+    __tablename__ = "outcome_snapshots"
+    __table_args__ = (
+        # One snapshot per decision. Accept → reopen → accept again keeps the
+        # first baseline: the horizon is anchored at the first acceptance, and
+        # a second row would be a second claim about one recommendation.
+        UniqueConstraint("decision_id", name="uq_outcome_snapshot_decision"),
+        Index("ix_outcome_snapshots_org_category", "organization_id", "category"),
+        Index("ix_outcome_snapshots_org_accepted", "organization_id", "accepted_at"),
+    )
+
+    outcome_snapshot_id: Mapped[str] = mapped_column(String(64), primary_key=True,
+                                                     default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    decision_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("decisions.decision_id"))
+    #: The signal whose evidence the baseline was read from. Non-null by
+    #: construction: v1 captures only signal-derived decisions (a STATE
+    #: decision has no signal baseline to freeze, and quantifies impact through
+    #: different machinery).
+    signal_id: Mapped[str] = mapped_column(String(64), index=True)
+    #: The signal's type — CUSTOMER_DECLINE, MARGIN_DETERIORATION, … — which is
+    #: what selects the evaluator and the default horizon.
+    category: Mapped[str] = mapped_column(String(48), index=True)
+    subject_entity_type: Mapped[str] = mapped_column(String(32))
+    subject_entity_id: Mapped[str] = mapped_column(String(64), index=True)
+    #: The signal's ``metrics``, copied whole. This is the baseline later
+    #: evaluation compares against, kept even if the signal row is ever erased.
+    baseline_metrics: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    #: The signal's ``window`` — which periods the baseline was measured over,
+    #: so a realised figure can say whether its window is comparable.
+    baseline_window: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    thresholds_version: Mapped[str] = mapped_column(String(32), default="")
+    horizon_days: Mapped[int] = mapped_column(Integer)
+    accepted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    accepted_by_user_id: Mapped[Optional[str]] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+# ── Value attribution ────────────────────────────────────────────────────────
+#
+# What the platform is worth to the business, measured rather than asserted.
+# ``Outcome`` above cannot carry this: its ``decision_id`` is non-nullable, so
+# it can only ever describe value that arrived through a decision card — and
+# most of the money this platform touches moves on the Quote Desk, which writes
+# ``QuoteDecision`` rows and no decision at all. Widening ``Outcome`` to make
+# that FK optional would leave one table with two meanings and a nullable join
+# that no query could safely assume either way.
+
+
+class ValueEvent(Base):
+    """One measured rupee outcome, tied to the evidence that establishes it.
+
+    Append-only, like ``QuoteDecision`` and for the same reason: this is the
+    ledger a renewal conversation is argued from, and a row that can be edited
+    afterwards proves nothing. A superseded event is superseded by a *new* row,
+    never by an update.
+
+    ``event_key`` is unique per organization because double counting is the
+    failure mode this table exists to survive. A rollup that runs twice, a
+    detector re-run after a re-sync, a quote whose outcome is recorded again —
+    each is an ordinary occurrence, and each would otherwise inflate the total
+    the business is being asked to pay against. The key is derived from
+    (event_type, evidence identity), so recording the same fact twice is a no-op
+    at the *database* level rather than a code path that has to remember. This
+    is the ``Decision.decision_key`` idiom (``uq_decision_key``) applied to
+    money, where getting it wrong is not a duplicate card but a false claim.
+
+    ``amount`` is nullable and that is not laxity. Some classes carry no money —
+    a counted intervention with no defensible rupee value must be recordable as
+    itself rather than as a zero, because zero is an *amount* and would sum. A
+    line whose ``unit_cost`` is missing produces no event here at all; absence of
+    evidence is UNKNOWN, never a benign zero (§1).
+
+    ``basis`` holds the operands the amount was computed from — the floor price,
+    the final price, the quantity — so the drill-down can re-derive the number
+    instead of restating it. An event nobody can re-derive is an assertion, and
+    ``evidence_refs`` is the other half of that: it is never empty, because an
+    event that cannot name what it was computed from has nothing to defend.
+
+    All economics here are RESTRICTED. Attributed value on a quote line *is*
+    ``gross_profit`` arithmetic, so this surface never reaches a salesperson —
+    absent from the response, not hidden in the browser.
+    """
+
+    __tablename__ = "value_events"
+    __table_args__ = (
+        # Unique over the *live* rows only. A plain unique constraint was wrong
+        # once supersession existed: correcting a measurement writes a second row
+        # with the same key, and the constraint would refuse the correction. The
+        # partial index keeps the guarantee that matters — one live claim per
+        # fact — while letting the superseded ones stay as history.
+        #
+        # Both backends support partial indexes (SQLite since 3.8, Postgres
+        # always), so this needs no dialect branch beyond naming the predicate
+        # twice.
+        Index("uq_value_event_key_live", "organization_id", "event_key",
+              unique=True,
+              sqlite_where=text("superseded_at IS NULL"),
+              postgresql_where=text("superseded_at IS NULL")),
+        Index("ix_value_events_org_occurred", "organization_id", "occurred_at"),
+        Index("ix_value_events_org_class", "organization_id", "value_class"),
+        Index("ix_value_events_org_superseded", "organization_id", "superseded_at"),
+    )
+
+    value_event_id: Mapped[str] = mapped_column(String(64), primary_key=True,
+                                                default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+
+    # A ``ValueEventType``. What happened.
+    event_type: Mapped[str] = mapped_column(String(48), index=True)
+    # A ``ValueClass``. How strong the evidence is — and therefore which total
+    # this row is allowed to be added into. The classes never sum together.
+    value_class: Mapped[str] = mapped_column(String(16))
+    event_key: Mapped[str] = mapped_column(String(128))
+
+    amount: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
+    # Stored per row rather than assumed: the books are INR today, and a total
+    # that silently mixes currencies is worse than one that refuses to.
+    currency: Mapped[str] = mapped_column(String(8), default="INR")
+
+    basis: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    evidence_refs: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+
+    # When the *business fact* happened, which is not when this row was written.
+    # A rollup for last month must include an event detected today about a quote
+    # won three weeks ago, so every window query reads this column.
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    thresholds_version: Mapped[str] = mapped_column(String(32), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    #: Set when a later detection run measured this same fact differently — a
+    #: line repriced again, so the earlier amount is now an understatement. The
+    #: superseded row is kept and every rollup filters ``IS NULL``, which is what
+    #: makes a re-run correct the ledger instead of accumulating into it.
+    #:
+    #: This is the one stamp written to an existing row, and it is why the table
+    #: can still be called append-only: the *claim* is immutable, and this only
+    #: records that a newer claim replaced it. Without it, a stable event key
+    #: would freeze the first amount forever, and a changing key — which is what
+    #: shipped first — let three runs over one line bank three overlapping
+    #: amounts for one price movement.
+    superseded_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+
+class EvaluationBaseline(Base):
+    """What the numbers looked like before the trial, so "better" means something.
+
+    Its own table rather than columns on ``IntelligenceTrial``, and the reason is
+    lifecycle rather than tidiness. A trial row is an **entitlement fact**: it
+    records that one set of books has had its free month, it must survive
+    everything, and it is never rebuilt. A baseline is **derived state** — a
+    measurement over rows a complete re-sync re-derives from Zoho, and therefore
+    something a recompute is entitled to rewrite. Putting them in one table would
+    put those two lifecycles in one row, where a routine baseline recompute could
+    destroy the record that stops a free month being minted twice.
+
+    ``evidence_gaps`` names what could not be measured. If there is not enough
+    history behind ``window_start``, the baseline says so and the report says the
+    comparison is not available — it does not quietly compare against a thin
+    window and call the difference improvement.
+    """
+
+    __tablename__ = "evaluation_baselines"
+    __table_args__ = (
+        Index("ix_evaluation_baselines_org_captured", "organization_id", "captured_at"),
+    )
+
+    baseline_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    trial_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("intelligence_trials.trial_id"), index=True)
+
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    # The period measured — the days *before* the trial began, not the trial.
+    window_start: Mapped[date] = mapped_column(Date)
+    window_end: Mapped[date] = mapped_column(Date)
+
+    metrics: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    evidence_gaps: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    thresholds_version: Mapped[str] = mapped_column(String(32), default="")
+
+
 # ── Identity layer ───────────────────────────────────────────────────────────
 #
 # The platform reads from several ERPs at once — two Zoho companies today, a
@@ -2002,7 +2341,7 @@ class ModelPayload(Base):
 
 
 class ErasureReceipt(Base):
-    """Proof of what was destroyed, signed, and readable after the fact.
+    """Proof of what was destroyed — and what was not — signed, readable after.
 
     Stored unencrypted on purpose: a receipt sealed under the key whose
     destruction it certifies would be unreadable exactly when it is wanted.
@@ -2013,6 +2352,14 @@ class ErasureReceipt(Base):
     receipt_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
     organization_id: Mapped[str] = mapped_column(String(64), index=True)
     manifest: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    #: What the erasure claimed at the moment it ran: ``method``, ``destroyed``
+    #: (the field classes encrypted under the DEK, which key loss unreads) and
+    #: ``survives_plaintext`` (the columns key destruction cannot touch, each
+    #: with its reason). Stamped by ``trust/erasure.erase`` and covered by the
+    #: signature — kept on the row rather than re-read from code so a later
+    #: edit to those lists neither rewrites an old receipt's story nor breaks
+    #: its verification.
+    attestation: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     reason: Mapped[str] = mapped_column(String(512), default="")
     actor_user_id: Mapped[Optional[str]] = mapped_column(String(64))
     erased_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),
@@ -2903,10 +3250,15 @@ class BusinessState(Base):
                                                    default=_uuid)
     organization_id: Mapped[str] = mapped_column(String(64), index=True)
     state: Mapped[str] = mapped_column(String(48), index=True)
-    #: The thing this state is *about* — a product id, a party id. A local id,
-    #: never an external one: two connected companies can number from one, and
-    #: a state keyed on an external id would silently merge them.
-    key: Mapped[str] = mapped_column(String(64), index=True)
+    #: The thing this state is *about* — a product id, a party id, or a
+    #: reducer's composite of them (``vendor:product``,
+    #: ``customer:product:2026-03``). Local ids, never external ones: two
+    #: connected companies can number from one, and a state keyed on an
+    #: external id would silently merge them. 160 because a composite of two
+    #: 64-char ids plus a month bucket is 137 — String(64) fit only the single
+    #: ids, which SQLite never enforced and Postgres rejected on first
+    #: contact.
+    key: Mapped[str] = mapped_column(String(160), index=True)
     as_of: Mapped[date] = mapped_column(Date, index=True)
     value: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     #: How many live events were folded into this row. Not decoration: a state
@@ -2947,7 +3299,8 @@ class StateTransition(Base):
     event_seq: Mapped[int] = mapped_column(Integer, index=True)
     event_type: Mapped[str] = mapped_column(String(48))
     state: Mapped[str] = mapped_column(String(48), index=True)
-    key: Mapped[str] = mapped_column(String(64), index=True)
+    #: Same width as BusinessState.key, for the same composite-key reason.
+    key: Mapped[str] = mapped_column(String(160), index=True)
     #: Which fold this working belongs to. Two builds at different ``as_of``
     #: dates are two different arithmetics over the same events, and a
     #: transition that did not say which would explain the wrong one.

@@ -64,6 +64,9 @@ export type Screen =
   /** Which quotes were won, which were lost, and why — the outcome half of the
    *  quoting loop, which the platform recorded and never read. */
   | "quoteOutcomes"
+  /** What the platform itself changed: the value ledger, its evidence gaps and
+   *  — for the owner — the 30-day report against the pre-trial baseline. */
+  | "attribution"
   /** The approval queue, and organization settings (owner is super admin). */
   | "approvals" | "settings"
   /** Which connector records describe the same customer or item. */
@@ -118,6 +121,7 @@ export const PATH: Record<Screen, string> = {
   catalogue: "/item-lines",
   negotiate: "/negotiate",
   quoteOutcomes: "/quote-outcomes",
+  attribution: "/what-pie-changed",
 };
 
 /** The three screens whose URL carries an id, as route patterns.
@@ -212,6 +216,13 @@ export function vizPath(route: string): string {
     supply: "supply",
     negotiate: "negotiate",
     "quote-outcomes": "quoteOutcomes",
+    // The two names the *needs-you* tiles carry. They were missing, and the
+    // fallback below sends an unknown name to home — so "Approvals waiting"
+    // and "Decisions in the queue" navigated to the screen the reader was
+    // already standing on, and only ever on the days those tiles had work in
+    // them, which is when the link renders at all.
+    approvals: "approvals",
+    list: "list",
     // Bare `customer` — no id — is the Customers screen with its own picker.
     // It routes here now that Customers is a nav destination in its own right
     // rather than only ever a link carrying an account.

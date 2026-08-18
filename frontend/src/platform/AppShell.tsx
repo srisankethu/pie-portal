@@ -23,7 +23,6 @@ import { useState, type ReactNode } from "react";
 import AppBar from "@mui/material/AppBar";
 import Badge from "@mui/material/Badge";
 import Box from "@mui/material/Box";
-import Button from "@mui/material/Button";
 import Divider from "@mui/material/Divider";
 import Drawer from "@mui/material/Drawer";
 import IconButton from "@mui/material/IconButton";
@@ -34,7 +33,6 @@ import ListItemText from "@mui/material/ListItemText";
 import ListSubheader from "@mui/material/ListSubheader";
 import Toolbar from "@mui/material/Toolbar";
 import Tooltip from "@mui/material/Tooltip";
-import Typography from "@mui/material/Typography";
 import useMediaQuery from "@mui/material/useMediaQuery";
 import { useTheme } from "@mui/material/styles";
 
@@ -66,10 +64,16 @@ import TimelineOutlined from "@mui/icons-material/TimelineOutlined";
 import StorageOutlined from "@mui/icons-material/StorageOutlined";
 import FingerprintOutlined from "@mui/icons-material/FingerprintOutlined";
 import PsychologyOutlined from "@mui/icons-material/PsychologyOutlined";
+import ScoreboardOutlined from "@mui/icons-material/ScoreboardOutlined";
+import CurrencyExchangeOutlined from "@mui/icons-material/CurrencyExchangeOutlined";
+import GavelOutlined from "@mui/icons-material/GavelOutlined";
+import ShieldOutlined from "@mui/icons-material/ShieldOutlined";
 import TuneOutlined from "@mui/icons-material/TuneOutlined";
+import InsightsOutlined from "@mui/icons-material/InsightsOutlined";
 
 import { Link as RouterLink } from "react-router-dom";
 
+import AccountMenu from "./AccountMenu";
 import { pathFor, type Screen } from "./route";
 
 export const DRAWER_WIDTH = 232;
@@ -92,6 +96,7 @@ const ICON: Partial<Record<Screen, typeof MenuIcon>> = {
   negotiate: HandshakeOutlined,
   simulate: ScienceOutlined,
   quotes: RequestQuoteOutlined,
+  quoteOutcomes: ScoreboardOutlined,
   approvals: FactCheckOutlined,
 
   weather: CloudOutlined,
@@ -113,10 +118,15 @@ const ICON: Partial<Record<Screen, typeof MenuIcon>> = {
   payments: PaymentsOutlined,
   payables: ReceiptLongOutlined,
   orderToCash: TimelineOutlined,
+  cashCycle: CurrencyExchangeOutlined,
+  statutory: GavelOutlined,
+
+  attribution: InsightsOutlined,
 
   data: StorageOutlined,
   identity: FingerprintOutlined,
   states: PsychologyOutlined,
+  trust: ShieldOutlined,
   settings: TuneOutlined,
 };
 
@@ -201,11 +211,17 @@ export default function AppShell({
                   onClick={() => setOpen(false)}
                   sx={{ minHeight: 34, py: 0.25, mb: "1px", color: "inherit" }}
                 >
-                  {Icon && (
-                    <ListItemIcon sx={{ minWidth: 30, color: "inherit" }}>
-                      <Icon sx={{ fontSize: 18 }} />
-                    </ListItemIcon>
-                  )}
+                  {/* The slot is always rendered, even with nothing in it. It
+                      used to be omitted when a screen had no icon, which pulled
+                      that one label flush against the edge while every
+                      neighbour stayed indented — so the four screens missing
+                      from ICON did not read as "no icon yet", they read as a
+                      broken list. A gap keeps the column straight, and a
+                      missing icon stays a small omission instead of a layout
+                      fault. */}
+                  <ListItemIcon sx={{ minWidth: 30, color: "inherit" }}>
+                    {Icon ? <Icon sx={{ fontSize: 18 }} /> : null}
+                  </ListItemIcon>
                   <ListItemText
                     primary={it.label}
                     slotProps={{
@@ -252,34 +268,13 @@ export default function AppShell({
               <MenuIcon />
             </IconButton>
           )}
-          <Typography
-            component="span"
-            sx={{
-              fontFamily: "var(--font-heading)",
-              fontWeight: 700,
-              letterSpacing: "0.04em",
-              textTransform: "uppercase",
-              fontSize: 15,
-              whiteSpace: "nowrap",
-            }}
-          >
-            PIE · Decisions
-          </Typography>
+          <PieLogo size={30} />
           <Box sx={{ flex: 1 }} />
           {/* No role switcher. A user has exactly one role, it comes from their
               account, and a control that swapped it would be a control that lets
-              anyone read the cost of every line in the book. */}
-          <Box sx={{ textAlign: "right", lineHeight: 1.2, display: { xs: "none", sm: "block" } }}>
-            <Typography sx={{ fontFamily: "var(--font-heading)", fontWeight: 600, fontSize: 13 }}>
-              {userName}
-            </Typography>
-            <Typography variant="caption" color="text.secondary">
-              {roleLabel}
-            </Typography>
-          </Box>
-          <Button size="small" variant="outlined" color="inherit" onClick={onSignOut}>
-            Sign out
-          </Button>
+              anyone read the cost of every line in the book. The role is shown
+              in there, and only shown. */}
+          <AccountMenu userName={userName} roleLabel={roleLabel} onSignOut={onSignOut} />
         </Toolbar>
       </AppBar>
 
@@ -322,22 +317,49 @@ export default function AppShell({
   );
 }
 
+/** How the product names itself, written once.
+ *
+ *  It was `PIE · Decisions` in two places — the shell header and `BrandMark` —
+ *  even though `BrandMark` exists precisely so the surfaces cannot disagree; the
+ *  header simply restated the string instead of using it. The sub-brand was also
+ *  stale: it dated from when the product was "Commercial Decisions", while the
+ *  landing page, the tab title and the positioning had all moved to commercial
+ *  intelligence.
+ *
+ *  So it is just `PIE` now — a name with a category glued to it goes out of date
+ *  every time the category is rethought, which is twice so far; the bare name
+ *  does not. Kept as one constant so the logo's accessible name has one source. */
+export const BRAND = "PIE";
+
+/** The product logo: the `PIE` wordmark set in the accent tile — the same mark
+ *  the browser tab carries (public/favicon.svg), redrawn here with theme tokens
+ *  and the bundled heading font so it tracks the palette instead of the
+ *  favicon's frozen hex. One in-app copy, used by the top bar and by BrandMark,
+ *  so the two never drift. `textLength` pins the advance width so the wordmark
+ *  stays centred in the tile even in the instant before Barlow Condensed
+ *  finishes loading and a wider fallback is briefly substituted. */
+export function PieLogo({ size = 30 }: { size?: number }) {
+  return (
+    <svg
+      width={size} height={size} viewBox="0 0 32 32"
+      role="img" aria-label={BRAND} style={{ display: "block", flex: "none" }}
+    >
+      <rect width="32" height="32" rx="6" fill="var(--color-accent-700)" />
+      <text
+        x="16" y="22.5" textAnchor="middle"
+        textLength="23" lengthAdjust="spacingAndGlyphs"
+        fontFamily="var(--font-heading)" fontSize="16" fontWeight="700"
+        fill="var(--color-bg)"
+      >
+        PIE<tspan fill="var(--color-accent-400)">.</tspan>
+      </text>
+    </svg>
+  );
+}
+
 /** The tooltip-wrapped brand mark, exported for the sign-in screen so the two
  *  surfaces agree on how the product names itself. */
 export function BrandMark({ tip }: { tip?: string }) {
-  const mark = (
-    <Typography
-      component="span"
-      sx={{
-        fontFamily: "var(--font-heading)",
-        fontWeight: 700,
-        letterSpacing: "0.04em",
-        textTransform: "uppercase",
-        fontSize: 15,
-      }}
-    >
-      PIE · Decisions
-    </Typography>
-  );
+  const mark = <PieLogo size={30} />;
   return tip ? <Tooltip title={tip}>{mark}</Tooltip> : mark;
 }

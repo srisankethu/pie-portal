@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="PIE">
+  <!-- The nav wordmark (`PIE` + the accent full stop, Landing.tsx `.lp-logo`)
+       as a tab icon. Colours are theme tokens: accent-700 tile, page bg for
+       the letters, accent-400 for the stop.
+
+       `textLength` is not decoration — Barlow Condensed is bundled with the
+       app and is NOT available to the browser chrome that paints a favicon,
+       so this falls back to whatever condensed sans the OS has. Forcing the
+       advance width makes all of those render inside the tile instead of
+       overflowing it. -->
+  <rect width="32" height="32" rx="4" fill="#416180"/>
+  <text x="16" y="22.5" text-anchor="middle"
+        textLength="23" lengthAdjust="spacingAndGlyphs"
+        font-family="'Barlow Condensed','Arial Narrow',Helvetica,Arial,sans-serif"
+        font-size="16" font-weight="700" fill="#f2f2f3"
+  >PIE<tspan fill="#94bce3">.</tspan></text>
+</svg>

@@ -23,14 +23,22 @@ import { useQuery } from "@tanstack/react-query";
  *  per view and each screen reads the fields it needs. */
 export type Envelope = Record<string, unknown>;
 
-export interface Loaded {
-  data: Envelope | null;
+/** The four states, over whatever shape the endpoint returns.
+ *
+ *  Generic with `Envelope` as the default so every existing caller is unchanged
+ *  — they read untyped payloads and branch on the keys they need. A caller that
+ *  has a declared interface for its response (the attribution surface does)
+ *  passes it and keeps it, rather than casting an interface through
+ *  `Record<string, unknown>` at the call site, which throws away exactly the
+ *  check `tsc` is there to make. */
+export interface Loaded<T = Envelope> {
+  data: T | null;
   loading: boolean;
   error: string | null;
   reload: () => void;
 }
 
-export function useInsight(
+export function useInsight<T = Envelope>(
   /** Which view this is. Part of the cache key, and the reason it exists.
    *
    * The first version keyed on `deps` alone, reasoning that "the deps the
@@ -51,10 +59,10 @@ export function useInsight(
    * forgets, and the symptom is a screen quietly showing another screen's data.
    */
   view: string,
-  fetcher: () => Promise<Envelope>,
+  fetcher: () => Promise<T>,
   deps: unknown[],
-): Loaded {
-  const query = useQuery<Envelope, Error>({
+): Loaded<T> {
+  const query = useQuery<T, Error>({
     queryKey: ["insight", view, ...deps],
     queryFn: fetcher,
   });

@@ -32,6 +32,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..clock import today as _clock_today
+from ..clock import utc_stamp
 from ..config import settings
 from ..domain import models
 from ..repositories import ReadModelRepository
@@ -499,15 +500,15 @@ class SyncService:
         stop and resume later, and swallowing it here would spend the rest of
         the run making calls that are all going to be rejected.
         """
-        from .zoho_client import ZohoScopeError, ZohoThrottleError
+        from .errors import SourceScopeError, SourceThrottleError
 
         self._phase(label)
         try:
             run()
             self.s.flush()
-        except ZohoThrottleError:
+        except SourceThrottleError:
             raise
-        except ZohoScopeError as e:
+        except SourceScopeError as e:
             # Not rolled back. Whatever this stage managed to read before the
             # refusal is real data, and discarding it would contradict the rest
             # of this module — a run that wrote 336 rows wrote 336 rows.
@@ -515,10 +516,11 @@ class SyncService:
             self.report.skip(
                 kind, e.path, "SCOPE_NOT_GRANTED", str(e),
                 context={"scope": e.scope, "endpoint": e.path,
-                         "fix": ("Reconnect this Zoho company from Data & "
-                                 f"connection and include {e.scope} in the "
-                                 "scope list. Nothing else about the "
-                                 "connection needs changing.")})
+                         "fix": ("Reconnect this company from Data & "
+                                 "connection and grant "
+                                 f"{e.scope or 'the missing permission'}. "
+                                 "Nothing else about the connection needs "
+                                 "changing.")})
         except Exception as e:                               # noqa: BLE001
             # Everything already written is kept; this one stage is reported as
             # incomplete. A supplier list that 500s must not discard an invoice
@@ -536,7 +538,7 @@ class SyncService:
         for raw in self.source.list_vendors():
             ref = str(raw.get("contact_id", "?"))
             try:
-                self.repo.upsert_vendor(normalize_vendor(raw))
+                self.repo.upsert_vendor(normalize_vendor(raw, system=self.connector))
                 self.report.vendors += 1
             except NormalizationError as e:
                 self.report.skip("vendor", ref, e.code, e.detail)
@@ -554,7 +556,7 @@ class SyncService:
             return
         item_id = str(raw.get("item_id", "?"))
         try:
-            snap = normalize_stock(raw, as_of)
+            snap = normalize_stock(raw, as_of, system=self.connector)
         except NormalizationError as e:
             self.report.skip("stock", item_id, e.code, e.detail)
             return
@@ -573,7 +575,7 @@ class SyncService:
                 skip=self._skipper("customerpayment")):
             ref = str(raw.get("payment_id", "?"))
             try:
-                payment = normalize_payment(raw)
+                payment = normalize_payment(raw, system=self.connector)
             except NormalizationError as e:
                 self.report.skip("payment", ref, e.code, e.detail)
                 continue
@@ -599,7 +601,7 @@ class SyncService:
         for raw in self.source.list_purchase_orders():
             ref = str(raw.get("purchaseorder_id", "?"))
             try:
-                po = normalize_purchase_order(raw)
+                po = normalize_purchase_order(raw, system=self.connector)
             except NormalizationError as e:
                 self.report.skip("purchase_order", ref, e.code, e.detail)
                 continue
@@ -620,7 +622,7 @@ class SyncService:
         for raw in self.source.list_sales_orders():
             ref = str(raw.get("salesorder_id", "?"))
             try:
-                so = normalize_sales_order(raw)
+                so = normalize_sales_order(raw, system=self.connector)
             except NormalizationError as e:
                 self.report.skip("sales_order", ref, e.code, e.detail)
                 continue
@@ -643,7 +645,7 @@ class SyncService:
         for raw in self.source.list_locations():
             ref = str(raw.get("location_id", "?"))
             try:
-                loc = normalize_location(raw)
+                loc = normalize_location(raw, system=self.connector)
             except NormalizationError as e:
                 self.report.skip("location", ref, e.code, e.detail)
                 continue
@@ -677,7 +679,7 @@ class SyncService:
                 # placeholder product would accumulate a shelf nobody ordered.
                 continue
             try:
-                snap = normalize_item_location(raw, as_of)
+                snap = normalize_item_location(raw, as_of, system=self.connector)
             except NormalizationError as e:
                 self.report.skip("stock_location", str(raw.get("item_id", "?")),
                                  e.code, e.detail)
@@ -700,7 +702,7 @@ class SyncService:
         for raw in self.source.list_credit_notes(skip=self._skipper("creditnote")):
             ref = str(raw.get("creditnote_id", "?"))
             try:
-                note, applications = normalize_credit_note(raw)
+                note, applications = normalize_credit_note(raw, system=self.connector)
             except NormalizationError as e:
                 self.report.skip("credit_note", ref, e.code, e.detail)
                 continue
@@ -724,7 +726,7 @@ class SyncService:
                 skip=self._skipper("vendorpayment")):
             ref = str(raw.get("payment_id", "?"))
             try:
-                vp = normalize_vendor_payment(raw)
+                vp = normalize_vendor_payment(raw, system=self.connector)
             except NormalizationError as e:
                 self.report.skip("vendor_payment", ref, e.code, e.detail)
                 continue
@@ -914,7 +916,16 @@ class SyncService:
                 return False
             # No stamp on either side means we cannot tell it apart — trust the
             # record we already hold rather than pay for the call again.
-            return not modified_at or modified_at == known[doc_id]
+            if not modified_at:
+                return True
+            # The stored side was rewritten onto the UTC line by
+            # ``mark_ingested`` (where the stamp allowed it), so the listed
+            # side goes through the same rewrite before comparing. Without it
+            # the same instant in a different offset dress reads as an edit,
+            # and every document pays its detail call again on every run. An
+            # unplaceable stamp rewrites to nothing and falls back to the
+            # verbatim comparison this check has always made.
+            return (utc_stamp(modified_at) or modified_at) == known[doc_id]
 
         return already_have
 
@@ -924,7 +935,7 @@ class SyncService:
         for raw in self.source.list_contacts():
             ref = str(raw.get("contact_id", "?"))
             try:
-                row = self.repo.upsert_customer(normalize_customer(raw))
+                row = self.repo.upsert_customer(normalize_customer(raw, system=self.connector))
                 # Flushed so the row has its id: the connector record points at
                 # the read-model row, and a null pointer here would silently
                 # decouple the two layers for every newly seen record.
@@ -989,10 +1000,10 @@ class SyncService:
         if fetch is None or external_id in self._item_fetch_missed:
             return row
         self._item_fetch_missed.add(external_id)     # one attempt, either way
-        from .zoho_client import ZohoThrottleError
+        from .errors import SourceThrottleError
         try:
             raw = fetch(external_id)
-        except ZohoThrottleError:
+        except SourceThrottleError:
             raise
         except Exception as e:  # noqa: BLE001 — a failed rescue is the old status quo
             log.warning("item %s: by-id fetch failed (%s); keeping the placeholder",
@@ -1018,7 +1029,7 @@ class SyncService:
 
         ref = str(raw.get("item_id", "?"))
         try:
-            row = self.repo.upsert_product(normalize_product(raw))
+            row = self.repo.upsert_product(normalize_product(raw, system=self.connector))
             # Flushed so the row has its id: the connector record points at
             # the read-model row, and a null pointer here would silently
             # decouple the two layers for every newly seen record.
@@ -1169,7 +1180,7 @@ class SyncService:
             # hardest to see. The same ordering, and the same reason, as bills.
             self._record_receivable(raw, ref)
             try:
-                lines = normalize_invoice(raw)
+                lines = normalize_invoice(raw, system=self.connector)
             except NormalizationError as e:
                 self.report.skip("invoice", ref, e.code, e.detail)
                 continue
@@ -1323,7 +1334,7 @@ class SyncService:
             # hardest to see.
             self._record_payable(raw, ref)
             try:
-                lines = normalize_bill(raw)
+                lines = normalize_bill(raw, system=self.connector)
             except NormalizationError as e:
                 self.report.skip("bill", ref, e.code, e.detail)
                 continue
@@ -1402,7 +1413,7 @@ class SyncService:
         screen look like the pull did twice the work.
         """
         try:
-            terms = normalize_bill_terms(raw)
+            terms = normalize_bill_terms(raw, system=self.connector)
         except NormalizationError as e:
             self.report.skip("payable", ref, e.code, e.detail)
             return
@@ -1431,7 +1442,7 @@ class SyncService:
         Data screen look like the pull did twice the work.
         """
         try:
-            terms = normalize_invoice_terms(raw)
+            terms = normalize_invoice_terms(raw, system=self.connector)
         except NormalizationError as e:
             self.report.skip("receivable", ref, e.code, e.detail)
             return
@@ -1524,22 +1535,32 @@ class ZohoNotConfiguredError(RuntimeError):
 def get_source(session: Session, organization_id: str,
                since: Optional[date] = None,
                connection_id: Optional[str] = None) -> ZohoSource:
-    """Select this organization's Zoho source (fixture offline, or its own live
-    connection). ``ZOHO_SOURCE=fixture`` is a process-wide dev/test switch and
-    applies to every org identically; ``api`` pulls each org's own credentials
-    (see ``connections.get_zoho_credentials``) — never another org's, and never
-    a silent fall-through to another org's leftover settings.
+    """Select this organization's source for one pull.
+
+    ``ZOHO_SOURCE=fixture`` is a process-wide dev/test switch and applies to
+    every org identically. ``api`` resolves the named connection and builds
+    whatever that connection's connector needs — the Zoho client from its
+    credentials, or a registered ERP source from its stored material — always
+    the org's own connection, never another org's, and never a silent
+    fall-through to another org's leftover settings. With no connection named,
+    the legacy single-company Zoho path applies unchanged.
     """
     if settings.ZOHO_SOURCE == "api":
-        from .connections import get_zoho_credentials
+        from .connections import (ZOHO_CONNECTOR, build_erp_source,
+                                  get_connection, get_zoho_credentials)
         from .zoho_client import ZohoApiSource
+
+        if connection_id is not None:
+            conn = get_connection(session, organization_id, connection_id)
+            if (getattr(conn, "connector", None) or ZOHO_CONNECTOR) != ZOHO_CONNECTOR:
+                return build_erp_source(session, conn, since=since)
 
         creds = get_zoho_credentials(session, organization_id,
                                      connection_id=connection_id)
         if creds is None:
             raise ZohoNotConfiguredError(
-                f"Organization {organization_id!r} has no Zoho connection. "
-                "Connect one via PUT /api/v1/data/connection before syncing.")
+                f"Organization {organization_id!r} has no connected company. "
+                "Connect one from Data & connection before syncing.")
         return ZohoApiSource(since=since, credentials=creds)
     from .mock_source import FixtureZohoSource
     return FixtureZohoSource()

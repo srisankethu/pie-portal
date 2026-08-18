@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DataGrid, numeric } from "./DataGrid";
 import { EntityName, EntitySource } from "./EntityName";
 import { CompanyFilter, useCompanyFilter } from "./CompanyFilter";
@@ -8,10 +8,12 @@ import {
   clearPlatformSession,
   isAuthError,
   loadPlatformSession,
+  onSessionChangedElsewhere,
   papi,
   savePlatformSession,
+  setAuthLossHandler,
 } from "./api";
-import type { Account, DecisionDetail, DecisionSummary, DecisionTrace, PlatformSession, Role, StatusFilter } from "./types";
+import type { Account, DecisionDetail, DecisionSummary, DecisionTrace, PlatformSession, Role, SignupOffer, StatusFilter } from "./types";
 import { aiState, factLabel, factValue, isPrimaryFact, stateFieldLabel, ROLE_LABEL } from "./format";
 import { ActionsPanel, Bp, Conf, DecisionCard, ImpactPanel, Interpretation, Labelled,
          Pri, RankingPanel, Tip, WhyPanel, typeLabel } from "./ui";
@@ -34,7 +36,10 @@ import {
   LEGACY_ACCOUNTS, PATH, PATTERN, pathFor, screenAt, vizPath, type Screen,
 } from "./route";
 import AppShell, { type NavItem } from "./AppShell";
+import { SetupChecklist } from "./SetupChecklist";
+import { TrialNotice } from "./TrialNotice";
 import { SignInCard } from "../SignInCard";
+import { SignUpCard } from "../SignUpCard";
 import { Landing } from "../landing/Landing";
 import { abilityFor } from "./ability";
 import { Seg } from "./viz/Seg";
@@ -71,6 +76,8 @@ const IdentityScreen = lazy(() =>
   import("./IdentityScreen").then((m) => ({ default: m.IdentityScreen })));
 const TrustScreen = lazy(() =>
   import("./TrustScreen").then((m) => ({ default: m.TrustScreen })));
+const AttributionScreen = lazy(() =>
+  import("./AttributionScreen").then((m) => ({ default: m.AttributionScreen })));
 const DataScreen = lazy(() =>
   import("./DataScreen").then((m) => ({ default: m.DataScreen })));
 const CustomerCommercial = lazy(() =>
@@ -151,9 +158,16 @@ const ROLE_HOME: Record<Role, { title: string; sub: string; nav: string }> = {
 /** The platform's door. The card itself is `src/SignInCard.tsx`, shared with
  *  the Quote Builder — the two forms had drifted, and the copy that drifted was
  *  the one still telling people any password worked. */
-function SignIn({ onIn, notice }: { onIn: (s: PlatformSession) => void; notice?: string | null }) {
+function SignIn({ onIn, notice, onSignUp }: {
+  onIn: (s: PlatformSession) => void;
+  notice?: string | null;
+  /** Passed straight through; the sentence is the card's, for the reason its
+   *  own prop docstring gives. Absent where sign-up is off. */
+  onSignUp?: () => void;
+}) {
   return (
     <SignInCard
+      onSignUp={onSignUp}
       title="Commercial Decisions"
       blurb="One product, three doors. Your account decides what you see first and what you may act on."
       submitLabel="Sign in"
@@ -177,6 +191,59 @@ function SignIn({ onIn, notice }: { onIn: (s: PlatformSession) => void; notice?:
       }
     />
   );
+}
+
+/** The other door: sign up for an organization that does not exist yet.
+ *
+ *  Reached only where the deployment offers it — see `useSignupOffer`. The
+ *  response is the login response, so this hands the session on through exactly
+ *  the same `onIn` the sign-in card uses; a second way to become signed in is a
+ *  second place to forget the currency. */
+function SignUp({ onIn, onSignIn, offer, defaultPlan }: {
+  onIn: (s: PlatformSession) => void;
+  onSignIn: () => void;
+  offer: SignupOffer | null;
+  defaultPlan?: string;
+}) {
+  return (
+    <SignUpCard
+      onSignIn={onSignIn}
+      offer={offer}
+      defaultPlan={defaultPlan}
+      onSubmit={async (d) => {
+        const r = await papi.signUp(d);
+        // Same field-by-field copy as sign-in, for the reason given there.
+        onIn({ token: r.token, role: r.role, name: r.name, email: r.email,
+               user_id: r.user_id,
+               organization_id: r.organization_id, currency: r.currency,
+               timezone: r.timezone,
+               must_change_password: r.must_change_password });
+      }}
+    />
+  );
+}
+
+/** What this deployment offers a stranger: sign-up or not, and on what terms.
+ *
+ *  Asked once, before the door is drawn, and answered `null` on any failure —
+ *  an older backend has no such endpoint and 404s, and the right reading of
+ *  "this deployment did not answer" is that it does not offer sign-up, not that
+ *  it does. Never fetched while signed in: the answer changes nothing then.
+ *
+ *  The whole object rather than a boolean, because the sign-up card needs the
+ *  plan ladder and the trial length and neither should be written a second time
+ *  in the browser. `signupOffered` below is still the boolean the doors key off. */
+function useSignupOffer(signedOut: boolean): SignupOffer | null {
+  const [offer, setOffer] = useState<SignupOffer | null>(null);
+  useEffect(() => {
+    if (!signedOut) return;
+    let live = true;
+    papi.signupOffer()
+      .then((o) => { if (live) setOffer(o.enabled ? o : null); })
+      .catch(() => { if (live) setOffer(null); });
+    return () => { live = false; };
+  }, [signedOut]);
+  return offer;
 }
 
 // ── action modal ─────────────────────────────────────────────────────────────
@@ -287,17 +354,30 @@ function ActionModal({
 export default function PlatformApp() {
   const { enqueueSnackbar, closeSnackbar } = useSnackbar();
   const [session, setSession] = useState<PlatformSession | null>(loadPlatformSession());
-  // Signed out, there are two doors: the public landing page (the default) and
-  // the sign-in card one click behind it. State rather than a route on purpose
-  // — a person deep-linked to any screen should land on the landing page, not
-  // on a bare form, and the URL they wanted is preserved for after sign-in.
-  const [door, setDoor] = useState<"landing" | "signin">("landing");
+  // Signed out, there are three doors: the public landing page (the default),
+  // the sign-in card one click behind it, and — where the deployment offers it
+  // — the sign-up card. State rather than a route on purpose: a person
+  // deep-linked to any screen should land on the landing page, not on a bare
+  // form, and the URL they wanted is preserved for after sign-in.
+  const [door, setDoor] = useState<"landing" | "signin" | "signup">("landing");
+  // Which pricing panel they came through, so the sign-up form opens on the
+  // plan they were reading about. Only a preselection: the account it creates
+  // is the free one whatever this says, which is `SignUpCard`'s whole header.
+  const [wantedPlan, setWantedPlan] = useState<string | undefined>(undefined);
   // The URL is the screen, so Back, reload and shareable links all work. React
   // Router owns the matching; `screen` is only what the nav highlights, which is
   // a different question — a decision detail has no nav item of its own.
   const location = useLocation();
   const navigate = useNavigate();
   const screen: Screen = screenAt(location.pathname);
+  // The destination a signed-out visitor actually asked for, held across the
+  // sign-in detour. A shared link to an account, or the screen a user was on
+  // when their token was retired, is otherwise lost: sign-in navigated to home
+  // unconditionally, under a comment claiming the deep link was preserved.
+  // Seeded from the first render because that is when the requested URL is
+  // still on screen.
+  const intended = useRef<string | null>(
+    screenAt(location.pathname) === "home" ? null : location.pathname + location.search);
   const [summaries, setSummaries] = useState<DecisionSummary[] | null>(null);
   const [details, setDetails] = useState<Record<string, DecisionDetail>>({});
   const [loading, setLoading] = useState(false);
@@ -341,7 +421,8 @@ export default function PlatformApp() {
     });
   }, [enqueueSnackbar, closeSnackbar]);
 
-  const signOut = useCallback(() => {
+  /** Drop this browser's view of the session. Local only — see `signOut`. */
+  const forgetSession = useCallback(() => {
     clearPlatformSession();
     setSession(null);
     setSummaries(null);
@@ -351,14 +432,89 @@ export default function PlatformApp() {
     setDoor("landing");
   }, []);
 
+  const signOut = useCallback(() => {
+    // Tell the server first, and do not wait for it or let it fail the sign-out:
+    // the local half must happen whether or not the network does, or a person on
+    // a flaky connection is left signed in by an error they cannot act on. The
+    // server call is what actually ends the session — clearing storage alone was
+    // the old behaviour, and it ended nothing.
+    void papi.logout().catch(() => { /* already invalid, or offline — leave anyway */ });
+    forgetSession();
+  }, [forgetSession]);
+
   /** A dead session must return the user to sign-in, not strand them inside
    *  application chrome that looks live but can load nothing. */
   const handleAuthLoss = useCallback(() => {
-    signOut();
+    // Where they were, so signing back in returns them there rather than to
+    // home. Captured before signOut swaps the shell for the landing page.
+    intended.current = location.pathname + location.search;
+    // `forgetSession`, not `signOut`: the session is already gone, and posting
+    // to /auth/logout with a dead credential answers 401, which is an auth loss,
+    // which calls this again. Local cleanup only.
+    forgetSession();
     // The toast lives inside the signed-in shell, which is about to unmount —
     // the message has to survive onto the sign-in screen to be seen at all.
     setNotice("Your session expired. Please sign in again.");
-  }, [signOut]);
+  }, [forgetSession, location.pathname, location.search]);
+
+  /** One session per browser, and now every tab agrees which one it is.
+   *
+   *  Without this the tabs drifted: a sign-out in one left the others drawing a
+   *  live-looking shell over a dead session, and a sign-in as somebody else left
+   *  the first tab showing the previous person's name and role until something
+   *  happened to reload it. */
+  useEffect(() => onSessionChangedElsewhere((next) => {
+    if (!next) {
+      forgetSession();
+      setNotice("You signed out in another tab.");
+      return;
+    }
+    setSession((prev) => {
+      if (prev && prev.user_id === next.user_id) return prev;   // same person; nothing to do
+      // A different account signed in elsewhere. Adopt it and drop everything
+      // loaded for the previous one rather than showing one person's data under
+      // another's name.
+      setSummaries(null);
+      setDetails({});
+      setError(null);
+      setNotice(`Signed in as ${next.name} in another tab.`);
+      return next;
+    });
+  }), [forgetSession]);
+
+  // Registered once for the whole app. Before this, a 401 was recognised only
+  // where a screen remembered to ask `isAuthError` — three call sites, all on
+  // the decision queue — so every other screen showed "this did not load"
+  // inside a shell that still looked signed in.
+  useEffect(() => {
+    setAuthLossHandler(handleAuthLoss);
+    return () => setAuthLossHandler(null);
+  }, [handleAuthLoss]);
+
+  /** Confirm the stored profile against the cookie, once, on boot.
+   *
+   *  What is in `localStorage` is a cache so the shell can draw immediately; the
+   *  cookie is the credential and the server is the authority on what it means.
+   *  Asking closes the gap between them — a session revoked from another device,
+   *  or a role changed by an owner, is reflected on load instead of at whichever
+   *  request happens to fail first. A 401 here routes through the normal
+   *  auth-loss path, so a stale profile cannot leave a signed-out person looking
+   *  signed in. */
+  const booted = useRef(false);
+  useEffect(() => {
+    if (booted.current || !session) return;
+    booted.current = true;
+    void papi.me()
+      .then((me) => {
+        const next: PlatformSession = { ...session, ...me, token: "" };
+        savePlatformSession(next);
+        setSession(next);
+      })
+      // Swallowed on purpose: a 401 has already been turned into an auth loss by
+      // the transport, and anything else (offline, a 502 from the proxy) is not
+      // a reason to throw someone out of a shell that is otherwise working.
+      .catch(() => { /* handled by the auth-loss path, or transient */ });
+  }, [session]);
 
   const load = useCallback(async () => {
     if (!session) return;
@@ -401,8 +557,31 @@ export default function PlatformApp() {
     setNotice(null);
     savePlatformSession(s);
     setSession(s);
-    navigate(PATH.home);
+    // Back to what they asked for, if they asked for anything. `intended` is
+    // only ever set from a path `screenAt` recognises as a real screen, so an
+    // unknown or landing-page path still goes home — which is where the
+    // catch-all route would have put them anyway.
+    //
+    // `replace`, so Back does not return to the sign-in card they have just
+    // left. Cleared afterwards: a second sign-in in the same tab, from home,
+    // must not be sent to a destination the previous session wanted.
+    const wanted = intended.current;
+    intended.current = null;
+    navigate(wanted ?? PATH.home, { replace: true });
   };
+  /** Swap in a token the server has just issued, keeping the rest of the
+   *  session. Changing a password retires every token minted before it, so a
+   *  screen that performs one and keeps the old token has signed the user out
+   *  without either of them knowing. */
+  const adoptToken = useCallback((token: string) => {
+    setSession((prev) => {
+      if (!prev) return prev;
+      const next = { ...prev, token };
+      savePlatformSession(next);
+      return next;
+    });
+  }, []);
+
   const refresh = useCallback(async (id?: string) => {
     if (!session) return;
     if (id) {
@@ -485,23 +664,59 @@ export default function PlatformApp() {
     [summaries],
   );
 
+  // Before the early returns below: hooks run in the same order every render.
+  const signupOffer = useSignupOffer(!session);
+  const signupOffered = signupOffer !== null;
+
   if (!session) {
-    // The landing page is the public front; the sign-in card is one click
-    // behind it. An expired session skips the landing — that person was
-    // already inside, and what they need is the door, with the notice saying
-    // why they are looking at it again.
-    if (door !== "signin" && !notice) {
-      return <Landing onEnter={() => setDoor("signin")} />;
+    // The landing page is the public front; the two cards are one click behind
+    // it. An expired session skips the landing and goes straight to sign-in —
+    // that person was already inside, and what they need is the door, with the
+    // notice saying why they are looking at it again.
+    if (door === "landing" && !notice) {
+      return (
+        <Landing
+          onEnter={() => setDoor("signin")}
+          // Absent unless the deployment accepts sign-ups, so "Get started
+          // free" is never a button that leads to a form that always refuses.
+          // That was the state of it until now: the landing page has always
+          // offered it, and the only account anybody could have was one an
+          // operator made with a shell on the box.
+          onSignUp={signupOffered
+            ? (plan?: string) => { setWantedPlan(plan); setDoor("signup"); }
+            : undefined}
+        />
+      );
+    }
+    const back = (
+      <Button
+        onClick={() => { setDoor("landing"); setNotice(null); }}
+        sx={{ position: "fixed", top: 14, left: 14, color: "text.secondary" }}
+      >
+        ← Back
+      </Button>
+    );
+    if (door === "signup" && signupOffered) {
+      return (
+        <>
+          {back}
+          <SignUp
+            onIn={signIn}
+            onSignIn={() => setDoor("signin")}
+            offer={signupOffer}
+            defaultPlan={wantedPlan}
+          />
+        </>
+      );
     }
     return (
       <>
-        <Button
-          onClick={() => { setDoor("landing"); setNotice(null); }}
-          sx={{ position: "fixed", top: 14, left: 14, color: "text.secondary" }}
-        >
-          ← Back
-        </Button>
-        <SignIn onIn={signIn} notice={notice} />
+        {back}
+        <SignIn
+          onIn={signIn}
+          notice={notice}
+          onSignUp={signupOffered ? () => setDoor("signup") : undefined}
+        />
       </>
     );
   }
@@ -601,6 +816,17 @@ export default function PlatformApp() {
     ...(ability.can("read", "supply")
       ? ([{ key: "targets", label: "Supplier targets", group: "understand" }] as NavItem[])
       : []),
+    // Manager and above, mirroring `require_manager_or_owner` on every
+    // attribution route. Every row of that ledger is gross-profit arithmetic —
+    // a margin-protected event names a line priced below its floor, so the
+    // event type *is* the below-floor flag — and there is no version of the
+    // screen with the economics taken out. The owner-only half of it (the
+    // report against the pre-trial baseline) is a panel gate inside the screen,
+    // not a second nav item.
+    ...(ability.can("read", "economics")
+      ? ([{ key: "attribution", label: "What PIE changed",
+            group: "understand" }] as NavItem[])
+      : []),
 
     // ── The book ──
     // One "Customers" door, not two. The account picker, the month-by-month
@@ -685,6 +911,11 @@ export default function PlatformApp() {
       onSignOut={signOut}
     >
       <div>
+        {/* In the shell rather than on one screen: a licence about to expire is
+            true wherever the reader happens to be, and the queue it takes away
+            is reached from everywhere. It is silent until the last stretch and
+            silent for a salesperson — see TrialNotice. */}
+        <TrialNotice session={session} />
         {/* An unreachable API must never be dressed as "nothing to do". The
             error REPLACES the queue rather than sitting above a reassuring
             empty state — the previous behaviour told a salesperson everything
@@ -823,6 +1054,13 @@ export default function PlatformApp() {
             <Route path={PATH.negotiate} element={<NegotiateScreen session={session} />} />
             <Route path={PATH.quoteOutcomes} element={<QuoteOutcomesScreen session={session} />} />
 
+            {/* ── WHAT PIE CHANGED ──
+                The value ledger, and what it could not measure. Routed for
+                every role rather than gated here: the screen itself says why
+                a salesperson cannot read it, which is a closed door rather
+                than a broken link for anyone who follows one. */}
+            <Route path={PATH.attribution} element={<AttributionScreen session={session} />} />
+
             {/* ── QUOTES ──
                 The Quote Builder itself, not a door in front of it. It used to
                 be a second application behind a button here: clicking through
@@ -836,7 +1074,9 @@ export default function PlatformApp() {
             <Route path={PATH.approvals} element={<ApprovalsScreen session={session} />} />
             <Route path={PATH.identity} element={<IdentityScreen token={session.token} />} />
             <Route path={PATH.trust} element={<TrustScreen session={session} />} />
-            <Route path={PATH.settings} element={<SettingsScreen session={session} />} />
+            <Route path={PATH.settings} element={
+              <SettingsScreen session={session} onToken={adoptToken}
+                              onSignedOutEverywhere={forgetSession} />} />
 
             {/* ── AI STATES (reference) ── */}
             <Route path={PATH.states} element={<StatesScreen />} />
@@ -1021,6 +1261,13 @@ function HomeScreen({
         <h1>{title}</h1>
         <p>{sub}</p>
       </div>
+
+      {/* Above everything, and only until the required steps are done. A tenant
+          with no connection has no morning read and no queue, so the panels
+          below are all correct empty states — and a stack of correct empty
+          states does not tell a new owner that the fix is four minutes of
+          setup. It removes itself; there is no dismiss and no stored flag. */}
+      <SetupChecklist session={session} />
 
       {/* The morning read. Above the queue because the first question is "can I
           trust this and what is going on", and the queue is one tile inside the

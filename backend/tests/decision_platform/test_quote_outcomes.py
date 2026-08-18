@@ -21,12 +21,11 @@ from decimal import Decimal
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
+import dbsupport
 from app.commercial.insight import outcomes
-from app.db import Base, get_session
+from app.db import get_session
 from app.domain import models
 from app.domain.enums import LOSS_REASON_NOT_RECORDED, QuoteLossReason
 from app.routers import insight, platform_auth, quote_intelligence
@@ -301,9 +300,7 @@ def _decide(s, quote_id: str, *, customer: str, won: bool, product: str = "p1",
 
 @pytest.fixture()
 def client():
-    engine = create_engine("sqlite://", connect_args={"check_same_thread": False},
-                           poolclass=StaticPool, future=True)
-    Base.metadata.create_all(engine)
+    engine = dbsupport.fresh_engine()
     Maker = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False,
                          future=True)
 

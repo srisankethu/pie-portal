@@ -1,8 +1,15 @@
-/* The public front door (Landing.tsx) — every colour and face comes from the
-   theme's emitted tokens, so this reads as the same product as the screens
-   behind the sign-in, not a marketing site bolted on. Scoped under
-   .pie-landing: these are document-flow styles and must not leak into the
-   app shell. */
+/* The public front door (Landing.tsx), drawn in the product's own language —
+   a works drawing. The page sits on a drawing sheet: a steel frame with zone
+   letters, dimension-line dividers naming each section, grid paper behind the
+   hero, and a title block under the decision card where the provenance line
+   used to be. The furniture is the accent ramp (drawing lines are blue);
+   content panels stay neutral, exactly as the app's surfaces do.
+
+   Every colour and face comes from the theme's emitted tokens, so this reads
+   as the same product as the screens behind the sign-in, not a marketing site
+   bolted on — a value changed in theme.ts changes this page with it. Scoped
+   under .pie-landing: these are document-flow styles and must not leak into
+   the app shell. */
 
 .pie-landing {
   background: var(--color-bg);
@@ -36,8 +43,44 @@
 .pie-landing .lp-btn.solid { background: var(--color-accent-700); color: var(--color-bg); }
 .pie-landing .lp-btn:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
 
+/* ── the sheet ──
+   The whole page inside a drawing frame: a strong outer border, a light inner
+   hairline, zone letters along the top margin. The hairline is decorative and
+   must never eat a click. */
+.pie-landing .lp-sheet {
+  position: relative; margin: 14px;
+  border: 1.5px solid var(--color-accent-800);
+}
+.pie-landing .lp-sheet::after {
+  content: ""; position: absolute; inset: 5px;
+  border: 1px solid var(--color-accent-300);
+  pointer-events: none;
+}
+.pie-landing .lp-zones {
+  position: absolute; top: -1px; left: 0; right: 0;
+  transform: translateY(-100%); padding: 0 48px 3px;
+  display: flex; justify-content: space-around;
+  font-family: var(--font-heading); font-size: 10px;
+  letter-spacing: 0.2em; color: var(--color-accent-500);
+}
+@media (max-width: 720px) {
+  .pie-landing .lp-sheet { margin: 8px; }
+  .pie-landing .lp-zones { display: none; }
+}
+
 /* ── nav ── */
-.pie-landing .lp-nav { border-bottom: 1px solid var(--color-divider); }
+/* Sticky, so the way out of a long page is always one click away. It sits
+   above the sheet's inner hairline (::after, no z-index of its own) and needs
+   an opaque background because the hero's grid paper scrolls underneath —
+   a transparent bar would drag the grid lines through the links. */
+.pie-landing .lp-nav {
+  position: sticky; top: 0; z-index: 20;
+  background: var(--color-bg);
+  border-bottom: 1px solid var(--color-accent-300);
+}
+/* The in-page links (#product, #how, #trust, #pricing) would otherwise land
+   their target underneath the bar that is now pinned over it. */
+.pie-landing section[id], .pie-landing header[id] { scroll-margin-top: 76px; }
 .pie-landing .lp-nav-inner { display: flex; align-items: center; gap: 28px; padding: 16px 0; }
 .pie-landing .lp-logo {
   font-family: var(--font-heading); font-weight: 700; font-size: 22px;
@@ -50,10 +93,70 @@
   color: var(--color-neutral-700);
 }
 .pie-landing .lp-nav-links a:hover { color: var(--color-text); }
-.pie-landing .lp-nav-links .lp-btn { padding: 8px 18px; font-size: 14px; }
+/* The nav's Sign-in button, wherever it sits — compact, not the page's
+   full-size CTA. Keyed on `.lp-nav` because the button is a direct child of the
+   bar now (so it can move into the dropdown on mobile). */
+.pie-landing .lp-nav .lp-btn { padding: 8px 18px; font-size: 14px; }
 
-/* ── hero ── */
-.pie-landing .lp-hero { padding: 68px 0 76px; }
+/* The menu button: hidden until the bar is too narrow for the links (below),
+   then a three-line mark on the right that folds into an X when the menu opens. */
+.pie-landing .lp-nav-toggle {
+  display: none; margin-left: auto;
+  width: 42px; height: 38px; padding: 0; cursor: pointer;
+  background: transparent; border: 1px solid var(--color-accent-300);
+  border-radius: var(--radius-md);
+  align-items: center; justify-content: center;
+}
+.pie-landing .lp-nav-toggle:focus-visible {
+  outline: 2px solid var(--color-accent); outline-offset: 2px;
+}
+.pie-landing .lp-burger,
+.pie-landing .lp-burger::before,
+.pie-landing .lp-burger::after {
+  content: ""; display: block; width: 18px; height: 2px;
+  background: var(--color-text); border-radius: 2px;
+  transition: transform 0.2s ease, opacity 0.2s ease;
+}
+.pie-landing .lp-burger { position: relative; }
+.pie-landing .lp-burger::before { position: absolute; top: -6px; left: 0; }
+.pie-landing .lp-burger::after { position: absolute; top: 6px; left: 0; }
+/* Open: the middle bar vanishes, the outer two cross into an X. */
+.pie-landing .lp-burger.open { background: transparent; }
+.pie-landing .lp-burger.open::before { top: 0; transform: rotate(45deg); }
+.pie-landing .lp-burger.open::after { top: 0; transform: rotate(-45deg); }
+
+/* Mobile nav. A phone bar cannot hold a logo, four links and a button, so the
+   links and Sign in collapse behind the menu button and drop down as a panel
+   under the bar — closed by default, which is also the prerendered state.
+   Absolutely positioned so opening it falls *over* the hero instead of shoving
+   the page down; `.lp-nav` is the sticky ancestor it hangs from, and it lines up
+   with the bar because both share the wrap's 24px inset. */
+@media (max-width: 640px) {
+  .pie-landing .lp-nav-toggle { display: inline-flex; }
+  .pie-landing .lp-nav-links {
+    display: none;
+    position: absolute; top: 100%; left: 0; right: 0;
+    flex-direction: column; align-items: stretch; gap: 0; margin: 0;
+    padding: 6px 0 12px;
+    background: var(--color-bg);
+    border-bottom: 1.5px solid var(--color-accent-800);
+    box-shadow: var(--shadow-md);
+  }
+  .pie-landing .lp-nav-links.open { display: flex; }
+  .pie-landing .lp-nav-links a { padding: 12px 24px; font-size: 15px; }
+  .pie-landing .lp-nav-links .lp-nav-cta {
+    margin: 10px 24px 4px; padding: 11px 18px; text-align: center;
+  }
+}
+
+/* ── hero, on grid paper ── */
+.pie-landing .lp-hero {
+  padding: 62px 0 68px;
+  background:
+    linear-gradient(var(--color-accent-200) 1px, transparent 1px),
+    linear-gradient(90deg, var(--color-accent-200) 1px, transparent 1px);
+  background-size: 27.2px 27.2px; /* --space-8: the drawing module */
+}
 .pie-landing .lp-hero-grid {
   display: grid; grid-template-columns: 1.05fr 0.95fr; gap: 56px; align-items: center;
 }
@@ -70,10 +173,12 @@
 .pie-landing .lp-ctas { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
 .pie-landing .lp-fine { font-size: 13px; color: var(--color-neutral-600); margin: 14px 0 0; }
 
-/* the decision-card mock — a real card from the product, not an illustration */
+/* the decision-card mock — a real card from the product, drawn as the sheet's
+   detail view: corner marks and a title block instead of a caption */
 .pie-landing .lp-card {
-  background: var(--color-surface); border: 1px solid var(--color-neutral-300);
-  border-radius: var(--radius-lg);
+  position: relative;
+  background: var(--color-neutral-100); border: 1px solid var(--color-accent-300);
+  border-radius: var(--radius-sm);
   box-shadow: 0 18px 44px -24px var(--color-neutral-800);
   padding: 22px 24px;
 }
@@ -82,6 +187,11 @@
   .pie-landing .lp-card { animation-delay: 0.12s; }
 }
 @keyframes lp-rise { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+.pie-landing .lp-corner { position: absolute; width: 11px; height: 11px; border: 0 solid var(--color-accent-700); }
+.pie-landing .lp-corner.tl { top: -4px; left: -4px; border-top-width: 2px; border-left-width: 2px; }
+.pie-landing .lp-corner.tr { top: -4px; right: -4px; border-top-width: 2px; border-right-width: 2px; }
+.pie-landing .lp-corner.bl { bottom: -4px; left: -4px; border-bottom-width: 2px; border-left-width: 2px; }
+.pie-landing .lp-corner.br { bottom: -4px; right: -4px; border-bottom-width: 2px; border-right-width: 2px; }
 .pie-landing .lp-chip {
   font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
   padding: 4px 10px; border-radius: 999px; display: inline-block;
@@ -108,14 +218,28 @@
   border: 1px solid var(--color-neutral-300); border-radius: var(--radius-md);
   padding: 7px 14px;
 }
-.pie-landing .lp-prov {
-  margin-top: 16px; padding-top: 12px; border-top: 1px dashed var(--color-neutral-300);
-  font-size: 11.5px; color: var(--color-neutral-600);
+/* the title block: the drawing's signature strip, carrying the same
+   provenance the dashed caption used to */
+.pie-landing .lp-tblock {
+  display: grid; grid-template-columns: 1.4fr 1fr 0.6fr 0.6fr;
+  margin-top: 16px; border: 1px solid var(--color-accent-400);
+  font-size: 10.5px; color: var(--color-neutral-700);
+}
+.pie-landing .lp-tblock > div { padding: 5px 8px; border-right: 1px solid var(--color-accent-400); }
+.pie-landing .lp-tblock > div:last-child { border-right: 0; }
+.pie-landing .lp-tblock .k {
+  display: block; font-family: var(--font-heading); font-size: 9px;
+  letter-spacing: 0.14em; text-transform: uppercase; color: var(--color-accent-600);
+}
+@media (max-width: 480px) {
+  .pie-landing .lp-tblock { grid-template-columns: 1fr 1fr; }
+  .pie-landing .lp-tblock > div:nth-child(2) { border-right: 0; }
+  .pie-landing .lp-tblock > div:nth-child(-n + 2) { border-bottom: 1px solid var(--color-accent-400); }
 }
 
 /* ── proof strip ── */
 .pie-landing .lp-proof {
-  border-top: 1px solid var(--color-divider); border-bottom: 1px solid var(--color-divider);
+  border-top: 1px solid var(--color-accent-300); border-bottom: 1px solid var(--color-accent-300);
   background: var(--color-accent-100);
 }
 .pie-landing .lp-proof-grid {
@@ -125,8 +249,40 @@
 .pie-landing .lp-proof-grid .v { font-size: 22px; font-weight: 700; font-family: var(--font-heading); }
 .pie-landing .lp-proof-grid .k { font-size: 12.5px; color: var(--color-neutral-700); }
 
+/* ── the parts schedule: which books it reads ── */
+.pie-landing .lp-sched {
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+  padding: 14px 24px 0;
+}
+.pie-landing .lp-sched .lp-sched-label {
+  font-family: var(--font-heading); font-weight: 600; font-size: 11.5px;
+  letter-spacing: 0.16em; text-transform: uppercase; color: var(--color-accent-800);
+  margin-right: 6px;
+}
+.pie-landing .lp-sys {
+  font-family: var(--font-heading); font-weight: 600; font-size: 12px;
+  letter-spacing: 0.06em; padding: 4px 9px;
+  border: 1px solid var(--color-accent-400); background: var(--color-neutral-100);
+  color: var(--color-accent-800);
+}
+.pie-landing .lp-sched .lp-sched-note { font-size: 11.5px; color: var(--color-neutral-600); margin-left: 4px; }
+
+/* ── dimension-line dividers: the section names live on these ── */
+.pie-landing .lp-dim {
+  display: flex; align-items: center; gap: 12px;
+  padding: 46px 24px 0;
+}
+.pie-landing .lp-dim::before, .pie-landing .lp-dim::after {
+  content: ""; flex: 1; height: 1px; background: var(--color-accent-400);
+}
+.pie-landing .lp-dim b {
+  font-family: var(--font-heading); font-weight: 600; font-size: 12.5px;
+  letter-spacing: 0.2em; text-transform: uppercase; color: var(--color-accent-800);
+  white-space: nowrap;
+}
+
 /* ── sections ── */
-.pie-landing section { padding: 76px 0 0; }
+.pie-landing section { padding: 34px 0 0; }
 .pie-landing .lp-sec-head { max-width: 62ch; margin-bottom: 36px; }
 .pie-landing .lp-sec-head h2 {
   font-size: clamp(26px, 3.6vw, 36px); margin: 0 0 12px; line-height: 1.12; text-wrap: balance;
@@ -137,8 +293,8 @@
 .pie-landing .lp-two { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
 @media (max-width: 720px) { .pie-landing .lp-two { grid-template-columns: 1fr; } }
 .pie-landing .lp-panel {
-  border: 1px solid var(--color-neutral-300); background: var(--color-surface);
-  border-radius: var(--radius-lg); padding: 26px;
+  border: 1px solid var(--color-neutral-300); background: var(--color-neutral-100);
+  border-radius: var(--radius-sm); padding: 26px;
 }
 .pie-landing .lp-panel h3 { font-size: 20px; margin: 0 0 10px; }
 .pie-landing .lp-panel p { font-size: 14.5px; color: var(--color-neutral-700); margin: 0; }
@@ -146,6 +302,7 @@
 .pie-landing .lp-tag {
   color: var(--danger-fg); font-weight: 700; font-size: 12px;
   letter-spacing: 0.12em; text-transform: uppercase; display: block; margin-bottom: 12px;
+  font-family: var(--font-heading);
 }
 
 .pie-landing .lp-grid3 {
@@ -156,8 +313,8 @@
   border-left: 1px solid var(--color-neutral-300);
   border-right: 1px solid var(--color-neutral-300);
   border-bottom: 1px solid var(--color-neutral-300);
-  background: var(--color-surface);
-  border-radius: 0 0 var(--radius-md) var(--radius-md);
+  background: var(--color-neutral-100);
+  border-radius: 0 0 var(--radius-sm) var(--radius-sm);
   padding: 22px;
 }
 .pie-landing .lp-feat h3 { font-size: 18px; margin: 0 0 8px; }
@@ -167,7 +324,7 @@
 .pie-landing .lp-steps { counter-reset: lp-step; }
 .pie-landing .lp-step {
   background: var(--color-accent-100); border: 1px solid var(--color-neutral-300);
-  border-radius: var(--radius-lg); padding: 24px; counter-increment: lp-step;
+  border-radius: var(--radius-sm); padding: 24px; counter-increment: lp-step;
 }
 .pie-landing .lp-step::before {
   content: counter(lp-step);
@@ -181,8 +338,9 @@
 .pie-landing .lp-step p { font-size: 14.5px; color: var(--color-neutral-700); margin: 0; }
 .pie-landing .lp-step p b { color: var(--color-text); font-weight: 600; }
 
-/* the invariant — the page's one dramatic moment */
-.pie-landing .lp-invariant { background: var(--color-neutral-900); color: var(--color-neutral-100); margin-top: 76px; }
+/* the invariant — the page's one dramatic moment, in the deep end of the
+   accent ramp rather than neutral ink: it is still a drawing, at night */
+.pie-landing .lp-invariant { background: var(--color-accent-900); color: var(--color-accent-100); margin-top: 64px; }
 .pie-landing .lp-invariant .lp-wrap { padding-top: 64px; padding-bottom: 64px; }
 .pie-landing .lp-invariant .lp-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; align-items: start; }
 @media (max-width: 760px) { .pie-landing .lp-invariant .lp-cols { grid-template-columns: 1fr; } }
@@ -210,11 +368,11 @@
 .pie-landing .lp-pricing-note { margin-top: 20px; font-size: 14px; color: var(--color-neutral-600); }
 
 /* final CTA + footer */
-.pie-landing .lp-final { text-align: center; padding: 88px 0; }
+.pie-landing .lp-final { text-align: center; padding: 84px 0; }
 .pie-landing .lp-final h2 { font-size: clamp(28px, 4vw, 42px); margin: 0 0 12px; }
 .pie-landing .lp-final p { color: var(--color-neutral-700); font-size: 17px; margin: 0 0 26px; }
 .pie-landing .lp-footer {
-  border-top: 1px solid var(--color-divider); padding: 28px 0 40px;
+  border-top: 1px solid var(--color-accent-300); padding: 28px 0 40px;
   font-size: 13.5px; color: var(--color-neutral-600);
 }
 .pie-landing .lp-footer .lp-wrap { display: flex; flex-wrap: wrap; gap: 10px 32px; justify-content: space-between; }

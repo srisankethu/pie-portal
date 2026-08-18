@@ -12,7 +12,8 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from ..domain import models
-from ..domain.enums import RESTRICTED_FACT_FIELDS, Role, SubjectEntityType
+from ..domain.enums import (
+    EvidenceSufficiency, RESTRICTED_FACT_FIELDS, Role, SubjectEntityType)
 from ..signals.config import SignalThresholds, load_thresholds
 from ..trust import pseudonym, vault
 from .bundle import ContextBundle, FactView, SignalView
@@ -201,7 +202,15 @@ def assemble_from_signal(session: Session, signal: models.Signal, recipient_role
                             subject_entity_id=signal.subject_entity_id,
                             severity_base=signal.severity_base)],
         facts=facts[:_MAX_FACTS],
-        evidence_sufficiency={"level": suff.get("level", "SUFFICIENT"),
+        # A missing (or empty) level defaults to INSUFFICIENT, not SUFFICIENT:
+        # this value is read as the pass/fail gate downstream, and "we have no
+        # record of whether the evidence was enough" must not read as "it was" —
+        # the §1 benign-default trap. No live path persists a level-less signal
+        # (every Signal is built via Sufficiency.to_dict / quote_bundle, which
+        # always set one), so this changes no current behaviour; it closes the
+        # fail-open direction the invariant forbids.
+        evidence_sufficiency={"level": (suff.get("level")
+                                        or EvidenceSufficiency.INSUFFICIENT.value),
                               "reasons": suff.get("reasons", [])},
         unknowns=unknowns,
         policies=_policies(signal.signal_type, th),

@@ -124,7 +124,7 @@ function CodeCell({
  *  availability and the active substitution each have a cell that states them,
  *  and the old table printed all seven here as well — three lines of pills
  *  restating what the row already said, on every row. */
-function Flags({ line }: { line: Line }) {
+function Flags({ line, wrap }: { line: Line; wrap?: boolean }) {
   const flags: [string, Tone][] = [
     line.flags.unresolved ? ["unresolved", "bad" as Tone] : null,
     line.flags.procurement ? ["procurement", "warn" as Tone] : null,
@@ -132,8 +132,12 @@ function Flags({ line }: { line: Line }) {
     line.flags.manualReview ? ["manual review", "warn" as Tone] : null,
   ].filter(Boolean) as [string, Tone][];
   if (!flags.length) return null;
+  // The grid cell is a fixed 66px row, so there it stays one clipped line; the
+  // card is the phone view and has the height to spare, so there the chips wrap
+  // rather than silently dropping the third and fourth flag off the right edge.
   return (
-    <Stack direction="row" spacing={0.5} useFlexGap sx={{ flexWrap: "nowrap", mt: 0.25, overflow: "hidden" }}>
+    <Stack direction="row" spacing={0.5} useFlexGap
+           sx={{ flexWrap: wrap ? "wrap" : "nowrap", mt: 0.25, ...(wrap ? {} : { overflow: "hidden" }) }}>
       {flags.map(([label, tone]) => (
         <StatusChip key={label} label={label} tone={tone} dense />
       ))}
@@ -299,7 +303,7 @@ function LineCard({
             }}
           >
             <CodeCell code={line.reqCode} desc={line.reqDesc} wrap>
-              <Flags line={line} />
+              <Flags line={line} wrap />
             </CodeCell>
           </Box>
         </Box>

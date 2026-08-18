@@ -304,6 +304,15 @@ def _settle_escalated_decision(session: Session, request: models.ApprovalRequest
         return
     if status is ApprovalStatus.APPROVED:
         decision.status = DecisionStatus.ACTIONED.value
+        # The second acceptance path. An escalated decision approved by
+        # management is accepted just as surely as one actioned directly, and
+        # the Outcome Tracker must not depend on which door it came through.
+        # Same capture function as `DecisionRepository.record_human_action`;
+        # the approver is the accepting human here.
+        from .commercial.outcome_tracker import capture_on_accept
+
+        capture_on_accept(session, decision,
+                          accepted_by_user_id=request.decided_by_user_id)
     elif status is ApprovalStatus.REJECTED:
         decision.status = DecisionStatus.DISMISSED.value
         decision.override_reason = request.decision_note
@@ -461,6 +470,15 @@ def pending_count(session: Session, principal) -> int:
                if refusal_for(principal, r, policy) is None)
 
 
+# What a salesperson is told in place of the four cost-varying fields. One
+# fixed authority label (never OWNER-vs-MANAGER, which is `below_cost`), no
+# rationale flag, and a title/reason that state the fact the salesperson needs —
+# this needs sign-off before it goes out — without the fact they must not have.
+_SALES_AUTHORITY = "APPROVAL_REQUIRED"
+_SALES_PENDING_TITLE = "Needs approval before it can go out"
+_SALES_PENDING_REASON = "This is waiting on a manager or owner to decide"
+
+
 def to_dict(request: models.ApprovalRequest, principal,
             policy: models.OrgPolicy,
             names: Optional[dict[str, str]] = None) -> dict:
@@ -517,6 +535,28 @@ def to_dict(request: models.ApprovalRequest, principal,
     }
     if not is_sales:
         out["subject"] = request.subject or {}
+        return out
+
+    # A salesperson raised this and can never decide it, so none of the fields
+    # below tell them anything they can act on — but four of them tell them the
+    # cost. `authority_for` escalates to OWNER *iff* the line is priced below
+    # what the item cost us (`below_cost`), a boundary with no policy multiplier
+    # in it. So `required_authority`, `requires_rationale` (= authority is
+    # OWNER), `cannot_decide_reason` (which names "below what the item cost us"),
+    # and `title` (the NEGATIVE_MARGIN vs below-floor exception title) each flip
+    # exactly at `proposed_price == unit_cost`. A salesperson who walks the price
+    # across that flip — every probe is inside the approvable region — bisects it
+    # and recovers cost to the paisa. This is the same predicate-is-the-number
+    # leak CLAUDE.md §1 records twice (MFLOOR, then NEGATIVE_MARGIN), and the
+    # same fix `quote_service._project_exceptions` already makes on the quote
+    # surface: collapse the cost-varying fields to one fixed value. The real
+    # authority, rationale rule, reason and title survive for the approver roles
+    # (is_sales False) that must act on them, and server-side enforcement is
+    # unchanged — only the boundary the salesperson could read is removed.
+    out["required_authority"] = _SALES_AUTHORITY
+    out["requires_rationale"] = False
+    out["cannot_decide_reason"] = _SALES_PENDING_REASON
+    out["title"] = _SALES_PENDING_TITLE
     return out
 
 

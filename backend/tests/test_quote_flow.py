@@ -14,17 +14,16 @@ from contextlib import contextmanager
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
-from app.db import Base, get_session
+import dbsupport
+from app.db import get_session
 from app.domain import models  # noqa: F401  (populate metadata)
 from app.ingestion.zoho_books_service import ZohoBooksService
 from app.ingestion.zoho_client import ZohoCredentials
 from app.routers import platform_auth, quote
 from app.routers.quote import QuoteBooks, books_for_quote
-from app.seed import SEED_PASSWORD, ensure_org_and_users
+from app.seed import SEED_PASSWORD, ensure_org_and_users, provision_organization
 from app.zoho import MockZoho, ZohoWriteRefused, ZohoWriteUnknown
 
 from decision_platform.test_zoho_books_service import FakeBooks
@@ -42,9 +41,7 @@ def client():
     These tests used to run against whatever `data/platform.db` happened to hold
     because the login they used consulted no database at all.
     """
-    engine = create_engine("sqlite://", connect_args={"check_same_thread": False},
-                           poolclass=StaticPool, future=True)
-    Base.metadata.create_all(engine)
+    engine = dbsupport.fresh_engine()
     Maker = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False,
                          future=True)
 
@@ -66,7 +63,9 @@ def client():
             sess.close()
 
     api.dependency_overrides[get_session] = _override
-    return TestClient(api)
+    tc = TestClient(api)
+    tc.Maker = Maker
+    return tc
 
 
 def _hdr(c: TestClient, email: str) -> dict:
@@ -106,6 +105,38 @@ def test_a_forged_token_is_refused(client):
     assert client.get(
         "/api/quotes/nope",
         headers={"Authorization": "Bearer not.a.real.token"}).status_code == 401
+
+
+def test_a_quote_is_invisible_to_another_tenant(client):
+    """The quote store is one process-wide dict with enumerable ids and no tenant
+    column of its own, so the org check at each read seam is the whole of quote
+    authorization. Without it a signed-in user from any tenant could read — or
+    mutate — another tenant's quote by guessing its id, cost and margin included
+    (``to_dict`` gates economics on the *reader's* role, so a cross-tenant owner
+    would receive them). A foreign id must be indistinguishable from an unknown
+    one: 404, not 403.
+    """
+    # A quote owned by org_pie's salesperson.
+    qid = client.post("/api/quotes", json={"customer": "Pitti"},
+                      headers=_hdr(client, SALES)).json()["id"]
+    assert client.get(f"/api/quotes/{qid}", headers=_hdr(client, SALES)).status_code == 200
+
+    # A second, unrelated tenant with its own owner.
+    s = client.Maker()
+    provision_organization(s, name="Rival Distributors", owner_email="o@rival.example",
+                           owner_name="Rival Owner", org_id="org_rival",
+                           password=SEED_PASSWORD, must_change_password=False)
+    s.commit()
+    s.close()
+    rival = _hdr(client, "o@rival.example")
+
+    # Every quote seam refuses the cross-tenant id, and none confirm it exists.
+    assert client.get(f"/api/quotes/{qid}", headers=rival).status_code == 404
+    assert client.post(f"/api/quotes/{qid}/intake", json={"text": "2001174, 20"},
+                       headers=rival).status_code == 404
+    assert client.post(f"/api/quotes/{qid}/discount",
+                       json={"lineIds": [], "percent": 5},
+                       headers=rival).status_code == 404
 
 
 @pytest.mark.requires_pie

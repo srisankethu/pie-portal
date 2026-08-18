@@ -20,6 +20,7 @@ from datetime import date
 
 import pytest
 
+import dbsupport
 from app.commercial import categories as cat
 from app.commercial.config import CommercialThresholds
 from app.commercial.insight import mix
@@ -381,17 +382,13 @@ def test_the_grid_carries_the_version_that_produced_it():
 def client():
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
-    from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
-    from sqlalchemy.pool import StaticPool
 
-    from app.db import Base, get_session
+    from app.db import get_session
     from app.routers import insight, platform_auth
     from app.seed import ensure_org_and_users
 
-    engine = create_engine("sqlite://", connect_args={"check_same_thread": False},
-                           poolclass=StaticPool, future=True)
-    Base.metadata.create_all(engine)
+    engine = dbsupport.fresh_engine()
     Maker = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False,
                          future=True)
     s = Maker()

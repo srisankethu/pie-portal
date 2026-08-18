@@ -1,7 +1,10 @@
 # pie-portal — Commercial Decision Platform + Quote Builder
 
 An AI-native commercial decision-support system for a B2B industrial
-cutting-tool distributor running on Zoho Books.
+cutting-tool distributor running on Zoho Books — with connectors for the
+ERPs US distributors actually run: Oracle NetSuite, Dynamics 365 Business
+Central, Acumatica, Epicor Prophet 21, and Sage X3 / Sage 100
+(see `docs/connectors.md`).
 
 It reads the company's own sales and cost history, detects the handful of
 commercial situations that genuinely deserve a human decision, has an AI

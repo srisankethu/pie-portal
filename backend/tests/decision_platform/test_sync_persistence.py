@@ -208,6 +208,11 @@ def _with_salesperson(**kw):
 
 
 def _user(session, org, email):
+    # The user's organization must exist first — the foreign key is enforced
+    # on both backends now.
+    if session.get(models.Organization, org) is None:
+        session.add(models.Organization(organization_id=org, name=org))
+        session.flush()
     u = models.User(organization_id=org, email=email, name="R. Nair", role="SALESPERSON")
     session.add(u)
     session.flush()

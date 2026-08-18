@@ -1,0 +1,52 @@
+# Local development infrastructure: Postgres and Redis, nothing else.
+#
+#   docker compose -f compose.dev.yaml up -d
+#   export DATABASE_URL=postgresql+psycopg://pie_portal:pie_portal@localhost:5432/pie_portal
+#   make dev
+#
+# The app itself still runs natively (`make dev` — uvicorn + vite), which this
+# deliberately does not change: the edit loop stays fast and the debugger
+# stays attached. This file exists for the days you want the backend on the
+# production dialect — docs/development.md has the loop, and
+# scripts/pg_sandbox.sh is the even lighter alternative when Docker isn't
+# around (it needs only the postgresql server package).
+#
+# SQLite remains the zero-configuration default for a fresh clone; nothing
+# here is required to run the tests or the app.
+#
+# Ports bind to loopback only: a dev database with a published password has no
+# business being reachable from the network.
+
+name: pie-portal-dev
+
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: pie_portal
+      POSTGRES_USER: pie_portal
+      # Dev-only credential for a loopback-only port. Production credentials
+      # live in .env.production and are never committed (docs/hosting.md).
+      POSTGRES_PASSWORD: pie_portal
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - dev-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -q -U pie_portal -d pie_portal"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+volumes:
+  dev-db-data:

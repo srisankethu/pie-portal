@@ -32,6 +32,43 @@ def aware(value: Optional[datetime]) -> Optional[datetime]:
     return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
 
 
+def utc_stamp(value: Optional[str]) -> Optional[str]:
+    """A source system's timestamp *string*, rewritten onto the UTC line as
+    ``YYYY-MM-DDTHH:MM:SSZ`` — one fixed-width form whose lexicographic order is
+    its chronological order. ``None`` when the string cannot be placed there.
+
+    Exists for the sync cursor. ``IngestedDocument.modified_at`` holds Zoho's
+    ``last_modified_time`` and the resume cursor is ``max()`` over it — a
+    *string* max, correct only while every stamp shares one offset format. Zoho
+    writes the book's own offset (``+0530``-style, with or without the colon,
+    with or without seconds), so the day two formats meet in one table — a
+    second org in another zone, or Zoho switching to ``Z`` — the lexicographic
+    max stops being the chronological max and the cursor silently skips edits.
+    Rewriting every stamp to one UTC form at write time keeps that max honest.
+
+    Returns ``None`` for anything unplaceable: an empty value, a string that
+    does not parse, or — deliberately — a stamp carrying no offset at all. A
+    naive stamp is evidence missing, and assuming UTC (or the business zone)
+    would store a guess as a fact; the caller decides what an unplaceable stamp
+    means, which for the cursor is "keep it verbatim, leave it out of the max".
+    Contrast ``aware``, which may attach UTC to a naive datetime: that one reads
+    values this application wrote as UTC, this one reads values another system
+    wrote in whatever dress it chose that day.
+
+    Sub-second precision is dropped. Zoho's list stamps do not carry it, and the
+    fixed width is what makes the string order the time order.
+    """
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def iso(value: Optional[datetime]) -> Optional[str]:
     """A stored *datetime* as an unambiguous ISO-8601 string. ``None`` passes through.
 

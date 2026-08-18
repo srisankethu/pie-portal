@@ -25,6 +25,7 @@ from datetime import date
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
@@ -94,11 +95,11 @@ class _Router(APIRouter):
 router = _Router(prefix="/api/v1/connections", tags=["connections"])
 
 
-#: How far back a first pull reads when nobody has said otherwise. Eighteen
-#: months gives the detectors a full recent window, a full comparison window,
-#: and room above the six-month history floor — so the first sync produces an
-#: analysis rather than a screen full of "not enough history".
-DEFAULT_HISTORY_MONTHS = 18
+#: How far back a first pull reads when nobody has said otherwise. Owned by
+#: ``ingestion.connections`` because the onboarding checklist states the same
+#: figure to a new owner in words; re-exported under the name this module has
+#: always used it by.
+DEFAULT_HISTORY_MONTHS = conn.DEFAULT_HISTORY_MONTHS
 
 
 def _default_since() -> date:
@@ -318,6 +319,154 @@ def add_connection(
 
     _check(session, row)
     return _dict(session, row)
+
+
+# ── the customer-facing authorization ────────────────────────────────────────
+# Four endpoints, and exactly one of them is public. That asymmetry is the
+# design: the browser arrives at the callback having followed Zoho's redirect,
+# carrying no session, so the callback proves *which* authorization finished
+# from the state token and proves nothing else. What the authorization produced
+# is picked up separately, by an authenticated owner in the organization the
+# state named. The previous implementation put `require_owner` on the callback
+# itself, which a top-level redirect can never satisfy, and 401'd before its
+# handler ran.
+
+
+@router.get("/zoho/authorize")
+def authorize_zoho(
+    dc: str = "in",
+    principal: Principal = Depends(require_owner),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Start an authorization: record the state, return where to send the browser.
+
+    ``dc`` is the data centre code, because a Zoho grant is not portable between
+    estates — a code issued by ``accounts.zoho.com`` is not redeemable at
+    ``accounts.zoho.in``. It is chosen here and carried on the state row rather
+    than round-tripped through the redirect, which cannot be trusted to return it.
+    """
+    from .. import oauth
+
+    if dc not in oauth.DATA_CENTRES:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"Unknown Zoho data centre {dc!r}. One of: "
+            f"{', '.join(sorted(oauth.DATA_CENTRES))}.")
+    if not oauth.configured():
+        # 503 and a sentence, not a 500 and not a dead button: this deployment
+        # has no application registered, and the manual path still works.
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "This deployment has no Zoho application registered, so it cannot "
+            "authorize on your behalf. Connect with a Self Client refresh token "
+            "instead.")
+
+    accounts_base, api_base = oauth.DATA_CENTRES[dc]
+    token, _ = oauth.issue_state(
+        session, organization_id=principal.organization_id,
+        accounts_base=accounts_base, api_base=api_base)
+    # Housekeeping on the one path that creates these, so the table cannot grow
+    # without bound and nothing needs a scheduled job to keep it honest.
+    oauth.sweep_expired(session)
+    return {
+        "authorization_url": oauth.authorization_url(
+            token, accounts_base, scope=conn.SCOPE_STRING),
+        "expires_in_seconds": settings.ZOHO_OAUTH_STATE_TTL_SECONDS,
+    }
+
+
+@router.get("/zoho/callback", include_in_schema=False)
+async def zoho_callback(
+    code: Optional[str] = None,
+    state: Optional[str] = None,
+    error: Optional[str] = None,
+    error_description: Optional[str] = None,
+    session: Session = Depends(get_session),
+) -> RedirectResponse:
+    """Zoho's redirect lands here. **Deliberately unauthenticated.**
+
+    What makes that safe is not that nothing valuable happens — the token
+    exchange happens — but that nothing valuable is *handed to the caller*. The
+    browser leaves with a one-time handoff code, and redeeming it requires a
+    session inside the organization the state was issued to. So a stranger who
+    replays this URL can, at most, spend a state that is already spent.
+
+    Always a redirect, never a JSON body, and never an exception that reaches
+    the default handler: a person is following a link, and the only useful
+    outcome is a screen. Every failure path below ends at the same place with a
+    reason attached.
+    """
+    from .. import oauth
+
+    if error:
+        return RedirectResponse(
+            oauth.return_url(ok=False, reason=error_description or error),
+            status_code=status.HTTP_303_SEE_OTHER)
+    if not code or not state:
+        return RedirectResponse(
+            oauth.return_url(ok=False, reason="Zoho did not return an "
+                                              "authorization code."),
+            status_code=status.HTTP_303_SEE_OTHER)
+
+    try:
+        row = oauth.consume_state(session, state)
+    except oauth.StateInvalid as e:
+        return RedirectResponse(oauth.return_url(ok=False, reason=str(e)),
+                                status_code=status.HTTP_303_SEE_OTHER)
+
+    try:
+        tokens = await oauth.exchange_code_for_tokens(code, row.accounts_base)
+        cred = oauth.credential_from_oauth(
+            session, organization_id=row.organization_id, tokens=tokens,
+            accounts_base=row.accounts_base, api_base=row.api_base)
+        handoff = oauth.issue_handoff(session, row, cred.credential_id)
+    except (ZohoAuthError, oauth.OAuthNotConfigured) as e:
+        return RedirectResponse(oauth.return_url(ok=False, reason=str(e)),
+                                status_code=status.HTTP_303_SEE_OTHER)
+    except Exception as e:  # noqa: BLE001 — a redirect must always be produced
+        log.exception("zoho callback failed")
+        return RedirectResponse(
+            oauth.return_url(ok=False, reason=f"{type(e).__name__}: {e}"),
+            status_code=status.HTTP_303_SEE_OTHER)
+
+    # The state row now holds the handoff and the credential, and the caller is
+    # about to be redirected away from this request — so it has to be durable
+    # before the response goes.
+    session.commit()
+    return RedirectResponse(oauth.return_url(ok=True, handoff=handoff),
+                            status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.get("/zoho/pending/{handoff}")
+def zoho_pending(
+    handoff: str,
+    principal: Principal = Depends(require_owner),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Which sign-in the completed authorization produced, for this owner.
+
+    The authenticated half, and deliberately the *whole* of it: this returns a
+    credential id and stops. Listing the companies that grant can reach is
+    already an endpoint — ``GET /api/v1/data/credentials/{id}/organizations`` —
+    which additionally marks the ones this organization has connected already,
+    and connecting one is ``POST /api/v1/connections`` with a ``credential_id``.
+    An authorization ends by producing a credential; from there it rejoins the
+    path a manually-entered credential takes, and a second company picker built
+    for this flow would be the copy that stops agreeing with that one.
+    """
+    from .. import oauth
+
+    try:
+        row = oauth.claim_handoff(
+            session, organization_id=principal.organization_id, token=handoff)
+    except oauth.StateInvalid as e:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(e)) from e
+
+    cred = session.get(models.ZohoCredential, row.credential_id or "")
+    if cred is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND,
+                            "That authorization no longer has a sign-in to use.")
+    return {"credential_id": cred.credential_id, "label": cred.label}
 
 
 class EditConnection(BaseModel):
@@ -684,6 +833,13 @@ def _check_erp(session: Session, row: models.ZohoConnection) -> dict:
 # ── Registered ERP connectors (NetSuite, Business Central, Acumatica, P21,
 #    Sage) ──────────────────────────────────────────────────────────────────
 
+def _oauth_available() -> bool:
+    """Whether the customer-facing authorization can complete on this deployment."""
+    from .. import oauth
+
+    return oauth.configured()
+
+
 def _zoho_catalog_entry() -> dict:
     """Zoho's row in the same list as the registered connectors.
 
@@ -714,6 +870,17 @@ def _zoho_catalog_entry() -> dict:
         "permissions": [p.to_dict() for p in conn.REQUIRED_SCOPES],
         "permission_note": conn.ZOHO_PERMISSION_NOTE,
         "permission_string": conn.SCOPE_STRING,
+        # The subset that still runs a sync, for the owner whose policy is to
+        # grant the least that works. Served beside the full set rather than
+        # instead of it: the screen leads with everything, because a scope
+        # ungranted fails quietly and later.
+        "permission_string_minimum": conn.MINIMUM_SCOPE_STRING,
+        # Whether this deployment has a Zoho application registered, and can
+        # therefore offer the authorize flow at all. Served rather than assumed
+        # so the screen can omit the button instead of showing one that 503s —
+        # a dead button beside a working manual path is what got the previous
+        # implementation deleted, and the lesson was about the button.
+        "can_authorize": _oauth_available(),
     }
 
 
@@ -749,6 +916,14 @@ def connector_catalog(
                 "permissions": [p.to_dict() for p in spec.permissions],
                 "permission_note": spec.permission_note,
                 "permission_string": spec.permission_string,
+                # Empty for every registered ERP, because access in each of
+                # their consoles is clicked rather than typed — a system with
+                # no pasteable string has no smaller one either. A connector
+                # that ever gains the first should gain the second with it.
+                "permission_string_minimum": "",
+                # No registered ERP has a customer-facing authorization flow;
+                # every one of them is a sign-in entered by hand.
+                "can_authorize": False,
             }
             for spec in erp.catalog()
         ],

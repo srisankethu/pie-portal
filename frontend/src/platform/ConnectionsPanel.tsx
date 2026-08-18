@@ -54,16 +54,22 @@ import { Bp, Labelled, Tip } from "./ui";
 // on the connection — the data centre the refresh token was issued in. A token
 // from one data centre is rejected by every other, so this is the one field a
 // manual connection cannot get wrong silently.
-const DC_PRESETS: { label: string; accounts_base: string; api_base: string }[] = [
-  { label: "India (.in)", accounts_base: "https://accounts.zoho.in",
+// `code` is the short data-centre token the authorize endpoint takes (`?dc=`);
+// the two bases are what the manual path stores on the credential. One list,
+// because they are one fact — which Zoho estate this grant belongs to — and two
+// lists would disagree the first time a data centre was added to one of them.
+const DC_PRESETS: {
+  code: string; label: string; accounts_base: string; api_base: string;
+}[] = [
+  { code: "in", label: "India (.in)", accounts_base: "https://accounts.zoho.in",
     api_base: "https://www.zohoapis.in/books/v3" },
-  { label: "United States (.com)", accounts_base: "https://accounts.zoho.com",
+  { code: "com", label: "United States (.com)", accounts_base: "https://accounts.zoho.com",
     api_base: "https://www.zohoapis.com/books/v3" },
-  { label: "Europe (.eu)", accounts_base: "https://accounts.zoho.eu",
+  { code: "eu", label: "Europe (.eu)", accounts_base: "https://accounts.zoho.eu",
     api_base: "https://www.zohoapis.eu/books/v3" },
-  { label: "Australia (.com.au)", accounts_base: "https://accounts.zoho.com.au",
+  { code: "com.au", label: "Australia (.com.au)", accounts_base: "https://accounts.zoho.com.au",
     api_base: "https://www.zohoapis.com.au/books/v3" },
-  { label: "Japan (.jp)", accounts_base: "https://accounts.zoho.jp",
+  { code: "jp", label: "Japan (.jp)", accounts_base: "https://accounts.zoho.jp",
     api_base: "https://www.zohoapis.jp/books/v3" },
 ];
 
@@ -843,7 +849,12 @@ function AddConnection({
   const [connector, setConnector] = useState("zoho");
   const entry = catalog.find((c) => c.key === connector);
   const hasCredentials = view.credentials.length > 0;
-  const [mode, setMode] = useState<"existing" | "new">(hasCredentials ? "existing" : "new");
+  const [mode, setMode] = useState<"existing" | "new" | "oauth">(
+    hasCredentials ? "existing" : "new");
+  // The data centre a Zoho grant belongs to. Not portable between estates: a
+  // code issued by accounts.zoho.com is not redeemable at accounts.zoho.in, so
+  // it is chosen before the redirect rather than guessed after it.
+  const [dc, setDc] = useState("in");
   const [form, setForm] = useState(EMPTY_FORM);
   const [credentialId, setCredentialId] = useState(view.credentials[0]?.credential_id ?? "");
   const [orgs, setOrgs] = useState<ZohoVisibleOrg[] | null>(null);
@@ -874,6 +885,65 @@ function AddConnection({
     }
   }, [hasCredentials, view.credentials, credentialId]);
 
+
+  // Coming back from Zoho. The callback redirects to `/#/data?oauth=…`, and
+  // under a hash router the query lives inside the hash — `window.location
+  // .search` is empty here, which is the kind of thing that silently returns
+  // "no handoff" for ever.
+  useEffect(() => {
+    const hash = window.location.hash;
+    const q = hash.includes("?") ? hash.slice(hash.indexOf("?") + 1) : "";
+    const params = new URLSearchParams(q);
+    const outcome = params.get("oauth");
+    if (!outcome) return;
+
+    // Clear it before doing anything else: the handoff is single-use, and a
+    // URL that still carries it is one a reload tries to spend again.
+    const handoff = params.get("handoff");
+    const reason = params.get("reason");
+    window.history.replaceState(null, "", hash.split("?")[0] || "#/data");
+
+    if (outcome !== "ok" || !handoff) {
+      setError(reason || "The authorization did not complete.");
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await papi.claimZohoAuthorization(token, handoff);
+        if (cancelled) return;
+        // An authorization's only product is a sign-in, so from here this is
+        // the ordinary reuse path: pick the company, connect it.
+        setCredentialId(r.credential_id);
+        setMode("existing");
+        setError(null);
+        await onAdded();
+      } catch (e) {
+        if (!cancelled) setError((e as Error).message);
+      }
+    })();
+    return () => { cancelled = true; };
+    // Once, on mount: the URL has been cleared by then, so re-running would
+    // find nothing and a changing `token` must not re-spend a used handoff.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function startAuthorization() {
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await papi.authorizeZoho(token, dc);
+      // A full-page navigation, not `window.open`. The previous implementation
+      // opened a popup and then listened for nothing, so the callback's answer
+      // landed in a window the opener could not read — and popups are blocked
+      // by default in enough browsers, and on enough phones, that the flow
+      // would have been unreachable for many people even had it worked.
+      window.location.assign(r.authorization_url);
+    } catch (e) {
+      setError((e as Error).message);
+      setBusy(false);
+    }
+  }
 
   async function listCompanies() {
     setError(null);
@@ -968,8 +1038,56 @@ function AddConnection({
         >
           Enter credentials manually
         </button>
+        {entry?.can_authorize && (
+          <button
+            type="button"
+            className="cx-tab"
+            aria-pressed={mode === "oauth"}
+            onClick={() => setMode("oauth")}
+          >
+            Sign in with Zoho
+          </button>
+        )}
       </div>
 
+      {mode === "oauth" ? (
+        <div>
+          <p className="st-help">
+            Sign in at Zoho and grant access — nothing to generate, and no secret
+            to paste. It produces a sign-in on this screen, exactly like a
+            manually-entered one; you then choose which company to connect.
+          </p>
+          <TextField
+            id="cx-oauth-dc"
+            select
+            fullWidth
+            size="small"
+            label="Where the books are kept"
+            sx={{ mt: 1.5 }}
+            value={dc}
+            onChange={(e) => setDc(e.target.value)}
+            helperText={
+              "A Zoho account lives in one data centre and a grant is not " +
+              "portable between them. Getting this wrong is the single most " +
+              "common setup failure."
+            }
+          >
+            {DC_PRESETS.map((d) => (
+              <MenuItem key={d.code} value={d.code}>{d.label}</MenuItem>
+            ))}
+          </TextField>
+          {error && <p className="st-bad" role="alert">{error}</p>}
+          <div className="cx-actions">
+            <Button
+              type="button" variant="contained" size="small"
+              disabled={busy}
+              onClick={startAuthorization}
+            >
+              {busy ? "Redirecting…" : "Continue to Zoho"}
+            </Button>
+          </div>
+        </div>
+      ) : (
       <form onSubmit={submit}>
         {mode === "existing" ? (
           <>
@@ -1127,6 +1245,7 @@ function AddConnection({
           </Button>
         </div>
       </form>
+      )}
       </>
       )}
 
@@ -1151,11 +1270,46 @@ function AddConnection({
  * that reason: the thing that changes the form has to change this too, and the
  * cheapest way to guarantee it is to leave them nowhere to disagree.
  */
-function Access({ entry }: { entry: ConnectorCatalogEntry }) {
+/** One pasteable scope string, with its own Copy button and its own label.
+ *
+ * A component rather than the markup twice: the connector offers two strings —
+ * everything, and the minimum that still runs a sync — and the "Copied" flag
+ * belongs to whichever button was actually pressed. One shared flag would light
+ * up under both.
+ */
+function ScopeString({
+  value,
+  label,
+  connectorKey,
+}: {
+  value: string;
+  label: string;
+  connectorKey: string;
+}) {
   const [copied, setCopied] = useState(false);
   // Reset when the tabs move: "Copied" left standing under a different
   // system's list claims something that was never put on the clipboard.
-  useEffect(() => setCopied(false), [entry.key]);
+  useEffect(() => setCopied(false), [connectorKey]);
+  if (!value) return null;
+  return (
+    <div className="cx-scopestring">
+      <span className="st-help">{label}</span>
+      <code>{value}</code>
+      <Button
+        variant="text" size="small"
+        onClick={() => {
+          navigator.clipboard?.writeText(value);
+          setCopied(true);
+          window.setTimeout(() => setCopied(false), 2000);
+        }}
+      >
+        {copied ? "Copied" : "Copy"}
+      </Button>
+    </div>
+  );
+}
+
+function Access({ entry }: { entry: ConnectorCatalogEntry }) {
   if (entry.permissions.length === 0) return null;
   return (
     <div className="cx-access">
@@ -1181,22 +1335,19 @@ function Access({ entry }: { entry: ConnectorCatalogEntry }) {
         </table>
       </Box>
       {/* Only where the system takes one. Every ERP in the registry is clicked
-          rather than typed, and an empty box to copy would be worse than none. */}
-      {entry.permission_string && (
-        <div className="cx-scopestring">
-          <code>{entry.permission_string}</code>
-          <Button
-            variant="text" size="small"
-            onClick={() => {
-              navigator.clipboard?.writeText(entry.permission_string);
-              setCopied(true);
-              window.setTimeout(() => setCopied(false), 2000);
-            }}
-          >
-            {copied ? "Copied" : "Copy"}
-          </Button>
-        </div>
-      )}
+          rather than typed, and an empty box to copy would be worse than none.
+          The full set leads, and the minimum sits under it — that order is the
+          recommendation, and it is the one the note above argues for. */}
+      <ScopeString
+        value={entry.permission_string}
+        label="Everything this platform reads — recommended"
+        connectorKey={entry.key}
+      />
+      <ScopeString
+        value={entry.permission_string_minimum}
+        label="The least that still runs a sync"
+        connectorKey={entry.key}
+      />
     </div>
   );
 }

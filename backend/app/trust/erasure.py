@@ -258,6 +258,12 @@ EXCLUDED_REASONS: dict[str, str] = {
         "Whether your books have used their free month of Commercial "
         "Intelligence — our licensing bookkeeping, with no fact about your "
         "business in it beyond the connection date you already have."),
+    "oauth_states": (
+        "An authorization that was in flight — the hashed one-time token from a "
+        "'Sign in with Zoho' round trip, its data centre, and when it expired. "
+        "Security plumbing with no fact about your business in it, spent within "
+        "minutes and swept within a day. The grant it produced is a Zoho "
+        "sign-in, and that is on `zoho_credentials`."),
 }
 
 EXCLUDED = tuple(EXCLUDED_REASONS)
@@ -281,6 +287,7 @@ MANIFESTED: tuple[tuple[str, Any], ...] = EXPORTED + (
     ("zoho_connections", models.ZohoConnection),
     ("ai_provider_keys", models.AIProviderKey),
     ("intelligence_trials", models.IntelligenceTrial),
+    ("oauth_states", models.OAuthState),
     ("tenant_keys", models.TenantKey),
     ("users", models.User),
     ("user_sessions", models.UserSession),

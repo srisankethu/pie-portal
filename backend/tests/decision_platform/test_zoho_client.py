@@ -648,6 +648,37 @@ def test_every_scope_the_pull_uses_is_declared():
         f"requested but never used: {sorted(declared - used)}")
 
 
+def test_the_minimum_scope_string_is_exactly_the_required_scopes():
+    """The two strings are projections of one list, and must stay so.
+
+    ``Permission.required`` already separates two different days — without a
+    required grant no sync runs at all, without an optional one a screen stays
+    empty. The full string was the only one offered, so an owner whose policy
+    is to grant the least that works had to assemble it by hand from the table,
+    which is how a scope gets missed. Asserted against the flag rather than
+    against a written-out list, because a second hand-written tuple is the copy
+    that stops agreeing the first time a scope changes side.
+    """
+    from app.ingestion.connections import (MINIMUM_SCOPE_STRING, REQUIRED_SCOPES,
+                                           SCOPE_STRING)
+
+    minimum = set(MINIMUM_SCOPE_STRING.split(","))
+    assert minimum == {p.name for p in REQUIRED_SCOPES if p.required}
+    # A subset, never a different set: the minimum is the full grant with the
+    # optional ones dropped, so anything in it must be grantable from the same
+    # console string the screen leads with.
+    assert minimum < set(SCOPE_STRING.split(","))
+
+
+def test_the_full_scope_string_still_asks_for_everything():
+    """The minimum is offered *beside* the full set, never instead of it. A
+    change that quietly narrowed what the screen leads with would cost every
+    new connection the optional stages — and they fail quietly, later."""
+    from app.ingestion.connections import REQUIRED_SCOPES, SCOPE_STRING
+
+    assert set(SCOPE_STRING.split(",")) == {p.name for p in REQUIRED_SCOPES}
+
+
 def test_the_scope_probe_asks_each_scope_exactly_once():
     """``settings.READ`` gates items, locations and per-location stock alike, so
     probing per endpoint would ask one question three times and charge three

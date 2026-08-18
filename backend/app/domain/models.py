@@ -35,6 +35,7 @@ from sqlalchemy import (
     UniqueConstraint,
     text,
 )
+from sqlalchemy.ext.mutable import MutableDict
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from ..db import Base
@@ -83,7 +84,28 @@ class Organization(Base):
     # more as a row an operator can list (``python -m app.entitlements
     # requests``) than as an email nobody kept. NULL means never asked.
     requested_plan: Mapped[Optional[str]] = mapped_column(String(32))
-    config: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    # ``MutableDict``, not a bare ``JSON``, and the wrapper is the whole point.
+    # SQLAlchemy notices a change by *assignment*: ``org.config = {...}`` marks
+    # the row dirty, ``org.config["k"] = v`` does not, so an in-place write is
+    # flushed as nothing at all and the next read returns what was there before.
+    # Silently — no error, no warning, a commit that reports success.
+    #
+    # Every writer today happens to assign a whole new dict (``ai/byok.py``,
+    # ``routers/data_status.py``), so there is no live defect here. This is the
+    # guardrail rather than the repair: a column read and written by four
+    # modules across three layers will eventually meet somebody who reaches for
+    # the obvious idiom, and the failure it produces is invisible.
+    #
+    # The column type is unchanged — this is a Python-side wrapper, so it needs
+    # no migration and produces no schema drift.
+    #
+    # What it does **not** cover, stated because a guardrail believed to be
+    # wider than it is, is worse than none: it tracks writes to *this* dict's
+    # own keys. ``org.config["a"]["b"] = 1`` mutates a plain nested dict and is
+    # still lost — verified, not assumed. Nothing here nests today; a writer who
+    # needs to should assign the whole sub-dict back.
+    config: Mapped[dict[str, Any]] = mapped_column(
+        MutableDict.as_mutable(JSON), default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
@@ -146,7 +168,8 @@ class ZohoCredential(Base):
     # object of the connector's secret fields; ``config`` carries the values
     # that are identifying rather than secret. Zoho rows leave both NULL.
     secrets_encrypted: Mapped[Optional[str]] = mapped_column(String(4096))
-    config: Mapped[Optional[dict]] = mapped_column(JSON)
+    # ``MutableDict`` for the reason ``Organization.config`` gives at length.
+    config: Mapped[Optional[dict]] = mapped_column(MutableDict.as_mutable(JSON))
 
     # Other platform organizations allowed to connect through this grant.
     # Explicit rather than implicit: a credential reachable by every tenant in
@@ -232,7 +255,8 @@ class ZohoConnection(Base):
     # Non-Zoho connectors only: per-company settings the credential does not
     # carry — a Business Central company GUID is here, its tenant id is on the
     # credential. Shapes are declared per connector in ``ingestion/erp``.
-    config: Mapped[Optional[dict]] = mapped_column(JSON)
+    # ``MutableDict`` for the reason ``Organization.config`` gives at length.
+    config: Mapped[Optional[dict]] = mapped_column(MutableDict.as_mutable(JSON))
 
     # Legacy inline credentials. Rows created before credentials were separated
     # keep working from these until the migration backfills them; nothing new is
@@ -270,6 +294,70 @@ class ZohoConnection(Base):
                                                  onupdate=_now)
 
     credential: Mapped[Optional["ZohoCredential"]] = relationship(lazy="joined")
+
+
+class OAuthState(Base):
+    """One in-flight authorization, from the redirect out to the redirect back.
+
+    A row rather than a key in ``Organization.config``, and the difference is
+    not tidiness — it is what makes the flow work at all.
+
+    The previous implementation stored these under the organization. That had
+    two consequences and both were fatal. The write was
+    ``org.config["oauth_states"][hash] = {...}`` on a plain ``JSON`` column, an
+    in-place mutation SQLAlchemy does not mark dirty, so it was flushed as
+    nothing and every callback failed state validation. And storing it *under*
+    the organization meant the callback could only find the state if it already
+    knew which organization — so it demanded a bearer token, on an endpoint the
+    browser reaches by following Zoho's redirect, which carries no such header.
+    The flow 401'd before its handler ran.
+
+    Keyed by the hash, the state is findable by the one value the redirect
+    actually carries. That is what lets the callback be public and still know
+    exactly whose authorization it is completing.
+
+    **The token itself is never stored.** Only ``sha256`` of it, for the reason
+    a password is not stored: this table is readable by anything that reaches
+    the database, and a live state token is a usable half of an authorization.
+
+    Single-use, and enforced by a column rather than by deletion —
+    ``consumed_at`` set means spent, and a second callback carrying the same
+    state is refused rather than silently re-run. Deleting instead would make a
+    replay indistinguishable from a state that had expired and been swept.
+    """
+
+    __tablename__ = "oauth_states"
+
+    #: ``sha256`` of the state token. Never the token.
+    state_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    #: Which platform organization asked. NOT NULL: today the flow starts from
+    #: an authenticated owner adding a company to a tenant that already exists.
+    #: An install-first signup — where the authorization *creates* the tenant —
+    #: is the case that would relax this, and it is a migration when it arrives
+    #: rather than a nullable column nothing writes.
+    organization_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("organizations.organization_id"), index=True)
+    #: Which system is being authorized. Zoho is the only one today; the column
+    #: is here because the table is named for the protocol, not the vendor, and
+    #: a second OAuth connector must not need a second table.
+    connector: Mapped[str] = mapped_column(String(32), default="zoho",
+                                           server_default="zoho")
+    #: The data centre chosen at the start. Carried on the row because the
+    #: callback needs it to exchange the code, and a redirect cannot be trusted
+    #: to hand it back — a ``.com`` user's code redeemed against ``.in`` fails
+    #: in a way nobody can diagnose.
+    accounts_base: Mapped[str] = mapped_column(String(255))
+    api_base: Mapped[str] = mapped_column(String(255))
+    #: Set once the callback has spent it. A second use is refused.
+    consumed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    #: What the callback hands the browser so an authenticated request can claim
+    #: the pending credential. Also a hash, for the reason the state is.
+    handoff_hash: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    #: The credential the exchange created, claimed by the handoff.
+    credential_id: Mapped[Optional[str]] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    #: Indexed because the only query that is not by key is the sweep.
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
 
 
 class IntelligenceTrial(Base):

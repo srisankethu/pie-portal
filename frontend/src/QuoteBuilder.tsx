@@ -287,18 +287,38 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
     return (
       <Box>
         <SectionHeader title="Quote Builder" sub={SUB} />
-        <LoadingState rows={3} label="Choose who this quote is for…" />
-        {/* No cancel: there is nothing behind this to return to, and a quote
-            with no customer cannot be priced — there is no price history to
-            read. */}
+        {/* Skeletons while the dialog is up — it is about to be answered and a
+            page that grows underneath costs somebody their place. Closed, they
+            would be a lie: nothing is loading, the screen is waiting to be
+            asked again. */}
+        {pickerOpen ? (
+          <LoadingState rows={3} label="Choose who this quote is for…" />
+        ) : (
+          <EmptyState
+            title="No quote open"
+            reason="A quote is priced against one customer's own price history,
+                    so it starts by choosing who it is for."
+            action={
+              <Button variant="contained" onClick={() => setPickerOpen(true)}>
+                Choose a customer
+              </Button>
+            }
+          />
+        )}
+        {/* Cancellable, and this is what it returns to. It used to have no way
+            out on the grounds that there was nothing behind it — true of the
+            page, and the wrong conclusion: an organization whose directory is
+            empty got a dialog it could not satisfy, over a backdrop that swallows
+            the nav, which is a locked screen rather than a firm question. */}
         <CustomerPicker
           open={pickerOpen}
-          token={t}
+          session={session}
           busy={busy}
           title="Who is this quote for?"
           note="Pricing reads this customer's own history, so the quote needs to
                 know whose. Start typing a name."
           onPick={startQuote}
+          onCancel={() => setPickerOpen(false)}
         />
       </Box>
     );
@@ -713,7 +733,7 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
           and silently wrong is worse than plainly starting again. */}
       <CustomerPicker
         open={pickerOpen}
-        token={t}
+        session={session}
         busy={busy}
         title="Change customer"
         note={quote.lines.length

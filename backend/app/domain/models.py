@@ -76,6 +76,13 @@ class Organization(Base):
     # CLI), never by a tenant — an owner who could set their own plan would
     # not have one.
     plan: Mapped[Optional[str]] = mapped_column(String(32))
+    # Which plan this organization *asked* for at sign-up. A request, never a
+    # licence: ``entitlements.licensed_plan`` reads ``plan`` above and has no
+    # idea this column exists, so writing "platform" here grants nothing. It is
+    # here because the sign-up form asks the question, and the answer is worth
+    # more as a row an operator can list (``python -m app.entitlements
+    # requests``) than as an email nobody kept. NULL means never asked.
+    requested_plan: Mapped[Optional[str]] = mapped_column(String(32))
     config: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 

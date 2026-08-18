@@ -62,6 +62,28 @@ A self-serve sign-up lands on **free**, whatever `DEFAULT_PLAN` says — pinned 
 inheriting it would hand the top tier to anyone who can reach the form. There
 is deliberately no API that changes a plan; that stays an operator command.
 
+**The sign-up form asks which plan a business wants, and the answer grants
+nothing.** It is stored on `organizations.requested_plan`, a column no
+resolution path reads — `licensed_plan` still reads `plan` alone — so the
+picker cannot become the plan-setting API that does not exist. What it buys is
+that the question has an answer somebody can find:
+
+```bash
+python -m app.entitlements requests                  # who is asking for more
+python -m app.entitlements set-plan <org_id> intelligence   # the only thing that grants it
+```
+
+The form says as much where it is asked: an account starts on the free Quote
+Desk the same day whichever plan is selected, and nothing is charged at sign-up.
+There is no billing in this product.
+
+**Turning sign-up on is what makes registration reachable at all.** With
+`SELF_SERVE_SIGNUP=0` the sign-in card offers no way to create an organization,
+and that is correct for a single-tenant install — the only accounts are the ones
+an owner creates from Settings. With it on, the card carries a "Create your
+organization" link and the landing page's pricing panels open the sign-up form
+on the plan that was being read about.
+
 ### Zoho
 
 Only `ZOHO_SOURCE` and the pull-behaviour settings below are process-wide. Every

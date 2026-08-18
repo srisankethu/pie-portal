@@ -66,7 +66,11 @@ import "./landing.css";
  */
 export function Landing({ onEnter, onSignUp }: {
   onEnter: () => void;
-  onSignUp?: () => void;
+  /** Takes the plan the visitor was reading about, where they came through a
+   *  pricing panel. It only preselects the radio on the sign-up form — the
+   *  account created is the free one whichever panel was pressed, because
+   *  nothing here sells anything. */
+  onSignUp?: (plan?: string) => void;
 }) {
   const enter = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -76,6 +80,16 @@ export function Landing({ onEnter, onSignUp }: {
   const start = (e: React.MouseEvent) => {
     e.preventDefault();
     (onSignUp ?? onEnter)();
+  };
+  /** A pricing panel's own CTA. Same door, opened on that plan.
+   *
+   *  The panels were three static blocks with nothing to press, so the one
+   *  place a visitor has decided which plan they want was the one place the
+   *  page stopped talking to them — they had to scroll back to a CTA that
+   *  asked the question again. */
+  const startOn = (plan: string) => (e: React.MouseEvent) => {
+    e.preventDefault();
+    (onSignUp ?? onEnter)(plan);
   };
 
   // The mobile nav collapses the section links behind a menu button. Closed on
@@ -444,6 +458,9 @@ export function Landing({ onEnter, onSignUp }: {
                   <b>Quote faster.</b> The quote desk, RFQ reading, margin floors
                   and approvals — for as long as you like, no card.
                 </p>
+                <a className="lp-btn solid" href="#signin" onClick={startOn("free")}>
+                  Start free
+                </a>
               </div>
               <div className="lp-panel lp-plan mid">
                 <h3>Commercial Intelligence</h3>
@@ -453,6 +470,9 @@ export function Landing({ onEnter, onSignUp }: {
                   health, collections — and the ledger measuring what the
                   intelligence layer was worth.
                 </p>
+                <a className="lp-btn" href="#signin" onClick={startOn("intelligence")}>
+                  Ask for this plan
+                </a>
               </div>
               <div className="lp-panel lp-plan">
                 <h3>Platform</h3>
@@ -462,11 +482,16 @@ export function Landing({ onEnter, onSignUp }: {
                   companies, one view — with all catalog builds included and a
                   named person who knows your setup.
                 </p>
+                <a className="lp-btn" href="#signin" onClick={startOn("platform")}>
+                  Ask for this plan
+                </a>
               </div>
             </div>
             <p className="lp-pricing-note">
               One-time catalog builds from <span className="lp-num">₹4,999</span>,
-              yours permanently.
+              yours permanently. Every account starts on the free Quote Desk and
+              works the same day — the paid plans are enabled with you, and
+              nothing is charged when you sign up.
             </p>
           </div>
         </section>

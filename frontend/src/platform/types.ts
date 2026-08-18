@@ -34,6 +34,18 @@ export interface SignupOffer {
   plan: string;
   trial_days: number;
   note: string;
+  /** The plans that exist, cheapest first, with what each adds. Sent by the
+   *  server so the form does not hold a second copy of the plan map — the copy
+   *  would go stale the first time a feature moved between tiers. No prices:
+   *  those are marketing copy and live only on the landing page. */
+  plans: PlanOption[];
+}
+
+/** One rung of the plan ladder, as `GET /api/v1/signup` describes it. */
+export interface PlanOption {
+  plan: string;
+  label: string;
+  summary: string;
 }
 
 /** What this organization's plan lets it use, and what it is about to lose.

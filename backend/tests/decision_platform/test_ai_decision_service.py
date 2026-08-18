@@ -63,6 +63,7 @@ def test_generate_persists_validated_decisions(session):
     result = DecisionService(session, ORG, provider=MockProvider("ok")).generate()
     session.commit()
     assert result["created"] >= 4
+    assert result["ai_failed"] == 0
 
     decisions = session.query(models.Decision).all()
     assert decisions
@@ -104,10 +105,17 @@ def test_ai_failure_still_surfaces_decisions(session):
     _seed_readmodel(session)
     run_detectors(session, ORG)
     session.commit()
-    DecisionService(session, ORG, provider=MockProvider("timeout")).generate()
+    result = DecisionService(session, ORG, provider=MockProvider("timeout")).generate()
     session.commit()
     ds = session.query(models.Decision).all()
     assert ds                                              # deterministic floor holds
+    # ... and the run summary says so. A summary that only counts
+    # created/refreshed reads as all-clear while every call bounces off a bad
+    # key — the caller must be able to see the failures without opening the
+    # telemetry.
+    failed = [d for d in ds if d.ai["status"] == "FAILED"]
+    assert failed
+    assert result["ai_failed"] == len(failed)
     assert all(d.ai["status"] == "FAILED" for d in ds)
     assert all(d.ai["recommendation"] == "" for d in ds)  # no fabricated advice
 

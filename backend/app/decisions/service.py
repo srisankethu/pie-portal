@@ -88,6 +88,11 @@ class DecisionService:
 
     def generate(self) -> dict:
         created = refreshed = skipped = 0
+        # Counted separately from created/refreshed: a decision whose narrative
+        # call failed still lands (with its deterministic signal), so the run
+        # "succeeds" — but a summary that only says so reads as all-clear while
+        # every provider call is bouncing off a bad key. The caller gets both.
+        ai_failed = 0
         by_type: dict[str, int] = {}
 
         for signal in _latest_signals(self.s, self.org):
@@ -124,6 +129,8 @@ class DecisionService:
                                   organization_id=signal.organization_id,
                                   decision_type=dtype, result=result)
             self.telemetry.record(result.telemetry)
+            if result.status is AiStatus.FAILED:
+                ai_failed += 1
             base = max(0, min(100, int(signal.severity_base)))
             adj = result.priority_adjustment if result.status is AiStatus.OK else 0
             final = max(0, min(100, base + adj))
@@ -161,7 +168,7 @@ class DecisionService:
             by_type[dtype] = by_type.get(dtype, 0) + 1
 
         return {"organization_id": self.org, "created": created, "refreshed": refreshed,
-                "skipped": skipped, "by_type": by_type,
+                "skipped": skipped, "ai_failed": ai_failed, "by_type": by_type,
                 "provider": getattr(self.provider, "name", ""),
                 "model": getattr(self.provider, "model", "")}
 

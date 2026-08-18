@@ -76,9 +76,10 @@ def test_an_obligation_lands_in_the_week_its_own_document_names(book):
     """Not the week it was raised, not an average — the due date's week."""
     rows = _schedule(book)
 
-    # INV-2: ₹16,700 due 2026-02-04. INV-3: ₹85,200 due 2026-08-19.
+    # INV-2: ₹16,700 due 2026-02-04. INV-3: ₹85,200 due two weeks from TODAY —
+    # derived exactly as the fixture derives it, so the two cannot drift apart.
     assert _amount(rows, f"in:{week_key(date(2026, 2, 4))}:") == Decimal("16700")
-    assert _amount(rows, f"in:{week_key(date(2026, 8, 19))}:") == Decimal("85200")
+    assert _amount(rows, f"in:{week_key(TODAY + timedelta(days=14))}:") == Decimal("85200")
     # BILL-1: ₹3,00,000 due 2026-04-01.
     assert _amount(rows, f"out:{week_key(date(2026, 4, 1))}:") == Decimal("300000")
 
@@ -183,7 +184,7 @@ def test_an_open_order_is_never_placed_on_the_timeline(book):
 
 def test_a_dated_obligation_past_the_horizon_is_named_not_dropped(book):
     """A projection whose parts do not add up to the book is one people stop
-    trusting. A one-week horizon must push the August invoice into
+    trusting. A one-week horizon must push the invoice due two weeks out into
     `beyond_horizon` rather than losing it."""
     narrow = _project(book, weeks=1)
 

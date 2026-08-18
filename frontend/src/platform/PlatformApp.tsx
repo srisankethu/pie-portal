@@ -828,7 +828,12 @@ export default function PlatformApp() {
       : []),
     // Mix and rhythm are revenue and dates — no cost anywhere in either — so
     // both are visible to a salesperson.
-    { key: "composition", label: "Mix", group: "understand" },
+    // "Mix shift", not "Mix". It sat two rows from "Product mix" and the two
+    // are unrelated: this one asks whether the mix moved and towards whom,
+    // that one asks which lines a customer does not take. The screen's own
+    // question is "Has the mix shifted, and towards whom", so the label now
+    // agrees with the heading a reader lands on.
+    { key: "composition", label: "Mix shift", group: "understand" },
     { key: "cadence", label: "Rhythm", group: "understand" },
     // Visible to everybody, unlike Suppliers: the customer half carries no cost
     // and no margin, and the server omits the supplier half from a

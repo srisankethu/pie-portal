@@ -9,6 +9,8 @@ only sees decisions assigned to them and never the RESTRICTED decision types.
 """
 from __future__ import annotations
 
+import logging
+import time
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -31,6 +33,7 @@ from ..state.engine import why as state_why
 from ..state.opportunities import ACTIONS as _ACTIONS
 from .outcomes import _redact
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/decisions", tags=["decisions"])
 
 
@@ -163,10 +166,13 @@ def _detail(session: Session, d: models.Decision, principal: Principal) -> dict:
     Facts (deterministic, sourced) are kept strictly separate from the AI
     interpretation. RESTRICTED facts are absent for a salesperson.
     """
+    t0 = time.time()
     is_sales = principal.role is Role.SALESPERSON
     signal = None
     if d.signal_ids:
         signal = session.get(models.Signal, d.signal_ids[0])
+    t1 = time.time()
+    logger.info(f"[_detail] Signal load (id={d.decision_id}): {(t1-t0)*1000:.1f}ms")
 
     facts: list[dict] = []
     if signal is not None:
@@ -182,12 +188,33 @@ def _detail(session: Session, d: models.Decision, principal: Principal) -> dict:
                 continue
             facts.append({"label": label, "value": value, "restricted": restricted,
                           "source": sources or "Zoho"})
+    t2 = time.time()
+    logger.info(f"[_detail] Facts extraction (id={d.decision_id}): {(t2-t1)*1000:.1f}ms")
 
     ai = d.ai or {}
     confidence = dict(d.confidence or {})
+
+    subject_label = _subject_label(session, d)
+    t3 = time.time()
+    logger.info(f"[_detail] Subject label (id={d.decision_id}): {(t3-t2)*1000:.1f}ms")
+
+    subject_origin_data = _subject_origin(session, d)
+    t4 = time.time()
+    logger.info(f"[_detail] Subject origin (id={d.decision_id}): {(t4-t3)*1000:.1f}ms")
+
+    assigned_to = (approvals.user_names(
+        session, d.organization_id, [d.assigned_user_id]).get(d.assigned_user_id)
+        if d.assigned_user_id else None)
+    t5 = time.time()
+    logger.info(f"[_detail] User names (id={d.decision_id}): {(t5-t4)*1000:.1f}ms")
+
+    outcome = _outcome(session, d, is_sales=is_sales)
+    t6 = time.time()
+    logger.info(f"[_detail] Outcome (id={d.decision_id}): {(t6-t5)*1000:.1f}ms")
+
     # AI economics never leak to a salesperson even in the interpretation text
     # (the interpreter already ran on a redacted bundle; this is defense in depth).
-    return {
+    result = {
         # Which producer made this. The card renders two quite different
         # things — an interpretation, or quantified impact with its own
         # arithmetic — and asking the row rather than sniffing its fields is
@@ -212,16 +239,14 @@ def _detail(session: Session, d: models.Decision, principal: Principal) -> dict:
         "decision_type": d.decision_type,
         "subject_entity_type": d.subject_entity_type,
         "subject_entity_id": d.subject_entity_id,
-        "subject_label": _subject_label(session, d),
-        **_subject_origin(session, d),
+        "subject_label": subject_label,
+        **subject_origin_data,
         "assigned_user_id": d.assigned_user_id,
         # The name, so the card can say whose this is. Null with a role set is
         # not missing data: a decision routed to SALES_MANAGER belongs to the
         # role rather than to a person, and the card says that instead of
         # rendering a blank.
-        "assigned_to": (approvals.user_names(
-            session, d.organization_id, [d.assigned_user_id]).get(d.assigned_user_id)
-            if d.assigned_user_id else None),
+        "assigned_to": assigned_to,
         "assigned_role": d.assigned_role,
         "detected_at": clock.iso(d.detected_at),
         "priority": {"band": d.priority_band, "score": d.priority_score,
@@ -243,8 +268,12 @@ def _detail(session: Session, d: models.Decision, principal: Principal) -> dict:
         },
         "confidence": d.confidence or {},
         "human_action": d.human_action,
-        "outcome": _outcome(session, d, is_sales=is_sales),
+        "outcome": outcome,
     }
+    t7 = time.time()
+    logger.info(f"[_detail] Result dict assembly (id={d.decision_id}): {(t7-t6)*1000:.1f}ms")
+    logger.info(f"[_detail] TOTAL for {d.decision_id}: {(t7-t0)*1000:.1f}ms")
+    return result
 
 
 def _visible(session: Session, principal: Principal,
@@ -274,23 +303,39 @@ def _to_read(d: models.Decision) -> DecisionRead:
     )
 
 
-@router.get("", response_model=list[DecisionRead])
+@router.get("")
 def list_decisions(
     type: Optional[str] = None,
     status_filter: Optional[str] = None,
+    include_detail: bool = False,
     principal: Principal = Depends(current_principal),
     session: Session = Depends(get_session),
-) -> list[DecisionRead]:
+):
+    t0 = time.time()
+    logger.info(f"[decisions:list] START type={type} status={status_filter} org={principal.organization_id}")
+
     repo = DecisionRepository(session, principal.organization_id)
+    t1 = time.time()
+    logger.info(f"[decisions:list] Repository init: {(t1-t0)*1000:.1f}ms")
+
     # Scope and the QUOTE_CONTEXT exclusion together, from `authz`, because the
     # landing page's queue tile has to count exactly this list — see
     # `decision_queue_scope`.
     scope = decision_queue_scope(principal, type)
+    t2 = time.time()
+    logger.info(f"[decisions:list] Scope calculation: {(t2-t1)*1000:.1f}ms")
+
     rows = repo.list(decision_type=type, status=status_filter, **scope)
+    t3 = time.time()
+    logger.info(f"[decisions:list] repo.list() returned {len(rows)} rows: {(t3-t2)*1000:.1f}ms")
+
     # Which company each decision is about. A queue pooled across three
     # connected books lists "ABC Industries" three times otherwise, and the
     # three are different customers with different problems.
     companies = Companies(session, principal.organization_id)
+    t4 = time.time()
+    logger.info(f"[decisions:list] Companies init: {(t4-t3)*1000:.1f}ms")
+
     masters = {
         SubjectEntityType.CUSTOMER.value: models.Customer,
         SubjectEntityType.PRODUCT.value: models.Product,
@@ -298,19 +343,56 @@ def list_decisions(
     }
     # One index per entity kind that actually appears, loaded once rather than
     # per row — and never for a kind this page does not show.
-    indexes = {
-        kind: index_of(session, principal.organization_id, model)
-        for kind, model in masters.items()
-        if any(d.subject_entity_type == kind for d in rows)
-    }
+    entity_types_in_rows = {d.subject_entity_type for d in rows}
+    logger.info(f"[decisions:list] Entity types in rows: {entity_types_in_rows}")
+
+    indexes = {}
+    for kind, model in masters.items():
+        if any(d.subject_entity_type == kind for d in rows):
+            t_idx_start = time.time()
+            idx = index_of(session, principal.organization_id, model)
+            t_idx_end = time.time()
+            indexes[kind] = idx
+            logger.info(f"[decisions:list] Loaded index for {kind}: {(t_idx_end-t_idx_start)*1000:.1f}ms, size={len(idx)}")
+
+    t5 = time.time()
+    logger.info(f"[decisions:list] All indexes loaded: {(t5-t4)*1000:.1f}ms")
+
     out = []
-    for d in rows:
+    for i, d in enumerate(rows):
         read = _to_read(d)
         record = indexes.get(d.subject_entity_type, {}).get(d.subject_entity_id)
         read.subject_origin = (companies.of(record).to_dict()
                                if record is not None else None)
         read.sources_differ = companies.count > 1
         out.append(read)
+
+    t6 = time.time()
+    logger.info(f"[decisions:list] Built {len(out)} result rows: {(t6-t5)*1000:.1f}ms")
+
+    # If frontend requested full details, include them in one pass to avoid N+1
+    if include_detail:
+        t6_detail = time.time()
+        result = []
+        for d in rows:
+            try:
+                summary = _to_read(d)
+                detail = _detail(session, d, principal)
+                # Merge summary and detail into one dict
+                summary_dict = summary.model_dump() if hasattr(summary, 'model_dump') else summary.__dict__
+                merged = {**summary_dict, **detail}
+                result.append(merged)
+            except Exception as e:
+                logger.error(f"[decisions:list] Failed to load detail for {d.decision_id}: {e}")
+                # Fallback to summary only
+                result.append(out[len(result)])
+
+        t7 = time.time()
+        logger.info(f"[decisions:list] Loaded {len(result)} with details: {(t7-t6_detail)*1000:.1f}ms")
+        logger.info(f"[decisions:list] TOTAL (with details): {(t7-t0)*1000:.1f}ms")
+        return result
+
+    logger.info(f"[decisions:list] TOTAL: {(t6-t0)*1000:.1f}ms")
     return out
 
 
@@ -329,7 +411,50 @@ def get_decision_detail(
     principal: Principal = Depends(current_principal),
     session: Session = Depends(get_session),
 ) -> dict:
-    return _detail(session, _visible(session, principal, decision_id), principal)
+    t0 = time.time()
+    logger.info(f"[decisions:detail] START decision_id={decision_id} org={principal.organization_id}")
+
+    d = _visible(session, principal, decision_id)
+    t1 = time.time()
+    logger.info(f"[decisions:detail] _visible(): {(t1-t0)*1000:.1f}ms")
+
+    detail = _detail(session, d, principal)
+    t2 = time.time()
+    logger.info(f"[decisions:detail] _detail(): {(t2-t1)*1000:.1f}ms")
+    logger.info(f"[decisions:detail] TOTAL: {(t2-t0)*1000:.1f}ms")
+    return detail
+
+
+@router.post("/bulk-detail")
+def get_decisions_bulk_detail(
+    decision_ids: list[str],
+    principal: Principal = Depends(current_principal),
+    session: Session = Depends(get_session),
+) -> dict[str, dict]:
+    """Fetch detail for multiple decisions in one request.
+
+    This eliminates the N+1 query pattern on the frontend where it calls
+    /decisions/{id}/detail for each decision in the list. The frontend should
+    call this endpoint once with all decision IDs instead of N separate requests.
+    """
+    t0 = time.time()
+    logger.info(f"[decisions:bulk-detail] START with {len(decision_ids)} ids org={principal.organization_id}")
+
+    result = {}
+    repo = DecisionRepository(session, principal.organization_id)
+
+    # Load all decisions in one pass (with authorization check per decision)
+    for did in decision_ids:
+        try:
+            d = _visible(session, principal, did)
+            result[did] = _detail(session, d, principal)
+        except HTTPException:
+            # Skip decisions the principal cannot see (404 due to authz)
+            pass
+
+    t1 = time.time()
+    logger.info(f"[decisions:bulk-detail] Loaded {len(result)}/{len(decision_ids)} details: {(t1-t0)*1000:.1f}ms")
+    return result
 
 
 #: How much of a state key's working one response carries by default. A busy

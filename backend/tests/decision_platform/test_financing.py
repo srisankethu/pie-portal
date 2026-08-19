@@ -70,9 +70,17 @@ def _settlement(customer_id: str, *, days: int, raised: date,
 
 
 def _history(customer_id: str, *, days: int, count: int = 6,
-             end: date = AS_OF) -> list[payments.Settlement]:
-    """``count`` invoices, all settled at the same lag, inside the window."""
-    return [_settlement(customer_id, days=days,
+             end: date = AS_OF, amount: str = "10000") -> list[payments.Settlement]:
+    """``count`` invoices, all settled at the same lag, inside the window.
+
+    ``amount`` is per invoice, and it matters as well as the count: the lag
+    prices the account's whole revenue, so the settled documents have to
+    account for a real share of it before that is allowed — see
+    ``financing_min_settled_share``. A fixture declaring ₹2,00,000 of revenue
+    and ₹60,000 of settlements is a book where seventy per cent never settled,
+    which is the case the floor exists to refuse.
+    """
+    return [_settlement(customer_id, days=days, amount=amount,
                         raised=end - timedelta(days=30 * (i + 1)),
                         ref=f"{customer_id}-{i}")
             for i in range(count)]
@@ -235,23 +243,25 @@ def test_a_gap_the_rate_does_not_close_leaves_the_order_alone():
 def test_the_charge_is_levied_on_costed_revenue_not_on_all_revenue():
     """The wave-1 blocker's shape: two populations in one expression.
 
-    ₹2,00,000 of revenue, half of it costed, ₹30,000 of profit on that half,
-    settled at 365 days, 12%. The charge is on the ₹1,00,000 the profit came
-    from — ₹12,000, leaving ₹18,000. Charging the whole ₹2,00,000 would take
-    ₹24,000 and print ₹6,000, which reads as a pricing failure and is a
-    cost-coverage gap.
+    ₹2,00,000 of revenue, ₹1,50,000 of it costed — above the platform's
+    ``min_cost_coverage``, because below that there is no figure at all and this
+    test is about *which* revenue is charged, not about the floor. ₹30,000 of
+    profit on the costed part, settled at 365 days, 12%. The charge is on the
+    ₹1,50,000 the profit came from — ₹18,000, leaving ₹12,000. Charging the
+    whole ₹2,00,000 would take ₹24,000, which reads as a pricing failure and is
+    a cost-coverage gap.
     """
-    metrics = [_metric("c1", "p1", "100000", "30000"),
-               _metric("c1", "p2", "100000", None)]
-    result = _build(metrics, _history("c1", days=365))
+    metrics = [_metric("c1", "p1", "150000", "30000"),
+               _metric("c1", "p2", "50000", None)]
+    result = _build(metrics, _history("c1", days=365, amount="20000"))
 
     row = _row(result, "c1")
     assert row["revenue"] == 200000.0
-    assert row["costed_revenue"] == 100000.0
-    assert row["cost_coverage"] == 0.5
-    assert row["financing_cost"] == 12000.0
-    assert row["adjusted_profit"] == 18000.0
-    assert row["adjusted_margin"] == 0.18
+    assert row["costed_revenue"] == 150000.0
+    assert row["cost_coverage"] == 0.75
+    assert row["financing_cost"] == 18000.0
+    assert row["adjusted_profit"] == 12000.0
+    assert row["adjusted_margin"] == 0.08
     assert row["reason"] == financing.PARTIAL_COST
 
 
@@ -411,7 +421,8 @@ def test_the_book_is_summed_never_averaged_across_customers():
     """
     metrics = [_metric("big", "p1", "900000", "180000"),
                _metric("small", "p1", "100000", "40000")]
-    settled = _history("big", days=365) + _history("small", days=365)
+    settled = (_history("big", days=365, amount="70000")
+               + _history("small", days=365))
     totals = _build(metrics, settled)["totals"]
 
     assert totals["costed_revenue"] == 1000000.0
@@ -423,6 +434,30 @@ def test_the_book_is_summed_never_averaged_across_customers():
     assert totals["financing_drag_pp"] == 12.0
     # The mean of 0.08 and 0.28 is 0.18. It is not what came back.
     assert totals["adjusted_margin"] != pytest.approx(0.18)
+
+
+def test_a_large_unpaid_invoice_does_not_read_as_a_fast_payer():
+    """The count floor alone lets the worst account look like the best.
+
+    Six ₹10,000 invoices settled on the day, and ₹9,00,000 of revenue behind
+    them — so 93% of what this account bought in the window has not settled and
+    is not in the lag at all. ``payments`` is satisfied: six settlements clears
+    its count floor and the median lag is zero days. Charged on that lag the
+    account costs nothing to fund and heads a list titled "what your credit
+    costs", while holding more of our cash than anyone on it.
+
+    Pinned as a refusal with a named reason rather than as "not first", because
+    a ranking assertion passes for the wrong reason the moment the fixture
+    changes.
+    """
+    metrics = [_metric("slow", "p1", "900000", "180000")]
+    result = _build(metrics, _history("slow", days=0, amount="10000"))
+
+    row = _row(result, "slow")
+    assert row["financing_cost"] is None
+    assert row["reason"] == financing.THIN_SETTLED_VALUE
+    # And no days figure to finish the multiplication with.
+    assert row["days_to_pay"] is None
 
 
 # ── window alignment ────────────────────────────────────────────────────────

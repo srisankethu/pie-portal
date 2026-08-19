@@ -96,6 +96,8 @@ along on a screen every role can open.
 """
 from __future__ import annotations
 
+import math
+
 from dataclasses import dataclass
 from datetime import date
 from statistics import median
@@ -299,14 +301,62 @@ def _gap_key(gap: dict) -> tuple:
     evidence, then ``mix``'s own lift-and-confidence ordering as the tiebreak,
     so a gap this module can say nothing about keeps exactly the position the
     grid already gave it instead of being shuffled to the bottom.
+
+    **The share is read only where the pair is directional, and only to one
+    decimal place.** Two defects sat here and both inverted the order the grid
+    had already got right:
+
+    *A share the module called NO_ORDER was still sorting the list.* If a pair's
+    two directions are evenly split this module reports NO_ORDER — a
+    measurement, not a gap in the evidence — and then let the same share it had
+    just disowned outrank ``mix``'s lift. The tiebreak the paragraph above
+    promises was unreachable for any gap carrying a measured share.
+
+    *A raw share has no base behind it.* 0.90 over eight customers, which is the
+    floor, outranked 0.85 over four hundred — so the ranking preferred the pair
+    it knew least about. What sorts is therefore the **lower bound** of the
+    share, not the share: ``_wilson_lower`` puts the first at about 0.60 and the
+    second at about 0.81, which is the honest order. Banding the share to a
+    decimal was tried first and does not work — 0.90 and 0.85 round into
+    different bands, so the thin pair still won.
+
+    The bound is arithmetic over two counts and nothing else; it introduces no
+    model and no forecast. It is the same instinct ``radar`` applies by keeping
+    evidence and money on separate axes, expressed as one number here because a
+    sort key has to be one number.
     """
     seq = gap.get("sequence") or {}
     affinity = gap.get("affinity") or {}
+    directional = bool(seq.get("directional", False))
+    strength = (_wilson_lower(seq.get("after_share") or 0.0,
+                              seq.get("both") or 0)
+                if directional else 0.0)
     return (gap.get("state") != mix.LAPSED,
-            not seq.get("directional", False),
-            -(seq.get("after_share") or 0.0),
+            not directional,
+            -strength,
             -(affinity.get("lift") or 0.0),
             -(affinity.get("confidence") or 0.0))
+
+
+def _wilson_lower(share: float, base: int, *, z: float = 1.96) -> float:
+    """The lower end of a share measured over ``base`` customers.
+
+    Standard Wilson score interval, taken at its lower bound so a share the book
+    has seen eight times cannot outrank one it has seen four hundred times. Two
+    counts in, one float out — no distributional assumption about future
+    customers, and nothing here is a forecast.
+
+    Zero base is zero rather than an error: the floor above should already have
+    withheld such a pair, and a sort key is the wrong place to raise.
+    """
+    if base <= 0:
+        return 0.0
+    z2 = z * z
+    denom = 1.0 + z2 / base
+    centre = (share + z2 / (2 * base)) / denom
+    margin = (z * math.sqrt((share * (1.0 - share) + z2 / (4 * base)) / base)
+              / denom)
+    return max(0.0, centre - margin)
 
 
 def below_floor(order: list[str], pairs: dict[tuple[str, str], Pair],

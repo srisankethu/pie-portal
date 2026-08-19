@@ -54,7 +54,7 @@ profit here comes from the metric rows that carry a cost, so charging financing
 on *all* of an account's revenue would subtract the funding cost of rupees whose
 profit was never counted, and the result would read as a pricing failure when it
 is a cost-coverage gap. Every row therefore states its coverage, and an account
-whose costed share falls below ``MIN_COST_COVERAGE`` gets no adjusted figure at
+whose costed share falls below the platform's ``min_cost_coverage`` gets no adjusted figure at
 all rather than one that speaks for a minority of the relationship while
 carrying the customer's whole name.
 
@@ -95,7 +95,7 @@ no gross profit   An account with no costed revenue has an unknown margin.
                   Subtracting a real financing cost from an unknown gross
                   profit yields a confident negative, which is the benign
                   default in reverse and just as wrong.
-thin coverage     Above zero and below ``MIN_COST_COVERAGE`` — see above.
+thin coverage     Above zero and below ``min_cost_coverage`` — see above.
 
 Aggregation is Σ adjusted profit ÷ Σ costed revenue over the accounts that
 produced a figure, never the mean of their margins, and the totals name how many
@@ -141,11 +141,18 @@ WINDOW_DAYS = 365
 #: figure describes the minority of a relationship while presenting as the
 #: relationship.
 #:
-#: A module constant rather than a threshold in Settings, for the reason
-#: ``gmroi.MIN_OBSERVED_DAYS`` is one: it is not commercial policy an owner
-#: should be able to lower, and making it editable would make "produce a number
-#: for the demo" a supported operation.
-MIN_COST_COVERAGE = 0.5
+#: **Read from ``CommercialThresholds.min_cost_coverage``, not defined here.**
+#: A local constant was the first version and it was wrong twice over: it was a
+#: second copy of a floor the platform already has, and it was *looser* (0.5
+#: against 0.6), so this screen asserted a margin for accounts ``cycle`` and
+#: every other consumer of that threshold refuse to assert one for. Two floors
+#: on one question is the §2 defect, and the one that gets moved is never the
+#: one that gets read. It is published on the response so a reader can see
+#: which number judged the row.
+#:
+#: The share of an account's revenue that must carry a cost record before an
+#: adjusted margin is stated at all. Below it the figure would describe the
+#: minority of a relationship while carrying the whole account's name.
 
 #: What a row's figures rest on.
 MEASURED = "MEASURED"
@@ -156,6 +163,7 @@ PARTIAL_COST = "PARTIAL_COST"
 #: Why a row carries no adjusted figure. Four, because they want four different
 #: responses: one is time, two are clerical, one is arithmetic.
 NO_PAYMENT_HISTORY = "NO_PAYMENT_HISTORY"
+THIN_SETTLED_VALUE = "THIN_SETTLED_VALUE"
 NO_COSTED_REVENUE = "NO_COSTED_REVENUE"
 THIN_COST_COVERAGE = "THIN_COST_COVERAGE"
 NO_REVENUE = "NO_REVENUE"
@@ -174,13 +182,21 @@ REASON_MEANING: dict[str, str] = {
         "window, so how long this account takes to pay is not established. The "
         "book's median is deliberately not substituted — that would state a "
         "financing cost for the one account there is no evidence about."),
+    THIN_SETTLED_VALUE: (
+        "This account's days-to-pay is measured over settled invoices, and too "
+        "little of what it bought in the window has settled for that lag to "
+        "price the whole relationship. The unpaid balance is exactly the money "
+        "a financing charge would be about, and it is not in the measurement — "
+        "so a figure here would read fastest for the account holding the most "
+        "of our cash. Chase the open invoices and the row measures itself."),
     NO_COSTED_REVENUE: (
         "Nothing this account bought in the window has a cost record behind it, "
         "so its gross profit is unknown. Unknown, not zero: subtracting a real "
         "financing cost from it would produce a confident loss."),
     THIN_COST_COVERAGE: (
-        f"Less than {MIN_COST_COVERAGE:.0%} of this account's revenue has a cost "
-        "behind it. The figure would describe a minority of the relationship "
+        "Too little of this account's revenue has a cost behind it — the share "
+        "required is on the response as `min_cost_coverage`. The figure would "
+        "describe a minority of the relationship "
         "while carrying the whole account's name, so it is withheld and the "
         "bills are worth chasing instead."),
     NO_REVENUE: "No revenue recorded for this account inside the window.",
@@ -196,7 +212,13 @@ def financing_cost(costed_revenue: Decimal, days: int,
     here would put a rounding error into a figure somebody plans a payment run
     around.
     """
-    return costed_revenue * (Decimal(days) / YEAR_DAYS) * rate
+    # Negative days — settled before the invoice was raised, i.e. paid in
+    # advance — yield no charge rather than a credit. The module declares what
+    # it publishes to be "a floor under the cost of an account's credit, never
+    # a ceiling"; a negative charge would lift the adjusted margin ABOVE the
+    # gross margin and contradict that on the same screen. Advance payment is
+    # genuinely worth something, and pricing it is a different feature.
+    return costed_revenue * (Decimal(max(days, 0)) / YEAR_DAYS) * rate
 
 
 @dataclass(frozen=True)
@@ -364,7 +386,11 @@ def _accounts(metrics: Iterable[models.CustomerItemMetric],
               lags: dict[str, payments.Lag],
               slow: dict[str, int],
               names: dict[str, str],
-              rate: Decimal) -> list[Account]:
+              rate: Decimal,
+              *,
+              min_cost_coverage: float,
+              settled_value: dict[str, Decimal],
+              min_settled_share: float) -> list[Account]:
     """One row per customer with metric rows, refusals included."""
     by_customer: dict[str, list[models.CustomerItemMetric]] = {}
     for row in metrics:
@@ -384,10 +410,26 @@ def _accounts(metrics: Iterable[models.CustomerItemMetric],
             reason = NO_REVENUE
         elif agg.gross_profit is None or agg.costed_revenue <= _ZERO:
             reason = NO_COSTED_REVENUE
-        elif (agg.revenue_coverage or 0.0) < MIN_COST_COVERAGE:
+        elif (agg.revenue_coverage or 0.0) < min_cost_coverage:
             reason = THIN_COST_COVERAGE
         elif measured is None:
             reason = NO_PAYMENT_HISTORY
+        # ── the settled-VALUE floor, which the count floor does not give ──────
+        # ``payments`` requires a minimum NUMBER of settled invoices. That is
+        # the right floor for "is this lag established", and it is the wrong one
+        # here on its own: days-to-pay is measured over settled documents only,
+        # so an account with six small invoices paid on the day and one large
+        # one still outstanding measures as a fast payer — and the outstanding
+        # invoice IS the financing cost this screen exists to charge. The
+        # unpaid money is invisible to the numerator and to the lag alike, and
+        # the account ranks first on "profitability after financing cost".
+        # So the settled documents must also account for a real share of what
+        # the account bought in the window before their lag is allowed to
+        # price the whole of it.
+        elif (agg.revenue > _ZERO
+              and float(settled_value.get(customer_id, _ZERO) / agg.revenue)
+              < min_settled_share):
+            reason = THIN_SETTLED_VALUE
         elif agg.costed_revenue < agg.revenue:
             reason = PARTIAL_COST
         else:
@@ -514,7 +556,7 @@ def build(*, metrics: Iterable[models.CustomerItemMetric],
             "metrics_computed_at": _computed_at(rows),
             "reason_meanings": REASON_MEANING,
             "min_settlements": payments.MIN_SETTLEMENTS,
-            "min_cost_coverage": MIN_COST_COVERAGE,
+            "min_cost_coverage": thresholds.min_cost_coverage,
             "unavailable": _unavailable(rate_set=False, counts={}),
             "thresholds_version": thresholds.version,
         }
@@ -529,7 +571,19 @@ def build(*, metrics: Iterable[models.CustomerItemMetric],
     lags = payments.lags(in_window)
     slow = _slow_days(in_window, lags)
 
-    accounts = _accounts(rows, lags, slow, names, rate)
+    # Settled value per party inside the window, for the value floor beside
+    # ``payments``' count floor. Summed here rather than inside ``_accounts``
+    # so the window filter is applied exactly once, to one list.
+    settled_value: dict[str, Decimal] = {}
+    for s_row in in_window:
+        settled_value[s_row.party_id] = (settled_value.get(s_row.party_id, _ZERO)
+                                         + Decimal(str(s_row.amount)))
+
+    accounts = _accounts(
+        rows, lags, slow, names, rate,
+        min_cost_coverage=thresholds.min_cost_coverage,
+        settled_value=settled_value,
+        min_settled_share=thresholds.financing_min_settled_share)
     by_margin = _rank(accounts, lambda a: a.gross_margin)
     by_adjusted = _rank(accounts, lambda a: a.adjusted_margin)
 
@@ -560,7 +614,7 @@ def build(*, metrics: Iterable[models.CustomerItemMetric],
         "metrics_computed_at": _computed_at(rows),
         "reason_meanings": REASON_MEANING,
         "min_settlements": payments.MIN_SETTLEMENTS,
-        "min_cost_coverage": MIN_COST_COVERAGE,
+        "min_cost_coverage": thresholds.min_cost_coverage,
         "unavailable": _unavailable(rate_set=True, counts=counts),
         "thresholds_version": thresholds.version,
     }

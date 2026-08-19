@@ -481,3 +481,43 @@ def test_a_salesperson_gets_the_ordering_and_still_no_money(client):
     offenders = [k for k in _keys(block)
                  if any(w in k.rsplit(".", 1)[-1].lower() for w in MONEY_WORDS)]
     assert not offenders, offenders
+
+
+def test_a_thin_pair_does_not_outrank_a_thick_one_on_a_raw_share():
+    """The ranking reads the share to one decimal, then the base.
+
+    0.90 over the eight customers that scrape the floor against 0.85 over four
+    hundred: on a raw share the thin pair wins, so the list leads with the pair
+    the book knows least about and inverts the order ``mix`` already produced.
+    Banded, the two land on one rung and the base decides.
+
+    Asserted on the key rather than through a built grid because the key is the
+    whole behaviour, and a fixture large enough to show it would be asserting on
+    four hundred synthetic customers to test one comparison.
+    """
+    thin = {"state": mix.NEVER,
+            "sequence": {"directional": True, "after_share": 0.90, "both": 8},
+            "affinity": {"lift": 1.0, "confidence": 0.5}}
+    thick = {"state": mix.NEVER,
+             "sequence": {"directional": True, "after_share": 0.85, "both": 400},
+             "affinity": {"lift": 1.0, "confidence": 0.5}}
+
+    assert adoption._gap_key(thick) < adoption._gap_key(thin)
+
+
+def test_a_directionless_pair_falls_through_to_the_grids_own_order():
+    """NO_ORDER is a measurement, and a share the module disowned must not sort.
+
+    Both pairs carry a share; only one is directional. The directionless one has
+    the higher share and the higher lift, and it must still rank below — its
+    share is not evidence of an order, and letting it sort was what made the
+    lift tiebreak unreachable for any gap carrying a measured share.
+    """
+    directional = {"state": mix.NEVER,
+                   "sequence": {"directional": True, "after_share": 0.7, "both": 20},
+                   "affinity": {"lift": 1.0, "confidence": 0.5}}
+    no_order = {"state": mix.NEVER,
+                "sequence": {"directional": False, "after_share": 0.95, "both": 20},
+                "affinity": {"lift": 9.0, "confidence": 0.9}}
+
+    assert adoption._gap_key(directional) < adoption._gap_key(no_order)

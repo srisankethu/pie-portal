@@ -339,6 +339,21 @@ class CommercialThresholds:
     # divides straight back to the revenue it was levied on. Both the reading it
     # feeds and the Settings screen that edits it are manager-or-owner only.
     cost_of_capital_annual_pct: Optional[float] = None
+    # How much of what an account bought in the window must have SETTLED before
+    # its measured days-to-pay is allowed to price the whole relationship.
+    #
+    # ``payments`` already refuses a lag below a minimum NUMBER of settled
+    # invoices, and that is the right floor for "is this lag established". It is
+    # the wrong floor on its own for a financing charge, because days-to-pay is
+    # measured over settled documents only: an account with six small invoices
+    # paid on the day and one large one still outstanding measures as a fast
+    # payer, and the outstanding invoice is exactly the money the charge is
+    # about. Without this the screen ranks the account holding the most of our
+    # cash as the cheapest to serve.
+    #
+    # Inside the version hash like every other floor, so a figure computed last
+    # quarter can say what rule produced it.
+    financing_min_settled_share: float = 0.4
 
     # ── statutory payment timing (MSMED s.15 / income-tax s.43B(h)) ──────────
     #

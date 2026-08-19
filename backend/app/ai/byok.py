@@ -2,9 +2,9 @@
 
 The environment variables (``AI_PROVIDER``, ``ANTHROPIC_API_KEY``, …) configure
 the *deployment*; this module lets one organization configure *itself* — enter
-its own Anthropic, OpenAI or Gemini key from Settings, choose which of them
-runs, and fall back to the deployment default by choosing nothing. Resolution
-order everywhere is therefore: organization's active BYOK provider, then the
+its own Anthropic, OpenAI, Gemini or OpenRouter key from Settings, choose which
+of them runs, and fall back to the deployment default by choosing nothing.
+Resolution order everywhere is therefore: organization's active BYOK provider, then the
 environment, then the offline mock — and, like ``select_provider``, nothing
 here lets a misconfiguration escalate into an error page.
 
@@ -33,7 +33,10 @@ from ..config import settings
 from ..domain import models
 
 #: The providers an organization may bring a key for, in display order.
-PROVIDERS: tuple[str, ...] = ("anthropic", "openai", "gemini")
+#: OpenRouter is last because it is a gateway rather than a lab: one key reaches
+#: models from all three of the others, so the model an organization names
+#: against it matters more than it does anywhere else on this list.
+PROVIDERS: tuple[str, ...] = ("anthropic", "openai", "gemini", "openrouter")
 
 _ACTIVE_KEY = "ai_provider"
 
@@ -54,7 +57,8 @@ def default_model(provider: str) -> str:
     _require_provider(provider)
     return {"anthropic": settings.AI_MODEL,
             "openai": settings.OPENAI_MODEL,
-            "gemini": settings.GEMINI_MODEL}[provider]
+            "gemini": settings.GEMINI_MODEL,
+            "openrouter": settings.OPENROUTER_MODEL}[provider]
 
 
 def env_key_name(provider: str) -> str:
@@ -63,7 +67,8 @@ def env_key_name(provider: str) -> str:
     _require_provider(provider)
     return {"anthropic": "ANTHROPIC_API_KEY",
             "openai": "OPENAI_API_KEY",
-            "gemini": "GEMINI_API_KEY"}[provider]
+            "gemini": "GEMINI_API_KEY",
+            "openrouter": "OPENROUTER_API_KEY"}[provider]
 
 
 def env_key_present(provider: str) -> bool:
@@ -71,7 +76,8 @@ def env_key_present(provider: str) -> bool:
     _require_provider(provider)
     return bool({"anthropic": settings.ANTHROPIC_API_KEY,
                  "openai": settings.OPENAI_API_KEY,
-                 "gemini": settings.GEMINI_API_KEY}[provider])
+                 "gemini": settings.GEMINI_API_KEY,
+                 "openrouter": settings.OPENROUTER_API_KEY}[provider])
 
 
 # ── keys ────────────────────────────────────────────────────────────────────

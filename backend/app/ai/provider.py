@@ -1,11 +1,12 @@
 """AI provider boundary — a thin, swappable seam (no framework, no agent).
 
-``AIProvider.complete(system, user) -> raw_text`` is the entire contract. Four
+``AIProvider.complete(system, user) -> raw_text`` is the entire contract. Five
 implementations: ``MockProvider`` (deterministic, offline — dev/test default)
-and three live ones — ``AnthropicProvider``, ``OpenAIProvider``,
-``GeminiProvider``. Selection is config-driven, at two levels: an organization
-that stored its own key and chose a provider (ai/byok.py) gets that one;
-otherwise the deployment's ``AI_PROVIDER`` decides, exactly as before.
+and four live ones — ``AnthropicProvider``, ``OpenAIProvider``,
+``GeminiProvider`` and ``OpenRouterProvider`` (a gateway onto many of them).
+Selection is config-driven, at two levels: an organization that stored its own
+key and chose a provider (ai/byok.py) gets that one; otherwise the deployment's
+``AI_PROVIDER`` decides, exactly as before.
 
 **Selection never raises.** ``AI_PROVIDER=anthropic`` with no key used to raise
 out of ``AnthropicProvider.__init__``, through ``select_provider()``, and out of
@@ -57,6 +58,9 @@ def _provider_class(name: str):
     if name == "gemini":
         from .gemini_provider import GeminiProvider
         return GeminiProvider
+    if name == "openrouter":
+        from .openrouter_provider import OpenRouterProvider
+        return OpenRouterProvider
     return None
 
 
@@ -135,8 +139,9 @@ def _env_status() -> dict:
             "source": "environment",
             "detail": ("AI_PROVIDER is not a live provider. Decision narratives "
                        "come from the offline mock, which reads the same facts "
-                       "but is not a model. Set AI_PROVIDER to anthropic, openai "
-                       "or gemini and the matching API key to run a real one — "
+                       "but is not a model. Set AI_PROVIDER to anthropic, openai, "
+                       "gemini or openrouter and the matching API key to run a "
+                       "real one — "
                        "or store an organization key under Settings → AI layer."),
         }
     from . import byok

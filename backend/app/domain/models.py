@@ -455,7 +455,8 @@ class AIProviderKey(Base):
     key_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
     organization_id: Mapped[str] = mapped_column(
         String(64), ForeignKey("organizations.organization_id"), index=True)
-    # "anthropic" | "openai" | "gemini" — validated in ai/byok.py, not here:
+    # "anthropic" | "openai" | "gemini" | "openrouter" — validated in
+    # ai/byok.py, not here:
     # the domain layer stores facts, it does not make decisions.
     provider: Mapped[str] = mapped_column(String(32))
     api_key_encrypted: Mapped[str] = mapped_column(String(2048))

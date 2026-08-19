@@ -415,6 +415,14 @@ class Settings:
     GEMINI_API_BASE: str = os.environ.get(
         "GEMINI_API_BASE", "https://generativelanguage.googleapis.com")
     GEMINI_MODEL: str = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+    # OpenRouter is a gateway rather than a lab: one key, an OpenAI-compatible
+    # Chat Completions endpoint, and a model id that names the upstream vendor
+    # ("openai/gpt-4o", "anthropic/claude-sonnet-4"). That makes the model the
+    # setting worth changing, so the default is stated as a fully qualified id.
+    OPENROUTER_API_KEY: str = os.environ.get("OPENROUTER_API_KEY", "")
+    OPENROUTER_API_BASE: str = os.environ.get(
+        "OPENROUTER_API_BASE", "https://openrouter.ai/api")
+    OPENROUTER_MODEL: str = os.environ.get("OPENROUTER_MODEL", "openai/gpt-4o-mini")
     # Priority banding (deterministic base + bounded AI adjustment).
     PRIORITY_HIGH_AT: int = int(os.environ.get("PRIORITY_HIGH_AT", "70"))
     PRIORITY_MEDIUM_AT: int = int(os.environ.get("PRIORITY_MEDIUM_AT", "40"))

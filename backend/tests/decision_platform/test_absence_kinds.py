@@ -21,7 +21,8 @@ import pathlib
 
 import pytest
 
-from app.commercial.insight import absence, bonds, dependency, mix, schemes
+from app.commercial.insight import (absence, adoption, bonds, dependency,
+                                    mix, outcomes, schemes)
 from app.commercial.insight import simulate as sim
 from app.commercial.insight import stock as _stock
 from app.commercial.insight import supply as _supply
@@ -75,10 +76,13 @@ def _every_produced_entry() -> list[tuple[str, dict]]:
     add("supply(some promised)", _supply._unavailable(2, 5))
     add("dependency", dependency.unavailable())
     add("mix", mix.unavailable())
+    add("adoption", adoption.unavailable())
     add("bonds(customer)", bonds.unavailable(bonds.CUSTOMER, has_reliability=False))
     add("bonds(vendor)", bonds.unavailable(bonds.VENDOR, has_reliability=False))
     add("bonds(vendor, reliable)", bonds.unavailable(bonds.VENDOR,
                                                      has_reliability=True))
+    add("outcomes(win rate against a competitor)",
+        [outcomes.win_rate_against_unavailable()])
     add("simulate", list(sim.UNAVAILABLE))
     add("schemes", list(schemes.REFUSALS.values()))
     return produced

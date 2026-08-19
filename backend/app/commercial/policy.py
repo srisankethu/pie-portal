@@ -47,6 +47,7 @@ EDITABLE: tuple[str, ...] = (
     "price_rounding_increment",
     "carrying_cost_annual_pct",
     "carrying_rate_is_published",
+    "cost_of_capital_annual_pct",
     "dead_stock_days",
     "slow_stock_days",
     "receivable_exposure_share",
@@ -194,6 +195,14 @@ FIELD_HELP: dict[str, tuple[str, str]] = {
         "How far ahead the MSME watchlist looks. Bills whose deadline has "
         "already passed are always listed, however old — a deadline that has "
         "gone by does not stop mattering."),
+    "cost_of_capital_annual_pct": (
+        "Annual cost of capital",
+        "What a rupee lent to a customer costs to fund for a year, as a "
+        "fraction — the money alone, not the carrying cost of stock above, "
+        "which also pays for the warehouse. Leave it empty if it has not been "
+        "decided: the financing-adjusted customer reading then computes "
+        "nothing and says this is why, rather than charging receivables at a "
+        "rate nobody chose. It is never shown to a salesperson."),
     "effective_tax_rate": (
         "Effective tax rate",
         "Used only to estimate what a disallowed deduction costs. Leave it "
@@ -239,7 +248,8 @@ _DAY_COUNTS = frozenset({"dead_stock_days", "slow_stock_days",
 #: Fields whose *absence* is a meaningful answer, so clearing one has to be
 #: possible. Everything else coerces a blank to a number, which for these would
 #: silently invent the value the field exists to withhold.
-_NULLABLE_RATES = frozenset({"effective_tax_rate"})
+_NULLABLE_RATES = frozenset({"effective_tax_rate",
+                            "cost_of_capital_annual_pct"})
 
 
 class PolicyError(ValueError):
@@ -432,6 +442,16 @@ def validate(th: CommercialThresholds) -> None:
             f"The effective tax rate must be a fraction between 0 and 1 "
             f"(0.25 is 25%), or left unset if it has not been decided — got "
             f"{th.effective_tax_rate}")
+    # Same shape as the tax rate above, and zero is refused for the same
+    # reason: a zero cost of capital is not "we borrow for nothing", it is an
+    # owner who meant to clear the field and instead published the claim that
+    # customer credit is free.
+    if th.cost_of_capital_annual_pct is not None and not (
+            0 < th.cost_of_capital_annual_pct < 1):
+        raise PolicyError(
+            f"The cost of capital must be a fraction between 0 and 1 (0.10 is "
+            f"10% a year), or left unset if it has not been decided — got "
+            f"{th.cost_of_capital_annual_pct}")
     if th.s194q_party_threshold < 0:
         raise PolicyError("The 194Q party threshold cannot be negative")
 

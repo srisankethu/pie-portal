@@ -13,6 +13,12 @@ venv/
 .verify-stamp
 .claude/.verify-nag
 
+# Scratch git worktrees created by isolated agent runs. Transient by design and
+# removed when the run ends, but a stop-hook or a `git add -A` will otherwise
+# try to commit them — and a git worktree checked in as ordinary files inside
+# its own repository is a wound that takes a while to notice.
+.claude/worktrees/
+
 # Generated PIE catalog (built from pie-parser corpus via scripts/build_catalog.py)
 backend/data/products.jsonl
 backend/data/*.jsonl

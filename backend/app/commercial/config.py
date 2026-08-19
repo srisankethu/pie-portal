@@ -123,6 +123,39 @@ class CommercialThresholds:
     meaningful_price_change_pct: float = 0.02
     meaningful_volume_change_pct: float = 0.15
 
+    # ── how far a cost move has to be before it can carry a division ─────────
+    #
+    # ``metrics.pass_through`` divides the realised price move by the cost move
+    # that provoked it, and a denominator near zero is the one input that turns
+    # an ordinary relationship into a headline. A ₹0.40 cost drift with a ₹12
+    # price rise behind it is a 30x "pass-through" that says nothing about
+    # pricing power and everything about rounding in a supplier's invoice.
+    #
+    # So a cost move smaller than this share of the baseline cost is not a small
+    # ratio, it is *no ratio* — the relationship refuses with
+    # ``COST_MOVE_IMMATERIAL`` rather than producing a number that would sort to
+    # the top of every list. Deliberately larger than
+    # ``meaningful_price_change_pct`` (0.02) and smaller than
+    # ``meaningful_cost_increase_pct`` (0.05): this is not asking whether a cost
+    # move is worth acting on, only whether it is big enough to divide by.
+    #
+    # In the version hash like every other threshold, because moving it changes
+    # which relationships have a figure at all — and a screen that silently
+    # gained forty rows between two quarters is one nobody can reconcile.
+    pass_through_min_cost_move_pct: float = 0.03
+    # The same guard, one level up. A category's pass-through is Σ price move ÷
+    # Σ cost move in money, and those are signed: one item's cost rising and
+    # another's falling can net to almost nothing while both were individually
+    # material. The ratio then explodes for a reason that has nothing to do with
+    # how this customer negotiates.
+    #
+    # So the net cost move must be at least this share of the gross (Σ of the
+    # absolute moves) before the roll-up is reported. Below it the group refuses
+    # with ``OFFSETTING_COST_MOVES`` and the item rows are still shown — the
+    # facts survive, the composite does not. 0.5 says the movement has to point
+    # one way more than it points both ways.
+    pass_through_min_net_cost_move_share: float = 0.5
+
     # ── economic materiality ─────────────────────────────────────────────────
     # Rupees. A gap below this is real but not worth anyone's afternoon, and
     # prioritising by percentage instead of dsize is how teams end up working
@@ -277,6 +310,50 @@ class CommercialThresholds:
     #: it happens. It is part of the thresholds version, so a screen rendered
     #: before and after the change is distinguishable.
     carrying_rate_is_published: bool = False
+
+    # ── cost of capital ──────────────────────────────────────────────────────
+    #
+    # What a rupee of *customer credit* costs to fund for a year, as a fraction.
+    # **RESTRICTED, and owner-set with no default — this is deliberately
+    # ``None``.**
+    #
+    # Not the same number as ``carrying_cost_annual_pct`` above and not a
+    # duplicate of it. That one is the all-in cost of holding *stock*: interest
+    # on the money plus warehousing, insurance and obsolescence. A receivable
+    # occupies no shelf and cannot go out of date; charging it the stock rate
+    # would bill an invoice for floor space. What is left when those halves come
+    # off is the money alone, which is what a receivable actually costs, and it
+    # is a different figure — a business borrowing at 9% and writing stock down
+    # at 3% has one rate here and another there.
+    #
+    # No default for the reason ``effective_tax_rate`` below has none: three
+    # entities with possibly three lenders sit behind this platform, and a
+    # plausible-looking 0.10 would be a made-up number driving a figure somebody
+    # plans a payment run around. Left unset, ``insight/financing`` computes
+    # nothing at all and names this field as what is missing — it does not fall
+    # back to the carrying rate, which would silently charge receivables for
+    # warehousing.
+    #
+    # RESTRICTED for the reason the carrying rate is: it is one
+    # organization-wide constant, so anyone holding it and one financing figure
+    # divides straight back to the revenue it was levied on. Both the reading it
+    # feeds and the Settings screen that edits it are manager-or-owner only.
+    cost_of_capital_annual_pct: Optional[float] = None
+    # How much of what an account bought in the window must have SETTLED before
+    # its measured days-to-pay is allowed to price the whole relationship.
+    #
+    # ``payments`` already refuses a lag below a minimum NUMBER of settled
+    # invoices, and that is the right floor for "is this lag established". It is
+    # the wrong floor on its own for a financing charge, because days-to-pay is
+    # measured over settled documents only: an account with six small invoices
+    # paid on the day and one large one still outstanding measures as a fast
+    # payer, and the outstanding invoice is exactly the money the charge is
+    # about. Without this the screen ranks the account holding the most of our
+    # cash as the cheapest to serve.
+    #
+    # Inside the version hash like every other floor, so a figure computed last
+    # quarter can say what rule produced it.
+    financing_min_settled_share: float = 0.4
 
     # ── statutory payment timing (MSMED s.15 / income-tax s.43B(h)) ──────────
     #
@@ -561,6 +638,47 @@ class CommercialThresholds:
     # their unplaced items stay honestly uncategorised.
     vendor_category_dominance: float = 0.7
 
+    # ── how much of the cycle a collections push is asked to move ────────────
+    #
+    # ``insight/capital`` turns the measured cycle into money: a day off DSO
+    # releases one day of billings, so a five-day improvement is a figure
+    # somebody can take to a funding conversation. These are the reductions it
+    # prices.
+    #
+    # Policy rather than presentation, and therefore inside ``version``. What
+    # counts as an achievable improvement is a commercial judgement about this
+    # book's customers, and the same rupee figure computed against a different
+    # grid is a different claim about what the business could do. A screen that
+    # said "₹18L released" without the version saying which reduction produced
+    # it would be unexplainable a quarter later.
+    #
+    # Days rather than a percentage, because DSO is a duration and a collections
+    # conversation is held in days. Tuple, not a list, so the dataclass stays
+    # frozen, hashable and JSON-stable for the version hash — the shape
+    # ``quantity_band_edges`` uses and for the same reason.
+    capital_dso_reduction_days: tuple[int, ...] = (5, 10, 15)
+
+    # ── ordering the cross-sell gaps by observed adoption sequence ───────────
+    #
+    # ``insight/adoption`` counts, for every ordered pair of lines, how many
+    # customers took the second after the first. Both figures below are evidence
+    # floors rather than commercial policy, which is why neither is in
+    # ``policy.EDITABLE``: an owner should not be able to make an empty ranking
+    # produce output by lowering the bar it failed. They are in the version hash
+    # for the opposite reason — a ranking computed last quarter has to be able
+    # to say what rule produced it.
+    #
+    # Fewer customers than this holding *both* lines and the share is a
+    # coincidence with a percentage sign on it, so the pair reports nothing at
+    # all. Higher than ``mix``'s own affinity floor on purpose: this one counts
+    # the intersection of two lines rather than the holders of one, and the
+    # intersection is always the smaller number.
+    crosssell_min_base_customers: int = 8
+    # And the order has to be one-sided enough to be worth calling an order. At
+    # 0.6, a pair split evenly between the two directions reports NO_ORDER —
+    # which is a measurement — instead of ranking a gap on a coin toss.
+    crosssell_min_sequence_share: float = 0.6
+
     @classmethod
     def from_env(cls) -> "CommercialThresholds":
         return cls(
@@ -574,6 +692,13 @@ class CommercialThresholds:
             carrying_rate_is_published=(
                 os.environ.get("CI_CARRYING_RATE_IS_PUBLISHED", "").strip().lower()
                 in ("1", "true", "yes")),
+            # Unset stays unset, exactly as ``effective_tax_rate`` below.
+            # ``_f`` would turn a missing variable into a number, and the whole
+            # point of this one being ``None`` is that there is none to invent.
+            cost_of_capital_annual_pct=(
+                float(os.environ["CI_COST_OF_CAPITAL_ANNUAL_PCT"])
+                if os.environ.get("CI_COST_OF_CAPITAL_ANNUAL_PCT", "").strip()
+                else _default("cost_of_capital_annual_pct")),
             msme_default_days=_i("CI_MSME_DEFAULT_DAYS",
                                  _default("msme_default_days")),
             msme_max_agreed_days=_i("CI_MSME_MAX_AGREED_DAYS",
@@ -621,6 +746,12 @@ class CommercialThresholds:
             meaningful_cost_increase_pct=_f("CI_MEANINGFUL_COST_INCREASE_PCT", 0.05),
             meaningful_price_change_pct=_f("CI_MEANINGFUL_PRICE_CHANGE_PCT", 0.02),
             meaningful_volume_change_pct=_f("CI_MEANINGFUL_VOLUME_CHANGE_PCT", 0.15),
+            pass_through_min_cost_move_pct=_f(
+                "CI_PASS_THROUGH_MIN_COST_MOVE_PCT",
+                _default("pass_through_min_cost_move_pct")),
+            pass_through_min_net_cost_move_share=_f(
+                "CI_PASS_THROUGH_MIN_NET_COST_MOVE_SHARE",
+                _default("pass_through_min_net_cost_move_share")),
             min_material_gap=_f("CI_MIN_MATERIAL_GAP", 10_000.0),
             min_transactions=_i("CI_MIN_TRANSACTIONS", 3),
             min_transactions_strong=_i("CI_MIN_TRANSACTIONS_STRONG", 6),
@@ -646,6 +777,12 @@ class CommercialThresholds:
             min_band_transactions=_i("CI_MIN_BAND_TRANSACTIONS", 2),
             min_quote_exception_impact=_f("CI_MIN_QUOTE_EXCEPTION_IMPACT", 500.0),
             quote_price_tolerance_pct=_f("CI_QUOTE_PRICE_TOLERANCE_PCT", 0.02),
+            crosssell_min_base_customers=_i(
+                "CI_CROSSSELL_MIN_BASE_CUSTOMERS",
+                _default("crosssell_min_base_customers")),
+            crosssell_min_sequence_share=_f(
+                "CI_CROSSSELL_MIN_SEQUENCE_SHARE",
+                _default("crosssell_min_sequence_share")),
         )
 
     # ── pricing-policy lookups ───────────────────────────────────────────────

@@ -83,8 +83,18 @@ select = [
 # The alternative is a third copy of the quote client fixture, which CLAUDE.md §2
 # calls out by name.
 #
-# Scoped to this one file rather than to `backend/tests/**`, because F811 in a
-# test file otherwise earns its keep: two test functions with the same name are
-# not a style issue — the second silently replaces the first, and the one that
-# stops running is the one nobody notices.
+# Scoped to the files that do it rather than to `backend/tests/**`, because F811
+# in a test file otherwise earns its keep: two test functions with the same name
+# are not a style issue — the second silently replaces the first, and the one
+# that stops running is the one nobody notices.
 "backend/tests/test_frontend_contract.py" = ["F811"]
+# `test_capital` borrows `two_books` from `test_cash_cycle` for the same reason:
+# the capital series is replayed from the cycle's own month ends, so the two
+# files describe one replay and a second copy of that fixture would be the pair
+# that drifts.
+"backend/tests/decision_platform/test_capital.py" = ["F811"]
+# `test_entity_routing` borrows the same `two_books` client, for the same
+# reason again: the routing screen files a customer, a vendor and a bill into
+# the connected company they belong to, which is the resolution that fixture
+# exists to exercise. A third copy of it would be the one that drifts.
+"backend/tests/decision_platform/test_entity_routing.py" = ["F811"]

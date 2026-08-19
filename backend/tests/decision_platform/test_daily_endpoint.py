@@ -96,7 +96,7 @@ def test_choosing_today_counts_document_dates_not_the_sync_that_just_ran(client)
         # The whole book arrives in one sync "now": an old invoice and one
         # genuinely dated today. Both have created_at == now.
         # The org the fixture actually seeded, not a literal. This read
-        # `"org_sanketh"` when the branch was written, and #95 renamed the
+        # `"org_pie"` when the branch was written, and #95 renamed the
         # default organization to `org_pie` while the branch sat unmerged — so
         # the rows landed in an organization that no longer exists, the endpoint
         # correctly found nothing, and the test failed claiming the *feature*

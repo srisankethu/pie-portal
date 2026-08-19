@@ -336,38 +336,23 @@ def build(*, invoices: Iterable[Document], receipts: Iterable[Applied],
 
     invoice_rows = list(invoices)
     bill_rows = list(bills)
-    known_invoices = {d.ref for d in invoice_rows}
-    known_bills = {d.ref for d in bill_rows}
+    sold_rows = list(sold)
+    held_rows = list(held)
 
-    receivable_applied, receivable_unmatched = _split(
-        list(receipts) + list(credits), known_invoices)
-    payable_applied, payable_unmatched = _split(list(bill_payments), known_bills)
-
-    by_book: dict[str, dict] = {}
-    for connection_id, label in books.items():
-        by_book[connection_id] = _one(
-            label=label,
-            invoices=[d for d in invoice_rows if d.book == connection_id],
-            receivable_applied=[a for a in receivable_applied
-                                if a.book == connection_id],
-            receivable_unmatched=[a for a in receivable_unmatched
-                                  if a.book == connection_id],
-            bills=[d for d in bill_rows if d.book == connection_id],
-            payable_applied=[a for a in payable_applied
-                             if a.book == connection_id],
-            payable_unmatched=[a for a in payable_unmatched
-                               if a.book == connection_id],
-            sold=[s for s in sold if s.book == connection_id],
-            held=[h for h in held if h.book == connection_id],
-            span=span, points=points, window_months=window_months,
-            thresholds=thresholds)
+    by_book = {
+        connection_id: _render(one) for connection_id, one in _replay(
+            invoices=invoice_rows, receipts=receipts, credits=credits,
+            bills=bill_rows, bill_payments=bill_payments, sold=sold_rows,
+            held=held_rows, books=books, span=span, points=points,
+            window_months=window_months, thresholds=thresholds).items()
+    }
 
     placed = set(books)
     unattributed = {
         "invoices": sum(1 for d in invoice_rows if d.book not in placed),
         "bills": sum(1 for d in bill_rows if d.book not in placed),
-        "sale_lines": sum(1 for s in sold if s.book not in placed),
-        "stock_lines": sum(1 for h in held if h.book not in placed),
+        "sale_lines": sum(1 for s in sold_rows if s.book not in placed),
+        "stock_lines": sum(1 for h in held_rows if h.book not in placed),
     }
 
     entities = sorted(
@@ -382,7 +367,7 @@ def build(*, invoices: Iterable[Document], receipts: Iterable[Applied],
         "definition": _definition(thresholds),
         "basis": _basis(),
         "unattributed": unattributed,
-        "unavailable": _unavailable(held=list(held)),
+        "unavailable": _unavailable(held=held_rows),
         "min_cost_coverage": thresholds.min_cost_coverage,
         "thresholds_version": thresholds.version,
     }
@@ -400,12 +385,98 @@ def _split(rows: list[Applied],
     return matched, [a for a in rows if a.document_ref not in known]
 
 
-def _one(*, label: str, invoices: list[Document],
+@dataclass(frozen=True)
+class Replay:
+    """One book's month-end rows, before anything renders them.
+
+    Lifted out because a second consumer now exists. ``insight/capital`` asks
+    what the cycle *costs* — the money standing in it, what that money earns,
+    and what a rupee of extra revenue would add to it — and every one of those
+    is arithmetic over exactly these rows. A module that re-read the documents
+    to rebuild them would be a second reconstruction of the same positions, and
+    the day the two disagreed there would be no way to say which screen was
+    wrong.
+
+    So the split is between *replaying* and *rendering*, not between two views.
+    ``months`` carries ``Decimal`` positions and ``Optional`` legs; ``_render``
+    turns them into the floats a chart wants. Money arithmetic happens on this
+    side of that line, never on the rounded numbers.
+    """
+
+    connection_id: str
+    label: str
+    months: list[Month]
+    receivable_from: Optional[date]
+    payable_from: Optional[date]
+    observation_days: tuple[date, ...]
+    counts: dict[str, int]
+
+
+def replay(*, invoices: Iterable[Document], receipts: Iterable[Applied],
+           credits: Iterable[Applied], bills: Iterable[Document],
+           bill_payments: Iterable[Applied], sold: Iterable[Sold],
+           held: Iterable[Held], books: dict[str, str], as_of: date,
+           thresholds: CommercialThresholds, months: int = DEFAULT_MONTHS,
+           window_months: int = WINDOW_MONTHS) -> dict[str, Replay]:
+    """The month-end rows ``build`` renders, per connected company.
+
+    Same inputs, same window arithmetic, same refusals — this is the half of
+    ``build`` that decides what is true, without the half that decides how it
+    prints. A caller wanting the cycle for a screen wants ``build``; a caller
+    computing something *from* the cycle wants this, so that whatever it derives
+    inherits every refusal rather than reproducing a subset of them.
+    """
+    span = periods.months_back(as_of, months + window_months - 1)
+    return _replay(invoices=list(invoices), receipts=receipts, credits=credits,
+                   bills=list(bills), bill_payments=bill_payments,
+                   sold=list(sold), held=list(held), books=books, span=span,
+                   points=span[window_months - 1:], window_months=window_months,
+                   thresholds=thresholds)
+
+
+def _replay(*, invoices: list[Document], receipts: Iterable[Applied],
+            credits: Iterable[Applied], bills: list[Document],
+            bill_payments: Iterable[Applied], sold: list[Sold],
+            held: list[Held], books: dict[str, str],
+            span: list[periods.Period], points: list[periods.Period],
+            window_months: int,
+            thresholds: CommercialThresholds) -> dict[str, Replay]:
+    """Bucket every input by the book it belongs to, then replay each book."""
+    known_invoices = {d.ref for d in invoices}
+    known_bills = {d.ref for d in bills}
+
+    receivable_applied, receivable_unmatched = _split(
+        list(receipts) + list(credits), known_invoices)
+    payable_applied, payable_unmatched = _split(list(bill_payments), known_bills)
+
+    return {
+        connection_id: _one(
+            connection_id=connection_id,
+            label=label,
+            invoices=[d for d in invoices if d.book == connection_id],
+            receivable_applied=[a for a in receivable_applied
+                                if a.book == connection_id],
+            receivable_unmatched=[a for a in receivable_unmatched
+                                  if a.book == connection_id],
+            bills=[d for d in bills if d.book == connection_id],
+            payable_applied=[a for a in payable_applied
+                             if a.book == connection_id],
+            payable_unmatched=[a for a in payable_unmatched
+                               if a.book == connection_id],
+            sold=[s for s in sold if s.book == connection_id],
+            held=[h for h in held if h.book == connection_id],
+            span=span, points=points, window_months=window_months,
+            thresholds=thresholds)
+        for connection_id, label in books.items()
+    }
+
+
+def _one(*, connection_id: str, label: str, invoices: list[Document],
          receivable_applied: list[Applied], receivable_unmatched: list[Applied],
          bills: list[Document], payable_applied: list[Applied],
          payable_unmatched: list[Applied], sold: list[Sold], held: list[Held],
          span: list[periods.Period], points: list[periods.Period],
-         window_months: int, thresholds: CommercialThresholds) -> dict:
+         window_months: int, thresholds: CommercialThresholds) -> Replay:
     """One company's series, and the boundary it is believable from."""
     receivable_from = _reliable_from(invoices, receivable_unmatched)
     payable_from = _reliable_from(bills, payable_unmatched)
@@ -432,11 +503,27 @@ def _one(*, label: str, invoices: list[Document],
         _dio(row)
         rows.append(row)
 
+    return Replay(
+        connection_id=connection_id, label=label, months=rows,
+        receivable_from=receivable_from, payable_from=payable_from,
+        observation_days=tuple(sorted(observations)),
+        counts={
+            "invoices": len(invoices),
+            "bills": len(bills),
+            "receivable_applications_unmatched": len(receivable_unmatched),
+            "payable_applications_unmatched": len(payable_unmatched),
+            "stock_observation_days": len(observations),
+        })
+
+
+def _render(one: Replay) -> dict:
+    """One replayed company as the series a screen reads."""
+    rows = one.months
     stated = [r for r in rows if r.ccc is not None]
     latest = stated[-1] if stated else None
     previous = stated[-2] if len(stated) > 1 else None
     return {
-        "label": label,
+        "label": one.label,
         "months": [r.to_dict() for r in rows],
         # The two numbers a reader acts on, lifted out rather than left to be
         # found at the end of an array. `change_days` is days, not percentage
@@ -454,19 +541,13 @@ def _one(*, label: str, invoices: list[Document],
                         and latest.ccc is not None and previous.ccc is not None
                         else None),
         "months_stated": len(stated),
-        "receivables_reliable_from": (receivable_from.isoformat()
-                                      if receivable_from else None),
-        "payables_reliable_from": (payable_from.isoformat()
-                                   if payable_from else None),
-        "stock_observed_from": (min(observations).isoformat()
-                                if observations else None),
-        "counts": {
-            "invoices": len(invoices),
-            "bills": len(bills),
-            "receivable_applications_unmatched": len(receivable_unmatched),
-            "payable_applications_unmatched": len(payable_unmatched),
-            "stock_observation_days": len(observations),
-        },
+        "receivables_reliable_from": (one.receivable_from.isoformat()
+                                      if one.receivable_from else None),
+        "payables_reliable_from": (one.payable_from.isoformat()
+                                   if one.payable_from else None),
+        "stock_observed_from": (one.observation_days[0].isoformat()
+                                if one.observation_days else None),
+        "counts": dict(one.counts),
     }
 
 

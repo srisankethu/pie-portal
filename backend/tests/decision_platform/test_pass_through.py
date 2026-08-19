@@ -48,7 +48,7 @@ from app.signals.base import CostRow, SaleRow
 
 TH = CommercialThresholds()
 AS_OF = date(2026, 7, 1)
-ORG = "org_sanketh"
+ORG = "org_pie"
 
 
 def _d(days_ago: int) -> date:

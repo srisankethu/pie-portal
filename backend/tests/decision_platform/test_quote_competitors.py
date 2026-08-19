@@ -46,7 +46,7 @@ from app.domain.enums import QuoteLossReason
 from app.routers import insight, platform_auth, quote_intelligence
 from app.seed import SEED_PASSWORD, ensure_org_and_users
 
-ORG = "org_sanketh"
+ORG = "org_pie"
 AS_OF = date(2026, 7, 1)
 
 OWNER = "s.menon@pie.example"

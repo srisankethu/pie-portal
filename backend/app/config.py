@@ -419,10 +419,20 @@ class Settings:
     # Chat Completions endpoint, and a model id that names the upstream vendor
     # ("openai/gpt-4o", "anthropic/claude-sonnet-4"). That makes the model the
     # setting worth changing, so the default is stated as a fully qualified id.
+    #
+    # It defaults to "openrouter/free" — the free router, which picks among the
+    # zero-cost models rather than naming one. Interpretation is a small bounded
+    # task and the deterministic engine computes every figure either way, so the
+    # cheapest thing that can read a fact set is the right default; a deployment
+    # that wants a specific model names one. Two consequences worth knowing:
+    # free models carry the tightest rate limits on the account, and
+    # AI_COST_PER_MTOK_* still bill this at whatever they say — set them to 0
+    # while running free, or the AI-spend screen reports a confident wrong
+    # number for calls that cost nothing.
     OPENROUTER_API_KEY: str = os.environ.get("OPENROUTER_API_KEY", "")
     OPENROUTER_API_BASE: str = os.environ.get(
         "OPENROUTER_API_BASE", "https://openrouter.ai/api")
-    OPENROUTER_MODEL: str = os.environ.get("OPENROUTER_MODEL", "openai/gpt-4o-mini")
+    OPENROUTER_MODEL: str = os.environ.get("OPENROUTER_MODEL", "openrouter/free")
     # Priority banding (deterministic base + bounded AI adjustment).
     PRIORITY_HIGH_AT: int = int(os.environ.get("PRIORITY_HIGH_AT", "70"))
     PRIORITY_MEDIUM_AT: int = int(os.environ.get("PRIORITY_MEDIUM_AT", "40"))

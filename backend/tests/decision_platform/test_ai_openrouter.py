@@ -52,6 +52,14 @@ def _capture(monkeypatch, status_code: int = 200, body: dict | None = None) -> d
 
 
 # ── registration: the gateway is a first-class provider everywhere ───────────
+def test_the_shipped_default_is_the_free_router():
+    """Interpretation is a small bounded task and every figure on every screen is
+    computed deterministically either way, so the default costs nothing. Naming a
+    paid model is a deliberate act, not the thing that happens by omission."""
+    assert settings.OPENROUTER_MODEL == "openrouter/free"
+    assert byok.default_model("openrouter") == "openrouter/free"
+
+
 def test_openrouter_is_a_provider_an_organization_can_bring_a_key_for():
     assert "openrouter" in byok.PROVIDERS
     assert byok.env_key_name("openrouter") == "OPENROUTER_API_KEY"
@@ -154,6 +162,53 @@ def test_an_error_alongside_a_real_answer_does_not_discard_the_answer(monkeypatc
         "error": {"code": 200, "message": "one upstream attempt was retried"},
     })
     assert OpenRouterProvider(api_key="sk-or-v1-x").complete("s", "u") == "the reading"
+
+
+def test_an_answer_truncated_to_nothing_is_a_failure_not_an_empty_reading(monkeypatch):
+    """Reasoning tokens come out of ``max_tokens``. A model that spends the whole
+    cap thinking returns ``finish_reason: "length"`` with no content — and the
+    free router may well pick such a model, since what it picks is not named in
+    advance. Returned as "" that reaches the contract layer as a model with
+    nothing to say; it is a truncation, and the reason a person reads later
+    should say so."""
+    _capture(monkeypatch, body={
+        "choices": [{"message": {"content": ""}, "finish_reason": "length"}],
+        "usage": {"prompt_tokens": 900, "completion_tokens": 400},
+    })
+    with pytest.raises(ProviderError) as e:
+        OpenRouterProvider(api_key="sk-or-v1-x").complete("sys", "usr")
+    assert "AI_MAX_TOKENS" in str(e.value)
+
+
+def test_the_upstream_vendors_own_word_for_truncation_counts_too(monkeypatch):
+    """OpenRouter keeps the vendor's raw reason beside the normalised one."""
+    _capture(monkeypatch, body={
+        "choices": [{"message": {"content": None}, "native_finish_reason": "length"}]})
+    with pytest.raises(ProviderError):
+        OpenRouterProvider(api_key="sk-or-v1-x").complete("sys", "usr")
+
+
+def test_a_truncation_is_reported_as_an_error_not_an_outage(monkeypatch):
+    """Telemetry reads the exception type. Nothing is unavailable — an identical
+    retry truncates identically — so PROVIDER_UNAVAILABLE would be the wrong
+    reason on the card and the wrong instinct for whoever reads it."""
+    from app.ai.telemetry import failure_reason_for_provider_error
+    from app.domain.enums import AiFailureReason
+
+    _capture(monkeypatch, body={
+        "choices": [{"message": {"content": ""}, "finish_reason": "length"}]})
+    try:
+        OpenRouterProvider(api_key="sk-or-v1-x").complete("sys", "usr")
+    except ProviderError as e:
+        assert failure_reason_for_provider_error(e) is AiFailureReason.PROVIDER_ERROR
+
+
+def test_an_empty_answer_that_was_not_truncated_stays_empty(monkeypatch):
+    """The guard fires on truncation, not on every empty string — a model that
+    simply returned nothing is the contract layer's problem, not this one's."""
+    _capture(monkeypatch, body={
+        "choices": [{"message": {"content": ""}, "finish_reason": "stop"}]})
+    assert OpenRouterProvider(api_key="sk-or-v1-x").complete("sys", "usr") == ""
 
 
 @pytest.mark.parametrize("status_code,expected", [

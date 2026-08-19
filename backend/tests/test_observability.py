@@ -347,5 +347,112 @@ class TestCapacityCalculator:
         assert forecast["status"] == "insufficient_data"
 
 
+class TestRegisteredHealthChecks:
+    """The checks `register_health_checks` installs must read facts that exist.
+
+    Two of the three read attributes nothing ever defined — `pie_service.engine`
+    and a module-level `scheduler` object in `ingestion/scheduler.py` — and each
+    sat behind its own `except Exception` that turned the resulting
+    AttributeError / ImportError into DEGRADED. So both were permanently amber
+    for a reason that was never true, and neither could ever report healthy no
+    matter what the component was doing. A monitor that is always the same
+    colour is one nobody reads, which is this repo's own stated reason for
+    consolidating its gates.
+
+    These tests drive the registered closures directly, with the components they
+    inspect stubbed, so they assert on what the check *concludes* rather than on
+    which attribute it happens to read.
+    """
+
+    @pytest.fixture()
+    def checks(self):
+        """The registered check functions, with the global registry restored after."""
+        from app.observability.health import health, register_health_checks
+
+        saved = dict(health._components)
+        health._components.clear()
+        register_health_checks(object(), object())
+        yield {name: comp.check_fn for name, comp in health._components.items()}
+        health._components.clear()
+        health._components.update(saved)
+
+    def test_the_pie_parser_check_can_report_ready(self, checks, monkeypatch):
+        import app.pie_service as pie_module
+
+        class _Loaded:
+            catalog_available = True
+
+        monkeypatch.setattr(pie_module, "pie_service", _Loaded())
+        status, message = checks["pie_parser"]()
+        assert status is HealthStatus.HEALTHY, message
+
+    def test_the_pie_parser_check_names_a_missing_catalogue(self, checks, monkeypatch):
+        import app.pie_service as pie_module
+
+        class _Unloaded:
+            catalog_available = False
+
+        monkeypatch.setattr(pie_module, "pie_service", _Unloaded())
+        status, message = checks["pie_parser"]()
+        assert status is HealthStatus.DEGRADED, message
+        assert "no attribute" not in message, (
+            "the check must report the catalogue, not its own broken read")
+        assert "catalogue" in message.lower()
+
+    def test_the_scheduler_check_is_quiet_where_nothing_is_scheduled(self, checks, monkeypatch):
+        """`start_scheduler` declines a fixture source by design — not a fault."""
+        from app.config import settings
+
+        monkeypatch.setattr(settings, "ZOHO_SOURCE", "fixture")
+        status, message = checks["scheduler"]()
+        assert status is HealthStatus.HEALTHY, message
+        assert "fixture" in message
+
+    def test_the_scheduler_check_notices_one_that_never_started(self, checks, monkeypatch):
+        from app.config import settings
+        from app.ingestion import scheduler as sync_scheduler
+
+        monkeypatch.setattr(settings, "ZOHO_SOURCE", "api")
+        monkeypatch.setattr(sync_scheduler, "_started", threading.Event())
+        status, message = checks["scheduler"]()
+        assert status is HealthStatus.DEGRADED, message
+        assert "cannot import name" not in message, (
+            "the check must report the scheduler, not its own broken import")
+
+    def test_the_scheduler_check_reports_a_live_thread(self, checks, monkeypatch):
+        from app.config import settings
+        from app.ingestion import scheduler as sync_scheduler
+
+        monkeypatch.setattr(settings, "ZOHO_SOURCE", "api")
+        started = threading.Event()
+        started.set()
+        monkeypatch.setattr(sync_scheduler, "_started", started)
+
+        stop = threading.Event()
+        thread = threading.Thread(target=stop.wait, name="sync-scheduler", daemon=True)
+        thread.start()
+        try:
+            status, message = checks["scheduler"]()
+        finally:
+            stop.set()
+            thread.join(timeout=5)
+        assert status is HealthStatus.HEALTHY, message
+
+    def test_the_scheduler_check_notices_a_thread_that_has_stopped(self, checks, monkeypatch):
+        """Started, then gone: the one state a monitor exists to catch."""
+        from app.config import settings
+        from app.ingestion import scheduler as sync_scheduler
+
+        monkeypatch.setattr(settings, "ZOHO_SOURCE", "api")
+        started = threading.Event()
+        started.set()
+        monkeypatch.setattr(sync_scheduler, "_started", started)
+        assert not any(t.name == "sync-scheduler" and t.is_alive()
+                       for t in threading.enumerate())
+
+        status, message = checks["scheduler"]()
+        assert status is HealthStatus.UNHEALTHY, message
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

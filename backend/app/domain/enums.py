@@ -67,7 +67,23 @@ class DecisionOrigin(str, Enum):
 
 
 class DecisionType(str, Enum):
-    """The five V1 decision types (§9). No sixth type in V1."""
+    """Every situation the platform raises a card about — 22 of them, in three
+    grains.
+
+    V1 shipped five and the brief (§9) said there would be no sixth. That held
+    while a customer or a product was the only thing a decision could be about,
+    and stopped holding when the grain did: the 6 Customer × Item types speak
+    about one customer's relationship with one item, and the 11 derived from
+    Business State speak about stock, supply and cash. Each grain has its own
+    frozenset below, and the routing and disclosure rules key on those rather
+    than on this list.
+
+    The V1 sentence is kept in the past tense rather than deleted — the
+    constraint is what explains the shape of the first five. It is not what
+    this file has held for a long time, and until now the docstring still said
+    it was. `test_enum_prose_counts` pins the three counts above to the members
+    below, so the next one to go stale fails instead of misleading.
+    """
 
     CUSTOMER_DECLINE = "CUSTOMER_DECLINE"
     CUSTOMER_DORMANCY = "CUSTOMER_DORMANCY"
@@ -87,11 +103,16 @@ class DecisionType(str, Enum):
 
     # ── derived from Business State, deterministically ──────────────────────
     #
-    # Seven types for the seven situations the two folded states can actually
-    # describe. Each is a *distinct situation with a distinct action set* —
-    # deliberately not one type per phrase in the brief, because dead stock and
-    # "capital locked" are one situation measured two ways, and two cards for
-    # one situation is two things to dismiss.
+    # One type per situation the two folded states can actually describe. Each
+    # is a *distinct situation with a distinct action set* — deliberately not
+    # one type per phrase in the brief, because dead stock and "capital locked"
+    # are one situation measured two ways, and two cards for one situation is
+    # two things to dismiss.
+    #
+    # How many there are is `STATE_DECISION_TYPES` below, and deliberately not
+    # written out here as well: this comment read "Seven types for the seven
+    # situations" for a long time after there were eleven, because a count
+    # restated beside the members it counts has nothing keeping it honest.
     INV_DEAD_STOCK = "INV_DEAD_STOCK"
     INV_SLOW_MOVING = "INV_SLOW_MOVING"
     INV_EXCESS_COVER = "INV_EXCESS_COVER"

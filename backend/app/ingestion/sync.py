@@ -270,14 +270,22 @@ def _sole_connection(session: Session, organization_id: str) -> bool:
     nowhere else. Two: it could be either, and picking one silently merges a
     stranger's customers into a book they never traded with.
 
-    **Counts Zoho connections only, and that is a real limit rather than an
-    oversight to read past.** It is correct while `zoho_connections` is the
-    only connection table, and it fails in the unsafe direction the moment it
-    is not: a second connector's book would not be counted, this would answer
-    "one", and adoption would claim rows belonging to a company it has never
-    read. Whatever restructures the connection tables owns this query too —
-    stated here because the failure is silent and the call site above reads
-    like a settled question.
+    **Counts every connection on the organization, whatever system it reads.**
+    The query names `ZohoConnection` and filters on nothing but the
+    organization, and that is correct rather than careless: the table holds
+    every connector's connections and the class name is historical.
+    `ZohoConnection`'s own docstring names this guard as one of the queries
+    that stays right because there is one connection table rather than one per
+    connector.
+
+    This paragraph used to say the reverse — "counts Zoho connections only",
+    warning that a second connector's book would go uncounted, this would
+    answer "one", and adoption would claim rows from a company it had never
+    read. No such hazard exists, and the sentence sent readers looking for one.
+    The live version of the worry is narrower and worth keeping: what this
+    depends on is one *table*, not one connector. A second connection table
+    alongside this one would fail in exactly that unsafe direction, silently,
+    so whatever adds one owns this query too.
     """
     from ..domain import models
 
@@ -876,13 +884,17 @@ class SyncService:
         company this pull has never read, and of the two possible mistakes only
         one is recoverable.
 
-        The guard reaches the retire *list*, not the delete itself.
-        `retire_document` still matches on `(organization_id, external_ref)`,
-        so two companies holding one ref — which Zoho's globally unique ids
-        make impossible and a per-company numbering scheme makes ordinary —
-        still delete together. `test_retiring_a_colliding_ref_does_not_delete_
-        the_other_companys_rows` is xfail against exactly that, and turns into
-        a failure the day the fact tables carry a connection.
+        The guard reaches the delete as well, which it did not always. Until
+        the fact tables carried provenance, `retire_document` matched on
+        `(organization_id, external_ref)` alone: scoping the sweep kept another
+        company's document out of the retire *list*, and nothing then stopped
+        the delete from reaching a colliding reference — ordinary the moment a
+        connector numbers per company rather than globally, as Zoho does. It
+        filters on the connection now.
+        `test_retiring_a_colliding_ref_does_not_delete_the_other_companys_rows`
+        was the strict xfail armed against that gap; it turned into a failure
+        the moment the provenance migration made it pass, and the marker came
+        off in the same change.
 
         Retirement supersedes the document's events rather than deleting them.
         The log is what everything else is derived from, so one supersede

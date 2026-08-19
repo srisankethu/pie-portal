@@ -1177,15 +1177,24 @@ def start_sync(session: Session, organization_id: str, *,
         existing = active_run(session, organization_id,
                               connection_id=connection_id, any_connection=False)
         # An all-companies run covers this connection too, now that it really
-        # reads every one of them rather than only the first. Starting a
-        # single-company pull beside it would have two jobs writing the same
-        # rows from the same API — idempotent, but twice the Zoho calls and a
-        # progress display that cannot say which job the counter belongs to.
-        # The reverse direction is already covered: the umbrella run's own
-        # guard is keyed on a NULL connection.
-        if existing is None and connection_id is not None:
-            existing = active_run(session, organization_id,
-                                  connection_id=None, any_connection=False)
+        # reads every one of them rather than only the first. Two jobs writing
+        # the same rows from the same API is idempotent, but it is twice the
+        # Zoho calls and a progress display that cannot say which job the
+        # counter belongs to — so the overlap is refused from *both* sides.
+        # It used to be refused from one: the umbrella's own guard is keyed on
+        # a NULL connection and a single-company pull never carries one, so an
+        # all-companies run started straight past a company already pulling.
+        if existing is None:
+            if connection_id is None:
+                # Every pull in flight rather than the newest one. `active_run`
+                # reads a single row, so a dead newest row is reaped to None
+                # while the live pull behind it goes unseen — and this is the
+                # question where any live pull at all is an overlap.
+                live = active_runs(session, organization_id)
+                existing = live[0] if live else None
+            else:
+                existing = active_run(session, organization_id,
+                                      connection_id=None, any_connection=False)
         if existing is not None:
             return existing, False
 

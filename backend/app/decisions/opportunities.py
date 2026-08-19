@@ -102,17 +102,31 @@ def generate_from_state(session: Session, org: str, *,
     caller that passes a date is asking "what would the queue have said on that
     day", which the state series makes answerable and which nothing else in the
     platform can do.
+
+    ``states_missing`` names the states this run could not read — always
+    present, empty on a clean run. A book whose bills have not been pulled has
+    no supplier fold on record, and that used to return ``None`` for the whole
+    set and take every detector down with it: no decisions, no error, nothing
+    on the run to say why. What a detector that could not run would have found
+    is unknown, so the states it reads are named and the detectors that *can*
+    see carry on.
     """
     report: dict[str, Any] = {"organization_id": org, "created": 0, "refreshed": 0,
-                              "resolved": 0, "by_type": {}, "as_of": None}
+                              "resolved": 0, "by_type": {}, "as_of": None,
+                              "states_missing": []}
     if not DETECTORS:
         return report
 
     wanted_states = set().union(*(d.states for d in DETECTORS.values()))
-    on = as_of or _latest_common(session, org, wanted_states)
+    if as_of is not None:
+        on, missing = as_of, []
+    else:
+        on, missing = _latest_common(session, org, wanted_states)
+    report["states_missing"] = missing
     if on is None:
-        # No fold has been built. Nothing to report and nothing to invent —
-        # the Data screen already says a sync builds it.
+        # Not one state has been folded. Nothing to report and nothing to
+        # invent — the Data screen already says a sync builds it, and
+        # ``states_missing`` now says which states are waiting for one.
         return report
     report["as_of"] = on.isoformat()
 
@@ -146,8 +160,15 @@ def generate_from_state(session: Session, org: str, *,
     # Situations that no longer exist. Resolved by the platform, which is a
     # different fact from a person dismissing them — and only ever rows this
     # producer made.
+    #
+    # Except where the state a card came from could not be read. A detector
+    # that did not run produced nothing, and producing nothing is exactly what
+    # a detector does when the situation has gone away — so sweeping on that
+    # would tell a person a supplier concentration cleared itself while the
+    # platform was not looking. Left as it stands until the state comes back.
+    blind = {t for t, d in DETECTORS.items() if d.states & set(missing)}
     for key, row in existing.items():
-        if key in seen or row.status in _SPOKEN_FOR:
+        if key in seen or row.status in _SPOKEN_FOR or row.decision_type in blind:
             continue
         row.status = DecisionStatus.RESOLVED.value
         row.updated_at = utc_now()
@@ -157,15 +178,26 @@ def generate_from_state(session: Session, org: str, *,
     return report
 
 
-def _latest_common(session: Session, org: str, states: set[str]) -> Optional[date]:
-    """The most recent day *every* required state was folded for.
+def _latest_common(session: Session, org: str, states: set[str],
+                   ) -> tuple[Optional[date], list[str]]:
+    """The most recent day every readable state was folded for, and the states
+    with no fold on record at all.
 
     The minimum rather than the maximum: reading one state from Tuesday and
     another from Friday would produce a decision describing a business that
     never existed on either day.
+
+    A state with no rows on any day is not that problem — it is a missing
+    input, and it is missing for either of two reasons this cannot tell apart:
+    the fold has never run for it, or it ran and found nothing. Treating the
+    second as the first silenced the whole producer; treating the first as the
+    second would have every card that state feeds swept away as resolved. So
+    it is named, and the caller decides what may be concluded without it.
     """
-    days = [latest_as_of(session, org, name) for name in states]
-    return min(days) if days and all(d is not None for d in days) else None
+    days = {name: latest_as_of(session, org, name) for name in sorted(states)}
+    folded = [d for d in days.values() if d is not None]
+    missing = [name for name, day in days.items() if day is None]
+    return (min(folded) if folded else None), missing
 
 
 def _apply(row: models.Decision, draft: OpportunityDraft,

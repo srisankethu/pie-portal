@@ -547,12 +547,13 @@ export default function PlatformApp() {
     setLoading(true);
     setError(null);
     try {
-      const list = await papi.listDecisions(session.token);
+      const list = await papi.listDecisions(session.token, { include_detail: true });
       setSummaries(list);
-      const entries = await Promise.all(
-        list.map(async (s) => [s.decision_id, await papi.getDetail(session.token, s.decision_id)] as const),
-      );
-      setDetails(Object.fromEntries(entries));
+      const details = list.reduce((acc, d) => {
+        acc[d.decision_id] = d as unknown as DecisionDetail;
+        return acc;
+      }, {} as Record<string, DecisionDetail>);
+      setDetails(details);
     } catch (e) {
       if (isAuthError(e)) return handleAuthLoss();
       // Keep whatever we last knew, but never let a stale/empty list be

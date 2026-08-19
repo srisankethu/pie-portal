@@ -279,10 +279,11 @@ export const papi = {
    *  all, so a tenant's free month simply ran out one day with no warning. */
   entitlements: (t: string) => req<Entitlements>("/api/v1/entitlements", {}, t),
 
-  listDecisions: (t: string, q: { type?: string; status_filter?: string } = {}) => {
+  listDecisions: (t: string, q: { type?: string; status_filter?: string; include_detail?: boolean } = {}) => {
     const p = new URLSearchParams();
     if (q.type) p.set("type", q.type);
     if (q.status_filter) p.set("status_filter", q.status_filter);
+    if (q.include_detail) p.set("include_detail", "true");
     const qs = p.toString();
     return req<DecisionSummary[]>(`/api/v1/decisions${qs ? "?" + qs : ""}`, {}, t);
   },

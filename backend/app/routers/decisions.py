@@ -379,7 +379,8 @@ def list_decisions(
                 summary = _to_read(d)
                 detail = _detail(session, d, principal)
                 # Merge summary and detail into one dict
-                merged = {**summary.model_dump() if hasattr(summary, 'model_dump') else summary.__dict__, **detail}
+                summary_dict = summary.model_dump() if hasattr(summary, 'model_dump') else summary.__dict__
+                merged = {**summary_dict, **detail}
                 result.append(merged)
             except Exception as e:
                 logger.error(f"[decisions:list] Failed to load detail for {d.decision_id}: {e}")

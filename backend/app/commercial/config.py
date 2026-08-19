@@ -123,6 +123,39 @@ class CommercialThresholds:
     meaningful_price_change_pct: float = 0.02
     meaningful_volume_change_pct: float = 0.15
 
+    # ── how far a cost move has to be before it can carry a division ─────────
+    #
+    # ``metrics.pass_through`` divides the realised price move by the cost move
+    # that provoked it, and a denominator near zero is the one input that turns
+    # an ordinary relationship into a headline. A ₹0.40 cost drift with a ₹12
+    # price rise behind it is a 30x "pass-through" that says nothing about
+    # pricing power and everything about rounding in a supplier's invoice.
+    #
+    # So a cost move smaller than this share of the baseline cost is not a small
+    # ratio, it is *no ratio* — the relationship refuses with
+    # ``COST_MOVE_IMMATERIAL`` rather than producing a number that would sort to
+    # the top of every list. Deliberately larger than
+    # ``meaningful_price_change_pct`` (0.02) and smaller than
+    # ``meaningful_cost_increase_pct`` (0.05): this is not asking whether a cost
+    # move is worth acting on, only whether it is big enough to divide by.
+    #
+    # In the version hash like every other threshold, because moving it changes
+    # which relationships have a figure at all — and a screen that silently
+    # gained forty rows between two quarters is one nobody can reconcile.
+    pass_through_min_cost_move_pct: float = 0.03
+    # The same guard, one level up. A category's pass-through is Σ price move ÷
+    # Σ cost move in money, and those are signed: one item's cost rising and
+    # another's falling can net to almost nothing while both were individually
+    # material. The ratio then explodes for a reason that has nothing to do with
+    # how this customer negotiates.
+    #
+    # So the net cost move must be at least this share of the gross (Σ of the
+    # absolute moves) before the roll-up is reported. Below it the group refuses
+    # with ``OFFSETTING_COST_MOVES`` and the item rows are still shown — the
+    # facts survive, the composite does not. 0.5 says the movement has to point
+    # one way more than it points both ways.
+    pass_through_min_net_cost_move_share: float = 0.5
+
     # ── economic materiality ─────────────────────────────────────────────────
     # Rupees. A gap below this is real but not worth anyone's afternoon, and
     # prioritising by percentage instead of dsize is how teams end up working
@@ -561,6 +594,26 @@ class CommercialThresholds:
     # their unplaced items stay honestly uncategorised.
     vendor_category_dominance: float = 0.7
 
+    # ── how much of the cycle a collections push is asked to move ────────────
+    #
+    # ``insight/capital`` turns the measured cycle into money: a day off DSO
+    # releases one day of billings, so a five-day improvement is a figure
+    # somebody can take to a funding conversation. These are the reductions it
+    # prices.
+    #
+    # Policy rather than presentation, and therefore inside ``version``. What
+    # counts as an achievable improvement is a commercial judgement about this
+    # book's customers, and the same rupee figure computed against a different
+    # grid is a different claim about what the business could do. A screen that
+    # said "₹18L released" without the version saying which reduction produced
+    # it would be unexplainable a quarter later.
+    #
+    # Days rather than a percentage, because DSO is a duration and a collections
+    # conversation is held in days. Tuple, not a list, so the dataclass stays
+    # frozen, hashable and JSON-stable for the version hash — the shape
+    # ``quantity_band_edges`` uses and for the same reason.
+    capital_dso_reduction_days: tuple[int, ...] = (5, 10, 15)
+
     @classmethod
     def from_env(cls) -> "CommercialThresholds":
         return cls(
@@ -621,6 +674,12 @@ class CommercialThresholds:
             meaningful_cost_increase_pct=_f("CI_MEANINGFUL_COST_INCREASE_PCT", 0.05),
             meaningful_price_change_pct=_f("CI_MEANINGFUL_PRICE_CHANGE_PCT", 0.02),
             meaningful_volume_change_pct=_f("CI_MEANINGFUL_VOLUME_CHANGE_PCT", 0.15),
+            pass_through_min_cost_move_pct=_f(
+                "CI_PASS_THROUGH_MIN_COST_MOVE_PCT",
+                _default("pass_through_min_cost_move_pct")),
+            pass_through_min_net_cost_move_share=_f(
+                "CI_PASS_THROUGH_MIN_NET_COST_MOVE_SHARE",
+                _default("pass_through_min_net_cost_move_share")),
             min_material_gap=_f("CI_MIN_MATERIAL_GAP", 10_000.0),
             min_transactions=_i("CI_MIN_TRANSACTIONS", 3),
             min_transactions_strong=_i("CI_MIN_TRANSACTIONS_STRONG", 6),

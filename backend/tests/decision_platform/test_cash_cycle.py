@@ -610,6 +610,25 @@ def two_books(engine):
                     organization_id=org, external_ref=f"c{zoho}-{i}",
                     product_id=f"prd_{connection_id}", date=when.date,
                     qty=Decimal("10"), unit_cost=Decimal("700"), source_ref={}))
+            # A vendor and its bills, because the docstring's "resolving a
+            # customer, a vendor and an item" was only two of the three: with no
+            # bill on record the payable leg is *unreconstructable* rather than
+            # nil, so every reading netted against it is refused and the router
+            # half of that resolution was never actually exercised.
+            s.add(models.Vendor(vendor_id=f"ven_{connection_id}",
+                                organization_id=org, external_id=f"v{zoho}",
+                                name=f"{label} supplier",
+                                connection_id=connection_id))
+            # Flushed before the bills that point at it: the bill rows carry a
+            # foreign key to this vendor, and the unit of work does not order
+            # the two for us here.
+            s.flush()
+            for i, when in enumerate(_monthly_invoices(SLS, date(2025, 1, 1))):
+                s.add(models.BillDoc(
+                    bill_id=f"bill_{connection_id}_{i}", organization_id=org,
+                    external_ref=f"b{zoho}-{i}", vendor_id=f"ven_{connection_id}",
+                    date=when.date, status="open", total=Decimal("60000"),
+                    balance=Decimal("60000"), source_ref={}))
             s.add(models.StockSnapshot(
                 stock_snapshot_id=f"ss_{connection_id}", organization_id=org,
                 product_id=f"prd_{connection_id}", as_of=date(2026, 6, 10),

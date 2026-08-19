@@ -34,13 +34,15 @@ from ..repositories import DecisionRepository
 from .. import approvals, clock
 from ..commercial import (economics, floor, incentive, jurisdiction, ownership,
                           policy, portfolio, principals, quote_service)
+from ..commercial.compute import compute_for
 from ..commercial import categories as cat
-from ..commercial.insight import (absence, bonds, cadence, cashflow, cohorts,
-                                  composition, credit, cycle,
+from ..commercial.insight import (absence, bonds, cadence, capital, cashflow,
+                                  cohorts, composition, credit, cycle,
                                   daily as daily_view,
                                   dependency, flow, gmroi, landscape, mix, msme,
                                   order_to_cash,
-                                  outcomes as outcomes_view, payments,
+                                  outcomes as outcomes_view,
+                                  passthrough as pass_through_view, payments,
                                   periods, radar, schemes, selffunding,
                                   simulate, stock,
                                   story, supply, terms as vendor_terms, wallet,
@@ -1156,6 +1158,12 @@ def _decided_quotes(outcomes: list[models.QuoteOutcome],
             product_lines=tuple(sorted({line_of[ln.product_id]
                                         for ln in lines
                                         if ln.product_id in line_of})),
+            # Passed through exactly as recorded. The grouping and the display
+            # form are the view's job — normalising on the way in would leave
+            # the router owning half of a rule stated in ``competitor_key``,
+            # and a won quote carrying a winner's name would be a fact about
+            # nobody, so it is dropped here rather than filtered downstream.
+            lost_to=("" if won else (row.lost_to or "")),
         ))
     return out
 
@@ -1252,8 +1260,14 @@ def quote_outcomes(months: int = Query(12, ge=1, le=36),
     """How often quotes are won, sliced the ways this business asks.
 
     Every role. Nothing in the response is derived from cost: counts, rates,
-    quoted values and the loss mix. The margin behind those losses is the other
-    endpoint.
+    quoted values, the loss mix and the competitor rollup beside it. The margin
+    behind those losses is the other endpoint.
+
+    The competitor half is here rather than there on purpose. Who is taking the
+    business is a name, a count of lost quotes and the value that went with
+    them — the same class of fact as a win rate, and nothing in it can be
+    inverted into what we paid for anything. What it costs us to lose those
+    quotes is a different question and stays behind ``/quote-pricing``.
     """
     ev = _quote_evidence(session, principal)
     org, snapshot, th, as_of = ev.org, ev.snapshot, ev.th, ev.as_of
@@ -1499,27 +1513,21 @@ def _sold_lines(snapshot, products: dict[str, Any]) -> list[cycle.Sold]:
     ]
 
 
-@router.get("/cash-cycle")
-def cash_conversion_cycle(
-        months: int = Query(cycle.DEFAULT_MONTHS,
-                            ge=CYCLE_MIN_MONTHS, le=CYCLE_MAX_MONTHS),
-        principal: Principal = Depends(require_manager_or_owner),
-        session: Session = Depends(get_session)) -> dict:
-    """DIO + DSO − DPO per legal entity, at every month end.
+def _cycle_inputs(session: Session, org: str, snapshot, *, as_of: date,
+                  months: int) -> dict[str, Any]:
+    """The five reads a cycle-derived screen needs, resolved to their books.
 
-    Manager and above, and scoped for the same reason ``/supply`` and
-    ``/cashflow`` are: two of the three legs are denominated in what stock cost
-    — the payable side is purchase cost by another name, and the inventory leg
-    is the shelf valued at what was paid for it. Removing them would leave a
-    composite that is not the answer to any question, so the endpoint is scoped
-    rather than half of it stripped.
+    Two endpoints ask the same question of the same tables — the cycle itself,
+    and what it costs in ``insight/capital`` — and the resolution here is the
+    part neither module does. A second copy of it would be a second opinion
+    about which company a document is filed under, and the two screens would
+    disagree about one entity's receivable with nothing on either saying why.
 
-    Reads the line grain rather than a fold. The month-end positions are
-    replayed from dated documents and their applications, which is the whole
-    reason ``state/reducers/receivables`` can go on refusing to hold them.
+    ``months`` is how many month-end points the caller will *replay*, not how
+    many it will show. The stock-day span is derived from it, so a caller that
+    needs leading months — ``/capital`` needs two, to average over a full window
+    at its earliest reported point — has to ask for them here as well.
     """
-    org, snapshot, th = _context(session, principal)
-    as_of = _as_of(snapshot) or clock.today(th.timezone)
     books = {c["connection_id"]: c["label"] for c in _companies(session, org)}
 
     customers = index_of(session, org, models.Customer)
@@ -1590,22 +1598,95 @@ def cash_conversion_cycle(
         if row.tracked
     ]
 
-    result = cycle.build(
-        invoices=invoices, receipts=receipts, credits=credits, bills=bills,
-        bill_payments=bill_payments, sold=_sold_lines(snapshot, products),
-        held=held, books=books, as_of=as_of, thresholds=th, months=months)
+    return {"invoices": invoices, "receipts": receipts, "credits": credits,
+            "bills": bills, "bill_payments": bill_payments,
+            "sold": _sold_lines(snapshot, products), "held": held,
+            "books": books}
 
-    empty = None
-    if not books:
-        empty = ("No Zoho company is connected, so there is no entity to "
-                 "compute a cycle for. Connect one from Data & connection.")
-    elif not invoices and not bills:
-        empty = ("No invoice or bill has been synced yet, so there is nothing "
-                 "to reconstruct a receivable or a payable from. Run a sync "
-                 "from Data & connection.")
-    return _envelope(result, th=th, empty_reason=empty,
+
+def _cycle_empty_reason(inputs: dict[str, Any]) -> Optional[str]:
+    """Why a cycle-derived screen has nothing on it — the state, not a shrug.
+
+    One function rather than one per endpoint, because both screens are empty
+    for exactly the same two reasons and a reader sent to re-run a sync that
+    had already worked is the failure ``_no_data`` was split up over.
+    """
+    if not inputs["books"]:
+        return ("No Zoho company is connected, so there is no entity to "
+                "compute a cycle for. Connect one from Data & connection.")
+    if not inputs["invoices"] and not inputs["bills"]:
+        return ("No invoice or bill has been synced yet, so there is nothing "
+                "to reconstruct a receivable or a payable from. Run a sync "
+                "from Data & connection.")
+    return None
+
+
+@router.get("/cash-cycle")
+def cash_conversion_cycle(
+        months: int = Query(cycle.DEFAULT_MONTHS,
+                            ge=CYCLE_MIN_MONTHS, le=CYCLE_MAX_MONTHS),
+        principal: Principal = Depends(require_manager_or_owner),
+        session: Session = Depends(get_session)) -> dict:
+    """DIO + DSO − DPO per legal entity, at every month end.
+
+    Manager and above, and scoped for the same reason ``/supply`` and
+    ``/cashflow`` are: two of the three legs are denominated in what stock cost
+    — the payable side is purchase cost by another name, and the inventory leg
+    is the shelf valued at what was paid for it. Removing them would leave a
+    composite that is not the answer to any question, so the endpoint is scoped
+    rather than half of it stripped.
+
+    Reads the line grain rather than a fold. The month-end positions are
+    replayed from dated documents and their applications, which is the whole
+    reason ``state/reducers/receivables`` can go on refusing to hold them.
+    """
+    org, snapshot, th = _context(session, principal)
+    as_of = _as_of(snapshot) or clock.today(th.timezone)
+    inputs = _cycle_inputs(session, org, snapshot, as_of=as_of, months=months)
+
+    result = cycle.build(**inputs, as_of=as_of, thresholds=th, months=months)
+    return _envelope(result, th=th,
+                     empty_reason=_cycle_empty_reason(inputs),
                      as_of=as_of.isoformat(),
-                     sources_differ=len(books) > 1)
+                     sources_differ=len(inputs["books"]) > 1)
+
+
+@router.get("/capital")
+def capital_employed(
+        months: int = Query(cycle.DEFAULT_MONTHS,
+                            ge=CYCLE_MIN_MONTHS, le=CYCLE_MAX_MONTHS),
+        principal: Principal = Depends(require_manager_or_owner),
+        session: Session = Depends(get_session)) -> dict:
+    """Capital standing in the cycle, what it returns, and what growth costs.
+
+    Manager and owner only, scoped exactly as ``/payables`` and
+    ``/quote-pricing`` are and for a stronger reason than either. Every figure
+    on it embeds cost twice over: the denominator is the shelf valued at what
+    was paid for it plus a receivable less a payable, and the numerator is gross
+    profit. There is no version of this screen with the economics removed — what
+    would be left is a day count, which ``/cash-cycle`` already is — so an
+    honest 403 beats a page stripped to nothing.
+
+    The arithmetic is in ``insight/capital``; the reads are shared with
+    ``/cash-cycle`` through ``_cycle_inputs`` so the two screens cannot come to
+    different conclusions about one book's receivable. Two extra month ends are
+    replayed and then dropped: the earliest month shown averages capital over
+    its own three-month window, and a series cut at that month would refuse its
+    own opening points for a reason that is an artefact of the request.
+    """
+    org, snapshot, th = _context(session, principal)
+    as_of = _as_of(snapshot) or clock.today(th.timezone)
+    replayed = months + cycle.WINDOW_MONTHS - 1
+    inputs = _cycle_inputs(session, org, snapshot, as_of=as_of, months=replayed)
+
+    result = capital.build(
+        replays=cycle.replay(**inputs, as_of=as_of, thresholds=th,
+                             months=replayed),
+        sold=inputs["sold"], as_of=as_of, thresholds=th, months=months)
+    return _envelope(result, th=th,
+                     empty_reason=_cycle_empty_reason(inputs),
+                     as_of=as_of.isoformat(),
+                     sources_differ=len(inputs["books"]) > 1)
 
 
 #: How many names a dead-stock row can usefully carry. Beyond this the column
@@ -1813,6 +1894,77 @@ def gmroi_position(months: int = Query(12, ge=1, le=36),
         result, th=th,
         empty_reason=(None if result["measurable"] else
                       result["window"]["shortfall"]))
+
+
+@router.get("/pass-through")
+def pricing_pass_through(
+        customer_id: Optional[str] = Query(None),
+        principal: Principal = Depends(require_manager_or_owner),
+        session: Session = Depends(get_session)) -> dict:
+    """How much of a cost move each account's realised price absorbed.
+
+    The magnitude behind ``items_cost_not_passed``. That count says a
+    pass-through gap exists; this says how big it is, which is the difference
+    between an account with pricing power and one where we are a price-taker.
+
+    **Manager and owner only, and there is no salesperson-safe version.** The
+    ratio is computed against cost movement, so handing it over with the price
+    move beside it hands over the cost move by division. The same call
+    ``/gmroi`` makes, for the same reason.
+
+    Recomputed live rather than read from ``customer_item_metrics``: the
+    persisted row keeps ``cost_change_pct`` but not the baseline the movement
+    was measured against, nor how many distinct cost points stood behind it —
+    and without the second of those, an item bought at one price forever is
+    indistinguishable from one whose supplier held steady. Those are different
+    refusals and the whole view rests on telling them apart.
+
+    Benchmarks are switched off for this run. The peer table is the expensive
+    half of a whole-book compute and nothing here reads it.
+
+    ``customer_id`` bounds the compute to one account. Optional because "which
+    of my accounts absorbs its cost increases" is a book-wide question, and a
+    screen that could only answer it one customer at a time would not answer it.
+    """
+    org, snapshot, th = _labels_only(session, principal)
+    as_of = _as_of(snapshot)
+    if as_of is None:
+        return _no_data(th, "pass-through")
+
+    computed, reference = compute_for(
+        session, org, th=th, as_of=as_of, with_benchmarks=False,
+        customer_ids=({customer_id} if customer_id else None))
+    if not computed:
+        return _no_data(th, "pass-through",
+                        synced=_books_have_sales(session, org))
+
+    lines_of = _category_of(session, org, th)
+    result = pass_through_view.build(
+        [
+            pass_through_view.from_metrics(
+                c.metrics,
+                label=(snapshot.product_names.get(c.metrics.product_id)
+                       or f"Unnamed item (id {c.metrics.product_id})"),
+                resolution=lines_of.get(c.metrics.product_id))
+            for c in computed
+        ],
+        customer_names=snapshot.customer_names, as_of=reference, thresholds=th)
+
+    # Per connected company, like every other customer list: one firm buying
+    # from two of the books is two relationships, and its pass-through in each
+    # is measured against that book's own purchase costs.
+    companies = Companies(session, org)
+    companies.stamp(result["customers"], index_of(session, org, models.Customer),
+                    by="customer_id")
+    result["sources_differ"] = companies.count > 1
+    return _envelope(
+        result, th=th,
+        empty_reason=(None if result["counts"]["items_measured"] else
+                      ("Nothing on this book has both a material cost move and "
+                       "a price charged against it in the window, so there is "
+                       "no pass-through to measure yet. Every row says which of "
+                       "the four reasons applies to it.")),
+        catalogue=cat.coverage_report(lines_of))
 
 
 @router.get("/supply")

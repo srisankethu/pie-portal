@@ -127,7 +127,8 @@ class ComputedRelationship:
 
 def compute_for(session: Session, org: str, *, customer_ids: Optional[set[str]] = None,
                 as_of: Optional[date] = None,
-                th: Optional[CommercialThresholds] = None
+                th: Optional[CommercialThresholds] = None,
+                with_benchmarks: bool = True
                 ) -> tuple[list[ComputedRelationship], date]:
     """Compute (without persisting) every relationship in scope.
 
@@ -135,6 +136,15 @@ def compute_for(session: Session, org: str, *, customer_ids: Optional[set[str]] 
     customers' relationships are returned — but peer benchmarks are still drawn
     from every customer buying the same items, because a benchmark restricted to
     the subject would be self-referential.
+
+    ``with_benchmarks=False`` leaves ``ComputedRelationship.benchmark`` as
+    ``None`` for every pair. The peer table is the expensive half of a whole-book
+    run — it is quadratic in customers-per-item where everything else is linear —
+    and a caller reading only the relationship's own movement pays for it for
+    nothing. A parameter rather than a second loader, because the loading, the
+    costing and the windowing must stay one implementation: two of those and the
+    quote screen and the analysis would eventually disagree about what a
+    relationship is. Anything reading ``benchmark`` must leave it on.
     """
     th = th or load_for_org(session, org)
 
@@ -161,14 +171,15 @@ def compute_for(session: Session, org: str, *, customer_ids: Optional[set[str]] 
         by_product[ln.product_id][ln.customer_id].append(ln)
 
     in_scope = {(s.customer_id, s.product_id) for s in subject_sales}
-    benchmarks: dict[tuple[str, str], ItemBenchmark] = {}
+    benchmarks: dict[tuple[str, str], Optional[ItemBenchmark]] = {}
     out: list[ComputedRelationship] = []
 
     for (customer_id, product_id) in sorted(in_scope):
         lines = by_pair[(customer_id, product_id)]
         m = compute_relationship(customer_id, product_id, lines, reference, th)
-        bm = compute_benchmark(product_id, customer_id, by_product[product_id],
-                               reference, th)
+        bm = (compute_benchmark(product_id, customer_id, by_product[product_id],
+                                reference, th)
+              if with_benchmarks else None)
         benchmarks[(customer_id, product_id)] = bm
         out.append(ComputedRelationship(metrics=m, benchmark=bm, lines=lines))
     return out, reference

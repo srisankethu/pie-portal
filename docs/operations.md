@@ -140,7 +140,7 @@ deployment needs no migration step.
 | `OPENAI_API_KEY` / `OPENAI_MODEL` | — / `gpt-4o-mini` | Required when `AI_PROVIDER=openai`. |
 | `GEMINI_API_KEY` / `GEMINI_MODEL` | — / `gemini-2.5-flash` | Required when `AI_PROVIDER=gemini`. |
 | `OPENROUTER_API_KEY` | — | Required when `AI_PROVIDER=openrouter`. |
-| `OPENROUTER_MODEL` | `openai/gpt-4o-mini` | Vendor-qualified id — `openai/gpt-4o`, `anthropic/claude-sonnet-4`. One key, any of them. |
+| `OPENROUTER_MODEL` | `openrouter/free` | The free router by default. Or a vendor-qualified id — `openai/gpt-4o`, `anthropic/claude-sonnet-4`. One key, any of them. |
 | `OPENROUTER_API_BASE` | `https://openrouter.ai/api` | Override for a gateway/proxy. |
 | `PROMPT_VERSION` | `p2` | Stamped on every decision and every telemetry row for provenance. Bump it when the system prompt changes. |
 | `PRIORITY_HIGH_AT` / `PRIORITY_MEDIUM_AT` | `70` / `40` | Priority band cutoffs. |
@@ -164,12 +164,26 @@ To run the narrative layer on a real model:
    ```
 
    Or route through OpenRouter, which reaches every vendor above on one key
-   and one bill — the model id names the vendor, so it is the setting that
-   decides what actually answers:
+   and one bill. Its default model is `openrouter/free` — the free router —
+   so this alone runs the narrative layer at no cost:
 
    ```bash
    export AI_PROVIDER=openrouter
    export OPENROUTER_API_KEY="sk-or-v1-..."
+   export AI_COST_PER_MTOK_INPUT=0     # free means free; see the note below
+   export AI_COST_PER_MTOK_OUTPUT=0
+   ```
+
+   Two things to know before leaving it there. Free models carry the tightest
+   rate limits on an OpenRouter account, so a large sync's worth of decisions
+   may be throttled — each throttled call degrades to the deterministic
+   narrative, which is safe but plainer. And the router does not say in advance
+   which model it picks; if it picks a reasoning model, reasoning tokens come
+   out of `AI_MAX_TOKENS` and an answer can be truncated to nothing. That is
+   reported as a provider error naming the cap, not as an empty reading — raise
+   `AI_MAX_TOKENS` or name a model:
+
+   ```bash
    export OPENROUTER_MODEL="openai/gpt-4o"
    ```
 

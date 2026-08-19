@@ -587,10 +587,13 @@ def _sync_state(session: Session, org: str, *, costs_visible: bool = True) -> di
         "last": _run_dict(last, costs_visible=costs_visible),
         "last_successful_at": (clock.iso(ok.started_at)
                                if ok is not None and ok.started_at else None),
-        # Kept, and no longer the gate for a per-connection button. An
-        # organization-wide pull — the "sync everything" path, which carries no
-        # connection_id — genuinely cannot run twice at once.
-        "can_start": not any(r.connection_id is None for r in running),
+        # Whether the "sync everything" button can start anything — not the
+        # gate for a per-connection button, which reads `busy_connections`
+        # above. That pull reads every company, so *any* pull in flight is one
+        # it would read a second time and `start_sync` hands it back that job
+        # instead of starting. Asking only whether another organization-wide
+        # pull was running left the button live for a click the server declines.
+        "can_start": not running,
     }
 
 

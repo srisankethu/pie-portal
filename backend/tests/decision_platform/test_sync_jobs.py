@@ -686,6 +686,40 @@ def test_one_company_cannot_pull_while_every_company_is_pulling(client):
     assert one["run"]["sync_run_id"] == every["run"]["sync_run_id"]
 
 
+def test_every_company_cannot_pull_while_one_company_is_pulling(client):
+    """The same overlap, the other way round — and the direction that was left
+    open. A single-company pull in flight is a book the all-companies run would
+    read again from the same API, so it must be handed that pull rather than
+    starting beside it. The guard used to ask only whether another *umbrella*
+    run was live, which no single-company pull ever is.
+    """
+    one = client.post("/api/v1/data/sync", headers=_hdr(client),
+                      json={"connection_id": "conn_sls"}).json()
+    every = client.post("/api/v1/data/sync", headers=_hdr(client), json={}).json()
+
+    assert one["started"] is True
+    assert every["started"] is False, (
+        "an all-companies pull must be handed the single-company job already "
+        "reading one of the books it covers")
+    assert every["run"]["sync_run_id"] == one["run"]["sync_run_id"]
+
+    s = client.Maker()
+    assert s.query(models.SyncRun).count() == 1, "one row, so one pull"
+    s.close()
+
+
+def test_the_all_companies_button_is_shut_while_one_company_pulls(client):
+    """`can_start` gates the "Sync every company" button, and the server would
+    decline that click. A True here is a button that appears to do nothing."""
+    client.post("/api/v1/data/sync", headers=_hdr(client),
+                json={"connection_id": "conn_sls"})
+
+    state = client.get("/api/v1/data/sync", headers=_hdr(client)).json()
+
+    assert state["busy_connections"] == ["conn_sls"], "the company itself is busy"
+    assert state["can_start"] is False
+
+
 # ── reading a run's log ─────────────────────────────────────────────────────
 #
 # "See the server log" was the advice a crashed sync gave to somebody with a

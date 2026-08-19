@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 from .. import approvals
 from ..authz import (Principal, can_view_decision, current_principal,
                      decision_queue_scope)
-from ..commercial import subject
+from ..commercial import outcome_tracker, subject
 from ..context.assembler import _flatten, _is_restricted
 from ..db import get_session
 from ..domain import models
@@ -29,6 +29,7 @@ from ..domain.schemas import ActionRequest, DecisionRead
 from ..repositories import DecisionRepository
 from ..state.engine import why as state_why
 from ..state.opportunities import ACTIONS as _ACTIONS
+from .outcomes import _redact
 
 router = APIRouter(prefix="/api/v1/decisions", tags=["decisions"])
 
@@ -105,6 +106,54 @@ def _subject_origin(session: Session, d: models.Decision) -> dict:
     return {
         "subject_origin": companies.of(row).to_dict() if row is not None else None,
         "sources_differ": companies.count > 1,
+    }
+
+
+def _outcome(session: Session, d: models.Decision, *,
+             is_sales: bool) -> Optional[dict]:
+    """What this decision actually changed, measured — or ``None``.
+
+    ``None`` is an absence and nothing more: no snapshot means the decision was
+    never accepted, or carried no signal baseline to freeze. The card used to
+    return that unconditionally, so a realised position the Outcome Tracker had
+    already computed was thrown away on the one screen where somebody goes to
+    read it.
+
+    The tracker's verdict is served as it comes — PENDING, REALISED or UNKNOWN
+    — and UNKNOWN keeps the ``missing`` list that names the gap rather than
+    being flattened into zeroes.
+
+    Role scope: the category gate is already spent by the time this runs.
+    ``_visible`` refused a salesperson every RESTRICTED decision type, and a
+    snapshot belongs to exactly one decision, so what is left is the
+    field-level filter — through the same ``_redact`` ``/api/v1/outcomes``
+    applies, rather than a second one that would drift from it. The keys here
+    are that endpoint's, minus the four the card already carries, so one
+    renderer can read both.
+    """
+    snap = outcome_tracker.snapshot_for_decision(session, d.decision_id)
+    if snap is None:
+        return None
+    # The tenant's zone, not the deployment's: it decides which day acceptance
+    # fell on and therefore whether the horizon has closed.
+    tz = getattr(session.get(models.Organization, d.organization_id),
+                 "timezone", None)
+    evaluation = outcome_tracker.evaluate(
+        session, snap, as_of=clock.today(tz), tz=tz).to_dict()
+    baseline = dict(snap.baseline_metrics or {})
+    if is_sales:
+        evaluation["realised"] = _redact(evaluation["realised"])
+        evaluation["delta"] = _redact(evaluation["delta"])
+        baseline = _redact(baseline)
+    return {
+        "outcome_snapshot_id": snap.outcome_snapshot_id,
+        "category": snap.category,
+        "accepted_at": clock.iso(snap.accepted_at),
+        "horizon_days": snap.horizon_days,
+        "thresholds_version": snap.thresholds_version,
+        "baseline_window": snap.baseline_window or {},
+        "baseline_metrics": baseline,
+        "evaluation": evaluation,
     }
 
 
@@ -194,7 +243,7 @@ def _detail(session: Session, d: models.Decision, principal: Principal) -> dict:
         },
         "confidence": d.confidence or {},
         "human_action": d.human_action,
-        "outcome": None,  # Outcome Tracker is a later phase
+        "outcome": _outcome(session, d, is_sales=is_sales),
     }
 
 

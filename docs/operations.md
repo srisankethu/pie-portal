@@ -131,12 +131,17 @@ deployment needs no migration step.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `AI_PROVIDER` | `mock` | `mock` (deterministic, offline) or `anthropic` (live). |
+| `AI_PROVIDER` | `mock` | `mock` (deterministic, offline), or a live provider: `anthropic`, `openai`, `gemini`, `openrouter`. |
 | `AI_MODEL` | `claude-haiku-4-5-20251001` | Model id. Interpretation is a small, bounded task — a fast model suits it. |
 | `AI_MAX_TOKENS` | `400` | Output cap. |
 | `AI_TIMEOUT_SECONDS` | `20` | Per-call timeout; on expiry the decision degrades to FAILED. |
 | `ANTHROPIC_API_KEY` | — | Required when `AI_PROVIDER=anthropic`. |
 | `ANTHROPIC_API_BASE` | `https://api.anthropic.com` | Override for a gateway/proxy. |
+| `OPENAI_API_KEY` / `OPENAI_MODEL` | — / `gpt-4o-mini` | Required when `AI_PROVIDER=openai`. |
+| `GEMINI_API_KEY` / `GEMINI_MODEL` | — / `gemini-2.5-flash` | Required when `AI_PROVIDER=gemini`. |
+| `OPENROUTER_API_KEY` | — | Required when `AI_PROVIDER=openrouter`. |
+| `OPENROUTER_MODEL` | `openai/gpt-4o-mini` | Vendor-qualified id — `openai/gpt-4o`, `anthropic/claude-sonnet-4`. One key, any of them. |
+| `OPENROUTER_API_BASE` | `https://openrouter.ai/api` | Override for a gateway/proxy. |
 | `PROMPT_VERSION` | `p2` | Stamped on every decision and every telemetry row for provenance. Bump it when the system prompt changes. |
 | `PRIORITY_HIGH_AT` / `PRIORITY_MEDIUM_AT` | `70` / `40` | Priority band cutoffs. |
 | `AI_PRIORITY_ADJUST_BOUND` | `20` | Hard clamp on the AI's priority influence. |
@@ -156,6 +161,16 @@ To run the narrative layer on a real model:
    ```bash
    export AI_PROVIDER=anthropic
    export ANTHROPIC_API_KEY="sk-ant-..."
+   ```
+
+   Or route through OpenRouter, which reaches every vendor above on one key
+   and one bill — the model id names the vendor, so it is the setting that
+   decides what actually answers:
+
+   ```bash
+   export AI_PROVIDER=openrouter
+   export OPENROUTER_API_KEY="sk-or-v1-..."
+   export OPENROUTER_MODEL="openai/gpt-4o"
    ```
 
    Set `AI_COST_PER_MTOK_INPUT` / `_OUTPUT` to your actual contracted rates at

@@ -1362,8 +1362,8 @@ const BAND_TONE: Record<string, Tone> = {
  * it is pointed at a real book.
  *
  * The figures are read-only; the provider no longer is. An owner can bring the
- * organization's own key for Anthropic Claude, OpenAI or Google Gemini in the
- * panel below and choose which one runs — the environment variables remain the
+ * organization's own key for Anthropic Claude, OpenAI, Google Gemini or
+ * OpenRouter in the panel below and choose which one runs — the environment variables remain the
  * deployment-wide fallback. The key itself is write-only: the server stores it
  * encrypted and every response carries at most its last four characters.
  */
@@ -1497,6 +1497,7 @@ const PROVIDER_LABEL: Record<string, string> = {
   anthropic: "Anthropic Claude",
   openai: "OpenAI",
   gemini: "Google Gemini",
+  openrouter: "OpenRouter",
 };
 
 /**

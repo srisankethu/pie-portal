@@ -10,8 +10,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 from app.ai import reading
 
 
@@ -31,14 +29,47 @@ class _Provider:
         return self.payload if isinstance(self.payload, str) else json.dumps(self.payload)
 
 
-@pytest.fixture(autouse=True)
-def _real_provider(monkeypatch):
-    """`read` refuses to call the mock provider, so tests must look configured."""
-    monkeypatch.setattr(reading.settings, "AI_PROVIDER", "anthropic")
-
-
 def _read(payload, text="need 50 nos CNMG 120408-MP"):
     return reading.read(text, _Provider(payload))
+
+
+# ── which provider gets asked, and how that is decided ───────────────────────
+#
+# These replace an autouse fixture that set ``AI_PROVIDER=anthropic`` for every
+# test in this file, with the docstring "`read` refuses to call the mock
+# provider, so tests must look configured". It was compensating for the guard
+# reading a deployment setting instead of the provider object — so the whole
+# suite ran in the one configuration where the bug is invisible, and both
+# failures below passed unnoticed.
+def test_an_organizations_own_provider_is_used_whatever_the_deployment_setting(
+        monkeypatch):
+    """BYOK: a live provider arrives while AI_PROVIDER still says mock.
+
+    Reading the setting switched the feature off for exactly the organizations
+    that had configured their own key.
+    """
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "AI_PROVIDER", "mock")
+    r = reading.read("need 50 nos CNMG 120408-MP", _Provider(
+        {"lines": [{"code": "CNMG 120408-MP", "qty": 50,
+                    "verbatim": "need 50 nos CNMG 120408-MP", "reading": ""}]}))
+    assert r.used_ai, "an organization's own provider was ignored"
+    assert [ln.code for ln in r.lines] == ["CNMG 120408-MP"]
+
+
+def test_the_mock_is_refused_even_when_the_setting_names_a_live_provider(
+        monkeypatch):
+    """The inverse: select_provider hands back the mock when a live provider
+    cannot be built (missing or revoked key). Trusting the setting would report
+    the mock's output as the model's reading."""
+    from app.ai.mock_provider import MockProvider
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "AI_PROVIDER", "anthropic")
+    r = reading.read("need 50 nos CNMG 120408-MP", MockProvider())
+    assert not r.used_ai
+    assert r.status == "fallback"
 
 
 # ── what it reads ────────────────────────────────────────────────────────────
@@ -86,8 +117,9 @@ def test_the_prompt_forbids_matching_and_pricing():
 
 
 # ── every failure ends at the regex, never at a lost enquiry ─────────────────
-def test_no_provider_configured_falls_back(monkeypatch):
-    monkeypatch.setattr(reading.settings, "AI_PROVIDER", "mock")
+def test_no_provider_configured_falls_back():
+    # No monkeypatch: `provider is None` short-circuits before anything else is
+    # consulted, so the deployment setting this used to set was never reached.
     r = reading.read("CNMG 120408-MP, 50", None)
     assert not r.used_ai and r.lines == []
 

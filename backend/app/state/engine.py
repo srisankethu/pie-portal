@@ -353,6 +353,15 @@ def _persist(session: Session, org: str, as_of: date, states: list[str],
                 models.StateTransition.as_of == as_of))
 
     now = utc_now()
+    # Every state this fold covered, including the ones that produced no rows.
+    # A state absent from the report reads as "not folded"; a state that folded
+    # to nothing is a different fact, and one the rows cannot state themselves
+    # because there are none of them. So the report states it. The distinction
+    # matters downstream: a reader of the *rows* alone — ``latest_as_of`` — sees
+    # the same emptiness either way, which is why the decision producer names a
+    # state it cannot read rather than reading it as an empty business.
+    for state in states:
+        report.rows_written.setdefault(state, 0)
     for (state, key), value in acc.items():
         session.add(models.BusinessState(
             organization_id=org, state=state, key=key, as_of=as_of,

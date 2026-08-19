@@ -225,6 +225,29 @@ def _withholding(view: Optional[dict], *, blocked_by: Optional[str],
     """
     if blocked_by is not None:
         return {"applies": False, "blocked_by": blocked_by, "crossings": []}
+    # **A book with no bills is not a book with an unconfirmed gate.** The gate
+    # is a fact about the tenant's own prior-year turnover — one setting for the
+    # whole organization — while ``view`` is absent whenever *this* book has no
+    # purchases to measure against it. Conflating them told an owner who had
+    # already confirmed the gate to go and confirm it, on the one entity that
+    # bought nothing, and contradicted the ``gate_confirmed: True`` sitting on
+    # the book next to it.
+    if view is None and thresholds.s194q_org_gate_met:
+        return {
+            "applies": True,
+            "gate_confirmed": True,
+            "party_threshold": float(thresholds.s194q_party_threshold),
+            "crossings": [],
+            # Zero, not ``None``, and the difference is the point: the gate is
+            # confirmed and the bills were looked for, so "no supplier is near
+            # the threshold" is a measurement here rather than a silence.
+            "crossed": 0,
+            "approaching": 0,
+            "blocked_by": None,
+            "note": ("No bill is on record for this company, so no supplier has "
+                     "any purchase against this entity to measure. The gate is "
+                     "confirmed; there is simply nothing under it."),
+        }
     if view is None or not view.get("gate_confirmed"):
         return {
             "applies": True,

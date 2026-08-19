@@ -606,3 +606,33 @@ def test_a_bill_that_lands_in_no_book_is_counted_rather_than_dropped(two_books):
 
     assert body["unattributed"]["bills_counted"] is True
     assert body["unattributed"]["bills"] == 2
+
+
+def test_a_book_with_no_bills_does_not_report_the_gate_as_unconfirmed():
+    """The 194Q gate is one setting for the tenant, not one per entity.
+
+    A book with no purchases has no view to build a crossing list from, and the
+    absent view was read as "the gate is open" — so an owner who had confirmed
+    their turnover was told to go and confirm it, on the one entity that bought
+    nothing, while the book beside it showed ``gate_confirmed: True``. Two
+    answers to one question about one organization.
+
+    The counts are zero rather than null here, and that is the second half: the
+    gate is confirmed and the bills were looked for, so "no supplier is near the
+    threshold" is a measurement, not a silence.
+    """
+    th = CommercialThresholds(s194q_org_gate_met=True)
+    built = routing._withholding(None, blocked_by=None, thresholds=th)
+
+    assert built["gate_confirmed"] is True
+    assert built["blocked_by"] is None
+    assert built["crossed"] == 0 and built["approaching"] == 0
+    assert "no bill is on record" in built["note"].lower()
+
+    # And with the gate genuinely open, the advice to confirm it comes back.
+    open_gate = routing._withholding(
+        None, blocked_by=None,
+        thresholds=CommercialThresholds(s194q_org_gate_met=False))
+    assert open_gate["gate_confirmed"] is False
+    assert open_gate["crossed"] is None
+    assert "confirmed in Settings" in open_gate["blocked_by"]

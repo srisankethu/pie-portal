@@ -38,6 +38,7 @@ from sqlalchemy.orm import Session
 
 from .. import crypto
 from ..domain import models
+from .url_safety import require_safe_source_url, require_safe_source_urls
 # The type Zoho's scope list shares with every registered connector's — one
 # declaration of "what this sign-in must be granted", read by one screen.
 from .erp.base import Permission
@@ -392,6 +393,10 @@ def create_credential(session: Session, organization_id: str, *, client_id: str,
                       accounts_base: str = "https://accounts.zoho.in",
                       api_base: str = "https://www.zohoapis.in/books/v3",
                       ) -> models.ZohoCredential:
+    # These two become server-side fetch targets the moment the connection is
+    # checked or synced; refuse one that points back inside our own network.
+    require_safe_source_url(accounts_base, field="Accounts URL")
+    require_safe_source_url(api_base, field="API URL")
     cred = models.ZohoCredential(
         owner_organization_id=organization_id,
         label=label[:255],
@@ -655,6 +660,10 @@ def set_zoho_credentials(
             refresh_token=refresh_token, label=credential_label or label,
             accounts_base=accounts_base, api_base=api_base)
     else:
+        # The create path validates inside create_credential; this branch sets
+        # the hosts on an existing credential directly, so it must too.
+        require_safe_source_url(accounts_base, field="Accounts URL")
+        require_safe_source_url(api_base, field="API URL")
         cred.accounts_base = accounts_base
         cred.api_base = api_base
     return add_connection(
@@ -762,6 +771,9 @@ def connect_erp(session: Session, organization_id: str, *, connector: str,
     from . import erp
 
     spec = erp.get_spec(connector)
+    # A connector's base_url is a server-side fetch target; refuse one aimed at
+    # our own network before it is stored.
+    require_safe_source_urls(values, label=spec.label)
     secrets, cred_config, conn_config, external = erp.split_inputs(spec, values)
 
     cred = find_matching_erp_credential(session, organization_id, connector,
@@ -804,6 +816,7 @@ def rotate_erp_credential(session: Session, organization_id: str,
         raise CredentialNotUsable(
             "Only the organization that owns a credential can rotate it")
     spec = erp.get_spec(getattr(cred, "connector", None) or "")
+    require_safe_source_urls(values, label=spec.label)
     secrets, cred_config = erp.split_credential_inputs(spec, values)
     cred.secrets_encrypted = crypto.encrypt(json.dumps(secrets, sort_keys=True))
     cred.config = cred_config

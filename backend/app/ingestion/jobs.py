@@ -440,6 +440,62 @@ def _window_label(start: date, end: date) -> str:
 
 
 # ── the work itself ─────────────────────────────────────────────────────────
+#: Where a run records that it read the masters and the shelf, keyed by the
+#: connection it read them for. On the run row rather than in a column of its
+#: own: it is a fact about one pull, the run row is already the audit record of
+#: a pull, and a column would be a migration for a cache marker.
+CATALOGUE_READ_NOTE = "catalogue_read_at"
+
+
+def catalogue_due(session: Session, organization_id: str,
+                  connection_id: Optional[str], *, today: date,
+                  full: bool, incremental: bool) -> bool:
+    """Whether this pull should read the masters and the per-location shelf.
+
+    They are the dominant cost of a sync and they are a **daily** reading. On a
+    live book: 13 pages of customers, 76 of items, 13 of suppliers, then one
+    `itemdetails` call per hundred items — about five minutes of listing and
+    152 more calls against a pacer that allows ninety a minute. The documents
+    that pull was actually asked for, one day of them, took thirty seconds.
+
+    Nothing about that work is wasted the first time. It is wasted the *second*
+    time in one day, because every row it writes is keyed and upserted by day:
+    `StockSnapshot`, `StockLocationSnapshot`, and the master rows themselves,
+    which are refreshed in place. A second sync at 15:00 spends twenty minutes
+    rewriting what the 09:00 sync wrote.
+
+    So: read them when this is a full sync (which re-reads everything by
+    definition), when the listing is not incremental (the reconciliation pass,
+    which is meant to be complete), or when no run has read them for this
+    connection today. Otherwise go straight to the documents.
+
+    What this does **not** defer: an item a document names and the master does
+    not hold is still fetched by id, so no line goes unresolved for want of
+    this pass. See `SyncService._resolve_product`.
+    """
+    if full or not incremental:
+        return True
+    rows = session.scalars(
+        select(models.SyncRun)
+        .where(models.SyncRun.organization_id == organization_id,
+               models.SyncRun.status.in_(("OK", "PARTIAL")))
+        .order_by(models.SyncRun.started_at.desc())
+        .limit(_CATALOGUE_LOOKBACK)).all()
+    stamp = today.isoformat()
+    for row in rows:
+        read = (row.notes or {}).get(CATALOGUE_READ_NOTE) or {}
+        if isinstance(read, dict) and read.get(connection_id or "") == stamp:
+            return False
+    return True
+
+
+#: How many recent runs to look back through for today's reading. A handful:
+#: the question is "did *a* run do this today", and today's runs are the newest
+#: rows there are. Deliberately not "every run today" — an organization pulling
+#: three companies every hour would make that a growing scan for a boolean.
+_CATALOGUE_LOOKBACK = 40
+
+
 def _revive(session: Session, run: models.SyncRun) -> models.SyncRun:
     """Make the session usable again if a rejected write left it dead.
 
@@ -602,11 +658,15 @@ def execute_sync(session: Session, run: models.SyncRun, *,
             # connection resolves to no company at all, which is what left the
             # Stock and Customers screens able to name the connector ("Zoho")
             # and never the book.
+            due = catalogue_due(session, org, target.connection_id,
+                                today=_clock_today(None), full=full,
+                                incremental=incremental)
             svc = SyncService(session, source_for(since, None, target.connection_id), org,
                               resume=not full, on_phase=phase,
                               connector=target.connector,
                               connection_id=target.connection_id,
-                              incremental=incremental)
+                              incremental=incremental,
+                              catalogue_due=due)
             # Once per run, not once per company: it clears the document cursor
             # for the whole organization, and clearing it again after the first
             # company had already recorded its documents would make the next
@@ -704,6 +764,19 @@ def execute_sync(session: Session, run: models.SyncRun, *,
         if report.windows_listed_in_full:
             run.notes = {**(run.notes or {}),
                          "windows_listed_in_full": report.windows_listed_in_full}
+        # Which companies' masters and shelf this run actually read, and on what
+        # day — the fact the next sync reads to decide whether today's reading
+        # has been taken. Per connection, because three connected companies are
+        # three books and one of them being read says nothing about the others.
+        read_today = {
+            (s_done.connection_id or ""): _clock_today(None).isoformat()
+            for s_done in services if s_done.report.catalogue_read
+        }
+        if read_today:
+            run.notes = {**(run.notes or {}),
+                         CATALOGUE_READ_NOTE: {
+                             **((run.notes or {}).get(CATALOGUE_READ_NOTE) or {}),
+                             **read_today}}
         run.skipped_count = len(report.skipped)
         run.skipped_sample = report.skipped[:20]
         # And the whole list, per company, in its own table — the sample above
@@ -1104,15 +1177,24 @@ def start_sync(session: Session, organization_id: str, *,
         existing = active_run(session, organization_id,
                               connection_id=connection_id, any_connection=False)
         # An all-companies run covers this connection too, now that it really
-        # reads every one of them rather than only the first. Starting a
-        # single-company pull beside it would have two jobs writing the same
-        # rows from the same API — idempotent, but twice the Zoho calls and a
-        # progress display that cannot say which job the counter belongs to.
-        # The reverse direction is already covered: the umbrella run's own
-        # guard is keyed on a NULL connection.
-        if existing is None and connection_id is not None:
-            existing = active_run(session, organization_id,
-                                  connection_id=None, any_connection=False)
+        # reads every one of them rather than only the first. Two jobs writing
+        # the same rows from the same API is idempotent, but it is twice the
+        # Zoho calls and a progress display that cannot say which job the
+        # counter belongs to — so the overlap is refused from *both* sides.
+        # It used to be refused from one: the umbrella's own guard is keyed on
+        # a NULL connection and a single-company pull never carries one, so an
+        # all-companies run started straight past a company already pulling.
+        if existing is None:
+            if connection_id is None:
+                # Every pull in flight rather than the newest one. `active_run`
+                # reads a single row, so a dead newest row is reaped to None
+                # while the live pull behind it goes unseen — and this is the
+                # question where any live pull at all is an overlap.
+                live = active_runs(session, organization_id)
+                existing = live[0] if live else None
+            else:
+                existing = active_run(session, organization_id,
+                                      connection_id=None, any_connection=False)
         if existing is not None:
             return existing, False
 

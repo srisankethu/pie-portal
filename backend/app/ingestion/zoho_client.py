@@ -263,6 +263,13 @@ class ZohoTransport:
         self._last_call_at: float = 0.0
         # Observable so a sync run can report what the pull actually cost.
         self.calls = 0
+        # Fetch-time SSRF guard over the two owner-supplied hosts this talks to
+        # (accounts_base for tokens, api_base for data). Storage-time validation
+        # proved them public when saved; this re-checks just before egress, so a
+        # host repointed at an internal address since is refused. Only when we
+        # own the socket — an injected transport (a test) has none to protect.
+        from .url_safety import FetchGuard
+        self._fetch_guard = FetchGuard() if http is None else None
 
     # ── transport ────────────────────────────────────────────────────────────
     def _client(self):
@@ -271,6 +278,17 @@ class ZohoTransport:
 
             self._http = httpx.Client(timeout=settings.ZOHO_TIMEOUT_SECONDS)
         return self._http
+
+    def _guard_fetch(self, url: str) -> None:
+        """Refuse egress to an internal address, re-checked at request time."""
+        if self._fetch_guard is None:
+            return
+        from .url_safety import UnsafeSourceUrl
+
+        try:
+            self._fetch_guard.check(url, field="Zoho URL")
+        except UnsafeSourceUrl as e:
+            raise ZohoError(str(e)) from e
 
     def _require_credentials(self) -> None:
         missing = [
@@ -296,9 +314,17 @@ class ZohoTransport:
         if self._token and time.time() < self._token_expires_at:
             return self._token
         self._require_credentials()
+        self._guard_fetch(f"{self._accounts}/oauth/v2/token")
+        # **In the body, not the query string.** These four values are the whole
+        # credential: anyone holding the refresh token and the client secret can
+        # read this company's books. httpx logs every request URL at INFO, so as
+        # query parameters they were written verbatim to stdout, to the log file,
+        # and — once a run's log was kept with the run — into the database and
+        # onto a screen. A form body is what OAuth specifies anyway; the query
+        # string was the accident.
         resp = self._client().post(
             f"{self._accounts}/oauth/v2/token",
-            params={
+            data={
                 "refresh_token": self._creds.refresh_token,
                 "client_id": self._creds.client_id,
                 "client_secret": self._creds.client_secret,
@@ -352,6 +378,7 @@ class ZohoTransport:
                  **params: Any) -> dict[str, Any]:
         """One authenticated call, with retry bounded by what the method allows."""
         url = f"{self._base}/{path.lstrip('/')}"
+        self._guard_fetch(url)
         params = {k: v for k, v in params.items() if v is not None}
         params["organization_id"] = self._org
         verb = method.upper()
@@ -735,8 +762,16 @@ class ZohoApiSource(ZohoTransport):
     #: batching is the whole reason per-location stock is affordable at all —
     #: the per-item detail endpoint would be one call per item, which on an
     #: 800-line master is 800 calls a sync to answer a question about three
-    #: branches. Kept modest because the ids travel in the query string.
-    ITEM_DETAIL_BATCH = 25
+    #: branches.
+    #:
+    #: 100, raised from 25 after a live book grew past 15,000 items: at 25 that
+    #: is 608 calls, and at the pacer's 90 a minute the stock stage alone ran
+    #: for the better part of half an hour on a sync whose documents took
+    #: thirty seconds. The ids travel in the query string, which is what keeps
+    #: this from being larger still — a Zoho item id is 19 characters, so 100
+    #: of them plus separators is about 2 KB of URL, comfortably inside every
+    #: limit in the path. Do not raise it without redoing that arithmetic.
+    ITEM_DETAIL_BATCH = 100
 
     def list_locations(self) -> Iterable[dict[str, Any]]:
         """Where this company trades from.

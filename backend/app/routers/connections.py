@@ -39,6 +39,7 @@ from ..db import get_session
 from ..domain import models
 from ..domain.enums import Role
 from ..ingestion import connections as conn
+from ..ingestion.url_safety import UnsafeSourceUrl
 from ..ingestion.zoho_client import ZohoApiSource, ZohoAuthError
 
 log = logging.getLogger("pie_portal.connections")
@@ -312,6 +313,8 @@ def add_connection(
                 # The grant is named after itself, not after the first company
                 # it happened to connect — it will very likely serve others.
                 credential_label=f"Zoho sign-in {body.client_id.strip()[:14]}")
+    except UnsafeSourceUrl as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from e
     except conn.CredentialNotUsable as e:
         raise HTTPException(status.HTTP_403_FORBIDDEN, str(e)) from e
     except entitlements.PlanRefused as e:
@@ -1009,6 +1012,9 @@ def discover_erp_companies(
             f"{spec.label} sign-ins are already scoped to one "
             f"{spec.company_term}; there is no list to discover.")
     try:
+        # discover signs in and fetches from the entered base_url, so it is the
+        # same server-side-request surface as connecting; refuse an internal one.
+        conn.require_safe_source_urls(body.values, label=spec.label)
         secrets, config = erp.split_credential_inputs(spec, body.values)
         companies = spec.discover(erp.CredentialMaterial(
             connector=spec.key, secrets=secrets, config=config))

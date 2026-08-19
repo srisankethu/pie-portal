@@ -775,6 +775,61 @@ def test_no_fold_means_no_decisions_rather_than_empty_ones(session):
     assert report["created"] == 0
     assert report["as_of"] is None
     assert _by_type(session) == {}
+    # Every state is named, so "nothing to report" is distinguishable from
+    # "nothing is wrong" by a reader who only has the report.
+    assert report["states_missing"] == sorted(
+        set().union(*(d.states for d in DETECTORS.values())))
+
+
+def test_one_state_with_no_fold_does_not_silence_the_detectors_that_can_see(session):
+    """A book whose bills have not been pulled folds no SUPPLIER state at all —
+    there is nothing to fold — so the two supplier detectors have nothing to
+    say. That must not silence the nine reading a state that folded perfectly
+    well: a shelf full of dead stock is still dead.
+
+    And the gap is named rather than swallowed. No supplier fold on record is
+    not evidence that nothing is concentrated; it is a missing input, and §1
+    says a missing input is UNKNOWN and never a clean run.
+    """
+    from app.state.reducers.supplier import SUPPLIER
+
+    _seed(session, bills=[])
+    th = _fold(session)
+    report = generate_from_state(session, ORG, thresholds=th)
+    session.commit()
+
+    assert report["as_of"] == TODAY.isoformat()
+    assert report["created"] > 0
+    assert DecisionType.INV_DEAD_STOCK.value in {
+        d.decision_type for d in _state_rows(session)}
+    assert report["states_missing"] == [SUPPLIER]
+
+
+def test_a_state_that_did_not_fold_does_not_resolve_the_cards_it_would_have_made(session):
+    """The other half of proceeding without a state: a detector that could not
+    run produced nothing, and producing nothing is exactly what a detector does
+    when the situation has gone away. Closing its cards on that basis would be
+    the platform telling a person a supplier concentration cleared itself while
+    it was not looking."""
+    from app.state.reducers.supplier import SUPPLIER
+
+    _seed(session)
+    _generate(session)
+    sole = _by_type(session)[DecisionType.SUP_SOLE_SOURCE.value]
+    assert sole.status == DecisionStatus.OPEN.value
+
+    session.execute(delete(models.BusinessState).where(
+        models.BusinessState.organization_id == ORG,
+        models.BusinessState.state == SUPPLIER))
+    session.commit()
+
+    th = load_for_org(session, ORG)
+    report = generate_from_state(session, ORG, thresholds=th)
+    session.commit()
+
+    assert report["states_missing"] == [SUPPLIER]
+    assert _by_type(session)[DecisionType.SUP_SOLE_SOURCE.value].status == (
+        DecisionStatus.OPEN.value)
 
 
 # ── the registry ────────────────────────────────────────────────────────────

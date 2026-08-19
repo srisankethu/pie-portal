@@ -37,7 +37,6 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from ..config import settings
 from .provider import AIProvider
 
 log = logging.getLogger("pie_portal.ai.reading")
@@ -122,9 +121,18 @@ def read(text: str, provider: Optional[AIProvider]) -> ReadResult:
     body = (text or "").strip()
     if not body:
         return ReadResult(status="fallback", detail="empty enquiry")
-    if provider is None or settings.AI_PROVIDER == "mock":
-        # Not an error. The regex is the product's behaviour without a provider
-        # configured, and saying so beats a screen that looks broken.
+    if provider is None or getattr(provider, "name", "") == "mock":
+        # Ask the provider that was actually handed over, never the deployment
+        # setting. The two disagree in both directions, and each way is silent:
+        # an organization running its own key (ai/byok.py) gets a live provider
+        # while ``AI_PROVIDER`` still says mock — reading the setting switches
+        # the feature off for exactly the customers who paid for it. And
+        # ``select_provider`` falls back to the mock whenever a live provider
+        # cannot be built, so reading the setting there would send the mock's
+        # output onward as the model's answer.
+        #
+        # Not an error either way. The regex is the product's behaviour without
+        # a provider, and saying so beats a screen that looks broken.
         return ReadResult(status="fallback", detail="no AI provider configured")
 
     try:

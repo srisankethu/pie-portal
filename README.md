@@ -199,8 +199,10 @@ decision lifecycle, the Quote Builder integration, and fresh-clone startup.
 V1 is complete and demo-ready. Before it runs on real customer data, three
 deployment gates remain — replacing the demo login with a real identity
 provider, mapping customer→salesperson assignment from Zoho, and setting the
-real AI cost rates. The Outcome Tracker (measuring the realised impact of
-accepted recommendations) is the most valuable next increment.
+real AI cost rates. The Outcome Tracker measures the realised impact of an
+accepted recommendation for the four detector families it has evaluators for;
+extending it past those four, and persisting an evaluation rather than
+recomputing it on read, are the most valuable next increments.
 
 Details in [operations.md](docs/operations.md) and
 [architecture.md](docs/architecture.md).

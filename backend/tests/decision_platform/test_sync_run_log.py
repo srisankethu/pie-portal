@@ -238,3 +238,47 @@ def test_running_migrations_does_not_switch_the_app_log_off(tmp_path, monkeypatc
     with logs.capture("run_after_migration") as run_log:
         app_logger.info("still logging")
     assert [line.message for line in run_log.lines] == ["still logging"]
+
+
+# ── credentials must never reach the log ────────────────────────────────────
+def test_a_credential_in_a_url_is_redacted_before_it_is_stored(session, run):
+    """Found in a real run log, pasted into a chat window to ask about sync
+    speed: the Zoho token refresh sent the refresh token and the client secret
+    as **query parameters**, httpx logs every request URL at INFO, and the run
+    log then wrote them to the database and rendered them on a screen.
+
+    The call site is fixed — they travel in the body now — and this pins the
+    second line of defence, because the next one will be somebody else's URL.
+    """
+    with logs.capture("run_1") as run_log:
+        # Placeholder values, in the shape the real ones have — all-zero, which
+        # is what the scanner in `test_crypto.test_no_live_secret_is_committed`
+        # recognises as a placeholder. That scanner caught the first draft of
+        # this test, which had pasted the credential straight out of the log
+        # that prompted it. Working as intended, on its author.
+        secret = "0" * 42
+        token = f"1000.{'0' * 32}.{'0' * 32}"
+        log.info(
+            'HTTP Request: POST https://accounts.zoho.in/oauth/v2/token'
+            '?refresh_token=%s&client_id=1000.CLIENTID'
+            '&client_secret=%s&grant_type=refresh_token "HTTP/1.1 200"',
+            token, secret)
+        jobs.persist_log(session, run, run_log)
+
+    stored = "\n".join(row.message for row in _lines(session))
+    assert token not in stored, "the refresh token must not be stored"
+    assert secret not in stored, "nor the client secret"
+    assert "refresh_token=[redacted]" in stored, (
+        "the parameter name stays, so the line still says which call this was")
+    assert "accounts.zoho.in/oauth/v2/token" in stored, "and remains diagnosable"
+
+
+def test_a_secret_in_a_json_body_is_redacted_too():
+    assert logs.redact('{"access_token": "1000.abc", "expires_in": 3600}') == (
+        '{"access_token": "[redacted]", "expires_in": 3600}')
+
+
+def test_an_ordinary_line_is_left_exactly_as_it_was():
+    """A redactor that mangles ordinary lines is one people turn off."""
+    line = "zoho items: stopped at the ZOHO_MAX_PAGES limit (50)"
+    assert logs.redact(line) == line

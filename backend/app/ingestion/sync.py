@@ -89,6 +89,13 @@ class SyncReport:
     #: that widens the window costs list calls over the new months, and a run
     #: that reports zero here read nothing it had not already read.
     windows_listed_in_full: int = 0
+    #: Whether this pull read the item catalogue and its shelf, or found
+    #: today's reading already taken and went straight to the documents.
+    #: Reported rather than inferred: a run with no new items is
+    #: indistinguishable from a run that never looked, and only one of those is
+    #: worth investigating.
+    catalogue_read: bool = False
+    catalogue_skipped_reason: str = ""
     skipped: list[dict[str, str]] = field(default_factory=list)
     # Relationships this pull actually moved. Lets the Customer × Item
     # recompute afterwards target what changed instead of rebuilding the whole
@@ -263,14 +270,22 @@ def _sole_connection(session: Session, organization_id: str) -> bool:
     nowhere else. Two: it could be either, and picking one silently merges a
     stranger's customers into a book they never traded with.
 
-    **Counts Zoho connections only, and that is a real limit rather than an
-    oversight to read past.** It is correct while `zoho_connections` is the
-    only connection table, and it fails in the unsafe direction the moment it
-    is not: a second connector's book would not be counted, this would answer
-    "one", and adoption would claim rows belonging to a company it has never
-    read. Whatever restructures the connection tables owns this query too —
-    stated here because the failure is silent and the call site above reads
-    like a settled question.
+    **Counts every connection on the organization, whatever system it reads.**
+    The query names `ZohoConnection` and filters on nothing but the
+    organization, and that is correct rather than careless: the table holds
+    every connector's connections and the class name is historical.
+    `ZohoConnection`'s own docstring names this guard as one of the queries
+    that stays right because there is one connection table rather than one per
+    connector.
+
+    This paragraph used to say the reverse — "counts Zoho connections only",
+    warning that a second connector's book would go uncounted, this would
+    answer "one", and adoption would claim rows from a company it had never
+    read. No such hazard exists, and the sentence sent readers looking for one.
+    The live version of the worry is narrower and worth keeping: what this
+    depends on is one *table*, not one connector. A second connection table
+    alongside this one would fail in exactly that unsafe direction, silently,
+    so whatever adds one owns this query too.
     """
     from ..domain import models
 
@@ -295,7 +310,8 @@ class SyncService:
                  on_phase: Optional[Callable[[str], None]] = None,
                  connector: str = "zoho",
                  connection_id: Optional[str] = None,
-                 incremental: bool = True) -> None:
+                 incremental: bool = True,
+                 catalogue_due: bool = True) -> None:
         self.s = session
         self.source = source
         self.org = organization_id
@@ -304,6 +320,19 @@ class SyncService:
         # reconciliation: still cheap (unchanged documents cost no detail call)
         # but complete, which is the only state in which deletions are visible.
         self.incremental = incremental
+        # Whether this pull reads the item catalogue and its per-location
+        # shelf, or leaves today's reading as it stands. See `run_reference`:
+        # these two are the dominant cost of a sync and are a daily reading, so
+        # a second pull on the same day was spending five minutes of item pages
+        # and 152 stock calls to rewrite what the first one wrote.
+        #
+        # Contacts and suppliers are **not** in this: they are read on every
+        # pull, whatever this says. An item a document names is fetched by id
+        # when the master lacks it (`_resolve_product`); a *customer* has no
+        # such rescue, so deferring the contact list would skip a new
+        # customer's first invoice as UNKNOWN_CUSTOMER. 26 calls to keep every
+        # line resolvable is not the cost worth cutting.
+        self.catalogue_due = catalogue_due
         # Reports what the pull is doing, so a job that takes minutes can say
         # so in words. Optional: a scripted caller that does not care passes
         # nothing and the stages run exactly as before.
@@ -401,8 +430,23 @@ class SyncService:
         """
         self._phase("Reading customers")
         self._sync_customers()
-        self._phase("Reading items")
-        self._sync_products()
+        if self.catalogue_due:
+            self.report.catalogue_read = True
+            self._phase("Reading items")
+            self._sync_products()
+        else:
+            # Not a shortcut around correctness: an item this pull's documents
+            # name and the catalogue does not hold is still fetched by id
+            # (`_resolve_product`), so no line goes unresolved for want of this
+            # pass. What is deferred is the *refresh* of names, prices, status
+            # and stock — a daily reading by construction, since every row it
+            # writes is keyed and upserted by day.
+            self.report.catalogue_skipped_reason = (
+                "today's reading was already taken; the item catalogue and the "
+                "per-location shelf are read once a day, and a full sync reads "
+                "them whatever the day")
+            log.info("skipping the item catalogue and the shelf: %s",
+                     self.report.catalogue_skipped_reason)
         if hasattr(self.source, "list_vendors"):
             self._supply_phase("Reading suppliers", "vendor", self._sync_vendors)
         self.s.flush()  # ensure customers/products have ids for FK resolution
@@ -710,6 +754,13 @@ class SyncService:
         reports a current number with no history, so history exists only because
         something writes it down once a day.
         """
+        if not self.catalogue_due:
+            # The expensive half of the daily reading: one `itemdetails` call
+            # per hundred items, so a fifteen-thousand-line master is 152 calls
+            # against a pacer that allows ninety a minute. Skipped for the same
+            # reason the master list is — today's shelf is already written down,
+            # and these rows are upserted by day.
+            return
         by_external = self.repo.product_ids_by_external()
         if not by_external:
             return
@@ -833,13 +884,17 @@ class SyncService:
         company this pull has never read, and of the two possible mistakes only
         one is recoverable.
 
-        The guard reaches the retire *list*, not the delete itself.
-        `retire_document` still matches on `(organization_id, external_ref)`,
-        so two companies holding one ref — which Zoho's globally unique ids
-        make impossible and a per-company numbering scheme makes ordinary —
-        still delete together. `test_retiring_a_colliding_ref_does_not_delete_
-        the_other_companys_rows` is xfail against exactly that, and turns into
-        a failure the day the fact tables carry a connection.
+        The guard reaches the delete as well, which it did not always. Until
+        the fact tables carried provenance, `retire_document` matched on
+        `(organization_id, external_ref)` alone: scoping the sweep kept another
+        company's document out of the retire *list*, and nothing then stopped
+        the delete from reaching a colliding reference — ordinary the moment a
+        connector numbers per company rather than globally, as Zoho does. It
+        filters on the connection now.
+        `test_retiring_a_colliding_ref_does_not_delete_the_other_companys_rows`
+        was the strict xfail armed against that gap; it turned into a failure
+        the moment the provenance migration made it pass, and the marker came
+        off in the same change.
 
         Retirement supersedes the document's events rather than deleting them.
         The log is what everything else is derived from, so one supersede

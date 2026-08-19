@@ -131,7 +131,17 @@ export function CustomerPicker({
   const [reloads, setReloads] = useState(0);
 
   useEffect(() => {
-    if (!open || !token) return;
+    // Only `open`. Guarding on the token as well is what stopped this dialog
+    // ever loading: the session moved into an httpOnly cookie, so
+    // `savePlatformSession` writes `token: ""` and `/auth/me` restores it that
+    // way — the browser holds an empty string and the cookie is the credential.
+    // `authInit` already treats an empty token as "send no Authorization
+    // header", which is why every other screen passes `session.token` straight
+    // through. Here the falsy check returned before the fetch, so `rows` stayed
+    // empty and the field answered "No customer matches that." to every name in
+    // the directory. The bug only appeared after a reload, which is why it read
+    // as an empty directory rather than a broken one.
+    if (!open) return;
     let live = true;
     setLoading(true);
     // Debounced: a keystroke per request would put three hundred queries

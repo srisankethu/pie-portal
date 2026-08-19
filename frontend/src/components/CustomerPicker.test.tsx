@@ -25,9 +25,9 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-function session(role: Role): PlatformSession {
+function session(role: Role, token = "tok"): PlatformSession {
   return {
-    token: "tok", role, name: "Test", user_id: "u1", organization_id: "org1",
+    token, role, name: "Test", user_id: "u1", organization_id: "org1",
     currency: "INR", timezone: "Asia/Kolkata",
   };
 }
@@ -40,12 +40,12 @@ function account(name: string): Account {
   } as Account;
 }
 
-function mount(role: Role = "OWNER") {
+function mount(role: Role = "OWNER", token?: string) {
   return render(
     <MemoryRouter>
       <CustomerPicker
         open
-        session={session(role)}
+        session={session(role, token)}
         title="Who is this quote for?"
         onPick={() => {}}
       />
@@ -117,6 +117,24 @@ describe("CustomerPicker, with nothing to show", () => {
     expect(screen.queryByText("Customers could not be loaded")).toBeNull();
     // The search field is the whole dialog when the directory has rows in it.
     expect(screen.getByLabelText("Customer")).toBeVisible();
+  });
+
+  it("loads the directory on a cookie session, where the token is empty", async () => {
+    // The state every browser is actually in after a reload. The session moved
+    // into an httpOnly cookie, so `savePlatformSession` stores `token: ""` and
+    // `/auth/me` restores it that way — and this dialog guarded its fetch on the
+    // token being truthy, so it never asked. Every name typed into it came back
+    // "No customer matches that.", because `rows` was empty and always would be.
+    //
+    // Every test above passes a token, which is why the bug survived them: the
+    // one session shape that reaches production was the one never mounted.
+    listAccounts.mockResolvedValue([account("Pitti Engineering")]);
+    mount("OWNER", "");
+
+    await waitFor(() => expect(listAccounts).toHaveBeenCalledWith("", ""));
+    expect(screen.getByLabelText("Customer")).toBeVisible();
+    // Not the empty-directory panel: an unasked question is not an empty answer.
+    expect(screen.queryByText("No customers have been synced yet")).toBeNull();
   });
 
   it("asks the second question only when the first came back empty", async () => {

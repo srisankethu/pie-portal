@@ -649,7 +649,12 @@ def two_books(engine):
             sess.close()
 
     app.dependency_overrides[get_session] = _override
-    return TestClient(app)
+    client = TestClient(app)
+    # The session factory, attached so a test can add a row this fixture does
+    # not describe — an orphan bill, say — without a second fixture that would
+    # then have to be kept in step with this one.
+    client.Maker = maker
+    return client
 
 
 def test_one_book_syncing_later_does_not_hide_another_books_observation(session):

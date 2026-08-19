@@ -4980,15 +4980,31 @@ def _statutory_views_by_book(session: Session, org: str, *, as_of: date,
     vendors = index_of(session, org, models.Vendor)
     names = _vendor_names(session, org)
 
+    # Counted as one set, not two. Both loops below file a bill into a book and
+    # both can fail to; counting only the first understated the caveat while the
+    # 43B(h) side quietly dropped rows, and a bill with no vendor at all was
+    # filtered out by the query before either could see it. The caveat exists to
+    # say what the entity figures do not cover, so it has to count every way a
+    # bill escapes them.
+    # Keyed on ``external_ref``, which both sides carry: a bill can escape the
+    # purchase loop and the open-bill loop, and counting it twice would overstate
+    # the caveat as surely as counting it never understated it.
+    unplaced: set[str] = set()
+
     purchases: dict[str, list[withholding.Purchase]] = {}
-    unattributed = 0
     for bill in session.scalars(
             select(models.BillDoc).where(
-                models.BillDoc.organization_id == org,
-                models.BillDoc.vendor_id.is_not(None))).all():
+                models.BillDoc.organization_id == org)).all():
+        # No vendor on the document: it names no party, so no book can claim it.
+        # Previously excluded by the query, which made it invisible rather than
+        # unattributed — a statutory exposure counted nowhere and disclosed
+        # nowhere.
+        if not bill.vendor_id:
+            unplaced.add(bill.external_ref)
+            continue
         book = _book_of(vendors, bill.vendor_id)
         if not book:
-            unattributed += 1
+            unplaced.add(bill.external_ref)
             continue
         purchases.setdefault(book, []).append(
             withholding.Purchase(vendor_id=bill.vendor_id, date=bill.date,
@@ -4996,15 +5012,18 @@ def _statutory_views_by_book(session: Session, org: str, *, as_of: date,
 
     open_bills: dict[str, list[msme.OpenBill]] = {}
     for open_bill in _unpaid_bills(session, org):
-        book = _book_of(vendors, open_bill.vendor_id)
+        book = (_book_of(vendors, open_bill.vendor_id)
+                if open_bill.vendor_id else None)
         if book:
             open_bills.setdefault(book, []).append(open_bill)
+        else:
+            unplaced.add(open_bill.external_ref)
 
     crossings = {book: withholding.crossings(rows, names, as_of=as_of, th=th)
                  for book, rows in purchases.items()}
     watchlists = {book: msme.watchlist(rows, statuses, names, as_of=as_of, th=th)
                   for book, rows in open_bills.items()}
-    return crossings, watchlists, unattributed
+    return crossings, watchlists, len(unplaced)
 
 
 @router.get("/entity-routing")
@@ -5046,10 +5065,24 @@ def entity_routing(principal: Principal = Depends(require_manager_or_owner),
     msme_refused = jurisdiction.msme_refusal(country)
     crossings: dict[str, dict] = {}
     watchlists: dict[str, dict] = {}
-    unattributed_bills = 0
+    # ``None`` rather than ``0`` while the block below has not run. Nobody
+    # counted, and a zero here would read as "every bill is accounted for" on
+    # exactly the screens where no bill was looked at.
+    unattributed_bills: Optional[int] = None
     if withholding_refused is None or msme_refused is None:
+        # **Today, not the snapshot's as_of, and the two dates are different
+        # kinds of fact.** Everything else on this screen measures trade, so it
+        # is replayed to the last day the business traded. A statutory deadline
+        # is not a measurement of trade: section 15 runs from a bill's date to a
+        # calendar date, and 194Q's year is the financial year we are standing
+        # in. `/msme-watchlist` and `/withholding-crossings` both use
+        # `clock.today`, so anchoring these blocks to the snapshot gave one
+        # tenant two answers to one statutory question on one day — and the
+        # answer here would drift further from the real deadline the longer a
+        # sync was stale, in the direction of saying there is more time left.
         crossings, watchlists, unattributed_bills = _statutory_views_by_book(
-            session, org, as_of=as_of, th=th, statuses=statuses)
+            session, org, as_of=clock.today(th.timezone), th=th,
+            statuses=statuses)
         if withholding_refused is not None:
             crossings = {}
         if msme_refused is not None:
@@ -5081,6 +5114,9 @@ def entity_routing(principal: Principal = Depends(require_manager_or_owner),
         # organization actually carries.
         unattributed={
             "bills": unattributed_bills,
+            # Stated, because ``bills: null`` and ``bills: 0`` mean opposite
+            # things and a reader cannot tell them apart from the number alone.
+            "bills_counted": unattributed_bills is not None,
             "customers": len(exposures.get("", ())),
             "suppliers": len(scopes.get("", ())),
         },

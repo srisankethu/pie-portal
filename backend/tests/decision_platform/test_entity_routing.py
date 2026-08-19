@@ -508,7 +508,12 @@ def test_the_endpoint_files_each_book_separately_over_real_rows(two_books):
     # Nothing on this book is unattributed, so the caveat is present and nil
     # rather than absent — a screen that only mentioned coverage when it was
     # broken would be a screen nobody trusts when it says nothing.
-    assert body["unattributed"] == {"bills": 0, "customers": 0, "suppliers": 0}
+    assert body["unattributed"] == {"bills": 0, "bills_counted": True,
+                                    "customers": 0, "suppliers": 0}
+    # And the flag is the point: `bills: 0` means "counted, none escaped", while
+    # `bills: null` means nobody counted. A reader cannot tell those apart from
+    # the number, so a nil caveat has to say which it is.
+    assert body["unattributed"]["bills_counted"] is True
 
 
 def test_the_gate_being_unconfirmed_leaves_every_books_194q_section_silent(
@@ -560,3 +565,44 @@ def test_the_endpoint_reads_the_country_off_the_organization(session, country,
                                       else entity["financial_year"])
     assert (entity["msme"]["applies"] is True) == (expected
                                                    == routing.SUPPORTED)
+
+
+def test_a_bill_that_lands_in_no_book_is_counted_rather_than_dropped(two_books):
+    """The caveat has to count every way a bill escapes the entity figures.
+
+    Two ways existed and neither was counted. A bill whose vendor carries no
+    connection was dropped from the 43B(h) side by a bare ``if book:`` while
+    only the 194Q side incremented the counter; a bill with no vendor at all was
+    excluded by the query before either loop could see it. Both read the same on
+    screen: ``unattributed.bills`` said zero while a statutory exposure sat
+    outside every book — the caveat asserting full coverage over money nobody
+    counted.
+
+    One of each is added here, so the count has to reach two. A test with one
+    would pass while either half was still broken.
+    """
+    org = settings.DEFAULT_ORG_ID
+    with two_books.Maker() as s:
+        s.add(models.Vendor(vendor_id="ven_orphan", organization_id=org,
+                            external_id="v-orphan", name="Unconnected supplier"))
+        s.flush()
+        # (a) a real vendor that belongs to no connected company
+        s.add(models.BillDoc(
+            bill_id="bill_orphan", organization_id=org, external_ref="b-orphan",
+            vendor_id="ven_orphan", date=date(2026, 1, 10), status="open",
+            total=Decimal("50000"), balance=Decimal("50000"), source_ref={}))
+        # (b) a bill naming no vendor at all
+        s.add(models.BillDoc(
+            bill_id="bill_novendor", organization_id=org,
+            external_ref="b-novendor", vendor_id=None, date=date(2026, 1, 11),
+            status="open", total=Decimal("40000"), balance=Decimal("40000"),
+            source_ref={}))
+        s.commit()
+
+    token = two_books.post("/api/v1/auth/login", json={
+        "email": "m.rao@pie.example", "password": SEED_PASSWORD}).json()["token"]
+    body = two_books.get("/api/v1/insight/entity-routing",
+                         headers={"Authorization": f"Bearer {token}"}).json()
+
+    assert body["unattributed"]["bills_counted"] is True
+    assert body["unattributed"]["bills"] == 2

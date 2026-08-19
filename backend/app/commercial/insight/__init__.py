@@ -34,6 +34,10 @@ Modules:
                 — receivable, payable and inventory positions replayed from
                 dated line data, and withheld outright for a month whose
                 inventory the platform never observed
+  ``financing`` what a customer earns once the cost of waiting to be paid is
+                charged against it — the item metrics' margin joined to the
+                settlement history's days-to-pay, at the owner's cost of
+                capital, and computing nothing at all until that rate is set
   ``schemes``   what hitting a principal's target actually pays: the rebate
                 slabs, what is secured, what is at stake, and — only above an
                 evidence floor — where the period lands at the current rate

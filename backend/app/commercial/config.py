@@ -311,6 +311,35 @@ class CommercialThresholds:
     #: before and after the change is distinguishable.
     carrying_rate_is_published: bool = False
 
+    # ── cost of capital ──────────────────────────────────────────────────────
+    #
+    # What a rupee of *customer credit* costs to fund for a year, as a fraction.
+    # **RESTRICTED, and owner-set with no default — this is deliberately
+    # ``None``.**
+    #
+    # Not the same number as ``carrying_cost_annual_pct`` above and not a
+    # duplicate of it. That one is the all-in cost of holding *stock*: interest
+    # on the money plus warehousing, insurance and obsolescence. A receivable
+    # occupies no shelf and cannot go out of date; charging it the stock rate
+    # would bill an invoice for floor space. What is left when those halves come
+    # off is the money alone, which is what a receivable actually costs, and it
+    # is a different figure — a business borrowing at 9% and writing stock down
+    # at 3% has one rate here and another there.
+    #
+    # No default for the reason ``effective_tax_rate`` below has none: three
+    # entities with possibly three lenders sit behind this platform, and a
+    # plausible-looking 0.10 would be a made-up number driving a figure somebody
+    # plans a payment run around. Left unset, ``insight/financing`` computes
+    # nothing at all and names this field as what is missing — it does not fall
+    # back to the carrying rate, which would silently charge receivables for
+    # warehousing.
+    #
+    # RESTRICTED for the reason the carrying rate is: it is one
+    # organization-wide constant, so anyone holding it and one financing figure
+    # divides straight back to the revenue it was levied on. Both the reading it
+    # feeds and the Settings screen that edits it are manager-or-owner only.
+    cost_of_capital_annual_pct: Optional[float] = None
+
     # ── statutory payment timing (MSMED s.15 / income-tax s.43B(h)) ──────────
     #
     # Money owed to a registered micro or small supplier past the section 15
@@ -614,6 +643,27 @@ class CommercialThresholds:
     # ``quantity_band_edges`` uses and for the same reason.
     capital_dso_reduction_days: tuple[int, ...] = (5, 10, 15)
 
+    # ── ordering the cross-sell gaps by observed adoption sequence ───────────
+    #
+    # ``insight/adoption`` counts, for every ordered pair of lines, how many
+    # customers took the second after the first. Both figures below are evidence
+    # floors rather than commercial policy, which is why neither is in
+    # ``policy.EDITABLE``: an owner should not be able to make an empty ranking
+    # produce output by lowering the bar it failed. They are in the version hash
+    # for the opposite reason — a ranking computed last quarter has to be able
+    # to say what rule produced it.
+    #
+    # Fewer customers than this holding *both* lines and the share is a
+    # coincidence with a percentage sign on it, so the pair reports nothing at
+    # all. Higher than ``mix``'s own affinity floor on purpose: this one counts
+    # the intersection of two lines rather than the holders of one, and the
+    # intersection is always the smaller number.
+    crosssell_min_base_customers: int = 8
+    # And the order has to be one-sided enough to be worth calling an order. At
+    # 0.6, a pair split evenly between the two directions reports NO_ORDER —
+    # which is a measurement — instead of ranking a gap on a coin toss.
+    crosssell_min_sequence_share: float = 0.6
+
     @classmethod
     def from_env(cls) -> "CommercialThresholds":
         return cls(
@@ -627,6 +677,13 @@ class CommercialThresholds:
             carrying_rate_is_published=(
                 os.environ.get("CI_CARRYING_RATE_IS_PUBLISHED", "").strip().lower()
                 in ("1", "true", "yes")),
+            # Unset stays unset, exactly as ``effective_tax_rate`` below.
+            # ``_f`` would turn a missing variable into a number, and the whole
+            # point of this one being ``None`` is that there is none to invent.
+            cost_of_capital_annual_pct=(
+                float(os.environ["CI_COST_OF_CAPITAL_ANNUAL_PCT"])
+                if os.environ.get("CI_COST_OF_CAPITAL_ANNUAL_PCT", "").strip()
+                else _default("cost_of_capital_annual_pct")),
             msme_default_days=_i("CI_MSME_DEFAULT_DAYS",
                                  _default("msme_default_days")),
             msme_max_agreed_days=_i("CI_MSME_MAX_AGREED_DAYS",
@@ -705,6 +762,12 @@ class CommercialThresholds:
             min_band_transactions=_i("CI_MIN_BAND_TRANSACTIONS", 2),
             min_quote_exception_impact=_f("CI_MIN_QUOTE_EXCEPTION_IMPACT", 500.0),
             quote_price_tolerance_pct=_f("CI_QUOTE_PRICE_TOLERANCE_PCT", 0.02),
+            crosssell_min_base_customers=_i(
+                "CI_CROSSSELL_MIN_BASE_CUSTOMERS",
+                _default("crosssell_min_base_customers")),
+            crosssell_min_sequence_share=_f(
+                "CI_CROSSSELL_MIN_SEQUENCE_SHARE",
+                _default("crosssell_min_sequence_share")),
         )
 
     # ── pricing-policy lookups ───────────────────────────────────────────────

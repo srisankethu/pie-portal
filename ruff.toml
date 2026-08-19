@@ -93,3 +93,8 @@ select = [
 # files describe one replay and a second copy of that fixture would be the pair
 # that drifts.
 "backend/tests/decision_platform/test_capital.py" = ["F811"]
+# `test_entity_routing` borrows the same `two_books` client, for the same
+# reason again: the routing screen files a customer, a vendor and a bill into
+# the connected company they belong to, which is the resolution that fixture
+# exists to exercise. A third copy of it would be the one that drifts.
+"backend/tests/decision_platform/test_entity_routing.py" = ["F811"]

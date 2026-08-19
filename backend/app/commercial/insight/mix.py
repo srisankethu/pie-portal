@@ -157,6 +157,14 @@ class Cell:
     revenue: float
     last_traded: Optional[date]
     orders: int
+    #: When this customer first took this line, over all history rather than the
+    #: window. Added for ``insight/adoption``, which ranks the gaps by the order
+    #: the base adopted its lines in and needs the earliest date rather than the
+    #: latest — the alternative was a second per-customer index derived from the
+    #: same rows, which is the responsibility duplication CLAUDE.md §2 names.
+    #: Deliberately not windowed: a first purchase truncated by a window is not
+    #: a first purchase.
+    first_traded: Optional[date] = None
 
     def to_dict(self) -> dict:
         # The field is still called ``category`` on the wire. It is what the
@@ -166,6 +174,7 @@ class Cell:
             "category": self.key, "label": self.label,
             "state": self.state, "revenue": round(self.revenue, 2),
             "last_traded": self.last_traded.isoformat() if self.last_traded else None,
+            "first_traded": self.first_traded.isoformat() if self.first_traded else None,
             "orders": self.orders,
         }
 
@@ -238,6 +247,7 @@ def build(lines: Iterable[MixLine], names: dict[str, str], as_of: date, *,
         if r.date >= start:
             cell.revenue += r.amount
         cell.last_traded = max(cell.last_traded or r.date, r.date)
+        cell.first_traded = min(cell.first_traded or r.date, r.date)
 
     for cells in per.values():
         for cell in cells.values():

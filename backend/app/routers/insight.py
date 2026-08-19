@@ -36,14 +36,15 @@ from ..commercial import (economics, floor, incentive, jurisdiction, ownership,
                           policy, portfolio, principals, quote_service)
 from ..commercial.compute import compute_for
 from ..commercial import categories as cat
-from ..commercial.insight import (absence, bonds, cadence, capital, cashflow,
-                                  cohorts, composition, credit, cycle,
+from ..commercial.insight import (absence, adoption, bonds, cadence, capital,
+                                  cashflow, cohorts, composition, credit, cycle,
                                   daily as daily_view,
-                                  dependency, flow, gmroi, landscape, mix, msme,
+                                  dependency, financing, flow, gmroi, landscape,
+                                  mix, msme,
                                   order_to_cash,
                                   outcomes as outcomes_view,
                                   passthrough as pass_through_view, payments,
-                                  periods, radar, schemes, selffunding,
+                                  periods, radar, routing, schemes, selffunding,
                                   simulate, stock,
                                   story, supply, terms as vendor_terms, wallet,
                                   weather, withholding)
@@ -919,6 +920,53 @@ def payable_behaviour(principal: Principal = Depends(require_manager_or_owner),
                       "a bill yet — so there is no bill date to measure from. "
                       "A sync run before bill breakdowns were read will fill "
                       "this in on its next pass."))
+
+
+@router.get("/customer-financing")
+def customer_financing(principal: Principal = Depends(require_manager_or_owner),
+                       session: Session = Depends(get_session)) -> dict:
+    """What each customer earns after the cost of waiting to be paid.
+
+    Manager and above, scoped like ``/payables`` and ``/quote-pricing``, and
+    here the reason is not an analogy: this screen is margin by construction.
+    Every row is gross profit minus a rupee charge levied at the organization's
+    cost of capital, and both halves are RESTRICTED — remove them and there is
+    nothing left but a days-to-pay column ``/payments`` already serves at every
+    role. So the endpoint refuses rather than serving an emptied version of
+    itself, which is the same call ``/cash-cycle`` makes.
+
+    The join itself is ``insight/financing``; nothing is computed here. The two
+    reads are the persisted metric rows and the same payment applications
+    ``/payments`` measures, so neither half is recomputed for this screen.
+    """
+    org, snapshot, th = _labels_only(session, principal)
+    as_of = clock.today(th.timezone)
+
+    metrics = session.scalars(
+        select(models.CustomerItemMetric).where(
+            models.CustomerItemMetric.organization_id == org)).all()
+    if not metrics:
+        return _no_data(th, "profitability after financing cost",
+                        missing="customer metrics",
+                        synced=_books_have_sales(session, org))
+
+    result = financing.build(
+        metrics=metrics, settlements=_settlements(session, org),
+        names=snapshot.customer_names, as_of=as_of, thresholds=th)
+    # Two different empty states, and conflating them is the mistake `_no_data`
+    # was split to stop: an unset rate is one person typing one number, and a
+    # thin book is nothing anybody can do today.
+    if not result["rate_set"]:
+        empty = ("No annual cost of capital is set, so nothing here can be "
+                 "computed. Set it in Settings — the reading refuses rather "
+                 "than charging receivables at a rate nobody chose.")
+    elif not result["measurable"]:
+        empty = ("Customer metrics have been computed, but no account has both "
+                 "a margin and a settled payment history inside the window, so "
+                 "there is nothing to charge financing against yet.")
+    else:
+        empty = None
+    return _envelope(result, th=th, empty_reason=empty)
 
 
 def _last_days_to_pay(settled: list[payments.Settlement]) -> dict[str, int]:
@@ -2397,6 +2445,17 @@ def relationship_bonds(
 # Every role. The grid is revenue and dates — no cost, no margin — and the whole
 # point of it is a conversation a salesperson has, so 403-ing them out of it
 # would be removing the feature to protect a field it does not contain.
+#
+# The cross-sell ordering added beside it does not change that, and the test is
+# the one CLAUDE.md §1 states rather than a glance at the field names: could a
+# recipient who may not see cost invert anything here to recover it? Every
+# figure in `cross_sell` is a count of customers, a share of one count by
+# another, or a number of days between two invoice dates. None of them is
+# denominated in money, none of them moves when a purchase price moves, and no
+# rule in it has a boundary anywhere near cost — so there is nothing to walk.
+# Had the ranking been by rupees at stake, which is the version this
+# deliberately refuses to compute, it would have belonged behind
+# `require_manager_or_owner` instead.
 @router.get("/mix")
 def product_mix(months: int = Query(12, ge=3, le=36),
                 by: str = Query(mix.BY_CATEGORY,
@@ -2467,6 +2526,16 @@ def product_mix(months: int = Query(12, ge=3, le=36),
         snapshot.customer_names, as_of, thresholds=th,
         columns=columns, dimension=by, months=months)
 
+    # And the order to work the gaps in. `rank` annotates each gap with the
+    # sequence the base adopted its lines in and re-sorts them; it reads the
+    # grid it is handed and computes nothing the grid does not already publish,
+    # so a reader can check any share on it against the cells beside it. On the
+    # response rather than behind its own endpoint because a ranking of gaps is
+    # meaningless without the gaps: two calls could disagree about the window,
+    # the company scope or the pivot, and the ordering would then be describing
+    # a grid the reader is not looking at.
+    sequence = adoption.rank(result, thresholds=th)
+
     # Per connected company, like every other list: the same firm buying from
     # two of the books is two relationships, and a coverage gap read across
     # both would show a line as missing that one of them already sells them.
@@ -2486,7 +2555,13 @@ def product_mix(months: int = Query(12, ge=3, le=36),
         # picker and the numbers under it can never describe different books.
         companies=_companies(session, org),
         scoped_to=connection_id,
-        unavailable=mix.unavailable())
+        cross_sell=sequence,
+        # Both modules' refusals, because the screen now makes both kinds of
+        # claim. `adoption`'s are the ones a reader is most likely to want
+        # answered — "so what is that gap worth" — and dropping them because
+        # `mix` already refuses something adjacent is how a refusal stops being
+        # read where the claim is made.
+        unavailable=mix.unavailable() + adoption.unavailable())
 
 
 # ── share of wallet: how much of their spend comes here ─────────────────────
@@ -4473,6 +4548,18 @@ def daily(moved_from: Optional[date] = Query(None),
 # explanation attached and not advice to run a sync that would not help.
 
 
+def _org_country(session: Session, org: str) -> Optional[str]:
+    """The country whose statutes reach this tenant, or ``None`` if unrecorded.
+
+    One reader of the column, because ``None`` here carries meaning — it is
+    "not established", which ``commercial/jurisdiction`` turns into a different
+    refusal from an unsupported country — and a second call site that read it
+    as a plain string would be the place that forgot.
+    """
+    row = session.get(models.Organization, org)
+    return row.country if row is not None else None
+
+
 def _statute_refusal(session: Session, org: str, rule) -> Optional[str]:
     """Why this organization's country blocks a statutory screen, or ``None``.
 
@@ -4480,8 +4567,7 @@ def _statute_refusal(session: Session, org: str, rule) -> Optional[str]:
     reason text lives there, keyed by country and by statute, so the API and
     any future caller cannot drift into two wordings of the same refusal.
     """
-    row = session.get(models.Organization, org)
-    return rule(row.country if row is not None else None)
+    return rule(_org_country(session, org))
 
 
 def _statute_refused(reason: str, *, th: Any, empty: dict) -> dict:
@@ -4813,3 +4899,192 @@ def self_funding(principal: Principal = Depends(require_owner),
     return _envelope(
         built, th=th,
         empty_reason=(None if built["confirmed"] else built["blocked_by"]))
+
+
+# ── entity routing: the determinants, side by side ──────────────────────────
+#
+# One screen, five reads that other screens already do, and no new arithmetic.
+# The question it serves — which of three legal entities a customer or a
+# principal should sit under — is decided from memory today because the inputs
+# have never been on one page. It stays a *surfacing* screen: ``insight/routing``
+# says at length why there is no recommended entity here, and the endpoint adds
+# nothing to the payload that could be read as one.
+#
+# Manager and owner only, for the reason ``/capital`` is: the capital block is
+# the shelf at what it cost, netted against a payable, with gross profit over
+# it. There is no version of this screen with the economics removed that still
+# answers the question, so an honest 403 beats a page stripped to nothing.
+
+
+def _supplier_scopes_by_book(session: Session, org: str,
+                             statuses: dict[str, msme.Status]
+                             ) -> dict[str, tuple[str, ...]]:
+    """Each book's suppliers, as the MSME scope somebody established for them.
+
+    A vendor with no status recorded contributes ``UNKNOWN`` through
+    ``msme.NO_STATUS`` rather than being left out. Dropping them would make a
+    book with four hundred unclassified suppliers look like one with none, and
+    the coverage gap is the finding rather than the absence of one.
+    """
+    out: dict[str, list[str]] = {}
+    for vendor in session.scalars(
+            select(models.Vendor).where(
+                models.Vendor.organization_id == org)).all():
+        out.setdefault(vendor.connection_id or "", []).append(
+            statuses.get(vendor.vendor_id, msme.NO_STATUS).scope)
+    return {book: tuple(scopes) for book, scopes in out.items()}
+
+
+def _exposures_by_book(session: Session,
+                       org: str) -> dict[str, tuple[credit.Exposure, ...]]:
+    """Each book's accounts against their own credit lines.
+
+    Through ``_exposures``, which is where the credit screen and the collections
+    screen both get theirs — a third reading of "what do they owe against what
+    were they given" is a third answer nobody could reconcile.
+
+    Unscoped by salesperson deliberately, unlike ``_customers_in_scope``: this
+    endpoint is manager and owner only, and an entity's credit position is the
+    whole book's rather than one person's share of it.
+    """
+    customers = list(session.scalars(
+        select(models.Customer).where(
+            models.Customer.organization_id == org)).all())
+    exposures = _exposures(session, org, customers)
+    out: dict[str, list[credit.Exposure]] = {}
+    for customer in customers:
+        exposure = exposures.get(customer.customer_id)
+        if exposure is not None:
+            out.setdefault(customer.connection_id or "", []).append(exposure)
+    return {book: tuple(rows) for book, rows in out.items()}
+
+
+def _statutory_views_by_book(session: Session, org: str, *, as_of: date,
+                             th: Any, statuses: dict[str, msme.Status]
+                             ) -> tuple[dict[str, dict], dict[str, dict], int]:
+    """``withholding.crossings`` and ``msme.watchlist``, per connected company.
+
+    Both builders are called once per book over that book's own bills rather
+    than once over the organization's, because both answer a question about a
+    *buyer* — the 194Q threshold is per supplier per buyer per year, and the
+    section 15 deadline is a debt of one company. Running them organization-wide
+    and splitting the rows afterwards would cross a supplier's threshold on
+    purchases two different legal entities made, which is the pooling this
+    screen exists to avoid.
+
+    A bill is filed in its vendor's book, which is the rule ``_cycle_inputs``
+    already applies — a document belongs to the book of the party it names.
+    Bills whose vendor carries no connection are counted out and reported rather
+    than filed under a company they may not belong to.
+    """
+    vendors = index_of(session, org, models.Vendor)
+    names = _vendor_names(session, org)
+
+    purchases: dict[str, list[withholding.Purchase]] = {}
+    unattributed = 0
+    for bill in session.scalars(
+            select(models.BillDoc).where(
+                models.BillDoc.organization_id == org,
+                models.BillDoc.vendor_id.is_not(None))).all():
+        book = _book_of(vendors, bill.vendor_id)
+        if not book:
+            unattributed += 1
+            continue
+        purchases.setdefault(book, []).append(
+            withholding.Purchase(vendor_id=bill.vendor_id, date=bill.date,
+                                 amount=float(bill.total or 0)))
+
+    open_bills: dict[str, list[msme.OpenBill]] = {}
+    for open_bill in _unpaid_bills(session, org):
+        book = _book_of(vendors, open_bill.vendor_id)
+        if book:
+            open_bills.setdefault(book, []).append(open_bill)
+
+    crossings = {book: withholding.crossings(rows, names, as_of=as_of, th=th)
+                 for book, rows in purchases.items()}
+    watchlists = {book: msme.watchlist(rows, statuses, names, as_of=as_of, th=th)
+                  for book, rows in open_bills.items()}
+    return crossings, watchlists, unattributed
+
+
+@router.get("/entity-routing")
+def entity_routing(principal: Principal = Depends(require_manager_or_owner),
+                   session: Session = Depends(get_session)) -> dict:
+    """The inputs to "which entity should this sit under", per connected company.
+
+    Five determinants side by side and no recommendation: jurisdiction and the
+    statutory calendar, the 194Q position, the 43B(h) exposure, credit headroom,
+    and capital employed with its return. Every one of them is read from the
+    module that owns it, so this screen cannot disagree with the screen a reader
+    came from.
+
+    The capital block is replayed exactly as ``/capital`` replays it, through
+    the same ``_cycle_inputs``, including the two leading month ends the
+    earliest reported month's window average needs. A cheaper approximation here
+    would be a second opinion about one entity's receivable.
+    """
+    org, snapshot, th = _context(session, principal)
+    as_of = _as_of(snapshot) or clock.today(th.timezone)
+    country = _org_country(session, org)
+
+    books = _companies(session, org)
+    # Read once and handed to both readers below. Two calls would be two
+    # queries answering one question, and — the part that actually bites — two
+    # chances for a supplier to be UNKNOWN on the coverage count and classified
+    # on the exposure beside it.
+    statuses = _msme_statuses(session, org)
+    scopes = _supplier_scopes_by_book(session, org, statuses)
+    exposures = _exposures_by_book(session, org)
+
+    # Nothing statutory is built for a tenant the statute does not reach, and
+    # the refusal is not re-decided here — ``insight/routing`` asks
+    # ``commercial/jurisdiction`` the same question and puts the reason on every
+    # entity. An empty dict below therefore means "this book has nothing to
+    # say", never "we are not allowed to say", which is the distinction the two
+    # statutory endpoints already keep.
+    withholding_refused = jurisdiction.withholding_refusal(country)
+    msme_refused = jurisdiction.msme_refusal(country)
+    crossings: dict[str, dict] = {}
+    watchlists: dict[str, dict] = {}
+    unattributed_bills = 0
+    if withholding_refused is None or msme_refused is None:
+        crossings, watchlists, unattributed_bills = _statutory_views_by_book(
+            session, org, as_of=as_of, th=th, statuses=statuses)
+        if withholding_refused is not None:
+            crossings = {}
+        if msme_refused is not None:
+            watchlists = {}
+
+    replayed = cycle.DEFAULT_MONTHS + cycle.WINDOW_MONTHS - 1
+    inputs = _cycle_inputs(session, org, snapshot, as_of=as_of, months=replayed)
+    capital_view = capital.build(
+        replays=cycle.replay(**inputs, as_of=as_of, thresholds=th,
+                             months=replayed),
+        sold=inputs["sold"], as_of=as_of, thresholds=th,
+        months=cycle.DEFAULT_MONTHS)
+
+    built = routing.assemble(
+        books=[routing.Book(connection_id=book["connection_id"],
+                            label=book["label"],
+                            supplier_scopes=scopes.get(book["connection_id"], ()),
+                            exposures=exposures.get(book["connection_id"], ()))
+               for book in books],
+        country=country, capital_view=capital_view,
+        withholding_views=crossings, msme_views=watchlists,
+        as_of=as_of, thresholds=th)
+
+    return _envelope(
+        built, th=th, as_of=as_of.isoformat(),
+        # What the side-by-side does not cover. A master with no connection on
+        # it belongs to no book here, and a screen that silently left those rows
+        # out would report a smaller exposure for every entity than the
+        # organization actually carries.
+        unattributed={
+            "bills": unattributed_bills,
+            "customers": len(exposures.get("", ())),
+            "suppliers": len(scopes.get("", ())),
+        },
+        empty_reason=(None if books else
+                      "No company is connected, so there is no entity to place "
+                      "a customer or a principal under. Connect one from Data "
+                      "& connection."))

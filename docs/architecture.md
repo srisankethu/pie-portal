@@ -383,24 +383,42 @@ without credentials.
 
 Stating these explicitly matters as much as the design itself.
 
-- **Outcome Tracker.** The `Outcome` model exists but nothing writes it. Until
-  it does, adoption and decision quality are measurable; realised monetary
-  impact is not. This is the most valuable next increment.
+- **A stored realised outcome.** The Outcome Tracker itself *is* built, and
+  this bullet claimed the opposite for longer than it should have.
+  `commercial/outcome_tracker.py` freezes an accepted decision's baseline into
+  `outcome_snapshots` — on both acceptance paths, actioned directly and settled
+  through an approval — and `GET /api/v1/outcomes` serves the realised delta
+  against it. What is not built is *storing* that delta: evaluation is
+  recomputed on read every time, and the older `Outcome` model still has no
+  writer.
 
-  Note that `quote_outcomes` is a different table with live writers and a real
-  `DRAFT → SENT → WON/LOST` machine. Outcome capture is half-built, on the half
-  that produces revenue — scope the Tracker against what exists rather than from
-  zero. For state-derived decisions, `impact.financial` already quantifies what
-  each situation is worth at the moment it is raised, so value-*at-risk*-weighted
-  acceptance needs no new table; only realised impact does.
+  That much is deliberate. Computing on read keeps the snapshot table
+  append-only by construction, and lets a re-sync that brings in late-arriving
+  invoices correct a realised figure instead of contradicting a stored one.
+  Persisting evaluations as superseded-not-mutated measurement rows — the
+  `state/` idiom — is the next increment, and is what `Outcome` would become.
 
-- **Realised monetary impact.** See the Outcome Tracker above. Adoption and
-  decision quality *are* measured: `decisions/outcomes.py` reports detector
-  false-alarm rate at `GET /internal/detector-outcomes` and queue adoption —
-  acceptance by category and user, modify rate and distance, and acceptance
-  against queue depth — at `GET /internal/queue-adoption`. Both owner-only, both
-  two-sided, both `INSUFFICIENT_DATA` below the minimum sample. What neither can
-  say is whether the business improved, which is what `Outcome` is for.
+  `quote_outcomes` is a third table, unrelated to both, with live writers and a
+  real `DRAFT → SENT → WON/LOST` machine.
+
+- **Realised impact beyond the four detector families.** `_EVALUATORS` holds
+  customer decline, dormancy, margin deterioration and cost pass-through, and
+  nothing else. A Customer × Item or quote-context decision freezes a baseline
+  at acceptance and then evaluates to `UNKNOWN` naming the evaluator it does
+  not have; a state-derived decision carries no signal, so nothing is captured
+  for it at all. Neither reports a zero it cannot support (§1: absence of
+  evidence is not a pass). For state-derived decisions `impact.financial`
+  already quantifies what each situation is worth at the moment it is raised,
+  so value-*at-risk*-weighted acceptance needs no new table — only realised
+  impact does.
+
+  Adoption and decision quality are measured separately, and were before any of
+  this: `decisions/outcomes.py` reports detector false-alarm rate at
+  `GET /internal/detector-outcomes` and queue adoption — acceptance by category
+  and user, modify rate and distance, and acceptance against queue depth — at
+  `GET /internal/queue-adoption`. Both owner-only, both two-sided, both
+  `INSUFFICIENT_DATA` below the minimum sample.
+
 - **Prompt/response content logging.** The easiest way to debug a bad
   recommendation, and rejected on purpose: it would create an unscoped second
   copy of the cost/margin facts the permission model works to contain. The

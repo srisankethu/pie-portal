@@ -14,6 +14,7 @@ sets a price, selects a product, or sends anything.
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 from datetime import date, datetime, timezone
 from typing import Any, Optional
@@ -38,9 +39,39 @@ from ..signals.config import SignalThresholds, load_thresholds
 from ..signals.quote_context import assemble
 
 
+log = logging.getLogger("pie_portal.decisions.quote_support")
+
+
 def _norm(s: str) -> str:
     """Normalize a code/name for tolerant matching: lowercase alphanumerics."""
     return re.sub(r"[^a-z0-9]", "", (s or "").lower())
+
+
+def _sole(matches: list[models.Customer], ref: str, how: str) -> Optional[models.Customer]:
+    """One customer, or none — never an arbitrary pick between several.
+
+    A name is not an identifier. An organization holding several connected
+    companies carries one ``Customer`` row per book (``uq_customer_source`` is
+    keyed on connector + connection), so one trading name legitimately matches
+    once per company. The row returned here decides which company's books an
+    estimate is created against — ``routers.quote`` passes it straight to
+    ``connections.book_for_customer`` — so returning the first row of an
+    unordered query is a silent coin flip between legal entities.
+
+    Refusing is already a supported outcome: the caller renders it as "no set
+    of books can be identified". A wrong match is an invoice raised by the
+    wrong company.
+    """
+    distinct = {c.customer_id: c for c in matches}
+    if len(distinct) == 1:
+        return next(iter(distinct.values()))
+    if distinct:
+        log.warning(
+            "customer reference %r matched %d customers by %s (%s); refusing "
+            "rather than choosing, because the choice decides which company's "
+            "books a quote is created against.",
+            ref, len(distinct), how, ", ".join(sorted(distinct)))
+    return None
 
 
 def _resolve_customer(session: Session, org: str, ref: str) -> Optional[models.Customer]:
@@ -48,20 +79,23 @@ def _resolve_customer(session: Session, org: str, ref: str) -> Optional[models.C
         return None
     rows = session.scalars(
         select(models.Customer).where(models.Customer.organization_id == org)).all()
-    # exact id / external_id
+    # An issued identifier is unique by construction, so it needs no arbitration.
     for c in rows:
         if ref in (c.customer_id, c.external_id):
             return c
-    # exact (case-insensitive) name, then normalized containment
     n = _norm(ref)
-    for c in rows:
-        if _norm(c.name) == n:
-            return c
-    for c in rows:
-        cn = _norm(c.name)
-        if cn and (cn in n or n in cn):
-            return c
-    return None
+    if not n:
+        return None
+    # Exact (case-insensitive) name, then normalized containment. An ambiguous
+    # exact match does NOT fall through to containment: answering with a looser
+    # rule a question the stricter one just refused only widens the candidate
+    # set that made it ambiguous.
+    exact = [c for c in rows if _norm(c.name) == n]
+    if exact:
+        return _sole(exact, ref, "exact name")
+    contained = [c for c in rows
+                 if _norm(c.name) and (_norm(c.name) in n or n in _norm(c.name))]
+    return _sole(contained, ref, "name containment")
 
 
 def _resolve_product(session: Session, org: str, ref: str) -> Optional[models.Product]:

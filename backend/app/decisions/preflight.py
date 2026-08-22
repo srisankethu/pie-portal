@@ -28,7 +28,6 @@ from ..ai.provider import provider_status
 from ..ai.telemetry import estimate_cost
 from ..config import settings
 from ..context.assembler import assemble_from_signal
-from ..domain.enums import DecisionStatus
 from ..repositories import DecisionRepository
 from ..signals.config import SignalThresholds, load_thresholds
 
@@ -37,7 +36,13 @@ from ..signals.config import SignalThresholds, load_thresholds
 # preflight that disagreed with the run it is predicting would be worse than no
 # preflight. Same reason `commercial/quote_service` borrows the Quote Builder's
 # customer matcher instead of growing a second one.
-from .service import _decision_key, _latest_signals, _recipient_role
+from .service import (
+    _decision_key,
+    _latest_signals,
+    _recipient_role,
+    is_reusable,
+    reader_identity,
+)
 
 #: Characters per token. A rule of thumb, stated as one — see the module note.
 _CHARS_PER_TOKEN = 4
@@ -53,6 +58,13 @@ def estimate(session: Session, organization_id: str,
     input_tokens = 0
     by_type: dict[str, int] = {}
 
+    # Who would write these narratives, read from configuration rather than by
+    # constructing anything — the module's whole constraint is that estimating
+    # costs nothing. ``provider_status`` reports the same name and model the
+    # run would build, including the mock it falls back to.
+    status = provider_status(session, organization_id)
+    reader = reader_identity(status["effective"], status["model"])
+
     for signal in _latest_signals(session, organization_id):
         dtype = signal.signal_type
         role = _recipient_role(dtype)
@@ -60,8 +72,7 @@ def estimate(session: Session, organization_id: str,
         existing = repo.get_by_key(
             _decision_key(organization_id, dtype, signal.subject_entity_id, signal))
 
-        if (existing is not None and existing.status == DecisionStatus.OPEN.value
-                and (existing.ai or {}).get("context_hash") == bundle.context_hash()):
+        if is_reusable(existing, bundle.context_hash(), reader):
             would_skip += 1
             continue
         if bundle.evidence_sufficiency.get("level") == "INSUFFICIENT":
@@ -77,7 +88,7 @@ def estimate(session: Session, organization_id: str,
     total = estimate_cost(input_tokens, output_tokens) or 0.0
 
     return {
-        "provider": provider_status(session, organization_id),
+        "provider": status,
         "signals_considered": would_call + would_skip + would_suppress,
         "would_call_provider": would_call,
         "would_reuse_cached": would_skip,

@@ -54,6 +54,42 @@ def _decision_key(org: str, dtype: str, subject_id: str, signal: models.Signal) 
     return "dk_" + hashlib.sha256(blob).hexdigest()[:16]
 
 
+def reader_identity(provider_name: str, model: str) -> tuple[str, str, str]:
+    """Who would write the narrative: provider, model, prompt version.
+
+    Three facts rather than one because each moves independently and each
+    changes the sentence a person reads — a different provider, the same
+    provider on a different model, or the same model under a rewritten prompt.
+    """
+    return (provider_name or "", model or "", settings.PROMPT_VERSION)
+
+
+def is_reusable(existing: Optional[models.Decision], context_hash: str,
+                reader: tuple[str, str, str]) -> bool:
+    """Whether an open decision can stand in place of a fresh inference.
+
+    The cost guard: unchanged context ⇒ no re-inference. **Unchanged reader**
+    belongs in it for the same reason unchanged context does, and leaving it out
+    was a silent trap. An owner who stores a key, tests it, and switches the AI
+    layer onto their own model sees nothing change anywhere — every open
+    decision still carries the sentence the offline mock wrote, because the
+    facts behind it did not move. The configuration screen says "Live", the
+    cards say otherwise, and nothing in the product accounts for the difference.
+
+    So a decision is reusable only if the same reader would produce it. Turning
+    a provider on re-infers once, and `decisions/preflight.py` prices that run
+    before it happens — which is the screen an owner already opens before
+    pointing a live model at a real book.
+    """
+    if existing is None or existing.status != DecisionStatus.OPEN.value:
+        return False
+    ai = existing.ai or {}
+    if ai.get("context_hash") != context_hash:
+        return False
+    return (ai.get("provider"), ai.get("model"),
+            ai.get("prompt_version")) == reader
+
+
 def _latest_signals(session: Session, org: str) -> list[models.Signal]:
     rows = session.scalars(
         select(models.Signal).where(models.Signal.organization_id == org)
@@ -71,6 +107,8 @@ class DecisionService:
         self.s = session
         self.org = organization_id
         self.provider = provider or select_provider(session, organization_id)
+        self.reader = reader_identity(getattr(self.provider, "name", ""),
+                                      getattr(self.provider, "model", ""))
         self.th = thresholds or load_thresholds()
         self.repo = DecisionRepository(session, organization_id)
         self.telemetry = AiTelemetryRepository(session, organization_id)
@@ -102,9 +140,10 @@ class DecisionService:
             key = _decision_key(self.org, dtype, signal.subject_entity_id, signal)
             existing = self.repo.get_by_key(key)
 
-            # cost control: unchanged context on an open decision ⇒ no re-inference
-            if (existing is not None and existing.status == DecisionStatus.OPEN.value
-                    and (existing.ai or {}).get("context_hash") == bundle.context_hash()):
+            # cost control: unchanged context *and* unchanged reader on an open
+            # decision ⇒ no re-inference. See is_reusable for why the reader is
+            # half of that test.
+            if is_reusable(existing, bundle.context_hash(), self.reader):
                 skipped += 1
                 # a cache hit is still an AI-layer event worth counting (WS3)
                 self.telemetry.record(CallTelemetry(

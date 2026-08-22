@@ -16,11 +16,23 @@ from app.signals.engine import run_detectors
 from .test_ai_decision_service import ORG, _seed_readmodel
 
 
-class RefusingProvider:
-    """Any call at all is the failure this suite is about."""
+#: The reader every generated run in this file is written by.
+_MOCK = MockProvider()
 
-    name = "refusing"
-    model = "none"
+
+class RefusingProvider:
+    """Any call at all is the failure this suite is about.
+
+    It presents as the provider whose run it repeats — ``MockProvider``'s own
+    name and model — because ``decisions/service.is_reusable`` keys reuse on the
+    reader as well as the context. A probe with an identity of its own is itself
+    a configuration change, and re-inferring after one is correct behaviour
+    rather than the defect this asserts against. Deriving the two fields rather
+    than spelling them keeps that true if the mock is ever renamed.
+    """
+
+    name = _MOCK.name
+    model = _MOCK.model
 
     def complete(self, system: str, user: str) -> str:  # pragma: no cover - must not run
         raise AssertionError("the preflight called a provider")
@@ -72,7 +84,8 @@ def test_a_second_run_is_predicted_as_cached_and_free(seeded):
     assert after["would_reuse_cached"] > 0
     assert after["estimated_cost_usd"] == 0.0
 
-    # and the prediction holds when the run is actually repeated
+    # and the prediction holds when the run is actually repeated — same facts,
+    # same reader, so nothing is asked of the provider at all
     provider = RefusingProvider()
     DecisionService(seeded, ORG, provider=provider).generate()
 

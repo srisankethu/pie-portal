@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import collections
 import re
+import shutil
 import sys
+import zipfile
 
 from pptx import Presentation
 from pptx.dml.color import RGBColor
@@ -783,6 +785,27 @@ def slide_14(prs):
 # ------------------------------------------------------------------ main ----
 
 
+def _freeze(path: str) -> None:
+    """Rewrite the package with a fixed ZIP timestamp.
+
+    A .pptx is a ZIP, and the writer stamps each entry with the wall-clock time,
+    so two runs over identical input produce different bytes. The parts inside
+    are already identical; only the container moves. Pinning the timestamp makes
+    a rebuild byte-identical, so re-running this script does not show up as a
+    69KB binary diff every time somebody edits a line of copy.
+    """
+    fixed = (1980, 1, 1, 0, 0, 0)
+    tmp = path + ".tmp"
+    with zipfile.ZipFile(path) as src, zipfile.ZipFile(
+            tmp, "w", zipfile.ZIP_DEFLATED) as dst:
+        for item in sorted(src.infolist(), key=lambda i: i.filename):
+            new = zipfile.ZipInfo(item.filename, date_time=fixed)
+            new.compress_type = item.compress_type
+            new.external_attr = item.external_attr
+            dst.writestr(new, src.read(item.filename))
+    shutil.move(tmp, path)
+
+
 def main() -> int:
     prs = Presentation()
     prs.slide_width, prs.slide_height = Inches(W), Inches(H)
@@ -792,6 +815,7 @@ def main() -> int:
         fn(prs)
     out = "pie-investor-deck.pptx"
     prs.save(out)
+    _freeze(out)
 
     print(f"{out}: {len(prs.slides._sldIdLst)} slides\n")
     print("sheet  words  cap  status")

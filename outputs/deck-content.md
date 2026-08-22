@@ -331,19 +331,18 @@ them.
 
 **Headline:** The engine is manufacturer-agnostic by construction
 
-**Single idea:** Horizontal expansion is a property of the architecture, not a roadmap promise —
-and here is the arithmetic for what that is worth, with every input exposed.
+**Single idea:** The same convergence of pressures recurs category by category, and the engine
+travels — here is the arithmetic for what that is worth, with every input exposed.
 
 **Body copy (54 words / cap 55):**
 
-Category ladder — six rungs, first at heavier stroke:
+Category ladder — seven rungs, beachhead at heavier stroke:
 
-> Cutting tools → Bearings → Power transmission → Hydraulics, pneumatics → Abrasives →
-> Specialty fasteners
+> Cutting tools → Bearings → Electrical → MRO → Automation → Fasteners → Industrial consumables
 
 Annotation, two statements:
 
-> Each rung: encoded codes, cross-brand substitution, a catalogue nobody memorises.
+> The same convergence recurs: many technical SKUs, constant quoting, margin pressure.
 >
 > New manufacturer, unchanged engine. New category also needs a standards decoder.
 
@@ -354,44 +353,39 @@ TAM/SAM/SOM box, arithmetic shown:
 > `A [ASSUMPTION] distributors` · `B [ASSUMPTION] annual spend each` ·
 > `C [ASSUMPTION] connected-ERP share` · `D [ASSUMPTION] reachable in three years`
 
-**Visual:** Ladder as a vertical stack at left, the first rung (cutting tools) at heavier stroke
-weight — proven here, same mechanism onward. Annotation in the centre column as two separated
-statements. TAM box at right: a ruled table, formula rows above, four labelled input rows below,
-every value cell amber and dashed.
+**Visual:** Ladder as a vertical stack at left, cutting tools at heavier stroke weight — proven
+here, same mechanism onward. Annotation in the centre column as two separated statements. TAM box
+at right: formula rows above a rule, four labelled input rows below, every value cell amber and
+dashed.
 
 **Placeholders:** all four of `A`, `B`, `C`, `D`.
 
-### Why the ladder is six rungs and not eight
+### What qualifies a rung
 
-The Phase 1 draft carried the brief's list — cutting tools, industrial tools, bearings,
-electrical, MRO, automation, fasteners, consumables. Four were cut against the test now stated
-in the annotation: **encoded codes, cross-brand substitution, a catalogue nobody memorises.**
+The test is the **convergence** named in `gtm-plan.md` §1 — high SKU complexity, frequent quoting,
+technical product selection, margin pressure — not whether part numbers are ISO-encoded.
 
-Electrical, automation, MRO and consumables fail it. Their part numbers are largely arbitrary
-vendor SKUs with nothing to decode, and where substitution happens at all it is governed by
-approvals and certification rather than geometry — so PIE would degrade to a search box. Bearings
-is promoted to second because it arguably fits *better* than the beachhead: ISO 15 designations
-are densely encoded and cross-brand interchange between SKF, FAG, NSK and Timken is the
-distributor's daily work, where in cutting tools equivalence is secondary to identity.
+That distinction was got wrong once and is recorded here so it is not got wrong again. An earlier
+revision cut electrical, MRO, automation and consumables on the grounds that their part numbers
+are weakly encoded. That is the wrong test: encoding governs how much of the *grammar-decode* path
+contributes, while identity resolution and equivalence keep working regardless. The capability
+degrades across the ladder; it does not fail. The ladder is ordered by how closely each rung's
+convergence resembles cutting tools, and bearings sits second because cross-brand interchange is a
+bearings distributor's daily work — arguably a closer fit than the beachhead itself.
 
-A long ladder of weak rungs is worth less than a short one that survives being asked about.
-
-### The qualification in the second annotation line, and why it is there
+### The qualification in the second annotation line
 
 The headline is accurate and machine-checked: the engine holds **zero manufacturer literals**,
-enforced by an AST check in the build gate. But it does carry *category* knowledge in two
-places — `engine/iso.py` holds the ISO 1832 alphabets (insert shapes, clearance angles) as typed
-constants, and `engine/model.py:207-215` whitelists cutting-tool field names such as
-`corner_radius_mm`, `flute_count` and `insert_polarity`.
+enforced by an AST check in the build gate. But it carries *category* knowledge in two places —
+`engine/iso.py` holds the ISO 1832 alphabets as typed constants, and `engine/model.py:207-215`
+whitelists cutting-tool field names such as `corner_radius_mm`, `flute_count` and
+`insert_polarity`.
 
 So a bearings pack needs an ISO 15 decoder added to the engine and new fields in that list.
-Neither forks the engine — both are additive, and the manifest-instantiated decoder mechanism is
-already generic — but it means **"a new manufacturer is new data against unchanged code" is true,
-and the same sentence about a new category is not.**
-
-Without the second line, an accurate headline sits beside a category ladder and invites an
-inference the code does not support. Technical diligence would find the ISO constants in an
-afternoon; better to have said it first.
+Neither forks the engine — both additive, and the manifest-instantiated decoder mechanism is
+already generic — but **"a new manufacturer is new data against unchanged code" is true, and the
+same sentence about a new category is not.** Without that line an accurate headline sits beside a
+category ladder and invites an inference the code does not support.
 
 ---
 
@@ -480,32 +474,35 @@ signal of depth. Say the word if you want the brief's original wording restored.
 **Single idea:** Who this is for, how it gets in, and how it grows — a summary of
 `gtm-plan.md`, which was written first.
 
-**Body copy (64 words / cap 70):**
+**Body copy (68 words / cap 70):**
 
 Band 1, `WHO — THE SCREEN` — six boxes, the ICP screen from `gtm-plan.md` §1:
 
-> `> 5,000 SKUs` · `Encoded geometry` · `> 150 lines/month` · `Margin < 25%` ·
-> `3–30 quoting` · `Connector ERP`
+> `High SKU count` · `Technically complex` · `Quote volume` · `Margin-sensitive` ·
+> `Hours lost searching` · `Connector ERP`
+
+> The pain is the convergence, not one signal.
 
 Band 2, `HOW IT LANDS`:
 
 > Founder-led. Owner or sales head, triggered by a price increase or a departing expert.
-> Diagnostic before demo.
 
 Band 3, `HOW IT GROWS` — six rungs, first heavier:
 
 > Quote Desk → Product Intelligence → Pricing → Margin Management → Agents → Commercial
 > Intelligence
 
-> Rung one ships free; the paid tier is built, not yet sold.
+> Rung one ships free; the paid tier is built, unsold.
 
 Band 4, `PRICING MODEL` — four lines, each with its own amber cell:
 
 > Platform subscription `[ASSUMPTION]` · Quote-desk seats `[ASSUMPTION]` ·
 > SKU intelligence volume `[ASSUMPTION]` · Premium modules `[ASSUMPTION]`
 
-**Visual:** Four horizontal bands, each with a mono section label and a hairline where one is
-needed. Band 1 is six equal solid boxes read as a filter. Band 3 is the ladder laid horizontally
+**Visual:** Four horizontal bands on an even 0.20in rhythm, each with a mono section label and a
+hairline where one is needed. Band 1 is six equal solid boxes read as a filter, with the
+convergence line beneath — the five pain conditions plus the one technical precondition, and the
+statement that no single one of them qualifies anybody. Band 3 is the ladder laid horizontally
 with arrows, the first rung at full stroke weight and the remaining five light — shipped versus
 projected, said with weight rather than a word. Band 4 is four cells, each a label above an amber
 dashed value box.

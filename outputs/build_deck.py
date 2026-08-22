@@ -574,21 +574,21 @@ def slide_08(prs):
 
 def slide_09(prs):
     s = sheet(prs, "The engine is manufacturer-agnostic by construction")
-    # Only the categories that pass the test named in the annotation. Electrical,
-    # MRO, automation and consumables were dropped: their part numbers are largely
-    # arbitrary vendor SKUs and substitution is governed by approvals rather than
-    # geometry, so PIE would degrade to a search box. A long ladder of weak rungs
-    # is worth less than a short one that survives being asked about.
-    ladder = ["Cutting tools", "Bearings", "Power transmission",
-              "Hydraulics, pneumatics", "Abrasives", "Specialty fasteners"]
+    # The decided expansion ladder. The qualifying test is the CONVERGENCE of
+    # SKU complexity, quote frequency, technical selection and margin pressure —
+    # not whether part numbers are ISO-encoded. Encoding governs how much of the
+    # grammar-decode path applies; identity resolution and equivalence still work
+    # in the later rungs, so those categories degrade rather than fail.
+    ladder = ["Cutting tools", "Bearings", "Electrical", "MRO",
+              "Automation", "Fasteners", "Industrial consumables"]
     lw = 3.05
     for i, t in enumerate(ladder):
-        y = BODY_TOP + 0.40 + i * 0.52
-        flow_box(s, L, y, lw, 0.42, t, size=8.5,
+        y = BODY_TOP + 0.36 + i * 0.46
+        flow_box(s, L, y, lw, 0.37, t, size=8.5,
                  width=1.4 if i == 0 else 0.6,
                  colour=BLUEPRINT if i == 0 else INK85)
         if i:
-            line(s, L + lw / 2, y - 0.10, L + lw / 2, y, RULE, 0.5)
+            line(s, L + lw / 2, y - 0.09, L + lw / 2, y, RULE, 0.5)
     label(s, L, BODY_TOP + 0.10, 3.2, "Category ladder", 8.5, RULE,
           tally=False)
 
@@ -600,8 +600,8 @@ def slide_09(prs):
     # Without this clause the headline sits beside a category ladder and invites
     # an inference the code does not support.
     text(s, ax, BODY_TOP + 0.36, 3.1, 2.1,
-         "Each rung: encoded codes, cross-brand substitution, a catalogue "
-         "nobody memorises.\n\nNew manufacturer, unchanged engine. New category "
+         "The same convergence recurs: many technical SKUs, constant quoting, "
+         "margin pressure.\n\nNew manufacturer, unchanged engine. New category "
          "also needs a standards decoder.", size=12.5, colour=INK85,
          line_spacing=1.3)
 
@@ -697,19 +697,24 @@ def slide_12(prs):
     # ladder says which of them exists and that none has been sold.
     y = BODY_TOP + 0.07
     label(s, L, y, 5.0, "Who — the screen", 9, RULE, tally=False)
-    screen = ["> 5,000 SKUs", "Encoded geometry", "> 150 lines/month",
-              "Margin < 25%", "3–30 quoting", "Connector ERP"]
+    # Five pain conditions plus the one technical precondition. The line beneath
+    # is the point: any single signal is common and means nothing on its own.
+    screen = ["High SKU count", "Technically complex", "Quote volume",
+              "Margin-sensitive", "Hours lost searching", "Connector ERP"]
     bw = (CW - 5 * 0.18) / 6
     for i, t in enumerate(screen):
-        flow_box(s, L + i * (bw + 0.18), y + 0.24, bw, 0.46, t, size=8)
+        flow_box(s, L + i * (bw + 0.18), y + 0.24, bw, 0.42, t, size=8)
+    text(s, L, y + 0.76, CW, 0.28,
+         "The pain is the convergence, not one signal.", size=12.5,
+         colour=INK85)
 
-    y = BODY_TOP + 1.00
+    y = BODY_TOP + 1.31
     label(s, L, y, 5.0, "How it lands", 9, RULE, tally=False)
-    text(s, L, y + 0.26, CW, 0.34,
+    text(s, L, y + 0.24, CW, 0.34,
          "Founder-led. Owner or sales head, triggered by a price increase or a "
-         "departing expert. Diagnostic before demo.", size=13.5, colour=INK85)
+         "departing expert.", size=13.5, colour=INK85)
 
-    y = BODY_TOP + 1.76
+    y = BODY_TOP + 2.05
     label(s, L, y, 5.0, "How it grows", 9, RULE, tally=False)
     rungs = ["Quote Desk", "Product\nIntelligence", "Pricing",
              "Margin\nManagement", "Agents", "Commercial\nIntelligence"]
@@ -723,10 +728,10 @@ def slide_12(prs):
             line(s, x + rw, y + 0.52, x + rw + 0.26, y + 0.52, BLUEPRINT,
                  0.75, arrow=True)
     text(s, L, y + 0.90, CW, 0.30,
-         "Rung one ships free; the paid tier is built, not yet sold.",
+         "Rung one ships free; the paid tier is built, unsold.",
          size=12.5, colour=INK85)
 
-    y = BODY_TOP + 3.30
+    y = BODY_TOP + 3.43
     label(s, L, y, 5.0, "Pricing model", 9, RULE, tally=False)
     line(s, L, y + 0.22, R, y + 0.22, RULE, 0.5)
     lines_ = ["Platform subscription", "Quote-desk seats",

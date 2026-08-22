@@ -1,6 +1,8 @@
-# PIE — Investor Deck, Phase 1 content
+# PIE — Investor deck, slide-by-slide content
 
-Status: **awaiting approval.** No design work has been done. Nothing has been built.
+Status: **built.** This file was written first, approved, and is now kept in sync with
+`build_deck.py` — it is the copy of record. Where the build differs from the Phase 1
+draft, the difference is noted in place.
 
 Every factual claim below is traceable to this repository or to `pie-parser`. Numbers were
 measured on 2026-08-22, not read from READMEs — both READMEs are stale on test counts.
@@ -235,21 +237,24 @@ line themselves.
 **Single idea:** Here is the actual mechanism working on an actual product, with nothing
 abstracted.
 
-**Body copy (48 words / cap 50):**
+**Body copy (43 words / cap 50):**
 
-Input, mono:
+Input, mono — a verbatim corpus row:
 
 > `CNMG 120408-49 - TN2000`
 
-Decode chain:
+Decode chain, nine callouts:
 
-> rhombic 80° · clearance 0°, negative · tolerance class M · fixing and chipbreaker · edge
-> length · thickness · corner radius 0.8 mm · grade
+> rhombic 80° · clearance 0°, negative · tolerance class M · fixing type · edge length 12 mm ·
+> thickness 4.76 mm · corner radius 0.8 mm · chipbreaker · grade — column, WIDIA legacy T
 
 Resolution:
 
-> Identity: exact match to MM# 2001174. Authoritative — not a guess. Then Zoho supplies stock
-> and landed cost; the pricing engine returns a recommended price and margin floor.
+> Identity MM# 2001174 → Zoho stock · landed cost → Pricing recommended · floor → EXACT
+
+Caption:
+
+> The eight character spans are the engine's own output.
 
 **Visual:** The input code set large in mono across the top. Leader lines drop from each
 character group of the code to its decoded meaning below, in the manner of a parts callout on a
@@ -257,14 +262,25 @@ drawing — this is the one slide where the blueprint metaphor and the actual su
 coincide, and it should be the most visually satisfying sheet in the deck. Beneath the decode,
 a short solid flow into identity → Zoho → price.
 
-**Placeholders:** `[EXAMPLE — REPLACE WITH LIVE SCREENSHOT]` in the lower-right, amber, dashed.
+**Placeholders: none.** The Phase 1 draft reserved `[EXAMPLE — REPLACE WITH LIVE SCREENSHOT]`
+here. It is gone, because the slide is now real rather than illustrative.
 
-**Note — Phase 2 rigour:** the code and MM# are a verbatim corpus row and the shape/clearance
-decodes come from `engine/iso.py`. I will **run the real parser on this row during Phase 2 and
-use its actual emitted output**, rather than my reading of the standard. In particular I have
-deliberately *not* asserted what the `-49` suffix means; the pack decodes it and I will take
-the pack's answer. `docs/evidence/after-quote-lines.png` exists in this repo and may serve as
-the live screenshot — I'll look at it in Phase 2 and tell you if it is presentable.
+**What changed once the parser was actually run.** The row was put through
+`tools/run_parser.py` against `packs/kennametal_widia` (v0.10.0, checksum `6be04ced55b4a239`)
+and the slide uses the emitted record, not a reading of ISO 1832. Two corrections to the draft:
+
+- **The brand is WIDIA, not Kennametal.** The pack covers both; this record resolves to WIDIA.
+- **`-49` is a chipbreaker**, per `field_meta.chipbreaker`, span `[12,14]`. The draft
+  deliberately declined to guess this; the pack settled it.
+
+The eight code spans drawn on the slide are the engine's own `field_meta` spans — `C[0,1]`,
+`N[1,2]`, `M[2,3]`, `G[3,4]`, `12[5,7]`, `04[7,9]`, `08[9,11]`, `49[12,14]`. **Grade is drawn
+with a leader and no span rule**, because its provenance is `EXPLICIT_COLUMN` with `span: null`
+— it resolves from the Grade column, not from the text. Drawing a span there would have made
+the caption beneath it false.
+
+`docs/evidence/after-quote-lines.png` was considered as a live screenshot and rejected: it is
+824×4888, a mobile-width capture far too tall for a sheet, and it shows a real customer name.
 
 ---
 
@@ -561,30 +577,81 @@ ends on the argument, per the acceptance checklist.
   on the upper tier, slide 8's caption says it ships off.
 - **Invented numbers: zero.** Every figure traces to the table at the top of this file.
 
-## Open placeholders (7)
+## Open placeholders (6)
 
-| # | Slide | Placeholder |
+| # | Sheet | Placeholder |
 |---|---|---|
 | 1 | 1 | `[STAGE]` |
 | 2 | 2 | Elapsed RFQ→quote time |
 | 3 | 6 | Minutes saved per line |
-| 4 | 7 | Live screenshot |
-| 5 | 9 | TAM inputs A, B, C, D |
-| 6 | 12 | Four pricing assumptions |
-| 7 | 13 | Four unvalidated claims |
+| 4 | 9 | TAM inputs A, B, C, D |
+| 5 | 12 | Four pricing assumptions |
+| 6 | 13 | Four unvalidated claims |
+
+Sheet 7's placeholder was removed rather than filled — see that sheet's note.
 
 Plus the founder background line, which appears in no slide but is needed for
 `hard-questions.md` Q10.
 
 ---
 
-## Phase 1 stops here
+## Build
 
-Nothing has been generated. On approval I will build `build_deck.py` as a single re-runnable
-script, render all 14 slides to PNG, look at each one, and report what I fixed.
+`python3 build_deck.py` regenerates `pie-investor-deck.pptx` from this copy and prints every
+sheet's word count against its cap. Editing copy means editing that script and re-running; no
+shape is hand-placed, so the layout cannot drift.
 
-Three decisions I would like in the same reply, though I can proceed without them:
+Three decisions were taken on the stated defaults when the go-ahead came without them:
 
-1. Slide 11 — confirm "sourced pairwise equivalence claims" over the brief's "equivalence graph".
-2. Slide 13 — keep the 21.6% coverage number on the slide, or move it to Q&A only.
-3. Slide 1 — keep `[STAGE]` or drop it entirely.
+1. Sheet 11 keeps **"sourced pairwise equivalence claims"** rather than the brief's
+   "equivalence graph" — a graph is a transitive closure, which `pie-parser/CLAUDE.md` §1
+   forbids by construction.
+2. Sheet 13 **keeps the 21.6% coverage figure** on the sheet rather than holding it for Q&A.
+3. Sheet 1 **keeps `[STAGE]`** as an amber placeholder.
+
+Any of the three is a one-line change in `build_deck.py`.
+
+---
+
+## Hand-off — what must be supplied before this deck is sent
+
+Six placeholders render in amber on the sheets. None is a blocker to showing the deck;
+all are blockers to it reading as finished.
+
+| # | Sheet | Placeholder | What to supply | Effort |
+|---|---|---|---|---|
+| 1 | 1 | `[STAGE]` | "Pre-seed" or "Seed", or tell me to delete the cell | minutes |
+| 2 | 2 | `ELAPSED: [TO VALIDATE]` | Median hours from RFQ received to quote sent, timed across ~20 real enquiries | a week of logging |
+| 3 | 6 | Minutes saved per line | Same measurement, run once with PIE and once without | a week |
+| 4 | 9 | TAM inputs `A`,`B`,`C`,`D` | Distributor counts in scope; annual spend each; share on a connected ERP; share reachable in three years | 2–3 days desk research |
+| 5 | 12 | Four `[ASSUMPTION]` pricing lines | Real quoted numbers, ideally after ten pricing conversations | weeks |
+| 6 | 13 | The `UNVALIDATED` column | Willingness to pay · time saved per quote · margin impact · one external customer | the substance of the next quarter |
+
+**Not a placeholder, but still needed:** the founder background line. It appears on no
+sheet, and it is the entire basis of `hard-questions.md` Q8.
+
+### Two things to fix outside the deck
+
+1. **`README.md` contradicts sheet 13.** It says "V1 is complete and demo-ready. Before it
+   runs on real customer data, three deployment gates remain." Sheet 13 says PIE runs live
+   on real Zoho data across three entities, on your instruction. That README is stale in
+   other respects too — it claims 138 backend tests where there are 2,895 — but an investor
+   in diligence will read it and find the disagreement. Update it before sending anything.
+
+2. **Sheet 9 is the weakest sheet in the deck, and it is fixable in days.** It presents the
+   TAM arithmetic with all four inputs open, because the brief permits a constructed TAM
+   only with every input labelled and you have none of them. Three of the four are ordinary
+   desk research. Sourced, this becomes one of the strongest sheets rather than the one an
+   investor's eye stops on.
+
+### Priorities, if only some of this gets done
+
+The order that most improves the raise, from `hard-questions.md`:
+
+1. Build the **second manufacturer pack** and record the hours. It is the only evidence that
+   the moat is an asset rather than a services business, and every horizontal-expansion
+   claim in the deck rests on it.
+2. **Ten pricing conversations** with unaffiliated distributors, quoting a real number.
+3. **One external user**, on any terms.
+
+Placeholders 4, 5 and 6 close themselves as a by-product of those three.

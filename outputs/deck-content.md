@@ -84,7 +84,7 @@ Dimension callouts along the timeline:
 > 3. Item master searched — 15,028 items, name is not identity
 > 4. No grade field — expert memory fills it
 > 5. Cost and stock in another screen
-> 6. Price set from memory or last invoice
+> 6. Price set from memory; floor unknown at the moment of discount
 >
 > `ELAPSED: [TO VALIDATE]`
 
@@ -199,7 +199,7 @@ rows of five with a return arrow rather than shrink the type below the body size
 
 **Single idea:** The wedge is a specific, daily, painful workflow — not a platform vision.
 
-**Body copy (50 words / cap 60):**
+**Body copy (56 words / cap 60):**
 
 Lane A, `TODAY`:
 
@@ -213,7 +213,8 @@ Lane B, `WITH PIE`:
 
 Caption:
 
-> The human still approves every line. PIE removes the lookup, not the judgement.
+> The human still approves every line. PIE removes the lookup, not the judgement — and no
+> line leaves below floor.
 >
 > `[TO VALIDATE] minutes saved per line — not yet measured`
 
@@ -224,9 +225,10 @@ visibly spaced. The contrast is spatial, not colour-coded.
 
 **Placeholders:** `[TO VALIDATE]` minutes saved per line.
 
-**Note:** The caption's second sentence is doing defensive work on purpose. An investor who has
-seen four "AI replaces your sales team" decks this quarter relaxes when a founder draws the
-line themselves.
+**Note:** The caption does two jobs. "PIE removes the lookup, not the judgement" is defensive —
+an investor who has seen four "AI replaces your sales team" decks this quarter relaxes when a
+founder draws the line first. "No line leaves below floor" is the commercial half: without it
+this sheet wins only on speed, and speed is the weaker of the two arguments.
 
 ---
 
@@ -248,15 +250,20 @@ Decode chain, nine callouts:
 > rhombic 80° · clearance 0°, negative · tolerance class M · fixing type · edge length 12 mm ·
 > thickness 4.76 mm · corner radius 0.8 mm · chipbreaker · grade — column, WIDIA legacy T
 
-Resolution:
+Resolution band, `WHAT THE DESK GETS` — four boxes, the last at heavier stroke:
 
-> Identity MM# 2001174 → Zoho stock · landed cost → Pricing recommended · floor → EXACT
+> Identity MM# 2001174 → Availability stock · landed cost → Recommended price · floor →
+> **Margin position**
 
 Caption:
 
-> The eight character spans are the engine's own output.
+> The eight spans are the engine's own output.
 
-**Visual:** The input code set large in mono across the top. Leader lines drop from each
+**Visual:** The decode occupies the upper third and the commercial chain the middle — deliberately
+that way round. An earlier revision inverted it, giving the decode most of the sheet and ending on
+`EXACT`, an *identity* verdict: the sheet ran all the way to the commercial moment and then
+reported on matching. It now ends on **Margin position**, which is what the desk is actually paid
+to get right. The input code set in mono across the top. Leader lines drop from each
 character group of the code to its decoded meaning below, in the manner of a parts callout on a
 drawing — this is the one slide where the blueprint metaphor and the actual subject matter
 coincide, and it should be the most visually satisfying sheet in the deck. Beneath the decode,
@@ -334,31 +341,41 @@ them.
 **Single idea:** The same convergence of pressures recurs category by category, and the engine
 travels — here is the arithmetic for what that is worth, with every input exposed.
 
-**Body copy (54 words / cap 55):**
+**Body copy (50 words / cap 55):**
 
-Category ladder — seven rungs, beachhead at heavier stroke:
+`WHERE THE SAME CONVERGENCE APPEARS` — seven rungs, beachhead at heavier stroke:
 
 > Cutting tools → Bearings → Electrical → MRO → Automation → Fasteners → Industrial consumables
 
 Annotation, two statements:
 
-> The same convergence recurs: many technical SKUs, constant quoting, margin pressure.
+> New manufacturer, unchanged engine.
 >
-> New manufacturer, unchanged engine. New category also needs a standards decoder.
+> New category also needs a standards decoder.
 
 TAM/SAM/SOM box, arithmetic shown:
 
-> `TAM = A × B` · `SAM = TAM × C` · `SOM = SAM × D`
+> `TAM = A × B   = $720M` · `SAM = TAM × C = $324M` · `SOM = SAM × D = $9.7M`
 >
-> `A [ASSUMPTION] distributors` · `B [ASSUMPTION] annual spend each` ·
-> `C [ASSUMPTION] connected-ERP share` · `D [ASSUMPTION] reachable in three years`
+> `ALL INPUTS [ASSUMPTION]`
+> `A 40,000 distributors in scope` · `B $18,000 spend each` ·
+> `C 45% on connected ERP` · `D 3% reachable, three years`
 
 **Visual:** Ladder as a vertical stack at left, cutting tools at heavier stroke weight — proven
 here, same mechanism onward. Annotation in the centre column as two separated statements. TAM box
 at right: formula rows above a rule, four labelled input rows below, every value cell amber and
 dashed.
 
-**Placeholders:** all four of `A`, `B`, `C`, `D`.
+**Placeholders:** all four of `A`, `B`, `C`, `D` — amber, dashed, and carrying values.
+
+**The values are invented, and that is deliberate.** The brief permits a *constructed* TAM
+provided every input is labelled and the arithmetic is shown. An earlier revision left all four
+cells blank, which satisfies "labelled" and fails "shows its arithmetic" — a formula with no
+operands is not arithmetic, and four empty boxes read as unprepared rather than as disciplined.
+The sheet now carries the chain through to a result so an investor has something to push on,
+with every operand amber and a header saying so. **None of the four is sourced.** They are the
+founder's numbers to replace; `A`, `C` and a comparable for `B` are a few days of desk research
+and are named in the hand-off.
 
 ### What qualifies a rung
 
@@ -656,7 +673,7 @@ all are blockers to it reading as finished.
 | 1 | 1 | `[STAGE]` | "Pre-seed" or "Seed", or tell me to delete the cell | minutes |
 | 2 | 2 | `ELAPSED: [TO VALIDATE]` | Median hours from RFQ received to quote sent, timed across ~20 real enquiries | a week of logging |
 | 3 | 6 | Minutes saved per line | Same measurement, run once with PIE and once without | a week |
-| 4 | 9 | TAM inputs `A`,`B`,`C`,`D` | Distributor counts in scope; annual spend each; share on a connected ERP; share reachable in three years | 2–3 days desk research |
+| 4 | 9 | TAM inputs `A`,`B`,`C`,`D` — **carrying invented values** | Replace 40,000 / $18,000 / 45% / 3% with sourced figures: distributor counts from trade-body registries, published ERP share, a comparable quoting/CPQ seat price | 2–3 days desk research |
 | 5 | 12 | Four `[ASSUMPTION]` pricing lines | Real quoted numbers, ideally after ten pricing conversations | weeks |
 | 6 | 13 | The `UNVALIDATED` column | Willingness to pay · time saved per quote · margin impact · one external customer | the substance of the next quarter |
 
@@ -675,11 +692,13 @@ summarises that plan, so closing its gaps closes placeholder 5 here as a by-prod
    other respects too — it claims 138 backend tests where there are 2,895 — but an investor
    in diligence will read it and find the disagreement. Update it before sending anything.
 
-2. **Sheet 9 is the weakest sheet in the deck, and it is fixable in days.** It presents the
-   TAM arithmetic with all four inputs open, because the brief permits a constructed TAM
-   only with every input labelled and you have none of them. Three of the four are ordinary
-   desk research. Sourced, this becomes one of the strongest sheets rather than the one an
-   investor's eye stops on.
+2. **Sheet 9's TAM values are invented and must be replaced before this is sent.** The sheet
+   carries $720M / $324M / $9.7M computed from 40,000 distributors × $18,000 each × 45%
+   connected × 3% reachable. Every operand is amber and the box says `ALL INPUTS
+   [ASSUMPTION]`, which is the honest presentation — but if an investor asks where 40,000
+   came from, the answer today is "nowhere". Three of the four are ordinary desk research:
+   distributor counts from trade-body registries, published ERP market share, and a
+   comparable seat price. Sourced, this becomes one of the strongest sheets in the deck.
 
 ### Priorities, if only some of this gets done
 

@@ -300,7 +300,7 @@ def slide_02(prs):
              "Item master searched — 15,028 items, name is not identity",
              "No grade field — expert memory fills it",
              "Cost and stock in another screen",
-             "Price set from memory or last invoice"]
+             "Price set from memory; floor unknown at the moment of discount"]
     span = CW - 1.1
     for i in range(6):
         bx = L + 0.55 + span * i / 5.0
@@ -456,10 +456,11 @@ def slide_06(prs):
     line(s, inner_r, lane_b + node_h / 2, R - node_w, lane_b + node_h / 2,
          BLUEPRINT, 0.75, arrow=True)
 
-    text(s, L, 5.62, 7.2, 0.4,
-         "The human still approves every line. PIE removes the lookup, "
-         "not the judgement.", size=13.5, colour=INK85)
-    placeholder(s, L, 6.10, 4.75, 0.40,
+    text(s, L, 5.52, 10.6, 0.52,
+         "The human still approves every line. PIE removes the lookup, not the "
+         "judgement — and no line leaves below floor.", size=13.5, colour=INK85,
+         line_spacing=1.28)
+    placeholder(s, L, 6.12, 4.75, 0.38,
                 "[to validate] minutes saved per line")
 
 
@@ -470,7 +471,7 @@ def slide_07(prs):
           tally=False)
 
     code = "CNMG 120408-49 - TN2000"
-    size = 27
+    size = 22
     adv = 0.6 * size / 72.0                       # Plex Mono advance = 0.6 em
     cw_ = len(code) * adv
     x0 = L
@@ -496,9 +497,9 @@ def slide_07(prs):
     # Four of the spans are single characters 0.22in apart, so labels are fanned
     # into evenly spaced slots and reached by two-segment leaders. Slot order
     # follows span order, so no two leaders cross.
-    y_rule = y_code + 0.58
-    y_shoulder = y_rule + 0.36
-    y_lab = y_rule + 0.70
+    y_rule = y_code + 0.48
+    y_shoulder = y_rule + 0.30
+    y_lab = y_rule + 0.58
     slot_w = CW / len(spans)
     for i, (a, b, lab, is_span) in enumerate(spans):
         cx = x0 + (a + b) / 2.0 * adv
@@ -511,21 +512,25 @@ def slide_07(prs):
              font=MONO, size=7.5, colour=INK85, align=PP_ALIGN.CENTER,
              line_spacing=1.16)
 
-    y_res = 4.62
-    line(s, L, y_res, R, y_res, RULE, 0.5)
-    chain = [("Identity\nMM# 2001174", None), ("Zoho\nstock · landed cost", None),
-             ("Pricing\nrecommended · floor", None), ("EXACT", None)]
-    bw, gap = 2.15, 0.42
-    for i, (t, d) in enumerate(chain):
+    # The decode is the proof; the chain is the point. Earlier revisions gave the
+    # decode 80% of the sheet and ended on EXACT — an identity verdict — so the
+    # sheet demonstrated a clever parser and never reached the commercial moment.
+    y_res = 4.06
+    label(s, L, y_res, 6.0, "What the desk gets", 8.5, RULE, tally=False)
+    line(s, L, y_res + 0.24, R, y_res + 0.24, RULE, 0.5)
+    chain = ["Identity\nMM# 2001174", "Availability\nstock · landed cost",
+             "Recommended\nprice · floor", "Margin\nposition"]
+    bw, gap = 2.52, 0.42
+    for i, t in enumerate(chain):
         x = L + i * (bw + gap)
-        flow_box(s, x, y_res + 0.26, bw, 0.72, t, size=8.5,
-                 bold=(i == 3), colour=BLUEPRINT if i == 3 else INK85)
+        flow_box(s, x, y_res + 0.46, bw, 0.94, t, size=10,
+                 width=1.5 if i == 3 else 0.75, bold=(i == 3),
+                 colour=BLUEPRINT if i == 3 else INK85)
         if i < 3:
-            line(s, x + bw, y_res + 0.62, x + bw + gap, y_res + 0.62,
+            line(s, x + bw, y_res + 0.93, x + bw + gap, y_res + 0.93,
                  BLUEPRINT, 0.75, arrow=True)
-    text(s, L, 6.02, 9.4, 0.36,
-         "The eight character spans are the engine's own output.",
-         size=13, colour=INK85)
+    text(s, L, 5.72, 10.6, 0.36,
+         "The eight spans are the engine's own output.", size=13, colour=INK85)
 
 
 def slide_08(prs):
@@ -589,7 +594,7 @@ def slide_09(prs):
                  colour=BLUEPRINT if i == 0 else INK85)
         if i:
             line(s, L + lw / 2, y - 0.09, L + lw / 2, y, RULE, 0.5)
-    label(s, L, BODY_TOP + 0.10, 3.2, "Category ladder", 8.5, RULE,
+    label(s, L, BODY_TOP + 0.10, 5.0, "Where the same convergence appears", 8.5, RULE,
           tally=False)
 
     ax = L + lw + 0.55
@@ -600,32 +605,40 @@ def slide_09(prs):
     # Without this clause the headline sits beside a category ladder and invites
     # an inference the code does not support.
     text(s, ax, BODY_TOP + 0.36, 3.1, 2.1,
-         "The same convergence recurs: many technical SKUs, constant quoting, "
-         "margin pressure.\n\nNew manufacturer, unchanged engine. New category "
-         "also needs a standards decoder.", size=12.5, colour=INK85,
-         line_spacing=1.3)
+         "New manufacturer, unchanged engine.\n\nNew category also needs a "
+         "standards decoder.", size=12.5, colour=INK85, line_spacing=1.3)
 
     tx = ax + 3.45
     tw = R - tx
     label(s, tx, BODY_TOP + 0.06, tw, "Sized opportunity", 8.5, RULE,
           tally=False)
+    # The arithmetic is carried through to a result, because a formula with no
+    # operands is not arithmetic and four blank cells read as unprepared. Every
+    # operand is invented and every one is amber: these are the founder's numbers
+    # to source, and the slide says so rather than implying they were researched.
     box(s, tx, BODY_TOP + 0.30, tw, 3.42, stroke=RULE, width=0.75)
-    text(s, tx + 0.18, BODY_TOP + 0.48, tw - 0.36, 0.9,
-         "TAM  =  A × B\nSAM  =  TAM × C\nSOM  =  SAM × D", font=MONO,
-         size=11, colour=BLUEPRINT, line_spacing=1.42)
-    line(s, tx + 0.18, BODY_TOP + 1.52, tx + tw - 0.18, BODY_TOP + 1.52,
+    text(s, tx + 0.18, BODY_TOP + 0.46, tw - 0.36, 0.95,
+         "TAM  =  A × B      =  $720M\n"
+         "SAM  =  TAM × C    =  $324M\n"
+         "SOM  =  SAM × D    =  $9.7M", font=MONO,
+         size=10, colour=BLUEPRINT, line_spacing=1.42)
+    line(s, tx + 0.18, BODY_TOP + 1.50, tx + tw - 0.18, BODY_TOP + 1.50,
          RULE, 0.5)
-    inputs = [("A", "distributors"), ("B", "annual spend each"),
-              ("C", "connected-ERP share"), ("D", "reachable in three years")]
-    for i, (k, v) in enumerate(inputs):
-        y = BODY_TOP + 1.66 + i * 0.47
+    label(s, tx + 0.18, BODY_TOP + 1.60, tw - 0.36, "All inputs [assumption]",
+          7.5, AMBER)
+    inputs = [("A", "40,000", "distributors in scope"),
+              ("B", "$18,000", "spend each"),
+              ("C", "45%", "on connected ERP"),
+              ("D", "3%", "reachable, three years")]
+    for i, (k, val, v) in enumerate(inputs):
+        y = BODY_TOP + 1.88 + i * 0.44
         text(s, tx + 0.18, y + 0.04, 0.3, 0.3, k, font=MONO, size=10,
              colour=BLUEPRINT, tally=False, line_spacing=1.0)
-        placeholder(s, tx + 0.52, y, 1.48, 0.34, "[assumption]")
+        placeholder(s, tx + 0.52, y, 1.02, 0.32, val)
         _placeholders.pop()
-        text(s, tx + 2.10, y + 0.045, tw - 2.28, 0.3, v, font=MONO, size=7.5,
+        text(s, tx + 1.66, y + 0.04, tw - 1.84, 0.3, v, font=MONO, size=7.5,
              colour=INK85, line_spacing=1.0)
-    _placeholders.append((_slide_no, "[ASSUMPTION] × 4 — TAM inputs A, B, C, D"))
+    _placeholders.append((_slide_no, "[ASSUMPTION] × 4 — every TAM input is invented"))
 
 
 def slide_10(prs):

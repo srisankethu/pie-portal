@@ -57,7 +57,7 @@ TB_Y = H - INSET - TB_H
 
 # Word budgets from the brief, headline excluded.
 BUDGET = {1: 25, 2: 60, 3: 55, 4: 30, 5: 45, 6: 60, 7: 50,
-          8: 70, 9: 55, 10: 50, 11: 60, 12: 65, 13: 55, 14: 50}
+          8: 70, 9: 55, 10: 50, 11: 60, 12: 70, 13: 55, 14: 50}
 
 _words: dict[int, int] = collections.defaultdict(int)
 _placeholders: list[tuple[int, str]] = []
@@ -678,38 +678,54 @@ def slide_11(prs):
 
 def slide_12(prs):
     s = sheet(prs, "Land on the quote desk. Expand into the commercial decision.")
-    mid = L + CW / 2 - 0.25
-    line(s, mid, BODY_TOP + 0.02, mid, 5.42, RULE, 0.75)
 
-    label(s, L, BODY_TOP + 0.06, 4.0, "Pricing model", 9.5, RULE, tally=False)
-    rows = ["Platform subscription per organization", "Quote-desk seats",
-            "SKU intelligence volume", "Premium modules"]
-    for i, r in enumerate(rows):
-        y = BODY_TOP + 0.46 + i * 0.78
-        text(s, L, y, mid - L - 0.4, 0.34, r, size=13.5, colour=INK85)
-        placeholder(s, L, y + 0.34, 1.42, 0.30, "[assumption]")
-        _placeholders.pop()
-        line(s, L, y + 0.72, mid - 0.4, y + 0.72, RULE, 0.5)
-    _placeholders.append((_slide_no, "[ASSUMPTION] × 4 — every pricing line"))
+    # Three bands, summarising gtm-plan.md. Nothing is claimed here that the
+    # plan does not support: the six rungs are a capability path, NOT six
+    # purchasable tiers — entitlements.py ships three — so the note under the
+    # ladder says which of them exists and that none has been sold.
+    y = BODY_TOP + 0.07
+    label(s, L, y, 5.0, "Who — the screen", 9, RULE, tally=False)
+    screen = ["> 5,000 SKUs", "Encoded geometry", "> 150 lines/month",
+              "Margin < 25%", "3–30 quoting", "Connector ERP"]
+    bw = (CW - 5 * 0.18) / 6
+    for i, t in enumerate(screen):
+        flow_box(s, L + i * (bw + 0.18), y + 0.24, bw, 0.46, t, size=8)
 
-    rx = mid + 0.55
-    label(s, rx, BODY_TOP + 0.06, 4.0, "Land and expand", 9.5, RULE,
-          tally=False)
-    rungs = ["Quote Desk", "Product Intelligence", "Pricing",
-             "Margin Management", "Agents", "Commercial Intelligence"]
+    y = BODY_TOP + 1.00
+    label(s, L, y, 5.0, "How it lands", 9, RULE, tally=False)
+    text(s, L, y + 0.26, CW, 0.34,
+         "Founder-led. Owner or sales head, triggered by a price increase or a "
+         "departing expert. Diagnostic before demo.", size=13.5, colour=INK85)
+
+    y = BODY_TOP + 1.76
+    label(s, L, y, 5.0, "How it grows", 9, RULE, tally=False)
+    rungs = ["Quote Desk", "Product\nIntelligence", "Pricing",
+             "Margin\nManagement", "Agents", "Commercial\nIntelligence"]
+    rw = (CW - 5 * 0.26) / 6
     for i, t in enumerate(rungs):
-        y = 5.02 - i * 0.50
-        flow_box(s, rx, y, R - rx, 0.40, t, size=9,
+        x = L + i * (rw + 0.26)
+        flow_box(s, x, y + 0.24, rw, 0.56, t, size=8,
                  width=1.5 if i == 0 else 0.6,
                  colour=BLUEPRINT if i == 0 else INK85)
-        if i:
-            line(s, rx + 0.34, y + 0.40, rx + 0.34, y + 0.50, RULE, 0.5)
+        if i < 5:
+            line(s, x + rw, y + 0.52, x + rw + 0.26, y + 0.52, BLUEPRINT,
+                 0.75, arrow=True)
+    text(s, L, y + 0.90, CW, 0.30,
+         "Rung one ships free; the paid tier is built, not yet sold.",
+         size=12.5, colour=INK85)
 
-    text(s, L, 5.80, 10.9, 0.7,
-         "The quote desk is the wedge because it is where a distributor "
-         "already feels the pain daily and where the value is legible in one "
-         "session. Price points are unvalidated.", size=12.5, colour=INK85,
-         line_spacing=1.28)
+    y = BODY_TOP + 3.30
+    label(s, L, y, 5.0, "Pricing model", 9, RULE, tally=False)
+    line(s, L, y + 0.22, R, y + 0.22, RULE, 0.5)
+    lines_ = ["Platform subscription", "Quote-desk seats",
+              "SKU intelligence volume", "Premium modules"]
+    pw = (CW - 3 * 0.30) / 4
+    for i, t in enumerate(lines_):
+        x = L + i * (pw + 0.30)
+        text(s, x, y + 0.34, pw, 0.28, t, size=12.5, colour=INK85)
+        placeholder(s, x, y + 0.66, 1.48, 0.32, "[assumption]")
+        _placeholders.pop()
+    _placeholders.append((_slide_no, "[ASSUMPTION] × 4 — every pricing line"))
 
 
 def slide_13(prs):

@@ -457,34 +457,50 @@ signal of depth. Say the word if you want the brief's original wording restored.
 
 **Headline:** Land on the quote desk. Expand into the commercial decision.
 
-**Single idea:** A specific entry workflow with a specific expansion path — priced, with the
-pricing honestly marked as untested.
+**Single idea:** Who this is for, how it gets in, and how it grows — a summary of
+`gtm-plan.md`, which was written first.
 
-**Body copy (59 words / cap 65):**
+**Body copy (64 words / cap 70):**
 
-Left, `PRICING MODEL`:
+Band 1, `WHO — THE SCREEN` — six boxes, the ICP screen from `gtm-plan.md` §1:
 
-> Platform subscription per organization `[ASSUMPTION]`
-> Quote-desk seats `[ASSUMPTION]`
-> SKU intelligence volume `[ASSUMPTION]`
-> Premium modules `[ASSUMPTION]`
+> `> 5,000 SKUs` · `Encoded geometry` · `> 150 lines/month` · `Margin < 25%` ·
+> `3–30 quoting` · `Connector ERP`
 
-Right, `LAND AND EXPAND`:
+Band 2, `HOW IT LANDS`:
+
+> Founder-led. Owner or sales head, triggered by a price increase or a departing expert.
+> Diagnostic before demo.
+
+Band 3, `HOW IT GROWS` — six rungs, first heavier:
 
 > Quote Desk → Product Intelligence → Pricing → Margin Management → Agents → Commercial
 > Intelligence
 
-Caption:
+> Rung one ships free; the paid tier is built, not yet sold.
 
-> The quote desk is the wedge because it is where a distributor already feels the pain daily
-> and where the value is legible in one session. Price points are unvalidated.
+Band 4, `PRICING MODEL` — four lines, each with its own amber cell:
 
-**Visual:** Split sheet, vertical hairline at centre. Left is a four-row ruled table, each row's
-value cell an amber dashed box. Right is a six-rung ladder ascending, first rung (Quote Desk)
-solid blueprint at full weight, the remaining five in lighter stroke — proven wedge, projected
-expansion, and the weight difference says so without a word.
+> Platform subscription `[ASSUMPTION]` · Quote-desk seats `[ASSUMPTION]` ·
+> SKU intelligence volume `[ASSUMPTION]` · Premium modules `[ASSUMPTION]`
 
-**Placeholders:** four `[ASSUMPTION]` tags on every pricing line.
+**Visual:** Four horizontal bands, each with a mono section label and a hairline where one is
+needed. Band 1 is six equal solid boxes read as a filter. Band 3 is the ladder laid horizontally
+with arrows, the first rung at full stroke weight and the remaining five light — shipped versus
+projected, said with weight rather than a word. Band 4 is four cells, each a label above an amber
+dashed value box.
+
+**Placeholders:** four `[ASSUMPTION]` tags, one per pricing line.
+
+**Consistency with `gtm-plan.md` — the one thing to get right here.** The six rungs are a
+*capability* path. They are **not** six purchasable tiers: `entitlements.py` ships three —
+`FREE` ("Quote Desk"), `INTELLIGENCE` ("Commercial Intelligence") and `PLATFORM` (multi-company).
+A slide implying six sellable steps would claim something the plan does not support and the code
+contradicts. That is what the line under the ladder is for: **"Rung one ships free; the paid tier
+is built, not yet sold."** It states which of the ladder exists, and — because there is no
+checkout and no customer — that none of it has been sold. Every other claim on the sheet traces
+to a numbered section of the plan: the screen to §1, the landing motion to §4, the ladder to §8,
+the pricing lines to §7, where they are explicitly unvalidated.
 
 ---
 
@@ -629,6 +645,10 @@ all are blockers to it reading as finished.
 
 **Not a placeholder, but still needed:** the founder background line. It appears on no
 sheet, and it is the entire basis of `hard-questions.md` Q8.
+
+**`gtm-plan.md` carries its own gap table**, and it is the more actionable of the two —
+willingness to pay, the cost of pack two, the §1 thresholds, the onboarding fee. Sheet 12
+summarises that plan, so closing its gaps closes placeholder 5 here as a by-product.
 
 ### Two things to fix outside the deck
 

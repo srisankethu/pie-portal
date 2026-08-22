@@ -5,11 +5,10 @@ from sqlalchemy.orm import sessionmaker
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from .conftest import *
 import dbsupport
 from app.domain import models
 from app.seed import SEED_PASSWORD, ensure_org_and_users
-from app.db import get_session, Base
+from app.db import get_session
 from app.routers import platform_auth, internal, decisions
 
 
@@ -87,7 +86,7 @@ def test_decisions_n_plus_1_pattern(client_and_maker):
     sales = _hdr(_login(client, "r.nair@pie.example"))
 
     # Step 1: list endpoint
-    print(f"\n✓ Frontend Step 1: GET /api/v1/decisions")
+    print("\n✓ Frontend Step 1: GET /api/v1/decisions")
     t0 = time.time()
     list_resp = client.get("/api/v1/decisions", headers=sales)
     t1 = time.time()
@@ -107,12 +106,12 @@ def test_decisions_n_plus_1_pattern(client_and_maker):
         if i < 3 or i == len(decisions) - 1:
             print(f"  → Detail {i+1}: {elapsed:.0f}ms")
         elif i == 3:
-            print(f"  → ...")
+            print("  → ...")
 
     total_detail = sum(detail_times)
     avg_detail = total_detail / len(detail_times) if detail_times else 0
 
-    print(f"\n📊 Summary:")
+    print("\n📊 Summary:")
     print(f"  List endpoint:     {list_time:.0f}ms")
     print(f"  Detail endpoint:   {len(detail_times)} × {avg_detail:.0f}ms avg = {total_detail:.0f}ms total")
     print(f"  TOTAL FRONTEND:    {list_time + total_detail:.0f}ms")

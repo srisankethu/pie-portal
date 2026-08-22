@@ -767,3 +767,141 @@ def test_lateness_is_measured_against_the_agreed_term_not_the_erps(session):
     after, _ = _bill_settlements(session, ORG)
     assert [s.days_late for s in after] == [-5]
     assert [s.days_to_pay for s in after] == [40]
+
+
+# ── the route behind the datum ──────────────────────────────────────────────
+#
+# ``cashflow.actual`` is the past half of the same drawing, and it has its own
+# set of things it must not claim. Tested against ``Movement`` rows directly
+# rather than through a synced book: the arithmetic under test is "put each
+# payment in the week it was made and add up", and a fixture that had to be
+# synced, folded and paid would test the sync three times over and this once.
+
+
+def _moved(days_ago: int, direction: str, amount: str) -> cashflow.Movement:
+    """One payment, that many days before TODAY."""
+    return cashflow.Movement(on=TODAY - timedelta(days=days_ago),
+                             direction=direction, amount=Decimal(amount))
+
+
+def test_a_payment_lands_in_the_week_it_was_actually_made():
+    """Not the week its invoice was raised, not the week it was due — the week
+    the money moved. This series exists precisely because the other two
+    questions are already answered elsewhere."""
+    made_on = THIS_MONDAY - timedelta(days=3)          # the Friday before
+    result = cashflow.actual(
+        [cashflow.Movement(on=made_on, direction="in", amount=Decimal("40000"))],
+        as_of=TODAY, weeks=13)
+
+    landed = [b for b in result["buckets"] if b["inflow"]]
+    assert len(landed) == 1, result["buckets"]
+    assert landed[0]["starts_on"] == (THIS_MONDAY - timedelta(days=7)).isoformat()
+    assert landed[0]["inflow"] == 40000.0
+
+
+def test_the_running_total_is_measured_back_from_the_datum():
+    """The last past week ends at zero — the point the committed channel opens
+    from — so every earlier week reads "the book has moved this much since
+    then". A cumulative that started at zero in the *oldest* week and ran
+    forward would leave the two halves of the drawing meeting at an arbitrary
+    height, which reads as a cash position. It is not one."""
+    result = cashflow.actual(
+        [_moved(20, "in", "100000"), _moved(6, "out", "40000")],
+        as_of=TODAY, weeks=13)
+
+    assert result["buckets"][-1]["cumulative"] == 0.0
+    assert result["net_over_window"] == 60000.0
+    # Before either payment: the whole window's movement still lies ahead.
+    assert result["buckets"][0]["cumulative"] == -60000.0
+    # Every step is that week's own net, and nothing else.
+    steps = [round(b["cumulative"] - a["cumulative"], 2)
+             for a, b in zip(result["buckets"], result["buckets"][1:])]
+    assert steps == [round(b["net"], 2) for b in result["buckets"][1:]]
+
+
+def test_money_older_than_the_window_is_counted_beside_it_never_inside():
+    """Folding it into the first week would draw a spike this business never
+    had, on a Monday nothing happened. Same refusal the forward half makes
+    about overdue money, in the other direction."""
+    result = cashflow.actual(
+        [_moved(500, "in", "900000"), _moved(2, "in", "1000")],
+        as_of=TODAY, weeks=13)
+
+    assert result["before_window"]["inflow"] == 900000.0
+    assert sum(b["inflow"] for b in result["buckets"]) == 1000.0
+    assert result["net_over_window"] == 1000.0
+
+
+def test_a_window_with_no_payment_in_it_says_so_rather_than_drawing_a_flat_line():
+    """A flat route at zero is a claim that nothing moved. When nothing has
+    *synced*, that claim is not available — so the reason is returned and the
+    screen says which kind of empty this is."""
+    result = cashflow.actual([], as_of=TODAY, weeks=13)
+
+    assert result["empty_reason"]
+    assert result["observed_from"] is None
+    assert all(b["net"] == 0.0 for b in result["buckets"])
+
+
+def test_the_route_arrives_at_the_datum_rather_than_at_last_sunday():
+    """The last bucket is the current week, run short to ``as_of``. Ending the
+    history on Sunday would leave every payment made since then counted on
+    neither side of the reference line — money that has moved, drawn nowhere.
+
+    The two halves overlap in *time* across that week and never in money: what
+    has already been paid has left the balances the forward half is folded
+    from, which is the same property `test_a_settled_document_schedules_nothing`
+    pins on the projection.
+    """
+    past = cashflow.actual([], as_of=TODAY, weeks=13)
+
+    assert past["ends_on"] == TODAY.isoformat()
+    assert past["starts_on"] == (THIS_MONDAY - timedelta(weeks=12)).isoformat()
+    assert past["buckets"][-1]["starts_on"] == THIS_MONDAY.isoformat()
+    assert past["buckets"][-1]["partial"] is True
+    assert [b["partial"] for b in past["buckets"][:-1]] == [False] * 12
+    assert len(past["buckets"]) == 13
+
+
+def test_the_past_window_is_as_long_as_the_horizon_asked_for(book):
+    """Twenty-six weeks forward is twenty-six weeks back. One scale, one
+    drawing — a fixed history behind a variable horizon would change the shape
+    of the channel every time somebody changed the horizon."""
+    for weeks in (13, 26):
+        past = cashflow.actual([], as_of=TODAY, weeks=weeks)
+        assert len(past["buckets"]) == weeks
+        assert len(_project(book, weeks=weeks)["buckets"]) == weeks
+
+
+def test_the_actual_route_reaches_the_endpoint_at_the_payment_grain(session):
+    """One receipt and one supplier payment, neither applied to a document.
+
+    An advance and a payment to an unresolved vendor are exactly the rows the
+    settlement tables cannot carry, and both are real cash. Read at the payment
+    grain they are counted; read from the applications they would vanish, which
+    would understate the movement in the direction that reads as calm.
+    """
+    from app.routers.insight import _cash_movements
+
+    _seed(session)
+    _fold(session)
+    customer = session.scalars(
+        select(models.Customer).where(models.Customer.external_id == "c1")).one()
+    session.add(models.PaymentReceipt(
+        organization_id=ORG, external_ref="rcpt-adv",
+        customer_id=customer.customer_id,
+        date=TODAY - timedelta(days=10), amount=Decimal("25000"),
+        is_advance=True))
+    session.add(models.VendorPaymentDoc(
+        vendor_payment_id="vp-anon", organization_id=ORG,
+        external_ref="vp-anon", vendor_id=None,
+        date=TODAY - timedelta(days=4), amount=Decimal("9000")))
+    session.commit()
+
+    result = cashflow.actual(_cash_movements(session, ORG),
+                             as_of=TODAY, weeks=13)
+
+    assert result["empty_reason"] is None
+    assert sum(b["inflow"] for b in result["buckets"]) == 25000.0
+    assert sum(b["outflow"] for b in result["buckets"]) == 9000.0
+    assert result["net_over_window"] == 16000.0

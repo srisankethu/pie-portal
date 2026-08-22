@@ -3556,3 +3556,88 @@ class ConfirmedCodeMapping(Base):
     superseded_by: Mapped[Optional[str]] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
                                                  index=True)
+
+
+class QueuedMessage(Base):
+    """One unit of background work, durable enough to survive the process.
+
+    Background work has existed here since the first sync took minutes: a
+    thread is started, the ``SyncRun`` row records what it is doing, and the
+    screen polls that row. What a thread cannot do is outlive its process. A
+    run that is QUEUED when the container is replaced — a deploy, an OOM, a
+    host moving — is simply never done; ten minutes later the reaper marks its
+    row stale and the work has silently evaporated. That is the gap this table
+    closes: the *request* to do the work is committed before anything starts,
+    so a worker in the next process can pick it up.
+
+    Deliberately a table rather than a broker. The queue depths here are one
+    message per organization per sync cadence, the database is already the
+    thing every process shares, and a Redis is an extra service to run, secure
+    and reason about for a workload that fits in a single indexed query. What
+    the table has to get right is the same short list any queue does:
+
+    * **Claiming is atomic.** A message moves PENDING -> CLAIMED with a
+      conditional UPDATE, so two workers racing for it produce one winner and
+      one zero-row update rather than two runs of the same job. This is what
+      makes multiple processes safe — which the thread dispatch never was, and
+      said so.
+    * **A dead worker releases its work.** ``heartbeat_at`` is the same
+      mechanism ``SyncRun`` uses: a CLAIMED message whose worker stopped
+      reporting is returned to PENDING rather than held forever by a process
+      that no longer exists.
+    * **Failure is bounded and visible.** Each attempt is counted and retried
+      with a growing delay; a message that exhausts its attempts becomes
+      DEAD_LETTER with its last error, which is a row an operator can read.
+      It is never silently dropped.
+    * **A duplicate is refused, not run twice.** ``dedupe_key`` names the work
+      rather than the request, so "sync organization X" enqueued twice while
+      the first is still pending is one message.
+
+    Rows are kept after completion: a queue with no history cannot answer "did
+    that run, and when". They are derived state — deleting them loses the
+    account of what ran and breaks nothing that computes a number.
+    """
+
+    __tablename__ = "queued_messages"
+    __table_args__ = (
+        # The claim query, exactly: the oldest available message on a topic.
+        Index("ix_queued_messages_claimable", "status", "available_at"),
+        # The dedupe lookup, which runs on every enqueue.
+        Index("ix_queued_messages_dedupe", "dedupe_key", "status"),
+    )
+
+    message_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    #: What kind of work this is — the key a handler is registered under.
+    topic: Mapped[str] = mapped_column(String(64), index=True)
+    #: Everything the handler needs, as JSON. Values only: a payload holding an
+    #: ORM object would be a reference into a session that is long closed by the
+    #: time the message runs, possibly in another process.
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    #: The tenant this work belongs to, where it belongs to one. Null for
+    #: platform-wide work. Carried so a queue depth can be read per
+    #: organization and so one tenant's backlog is legible as theirs.
+    organization_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    #: PENDING | CLAIMED | DONE | DEAD_LETTER
+    status: Mapped[str] = mapped_column(String(16), index=True, default="PENDING")
+    #: Names the *work*, not the request: while a message with this key is
+    #: PENDING or CLAIMED, enqueueing it again returns the existing one.
+    dedupe_key: Mapped[Optional[str]] = mapped_column(String(191))
+    #: Not before this instant. Both the delay of a scheduled message and the
+    #: backoff of a retry are expressed here, so the claim query needs one
+    #: condition rather than two notions of "later".
+    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),
+                                                   default=_now, index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, default=3)
+    #: Which worker holds it, for a human reading the table during an incident.
+    claimed_by: Mapped[Optional[str]] = mapped_column(String(128))
+    claimed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    #: Touched while the handler runs. A CLAIMED row whose heartbeat has gone
+    #: cold is a dead worker's, not a slow one's — same rule as ``SyncRun``.
+    heartbeat_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    #: Why the last attempt failed, kept even after a later attempt succeeds:
+    #: a message that needed three tries is worth knowing about.
+    last_error: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
+                                                 index=True)
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))

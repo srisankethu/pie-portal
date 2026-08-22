@@ -14,6 +14,7 @@ layer, keyed by the manufacturer MM# that resolution returns.
 from __future__ import annotations
 
 import argparse
+import copy
 import importlib.util
 import json
 import logging
@@ -23,10 +24,44 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from . import cache as cache_module
 from .catalog import ensure_catalog
 from .config import settings
 
 log = logging.getLogger("pie_portal.pie")
+
+#: The engine's verdict for one product code, remembered.
+#:
+#: Resolution is the most expensive thing a quote does — an identity lookup and
+#: a scored pass over the whole decoded catalogue, per line — and a quote
+#: re-resolves the same codes every time it is rebuilt, while a customer's
+#: repeat enquiry is *the same text* as last month's. The answer is a pure
+#: function of the engine's inputs, which is what makes it cacheable at all.
+#:
+#: What is in the key, and why each one has to be (see ``app/cache.py``):
+#:
+#: * the catalogue's ruleset version — a rebuilt catalogue decodes differently,
+#:   and that is exactly the fact that explains why the same text resolved to a
+#:   different product last March;
+#: * the requested text, and the customer identity it is resolved under;
+#: * a fingerprint of the confirmed mappings the engine could read — confirming
+#:   "this customer's X means MM# Y" changes the answer for that customer
+#:   immediately, and a cache that outlived the confirmation would keep telling
+#:   them it had not been recorded.
+#:
+#: Not in the key, deliberately: the equivalence *bands*. They are commercial
+#: policy applied by ``_map`` after the engine has run, so two organizations
+#: with different bands read one cached engine result differently — which is
+#: the correct relationship between a fact and the policy that judges it (§1 —
+#: "an equivalence score is policy, never an identity").
+#:
+#: There is no money in a cached value: this is nomenclature, and price, cost
+#: and stock are read from the books afterwards by ``store._enrich_from_zoho``.
+_resolution_cache = cache_module.register(cache_module.Cache(
+    "pie_resolution",
+    maxsize=settings.PIE_CACHE_SIZE,
+    ttl_seconds=settings.PIE_CACHE_TTL_SECONDS,
+))
 
 # ── relationship model (mirrors the design's REL table) ──────────────────────
 # rank orders lines by how much attention they need (lower = calmer).
@@ -379,6 +414,57 @@ class PieService:
             mapping_store=mapping_store,
         )
 
+    # ── resolution cache ─────────────────────────────────────────────────────
+    @staticmethod
+    def _mapping_fingerprint(mapping_store: Any) -> Optional[str]:
+        """A value naming the confirmed mappings the engine will read, or None.
+
+        None means "do not cache this resolution". That is the answer for a
+        store this code cannot fingerprint — a test double, or a future store
+        of a different shape — because caching against an unknown input is how
+        a confirmed mapping silently stops taking effect. Refusing to cache
+        costs a scan; guessing costs the customer a wrong answer with a
+        confident explanation attached.
+        """
+        if mapping_store is None:
+            return "none"                    # the packaged empty store
+        fingerprint = getattr(mapping_store, "fingerprint", None)
+        if not callable(fingerprint):
+            return None
+        try:
+            return str(fingerprint())
+        except Exception:  # noqa: BLE001 — an unfingerprintable store is uncached
+            log.exception("could not fingerprint the mapping store; resolving "
+                          "this line without the cache")
+            return None
+
+    def _cache_key(self, text: str, customer_scope: Optional[str],
+                   mapping_store: Any) -> Optional[str]:
+        """The key this resolution is stored under, or None if it may not be
+        cached at all."""
+        if _resolution_cache.maxsize == 0:
+            return None
+        mappings = self._mapping_fingerprint(mapping_store)
+        if mappings is None:
+            return None
+        return cache_module.fingerprint(
+            "pie_resolution", self._catalog_version, text, customer_scope,
+            mappings)
+
+    @staticmethod
+    def _cached_result(key: Optional[str]) -> Optional[Dict[str, Any]]:
+        """The stored engine result for this key, deep-copied, or None.
+
+        Copied on the way out for the reason the write side gives: callers keep
+        references into this dict, and a shared one would make two quotes one.
+        """
+        if key is None:
+            return None
+        stored = _resolution_cache.get(key)
+        if stored is cache_module.MISS:
+            return None
+        return copy.deepcopy(stored)
+
     # ── resolution ───────────────────────────────────────────────────────────
     def resolve(self, text: str, customer_scope: Optional[str] = None,
                 bands: Optional[Bands] = None,
@@ -399,8 +485,18 @@ class PieService:
         text = (text or "").strip()
         try:
             self._ensure_loaded()
-            args = self._make_args(text, customer_scope, mapping_store)
-            result, _human = self._mod.run(args, self._sources)
+            key = self._cache_key(text, customer_scope, mapping_store)
+            result = self._cached_result(key)
+            if result is None:
+                args = self._make_args(text, customer_scope, mapping_store)
+                result, _human = self._mod.run(args, self._sources)
+                if key is not None:
+                    # A copy, so the object handed to ``_map`` below — and to
+                    # every Candidate that keeps a reference into it — cannot
+                    # be reached from the cache. A Line built from a cached
+                    # resolution that shared its ``attributes`` dict would let
+                    # one quote's edit change another's.
+                    _resolution_cache.set(key, copy.deepcopy(result))
             return self._map(text, result, bands or Bands.default())
         except Exception:  # noqa: BLE001 — deliberate: isolate engine failures
             log.exception("pie-parser resolution failed for %r", text)

@@ -139,6 +139,18 @@ async def lifespan(_app: FastAPI):
         start_scheduler()
     except Exception:  # noqa: BLE001
         log.exception("auto-sync scheduler failed to start; manual sync still works.")
+
+    # The queue worker. Declines unless this deployment dispatches through the
+    # queue (see settings.SYNC_DISPATCH), so a default install starts nothing
+    # and behaves exactly as it did. Non-fatal for the same reason as the
+    # scheduler: a platform that cannot drain its queue is degraded, and one
+    # that will not start over it is down.
+    try:
+        from .messaging import start_worker
+
+        start_worker()
+    except Exception:  # noqa: BLE001
+        log.exception("queue worker failed to start; queued jobs will wait.")
     yield
 
 

@@ -258,6 +258,11 @@ EXCLUDED_REASONS: dict[str, str] = {
         "Whether your books have used their free month of Commercial "
         "Intelligence — our licensing bookkeeping, with no fact about your "
         "business in it beyond the connection date you already have."),
+    "queued_messages": (
+        "Background work we had queued for your books — a sync to run, when it "
+        "was asked for, and whether it succeeded. Our own plumbing: the row "
+        "holds the id of a job and nothing about what it read. What those "
+        "pulls actually brought in is the trading record exported above."),
     "oauth_states": (
         "An authorization that was in flight — the hashed one-time token from a "
         "'Sign in with Zoho' round trip, its data centre, and when it expired. "
@@ -283,6 +288,7 @@ MANIFESTED: tuple[tuple[str, Any], ...] = EXPORTED + (
     ("state_transitions", models.StateTransition),
     ("sync_runs", models.SyncRun),
     ("sync_run_logs", models.SyncRunLog),
+    ("queued_messages", models.QueuedMessage),
     ("ingested_documents", models.IngestedDocument),
     ("zoho_connections", models.ZohoConnection),
     ("ai_provider_keys", models.AIProviderKey),

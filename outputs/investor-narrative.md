@@ -47,10 +47,9 @@ watchers over the commercial book.
 The asset compounds specifically rather than generically. Each manufacturer's naming
 system is reverse-engineered once into a versioned pack — eleven families and 6,717
 rows decoded at full coverage today — and the engine holds no manufacturer knowledge
-at all, which is enforced rather than asserted. A new manufacturer, eventually a new
-category, is new data against unchanged code. That structure is published nowhere. It
-is not a data-scale claim but a specific artefact that took specification work to
-build.
+at all, enforced rather than asserted. A new manufacturer is new data against unchanged
+code; a new category costs one added decoder. That structure is published nowhere. Not
+a data-scale claim but a specific artefact that took specification work to build.
 
 ERP records the transaction. PIE understands the product and helps decide what
 should happen.

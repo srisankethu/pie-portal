@@ -331,47 +331,67 @@ them.
 
 **Headline:** The engine is manufacturer-agnostic by construction
 
-**Single idea:** Horizontal expansion is a property of the architecture, not a roadmap promise
-— and here is the arithmetic for what that is worth, with every input exposed.
+**Single idea:** Horizontal expansion is a property of the architecture, not a roadmap promise —
+and here is the arithmetic for what that is worth, with every input exposed.
 
 **Body copy (54 words / cap 55):**
 
-Category ladder:
+Category ladder — six rungs, first at heavier stroke:
 
-> Cutting tools → industrial tools → bearings → electrical → MRO → automation → fasteners →
-> consumables
+> Cutting tools → Bearings → Power transmission → Hydraulics, pneumatics → Abrasives →
+> Specialty fasteners
 
-Left annotation:
+Annotation, two statements:
 
-> A new manufacturer is a new data pack. Zero manufacturer literals in the engine — tested, not
-> asserted.
+> Each rung: encoded codes, cross-brand substitution, a catalogue nobody memorises.
+>
+> New manufacturer, unchanged engine. New category also needs a standards decoder.
 
 TAM/SAM/SOM box, arithmetic shown:
 
-> `TAM = A × B`
-> `SAM = TAM × C`
-> `SOM = SAM × D`
+> `TAM = A × B` · `SAM = TAM × C` · `SOM = SAM × D`
 >
-> `A  [ASSUMPTION]  distributors in scope`
-> `B  [ASSUMPTION]  annual spend each`
-> `C  [ASSUMPTION]  share on a connected ERP`
-> `D  [ASSUMPTION]  reachable in three years`
+> `A [ASSUMPTION] distributors` · `B [ASSUMPTION] annual spend each` ·
+> `C [ASSUMPTION] connected-ERP share` · `D [ASSUMPTION] reachable in three years`
 
-**Visual:** Category ladder as a vertical stack of boxes at left, the first (cutting tools)
-solid and filled-stroke-weight heavier, the rest solid but lighter — read as "proven here,
-same mechanism onward". The TAM box at right is a ruled table with the formula row above and
-four labelled input rows below, every value cell amber and dashed.
+**Visual:** Ladder as a vertical stack at left, the first rung (cutting tools) at heavier stroke
+weight — proven here, same mechanism onward. Annotation in the centre column as two separated
+statements. TAM box at right: a ruled table, formula rows above, four labelled input rows below,
+every value cell amber and dashed.
 
 **Placeholders:** all four of `A`, `B`, `C`, `D`.
 
-**Note — read this one carefully.** The brief permits a constructed TAM only with every input
-labelled, and you have none of the four inputs. So the slide presents the *arithmetic* as the
-content and leaves the values open. This is unusual and it is a deliberate trade-off: an
-all-amber market slide reads as underprepared to some investors, and as disciplined to others.
-The three inputs that are cheap to source properly are `A` (distributor counts from trade-body
-registries in your chosen geographies), `C` (published ERP market share), and a defensible `B`
-from comparable quoting/CPQ seat pricing. Source those and this becomes the strongest slide in
-the deck rather than the weakest. Flagged in the hand-off.
+### Why the ladder is six rungs and not eight
+
+The Phase 1 draft carried the brief's list — cutting tools, industrial tools, bearings,
+electrical, MRO, automation, fasteners, consumables. Four were cut against the test now stated
+in the annotation: **encoded codes, cross-brand substitution, a catalogue nobody memorises.**
+
+Electrical, automation, MRO and consumables fail it. Their part numbers are largely arbitrary
+vendor SKUs with nothing to decode, and where substitution happens at all it is governed by
+approvals and certification rather than geometry — so PIE would degrade to a search box. Bearings
+is promoted to second because it arguably fits *better* than the beachhead: ISO 15 designations
+are densely encoded and cross-brand interchange between SKF, FAG, NSK and Timken is the
+distributor's daily work, where in cutting tools equivalence is secondary to identity.
+
+A long ladder of weak rungs is worth less than a short one that survives being asked about.
+
+### The qualification in the second annotation line, and why it is there
+
+The headline is accurate and machine-checked: the engine holds **zero manufacturer literals**,
+enforced by an AST check in the build gate. But it does carry *category* knowledge in two
+places — `engine/iso.py` holds the ISO 1832 alphabets (insert shapes, clearance angles) as typed
+constants, and `engine/model.py:207-215` whitelists cutting-tool field names such as
+`corner_radius_mm`, `flute_count` and `insert_polarity`.
+
+So a bearings pack needs an ISO 15 decoder added to the engine and new fields in that list.
+Neither forks the engine — both are additive, and the manifest-instantiated decoder mechanism is
+already generic — but it means **"a new manufacturer is new data against unchanged code" is true,
+and the same sentence about a new category is not.**
+
+Without the second line, an accurate headline sits beside a category ladder and invites an
+inference the code does not support. Technical diligence would find the ISO constants in an
+afternoon; better to have said it first.
 
 ---
 

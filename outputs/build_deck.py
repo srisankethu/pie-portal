@@ -574,23 +574,35 @@ def slide_08(prs):
 
 def slide_09(prs):
     s = sheet(prs, "The engine is manufacturer-agnostic by construction")
-    ladder = ["Cutting tools", "Industrial tools", "Bearings", "Electrical",
-              "MRO", "Automation", "Fasteners", "Consumables"]
+    # Only the categories that pass the test named in the annotation. Electrical,
+    # MRO, automation and consumables were dropped: their part numbers are largely
+    # arbitrary vendor SKUs and substitution is governed by approvals rather than
+    # geometry, so PIE would degrade to a search box. A long ladder of weak rungs
+    # is worth less than a short one that survives being asked about.
+    ladder = ["Cutting tools", "Bearings", "Power transmission",
+              "Hydraulics, pneumatics", "Abrasives", "Specialty fasteners"]
     lw = 3.05
     for i, t in enumerate(ladder):
-        y = BODY_TOP + 0.34 + i * 0.47
-        flow_box(s, L, y, lw, 0.38, t, size=8.5,
+        y = BODY_TOP + 0.40 + i * 0.52
+        flow_box(s, L, y, lw, 0.42, t, size=8.5,
                  width=1.4 if i == 0 else 0.6,
                  colour=BLUEPRINT if i == 0 else INK85)
         if i:
-            line(s, L + lw / 2, y - 0.09, L + lw / 2, y, RULE, 0.5)
-    label(s, L, BODY_TOP + 0.06, 3.2, "Category ladder", 8.5, RULE,
+            line(s, L + lw / 2, y - 0.10, L + lw / 2, y, RULE, 0.5)
+    label(s, L, BODY_TOP + 0.10, 3.2, "Category ladder", 8.5, RULE,
           tally=False)
 
     ax = L + lw + 0.55
-    text(s, ax, BODY_TOP + 0.30, 3.1, 1.3,
-         "A new manufacturer is a new data pack. Zero manufacturer literals "
-         "in the engine — tested, not asserted.", size=13, colour=INK85,
+    # The second line is the honest qualification. The engine holds no
+    # MANUFACTURER literals and that is AST-enforced, but engine/iso.py carries
+    # the ISO 1832 alphabets and model.py whitelists cutting-tool field names, so
+    # a new CATEGORY is an additive engine change rather than pure pack data.
+    # Without this clause the headline sits beside a category ladder and invites
+    # an inference the code does not support.
+    text(s, ax, BODY_TOP + 0.36, 3.1, 2.1,
+         "Each rung: encoded codes, cross-brand substitution, a catalogue "
+         "nobody memorises.\n\nNew manufacturer, unchanged engine. New category "
+         "also needs a standards decoder.", size=12.5, colour=INK85,
          line_spacing=1.3)
 
     tx = ax + 3.45
@@ -603,8 +615,8 @@ def slide_09(prs):
          size=11, colour=BLUEPRINT, line_spacing=1.42)
     line(s, tx + 0.18, BODY_TOP + 1.52, tx + tw - 0.18, BODY_TOP + 1.52,
          RULE, 0.5)
-    inputs = [("A", "distributors in scope"), ("B", "annual spend each"),
-              ("C", "share on a connected ERP"), ("D", "reachable in three years")]
+    inputs = [("A", "distributors"), ("B", "annual spend each"),
+              ("C", "connected-ERP share"), ("D", "reachable in three years")]
     for i, (k, v) in enumerate(inputs):
         y = BODY_TOP + 1.66 + i * 0.47
         text(s, tx + 0.18, y + 0.04, 0.3, 0.3, k, font=MONO, size=10,

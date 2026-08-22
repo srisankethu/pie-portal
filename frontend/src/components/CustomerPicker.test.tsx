@@ -10,7 +10,7 @@
 //
 // So what is pinned here is the wording, per reason. A test that only asserted
 // "some message appears" would have passed against the bug it was written for.
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -135,6 +135,50 @@ describe("CustomerPicker, with nothing to show", () => {
     expect(screen.getByLabelText("Customer")).toBeVisible();
     // Not the empty-directory panel: an unasked question is not an empty answer.
     expect(screen.queryByText("No customers have been synced yet")).toBeNull();
+  });
+
+  it("never offers the previous search's names under the new one", async () => {
+    // The reported bug, and the reason this asserts on the *window* rather than
+    // on the settled result: search runs on the server, so between the keystroke
+    // and the response there is a debounce plus a round trip in which `rows`
+    // still holds the last query's answer. The dialog rendered it. Typing
+    // "pitti" showed 7TH GEAR, ADVENT and ARUSH — three names containing no
+    // "p" — sitting in the listbox looking exactly like a result, with a 16px
+    // spinner as the only disclaimer. A test that waited for the answer would
+    // have passed against that, which is why this one looks while it is wrong.
+    const ALL = [account("7TH GEAR AUTOMOTIVE LLP"), account("ADVENT TECHNOLOGIES")];
+    let release: (() => void) | null = null;
+    listAccounts.mockImplementation((_t: string, q: string) => {
+      if (!q) return Promise.resolve(ALL);
+      // Held open, standing in for the round trip the screenshot caught.
+      return new Promise((resolve) => {
+        release = () => resolve([account("PITTI ENGINEERING LTD")]);
+      });
+    });
+    mount("OWNER", "");
+
+    const field = screen.getByLabelText("Customer");
+    await waitFor(() => expect(listAccounts).toHaveBeenCalled());
+    fireEvent.focus(field);
+    // Focus first: MUI resets an unfocused Autocomplete's input on the next
+    // render, so a change event without it never reaches `onInputChange`.
+    fireEvent.change(field, { target: { value: "pitti" } });
+
+    // While the answer is outstanding the dialog says so, and offers nothing.
+    expect(await screen.findByText("Searching the directory…")).toBeInTheDocument();
+    expect(screen.queryByText("7TH GEAR AUTOMOTIVE LLP")).toBeNull();
+    expect(screen.queryByText("ADVENT TECHNOLOGIES")).toBeNull();
+    // Nor the opposite wrong answer: "no match" is also a claim about a
+    // directory that has not replied yet.
+    expect(screen.queryByText("No customer matches that.")).toBeNull();
+
+    await waitFor(() => expect(release).not.toBeNull());
+    release!();
+
+    const box = await screen.findByRole("listbox");
+    await waitFor(() => expect(
+      within(box).getAllByRole("option").map((o) => o.textContent),
+    ).toEqual(["PITTI ENGINEERING LTD"]));
   });
 
   it("asks the second question only when the first came back empty", async () => {

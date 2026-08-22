@@ -121,6 +121,17 @@ export function CustomerPicker({
   const navigate = useNavigate();
   const [query, setQuery] = useState("");
   const [rows, setRows] = useState<Account[]>([]);
+  // Which search `rows` is the answer to. `null` until the first one lands.
+  //
+  // Kept beside the rows because they are one fact, not two: a list of names
+  // means nothing without the query it answers. Search runs on the server, so
+  // between a keystroke and its response `query` and `answered` disagree — and
+  // that window is a defect rather than a detail. The dialog used to keep the
+  // previous search's names on screen underneath the new text, so typing
+  // "pitti" showed three companies whose names contain no "p" and read as the
+  // result. Debounce plus a round trip is long enough to photograph, and the
+  // only thing saying otherwise was a 16px spinner beside a full dropdown.
+  const [answered, setAnswered] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [choice, setChoice] = useState<Account | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
@@ -151,6 +162,7 @@ export function CustomerPicker({
         .then(async (r) => {
           if (!live) return;
           setRows(r);
+          setAnswered(query);
           setFailed(null);
           if (r.length || query.trim()) {
             setEmptyReason(null);
@@ -172,6 +184,16 @@ export function CustomerPicker({
     }, 220);
     return () => { live = false; clearTimeout(t); };
   }, [open, token, query, reloads]);
+
+  // What this dialog is entitled to offer: the rows, once they answer the
+  // question currently in the box. While a search is in flight there is no
+  // answer yet, and the honest output is the one `loading` already draws —
+  // "Searching the directory…" — not the previous query's names. Offering
+  // those is the benign default `kit.tsx` and the platform's own absence rule
+  // both refuse: a stale list is not a weaker answer, it is a wrong one, and
+  // it is indistinguishable on screen from a correct one.
+  const settled = answered === query;
+  const options = settled ? rows : [];
 
   // Whether to print the company beside each name. With one connected book
   // every line would say the same thing, which is width spent saying nothing.
@@ -196,9 +218,19 @@ export function CustomerPicker({
         )}
         <Autocomplete<Account>
           autoFocus
-          options={rows}
+          options={options}
           value={choice}
-          loading={loading}
+          // `!settled` and not just `loading`: `setLoading(true)` happens in an
+          // effect, which React runs *after* the paint that already showed the
+          // new text. That one frame had an empty list and a false `loading`,
+          // which is precisely when MUI draws `noOptionsText` — a flash of "No
+          // customer matches that." before the search had been sent.
+          loading={loading || !settled}
+          // Shown in place of `noOptionsText` while `options` is empty and a
+          // request is out — which is exactly the window above. "No customer
+          // matches that." would be the same wrong answer in the other
+          // direction: a claim about the directory made before it replied.
+          loadingText="Searching the directory…"
           onChange={(_e, v) => setChoice(v)}
           inputValue={query}
           onInputChange={(_e, v) => setQuery(v)}

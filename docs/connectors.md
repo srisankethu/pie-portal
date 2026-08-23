@@ -151,6 +151,50 @@ A US client organization sets its own `currency` (e.g. USD) and timezone; a
 document denominated in anything else is refused at the seam and named on the
 sync report, exactly as the Zoho pull refuses them.
 
+## What each connector cannot be written to, and why
+
+Desk research against each vendor's own documentation, so the next person does
+not repeat it. None of these three changes anything today — all five ERPs still
+declare `writes=()` — but the answers differ enough that "add a writer" is a
+different size of job for each.
+
+The question in each case is the one the settle protocol forces: **is there a
+write surface reachable from the transport this connector already speaks, and
+can it carry a caller-supplied reference that a later read can find?** Without
+the second, a write must be refused outright rather than sent — an uncertain
+write that cannot be looked up is unanswerable.
+
+- **Prophet 21 — viable, on a surface the connector does not yet speak.** The
+  OData Data Services API this connector reads through is for retrieval; on
+  cloud P21 the underlying SQL access is read-only. Writes go through the
+  separate **Transaction API**, which creates native `oe_hdr` / `oe_line`
+  records and returns a real P21 order number. Its header carries a customer
+  **PO number**, which is the re-checkable reference the protocol needs. The
+  token sign-in the connector already performs reaches it, so the credential
+  shape does not change — the API surface does.
+
+- **Sage X3 — uncertain, and site-specific.** X3's REST layer creates records
+  only for modules exposed through Classes and representations
+  (`POST …/x3/$$prod/<ENTITY>?representation=<ENTITY>.$edit`). Whether the
+  sales-order object `SOH` has such a representation on a given installation is
+  not something the documentation settles; the route the community documents
+  for creating an order is a **SOAP web service against `SOH` using its `save`
+  method**, which is neither REST nor the SData surface this connector reads
+  through. Two hops away from where the connector stands, and the answer likely
+  varies per site. Do not plan a writer for X3 without a specific
+  installation's own API configuration in hand.
+
+- **Sage 100 — negative, and that is a complete answer.** There is no native
+  REST write. SData, which this connector reads through, is **deprecated**.
+  Writes go through the **Business Object Interface**, a COM component invoked
+  in-process on Windows — not something a Python service reaches over HTTP at
+  all. A Sage 100 book cannot be written to from this platform without
+  third-party middleware standing in front of it, and that middleware would be
+  the thing this platform integrated with, not Sage 100.
+
+  The SData deprecation is worth knowing for the **read** path too: it is the
+  surface this connector's entire sync depends on.
+
 ## Adding connector number seven
 
 Write one module in `backend/app/ingestion/erp/` that registers a

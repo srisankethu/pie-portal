@@ -135,7 +135,13 @@ def test_the_card_serves_the_realised_outcome_the_tracker_computed(api):
     snap = s.query(models.OutcomeSnapshot).one()
     accepted = clock.now() - timedelta(days=200)
     snap.accepted_at = accepted
-    start = accepted.date()
+    # The org's date, not UTC's. ``outcome_tracker`` derives the window start
+    # with ``clock.to_local(...).date()`` because a business day belongs to the
+    # business, and this org is Asia/Kolkata — so for the five and a half hours
+    # either side of UTC midnight the two dates differ by one. Taking
+    # ``accepted.date()`` here made this test pass for most of the day and fail
+    # in the evening, against code that was right both times.
+    start = clock.to_local(accepted).date()
     # Inside the window (start < date ≤ start+90), and one later sale so the
     # book is observed past the window end — otherwise the coverage gate is
     # right to answer UNKNOWN.

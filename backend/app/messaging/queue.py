@@ -36,7 +36,7 @@ import logging
 from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
 
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
 from ..clock import aware as _aware, now as _now
@@ -283,6 +283,87 @@ def reap_stale(session: Session, *, now: Optional[datetime] = None,
     if reaped:
         session.commit()
     return reaped
+
+
+def requeue(session: Session, message: models.QueuedMessage, *,
+            now: Optional[datetime] = None) -> models.QueuedMessage:
+    """Put a dead-lettered message back on the queue. Commits.
+
+    The other half of dead-lettering. Without it "fix the cause and try again"
+    is advice that ends at a hand-written UPDATE, which is how failed work
+    quietly becomes permanent — and a queue whose only exit from failure is a
+    DBA is a queue that loses work slowly instead of quickly.
+
+    Attempts go back to zero: the operator is asserting that the cause is
+    fixed, so this is a first attempt at work that now has a chance, not a
+    fourth at work that does not. ``last_error`` is kept — it is the record of
+    why this needed a person, and the next failure overwrites it anyway.
+
+    Only a terminal message may be requeued. One that is still PENDING or
+    CLAIMED is either waiting or running, and "retrying" it would mean two
+    workers on one job.
+    """
+    now = now or _now()
+    if message.status in ACTIVE:
+        raise ValueError(
+            f"message {message.message_id} is {message.status}; it is already "
+            "queued or in flight, and requeuing it would run it twice")
+    session.execute(
+        update(models.QueuedMessage)
+        .where(models.QueuedMessage.message_id == message.message_id)
+        .values(status=PENDING, attempts=0, available_at=now, claimed_by=None,
+                claimed_at=None, heartbeat_at=None, finished_at=None))
+    session.commit()
+    session.refresh(message)
+    log.info("queue: %s requeued by hand (%s)", message.message_id, message.topic)
+    return message
+
+
+def prune(session: Session, *, now: Optional[datetime] = None,
+          done_days: Optional[int] = None,
+          dead_letter_days: Optional[int] = None) -> Dict[str, int]:
+    """Delete terminal messages older than their retention. Commits.
+
+    Rows are kept after completion on purpose — a queue with no history cannot
+    answer "did that run, and when" — but "kept" and "kept forever" are
+    different promises, and only one of them is a table that stops growing. At
+    one sync per organization per cadence this is the largest table in the
+    database within a year, holding rows nobody has read since the day they
+    finished.
+
+    The two retentions differ because the rows mean different things. A DONE
+    message is a receipt; a DEAD_LETTER is unfinished business somebody may
+    still act on, so it is kept far longer and deleting one is deleting the
+    evidence of a failure. Either ``0`` means keep forever.
+
+    Deletes rather than archives: these are derived rows about work whose real
+    record lives elsewhere (a ``SyncRun``, a metrics table). Nothing computes
+    from them.
+    """
+    now = now or _now()
+    done_days = (settings.QUEUE_DONE_RETENTION_DAYS if done_days is None
+                 else done_days)
+    dead_letter_days = (settings.QUEUE_DEAD_LETTER_RETENTION_DAYS
+                        if dead_letter_days is None else dead_letter_days)
+
+    removed = {DONE: 0, DEAD_LETTER: 0}
+    for status, days in ((DONE, done_days), (DEAD_LETTER, dead_letter_days)):
+        if days <= 0:
+            continue
+        cutoff = now - timedelta(days=days)
+        result = session.execute(
+            delete(models.QueuedMessage)
+            .where(models.QueuedMessage.status == status,
+                   # ``finished_at`` is set on both terminal transitions;
+                   # ``created_at`` covers a row from before it was.
+                   func.coalesce(models.QueuedMessage.finished_at,
+                                 models.QueuedMessage.created_at) < cutoff))
+        removed[status] = int(result.rowcount or 0)
+    if any(removed.values()):
+        session.commit()
+        log.info("queue: pruned %d done and %d dead-lettered message(s)",
+                 removed[DONE], removed[DEAD_LETTER])
+    return removed
 
 
 def depth(session: Session, *, organization_id: Optional[str] = None

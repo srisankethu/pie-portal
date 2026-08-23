@@ -413,6 +413,22 @@ class Settings:
     # busy.
     QUEUE_MAX_ATTEMPTS: int = int(os.environ.get("QUEUE_MAX_ATTEMPTS", "3"))
     QUEUE_BACKOFF_SECONDS: float = float(os.environ.get("QUEUE_BACKOFF_SECONDS", "30"))
+    # How long a finished message is kept. Rows survive completion on purpose —
+    # a queue with no history cannot answer "did that run, and when" — but kept
+    # and kept forever are different promises, and only one of them is a table
+    # that stops growing. The two differ because the rows do: a DONE message is
+    # a receipt, a dead-lettered one is unfinished business somebody may still
+    # act on, and deleting that is deleting the evidence of a failure. 0 on
+    # either means keep forever.
+    QUEUE_DONE_RETENTION_DAYS: int = int(
+        os.environ.get("QUEUE_DONE_RETENTION_DAYS", "14"))
+    QUEUE_DEAD_LETTER_RETENTION_DAYS: int = int(
+        os.environ.get("QUEUE_DEAD_LETTER_RETENTION_DAYS", "90"))
+    # How often the worker sweeps them out. Not per pass: it is a delete over a
+    # date range, and running it every two seconds would be the loop's main
+    # activity on an idle queue.
+    QUEUE_PRUNE_INTERVAL_SECONDS: float = float(
+        os.environ.get("QUEUE_PRUNE_INTERVAL_SECONDS", "3600"))
     QUEUE_MAX_BACKOFF_SECONDS: float = float(
         os.environ.get("QUEUE_MAX_BACKOFF_SECONDS", "900"))
 

@@ -532,6 +532,64 @@ curl http://localhost:8000/api/v1/internal/health
 Returns database connectivity and the configured Zoho source. It does **not**
 check the AI provider — use the metrics endpoint for that.
 
+### The background queue
+
+Where `SYNC_DISPATCH=queue` (the compose stack's default — see
+`docs/caching-and-queue.md` for why), background work is a committed row in
+`queued_messages` and the `worker` container drains it. Three things to look at,
+in the order they matter.
+
+```bash
+# Depth, the recent messages, and — separately — anything that failed for good.
+curl -H "Authorization: Bearer $OWNER_TOKEN" \
+     http://localhost:8000/api/v1/internal/queue
+```
+
+`dead_letters` is the part that is somebody's job: each one is work that failed
+every attempt, with `last_error` saying why. `/api/health` reports the same
+thing as a DEGRADED `queue` component — the platform is serving, one job is not.
+
+```bash
+# One message, with the payload it was queued with.
+curl -H "Authorization: Bearer $OWNER_TOKEN" \
+     http://localhost:8000/api/v1/internal/queue/$MESSAGE_ID
+
+# Put it back once the cause is fixed. Owner only; refused (409) for a message
+# that is still pending or in flight, because that would run it twice.
+curl -X POST -H "Authorization: Bearer $OWNER_TOKEN" \
+     http://localhost:8000/api/v1/internal/queue/$MESSAGE_ID/retry
+```
+
+**"Nothing is running."** `worker_running` in that response is about *the
+process answering the request* — false on an API replica beside a dedicated
+worker, which is correct, not a fault. What says the workers are keeping up is
+the depth: PENDING that only grows means no container is draining. Check the
+worker is up (`docker compose ps worker`), and that it did not decline to start
+— a worker process with `QUEUE_WORKER=0` exits non-zero saying so.
+
+**A backlog.** `docker compose up -d --scale worker=3`. The claim is a
+conditional UPDATE, so several workers take different messages rather than
+racing for one.
+
+**The table's size.** Finished messages are swept out by the worker on an
+interval: `QUEUE_DONE_RETENTION_DAYS` (14) for receipts,
+`QUEUE_DEAD_LETTER_RETENTION_DAYS` (90) for failures, `0` on either to keep
+forever. A deployment with no worker running never prunes — one more reason the
+depth is worth a glance.
+
+### Cache counters
+
+```bash
+curl -H "Authorization: Bearer $OWNER_TOKEN" \
+     http://localhost:8000/api/v1/internal/observability/caches
+```
+
+Size, hits, misses and hit rate per cache. **Per process**, so two API
+containers legitimately report different numbers and a freshly started one
+reports a cold cache rather than a fault. A hit rate near zero on a warm
+process is worth a look: it usually means a key is carrying something that
+changes every request.
+
 ### AI cost and health (owner only)
 
 ```bash

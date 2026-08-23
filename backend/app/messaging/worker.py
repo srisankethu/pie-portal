@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import time
 import uuid
 from typing import Callable, Optional, Self
 
@@ -41,6 +42,11 @@ POLL_SECONDS = float(settings.QUEUE_POLL_SECONDS)
 #: inside ``queue.STALE_AFTER``: a heartbeat that beats as slowly as the
 #: reaper's patience is a race, not a heartbeat.
 HEARTBEAT_SECONDS = max(1.0, float(settings.QUEUE_STALE_MINUTES) * 60.0 / 10.0)
+
+#: How often the loop sweeps out messages that finished long ago. See
+#: ``queue.prune``: retention is what keeps this table from becoming the
+#: largest one in the database.
+PRUNE_INTERVAL_SECONDS = float(settings.QUEUE_PRUNE_INTERVAL_SECONDS)
 
 #: Set once a worker thread has been started in this process.
 _started = threading.Event()
@@ -198,6 +204,7 @@ def start_worker() -> bool:
     def loop() -> None:
         from ..db import SessionLocal
 
+        last_prune = 0.0
         while not _stop.is_set():
             try:
                 session = SessionLocal()
@@ -205,6 +212,13 @@ def start_worker() -> bool:
                     # Reap first: a message held by a worker that died is not
                     # visible to the claim below until it is handed back.
                     queue.reap_stale(session)
+                    # And sweep out what finished long ago — on an interval,
+                    # because it is a delete over a date range and running it
+                    # every pass would be an idle worker's main activity.
+                    now = time.monotonic()
+                    if now - last_prune >= PRUNE_INTERVAL_SECONDS:
+                        last_prune = now
+                        queue.prune(session)
                     ran = drain_once(session, worker=name,
                                      session_factory=SessionLocal)
                 finally:

@@ -127,6 +127,20 @@ answer.**
 
 ---
 
+### What is verified, and where
+
+The queue's tests run twice: on SQLite with the rest of the suite, and on
+PostgreSQL in `scripts/verify.sh`'s step 6 whenever a server is available
+(`PG_VERIFY_URL`, or the throwaway cluster `pg_sandbox.sh` starts). The
+concurrent-claim test only runs on Postgres and skips elsewhere, and that is not
+a formality: the SQLite test fixture hands every session one shared connection,
+so racing two threads over it tests the pool rather than the queue. Where no
+Postgres server exists the gate says the step was skipped rather than passing
+it — the one property that makes multiple workers safe is the one that must not
+be assumed.
+
+---
+
 ## The message queue — `backend/app/messaging/`
 
 A durable queue over one table, `queued_messages`, with a worker thread that
@@ -142,8 +156,17 @@ evaporated with nothing to say so. The queue closes that gap by committing the
 *request* before anything starts.
 
 A table rather than a broker: the depths here are one message per organization
-per sync cadence, the database is already the thing every process shares, and
-Redis would be a service to run for a workload that fits in one indexed query.
+per sync cadence, the database is already the thing every process shares, and a
+broker would be one more service to reason about for a workload that fits in
+one indexed query.
+
+`compose.yaml` *does* provision Redis, "for cross-replica state (rate limits,
+cache, job coordination)", with a comment saying no feature requires it yet.
+That is still true, and it is a choice rather than an oversight: the queue needs
+durability and an atomic claim, which the database it already writes to
+provides, and putting the work list somewhere the business data is not would
+mean a queued job and the row it acts on can disappear independently. Redis
+remains available for the things it is actually better at.
 
 ### The shape
 
@@ -192,6 +215,30 @@ means.
 queued message in a deployment running `SYNC_DISPATCH=thread` is work that
 silently never happens, which is worse than an answer saying so.
 
+### Operating it — depth, dead letters, retention
+
+`GET /api/v1/internal/queue` is the operator's view: the dispatch this process
+uses, whether *this* process drains the queue, the depth per status, the recent
+messages, and — listed separately, because it is the only part that is
+somebody's job — the dead letters. `GET /api/v1/internal/queue/{id}` shows one
+message with its payload; the listing withholds payloads on purpose, since a
+listing that prints job arguments eventually prints something it should not.
+
+`POST /api/v1/internal/queue/{id}/retry` puts a dead-lettered message back
+(owner only). Attempts reset to zero — the operator is asserting the cause is
+fixed, so this is a first attempt at work that now has a chance — and
+`last_error` is kept as the record of why it needed a person. A message that is
+still pending or in flight is refused with 409 rather than quietly ignored:
+"retrying" it would put two workers on one job.
+
+Finished messages are swept out by the worker on an interval
+(`QUEUE_PRUNE_INTERVAL_SECONDS`, hourly). Receipts and failures are kept for
+different spans because they mean different things: `QUEUE_DONE_RETENTION_DAYS`
+(14) for a DONE message, `QUEUE_DEAD_LETTER_RETENTION_DAYS` (90) for a dead
+letter, since deleting one of those is deleting the evidence of a failure. `0`
+on either keeps them forever, which is the setting that makes this the largest
+table in the database.
+
 ### Turning it on
 
 | Variable | Default | Meaning |
@@ -203,8 +250,24 @@ silently never happens, which is worse than an answer saying so.
 | `QUEUE_MAX_ATTEMPTS` | `3` | Attempts before dead-lettering |
 | `QUEUE_BACKOFF_SECONDS` | `30` | First retry delay; doubles per attempt |
 | `QUEUE_MAX_BACKOFF_SECONDS` | `900` | Cap on that delay |
+| `QUEUE_DONE_RETENTION_DAYS` | `14` | How long a finished message is kept; `0` keeps them forever |
+| `QUEUE_DEAD_LETTER_RETENTION_DAYS` | `90` | The same for a failure — longer, because it is evidence |
+| `QUEUE_PRUNE_INTERVAL_SECONDS` | `3600` | How often the worker sweeps |
 
-`thread` is the default deliberately. The queue path needs a worker running to
+**The compose stack sets `SYNC_DISPATCH=queue`** and runs a `worker` service
+beside the API: same image, same environment, `QUEUE_WORKER=1` against the
+API's `QUEUE_WORKER=0`, so long jobs run somewhere that is not answering
+requests. `docker compose up -d --scale worker=3` for a backlog — the claim is
+a conditional UPDATE, so workers take different messages rather than racing for
+one. A single-service host (Railway) does the same thing with one process:
+`SYNC_DISPATCH=queue` and `QUEUE_WORKER=1` on the API.
+
+`python -m app.worker` is that process. It starts the same drain loop the API
+can run in-process, waits for SIGTERM, and **exits non-zero if its
+configuration declines to start a worker** — a worker container that stays
+green while the queue fills is the failure this is built to avoid.
+
+The code default is still `thread`, deliberately. The queue path needs a worker running to
 do anything at all, and a default that silently requires a second moving part
 is a default that makes a fresh clone's Sync button do nothing. Turn it on
 where containers are replaced under load, or where more than one process runs.

@@ -46,6 +46,13 @@ x-backend-env: &backend-env
 
   ZOHO_SOURCE: ${ZOHO_SOURCE:-fixture}
 
+  # Background work goes through the durable queue here, because this is the
+  # deployment where a thread loses it: `deploy-up` replaces containers, and a
+  # sync that was QUEUED when its container went is never done. The `worker`
+  # service below drains it; the API is told not to (QUEUE_WORKER=0) so the
+  # long jobs run somewhere that is not serving requests.
+  SYNC_DISPATCH: ${SYNC_DISPATCH:-queue}
+
   # Provisioned beside the API for cross-replica state (rate limits, cache,
   # job coordination). No feature requires it yet — config.py says which
   # candidates exist — so the API must keep serving if Redis is down.
@@ -115,7 +122,11 @@ services:
   api:
     build: *api-build
     image: pie-portal-api:latest
-    environment: *backend-env
+    environment:
+      <<: *backend-env
+      # The API queues work; the worker service runs it. A uvicorn process that
+      # also drains the queue spends its request threads on hour-long pulls.
+      QUEUE_WORKER: "0"
     depends_on:
       db:
         condition: service_healthy
@@ -135,6 +146,37 @@ services:
       retries: 5
       # Warming the pie-parser catalogue takes a while on a small box.
       start_period: 90s
+    restart: unless-stopped
+
+  # Drains `queued_messages`: the background sync and the metric rebuilds. Same
+  # image and same environment as the API, one setting apart — which is the
+  # point of `QUEUE_WORKER`, and why a message the API queues is one this
+  # container can run.
+  #
+  # Scale it to taste: `docker compose up -d --scale worker=3`. The claim is a
+  # conditional UPDATE, so several workers take different messages rather than
+  # racing for the same one.
+  #
+  # No healthcheck and no port: it serves nothing. Whether it is draining is
+  # `GET /api/v1/internal/queue` on the API — `worker_running` is false *there*
+  # by design, and the depth is what says this container is keeping up.
+  worker:
+    build: *api-build
+    image: pie-portal-api:latest
+    environment:
+      <<: *backend-env
+      QUEUE_WORKER: "1"
+      # It serves no requests, so it needs neither the web process manager nor
+      # the catalogue warm-up on boot — but it *does* resolve product codes if a
+      # queued job asks, so PIE_WARM is left to the shared default rather than
+      # forced off here.
+      UVICORN_WORKERS: "1"
+    command: ["python", "-m", "app.worker"]
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
     restart: unless-stopped
 
   web:

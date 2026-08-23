@@ -22,10 +22,16 @@ modification stamp. The expensive-looking design is the cheap one.
 The cadence lives in ``Organization.config["auto_sync_hours"]`` — per tenant,
 edited from the sync screen, ``0`` meaning off — with
 ``settings.SYNC_AUTO_HOURS`` as the default for an organization that has never
-chosen. Threads, not a broker, for the reason ``jobs`` gives: this deployment
-is one uvicorn process, and the in-process lock in ``start_sync`` is the real
-concurrency guard either way. If this ever runs multi-process, the tick must
-move behind a database lock — and the decision function below would not change.
+chosen. Threads, not a broker, for the reason ``jobs`` gives.
+
+**Every worker runs its own tick.** The deployment is two uvicorn workers by
+default, so this thread exists twice and both copies can find the same
+organization due in the same minute. That is not a leader-election problem here
+because the tick does not start pulls itself — it calls ``jobs.start_sync``, and
+the partial unique indexes on ``sync_runs`` allow only one active run per
+connection. The second tick is handed the first one's run and reports it as
+already started. Leader election would save the wasted call, not prevent a
+second pull; the database already prevents that.
 """
 from __future__ import annotations
 
@@ -151,8 +157,10 @@ def tick(session: Session) -> int:
             .limit(1))
         if not due(last, hours):
             continue
-        # `start_sync` re-checks for an active run under its own lock, so a
-        # pull a person started thirty seconds ago is handed back, not raced.
+        # `start_sync` re-checks for an active run under its own lock, and the
+        # unique indexes on `sync_runs` re-check across workers, so a pull a
+        # person started thirty seconds ago — or the other worker's tick started
+        # this millisecond — is handed back, not raced.
         _run, fresh = jobs.start_sync(
             session, org_id,
             since=scheduled_since(session, org_id),

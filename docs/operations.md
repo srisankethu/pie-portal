@@ -362,13 +362,21 @@ accepted recommendations.
 
 ## Scheduling the sync
 
-**Nothing in the application schedules a pull.** `POST /api/v1/data/sync` is
-started by a person pressing the button on Data & connection, or by something
-outside this repo calling it. Until a timer exists, every screen shows whatever
-the last manual sync left behind — and the morning read says so, in as many
-words, at the top of the landing page.
+**The application does schedule pulls, and there is also a script.** This
+section used to open with "Nothing in the application schedules a pull", which
+was the fourth place in this repo asserting a deployment shape that had stopped
+being true; the other three were comments in `ingestion/jobs.py`,
+`ingestion/scheduler.py` and `scripts/scheduled_sync.py`.
 
-`scripts/scheduled_sync.py` is that something. It signs in, calls the same
+`app/ingestion/scheduler.py` runs a timer inside the app, on each
+organization's `config["auto_sync_hours"]` (`0` meaning off, `SYNC_AUTO_HOURS`
+the default). It starts only when `ZOHO_SOURCE=api`, which is why a fixture
+deployment genuinely has no scheduler and why the sentence above survived so
+long. Both it and the button call `POST /api/v1/data/sync`, so there is one
+code path.
+
+`scripts/scheduled_sync.py` is the alternative for deployments that would
+rather own the timer themselves. It signs in, calls the same
 endpoint the screen calls, waits for the run it started, and exits non-zero if
 it failed — which is the whole interface, because a non-zero exit is what makes
 cron mail you.

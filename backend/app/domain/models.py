@@ -1445,6 +1445,49 @@ class SyncRun(Base):
     """
 
     __tablename__ = "sync_runs"
+    __table_args__ = (
+        # **The guard against two workers starting the same pull.** The check in
+        # ``jobs.start_sync`` reads the active runs and then inserts, under a
+        # ``threading.Lock`` — which is process-local, and the deployment runs
+        # two uvicorn workers. Both reads returned "nothing running" before
+        # either insert committed, so both inserted and both pulled: every
+        # invoice fetched twice, two jobs racing on the same rows, and a
+        # progress display that could not say which job its counter belonged
+        # to. Only the database can exclude across processes, so the index is
+        # the guard and the lock is a fast path in front of it.
+        #
+        # Two indexes rather than one because ``connection_id`` is nullable and
+        # NULL is not equal to NULL: a single unique index over
+        # (organization_id, connection_id) would let two umbrella runs — the
+        # all-companies pull, which carries no connection — both insert. The
+        # first index holds the per-connection case, the second the umbrella
+        # one, and neither constrains the other, which is what keeps two
+        # connected companies pulling at once (they are two independent APIs
+        # and must not serialise).
+        #
+        # Partial, over the active rows only: a finished run must not stop the
+        # next one, and the whole history of a connection's pulls stays in this
+        # table. Both backends support partial indexes (SQLite since 3.8,
+        # Postgres always), so this needs no dialect branch beyond naming the
+        # predicate twice — the ``uq_value_event_key_live`` idiom.
+        #
+        # What the index cannot express, and what therefore stays in
+        # ``start_sync``: the cross-exclusion between an umbrella run and a
+        # per-connection run of the same organization. A unique index has no
+        # way to say "no row in *that* group either".
+        Index("uq_sync_run_active_connection",
+              "organization_id", "connection_id", unique=True,
+              sqlite_where=text(
+                  "status IN ('QUEUED', 'RUNNING') AND connection_id IS NOT NULL"),
+              postgresql_where=text(
+                  "status IN ('QUEUED', 'RUNNING') AND connection_id IS NOT NULL")),
+        Index("uq_sync_run_active_umbrella",
+              "organization_id", unique=True,
+              sqlite_where=text(
+                  "status IN ('QUEUED', 'RUNNING') AND connection_id IS NULL"),
+              postgresql_where=text(
+                  "status IN ('QUEUED', 'RUNNING') AND connection_id IS NULL")),
+    )
 
     sync_run_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
     organization_id: Mapped[str] = mapped_column(String(64), index=True)

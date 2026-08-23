@@ -178,6 +178,45 @@ class Settings:
     # Warnings and errors are *never* dropped by it — see `observability/logs`.
     SYNC_LOG_MAX_LINES: int = int(os.environ.get("SYNC_LOG_MAX_LINES", "5000"))
 
+    # ── backups ──────────────────────────────────────────────────────────────
+    # Where `scripts/backup.sh` writes, and what the `backups` health component
+    # reads. Unset in development on purpose: that database is derived — a
+    # complete re-sync rebuilds it from Zoho, and `python -m app.bootstrap`
+    # builds it from nothing — so there is nothing there worth a retention
+    # policy. On a *production* deployment an unset value is not a preference,
+    # it is a deployment with no backups, and the health check says so rather
+    # than passing quietly (§1). `compose.yaml` sets APP_ENV=production, so the
+    # discriminator is the one this codebase already trusts everywhere else.
+    BACKUP_DIR: Optional[Path] = (
+        _path_env("BACKUP_DIR", Path("/nonexistent"))
+        if os.environ.get("BACKUP_DIR") else None)
+
+    # How old the newest dump may be before the check goes amber. Twenty-six
+    # hours, not twenty-four: a nightly cron that runs at 02:00 has a newest
+    # backup just under a day old for most of the day and just over it right
+    # before the next run, so a 24-hour threshold flaps once a night for
+    # reasons that are not a fault. Two hours of slack is one missed run
+    # detected within a day, without the false alarm.
+    BACKUP_MAX_AGE_HOURS: int = int(os.environ.get("BACKUP_MAX_AGE_HOURS", "26"))
+
+    # How long `scripts/backup.sh` keeps dumps. It never prunes the newest one
+    # whatever its age — a retention policy that can delete the only backup you
+    # have is worse than none.
+    BACKUP_RETAIN_DAYS: int = int(os.environ.get("BACKUP_RETAIN_DAYS", "14"))
+
+    # Below this, a file is not a database. Freshness alone would let a
+    # zero-byte file report as a good backup, which is the shape of every
+    # defect §1 lists: a check whose evidence is missing answering yes.
+    #
+    # The floor is *compressed* bytes, and 1 KiB is measured rather than
+    # guessed: this schema's `CREATE TABLE` statements alone — 74 tables, no
+    # rows at all — are 43 KB of SQL that gzips to about 5.5 KB. So even a dump
+    # of a completely empty database clears the floor five times over, and
+    # anything under it is a truncated write or an empty stream. Re-measure it
+    # if that ever stops being true; do not raise it to catch a *small* backup,
+    # because "smaller than I expected" is a judgement and this is a fact.
+    BACKUP_MIN_BYTES: int = int(os.environ.get("BACKUP_MIN_BYTES", "1024"))
+
     @property
     def is_production(self) -> bool:
         return self.APP_ENV.strip().lower() == "production"

@@ -192,8 +192,60 @@ without `ON_ERROR_STOP=1` a restore that dropped half the tables also exits 0.
 Neither flag was here until `scripts/restore_drill.py` was written and had to
 decide what "the restore succeeded" meant.
 
-Put that first command on a schedule and copy the output off the machine. A
-backup that lives only on the host it backs up is not one.
+### Putting it on a schedule
+
+`scripts/backup.sh` is those two flags plus the three things a hand-run command
+line does not do, and each of them is a way the file on disk can lie about being
+a backup:
+
+- it writes to `.part`, verifies the archive with `gzip -t`, checks it is large
+  enough to hold this schema at all, and only then renames into place. `mv`
+  within a directory is atomic, so **the backup directory only ever contains
+  dumps that completed**. `pipefail` catches a dump that *fails*; nothing
+  catches one that is interrupted — a kill, a full disk, a container stopped
+  mid-write — which leaves a partial file whose mtime is fresh and whose name is
+  a backup. That is what the rename is for, and it is what lets the health check
+  below trust an mtime instead of guessing;
+- it never overwrites an existing dump. The `date +%F` above means a second run
+  in a day silently replaces the first, and the day you take an extra dump is
+  the day you are about to do something risky;
+- it prunes past `BACKUP_RETAIN_DAYS`, and never the newest file whatever its
+  age. `BACKUP_RETAIN_DAYS=0` means "keep only the latest", not "keep none".
+
+```bash
+# Nightly at 03:00. BACKUP_DIR must be a directory that exists.
+(crontab -l 2>/dev/null; echo '0 3 * * * cd ~/pie-portal && BACKUP_DIR=/var/backups/pie-portal ./scripts/backup.sh >> ~/backup.log 2>&1') | crontab -
+```
+
+Exit codes are the interface to cron: `0` a verified dump is in place, `2` the
+directory is unusable, `3` the dump failed or was implausible and **nothing was
+moved into place**, `4` the dump is good but pruning failed. Anything non-zero
+mails you.
+
+Still copy the output off the machine. A backup that lives only on the host it
+backs up is not one, and nothing in this repository does that step — it needs a
+destination and a credential that only you have.
+
+### The deployment says whether it has one
+
+`BACKUP_DIR` also configures the `backups` component on
+`/api/v1/internal/observability/health`, so "do we have backups" is a question
+with an answer rather than a memory:
+
+| What it finds | Verdict | What to do |
+|---|---|---|
+| `APP_ENV` is not production and nothing configured | healthy, and says so | nothing — a dev database is derived, `app.bootstrap` rebuilds it |
+| production, `BACKUP_DIR` unset | **unhealthy** | you have no backups. Set it and add the cron above |
+| directory missing or unreadable | **unhealthy** | usually a volume that did not mount |
+| directory holds no dump | **unhealthy** | the job has never once completed — read `~/backup.log` |
+| newest dump under `BACKUP_MIN_BYTES` | **unhealthy** | that is a file, not a database |
+| newest dump older than `BACKUP_MAX_AGE_HOURS` | degraded | the job has stopped. A stale backup is still a backup |
+| newest dump fresh and plausible | healthy | — |
+
+An unset `BACKUP_DIR` on a production deployment is deliberately the loudest
+thing that component says. It is not a statement that backups are handled
+somewhere else; it is the absence of one, and reading it as good news is exactly
+the failure the invariants in CLAUDE.md §1 are written against.
 
 ### The procedure is tested
 
@@ -218,7 +270,9 @@ What the drill does **not** prove is the shorter and more important list. It
 dumps a database it created seconds earlier, so it says nothing about whether
 any *particular* backup file on disk is good, nothing about that file being
 stored anywhere durable or off this host, and nothing about how long a restore
-takes at production volume — the seed is a few hundred rows so the drill costs
+takes at production volume. The `backups` health component above covers the
+first of those — a dump exists, it is recent, and it is large enough to be a
+database — and the two together are still not a restore of a real file — the seed is a few hundred rows so the drill costs
 the gate seconds. Verifying an actual backup is still a thing a person has to
 do; this only removes the excuse that the procedure itself was never tried.
 

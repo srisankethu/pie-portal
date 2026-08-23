@@ -632,9 +632,14 @@ would live:
 - It proves **nothing about any particular backup**. The drill dumps a database
   it created seconds earlier. A production archive that is corrupt, truncated,
   or of the wrong database is entirely outside what it can see.
-- It proves **nothing about the backup existing somewhere durable**. Scheduling
-  the dump and copying it off the host is still a human arrangement, and a
-  backup that lives only on the machine it backs up is not one.
+- It proves **nothing about the backup existing somewhere durable**. Half of
+  that gap is now closed by something other than the drill: `scripts/backup.sh`
+  takes the dump on a schedule and the `backups` health component reports
+  whether a recent, plausible one is where it was promised, loudly rather than
+  quietly ([hosting.md](hosting.md#putting-it-on-a-schedule)). The other half is
+  still a human arrangement — copying it off the host needs a destination and a
+  credential that this repository does not have, and a backup that lives only on
+  the machine it backs up is not one.
 - It proves **nothing about RTO**. The seed is a few hundred rows, chosen so the
   drill costs the gate seconds rather than minutes; it measures the procedure,
   not the clock.

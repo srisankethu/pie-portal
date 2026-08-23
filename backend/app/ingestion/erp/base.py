@@ -174,6 +174,12 @@ class ConnectorSpec:
     #: answer *is* per connector: a screen that shows one system's list while
     #: another system is selected is telling an owner to grant something that
     #: does not exist where they are looking.
+    #: What this system calls the document a quote becomes there — "sales
+    #: quote", "quotation". Sibling of ``company_term`` above and for the same
+    #: reason: telling a Business Central user their "estimate" was created
+    #: names a record type their own system does not have, so they go looking
+    #: for it. Defaulted because it is right for most, overridden where not.
+    quote_term: str = "sales quote"
     permissions: tuple[Permission, ...] = ()
     #: One sentence on where those grants are made, in that console's own
     #: navigation. Rendered above the list.

@@ -370,6 +370,29 @@ def can_write_quotes(connector: str) -> bool:
     return "sales_quotes" in writes_for(connector)
 
 
+def quote_term_for(connector: str) -> str:
+    """What this system calls the document a quote becomes there.
+
+    So a message can say "Zoho estimate SQ-1001" or "Business Central sales
+    quote SQ-1001" rather than one word for both. Naming a Business Central
+    document an "estimate" sends its user looking for a record type their own
+    system does not have.
+    """
+    if connector == ZOHO_CONNECTOR:
+        return "estimate"
+    from . import erp
+    try:
+        return erp.get_spec(connector).quote_term
+    except erp.UnknownConnectorError:
+        return "quote"
+
+
+def system_label_for(connector: str) -> str:
+    """That system's own name, as its users call it."""
+    from ..domain.origin import CONNECTORS
+    return (CONNECTORS.get(connector) or {}).get("label") or connector
+
+
 def quote_writer_ready(connector: str) -> bool:
     """Whether a quote built here can actually be sent to this connector today.
 

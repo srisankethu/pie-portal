@@ -422,7 +422,9 @@ def create_estimate(quote_id: str,
             message=(f"{len(blockers)} line(s) must be resolved before this quote "
                      f"can be sent: {_name_lines(blockers)}."),
         )
-    # A resolved line with no rate would go to Zoho as a line with no rate.
+    # A resolved line with no rate would reach the source as a line with no
+    # rate, and every system this writes to prices that from its own item
+    # card — quoting a number nobody here chose.
     unpriced = [ln for ln in q.lines if ln.supplyCode and ln.quoted is None]
     if unpriced:
         return EstimateResponse(
@@ -492,10 +494,17 @@ def create_estimate(quote_id: str,
     # and relied on the reference round trip to undo what it had just asked for.
     sent = quote_service.latest_document(session, org, quote_id=quote_id)
     if sent is not None and sent.fingerprint == fingerprint:
+        # Named from the row rather than from ``books``: this answers about the
+        # document that was actually written, which may predate a customer
+        # being re-pointed at a different system.
+        held = sent.external_system or books.system
         return EstimateResponse(
-            ok=True, estimateNumber=sent.external_document_number,
-            lineCount=sent.line_count,
-            message=(f"{sent.external_document_number} already covers this quote "
+            ok=True, documentNumber=sent.external_document_number,
+            lineCount=sent.line_count, alreadyExisted=True,
+            **_system_words(held),
+            message=(f"{conn.system_label_for(held)} "
+                     f"{conn.quote_term_for(held)} "
+                     f"{sent.external_document_number} already covers this quote "
                      "— nothing has changed since it was created."))
 
     lines = [{"code": ln.supplyCode, "itemId": ln.itemId,
@@ -550,14 +559,30 @@ def create_estimate(quote_id: str,
     except Exception:  # noqa: BLE001 — the estimate exists; bookkeeping must not undo it
         log.exception("could not mark quote %s as sent", quote_id)
 
+    words = _system_words(books.system)
+    named = f"{words['systemLabel']} {words['documentTerm']}"
     if est.already_existed:
         return EstimateResponse(
-            ok=True, estimateNumber=est.number, lineCount=est.line_count,
-            message=(f"This quote was already sent — Zoho estimate {est.number} "
-                     f"exists under reference {q.reference}. Nothing was created twice."))
-    return EstimateResponse(ok=True, estimateNumber=est.number,
-                            lineCount=est.line_count,
-                            message=f"Zoho estimate {est.number} created — {est.line_count} lines.")
+            ok=True, documentNumber=est.number, lineCount=est.line_count,
+            alreadyExisted=True, **words,
+            message=(f"This quote was already sent — {named} {est.number} exists "
+                     f"under reference {q.reference}. Nothing was created twice."))
+    return EstimateResponse(ok=True, documentNumber=est.number,
+                            lineCount=est.line_count, **words,
+                            message=f"{named} {est.number} created — "
+                                    f"{est.line_count} lines.")
+
+
+def _system_words(connector: str) -> dict[str, str]:
+    """The three naming fields, from one place.
+
+    Built once rather than at each return: five responses carry them, and five
+    hand-assembled copies is how one of them ends up saying "estimate" about a
+    Business Central document long after the others stopped.
+    """
+    return {"system": connector,
+            "systemLabel": conn.system_label_for(connector),
+            "documentTerm": conn.quote_term_for(connector)}
 
 
 def _name_lines(lines: list[Line], limit: int = 4) -> str:

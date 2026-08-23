@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 
+import json
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -266,7 +268,7 @@ def test_estimate_created_when_clean_and_nothing_needs_approval(client, mgmt_hdr
     qid = _clean_quote(client, mgmt_hdr)
     est = client.post(f"/api/quotes/{qid}/estimate", headers=mgmt_hdr).json()
     assert est["ok"] is True, est
-    assert est["estimateNumber"]
+    assert est["documentNumber"]
 
 
 # ── the price on a line, and whose it is ─────────────────────────────────────
@@ -358,13 +360,13 @@ def test_sending_the_same_quote_twice_returns_the_one_estimate(client, mgmt_hdr)
     assert first["ok"] is True, first
     again = client.post(f"/api/quotes/{qid}/estimate", headers=mgmt_hdr).json()
     assert again["ok"] is True
-    assert again["estimateNumber"] == first["estimateNumber"]
+    assert again["documentNumber"] == first["documentNumber"]
     assert "already covers" in again["message"]
 
     # The quote itself says what it has sent, so the screen does not have to
     # have been watching when it happened.
     q = client.get(f"/api/quotes/{qid}", headers=mgmt_hdr).json()
-    assert q["estimate"]["number"] == first["estimateNumber"]
+    assert q["estimate"]["number"] == first["documentNumber"]
     assert q["estimate"]["current"] is True
 
 
@@ -381,7 +383,7 @@ def test_amending_a_sent_quote_produces_a_new_estimate(client, mgmt_hdr):
 
     second = client.post(f"/api/quotes/{qid}/estimate", headers=mgmt_hdr).json()
     assert second["ok"] is True
-    assert second["estimateNumber"] != first["estimateNumber"]
+    assert second["documentNumber"] != first["documentNumber"]
 
 
 @pytest.mark.requires_pie
@@ -541,7 +543,7 @@ def test_a_refused_estimate_does_not_report_one(client, mgmt_hdr):
         qid = _clean_quote(client, mgmt_hdr)
         est = client.post(f"/api/quotes/{qid}/estimate", headers=mgmt_hdr).json()
     assert est["ok"] is False
-    assert est["estimateNumber"] is None
+    assert est["documentNumber"] is None
     assert "no ledger for this customer" in est["message"]
 
 
@@ -555,6 +557,56 @@ def test_a_refusal_points_at_the_lines_that_caused_it(client, mgmt_hdr):
     with _books(client, _StubBooks(ZohoWriteRefused("not in these books", codes=[code]))):
         est = client.post(f"/api/quotes/{qid}/estimate", headers=mgmt_hdr).json()
     assert est["ok"] is False and est["blockers"] == [qd["lines"][0]["id"]]
+
+
+@pytest.mark.requires_pie
+def test_the_send_names_the_system_it_wrote_into(client, mgmt_hdr):
+    """The response used to say "Zoho estimate" whatever it had written to.
+
+    Business Central has no record type called an estimate, so telling its user
+    one was created sends them looking for something their system does not
+    have. The words come from the server because the screen cannot know which
+    system a given quote's books are.
+    """
+    with _books(client, _StubBooks()):
+        qid = _clean_quote(client, mgmt_hdr)
+        sent = client.post(f"/api/quotes/{qid}/estimate", headers=mgmt_hdr).json()
+
+    assert sent["ok"] is True
+    assert sent["system"] == "zoho"
+    assert sent["systemLabel"] == "Zoho Books"
+    assert sent["documentTerm"] == "estimate"
+    assert sent["alreadyExisted"] is False
+    assert f"Zoho Books estimate {sent['documentNumber']} created" in sent["message"]
+
+    # And the second press is a different claim, not the same one reworded.
+    with _books(client, _StubBooks()):
+        again = client.post(f"/api/quotes/{qid}/estimate", headers=mgmt_hdr).json()
+    assert again["alreadyExisted"] is True
+    assert "already covers this quote" in again["message"]
+
+
+@pytest.mark.requires_pie
+def test_the_send_response_carries_no_economics(client, mgmt_hdr):
+    """§1, on the one payload a salesperson sees after pressing send.
+
+    Naming the system is the change this test guards; the risk it carries is
+    that a naming field is an easy place to slip a count or a flag in beside.
+    MFLOOR and NEGATIVE_MARGIN both entered through exactly that kind of small
+    extra field, so the whole payload is asserted rather than the new keys.
+    """
+    with _books(client, _StubBooks()):
+        qid = _clean_quote(client, mgmt_hdr)
+        sent = client.post(f"/api/quotes/{qid}/estimate", headers=mgmt_hdr).json()
+
+    assert set(sent) == {"ok", "documentNumber", "lineCount", "blockers",
+                         "message", "system", "systemLabel", "documentTerm",
+                         "alreadyExisted"}, (
+        "a field was added to the send response — if it answers a margin "
+        "question, in any form, it does not belong here")
+    body = json.dumps(sent).lower()
+    for word in ("cost", "margin", "floor", "profit"):
+        assert word not in body
 
 
 @pytest.mark.requires_pie
@@ -572,7 +624,7 @@ def test_a_sent_quote_is_still_sent_after_the_process_forgets_it(client, mgmt_hd
     with _books(client, _StubBooks()):
         qid = _clean_quote(client, mgmt_hdr)
         first = client.post(f"/api/quotes/{qid}/estimate", headers=mgmt_hdr).json()
-        assert first["ok"] is True and first["estimateNumber"]
+        assert first["ok"] is True and first["documentNumber"]
 
         # The process forgets. The ledger does not.
         quote = store_mod.store.get(qid)
@@ -582,7 +634,7 @@ def test_a_sent_quote_is_still_sent_after_the_process_forgets_it(client, mgmt_hd
         again = client.post(f"/api/quotes/{qid}/estimate", headers=mgmt_hdr).json()
 
     assert again["ok"] is True
-    assert again["estimateNumber"] == first["estimateNumber"], (
+    assert again["documentNumber"] == first["documentNumber"], (
         "a restart made the platform send the same quote a second time")
     assert "already covers this quote" in again["message"]
 
@@ -607,7 +659,7 @@ def test_the_document_a_send_produced_names_its_system_and_its_policy(
         rows = s.query(models.QuoteDocument).filter_by(quote_id=qid).all()
     assert len(rows) == 1, "one send, one row"
     (doc,) = rows
-    assert doc.external_document_number == sent["estimateNumber"]
+    assert doc.external_document_number == sent["documentNumber"]
     assert doc.external_system, "the row does not say which system holds it"
     assert doc.thresholds_version, "a signed send with no policy stamp"
     assert doc.fingerprint, "without the content stamp the duplicate check is blind"
@@ -621,7 +673,7 @@ def test_an_unknown_write_outcome_is_neither_success_nor_silence(client, mgmt_hd
             "sent, reply lost — look for reference QB-1-abcd", reference="QB-1-abcd"))):
         qid = _clean_quote(client, mgmt_hdr)
         est = client.post(f"/api/quotes/{qid}/estimate", headers=mgmt_hdr).json()
-    assert est["ok"] is False and est["estimateNumber"] is None
+    assert est["ok"] is False and est["documentNumber"] is None
     assert "QB-1-abcd" in est["message"]
 
 

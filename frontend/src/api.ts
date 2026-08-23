@@ -9,7 +9,7 @@
  * on one request is how a screen ends up displaying one person's name while
  * deciding what to show from another's role.
  */
-import type { Quote } from "./types";
+import type { EstimateResult, Quote } from "./types";
 import { authInit } from "./authFetch";
 
 const DRAFT_KEY = "pie_portal_draft";
@@ -98,7 +98,7 @@ export const api = {
    *  which meant a client that simply omitted it was a client with no approvals
    *  to satisfy. */
   createEstimate: (t: string, id: string) =>
-    req<{ ok: boolean; estimateNumber: string | null; lineCount: number | null; blockers: string[]; message: string }>(
+    req<EstimateResult>(
       `/api/quotes/${id}/estimate`,
       { method: "POST" },
       t,

@@ -76,6 +76,28 @@ company using it (`POST /api/v1/connections/{id}/rotate-erp`).
 
 ## What each sign-in must already be granted
 
+## What a connector may create
+
+Reading a system and writing to it are different grants, different code and
+different days, so they are declared separately: `READ_STAGES` names what a
+connector pulls, `WRITE_STAGES` names what the platform can create there. Today
+`WRITE_STAGES` is `("sales_quotes",)` and two connectors declare it — `zoho`
+and `dynamics365`. The rest read only, and their access copy says so.
+
+Both lists are pinned against the implementation **in both directions**. A
+declared capability with no `create_<stage>` method sends an owner to grant a
+permission for something that cannot happen; a `create_<stage>` method nobody
+declared creates records in a system nobody was asked to permit it in. Zoho is
+pinned separately (`test_zohos_declared_writes_match_what_the_adapter_can_actually_create`)
+because it is not in the `ingestion/erp` registry and the registry-wide pin
+cannot see it — which is exactly how its write scopes went years undeclared.
+
+A write is never replayed. A non-idempotent call that fails without an answer
+raises `SourceWriteUncertain`, and the adapter settles it by reading the record
+back under a caller-supplied reference — see `ingestion/write_settle.py`. A
+connector whose target system cannot carry a re-checkable reference cannot
+support a write at all, and should declare none.
+
 A half-granted sign-in is the most common way a connection authenticates and
 then returns nothing: the credential works, one endpoint refuses, and the sync
 reports zero rows of that kind with nothing obviously wrong. So every system
@@ -83,7 +105,7 @@ declares its own access requirements, and the **Add a company** panel lists
 them under the connector the tabs have selected — the same panel, so the two
 have nowhere to disagree.
 
-They are declared as `Permission(name, why, required, reads)` on the connector's
+They are declared as `Permission(name, why, required, reads, writes)` on the connector's
 own spec, and Zoho's scope list is the same type in `ingestion/connections.py`
 (Zoho is a row in the catalog, not a separate panel — that separation is what
 let the screen show `ZohoBooks.*.READ` while NetSuite was selected). `name` is
@@ -92,9 +114,9 @@ person granting it is reading:
 
 | Connector | Where it is granted | Shape |
 |---|---|---|
-| `zoho` | Zoho API console, scope field | Ten `ZohoBooks.*.READ` scopes, pasted as one string |
+| `zoho` | Zoho API console, scope field | Ten `ZohoBooks.*.READ` scopes plus `estimates.CREATE`, `estimates.READ` and `settings.CREATE` for the write, pasted as one string |
 | `netsuite` | Setup → Users/Roles → Manage Roles, on the token's role | Setup and Reports permissions plus View on each list/transaction |
-| `dynamics365` | Entra ID app registration + permission sets on the app's user | `API.ReadWrite.All` with admin consent (BC publishes no read-only variant), then read on each entity |
+| `dynamics365` | Entra ID app registration + permission sets on the app's user | `API.ReadWrite.All` with admin consent (BC publishes no read-only variant), then read on each entity plus create on sales quotes |
 | `acumatica` | User Security → Access Rights by Role | Endpoint access plus View Only per screen |
 | `prophet21` | P21 user API flag + the middleware's exposed views | Per OData view |
 | `sagex3` | Syracuse role | SData access plus read per X3 table |

@@ -487,7 +487,7 @@ def create_estimate(quote_id: str,
         quote_service.record_document(
             session, org, quote_id=quote_id,
             external_system=books.system, number=est.number,
-            document_id=est.estimate_id, line_count=est.line_count,
+            document_id=est.document_id, line_count=est.line_count,
             fingerprint=fingerprint, reference=q.reference or "",
             already_existed=est.already_existed,
             thresholds_version=policy_service.load_for_org(session, org).version)

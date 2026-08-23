@@ -29,6 +29,7 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Dict, List, Optional, Protocol
 
+from .ingestion.erp.base import WrittenDocument
 from .ingestion.errors import (SourceUnavailable, SourceWriteRefused,
                                SourceWriteUnknown)
 
@@ -65,16 +66,11 @@ class ZohoItem:
     tax_percentage: Optional[float] = None
 
 
-@dataclass
-class ZohoEstimate:
-    estimate_id: str
-    number: str
-    customer: str
-    line_count: int
-    # True when the estimate already existed under this reference and was read
-    # back rather than created. Sending the same quote twice must not put two
-    # estimates in front of the customer.
-    already_existed: bool = False
+#: The Zoho name for the neutral record every connector's write returns. Kept
+#: as an alias rather than a second dataclass: one concept, one shape, and the
+#: name callers already use goes on meaning what it meant. ``estimate_id`` is
+#: ``document_id`` — see ``WrittenDocument``.
+ZohoEstimate = WrittenDocument
 
 
 # ── the three ways this boundary is allowed to fail ─────────────────────────
@@ -233,7 +229,7 @@ class MockZoho:
         with self._lock:
             self._estimate_seq += 1
             num = f"EST-{self._estimate_seq:05d}"
-            return ZohoEstimate(estimate_id=f"zoho-{int(time.time())}-{self._estimate_seq}",
+            return ZohoEstimate(document_id=f"zoho-{int(time.time())}-{self._estimate_seq}",
                                 number=num, customer=customer, line_count=len(lines))
 
     @property

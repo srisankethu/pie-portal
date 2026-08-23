@@ -321,7 +321,7 @@ class ZohoBooksService(ZohoTransport):
                        line_count: int, already_existed: bool) -> ZohoEstimate:
         raw_lines = raw.get("line_items") or []
         return ZohoEstimate(
-            estimate_id=str(raw.get("estimate_id") or ""),
+            document_id=str(raw.get("estimate_id") or ""),
             number=str(raw.get("estimate_number") or ""),
             customer=str(raw.get("customer_name") or customer),
             line_count=len(raw_lines) if raw_lines else line_count,

@@ -73,6 +73,28 @@ READ_STAGES: tuple[str, ...] = (
 WRITE_STAGES: tuple[str, ...] = ("sales_quotes",)
 
 
+@dataclass
+class WrittenDocument:
+    """A record this platform created in a source system.
+
+    One shape for every connector, because the facts a caller needs back are the
+    same wherever it wrote: an id to look the thing up by, the number a person
+    sees, how many lines it carries, and whether it was created now or
+    recognised as one the source already held under the same reference.
+
+    ``already_existed`` is not a detail. Sending the same quote twice must not
+    put two documents in front of a customer, so a write that finds its own
+    reference already there reports *that* document — and the screen has to be
+    able to say "already sent" rather than "sent", which are different claims.
+    """
+
+    document_id: str
+    number: str
+    customer: str
+    line_count: int
+    already_existed: bool = False
+
+
 @dataclass(frozen=True)
 class Permission:
     """One grant the sign-in must already hold in the source system.

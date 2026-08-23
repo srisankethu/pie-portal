@@ -417,13 +417,6 @@ class Quote:
     reference: str = ""
     lines: List[Line] = field(default_factory=list)
     savedAt: Optional[str] = None
-    #: The Zoho estimate this quote has already produced, and the priced content
-    #: it was produced from. Nothing remembered either, so pressing the send
-    #: button three times created three estimates and the screen looked
-    #: identical after the first as before it.
-    estimateNumber: Optional[str] = None
-    estimateLineCount: Optional[int] = None
-    estimateFingerprint: Optional[str] = None
 
     @property
     def customer_ref(self) -> str:
@@ -528,13 +521,10 @@ class Quote:
             # zero. §1 asks for absent, and here the difference is not cosmetic:
             # see `_filter_counts`.
             **({"marginFloor": self._margin_floor()} if mgmt else {}),
-            # What has already gone to Zoho from this quote, so the screen can
-            # say so rather than leaving an unchanged primary button as the only
-            # evidence that anything happened.
-            "estimate": ({"number": self.estimateNumber,
-                          "lineCount": self.estimateLineCount,
-                          "current": self.estimateFingerprint == _priced_fingerprint(self)}
-                         if self.estimateNumber else None),
+            # ``estimate`` is added by the router, from the persisted document
+            # rather than from this object. It used to be three attributes
+            # here, which a restart erased — so a quote that had been sent
+            # looked unsent, and the send button offered to send it again.
         }
 
     def _filter_counts(self, mgmt: bool) -> Dict[str, int]:
@@ -853,13 +843,6 @@ class QuoteStore:
     def priced_fingerprint(quote: Quote) -> str:
         """The quote's sendable content, for deciding whether a re-send is one."""
         return _priced_fingerprint(quote)
-
-    @staticmethod
-    def record_estimate(quote: Quote, *, number: str, line_count: int,
-                        fingerprint: str) -> None:
-        quote.estimateNumber = number
-        quote.estimateLineCount = line_count
-        quote.estimateFingerprint = fingerprint
 
 
 store = QuoteStore()

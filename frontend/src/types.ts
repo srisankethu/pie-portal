@@ -138,6 +138,12 @@ export interface QuoteEstimate {
   number: string;
   lineCount: number | null;
   current: boolean;
+  /** The system holding it, and its own names for itself and the document.
+   *  "Sent · SQ-1001" does not say where, and two connected systems can both
+   *  answer to that number. */
+  system: string;
+  systemLabel: string;
+  documentTerm: string;
 }
 
 /** How the lines in this response were produced. Sent only by `/intake`, so it

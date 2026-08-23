@@ -120,8 +120,8 @@ export function SummaryBar({
           color={quote.estimate!.current ? "success" : "default"}
           variant="outlined"
           label={quote.estimate!.current
-            ? `Sent · ${quote.estimate!.number}`
-            : `Sent · ${quote.estimate!.number} · amended since`}
+            ? `Sent · ${quote.estimate!.systemLabel} · ${quote.estimate!.number}`
+            : `Sent · ${quote.estimate!.systemLabel} · ${quote.estimate!.number} · amended since`}
         />
       )}
 

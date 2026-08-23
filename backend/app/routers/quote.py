@@ -187,15 +187,19 @@ def _get_line(quote: Quote, line_id: str) -> Line:
 
 
 @router.post("")
-def create_quote(body: CreateQuoteRequest, principal: Principal = Depends(current_principal)):
+def create_quote(body: CreateQuoteRequest,
+                 principal: Principal = Depends(current_principal),
+                 session: Session = Depends(get_session)):
     q = store.create(body.customer, body.customer_id, principal.organization_id)
-    return q.to_dict(principal.is_manager_or_owner)
+    return _view(session, principal, q)
 
 
 @router.get("/{quote_id}")
-def get_quote(quote_id: str, principal: Principal = Depends(current_principal)):
-    return _get_quote(quote_id, principal.organization_id).to_dict(
-        principal.is_manager_or_owner)
+def get_quote(quote_id: str,
+              principal: Principal = Depends(current_principal),
+              session: Session = Depends(get_session)):
+    return _view(session, principal,
+                 _get_quote(quote_id, principal.organization_id))
 
 
 @router.post("/{quote_id}/intake")
@@ -221,7 +225,7 @@ def intake(quote_id: str, body: IntakeRequest,
     if read.used_ai:
         log.info("rfq read by %s into %d line(s) for quote %s",
                  settings.AI_PROVIDER, len(lines), quote_id)
-    return {**q.to_dict(principal.is_manager_or_owner),
+    return {**_view(session, principal, q),
             # How the lines were produced, so the screen can say "read from
             # your message — check each line" rather than presenting a model's
             # reading as though somebody had typed it.
@@ -307,7 +311,7 @@ def select_supply(quote_id: str, line_id: str, body: SelectSupplyRequest,
     ln = _get_line(q, line_id)
     confirmed = _confirm_identity(session, principal, q, ln, body.code)
     store.select_supply(ln, body.code, zoho, manual=body.manual)
-    out = q.to_dict(principal.is_manager_or_owner)
+    out = _view(session, principal, q)
     if confirmed:
         # Worth saying out loud: the person has just taught the system something
         # permanent, and a change with no feedback reads as a change that did
@@ -346,7 +350,8 @@ def _confirm_identity(session: Session, principal: Principal,
 
 @router.post("/{quote_id}/lines/{line_id}/confirm-reading")
 def confirm_reading(quote_id: str, line_id: str,
-                    principal: Principal = Depends(current_principal)):
+                    principal: Principal = Depends(current_principal),
+                    session: Session = Depends(get_session)):
     """A person has checked this line against the customer's own words.
 
     Every role, because the salesperson who received the enquiry is the one who
@@ -355,33 +360,36 @@ def confirm_reading(quote_id: str, line_id: str,
     """
     q = _get_quote(quote_id, principal.organization_id)
     store.confirm_reading(_get_line(q, line_id))
-    return q.to_dict(principal.is_manager_or_owner)
+    return _view(session, principal, q)
 
 
 @router.post("/{quote_id}/lines/{line_id}/price")
 def set_price(quote_id: str, line_id: str, body: SetPriceRequest,
-              principal: Principal = Depends(current_principal)):
+              principal: Principal = Depends(current_principal),
+              session: Session = Depends(get_session)):
     q = _get_quote(quote_id, principal.organization_id)
     ln = _get_line(q, line_id)
     store.set_price(ln, body.price)
-    return q.to_dict(principal.is_manager_or_owner)
+    return _view(session, principal, q)
 
 
 @router.delete("/{quote_id}/lines/{line_id}")
 def delete_line(quote_id: str, line_id: str,
-                principal: Principal = Depends(current_principal)):
+                principal: Principal = Depends(current_principal),
+                session: Session = Depends(get_session)):
     q = _get_quote(quote_id, principal.organization_id)
     store.delete_line(q, line_id)
-    return q.to_dict(principal.is_manager_or_owner)
+    return _view(session, principal, q)
 
 
 @router.post("/{quote_id}/discount")
 def apply_discount(quote_id: str, body: DiscountRequest,
-                   principal: Principal = Depends(current_principal)):
+                   principal: Principal = Depends(current_principal),
+                   session: Session = Depends(get_session)):
     q = _get_quote(quote_id, principal.organization_id)
     selected = [ln for ln in q.lines if ln.id in set(body.lineIds)]
     n = store.apply_discount(selected, body.percent)
-    result = q.to_dict(principal.is_manager_or_owner)
+    result = _view(session, principal, q)
     result["applied"] = n
     return result
 
@@ -389,7 +397,8 @@ def apply_discount(quote_id: str, body: DiscountRequest,
 @router.post("/{quote_id}/lines/{line_id}/create-item")
 def create_item(quote_id: str, line_id: str,
                 principal: Principal = Depends(current_principal),
-                zoho: ZohoService = Depends(zoho_for_quote)):
+                zoho: ZohoService = Depends(zoho_for_quote),
+                session: Session = Depends(get_session)):
     q = _get_quote(quote_id, principal.organization_id)
     ln = _get_line(q, line_id)
     if not ln.supplyCode:
@@ -399,7 +408,7 @@ def create_item(quote_id: str, line_id: str,
     # still worth looking at. The reason travels with it so the screen does not
     # have to say "something went wrong".
     failure = store.create_item(ln, zoho)
-    result = q.to_dict(principal.is_manager_or_owner)
+    result = _view(session, principal, q)
     if failure:
         result["createItemError"] = failure
     return result
@@ -534,8 +543,6 @@ def create_estimate(quote_id: str,
     # check above can answer the next press without a round trip, and so the
     # quote leaves DRAFT: the DRAFT → SENT → WON/LOST path is modelled, served
     # and typed on the client, and nothing ever moved a quote off DRAFT.
-    store.record_estimate(q, number=est.number, line_count=est.line_count,
-                          fingerprint=fingerprint)
     # The durable half, and the reason this whole endpoint can be pressed twice
     # safely. Written before the outcome transition because it is the record of
     # something that has already happened in somebody's ledger: if the status
@@ -571,6 +578,33 @@ def create_estimate(quote_id: str,
                             lineCount=est.line_count, **words,
                             message=f"{named} {est.number} created — "
                                     f"{est.line_count} lines.")
+
+
+def _view(session: Session, principal: Principal, q: Quote) -> dict[str, Any]:
+    """One quote as the screen reads it, including what it has already sent.
+
+    The ``estimate`` block is assembled here rather than on ``Quote`` because
+    it comes from a persisted row and ``Quote`` is an in-memory object with no
+    session. It used to be three attributes on that object, which a restart
+    erased — so a quote that had been sent looked unsent, and the primary
+    button offered to send it again.
+
+    ``current`` is what makes the block worth having: false once the priced
+    content has moved, so the chip can say "amended since" rather than implying
+    the customer holds what is on screen.
+    """
+    out = q.to_dict(principal.is_manager_or_owner)
+    sent = quote_service.latest_document(session, principal.organization_id,
+                                         quote_id=q.id)
+    out["estimate"] = None if sent is None else {
+        "number": sent.external_document_number,
+        "lineCount": sent.line_count,
+        "current": sent.fingerprint == store.priced_fingerprint(q),
+        # Named, because "Sent · SQ-1001" does not say where it was sent and
+        # two connected systems can both answer to that.
+        **_system_words(sent.external_system),
+    }
+    return out
 
 
 def _system_words(connector: str) -> dict[str, str]:

@@ -368,6 +368,10 @@ def test_sending_the_same_quote_twice_returns_the_one_estimate(client, mgmt_hdr)
     q = client.get(f"/api/quotes/{qid}", headers=mgmt_hdr).json()
     assert q["estimate"]["number"] == first["documentNumber"]
     assert q["estimate"]["current"] is True
+    # And it says where, which "Sent · SQ-1001" alone does not — two connected
+    # systems can both answer to that number.
+    assert q["estimate"]["systemLabel"] == "Zoho Books"
+    assert q["estimate"]["documentTerm"] == "estimate"
 
 
 @pytest.mark.requires_pie
@@ -557,6 +561,54 @@ def test_a_refusal_points_at_the_lines_that_caused_it(client, mgmt_hdr):
     with _books(client, _StubBooks(ZohoWriteRefused("not in these books", codes=[code]))):
         est = client.post(f"/api/quotes/{qid}/estimate", headers=mgmt_hdr).json()
     assert est["ok"] is False and est["blockers"] == [qd["lines"][0]["id"]]
+
+
+@pytest.mark.requires_pie
+def test_a_restart_does_not_make_a_sent_quote_look_unsent(client, mgmt_hdr):
+    """What the in-memory copy got wrong, on the screen rather than in the send.
+
+    The quote's own ``estimate`` block was three attributes on a process-wide
+    object. After a restart it read as None, so a quote that had been sent
+    showed no chip at all and an unchanged primary button — the only evidence
+    anything had happened was gone, and the obvious move was to press send
+    again.
+    """
+    from app import store as store_mod
+
+    with _books(client, _StubBooks()):
+        qid = _clean_quote(client, mgmt_hdr)
+        sent = client.post(f"/api/quotes/{qid}/estimate", headers=mgmt_hdr).json()
+    assert sent["ok"] is True
+
+    # The process forgets everything it held about this quote's send.
+    quote = store_mod.store.get(qid)
+    assert not hasattr(quote, "estimateNumber"), (
+        "the in-memory copy is back, and it is the one that lies after a restart")
+
+    q = client.get(f"/api/quotes/{qid}", headers=mgmt_hdr).json()
+    assert q["estimate"] is not None, "a sent quote read as unsent"
+    assert q["estimate"]["number"] == sent["documentNumber"]
+    assert q["estimate"]["current"] is True
+
+
+@pytest.mark.requires_pie
+def test_an_edit_after_sending_marks_the_document_out_of_date(client, mgmt_hdr):
+    """``current`` is what makes the block worth having. Without it the chip
+    implies the customer holds what is on screen, and the priced content has
+    moved since."""
+    with _books(client, _StubBooks()):
+        qid = _clean_quote(client, mgmt_hdr)
+        client.post(f"/api/quotes/{qid}/estimate", headers=mgmt_hdr)
+        qd = client.get(f"/api/quotes/{qid}", headers=mgmt_hdr).json()
+        assert qd["estimate"]["current"] is True
+
+        line = qd["lines"][0]
+        client.post(f"/api/quotes/{qid}/lines/{line['id']}/price",
+                    headers=mgmt_hdr, json={"price": 9999.0})
+        after = client.get(f"/api/quotes/{qid}", headers=mgmt_hdr).json()
+
+    assert after["estimate"]["current"] is False, (
+        "the quote was re-priced and still claimed the sent document describes it")
 
 
 @pytest.mark.requires_pie

@@ -353,8 +353,25 @@ def writes_for(connector: str) -> tuple[str, ...]:
 
 
 def can_write_quotes(connector: str) -> bool:
-    """Whether a quote can be created in this connector's system at all."""
+    """Whether the grant for this connector covers creating a quote there.
+
+    A statement about the *permission*, not about whether this platform can act
+    on it — see ``quote_writer_ready``. ``book_for_customer`` asks this first
+    because a connector that cannot be written to at all needs a different
+    sentence from one that can but has no writer here yet.
+    """
     return "sales_quotes" in writes_for(connector)
+
+
+def quote_writer_ready(connector: str) -> bool:
+    """Whether a quote built here can actually be sent to this connector today.
+
+    Both halves: the grant covers it *and* something here knows how. This is
+    the question a screen asks — an owner reading "Can create quotes here"
+    beside a send button that refuses has been told something false, and the
+    two questions come apart exactly while a connector's writer is being built.
+    """
+    return can_write_quotes(connector) and connector in _QUOTE_ADAPTERS
 
 
 #: Connectors this platform has a quote-write adapter wired for, as opposed to

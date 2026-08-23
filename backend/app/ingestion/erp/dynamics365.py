@@ -25,7 +25,8 @@ from datetime import date
 from decimal import Decimal
 from typing import Any, Iterable, Iterator, Optional
 
-from ..errors import (SourceAuthError, SourceScopeError, SourceWriteRefused,
+from ..errors import (IngestionError, SourceAuthError, SourceScopeError,
+                      SourceThrottleError, SourceWriteRefused,
                       SourceWriteUncertain, SourceWriteUnknown)
 from ..source import SkipPredicate
 from ..write_settle import settle_by_read
@@ -276,16 +277,42 @@ def _odata_str(value: str) -> str:
     return value.replace("'", "''")
 
 
-def _number(value: Any) -> Any:
-    """A quantity or a price, as JSON carries it.
+def _same_reference(held: str, sent: str) -> bool:
+    """Whether a row the server matched really carries the reference we sent.
 
-    ``Decimal`` is not JSON-serialisable and ``float`` would round money on the
-    way out, so a Decimal goes as its own string — which BC parses — and
-    anything else passes through as it arrived. No arithmetic here on purpose:
-    what this writes was computed in ``commercial`` and is not recomputed at the
-    boundary.
+    Case- and space-insensitive on purpose. ``externalDocumentNumber`` is an AL
+    ``Code[35]``, which upper-cases and trims what is stored in it, while the
+    references generated here carry lowercase hex. An exact comparison can only
+    turn *found* into *not found* — and *not found* is the branch that tells an
+    operator retrying is safe. So a strict re-check here does not tighten the
+    protocol, it authorises the duplicate it exists to prevent.
     """
-    return str(value) if isinstance(value, Decimal) else value
+    return held.strip().casefold() == sent.strip().casefold()
+
+
+def _number(value: Any) -> Any:
+    """A quantity or a price, as JSON should carry it.
+
+    Money goes out as a string, whatever it arrived as. ``Decimal`` is not
+    JSON-serialisable, and a ``float`` serialises to whatever repr it has —
+    which is the live path here, since ``store.Line.quoted`` is a float. Both
+    are routed through ``Decimal(str(...))``, the same normalisation the Zoho
+    adapter applies, so the number on the document is the number that was
+    priced rather than a binary approximation of it.
+
+    No arithmetic, deliberately: what this writes was computed in
+    ``commercial`` and must not be recomputed at the boundary (§1).
+    """
+    if value is None:
+        return None
+    if isinstance(value, (Decimal, float, int, str)):
+        try:
+            return str(Decimal(str(value)))
+        except (ArithmeticError, ValueError):
+            # Unparseable is not something to guess at: send it on and let
+            # Business Central refuse it by name.
+            return value
+    return value
 
 
 class BusinessCentralSource:
@@ -401,12 +428,38 @@ class BusinessCentralSource:
                 f"The reference {reference!r} is longer than the "
                 f"{_EXTERNAL_DOC_MAX} characters Business Central stores, so it "
                 f"could not be read back. Nothing was sent.")
+        if not lines:
+            raise SourceWriteRefused(
+                "This quote has no priced lines, so there is nothing to create "
+                "in Business Central. An empty sales quote in a customer's "
+                "ledger is worse than none. Nothing was sent.")
         missing = [str(ln.get("code") or "?") for ln in lines if not ln.get("itemId")]
         if missing:
             raise SourceWriteRefused(
                 "These lines carry no Business Central item id, and a quote "
                 "line must name an item that already exists there: "
                 + ", ".join(missing), codes=[c for c in missing if c != "?"])
+        # A line with no price or no quantity is not a line Business Central
+        # can be trusted with: it prices an omitted unitPrice from the item
+        # card, so the customer would be quoted a number nobody here chose.
+        unpriced = [str(ln.get("code") or "?") for ln in lines
+                    if ln.get("rate") is None or ln.get("qty") is None]
+        if unpriced:
+            raise SourceWriteRefused(
+                "These lines have no price or no quantity, and Business Central "
+                "would fill an omitted price from the item card — quoting a "
+                "number nobody here chose: " + ", ".join(unpriced),
+                codes=[c for c in unpriced if c != "?"])
+
+        # Pre-flight. Business Central puts no uniqueness on
+        # externalDocumentNumber, so without this a second press simply creates
+        # a second quote — the settle read only ever runs after a *fault*, and
+        # a clean repeat never faults. Zoho reads first for exactly this reason
+        # and dropping it here left the whole protocol resting on the caller's
+        # in-memory fingerprint, which is the check that already failed once.
+        already = self._settled_quote(reference, customer)
+        if already is not None:
+            return already
 
         header = {"customerNumber": str(customer_ref),
                   "externalDocumentNumber": reference}
@@ -422,8 +475,7 @@ class BusinessCentralSource:
             detail = str(e)
             return settle_by_read(
                 lambda: self._quote_by_reference(reference),
-                lambda row: self._written(row, customer, len(lines),
-                                          already_existed=True),
+                lambda row: self._found(row, customer, len(lines), reference),
                 unknown_message=lambda err: (
                     f"The sales quote could not be completed ({detail}), and Business "
                     f"Central could not be re-read to find out ({err}) — whether "
@@ -434,6 +486,19 @@ class BusinessCentralSource:
                     f"holds nothing under external document number {reference}, "
                     f"so sending again is safe."),
                 reference=reference)
+        except (SourceScopeError, SourceAuthError):
+            # Not write outcomes: the remedy is a grant or a credential, and
+            # both carry what to fix. Re-wrapping them as "refused" would throw
+            # that away.
+            raise
+        except IngestionError as e:
+            # Business Central answered and said no — a definite "nothing was
+            # written", which is exactly what SourceWriteRefused means. Left as
+            # a bare IngestionError it is outside the three outcomes a caller
+            # handles, so it surfaced as a 500: no message, and a 500 is the
+            # thing people answer by pressing the button again.
+            raise SourceWriteRefused(
+                f"Business Central refused the sales quote: {e}") from e
 
         quote_id = str(created.get("id") or "")
         if not quote_id:
@@ -453,6 +518,11 @@ class BusinessCentralSource:
                     "POST",
                     self._entity(f"salesQuotes({quote_id})/salesQuoteLines"),
                     json=body)
+            except (SourceScopeError, SourceAuthError, SourceThrottleError):
+                # These name their own remedy — a permission, a credential, a
+                # wait. Flattening them into the unknown below would leave the
+                # header just as orphaned and the reader with nothing to act on.
+                raise
             except Exception as e:                   # noqa: BLE001
                 # The header exists and this quote is incomplete. Neither
                 # outcome is available: reporting success would put a quote
@@ -478,23 +548,76 @@ class BusinessCentralSource:
         """The sales quote carrying this external document number, or None.
 
         Raises rather than returning None when the read itself fails — the
-        settle protocol needs "not there" and "could not look" kept apart.
+        settle protocol needs "not there" and "could not look" kept apart, and
+        collapsing them is how a write that landed gets sent again.
+
+        The lines come back with the header. Without them a caller can only
+        report the count it *sent*, which is a claim about its own intent
+        rather than about the document.
         """
         rows = self._client.pages(
             "salesQuotes", company_id=self._company,
-            params={"$filter": f"externalDocumentNumber eq '{_odata_str(reference)}'"})
+            params={"$expand": "salesQuoteLines",
+                    "$filter": f"externalDocumentNumber eq '{_odata_str(reference)}'"})
         for row in rows:
-            if str(row.get("externalDocumentNumber") or "") == reference:
+            if _same_reference(str(row.get("externalDocumentNumber") or ""), reference):
                 return row
         return None
+
+    def _settled_quote(self, reference: str, customer: str) -> Optional[WrittenDocument]:
+        """This reference's quote as Business Central holds it, or None.
+
+        Used before writing, where a read that *fails* must not be mistaken for
+        "not there" — that would send a quote that already exists. So the fault
+        propagates: refusing to send because we could not check is recoverable,
+        sending a duplicate is not.
+        """
+        row = self._quote_by_reference(reference)
+        if row is None:
+            return None
+        return self._found(row, customer, len(row.get("salesQuoteLines") or []),
+                           reference)
+
+    def _found(self, row: dict[str, Any], customer: str, sent_lines: int,
+               reference: str) -> WrittenDocument:
+        """A quote Business Central already holds, reported as what it *is*.
+
+        The count is read back, never echoed from what was sent. A header that
+        landed while its lines did not is a real state on this connector — the
+        write is two POSTs — and reporting ``len(lines)`` there would claim a
+        complete quote for a document with none, which is precisely the state
+        the line-failure path refuses to call a success.
+        """
+        held = row.get("salesQuoteLines")
+        if held is None:
+            raise SourceWriteUnknown(
+                f"Business Central holds a sales quote under external document "
+                f"number {reference} but did not return its lines, so whether it "
+                f"is complete cannot be established. Check it before sending "
+                f"this quote again.", reference=reference)
+        if len(held) != sent_lines:
+            raise SourceWriteUnknown(
+                f"Business Central holds sales quote "
+                f"{row.get('number') or row.get('id')} under external document "
+                f"number {reference}, but with {len(held)} lines where this quote "
+                f"has {sent_lines}. It is not the same document, so it is neither "
+                f"safe to report as sent nor safe to send again — check it.",
+                reference=reference)
+        return self._written(row, customer, len(held), already_existed=True)
 
     @staticmethod
     def _written(row: dict[str, Any], customer: str, line_count: int, *,
                  already_existed: bool) -> WrittenDocument:
+        number = str(row.get("number") or "")
+        if not number:
+            # An id with no number is not something a person can go and look at,
+            # and "look it up" is the whole remedy this record exists to enable.
+            raise SourceWriteUnknown(
+                "Business Central returned a sales quote with no document "
+                "number, so it cannot be named to whoever has to find it.")
         return WrittenDocument(
             document_id=str(row.get("id") or ""),
-            number=str(row.get("number") or ""),
-            customer=customer, line_count=line_count,
+            number=number, customer=customer, line_count=line_count,
             already_existed=already_existed)
 
     def list_purchase_orders(self) -> Iterable[dict[str, Any]]:

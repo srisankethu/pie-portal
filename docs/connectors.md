@@ -74,8 +74,6 @@ Every connection is checked at connect time and can be re-checked from its
 card; rotation replaces the whole stored sign-in in one operation for every
 company using it (`POST /api/v1/connections/{id}/rotate-erp`).
 
-## What each sign-in must already be granted
-
 ## What a connector may create
 
 Reading a system and writing to it are different grants, different code and
@@ -97,6 +95,8 @@ raises `SourceWriteUncertain`, and the adapter settles it by reading the record
 back under a caller-supplied reference — see `ingestion/write_settle.py`. A
 connector whose target system cannot carry a re-checkable reference cannot
 support a write at all, and should declare none.
+
+## What each sign-in must already be granted
 
 A half-granted sign-in is the most common way a connection authenticates and
 then returns nothing: the credential works, one endpoint refuses, and the sync

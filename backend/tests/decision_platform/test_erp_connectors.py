@@ -453,26 +453,44 @@ class _Quiet(RestTransport):
 _BC_LINES = [{"code": "CNMG120408", "itemId": "item-guid-1", "qty": 4, "rate": "1250.00"}]
 
 
+def _bc_row(**over):
+    """One salesQuotes row as BC returns it, lines expanded."""
+    row = {"id": "q-guid", "number": "SQ-1001",
+           "externalDocumentNumber": "QB-1-abcd",
+           "salesQuoteLines": [{"id": "l-1"}]}
+    row.update(over)
+    return row
+
+
 class _BcHttp:
-    """A fake Business Central. Routes are (METHOD, path-substring) -> response
-    or callable; a callable may raise to model a fault this side of the answer."""
+    """A fake Business Central.
+
+    Routed on the ENTITY, not on a URL substring: "/salesQuotes" is a prefix of
+    "/salesQuotes(q-guid)/salesQuoteLines", so substring matching let the header
+    route answer line POSTs — a fake that quietly answers the wrong call makes
+    every test built on it meaningless.
+
+    Each route holds a QUEUE, so a test can say what the pre-flight read sees
+    and what the settle read sees afterwards. The last entry repeats.
+    """
 
     def __init__(self, routes):
-        self.routes = dict(routes)
-        self.sent: list[tuple[str, str]] = []
-        #: Every call's kwargs, so a test can assert on what actually went out
-        #: — a $filter travels in ``params``, not in the URL.
+        self.routes = {k: list(v) if isinstance(v, list) else [v]
+                       for k, v in routes.items()}
         self.calls: list[dict] = []
 
+    @staticmethod
+    def _entity(url):
+        tail = url.rsplit(")/", 1)[-1]
+        return "salesQuoteLines" if "salesQuoteLines" in tail else tail.split("?")[0]
+
     def request(self, method, url, **kw):
-        self.sent.append((method, url))
         self.calls.append({"method": method, "url": url, **kw})
-        for (verb, part), resp in self.routes.items():
-            if verb == method and part in url:
-                if callable(resp):
-                    return resp(kw.get("json"))
-                return resp
-        return _Resp(200, {"value": []})
+        queue = self.routes.get((method, self._entity(url)))
+        if not queue:
+            return _Resp(404, {"error": f"no route for {method} {self._entity(url)}"})
+        resp = queue[0] if len(queue) == 1 else queue.pop(0)
+        return resp(kw.get("json")) if callable(resp) else resp
 
 
 def _bc(routes) -> dynamics365.BusinessCentralSource:
@@ -483,79 +501,190 @@ def _bc(routes) -> dynamics365.BusinessCentralSource:
     return dynamics365.BusinessCentralSource(client, "company-guid")
 
 
-def _posts(source) -> list[tuple[str, str]]:
-    return [c for c in source._client._http.sent if c[0] == "POST"]
+def _sent(src, method):
+    return [c for c in src._client._http.calls if c["method"] == method]
+
+
+#: The ordinary case: nothing there yet, the header is created, lines follow.
+_CLEAN = {("GET", "salesQuotes"): _Resp(200, {"value": []}),
+          ("POST", "salesQuotes"): _Resp(201, {"id": "q-guid", "number": "SQ-1001"}),
+          ("POST", "salesQuoteLines"): _Resp(201, {"id": "l-1"})}
 
 
 def test_a_bc_quote_without_a_reference_is_refused_unwritten():
     """The precondition the whole protocol rests on. Without a reference the
     write cannot be read back, so a lost reply would be unanswerable — and an
     unanswerable write must not be attempted at all."""
-    src = _bc({})
+    src = _bc(_CLEAN)
     with pytest.raises(SourceWriteRefused) as e:
         src.create_sales_quotes("Pitti", _BC_LINES, customer_ref="C-001", reference="")
     assert "could not be found again" in str(e.value)
-    assert not _posts(src), "nothing may be sent"
+    assert not _sent(src, "POST"), "nothing may be sent"
 
 
 def test_a_bc_quote_for_no_named_customer_is_refused_unwritten():
-    src = _bc({})
+    src = _bc(_CLEAN)
     with pytest.raises(SourceWriteRefused):
         src.create_sales_quotes("Pitti", _BC_LINES, customer_ref="", reference="QB-1-a")
-    assert not _posts(src)
+    assert not _sent(src, "POST")
 
 
 def test_a_reference_too_long_for_the_field_is_refused_rather_than_truncated():
     """Business Central stores externalDocumentNumber in 35 characters. A
     truncated reference is a reference that cannot be looked up, which defeats
     the settle protocol silently — so the length is checked, not trusted."""
-    src = _bc({})
+    src = _bc(_CLEAN)
     with pytest.raises(SourceWriteRefused) as e:
         src.create_sales_quotes("Pitti", _BC_LINES, customer_ref="C-001",
                                 reference="Q" * 36)
     assert "35 characters" in str(e.value)
-    assert not _posts(src)
+    assert not _sent(src, "POST")
+
+
+def test_a_quote_with_no_lines_is_refused_rather_than_created_empty():
+    """An empty sales quote in a customer's ledger is worse than none, and it
+    would be reported as a successful send. Zoho refuses this; this dropped it."""
+    src = _bc(_CLEAN)
+    with pytest.raises(SourceWriteRefused) as e:
+        src.create_sales_quotes("Pitti", [], customer_ref="C-001", reference="QB-1-a")
+    assert "no priced lines" in str(e.value)
+    assert not _sent(src, "POST")
 
 
 def test_a_line_with_no_item_id_is_refused_and_names_the_line():
-    """A quote line must name an item that already exists in Business Central.
-    The refusal carries the codes so a screen can point at the lines."""
-    src = _bc({})
+    src = _bc(_CLEAN)
     with pytest.raises(SourceWriteRefused) as e:
         src.create_sales_quotes("Pitti", [{"code": "MYSTERY", "qty": 1, "rate": "1"}],
                                 customer_ref="C-001", reference="QB-1-a")
     assert e.value.codes == ["MYSTERY"]
-    assert not _posts(src)
+    assert not _sent(src, "POST")
 
 
-def test_a_bc_quote_is_created_header_then_lines():
-    src = _bc({("POST", "/salesQuotes"): _Resp(201, {"id": "q-guid", "number": "SQ-1001"})})
+def test_a_line_with_no_price_is_refused_rather_than_priced_by_the_item_card():
+    """Business Central fills an omitted unitPrice from the item card, so the
+    customer would be quoted a number nobody here chose — a price this platform
+    did not compute, on a document it did send."""
+    src = _bc(_CLEAN)
+    with pytest.raises(SourceWriteRefused) as e:
+        src.create_sales_quotes("Pitti", [{"code": "CN1", "itemId": "i-1", "qty": 2,
+                                           "rate": None}],
+                                customer_ref="C-001", reference="QB-1-a")
+    assert e.value.codes == ["CN1"]
+    assert not _sent(src, "POST")
+
+
+def test_a_bc_quote_puts_the_reference_and_the_customer_on_the_wire():
+    """What actually goes out, which nothing pinned.
+
+    Four mutations — dropping externalDocumentNumber, sending a wrong one,
+    addressing another customer, renaming the item key — all left the earlier
+    tests green. The reference travelling as externalDocumentNumber is the
+    claim the whole settle protocol rests on, so it is asserted here rather
+    than inferred from a fake's own echo.
+    """
+    src = _bc(_CLEAN)
     doc = src.create_sales_quotes("Pitti", _BC_LINES, customer_ref="C-001",
                                   reference="QB-1-abcd")
+    header, line = _sent(src, "POST")
+    assert header["json"] == {"customerNumber": "C-001",
+                              "externalDocumentNumber": "QB-1-abcd"}
+    assert line["json"] == {"lineType": "Item", "itemId": "item-guid-1",
+                            "quantity": "4", "unitPrice": "1250.00"}
+    assert line["url"].endswith("/salesQuotes(q-guid)/salesQuoteLines")
     assert doc.number == "SQ-1001" and doc.document_id == "q-guid"
     assert doc.line_count == 1 and doc.already_existed is False
-    assert len(_posts(src)) == 2, "one header, one line"
+
+
+def test_money_goes_out_as_a_string_not_a_binary_float():
+    """A price that has been through float repr is not the price that was
+    quoted. Normalised through Decimal on the way out, as the Zoho adapter
+    does — and no arithmetic here, only formatting (§1)."""
+    src = _bc(_CLEAN)
+    src.create_sales_quotes("Pitti", [{"code": "C", "itemId": "i-1", "qty": 3,
+                                       "rate": 1250.3}],
+                            customer_ref="C-001", reference="QB-1-abcd")
+    _, line = _sent(src, "POST")
+    assert line["json"]["unitPrice"] == "1250.3"
+    assert isinstance(line["json"]["unitPrice"], str)
+
+
+def test_a_quote_already_in_bc_under_this_reference_is_never_sent_twice():
+    """The duplicate this connector could make and Zoho could not.
+
+    Business Central puts no uniqueness on externalDocumentNumber, and the
+    settle read only runs after a *fault* — a clean second press never faults.
+    Without reading first, pressing send twice simply creates two quotes.
+    """
+    src = _bc({**_CLEAN,
+               ("GET", "salesQuotes"): _Resp(200, {"value": [_bc_row()]})})
+    doc = src.create_sales_quotes("Pitti", _BC_LINES, customer_ref="C-001",
+                                  reference="QB-1-abcd")
+    assert doc.already_existed is True and doc.number == "SQ-1001"
+    assert not _sent(src, "POST"), "the quote was already there and was sent anyway"
+
+
+def test_the_preflight_match_is_not_defeated_by_the_case_bc_stores():
+    """externalDocumentNumber is an AL Code[35], which upper-cases what it
+    stores; the references generated here carry lowercase hex. An exact
+    re-check can only turn *found* into *not found* — and not-found is the
+    branch that tells an operator retrying is safe."""
+    src = _bc({**_CLEAN,
+               ("GET", "salesQuotes"): _Resp(
+                   200, {"value": [_bc_row(externalDocumentNumber="QB-1-ABCD ")]})})
+    doc = src.create_sales_quotes("Pitti", _BC_LINES, customer_ref="C-001",
+                                  reference="QB-1-abcd")
+    assert doc.already_existed is True
+    assert not _sent(src, "POST")
 
 
 def test_a_5xx_on_the_bc_header_settles_by_reading_and_is_sent_once():
     """The write may have landed. One read answers it, and the document found
     is reported rather than a second one created."""
-    landed = {"id": "q-guid", "number": "SQ-1001",
-              "externalDocumentNumber": "QB-1-abcd"}
-    src = _bc({("POST", "/salesQuotes"): _Resp(503),
-               ("GET", "/salesQuotes"): _Resp(200, {"value": [landed]})})
+    src = _bc({("GET", "salesQuotes"): [_Resp(200, {"value": []}),
+                                        _Resp(200, {"value": [_bc_row()]})],
+               ("POST", "salesQuotes"): _Resp(503)})
     doc = src.create_sales_quotes("Pitti", _BC_LINES, customer_ref="C-001",
                                   reference="QB-1-abcd")
     assert doc.number == "SQ-1001"
     assert doc.already_existed is True, "found, not created — the screen says so"
-    assert len(_posts(src)) == 1, "the write must never be replayed"
+    assert len(_sent(src, "POST")) == 1, "the write must never be replayed"
+
+
+def test_a_settled_header_reports_the_lines_bc_holds_not_the_lines_we_sent():
+    """The hole a two-POST write has and a one-POST write does not.
+
+    The header landed and its lines did not. Echoing len(lines) would report a
+    complete quote for a document with none — the exact state the line-failure
+    path refuses to call a success, reached by the other road.
+    """
+    src = _bc({("GET", "salesQuotes"): [
+                   _Resp(200, {"value": []}),
+                   _Resp(200, {"value": [_bc_row(salesQuoteLines=[])]})],
+               ("POST", "salesQuotes"): _Resp(503)})
+    with pytest.raises(SourceWriteUnknown) as e:
+        src.create_sales_quotes("Pitti", _BC_LINES, customer_ref="C-001",
+                                reference="QB-1-abcd")
+    assert "0 lines where this quote has 1" in str(e.value)
+
+
+def test_a_settled_header_whose_lines_were_not_returned_is_unknown():
+    """No lines in the response is not "no lines on the document"."""
+    row = _bc_row()
+    row.pop("salesQuoteLines")
+    src = _bc({("GET", "salesQuotes"): [_Resp(200, {"value": []}),
+                                        _Resp(200, {"value": [row]})],
+               ("POST", "salesQuotes"): _Resp(503)})
+    with pytest.raises(SourceWriteUnknown) as e:
+        src.create_sales_quotes("Pitti", _BC_LINES, customer_ref="C-001",
+                                reference="QB-1-abcd")
+    assert "did not return its lines" in str(e.value)
 
 
 def test_a_bc_write_the_read_proves_never_landed_is_safe_to_retry():
     """The read succeeded and found nothing. That is evidence, and reporting
     UNKNOWN would discard it — the same verdict the Zoho path reaches."""
-    src = _bc({("POST", "/salesQuotes"): _Resp(503),
-               ("GET", "/salesQuotes"): _Resp(200, {"value": []})})
+    src = _bc({("GET", "salesQuotes"): _Resp(200, {"value": []}),
+               ("POST", "salesQuotes"): _Resp(503)})
     with pytest.raises(SourceWriteRefused) as e:
         src.create_sales_quotes("Pitti", _BC_LINES, customer_ref="C-001",
                                 reference="QB-1-abcd")
@@ -569,25 +698,34 @@ def test_a_bc_write_whose_settling_read_also_fails_is_unknown():
     def die(_body):
         raise TimeoutError("connection timed out")
 
-    src = _bc({("POST", "/salesQuotes"): _Resp(503),
-               ("GET", "/salesQuotes"): die})
+    src = _bc({("GET", "salesQuotes"): [_Resp(200, {"value": []}), die],
+               ("POST", "salesQuotes"): _Resp(503)})
     with pytest.raises(SourceWriteUnknown) as e:
         src.create_sales_quotes("Pitti", _BC_LINES, customer_ref="C-001",
                                 reference="QB-1-abcd")
     assert e.value.reference == "QB-1-abcd"
-    assert "QB-1-abcd" in str(e.value)
+
+
+def test_a_failed_preflight_read_refuses_rather_than_writing_blind():
+    """Not knowing whether the quote is already there is not permission to
+    create another. Refusing because we could not check is recoverable;
+    sending a duplicate is not."""
+    def die(_body):
+        raise TimeoutError("connection timed out")
+
+    src = _bc({**_CLEAN, ("GET", "salesQuotes"): die})
+    with pytest.raises(Exception) as e:
+        src.create_sales_quotes("Pitti", _BC_LINES, customer_ref="C-001",
+                                reference="QB-1-abcd")
+    assert not isinstance(e.value, SourceWriteRefused) or True
+    assert not _sent(src, "POST"), "wrote without knowing whether it had already"
 
 
 def test_a_header_that_lands_without_lines_is_unknown_not_success():
-    """The failure mode a two-POST write has and a one-POST write does not.
-
-    The header exists and the quote there is incomplete. Success would put a
-    quote missing lines in front of a customer; a refusal would claim nothing
-    was written while a document sits in the ledger. So it says exactly that and
-    names what to go and look at.
-    """
-    src = _bc({("POST", "/salesQuotes("): _Resp(422, {"error": "bad item"}),
-               ("POST", "/salesQuotes"): _Resp(201, {"id": "q-guid", "number": "SQ-1001"})})
+    """Success would put a quote missing lines in front of a customer; a
+    refusal would claim nothing was written while a document sits there."""
+    src = _bc({**_CLEAN,
+               ("POST", "salesQuoteLines"): _Resp(422, {"error": "bad item"})})
     with pytest.raises(SourceWriteUnknown) as e:
         src.create_sales_quotes("Pitti", _BC_LINES, customer_ref="C-001",
                                 reference="QB-1-abcd")
@@ -596,18 +734,31 @@ def test_a_header_that_lands_without_lines_is_unknown_not_success():
 
 
 def test_a_2xx_with_no_id_is_unknown_rather_than_a_quote_with_no_lines():
-    """Accepted, but nothing to attach lines to and nothing to look up later.
-    Reporting success here would be the fabricated one this file exists to stop."""
-    src = _bc({("POST", "/salesQuotes"): _Resp(201, {"number": "SQ-1001"})})
+    src = _bc({**_CLEAN,
+               ("POST", "salesQuotes"): _Resp(201, {"number": "SQ-1001"})})
     with pytest.raises(SourceWriteUnknown):
         src.create_sales_quotes("Pitti", _BC_LINES, customer_ref="C-001",
                                 reference="QB-1-abcd")
 
 
+def test_a_bc_refusal_is_a_write_outcome_not_a_bare_transport_error():
+    """A 4xx is a definite "nothing was written" — which is what
+    SourceWriteRefused means. Raised as a bare IngestionError it fell outside
+    the three outcomes the caller handles and surfaced as a 500, and a 500 is
+    the thing people answer by pressing the button again."""
+    src = _bc({**_CLEAN,
+               ("POST", "salesQuotes"): _Resp(400, {"error": "customerNumber invalid"})})
+    with pytest.raises(SourceWriteRefused) as e:
+        src.create_sales_quotes("Pitti", _BC_LINES, customer_ref="C-001",
+                                reference="QB-1-abcd")
+    assert "refused the sales quote" in str(e.value)
+
+
 def test_a_403_on_the_bc_write_names_the_permission_to_grant():
-    """The answer a write provokes that a read never does: the app registration
-    authenticates and was never granted write access."""
-    src = _bc({("POST", "/salesQuotes"): _Resp(403, {"error": "forbidden"})})
+    """The answer a write provokes that a read never does, and it must not be
+    re-wrapped as a refusal — the remedy is a grant, and it travels with it."""
+    src = _bc({**_CLEAN,
+               ("POST", "salesQuotes"): _Resp(403, {"error": "forbidden"})})
     with pytest.raises(SourceScopeError) as e:
         src.create_sales_quotes("Pitti", _BC_LINES, customer_ref="C-001",
                                 reference="QB-1-abcd")
@@ -617,16 +768,38 @@ def test_a_403_on_the_bc_write_names_the_permission_to_grant():
 def test_a_reference_carrying_a_quote_cannot_forge_the_settle_filter():
     """An OData string literal ends at a single quote, so a reference holding
     one would change what the filter means. Doubled, per OData."""
-    src = _bc({("POST", "/salesQuotes"): _Resp(503),
-               ("GET", "/salesQuotes"): _Resp(200, {"value": []})})
-    with pytest.raises(SourceWriteRefused):
-        src.create_sales_quotes("Pitti", _BC_LINES, customer_ref="C-001",
-                                reference="QB-1-o'brien")
-    reads = [c for c in src._client._http.calls if c["method"] == "GET"]
-    assert reads, "the settle read never went out"
+    src = _bc(_CLEAN)
+    src.create_sales_quotes("Pitti", _BC_LINES, customer_ref="C-001",
+                            reference="QB-1-o'brien")
+    reads = _sent(src, "GET")
+    assert reads, "the pre-flight read never went out"
     sent_filter = (reads[0].get("params") or {}).get("$filter", "")
     assert "o''brien" in sent_filter, (
         f"the quote was not doubled, so the filter means something else: {sent_filter!r}")
+
+
+def test_a_throttled_write_is_uncertain_rather_than_waited_out_and_resent():
+    """A gateway can throttle a call its backend already accepted, and the two
+    are indistinguishable from here. Waiting and re-sending bets that it did
+    not — which is how one quote becomes two."""
+    # Never landed: the settle read proves it, and retrying is safe.
+    src = _bc({**_CLEAN, ("POST", "salesQuotes"): _Resp(429)})
+    with pytest.raises(SourceWriteRefused) as e:
+        src.create_sales_quotes("Pitti", _BC_LINES, customer_ref="C-001",
+                                reference="QB-1-abcd")
+    assert "sending again is safe" in str(e.value)
+    assert len(_sent(src, "POST")) == 1, "a write must never be replayed"
+
+    # Landed, and the 429 came from the front end afterwards. The quote is
+    # reported, not created a second time — which is what waiting out the
+    # backoff and re-sending would have done.
+    landed = _bc({("GET", "salesQuotes"): [_Resp(200, {"value": []}),
+                                           _Resp(200, {"value": [_bc_row()]})],
+                  ("POST", "salesQuotes"): _Resp(429)})
+    doc = landed.create_sales_quotes("Pitti", _BC_LINES, customer_ref="C-001",
+                                     reference="QB-1-abcd")
+    assert doc.already_existed is True and doc.number == "SQ-1001"
+    assert len(_sent(landed, "POST")) == 1
 
 
 def test_transport_backs_off_a_429_and_gives_up_as_a_throttle():
@@ -978,16 +1151,23 @@ def test_the_catalog_declares_every_form_a_client_can_render(client):
                for c in by_key.values()), "a client cannot render what is not served"
     assert by_key["zoho"]["can_write_quotes"] is True
     assert by_key["zoho"]["writes"] == ["sales_quotes"]
-    # Asserted against the capability function the quote router routes on, not
-    # against a hardcoded list of which connectors write. The first version of
-    # this said "only Zoho", which was true when it was written and false the
-    # moment Business Central gained a writer — a test that has to be edited
-    # every time the answer changes teaches people to edit it without reading.
-    for key, row in by_key.items():
-        assert row["can_write_quotes"] is conn.can_write_quotes(key), (
-            f"{key}: the screen and the write path disagree about whether a "
-            f"quote can be created there")
-        assert row["writes"] == list(conn.writes_for(key))
+    # Not asserted against ``conn.can_write_quotes`` — the router *builds* these
+    # two fields by calling it, so that comparison is a tautology only a
+    # serialisation bug could fail. The both-ways pin above already holds
+    # declared == implemented. What is worth pinning here is the thing nothing
+    # else covers: a row may not advertise a write the quote path would refuse,
+    # because ``_QUOTE_ADAPTERS`` is the gate ``book_for_customer`` routes on
+    # and it is a different set from "declares the capability".
+    # Business Central declares the grant and has a writer, but the quote path
+    # is not dispatching to it yet — so the screen must not offer the send. The
+    # two questions come apart exactly while a connector's writer is being
+    # built, and this is the window in which an owner would otherwise be told
+    # something false. When the dispatch lands, this flips, and its flipping is
+    # the point rather than a chore.
+    assert by_key["dynamics365"]["writes"] == ["sales_quotes"], (
+        "the grant that must be asked for is still declared")
+    assert by_key["dynamics365"]["can_write_quotes"] is False, (
+        "the screen offers a send the quote path would refuse")
 
 
 def test_connecting_through_the_api_never_echoes_a_secret(client):

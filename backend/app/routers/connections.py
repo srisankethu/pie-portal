@@ -889,7 +889,7 @@ def _zoho_catalog_entry() -> dict:
         # so a hand-written ``[]`` here would be the single most misleading
         # value in the whole catalogue.
         "writes": list(conn.writes_for(conn.ZOHO_CONNECTOR)),
-        "can_write_quotes": conn.can_write_quotes(conn.ZOHO_CONNECTOR),
+        "can_write_quotes": conn.quote_writer_ready(conn.ZOHO_CONNECTOR),
     }
 
 
@@ -938,7 +938,7 @@ def connector_catalog(
                 # rather than off the spec directly, so the screen and the
                 # write path cannot answer this differently.
                 "writes": list(conn.writes_for(spec.key)),
-                "can_write_quotes": conn.can_write_quotes(spec.key),
+                "can_write_quotes": conn.quote_writer_ready(spec.key),
             }
             for spec in erp.catalog()
         ],

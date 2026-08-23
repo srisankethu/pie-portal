@@ -177,15 +177,39 @@ class RestTransport:
                     raise scope
                 # One refresh per request: a token can expire mid-run, but a
                 # second refusal on a freshly minted grant is the grant itself.
-                if not refreshed_auth:
+                #
+                # A 401 is *usually* "nothing happened" — but only usually. A
+                # gateway can mint it after the backend accepted the call, and
+                # re-sending an unreplayable write on that reading is how one
+                # quote becomes two. The 5xx branch below already refuses to
+                # guess; this one used to, and the difference was invisible
+                # because no write had ever gone through this transport.
+                if not refreshed_auth and may_replay:
                     refreshed_auth = True
                     self._invalidate_auth()
                     last = f"HTTP {resp.status_code}"
                     continue
+                if not may_replay and not refreshed_auth:
+                    self._invalidate_auth()
+                    raise SourceWriteUncertain(
+                        f"{self.system} answered HTTP {resp.status_code} to "
+                        f"{verb} {url} and the credentials have been refreshed, "
+                        f"but the call has not been sent again — whether the "
+                        f"record was written cannot be told from here. Check "
+                        f"{self.system} before sending it again.")
                 raise SourceAuthError(
                     f"{self.system} rejected the credentials at {url} "
                     f"(HTTP {resp.status_code}): {_body_hint(resp)}")
             if resp.status_code == 429:
+                if not may_replay:
+                    # A front end can throttle a call its backend already
+                    # accepted, and the two are indistinguishable from here.
+                    # Waiting and re-sending a write bets that it did not.
+                    raise SourceWriteUncertain(
+                        f"{self.system} rate-limited {verb} {url} (HTTP 429). "
+                        f"Whether the record was written cannot be told from "
+                        f"here, so it has not been sent again — check "
+                        f"{self.system} before sending it again.")
                 throttled = True
                 last = "HTTP 429 (rate limited)"
                 delay = self._retry_after(resp)

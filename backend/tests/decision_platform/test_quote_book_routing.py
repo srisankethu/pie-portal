@@ -85,6 +85,32 @@ def test_a_disabled_connection_is_refused_not_substituted(session):
         book_for_customer(session, org, customer)
 
 
+def test_a_customer_with_no_contact_id_is_refused_for_that_not_for_ambiguity(
+        session):
+    """A missing contact id blocks every book equally, so it is not a question
+    about which book.
+
+    With two connected Zoho companies this used to fall through to the
+    which-one sentence, sending whoever read it to compare two ledgers when the
+    blocker was that this customer has no contact in either. The remedy is the
+    same re-sync either way, which is precisely why the wrong reason survived:
+    following it happened to work, so nobody learned the message was wrong.
+    """
+    org = _org(session)
+    _connect(session, org, "60036630487", "SLS Engineers")
+    _connect(session, org, "60036630488", "4U Precision")
+    customer = _customer(session, org, connection_id=None, connector=None,
+                         external_id="")
+
+    with pytest.raises(ConnectionNotFound) as e:
+        book_for_customer(session, org, customer)
+    msg = str(e.value)
+    assert "no contact id" in msg
+    assert "Which one" not in msg, (
+        "the refusal blamed a choice between books for a blocker that applies "
+        "to all of them")
+
+
 def test_a_customer_from_a_connector_that_cannot_write_is_refused(session):
     """A Tally customer has no contact to write a quote against, and the id it
     carries belongs to a different system entirely.

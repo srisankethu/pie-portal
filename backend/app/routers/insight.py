@@ -1194,6 +1194,7 @@ def _decided_quotes(outcomes: list[models.QuoteOutcome],
             customer_label=(customer_names.get(row.customer_id or "")
                             or row.customer_ref or "Unattributed"),
             won=won,
+            ever_sent=row.sent_at is not None,
             loss_reason=("" if won
                          else (row.loss_reason or LOSS_REASON_NOT_RECORDED)),
             decided_on=clock.aware(row.decided_at).date(),

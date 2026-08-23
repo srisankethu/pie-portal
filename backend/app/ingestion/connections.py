@@ -443,7 +443,21 @@ def book_for_customer(session: Session, organization_id: str,
             f"ledger to write {customer.name}'s quote into."
             + (f" Its connected books read {', '.join(other_systems)}, which "
                f"hold no Zoho estimate." if other_systems else ""))
-    if len(enabled) == 1 and customer.external_id:
+    # A missing contact id blocks every book equally, so it is answered before
+    # the which-book question rather than after it. It used to fall through to
+    # whichever ambiguity sentence came next, and with two Zoho companies that
+    # sentence said the choice between them could not be decided — sending the
+    # reader to compare two books when the blocker was that this customer has
+    # no contact in either. The remedy happens to be the same re-sync, which is
+    # exactly why the wrong reason survived: it "worked".
+    if not customer.external_id:
+        where = (next(iter(zoho.values())).label or "the connected Zoho company"
+                 if len(zoho) == 1 else "any connected Zoho company")
+        raise ConnectionNotFound(
+            f"{customer.name} carries no contact id in {where}, so there is no "
+            f"contact to write this quote against — re-sync the company this "
+            f"customer belongs to.")
+    if len(enabled) == 1:
         return CustomerBook(next(iter(zoho.values())), str(customer.external_id))
 
     # Two different questions are being refused here, and they read as one only
@@ -473,14 +487,15 @@ def book_for_customer(session: Session, organization_id: str,
               f"estimate cannot be quoted into — so writing the estimate into "
               f"that Zoho company would invent the provenance that was never "
               f"recorded. Re-sync the company this customer belongs to.")
-    # One Zoho company, nothing else connected, and still no answer: the
-    # customer carries no contact id in it. Named for what it is rather than
-    # borrowed from either sentence above — neither is true here.
+    # One Zoho company, nothing else connected, a contact id present — and the
+    # resolve above did not take it, which means ``enabled`` holds a disabled
+    # or otherwise unusable row this function has not accounted for. Refused
+    # rather than resolved: reaching here at all is a gap in the reasoning
+    # above, and guessing a book to close it is how provenance gets invented.
     raise ConnectionNotFound(
-        f"{customer.name} carries no contact id in "
-        f"{next(iter(zoho.values())).label or 'the connected Zoho company'}, "
-        f"so there is no contact to write this quote against — re-sync the "
-        f"company this customer belongs to.")
+        f"{customer.name} cannot be placed against a connected Zoho company "
+        f"from what is recorded on it — re-sync the company this customer "
+        f"belongs to.")
 
 
 # ── credentials ─────────────────────────────────────────────────────────────

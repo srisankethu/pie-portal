@@ -3572,8 +3572,8 @@ class QueuedMessage(Base):
 
     Deliberately a table rather than a broker. The queue depths here are one
     message per organization per sync cadence, the database is already the
-    thing every process shares, and a Redis is an extra service to run, secure
-    and reason about for a workload that fits in a single indexed query. What
+    thing every process shares, and a broker would be one more service to run,
+    secure and reason about for a workload that fits in a single indexed query. What
     the table has to get right is the same short list any queue does:
 
     * **Claiming is atomic.** A message moves PENDING -> CLAIMED with a

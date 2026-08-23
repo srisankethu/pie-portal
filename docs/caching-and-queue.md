@@ -160,13 +160,23 @@ per sync cadence, the database is already the thing every process shares, and a
 broker would be one more service to reason about for a workload that fits in
 one indexed query.
 
-`compose.yaml` *does* provision Redis, "for cross-replica state (rate limits,
-cache, job coordination)", with a comment saying no feature requires it yet.
-That is still true, and it is a choice rather than an oversight: the queue needs
-durability and an atomic claim, which the database it already writes to
-provides, and putting the work list somewhere the business data is not would
-mean a queued job and the row it acts on can disappear independently. Redis
-remains available for the things it is actually better at.
+`compose.yaml` used to provision a Redis "for cross-replica state (rate limits,
+cache, job coordination)", with a comment conceding that no feature required it
+yet. It has been removed, and this paragraph is the record of why rather than an
+open question — a container, a volume, two dependency edges and a `REDIS_URL`
+nothing read, teaching every reader that a dependency existed where none did.
+
+The decision behind it: this queue needs durability, an atomic claim, and — the
+one that settles it — the message committed in the *same transaction* as the row
+it acts on. `start_sync` writes a `SyncRun` and its message together, so a crash
+between them is impossible by construction; split across two stores it is merely
+unlikely, and the failure is a job with no run row or a run nobody will ever
+work. The caches stayed in-process for the arithmetic at the top of this
+document: at the replica count this deployment runs, a network hop and an
+invalidation protocol cost more than they save.
+
+Neither argument is permanent. Re-provision a broker the day something needs
+what a broker is better at — and let that thing arrive first.
 
 ### The shape
 

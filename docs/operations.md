@@ -41,7 +41,6 @@ always wins over it**. All values have defaults that work for local development.
 | `DB_POOL_TIMEOUT` | `30` | Seconds a request waits for a free connection before failing loudly. |
 | `DB_POOL_RECYCLE` | `1800` | Retire pooled connections before proxy/NAT idle cutoffs drop them first. |
 | `DB_SLOW_QUERY_MS` | `1000` | Log statements slower than this (0 = off; the compose stack sets 500). Statement text only — parameter values never reach the log. |
-| `REDIS_URL` | *(empty)* | Provisioned infrastructure (both compose stacks run one); no feature requires it yet, and nothing may refuse to serve because it is absent. |
 | `AUTO_BOOTSTRAP` | `1` | Create the DB, migrate, and seed users on startup. **Ignored in production.** |
 | `DEMO_SEED_ON_START` | `1` | Seed the demo dataset on startup. **Ignored in production, and ignored whenever `ZOHO_SOURCE=api`** — a live account means no fabricated customer should ever appear. |
 

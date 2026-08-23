@@ -210,17 +210,6 @@ class Settings:
     # and credentials, and trust/ exists so those never reach a log file.
     DB_SLOW_QUERY_MS: int = int(os.environ.get("DB_SLOW_QUERY_MS", "1000"))
 
-    # ── Redis (provisioned infrastructure; no feature requires it yet) ──────
-    # Both compose stacks run a Redis next to the API for the state that must
-    # one day live outside a process: cross-replica rate limiting (the signup
-    # limiter in routers/onboarding.py is in-process and says so), cache, and
-    # background-job coordination if the thread-based sync ever needs to span
-    # replicas. Empty means "none configured", and nothing may *require* Redis
-    # to serve a request — a candidate consumer degrades to its in-process
-    # behaviour, the way the signup limiter behaves today. Kept honest on
-    # purpose: config that pretends a dependency is load-bearing before any
-    # code reads it teaches operators to ignore this file.
-    REDIS_URL: str = os.environ.get("REDIS_URL", "")
 
     # Create the database + schema + demo users on startup, so a fresh clone
     # runs without a separate migrate/seed step. Always disabled in production,

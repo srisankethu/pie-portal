@@ -31,11 +31,18 @@ error the screen has to translate.
 the moment the response is sent; the job would then be writing through a dead
 connection.
 
-Deliberately a thread rather than a broker. This deployment is a single uvicorn
-process with no Redis and no worker, and a thread is honest about that: the
-in-process lock below is not distributed, and the module says so rather than
-implying a guarantee it cannot make. If this ever runs multi-process, the lock
-must become a database one — the reaping and status model would not change.
+A thread by default, and a durable message where a deployment asks for one.
+This paragraph used to argue for the thread from "a single uvicorn process with
+no Redis and no worker", which was never quite true — the image has shipped
+``--workers 2`` throughout — and is no longer true at all: ``compose.yaml`` runs
+a ``worker`` container, and ``SYNC_DISPATCH=queue`` sends the dispatch through
+``queued_messages`` (see ``app/messaging`` and ``docs/caching-and-queue.md``).
+
+What the thread *is* honest about is its limit: ``_start_lock`` below is not
+distributed, so it guards this process and says so rather than implying a
+guarantee it cannot make. The thing that made the guard's absence matter — two
+scheduler threads both deciding a pull was due — is now held by a database
+lease (``app/leases.py``), and the reaping and status model did not change.
 """
 from __future__ import annotations
 

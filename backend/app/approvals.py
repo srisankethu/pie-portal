@@ -32,6 +32,7 @@ from sqlalchemy.orm import Session
 
 from . import clock
 from .domain import models
+from .trust import audit
 from .domain.enums import (
     APPROVER_DECISIONS,
     OPEN_APPROVAL_STATUSES,
@@ -243,6 +244,7 @@ def decide(session: Session, principal, request: models.ApprovalRequest,
     request.decision_note = (note or None)
     request.thread = list(request.thread or []) + [_entry(principal, status.value, note)]
     session.flush()
+    _audit(session, principal, request, audit.APPROVAL_DECIDED, status.value, note)
 
     if request.kind == ApprovalKind.DECISION_ESCALATION.value:
         _settle_escalated_decision(session, request, status)
@@ -263,7 +265,50 @@ def withdraw(session: Session, principal, request: models.ApprovalRequest,
     request.decided_at = datetime.now(timezone.utc)
     request.thread = list(request.thread or []) + [_entry(principal, "WITHDRAWN", note)]
     session.flush()
+    _audit(session, principal, request, audit.APPROVAL_WITHDRAWN,
+           ApprovalStatus.WITHDRAWN.value, note)
     return request
+
+
+def _audit(session: Session, principal, request: models.ApprovalRequest,
+           action: str, outcome: str, note: Optional[str]) -> None:
+    """Put this decision on the tenant's audit chain.
+
+    The row itself is mutated on a decision and its ``thread`` is rewritten on
+    every resubmit, so the *sequence* — raised, returned, re-raised, approved —
+    was recoverable only from a JSON blob that the same code path overwrites.
+    Appending here makes each step a linked entry that a later edit to the
+    request cannot change.
+
+    **What is deliberately not in it.** No price, no cost, no margin. §1: a
+    predicate a caller can walk is the number it tests against, and
+    ``below_cost`` is exactly such a predicate — but it is already on the
+    request, already shown to the manager deciding, and carries no threshold to
+    walk: it is a fact about a line that was recorded once, not an oracle
+    answering a question about an input the caller supplies. The number that
+    made it true stays in ``request.subject``, behind the role gate that
+    already guards it. What this entry adds is *who signed, when, and whether
+    they gave the reason the rule required* — which is the part that was
+    unrecoverable.
+    """
+    audit.append(
+        session, organization_id=request.organization_id, action=action,
+        actor=principal, subject_type="APPROVAL_REQUEST",
+        subject_id=request.approval_request_id,
+        detail={
+            "kind": request.kind,
+            "outcome": outcome,
+            "required_authority": request.required_authority,
+            "requested_by_user_id": request.requested_by_user_id,
+            "quote_or_decision_id": request.subject_id,
+            "subject_line_id": request.subject_line_id,
+            # Whether a rationale was *required* and whether one was given —
+            # never the text, which can name a customer and belongs on the
+            # request where the role gate already reaches it.
+            "rationale_required": rationale_required(request),
+            "rationale_given": bool((note or "").strip()),
+            "thread_length": len(request.thread or []),
+        })
 
 
 def release_if_no_longer_needed(session: Session, principal, *, quote_id: str,

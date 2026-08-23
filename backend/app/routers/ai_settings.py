@@ -25,6 +25,7 @@ from ..ai.provider import ProviderError, build_provider
 from ..authz import Principal, require_owner
 from ..config import settings
 from ..db import get_session
+from ..trust import audit
 
 log = logging.getLogger("pie_portal.routers.ai_settings")
 
@@ -157,10 +158,40 @@ def test_key(
 
     api_key = crypto.decrypt(row.api_key_encrypted) if row is not None else None
     model = (row.model or None) if row is not None else None
+    # Audited on both paths, and before either return.
+    #
+    # This is a live round trip to an external provider on a tenant's key, run
+    # by hand. It produces no ``CallTelemetry`` — nothing here goes through
+    # ``ai/interpret`` — so ``AiTelemetryRepository.record`` never sees it and it
+    # was, until now, the one model call in the platform that left no trace
+    # anywhere. A failed one matters as much as a successful one: a key that
+    # stopped working, and when somebody noticed, is exactly the sort of thing
+    # an incident is reconstructed from.
+    outcome: dict = {}
     try:
         p = build_provider(provider, api_key=api_key, model=model)
         text = p.complete("Reply with the single word: ok", "ping")
+        outcome = {"ok": True, "provider": provider, "model": p.model,
+                   "detail": (text or "")[:64]}
     except ProviderError as e:
-        return {"ok": False, "provider": provider, "detail": str(e)[:512]}
-    return {"ok": True, "provider": provider, "model": p.model,
-            "detail": (text or "")[:64]}
+        outcome = {"ok": False, "provider": provider, "detail": str(e)[:512]}
+
+    audit.append(
+        session, organization_id=principal.organization_id, action=audit.AI_CALL,
+        actor=principal, subject_type="AI_PROVIDER", subject_id=provider,
+        detail={
+            "decision_type": "CONNECTION_TEST",
+            "ai_status": "OK" if outcome["ok"] else "FAILED",
+            "provider": provider,
+            "model": outcome.get("model", model or ""),
+            "provider_called": True,
+            "key_source": "TENANT" if row is not None else "ENVIRONMENT",
+            # The ping is a fixed word carrying no business data, so its hash is
+            # a constant and worth nothing. Named rather than omitted so the
+            # entry does not read as a call whose prompt we failed to record.
+            "prompt_sha256": None,
+            "prompt_is_fixed_ping": True,
+            "failure_reason": None if outcome["ok"] else outcome["detail"][:200],
+        })
+    session.commit()
+    return outcome

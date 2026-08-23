@@ -416,6 +416,14 @@ class Settings:
     QUEUE_MAX_BACKOFF_SECONDS: float = float(
         os.environ.get("QUEUE_MAX_BACKOFF_SECONDS", "900"))
 
+    # How long ``/api/health`` may answer the schema question from memory. The
+    # cache key already carries the database's Alembic revision, so a migration
+    # is reflected on the next poll whatever this is; this bounds only the case
+    # the key cannot see — a schema altered by hand under an unchanged stamp.
+    # 0 disables it and every poll reflects all ~70 tables again.
+    SCHEMA_GAP_CACHE_TTL_SECONDS: float = float(
+        os.environ.get("SCHEMA_GAP_CACHE_TTL_SECONDS", "30"))
+
     # ── Resolution cache ──────────────────────────────────────────────────────
     # The nomenclature engine's verdict for one product code, keyed by the
     # catalogue ruleset and the confirmed mappings it read — see app/cache.py

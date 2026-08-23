@@ -37,6 +37,33 @@ from the working agreement's §1, arriving through a key that forgot the reader.
 If something money-shaped ever wants caching, the recipient's role is part of
 the key or it does not go in.
 
+### Where it is applied, and where it was measured not to be
+
+Every entry below came out of profiling the real read path — the app booted
+against a seeded database, every parameterless `GET` hit once, wall time and SQL
+statements recorded per request (`before_cursor_execute`), then the slow ones
+re-run warmed under `cProfile`. Query counts decide more than milliseconds do: a
+count that is already per-row is what becomes slow with a real book, and on
+Postgres each one is a network round trip.
+
+| Path | Before | After | What it was |
+|---|---|---|---|
+| `/api/health` (steady state) | 45 ms, 76 queries | 7 ms, 3 queries | reflected all ~70 tables *and* re-walked every migration file, per poll |
+| A name vault page, 500 names | 442 ms, 1000 queries | 39 ms, 2 queries | the tenant key re-read and re-unwrapped per value — see below |
+| One RFQ line, repeat resolution | full catalogue scan | cached | the engine's verdict |
+
+Rejected, with the measurement that rejected them:
+
+- **`/api/v1/connections/catalog`** looked like the worst endpoint at 262 ms on
+  two queries. Warmed, it is 7 ms: that was one-off import cost, not per-request
+  work. Nothing to cache.
+- **`load_for_org`** (the commercial thresholds) is called on most intelligence
+  endpoints, and is two cheap reads. Caching it would put a stale *margin
+  policy* behind a screen that says which policy judged it, which is a trade
+  nothing here justifies.
+- **The tenant data key.** The measured waste was real and large, and a cache
+  was still the wrong fix — see the next section.
+
 ### What is cached today
 
 One thing: **the nomenclature engine's verdict for a product code**
@@ -65,10 +92,36 @@ Two more rules the resolution cache follows:
 - A `PIE_DOWN` result is never stored. Pinning a transient failure would keep a
   recovered engine offline until the entry expired.
 
+### The one that should not be a cache
+
+`decrypt_for` costs 515 µs per value here, of which 53 µs is the decryption. The
+rest is reading the tenant's key row — **one SQL statement per value** — and
+unwrapping the DEK under the master key. Every screen showing customer or vendor
+names paid it per name; `vault.backfill` paid it per customer, product and vendor
+at the end of every sync.
+
+The obvious fix is to cache the unwrapped key. It is the wrong one: a cached DEK
+keeps a **destroyed** key usable — in this process until it expires, and in every
+other process for as long as its own copy lives — and "destroy the key and the
+ciphertext is unreadable everywhere" is what the erasure receipt attests to a
+customer.
+
+So the repeated work is removed rather than remembered. `keys.cipher_for()`
+opens the key once and returns a `TenantCipher` the caller reuses for the whole
+batch: `vault.resolve_many`, `vault.backfill` and `disclosure.reveal_many` each
+open one key per page instead of one per row. 500 names went from 442 ms and
+1,000 statements to 39 ms and 2 — and a key destroyed a moment ago is still
+refused by the very next batch, because nothing holds it.
+
+The general rule this leaves behind: **when repeated work has a correctness
+promise attached to its freshness, remove the repetition instead of caching the
+answer.**
+
 ### Settings
 
 | Variable | Default | Meaning |
 |---|---|---|
+| `SCHEMA_GAP_CACHE_TTL_SECONDS` | `30` | How long `/api/health` may answer the schema question from memory. The key carries the database's Alembic revision, so a migration is reflected on the next poll whatever this is; the TTL bounds only a schema altered by hand under an unchanged stamp. `0` disables it |
 | `PIE_CACHE_SIZE` | `2048` | Entries. `0` disables the cache entirely — the off switch for a deployment that suspects a stale answer, with no code change |
 | `PIE_CACHE_TTL_SECONDS` | `1800` | A ceiling on staleness for the one input the key cannot see: a catalogue rebuilt in place under an unchanged version |
 
@@ -124,8 +177,20 @@ The four properties it has to get right:
   so the same sync enqueued twice while the first is in flight is one message.
 
 Topics are owned by the module that owns the work — `ingestion/jobs.py`
-registers `sync.run` — so the queue itself knows nothing about syncs, Zoho, or
-what any payload means.
+registers `sync.run`, `commercial/jobs.py` registers `commercial.recompute` — so
+the queue itself knows nothing about syncs, metrics, Zoho, or what any payload
+means.
+
+### What is queued today
+
+| Topic | Producer | Why it is not a request |
+|---|---|---|
+| `sync.run` | `jobs.queue_dispatch`, when `SYNC_DISPATCH=queue` | a pull reads every document individually; minutes, and it must survive a replaced container |
+| `commercial.recompute` | `POST /commercial/recompute` with `background: true` | a whole-organization rebuild is O(customers × items) with a detector pass per pair — the shape the sync had before it moved to the background, and it fails the same way: a gateway gives up before the work does |
+
+`background: true` is refused with a 409 where no worker would drain it. A
+queued message in a deployment running `SYNC_DISPATCH=thread` is work that
+silently never happens, which is worse than an answer saying so.
 
 ### Turning it on
 

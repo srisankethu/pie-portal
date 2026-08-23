@@ -320,13 +320,18 @@ def health(response: Response) -> dict:
     """
     from .db import engine
     from .migration_state import inspect_database
-    from .schema_check import describe, missing_columns
+    from .schema_check import describe, gaps_for
 
     body: dict = {"ok": True, "service": "pie-portal", "version": app.version}
     try:
         state = inspect_database(engine)
         body["migration"] = state.to_dict()
-        gap = describe(missing_columns(engine))
+        # ``gaps_for`` rather than ``missing_columns``: the reflection behind it
+        # is ~70 statements, this endpoint is polled by a load balancer, and the
+        # answer is remembered against the revision ``state`` just read — so a
+        # migrated deployment still goes green on the next poll without a
+        # restart. See schema_check._gap_cache.
+        gap = describe(gaps_for(engine, state.current))
         body["schema_gap"] = gap
         # Which dialect this process is actually serving, and how full its
         # pool is. Informational, never part of `ok`: a busy pool is load, not

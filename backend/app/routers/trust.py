@@ -62,6 +62,11 @@ def get_payloads(limit: int = Query(50, ge=1, le=200),
     hundred payloads to render a table nobody reads is work done for nothing.
     """
     rows = disclosure.payloads_for(session, principal.organization_id, limit)
+    # One key for the page. Revealing per row read and unwrapped this
+    # organization's data key once per payload, which is the work the
+    # ``reveal=false`` default exists to avoid — and it was still being done
+    # a hundred times over whenever somebody did ask to see them.
+    plaintext = disclosure.reveal_many(session, rows) if reveal else {}
     return {
         "summary": disclosure.findings_summary(rows),
         "payloads": [
@@ -72,7 +77,7 @@ def get_payloads(limit: int = Query(50, ge=1, le=200),
                 "model": r.model,
                 "created_at": clock.iso(r.created_at),
                 "findings": r.disclosure_findings or [],
-                "payload": disclosure.reveal(session, r) if reveal else None,
+                "payload": plaintext.get(r.payload_id) if reveal else None,
             }
             for r in rows
         ],

@@ -337,3 +337,51 @@ def test_the_default_dispatch_is_the_thread_unless_asked_otherwise(monkeypatch):
     assert jobs.default_dispatch() is jobs.thread_dispatch
     monkeypatch.setattr(settings, "SYNC_DISPATCH", "queue")
     assert jobs.default_dispatch() is jobs.queue_dispatch
+
+
+def test_a_whole_organization_rebuild_can_be_queued(engine, session, monkeypatch):
+    """The queue's second producer: ``POST /commercial/recompute``.
+
+    A whole-organization rebuild is O(customers × items) with a detector pass
+    per pair — the shape the sync had before it moved to the background, and it
+    fails the same way, with a gateway giving up before the work does.
+    """
+    from app.commercial import jobs as commercial_jobs
+
+    maker = _maker(engine)
+    monkeypatch.setattr("app.db.SessionLocal", maker)
+    ran = []
+    monkeypatch.setattr("app.commercial.compute.recompute",
+                        lambda s, org, **kw: ran.append((org, kw)) or _Report())
+    worker.load_handlers()
+
+    commercial_jobs.enqueue_recompute(session, "org-1", emit_signals=False)
+    session.commit()
+    assert ran == []                       # committed, not run
+
+    consumer = maker()
+    assert worker.drain_once(consumer, worker="w1", heartbeat_seconds=0) == 1
+    consumer.close()
+    assert ran and ran[0][0] == "org-1"
+    assert ran[0][1]["emit_signals"] is False
+
+
+class _Report:
+    def to_dict(self):
+        return {"ok": True}
+
+
+def test_a_rebuild_queued_twice_while_pending_is_one_rebuild(session):
+    """Two clicks are one pass over the same rows — the answer ``start_sync``
+    gives, for the same reason."""
+    from app.commercial import jobs as commercial_jobs
+
+    first = commercial_jobs.enqueue_recompute(session, "org-1")
+    second = commercial_jobs.enqueue_recompute(session, "org-1")
+    session.commit()
+    assert first.message_id == second.message_id
+
+    # A different scope is different work.
+    scoped = commercial_jobs.enqueue_recompute(session, "org-1", customer_id="c1")
+    session.commit()
+    assert scoped.message_id != first.message_id

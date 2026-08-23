@@ -70,9 +70,11 @@ def load_handlers() -> None:
     never populated the registry would import successfully and still have no
     handler.
     """
-    from ..ingestion import jobs
+    from ..commercial import jobs as commercial_jobs
+    from ..ingestion import jobs as ingestion_jobs
 
-    jobs.register_topics()
+    ingestion_jobs.register_topics()      # sync.run
+    commercial_jobs.register_topics()     # commercial.recompute
 
 
 class _Beating:

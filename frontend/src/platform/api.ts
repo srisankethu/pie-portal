@@ -1,4 +1,4 @@
-import type { AccessReport, Account, AccountItem, AiByokView, AiKeyTestResult, AiMetricsReport, AiReadiness, ApprovalRequest, AttributionEvaluation, AttributionEvents, AttributionSummary, ConnectionCheck, ConnectionsView, ConnectorCatalog, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, DecisionTrace, DemoOffer, DisclosureStatement, Entitlements, EntityKind, ErasureState, ErpConnectInput, ErpDiscoveredCompany, FixedThresholds, FloorBacktest, Identity, IdentityCoverage, IdentityPolicy, IdentitySuggestion, MarginPolicy, MarginPolicyPatch, NewConnectionInput, OnboardingView, OrgPolicy, PayloadsReport, PlatformSession, PlatformUser, QuoteGate, Retrospective, Role, SignupOffer, SkippedRows, StatusFilter, SyncOptions, SyncRunLogPage, SyncStartResponse, SyncState, ThresholdView, ZohoConnection, ZohoConnectionInput, ZohoCredential, ZohoVisibleOrg } from "./types";
+import type { AccessReport, Account, AccountItem, AiByokView, AiKeyTestResult, AiMetricsReport, AiReadiness, ApprovalRequest, AttributionEvaluation, AttributionEvents, AttributionRollup, AttributionSummary, ConnectionCheck, ConnectionsView, ConnectorCatalog, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, DecisionTrace, DemoOffer, DisclosureStatement, Entitlements, EntityKind, ErasureState, ErpConnectInput, ErpDiscoveredCompany, FixedThresholds, FloorBacktest, Identity, IdentityCoverage, IdentityPolicy, IdentitySuggestion, MarginPolicy, MarginPolicyPatch, NewConnectionInput, OnboardingView, OrgPolicy, PayloadsReport, PlatformSession, PlatformUser, QuoteGate, Retrospective, Role, SignupOffer, SkippedRows, StatusFilter, SyncOptions, SyncRunLogPage, SyncStartResponse, SyncState, ThresholdView, ZohoConnection, ZohoConnectionInput, ZohoCredential, ZohoVisibleOrg } from "./types";
 
 import { setMoneyCurrency } from "../money";
 import { setBusinessTimezone } from "../when";
@@ -622,10 +622,10 @@ export const papi = {
   retrospective: (t: string) => req<Retrospective>("/api/v1/retrospective", {}, t),
 
   // ── what PIE changed: the value-attribution ledger ────────────────────────
-  // Manager and above for the first two, owner only for the report, and all
-  // three behind the `intelligence` plan — the same gate the insight surface
-  // sits behind, because every row of this ledger is gross-profit arithmetic
-  // over the rows those screens read.
+  // Manager and above for the summary and the ledger, owner only for the two
+  // that price the platform itself, and all four behind the `intelligence`
+  // plan — the same gate the insight surface sits behind, because every row of
+  // this ledger is gross-profit arithmetic over the rows those screens read.
   //
   // Not under `/api/v1/`: `routers/attribution.py` mounts at `/api/v1/attribution`.
   attributionSummary: (t: string) =>
@@ -658,6 +658,26 @@ export const papi = {
     req<AttributionEvaluation>(
       "/api/v1/attribution/evaluation"
       + (pieCost ? `?pie_cost=${encodeURIComponent(pieCost)}` : ""), {}, t),
+
+  /** Value month by month over a span, and the return on it. Owner only.
+   *
+   *  `monthlyCost` is a **rate** — what one month of the plan costs — because
+   *  the span is many months. Passing a total here would divide a year of value
+   *  by a month of cost. Omitted, `roi` comes back `null` with
+   *  `roi_is_unknown` true: UNKNOWN, never 0x.
+   *
+   *  This is the figure `attributionEvaluation` cannot give after the trial
+   *  ends, which is when a renewal is actually decided. */
+  attributionRollup: (t: string, q: {
+    months?: number; monthlyCost?: string | null;
+  } = {}) => {
+    const p = new URLSearchParams();
+    if (q.months) p.set("months", String(q.months));
+    if (q.monthlyCost) p.set("monthly_cost", q.monthlyCost);
+    const qs = p.toString();
+    return req<AttributionRollup>(
+      `/api/v1/attribution/rollup${qs ? "?" + qs : ""}`, {}, t);
+  },
 
   dataStatus: (t: string) => req<DataStatus>("/api/v1/data/status", {}, t),
 

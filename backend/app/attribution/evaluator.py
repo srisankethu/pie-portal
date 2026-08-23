@@ -31,7 +31,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Optional
 
 from sqlalchemy import func, select
@@ -39,10 +39,11 @@ from sqlalchemy.orm import Session
 
 from .. import clock
 from ..commercial.config import CommercialThresholds
+from ..commercial.insight import periods
 from ..commercial.policy import load_for_org
 from ..domain import models
 from ..domain.enums import QuoteOutcomeStatus, ValueClass, ValueEventType
-from .calculator import roi
+from .calculator import MONEY_EXPONENT, roi
 from .detectors import NOT_MEASURABLE_REASONS
 
 #: How far back a baseline looks. Long enough that one quiet month does not
@@ -55,6 +56,16 @@ BASELINE_DAYS = 90
 #: versus what the platform has done *lately*) and moving one must not silently
 #: move the other.
 SUMMARY_DAYS = 90
+
+#: How many calendar months ``value_rollup`` covers when the caller does not
+#: say. Twelve because the question it answers is a renewal one, and a renewal
+#: is argued over a year rather than over a quarter.
+ROLLUP_MONTHS = 12
+
+#: The most it will cover. A ceiling rather than a preference: the roll-up runs
+#: one indexed aggregate per month, so an unbounded ``months`` is an unbounded
+#: query count on a route any owner can call.
+MAX_ROLLUP_MONTHS = 36
 
 #: What framed the window a summary measured. Strings rather than an enum, as
 #: the gap reasons above are, because nothing persists them.
@@ -157,6 +168,14 @@ NO_COSTED_LINES_IN_WINDOW = "NO_COSTED_LINES_IN_WINDOW"
 NO_DECIDED_QUOTES_IN_WINDOW = "NO_DECIDED_QUOTES_IN_WINDOW"
 NO_PLATFORM_COST_SUPPLIED = "NO_PLATFORM_COST_SUPPLIED"
 NOT_MEASURABLE = "NOT_MEASURABLE"
+#: A complete month inside a roll-up span that the ledger holds no event for.
+#: Named per month rather than counted, because "which months" is the question
+#: an owner asks next and the answer is usually "the ones before we connected".
+PERIOD_NOT_MEASURED = "PERIOD_NOT_MEASURED"
+#: A span with no complete calendar month in it at all — an organization in its
+#: first weeks. Distinct from an empty ledger: there is nothing to roll up yet,
+#: which is not the same as having rolled up and found nothing.
+NO_COMPLETE_PERIOD = "NO_COMPLETE_PERIOD"
 
 #: What is said about an event type that recorded nothing and has no registered
 #: structural reason. Deliberately refuses to guess between the two cases: from
@@ -247,6 +266,36 @@ def _by_class(session: Session, org: str,
             "amount": _as_decimal(total),
         }
     return out
+
+
+def _headline(classes: dict[str, dict[str, Any]],
+              total_events: int) -> tuple[Optional[Decimal], int]:
+    """The ATTRIBUTED total for one window, and how many of its events lack one.
+
+    The single place this codebase decides the difference between **UNKNOWN**
+    and a **measured zero**, because the two are one line apart and the wrong
+    one reads as good news. ``None`` means the window holds no events at all and
+    nothing here can tell "detection ran and found nothing worth valuing" from
+    "no detection run is on record". ``Decimal("0")`` means events exist and none
+    of them were attributed — a real, reportable zero.
+
+    Written out rather than as ``amount or Decimal("0")`` on purpose. That idiom
+    is the exact shape §1 says to distrust, and here it would be doing real work
+    — turning a NULL sum into a zero — behind a form that reads as incidental.
+    The zero is a claim; it gets its own line.
+
+    The second element is the count of attributed events carrying no defensible
+    amount, so a caller can say that its total covers fewer rows than the class
+    holds. It is zero where the answer is UNKNOWN, because there is nothing for
+    it to be missing from.
+    """
+    if not total_events:
+        return None, 0
+    attributed = classes[ValueClass.ATTRIBUTED.value]
+    amount = attributed["amount"]
+    if amount is None:
+        amount = Decimal("0")
+    return amount, int(attributed["amounts_missing"])
 
 
 def _by_event_type(session: Session, org: str,
@@ -607,29 +656,17 @@ def value_summary(session: Session, org: str, *,
     gaps: list[dict[str, str]] = []
 
     attributed = classes[ValueClass.ATTRIBUTED.value]
-    if not total_events:
-        headline: Optional[Decimal] = None
+    headline, missing = _headline(classes, total_events)
+    if headline is None:
         gaps.append(_gap("attributed_value", NO_EVENTS_RECORDED,
                          f"no value events are recorded in {window.label.lower()}. "
                          "That is not a measured zero — it means no detection run "
                          "has been recorded in this window, and the two cannot be "
                          "told apart from here"))
-    else:
-        # The window holds events and none of them are ATTRIBUTED: a measured
-        # zero, real and reportable, and deliberately not topped up from
-        # POTENTIAL to make the window look better.
-        #
-        # Written out rather than as ``amount or Decimal("0")`` on purpose. That
-        # idiom is the exact shape §1 says to distrust, and here it would be
-        # doing real work — turning a NULL sum into a zero — behind a form that
-        # reads as incidental. The zero is a claim; it gets its own line.
-        headline = attributed["amount"]
-        if headline is None:
-            headline = Decimal("0")
-        if attributed["amounts_missing"]:
-            gaps.append(_gap("attributed_value", NOT_MEASURABLE,
-                             f"{attributed['amounts_missing']} attributed events "
-                             "carry no amount and are not in the total"))
+    elif missing:
+        gaps.append(_gap("attributed_value", NOT_MEASURABLE,
+                         f"{missing} attributed events carry no amount and are "
+                         "not in the total"))
 
     # Every event type that produced nothing in this window is *named*. An
     # event type simply missing from the breakdown is the absence-of-evidence
@@ -680,6 +717,185 @@ def value_summary(session: Session, org: str, *,
             "statements and must never be added together."),
         "by_event_type": by_type,
         "productivity": _productivity(session, org, started, until),
+        "currency": "INR",
+        "evidence_gaps": gaps,
+    }
+
+
+def _period_row(session: Session, org: str, period: periods.Period,
+                start: datetime, end: datetime,
+                complete: bool) -> dict[str, Any]:
+    """One month of the roll-up, measured over the part of it that has happened.
+
+    ``attributed_value`` is ``None`` — not ``0`` — for a month the ledger holds
+    no events for, and a chart must render that as a **break in the line rather
+    than a point at zero**. This is the one place the roll-up deliberately
+    parts company with ``periods.bucket_by_month``, which fills a missing month
+    with ``0.0`` and is right to: an empty month of *revenue* is a fact about
+    the business, while an empty month of *value events* cannot be told apart
+    from a month detection never ran over.
+    """
+    classes = _by_class(session, org, start, end)
+    events = sum(c["events"] for c in classes.values())
+    amount, missing = _headline(classes, events)
+    return {
+        "period": f"{period.start.year:04d}-{period.start.month:02d}",
+        "label": period.label,
+        "start": period.start.isoformat(),
+        "end": period.end.isoformat(),
+        "measured_to": clock.iso(end),
+        # A month whose last instant has not arrived yet, or one cut short by
+        # the plan freeze. Its value is real and its *cost* is not comparable to
+        # it, which is why it is reported beside the total and never inside it.
+        "complete": complete,
+        "measured": bool(events),
+        "events": events,
+        "attributed_value": amount,
+        "attributed_events": classes[ValueClass.ATTRIBUTED.value]["events"],
+        "amounts_missing": missing,
+    }
+
+
+def value_rollup(session: Session, org: str, *,
+                 months: int = ROLLUP_MONTHS,
+                 monthly_cost: Optional[Decimal] = None,
+                 readable_until: Optional[datetime] = None) -> dict[str, Any]:
+    """What the platform has been worth month by month, and the return on it.
+
+    ``thirty_day_report`` answers this for the trial and only for the trial, so
+    the day a trial ends the one ROI figure this platform states disappears and
+    never comes back — the customer deciding whether to keep paying in month
+    fourteen has the same evidence as the one deciding in month one, minus the
+    baseline. This is that figure over an arbitrary span, and it is the surface
+    a renewal after the first year is argued from.
+
+    **Complete calendar months only, in the total and in the ratio.** The month
+    in progress is reported separately as ``in_progress`` and is never added to
+    ``attributed_value``. A subscription bills a whole month; three days of it
+    have produced three days of value; dividing one by the other understates the
+    return by however far through the month the reader happens to be, and it
+    would understate it differently every time the page was opened.
+
+    **A month with no events on record refuses the ratio outright.** This is the
+    §1 rule at the level a time series makes easy to miss: ``func.sum`` skips a
+    month that recorded nothing, so the numerator quietly covers eight months
+    while ``monthly_cost x 12`` covers twelve, and the result is a real-looking
+    number computed over a span nobody measured. That understates rather than
+    flatters, which is exactly why it would survive review — a conservative
+    fabricated number is still a fabricated number. So the unmeasured months are
+    *named* and ``roi`` is ``None``.
+
+    ``monthly_cost`` is supplied by the caller for the same reason
+    ``thirty_day_report`` takes ``pie_cost``: this platform holds no price for
+    its own plans, and a default here would put a return figure nobody entered
+    on the screen a renewal is signed against. It is a **rate** — what one month
+    costs — because the span is many months; passing a total would silently
+    divide a year of value by a month of cost.
+
+    **The months are UTC months, and that is a stated limitation rather than an
+    oversight.** ``commercial/insight`` cuts its calendar months in the tenant's
+    own zone (``clock.today(tz)``), which is the better frame for a business
+    calendar; everything in this module — ``_bounds``, ``summary_window``, the
+    trial itself — is UTC. Following ``insight`` here would put two definitions
+    of "a month" on one screen, where the summary's ninety days and the
+    roll-up's twelve months would disagree about which side of a boundary an
+    event fell on. The error is bounded by the tenant's offset, so an event in
+    the last few hours of a month can land in the next one; it never
+    double-counts and never drops a row, because the months tile exactly.
+    Moving the whole module onto tenant-local windows is the fix, and it is a
+    larger change than this function.
+    """
+    months = max(1, min(int(months), MAX_ROLLUP_MONTHS))
+    now = clock.now()
+    end = min(now, readable_until) if readable_until is not None else now
+
+    rows: list[tuple[periods.Period, dict[str, Any]]] = []
+    for period in periods.months_back(end.date(), months):
+        start_at, close_at = _bounds(period.start, period.end)
+        if start_at > end:
+            # Only reachable when the freeze lands mid-month: ``months_back``
+            # ends at ``end``'s own month, so nothing after it is generated.
+            continue
+        rows.append((period, _period_row(session, org, period, start_at,
+                                         min(close_at, end),
+                                         complete=close_at <= end)))
+
+    whole = [(period, row) for period, row in rows if row["complete"]]
+    complete = [row for _, row in whole]
+    in_progress = next((row for _, row in rows if not row["complete"]), None)
+    gaps: list[dict[str, str]] = []
+
+    span_from = whole[0][0].start if whole else None
+    span_to = whole[-1][0].end if whole else None
+
+    total: Optional[Decimal] = None
+    attributed_events = 0
+    if whole:
+        # The total is its own query over the whole span rather than a sum of
+        # the rows above. Both give the same number today; only one of them is
+        # a statement the database makes, and the module docstring's rule about
+        # totals assembled in Python is there because the loop is what breaks
+        # when a class filter or a supersession rule changes in one place.
+        span_start, span_end = _bounds(span_from, span_to)
+        classes = _by_class(session, org, span_start, span_end)
+        span_events = sum(c["events"] for c in classes.values())
+        total, missing = _headline(classes, span_events)
+        attributed_events = classes[ValueClass.ATTRIBUTED.value]["events"]
+        if missing:
+            gaps.append(_gap("attributed_value", NOT_MEASURABLE,
+                             f"{missing} attributed events carry no amount and "
+                             "are not in the total"))
+    else:
+        gaps.append(_gap("periods", NO_COMPLETE_PERIOD,
+                         "no complete calendar month falls inside this span, so "
+                         "there is nothing to roll up. A month still running is "
+                         "reported on its own and is not a total"))
+
+    unmeasured = [row["label"] for row in complete if not row["measured"]]
+    if unmeasured:
+        gaps.append(_gap("periods", PERIOD_NOT_MEASURED,
+                         "no value event is recorded for "
+                         + ", ".join(unmeasured)
+                         + ". Those months are not measured zeros, so they are "
+                         "not in the total and no return is stated over a span "
+                         "that contains them"))
+
+    platform_cost: Optional[Decimal] = None
+    if monthly_cost is not None and complete:
+        platform_cost = (monthly_cost * len(complete)).quantize(
+            MONEY_EXPONENT, rounding=ROUND_HALF_UP)
+
+    ratio = None if unmeasured else roi(total, platform_cost)
+    if ratio is None:
+        gaps.append(_gap(
+            "roi",
+            NO_PLATFORM_COST_SUPPLIED if monthly_cost is None else NOT_MEASURABLE,
+            "no monthly platform cost was supplied, or the span is not fully "
+            "measured, so return on investment is UNKNOWN. Render it as "
+            "UNKNOWN — not as 0x"))
+
+    return {
+        "span": {
+            "months_requested": months,
+            "complete_months": len(complete),
+            "measured_months": sum(1 for row in complete if row["measured"]),
+            "start": span_from.isoformat() if span_from else None,
+            "end": span_to.isoformat() if span_to else None,
+            "label": (periods.label_for(span_from, span_to)
+                      if span_from and span_to else None),
+            "frozen_at": clock.iso(readable_until) if readable_until else None,
+        },
+        "periods": complete,
+        # Beside the total, never inside it — the same discipline POTENTIAL gets
+        # next to ATTRIBUTED, and for the same reason: one of them is comparable
+        # to a month of cost and the other is not.
+        "in_progress": in_progress,
+        "attributed_value": total,
+        "attributed_events": attributed_events,
+        "monthly_cost": monthly_cost,
+        "platform_cost": platform_cost,
+        "roi": ratio,
+        "roi_is_unknown": ratio is None,
         "currency": "INR",
         "evidence_gaps": gaps,
     }

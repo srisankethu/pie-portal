@@ -29,7 +29,7 @@ from __future__ import annotations
 import ast
 import pathlib
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Iterator
 
@@ -1396,3 +1396,196 @@ def test_a_flag_after_the_win_is_not_dated_before_its_own_evidence(session, tria
     flagged_at = clock.now() - timedelta(days=1)
     assert clock.aware(row.occurred_at) >= flagged_at - timedelta(minutes=1), (
         "the event is dated before the evidence that produced it existed")
+
+
+# ── 12. the roll-up: a span of months, and the return over it ───────────────
+#
+# ``thirty_day_report`` answers "what was it worth" for the trial and only for
+# the trial, so the one ROI figure this platform states disappeared on the day a
+# trial ended and never came back. ``value_rollup`` is that figure over a span
+# the caller chooses, and the two things that can go wrong with it are both
+# arithmetic over time rather than over rows: a month of value divided by a
+# month of cost when only three days of the month have happened, and a numerator
+# that quietly covers eight months while the denominator covers twelve.
+FIXED_NOW = datetime(2026, 6, 17, 12, 0, tzinfo=timezone.utc)
+
+
+@pytest.fixture()
+def frozen(monkeypatch):
+    """A fixed present, so a month boundary cannot decide whether a test passes.
+
+    Every assertion below names a calendar month by its label, which is only
+    stable if "now" is. Patched on ``clock`` itself because every module here
+    reaches it as ``clock.now()`` at call time rather than binding it at import.
+    """
+    monkeypatch.setattr(clock, "now", lambda: FIXED_NOW)
+    return FIXED_NOW
+
+
+def _at(year: int, month: int, day: int = 15) -> datetime:
+    """Midday on a given date, UTC. The 15th exists in every month."""
+    return datetime(year, month, day, 12, 0, tzinfo=timezone.utc)
+
+
+def _month_event(s, tag: str, amount: Decimal | None, when: datetime,
+                 value_class: ValueClass = ValueClass.ATTRIBUTED) -> None:
+    """One event in one month. ``tag`` keeps the event keys distinct — the live
+    ledger refuses a second row under one key, which is the whole point of it,
+    and a fixture that reused one would seed a single superseding row."""
+    led.record(s, ORG, _draft(value_class, amount, identity=(tag, "L1"),
+                              evidence_refs=[{"record_type": "quote_decision",
+                                              "record_id": f"qd_{tag}",
+                                              "quote_id": tag}],
+                              occurred_at=when))
+
+
+def test_a_month_still_running_is_reported_beside_the_total_never_inside_it(
+        session, trial, frozen):
+    """A subscription bills a whole month; seventeen days of it have produced
+    seventeen days of value. Dividing one by the other understates the return by
+    however far through the month the reader happens to open the page — and by a
+    different amount every time they open it."""
+    _month_event(session, "mar", Decimal("100.0000"), _at(2026, 3))
+    _month_event(session, "apr", Decimal("200.0000"), _at(2026, 4))
+    _month_event(session, "may", Decimal("300.0000"), _at(2026, 5))
+    _month_event(session, "jun", Decimal("999.0000"), _at(2026, 6, 5))
+
+    out = ev.value_rollup(session, ORG, months=4, monthly_cost=Decimal("50"))
+
+    assert [row["label"] for row in out["periods"]] == [
+        "Mar 2026", "Apr 2026", "May 2026"]
+    assert out["in_progress"]["label"] == "Jun 2026"
+    assert out["in_progress"]["complete"] is False
+
+    # The month in progress carries its own real figure and is not in the total.
+    assert out["in_progress"]["attributed_value"] == Decimal("999.0000")
+    assert out["attributed_value"] == Decimal("600.0000")
+
+    # And the cost it is divided by covers exactly the months in that total.
+    assert out["platform_cost"] == Decimal("150.0000")
+    assert out["roi"] == Decimal("4.0000")
+    assert out["roi_is_unknown"] is False
+
+
+def test_a_span_containing_an_unmeasured_month_states_no_return_at_all(
+        session, trial, frozen):
+    """The §1 rule at the level a time series makes easy to miss.
+
+    ``func.sum`` skips a month that recorded nothing, so the numerator covers
+    two months while ``monthly_cost x 3`` covers three. The result understates
+    rather than flatters, which is exactly why it would survive review — a
+    conservative fabricated number is still a fabricated number.
+    """
+    _month_event(session, "mar", Decimal("100.0000"), _at(2026, 3))
+    # April recorded nothing at all.
+    _month_event(session, "may", Decimal("300.0000"), _at(2026, 5))
+
+    out = ev.value_rollup(session, ORG, months=4, monthly_cost=Decimal("50"))
+
+    assert out["roi"] is None
+    assert out["roi_is_unknown"] is True
+
+    named = [gap for gap in out["evidence_gaps"]
+             if gap["reason"] == ev.PERIOD_NOT_MEASURED]
+    assert len(named) == 1, "the unmeasured month must be named, not counted"
+    assert "Apr 2026" in named[0]["detail"]
+
+    # The total itself is still stated — it is honest about the months it does
+    # cover. What is refused is dividing it by a cost that covers more.
+    assert out["attributed_value"] == Decimal("400.0000")
+
+
+def test_a_month_with_no_events_and_a_month_with_no_value_stay_different(
+        session, trial, frozen):
+    """The two empty months mean opposite things and a chart must draw them
+    differently: one is a break in the line, the other is a point at zero."""
+    _month_event(session, "mar", POTENTIAL_AMOUNT, _at(2026, 3),
+                 value_class=ValueClass.POTENTIAL)
+    _month_event(session, "may", Decimal("300.0000"), _at(2026, 5))
+
+    out = ev.value_rollup(session, ORG, months=4)
+    rows = {row["label"]: row for row in out["periods"]}
+
+    # March: detection ran and attributed nothing. A measured zero.
+    assert rows["Mar 2026"]["measured"] is True
+    assert rows["Mar 2026"]["attributed_value"] == Decimal("0")
+
+    # April: nothing on record. UNKNOWN, and never a zero that would sum.
+    assert rows["Apr 2026"]["measured"] is False
+    assert rows["Apr 2026"]["attributed_value"] is None
+
+
+def test_the_rollup_never_divides_by_a_cost_nobody_supplied(session, trial,
+                                                            frozen):
+    """This platform holds no price for its own plans. A default here would put
+    a return figure nobody entered on the screen a renewal is signed against."""
+    for tag, month in (("mar", 3), ("apr", 4), ("may", 5)):
+        _month_event(session, tag, Decimal("100.0000"), _at(2026, month))
+
+    out = ev.value_rollup(session, ORG, months=4)
+
+    assert out["attributed_value"] == Decimal("300.0000")
+    assert out["platform_cost"] is None
+    assert out["roi"] is None and out["roi_is_unknown"] is True
+    assert any(gap["reason"] == ev.NO_PLATFORM_COST_SUPPLIED
+               for gap in out["evidence_gaps"])
+
+
+def test_an_organization_younger_than_a_month_is_told_so_not_shown_a_zero(
+        session, trial, frozen):
+    """Asking for one month when only the month in progress exists. There is
+    nothing to roll up yet, which is not the same as having rolled up and found
+    nothing — and ``months=1`` is the request a dashboard makes by default."""
+    _month_event(session, "jun", Decimal("999.0000"), _at(2026, 6, 5))
+
+    out = ev.value_rollup(session, ORG, months=1, monthly_cost=Decimal("50"))
+
+    assert out["periods"] == []
+    assert out["attributed_value"] is None
+    assert out["roi"] is None
+    assert out["in_progress"]["attributed_value"] == Decimal("999.0000")
+    assert any(gap["reason"] == ev.NO_COMPLETE_PERIOD
+               for gap in out["evidence_gaps"])
+
+
+def test_the_span_never_reaches_past_the_window_a_lapsed_plan_kept(monkeypatch):
+    """The roll-up is the route whose span the *caller* chooses, so it is the
+    one where an uncapped read would hand a lapsed organization thirty-six
+    months of exactly the rolling figure the plan is meant to sell."""
+    monkeypatch.setattr(settings, "DEFAULT_PLAN", "free")
+    tc = _lapsed_client(with_trial=True)
+    hdr = _hdr(tc, LAPSED_OWNER)
+
+    r = tc.get("/api/v1/attribution/rollup?months=12", headers=hdr)
+    assert r.status_code == 200, r.text
+    body = r.json()
+
+    assert body["span"]["frozen_at"] is not None
+    reported = [row["attributed_value"] for row in body["periods"]]
+    if body["in_progress"]:
+        reported.append(body["in_progress"]["attributed_value"])
+    amounts = [float(value) for value in reported if value is not None]
+
+    # 1000 fell inside the trial window and stays readable; 2000 was attributed
+    # after it ended and is what the plan buys.
+    assert 1000.0 in amounts
+    assert 2000.0 not in amounts
+    assert all(row["measured_to"] <= body["span"]["frozen_at"]
+               for row in body["periods"] if row["measured"])
+
+
+def test_the_rollup_is_owner_only_like_the_report_it_extends(client):
+    """One rule per route rather than a boundary that depends on whether a query
+    parameter was supplied: a route that takes the platform's own cost and
+    divides value by it *is* the renewal conversation, whatever span it covers.
+
+    A manager reads ``/summary`` and is refused here, which is the distinction
+    being pinned — not that the surface is gated at all.
+    """
+    assert {"/api/v1/attribution/rollup"} <= {r.path for r in _routes()}
+    assert client.get("/api/v1/attribution/summary",
+                      headers=_hdr(client, MANAGER)).status_code == 200
+    assert client.get("/api/v1/attribution/rollup",
+                      headers=_hdr(client, MANAGER)).status_code == 403
+    assert client.get("/api/v1/attribution/rollup",
+                      headers=_hdr(client, OWNER)).status_code == 200

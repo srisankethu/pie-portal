@@ -1623,6 +1623,80 @@ export interface AttributionBaseline {
   thresholds_version: string | null;
 }
 
+/** One calendar month of the roll-up.
+ *
+ *  `attributed_value` is `null` — not `0` — for a month the ledger holds no
+ *  events for, and a chart must draw that as a **break in the line, never a
+ *  point at zero**: an empty month of value events cannot be told apart from a
+ *  month detection never ran over. `measured` is the field that says which of
+ *  the two a `null` is, so nothing has to infer it from the amount. */
+export interface AttributionPeriod {
+  /** `YYYY-MM`, for keys and sorting. */
+  period: string;
+  /** `Mar 2026`, for reading. */
+  label: string;
+  start: string;
+  end: string;
+  /** How far into the month was actually measured — the month's own end, or
+   *  the moment a lapsed plan's window stops. */
+  measured_to: string | null;
+  /** Whether the whole month has happened *and* is inside the readable window.
+   *  Only complete months are in the total and in the ratio. */
+  complete: boolean;
+  /** Whether any event at all is on record for the month. `false` with a `null`
+   *  amount is UNKNOWN; `true` with a `0` amount is a measured zero. */
+  measured: boolean;
+  events: number;
+  attributed_value: MoneyString | null;
+  attributed_events: number;
+  /** Attributed events in the month carrying no defensible amount, so a reader
+   *  can see the total covers fewer rows than the month holds. */
+  amounts_missing: number;
+}
+
+/** `GET /api/v1/attribution/rollup` — owner only. Value month by month over a
+ *  span the caller chooses, and the return on it.
+ *
+ *  Two rules the screen must not soften. The month **in progress** is
+ *  `in_progress` and is never inside `attributed_value`: a subscription bills a
+ *  whole month, and dividing part of one by all of it understates the return by
+ *  however far through the month the page happened to be opened. And a span
+ *  containing a month with nothing on record states **no return at all** —
+ *  `roi` is `null` and `evidence_gaps` names the months, because a numerator
+ *  covering eight months over a denominator covering twelve is a fabricated
+ *  number even though it errs low. */
+export interface AttributionRollup {
+  span: {
+    months_requested: number;
+    complete_months: number;
+    measured_months: number;
+    start: string | null;
+    end: string | null;
+    label: string | null;
+    /** Set where a lapsed plan's entitlement, rather than the clock, decided
+     *  how far the span reaches. */
+    frozen_at: string | null;
+  };
+  /** Complete months only, oldest first. */
+  periods: AttributionPeriod[];
+  /** The month still running, beside the total and never in it. */
+  in_progress: AttributionPeriod | null;
+  /** ATTRIBUTED over the complete months. `null` where no complete month
+   *  exists — which is not a zero. */
+  attributed_value: MoneyString | null;
+  attributed_events: number;
+  /** What one month of the plan costs, echoed back. The caller's own figure —
+   *  this platform holds no price for its own plans. */
+  monthly_cost: MoneyString | null;
+  /** `monthly_cost` x the complete months in the span. */
+  platform_cost: MoneyString | null;
+  roi: MoneyString | null;
+  roi_is_unknown: boolean;
+  currency?: string;
+  evidence_gaps: EvidenceGap[];
+  empty_reason: string | null;
+}
+
 /** `GET /api/v1/attribution/evaluation` — owner only. The summary, plus the
  *  before/during comparison and the return on what the platform costs. */
 export interface AttributionEvaluation extends AttributionSummary {

@@ -1,12 +1,13 @@
 """What PIE changed — the value ledger, over HTTP.
 
-Three reads and no arithmetic. Every number on this surface was computed in
+Four reads and no arithmetic. Every number on this surface was computed in
 ``attribution/`` from rows the Quote Desk already wrote; this module maps query
 parameters onto those calls and shapes what comes back. A router that added up a
 class total here would be a second answer to the question the ledger exists to
 answer once.
 
-**Every route is manager-or-owner, and the report is owner-only.** That is
+**Every route is manager-or-owner, and the two that price the platform itself
+— ``/evaluation`` and ``/rollup`` — are owner-only.** That is
 stricter than "hide the amounts", and the reason is the ``filterCounts.MFLOOR``
 lesson in §1 rather than caution: on this surface the amount is not the only
 thing that answers a margin question. A ``MARGIN_PROTECTED`` event *names a quote
@@ -44,16 +45,19 @@ old arrangement by their role, not by their organization's plan, and still is.
 Gating by plan as well conflated a commercial boundary with a confidentiality
 one and only the commercial half was ever doing work here.
 
-All three routes carry the rule, and uniformly. ``/evaluation`` is pinned to the
+All four routes carry the rule, and uniformly. ``/evaluation`` is pinned to the
 trial by construction and could not reach past it however it is called, so the
 cap is redundant there — it is applied anyway because one rule stated once is
 worth more than a route that is safe for a reason the next reader has to
 reconstruct.
 
-``/summary`` genuinely needs it. Its window is no longer the trial: once a trial
-has finished the summary measures a trailing period so a paying customer's
-headline keeps advancing, and without the cap that trailing window would hand a
-lapsed organization exactly the rolling figure the plan is meant to sell.
+``/summary`` genuinely needs it, and ``/rollup`` needs it most: its span is
+chosen by the caller, so without the cap a lapsed organization would ask for
+thirty-six months and read every one of them. Its window is no longer the trial:
+once a trial has finished the summary measures a trailing period so a paying
+customer's headline keeps advancing, and without the cap that trailing window
+would hand a lapsed organization exactly the rolling figure the plan is meant to
+sell.
 """
 from __future__ import annotations
 
@@ -66,7 +70,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from .. import attribution, clock, entitlements
-from ..attribution.evaluator import NO_EVENTS_RECORDED, NO_TRIAL_ON_RECORD
+from ..attribution.evaluator import (MAX_ROLLUP_MONTHS, NO_COMPLETE_PERIOD,
+                                     NO_EVENTS_RECORDED, NO_TRIAL_ON_RECORD,
+                                     ROLLUP_MONTHS)
 from ..authz import Principal, require_manager_or_owner, require_owner
 from ..db import get_session
 from ..domain.enums import ValueClass, ValueEventType
@@ -143,6 +149,11 @@ def _empty_reason(gaps: list[dict[str, Any]]) -> Optional[str]:
     if NO_TRIAL_ON_RECORD in reasons:
         return ("This organization has no intelligence trial on record, so there "
                 "is no window to measure. Connect a Zoho company to start one.")
+    if NO_COMPLETE_PERIOD in reasons:
+        return ("This organization has not completed a full calendar month yet, "
+                "so there is no month to roll up. The month in progress is shown "
+                "on its own — it is not a total and is not comparable to a "
+                "month of cost.")
     if NO_EVENTS_RECORDED in reasons:
         return ("No value events have been recorded in this window. That is not a "
                 "measured zero — it means no detection run is on record, and the "
@@ -241,5 +252,39 @@ def evaluation(pie_cost: Optional[Decimal] = Query(None, ge=0),
     _readable_until(session, principal.organization_id)
     result = attribution.thirty_day_report(
         session, principal.organization_id, pie_cost=pie_cost)
+    return {**result,
+            "empty_reason": _empty_reason(result.get("evidence_gaps") or [])}
+
+
+@router.get("/rollup")
+def rollup(months: int = Query(ROLLUP_MONTHS, ge=1, le=MAX_ROLLUP_MONTHS),
+           monthly_cost: Optional[Decimal] = Query(None, ge=0),
+           principal: Principal = Depends(require_owner),
+           session: Session = Depends(get_session)) -> dict:
+    """Value month by month over a span, and the return on it. Owner-only.
+
+    ``/evaluation`` answers this for the trial and cannot answer it afterwards,
+    which left a customer renewing in month fourteen with no ROI figure at all.
+    This is the same question over a span the caller chooses.
+
+    Owner-only for the same reason ``/evaluation`` is, and stated as one rule
+    rather than two: a route that takes the platform's own cost and divides
+    value by it **is** the renewal conversation, whatever span it covers. Gating
+    on whether ``monthly_cost`` happened to be supplied would make the audience
+    of a route depend on one query parameter, which is the kind of conditional
+    boundary §1 was written about.
+
+    ``monthly_cost`` is a **rate** — what one month of the plan costs — because
+    the span is many months. Omitted, ``roi`` is ``None`` and
+    ``roi_is_unknown`` is true; render that as UNKNOWN, never as 0x.
+
+    Everything else is passed through: the roll-up decides which months count
+    and which are merely in progress, and a router that re-shaped that would be
+    a second opinion about a number somebody signs against.
+    """
+    result = attribution.value_rollup(
+        session, principal.organization_id, months=months,
+        monthly_cost=monthly_cost,
+        readable_until=_readable_until(session, principal.organization_id))
     return {**result,
             "empty_reason": _empty_reason(result.get("evidence_gaps") or [])}

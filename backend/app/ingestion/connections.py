@@ -129,6 +129,26 @@ REQUIRED_SCOPES: tuple[Permission, ...] = (
                "Optional: without it accounts stay unassigned and every "
                "decision routes to management.",
                required=False, reads=("users",)),
+    # The write grants. ``required`` means "no sync runs without it", which is
+    # not true of these — a connection missing them reads everything and only
+    # the send refuses. They are still in the full string the screen leads
+    # with, which is the string an owner who wants the send should paste.
+    Permission("ZohoBooks.estimates.CREATE",
+               "Creating the quote in Zoho — the Send to Zoho action. Without "
+               "it everything else works and every send refuses.",
+               required=False, writes=("sales_quotes",)),
+    Permission("ZohoBooks.estimates.READ",
+               "Reading estimates back: the duplicate check that stops one "
+               "quote becoming two, and finding out what happened when a "
+               "write's reply is lost. Needed by the send even though it only "
+               "reads — an estimate that cannot be looked up cannot be created "
+               "safely, so without this the send refuses too.",
+               required=False),
+    Permission("ZohoBooks.settings.CREATE",
+               "Creating an item in the books — the Create in books action on "
+               "a NOT IN BOOKS line. Leave it out if items should only ever be "
+               "created by a person in Zoho; everything else still works.",
+               required=False),
 )
 
 def scope_string(*, minimum: bool = False) -> str:

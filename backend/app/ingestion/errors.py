@@ -29,6 +29,22 @@ class SourceThrottleError(IngestionError):
     wait and resume, rather than fix a credential."""
 
 
+class SourceWriteUncertain(IngestionError):
+    """A write was sent and its outcome is unknown.
+
+    Raised instead of retrying when a non-idempotent call fails in a way that
+    cannot tell "the source never saw it" from "the source did it and the
+    answer was lost" — a 5xx, or a connection dropped mid-flight. Replaying
+    either of those is how one quote becomes two orders in a customer's inbox,
+    so the caller is told the truth and can settle the question by reading the
+    record back instead.
+
+    Distinct from a plain :class:`IngestionError`, which means the source
+    answered and said no: that one is safe to report as a failure, this one is
+    not.
+    """
+
+
 class SourceScopeError(SourceAuthError):
     """The credentials are fine; this *endpoint* was not granted.
 

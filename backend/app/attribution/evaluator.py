@@ -155,6 +155,7 @@ NO_INVOICE_LINES_IN_WINDOW = "NO_INVOICE_LINES_IN_WINDOW"
 NO_PRICED_LINES_IN_WINDOW = "NO_PRICED_LINES_IN_WINDOW"
 NO_COSTED_LINES_IN_WINDOW = "NO_COSTED_LINES_IN_WINDOW"
 NO_DECIDED_QUOTES_IN_WINDOW = "NO_DECIDED_QUOTES_IN_WINDOW"
+WINS_NOT_RECORDABLE_IN_WINDOW = "WINS_NOT_RECORDABLE_IN_WINDOW"
 NO_PLATFORM_COST_SUPPLIED = "NO_PLATFORM_COST_SUPPLIED"
 NOT_MEASURABLE = "NOT_MEASURABLE"
 
@@ -436,23 +437,85 @@ def _priced_lines(session: Session, org: str,
 
 def _quote_outcomes(session: Session, org: str,
                     start: datetime, end: datetime) -> dict[str, Any]:
-    """Won and lost counts for quotes decided in the window. One GROUP BY."""
+    """Won and lost counts for quotes decided in the window. One GROUP BY.
+
+    Sent quotes are counted alongside them because a win rate needs a book that
+    could have produced a win. ``QUOTE_OUTCOME_TRANSITIONS`` reaches WON only
+    from SENT while LOST is reachable straight from DRAFT, and SENT is stamped
+    only once a quote has actually been written out to the customer's system —
+    so an organization whose connector cannot write accumulates losses and
+    structurally never records a win. Dividing that 0 by its losses states a 0%
+    win rate for a question the evidence could not have answered either way.
+    """
     rows = session.execute(
-        select(models.QuoteOutcome.status, func.count())
+        select(models.QuoteOutcome.status, func.count(),
+               func.count().filter(models.QuoteOutcome.sent_at.is_not(None)))
         .where(models.QuoteOutcome.organization_id == org,
                models.QuoteOutcome.decided_at.is_not(None),
                models.QuoteOutcome.decided_at >= start,
                models.QuoteOutcome.decided_at <= end)
         .group_by(models.QuoteOutcome.status)).all()
-    counts = {str(status): int(n or 0) for status, n in rows}
+    counts = {str(status): int(n or 0) for status, n, _ in rows}
+    sent_counts = {str(status): int(n or 0) for status, _, n in rows}
     won = counts.get(QuoteOutcomeStatus.WON.value, 0)
     lost = counts.get(QuoteOutcomeStatus.LOST.value, 0)
     decided = won + lost
+    # Of the quotes decided here, the ones that ever reached SENT — the only
+    # ones a win could have come from. A WON row always carries ``sent_at``; a
+    # quote that went DRAFT -> LOST never can.
+    decided_quotes_ever_sent = (sent_counts.get(QuoteOutcomeStatus.WON.value, 0)
+                   + sent_counts.get(QuoteOutcomeStatus.LOST.value, 0))
     return {"quotes_won": won, "quotes_lost": lost, "quotes_decided": decided,
-            # ``None`` rather than 0.0 when nothing was decided: a win rate of
-            # zero and no decisions at all are different facts, and only one of
-            # them is bad news.
-            "quote_win_rate": (round(won / decided, 4) if decided else None)}
+            # Reported rather than left implicit, so the UNKNOWN below can be
+            # read: none of 3 decided quotes was ever sent is the whole reason.
+            "decided_quotes_ever_sent": decided_quotes_ever_sent,
+            # ``None`` rather than 0.0 in two cases, and neither is a measured
+            # zero. Nothing decided at all is the first. The second is a book
+            # that decided plenty and could not have won any of it — 0/n over a
+            # numerator nothing could reach. A quote that *was* sent and then
+            # lost is a real zero and stays one: the two must not collapse.
+            #
+            # ``won`` is read beside ``decided_quotes_ever_sent`` rather than trusted to
+            # imply it. A recorded win proves a win was recordable whatever the
+            # sent stamp says, so a row written before that column meant
+            # anything cannot turn its own book into an UNKNOWN.
+            "quote_win_rate": (round(won / decided, 4)
+                               if decided and (won or decided_quotes_ever_sent) else None)}
+
+
+def _wins_unrecordable_gap(outcomes: dict[str, Any]) -> Optional[dict[str, str]]:
+    """Named where a window decided quotes that could never have been won.
+
+    Two shapes, one gap, because they are one defect at different strengths.
+    Where *no* decided quote was ever sent there is no win rate to report at
+    all. Where only *some* were, a rate is still computed — and the ones that
+    could not have won sit in its denominator, pulling it down. 1 win from 2
+    sendable quotes is a 50% book; the same rows beside eight quotes that never
+    reached SENT report 10%, and nothing on the screen says the difference.
+    That number is not wrong the way a bug is wrong, it is wrong the way a
+    benign default is: it answers confidently where the evidence does not
+    reach. So it carries what would be needed to read it.
+
+    One wording for both windows the report draws: the baseline and the trial
+    are the same claim about two periods, and a second copy of the sentence
+    would drift from this one.
+    """
+    decided = outcomes["quotes_decided"]
+    sendable = outcomes["decided_quotes_ever_sent"]
+    if not decided:
+        return None
+    if not (outcomes["quotes_won"] or sendable):
+        return _gap("quote_win_rate", WINS_NOT_RECORDABLE_IN_WINDOW,
+                    f"{decided} quotes were decided in this window and none of them "
+                    "was ever recorded as sent, so no win could have been recorded "
+                    "either. The win rate is UNKNOWN, not 0%")
+    if decided > sendable > 0:
+        return _gap("quote_win_rate", WINS_NOT_RECORDABLE_IN_WINDOW,
+                    f"{decided - sendable} of {decided} decided quotes were never "
+                    f"recorded as sent, so no win could have been recorded against "
+                    f"them. The win rate is over all {decided}; among the {sendable} "
+                    "that could have been won it is higher")
+    return None
 
 
 def _productivity(session: Session, org: str,
@@ -537,10 +600,13 @@ def capture_baseline(session: Session, org: str,
                          "margin above"))
 
     outcomes = _quote_outcomes(session, org, start_dt, end_dt)
+    unrecordable = _wins_unrecordable_gap(outcomes)
     if not outcomes["quotes_decided"]:
         gaps.append(_gap("quote_win_rate", NO_DECIDED_QUOTES_IN_WINDOW,
                          "no quote was won or lost in the window, so there is no "
                          "baseline win rate"))
+    elif unrecordable:
+        gaps.append(unrecordable)
 
     metrics: dict[str, Any] = {
         "invoice_lines": invoice_lines,
@@ -552,7 +618,8 @@ def capture_baseline(session: Session, org: str,
         "approval_required_lines": priced["approval_required_lines"],
         "approval_required_rate": priced["approval_required_rate"],
         **{k: outcomes[k] for k in
-           ("quotes_won", "quotes_lost", "quotes_decided", "quote_win_rate")},
+           ("quotes_won", "quotes_lost", "quotes_decided", "decided_quotes_ever_sent",
+            "quote_win_rate")},
     }
 
     row = session.scalars(
@@ -735,6 +802,12 @@ def thirty_day_report(session: Session, org: str, *,
 
     during = _priced_lines(session, org, started, until)
     during_outcomes = _quote_outcomes(session, org, started, until)
+    # Named because the counts beside it do not explain it: quotes decided and a
+    # blank win rate reads as a bug otherwise. "Nothing decided" needs no gap —
+    # the screen reads that straight off ``quotes_decided``.
+    unrecordable = _wins_unrecordable_gap(during_outcomes)
+    if unrecordable:
+        gaps.append(unrecordable)
 
     if baseline is None:
         gaps.append(_gap("comparison", NO_BASELINE_ON_RECORD,

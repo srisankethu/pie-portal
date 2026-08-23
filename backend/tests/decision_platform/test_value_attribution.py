@@ -46,12 +46,14 @@ from app.attribution import detectors as det
 from app.attribution import evaluator as ev
 from app.attribution import ledger as led
 from app.attribution.calculator import roi
+from app.commercial import quote_service
 from app.commercial.quote_exceptions import BELOW_MARGIN_FLOOR
 from app.commercial.references import MARGIN_FLOOR_PRICE
 from app.config import settings
 from app.db import get_session
 from app.domain import models
-from app.domain.enums import PlanTier, ValueClass, ValueEventType
+from app.domain.enums import (PlanTier, QuoteLossReason, QuoteOutcomeStatus,
+                              ValueClass, ValueEventType)
 from app.passwords import hash_password
 from app.routers import attribution as attribution_router
 from app.routers import platform_auth
@@ -1396,3 +1398,149 @@ def test_a_flag_after_the_win_is_not_dated_before_its_own_evidence(session, tria
     flagged_at = clock.now() - timedelta(days=1)
     assert clock.aware(row.occurred_at) >= flagged_at - timedelta(minutes=1), (
         "the event is dated before the evidence that produced it existed")
+
+
+# ── 12. a 0% win rate for a book whose wins cannot be recorded ───────────────
+#
+# `QUOTE_OUTCOME_TRANSITIONS` makes LOST reachable straight from DRAFT and WON
+# reachable only through SENT, and SENT is written only after a quote has
+# successfully been pushed into the customer's ERP. An organization on a
+# read-only connector therefore records every loss and no win it ever has — so
+# its win rate came back a HARD 0.0 over a question its evidence could not have
+# answered either way. That is the §1 "absence of evidence is not a pass" shape
+# pointed the other way: a benign default reading as bad news rather than good.
+
+
+def _lost(s, quote_id: str, *, sent: bool = False,
+          days_ago: int = 1) -> models.QuoteOutcome:
+    """A lost quote, moved through the real transitions rather than inserted.
+
+    ``set_outcome`` on purpose: what the test below asserts is a property of the
+    transition table, and a hand-built row would keep passing after the table
+    changed under it. ``sent`` is the difference between a quote that had a path
+    to WON and one that never did.
+    """
+    if sent:
+        quote_service.set_outcome(s, ORG, quote_id=quote_id,
+                                  status=QuoteOutcomeStatus.SENT)
+    row = quote_service.set_outcome(s, ORG, quote_id=quote_id,
+                                    status=QuoteOutcomeStatus.LOST,
+                                    loss_reason=QuoteLossReason.PRICE)
+    row.decided_at = clock.now() - timedelta(days=days_ago)
+    s.flush()
+    return row
+
+
+def test_a_win_can_only_be_recorded_by_way_of_sent(session, trial):
+    """The premise the two tests below rest on, asserted rather than assumed.
+
+    If an edge into WON is ever added from DRAFT this fails first, and the
+    UNKNOWN those tests demand becomes wrong rather than quietly wrong.
+    """
+    with pytest.raises(quote_service.InvalidTransition):
+        quote_service.set_outcome(session, ORG, quote_id="q_premise",
+                                  status=QuoteOutcomeStatus.WON)
+    # And the losing edge out of DRAFT is open, which is what makes the book
+    # below lopsided rather than simply empty.
+    _lost(session, "q_premise")
+
+
+def test_a_book_whose_wins_cannot_be_recorded_reports_unknown_not_zero(session, trial):
+    """Three losses, no path to a win: UNKNOWN, and the gap says why.
+
+    0/3 is arithmetically true and commercially a fabrication — nothing in this
+    window could have landed in the numerator.
+    """
+    for i in range(3):
+        _lost(session, f"q_readonly{i}")
+
+    report = ev.thirty_day_report(session, ORG)
+    during = report["during"]
+
+    assert during["quotes_lost"] == 3, "the losses themselves must still be counted"
+    assert during["quotes_won"] == 0
+    assert during["quote_win_rate"] is None, (
+        "a book whose wins are structurally unrecordable reported a HARD 0.0 "
+        "win rate — 0/3 over a question the evidence could not answer")
+    assert ev.WINS_NOT_RECORDABLE_IN_WINDOW in {
+        g["reason"] for g in report["evidence_gaps"]}, (
+        "the win rate went missing without anything naming why")
+
+
+def test_a_quote_that_could_have_been_won_and_was_not_stays_a_measured_zero(
+        session, trial):
+    """The other half, and the one that must not collapse into UNKNOWN.
+
+    A quote that reached SENT could have come back WON. It did not, so 0% is a
+    measured fact about this book and reporting it as UNKNOWN would be the same
+    defect wearing the opposite costume.
+    """
+    _lost(session, "q_sent_and_lost", sent=True)
+
+    report = ev.thirty_day_report(session, ORG)
+    during = report["during"]
+
+    assert during["quote_win_rate"] == 0.0, (
+        "a quote that was sent and lost is a real zero, not an unknown")
+    assert ev.WINS_NOT_RECORDABLE_IN_WINDOW not in {
+        g["reason"] for g in report["evidence_gaps"]}
+
+    # And the two readings are different documents, which is the only part a
+    # caller can act on.
+    _lost(session, "q_never_sent")
+    assert ev.thirty_day_report(session, ORG)["during"]["quote_win_rate"] == 0.0, (
+        "one unsendable quote beside a sent one must not erase the measured zero")
+
+
+def test_a_mixed_book_says_how_much_of_its_denominator_could_never_have_won(
+        session, trial):
+    """The half the first fix missed: some sendable, most not.
+
+    The all-or-nothing case reports no rate at all, so it cannot mislead. This
+    one does report a rate, and the quotes that could never have won sit in its
+    denominator dragging it down. One win from two sendable quotes is a 50%
+    book; the same two rows beside eight that never reached SENT read as 10%,
+    and a reader with nothing else on screen takes that for a bad quarter.
+    Reporting it bare is the benign default §1 forbids — answering confidently
+    where the evidence does not reach.
+    """
+    quote_service.set_outcome(session, ORG, quote_id="q_mixed_won",
+                              status=QuoteOutcomeStatus.SENT)
+    quote_service.set_outcome(session, ORG, quote_id="q_mixed_won",
+                              status=QuoteOutcomeStatus.WON)
+    _lost(session, "q_mixed_lost", sent=True)
+    for i in range(8):
+        _lost(session, f"q_mixed_unsendable{i}")
+
+    report = ev.thirty_day_report(session, ORG)
+    during = report["during"]
+
+    assert during["quotes_decided"] == 10
+    assert during["decided_quotes_ever_sent"] == 2
+    assert during["quote_win_rate"] == 0.1, (
+        "the rate is still over the whole decided book — this test pins the "
+        "gap that makes it readable, not a change to what it measures")
+    gap = next((g for g in report["evidence_gaps"]
+                if g["reason"] == ev.WINS_NOT_RECORDABLE_IN_WINDOW), None)
+    assert gap is not None, (
+        "a 10% book that is 50% among the quotes that could have been won "
+        "reported the 10% with nothing saying so")
+    assert "8 of 10" in gap["detail"], (
+        "the gap must carry the counts; a bare UNKNOWN flag cannot be acted on")
+
+
+def test_a_recorded_win_is_never_read_as_unrecordable(session, trial):
+    """A win on record proves a win was recordable, whatever the sent stamp says.
+
+    ``sent_at`` is the evidence of a path to WON, but it is not the only
+    evidence: a row written before that column carried meaning has none, and
+    reading it alone would turn a book that demonstrably won something into an
+    UNKNOWN.
+    """
+    _won(session, "q_stampless_win")
+    _lost(session, "q_stampless_loss")
+
+    report = ev.thirty_day_report(session, ORG)
+    assert report["during"]["quote_win_rate"] == 0.5
+    assert ev.WINS_NOT_RECORDABLE_IN_WINDOW not in {
+        g["reason"] for g in report["evidence_gaps"]}

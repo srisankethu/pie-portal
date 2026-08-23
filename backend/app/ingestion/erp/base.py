@@ -59,6 +59,19 @@ READ_STAGES: tuple[str, ...] = (
     "users",
 )
 
+#: The same vocabulary in the other direction: the records the platform can
+#: *create* in a source system. A separate list rather than a flag on the one
+#: above, because reading a kind of record and writing it are different grants,
+#: different code and different days — every ERP here can be read and none of
+#: them could be written when this was added.
+#:
+#: A connector claims a stage here through a ``Permission``, and
+#: ``test_connector_writes`` holds the claim against a ``create_<stage>``
+#: method on the source, both ways: a claim nobody implements sends an owner
+#: to grant a permission for something that cannot happen, and a writer nobody
+#: declared creates records in a system nobody was asked to permit it in.
+WRITE_STAGES: tuple[str, ...] = ("sales_quotes",)
+
 
 @dataclass(frozen=True)
 class Permission:
@@ -78,24 +91,33 @@ class Permission:
     one kind of record, and more than one where a system gates several stages
     behind a single grant (Zoho reads customers *and* suppliers from
     ``ZohoBooks.contacts.READ``).
+
+    ``writes`` names what the grant lets the platform *create* there, from the
+    separate ``WRITE_STAGES`` vocabulary. One grant may well do both — an ERP
+    that hands out read and create on sales quotes together is one permission,
+    named once, declaring both.
     """
 
     name: str
     why: str
     required: bool = True
     reads: tuple[str, ...] = ()
+    writes: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        unknown = [r for r in self.reads if r not in READ_STAGES]
-        if unknown:
-            raise ValueError(
-                f"{self.name}: {', '.join(unknown)} "
-                f"{'is' if len(unknown) == 1 else 'are'} not a sync stage "
-                f"(one of {', '.join(READ_STAGES)})")
+        for kind, declared, stages in (("sync stage", self.reads, READ_STAGES),
+                                       ("write stage", self.writes, WRITE_STAGES)):
+            unknown = [s for s in declared if s not in stages]
+            if unknown:
+                raise ValueError(
+                    f"{self.name}: {', '.join(unknown)} "
+                    f"{'is' if len(unknown) == 1 else 'are'} not a {kind} "
+                    f"(one of {', '.join(stages)})")
 
     def to_dict(self) -> dict[str, Any]:
         return {"name": self.name, "why": self.why,
-                "required": self.required, "reads": list(self.reads)}
+                "required": self.required, "reads": list(self.reads),
+                "writes": list(self.writes)}
 
 
 @dataclass(frozen=True)
@@ -143,6 +165,20 @@ class ConnectorSpec:
     #: asking somebody to find a GUID. None for systems whose sign-in is
     #: already scoped to one company.
     discover: Optional[Callable[..., list[dict[str, Any]]]] = None
+
+    @property
+    def writes(self) -> tuple[str, ...]:
+        """What this connector can create in its system, in ``WRITE_STAGES``
+        order.
+
+        Derived from ``permissions`` rather than declared a second time: a
+        capability written down twice is one that can disagree with itself, and
+        the copy a screen reads would be the one nobody updated. It also keeps
+        the two inseparable — a connector cannot advertise a write without
+        naming the grant an owner has to click for it.
+        """
+        claimed = {stage for p in self.permissions for stage in p.writes}
+        return tuple(s for s in WRITE_STAGES if s in claimed)
 
 
 @dataclass(frozen=True)

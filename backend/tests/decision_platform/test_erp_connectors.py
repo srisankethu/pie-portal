@@ -42,8 +42,9 @@ from app.ingestion import erp
 from app.ingestion import connections as conn
 from app.ingestion.erp import acumatica, dynamics365, netsuite, prophet21, sage
 from app.ingestion.erp.base import iso_date
-from app.ingestion.errors import (SourceAuthError, SourceScopeError,
-                                  SourceThrottleError)
+from app.ingestion.errors import (IngestionError, SourceAuthError,
+                                  SourceScopeError, SourceThrottleError,
+                                  SourceWriteUncertain)
 from app.ingestion.erp.transport import RestTransport
 from app.ingestion.normalize import normalize_bill, normalize_invoice
 from app.ingestion.sync import SyncService
@@ -117,12 +118,49 @@ def test_connector_permissions():
             f"{sorted(reads - implemented)}")
 
 
+def test_connector_writes():
+    """The same pin as ``test_connector_permissions``, in the direction that
+    creates records — and it has to be armed *before* the first writer exists,
+    which is why it is here while every spec still writes nothing.
+
+    A capability list is prose until something holds it to the code. Declared
+    but unimplemented, an owner is told to grant a permission for a write this
+    connector cannot do, and a screen offers a button that fails at the ERP.
+    Implemented but undeclared is worse: the platform can create a record in a
+    system nobody was asked to grant a create permission in, and the first
+    anyone hears of it is a refusal in the middle of sending a customer's
+    quote. So the declaration equals what the source implements, both ways.
+    """
+    for spec in erp.catalog():
+        source = _SOURCE_OF[spec.key]
+        declared = set(spec.writes)
+        implemented = {stage for stage in erp.WRITE_STAGES
+                       if hasattr(source, f"create_{stage}")}
+        assert declared == implemented, (
+            f"{spec.key}: writes but never asks for "
+            f"{sorted(implemented - declared)}; asks for but cannot write "
+            f"{sorted(declared - implemented)}")
+
+
 def test_a_permission_cannot_name_a_stage_that_is_not_a_sync_stage():
     """A typo in ``reads`` would make the pin above pass by describing a stage
     nothing runs. Refused where it is written instead."""
     with pytest.raises(ValueError) as e:
         erp.Permission("Lists → Customers", "why", reads=("custmoers",))
     assert "custmoers" in str(e.value)
+
+    with pytest.raises(ValueError) as e:
+        erp.Permission("Sales Quote → Create", "why", writes=("sales_qoutes",))
+    assert "sales_qoutes" in str(e.value)
+
+    # The two vocabularies are separate lists, not one list read twice: a pull
+    # stage is not something the platform can create, and the one thing it can
+    # create is not a stage the sync pulls. Either swap would make both pins
+    # above pass while describing a capability that does not exist.
+    with pytest.raises(ValueError):
+        erp.Permission("Sales Quote → Create", "why", writes=("sales_orders",))
+    with pytest.raises(ValueError):
+        erp.Permission("Lists → Quotes", "why", reads=("sales_quotes",))
 
 
 def test_split_inputs_refuses_missing_fields_by_label():
@@ -436,6 +474,68 @@ def test_transport_reports_a_named_scope_refusal_over_a_generic_auth_error():
 
     with pytest.raises(SourceScopeError):
         _Scoped(_Http([_Resp(403)])).get("https://erp.example/x")
+
+
+def test_a_5xx_on_an_unmarked_write_is_uncertain_and_is_sent_exactly_once():
+    """The distinction the whole settle-by-read protocol is built on.
+
+    A 5xx on a non-idempotent call cannot be told apart from a success whose
+    answer was lost, so it is not replayed — that is how one quote becomes two
+    orders. But "not replayed" is only half of it: raised as a plain
+    ``IngestionError`` it reads identically to "the source answered and said
+    no", and a caller that cannot tell those apart either sends again or
+    reports a failure that may well have landed.
+    """
+    http = _Http([_Resp(500), _Resp(500), _Resp(500)])
+    t = _Quiet(http)
+    with pytest.raises(SourceWriteUncertain):
+        t.request("POST", "https://erp.example/quotes", json={"line": 1})
+    assert http.calls == 1                # never sent a second time
+    assert t.calls == 1
+
+
+def test_a_refusal_is_a_plain_failure_not_an_uncertain_write():
+    """The other side of that pin: the source answered, so nothing was
+    written and there is nothing to go and look up."""
+    t = _Quiet(_Http([_Resp(400, {"message": "customer is required"})]))
+    with pytest.raises(IngestionError) as e:
+        t.request("POST", "https://erp.example/quotes", json={"line": 1})
+    assert not isinstance(e.value, SourceWriteUncertain)
+
+
+def test_a_post_the_caller_marks_replayable_still_keeps_its_retry_budget():
+    """A POST that is really a read — NetSuite's SuiteQL, a token sign-in —
+    is idempotent, and the 5xx backoff it has always had is not a write."""
+    http = _Http([_Resp(500), _Resp(500), _Resp(200, {"items": [{"id": 1}]})])
+    t = _Quiet(http)
+    body = t.request("POST", "https://erp.example/suiteql",
+                     json={"q": "SELECT 1"}, replayable=True)
+    assert body == {"items": [{"id": 1}]}
+    assert http.calls == 3
+
+
+def test_a_dropped_connection_on_a_write_is_uncertain_and_on_a_read_is_not():
+    """A fault this side of the answer is the same unknown as a 5xx: the
+    request may well have been received. A read that never landed is only a
+    failed read, and dressing it as an uncertain write would send an owner
+    looking for a record nothing ever tried to create."""
+    class _Broken:
+        def __init__(self):
+            self.calls = 0
+
+        def request(self, method, url, **kw):
+            self.calls += 1
+            raise ConnectionError("connection reset by peer")
+
+    write = _Broken()
+    with pytest.raises(SourceWriteUncertain):
+        _Quiet(write).request("POST", "https://erp.example/quotes",
+                              json={"line": 1})
+    assert write.calls == 1
+
+    read = _Broken()
+    with pytest.raises(ConnectionError):
+        _Quiet(read).get("https://erp.example/x")
 
 
 # ── the connect service ─────────────────────────────────────────────────────

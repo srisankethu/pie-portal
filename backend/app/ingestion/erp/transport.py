@@ -28,7 +28,7 @@ import time
 from typing import Any, Optional
 
 from ..errors import (IngestionError, SourceAuthError, SourceScopeError,
-                      SourceThrottleError)
+                      SourceThrottleError, SourceWriteUncertain)
 
 log = logging.getLogger("pie_portal.erp")
 
@@ -121,8 +121,11 @@ class RestTransport:
 
         ``replayable=True`` marks a POST that is really a read (a query, a
         sign-in) so it keeps the full retry budget; an unmarked non-GET is
-        never replayed past a 5xx, which cannot be told apart from a success
-        whose response was lost.
+        never replayed past a 5xx or a dropped connection, neither of which can
+        be told apart from a success whose response was lost. Those two raise
+        :class:`SourceWriteUncertain` rather than a plain failure, because the
+        caller's next move is different: not "report it failed" but "go and
+        read whether the record is there".
         """
         verb = method.upper()
         may_replay = (verb in self._REPLAYABLE) if replayable is None else replayable
@@ -139,6 +142,10 @@ class RestTransport:
         throttled = False
         refreshed_auth = False
         attempts = max(1, self.max_retries)
+        # Outside the loop and outside the try below: building the client sends
+        # nothing, so a failure here must not be reported as a write whose fate
+        # is unknown. Only the network call itself earns that.
+        client = self._client()
         for attempt in range(attempts):
             sent = {**self._auth_headers(), **(headers or {})}
             self._pace()
@@ -147,7 +154,20 @@ class RestTransport:
                 kwargs["json"] = json
             if data is not None:
                 kwargs["data"] = data
-            resp = self._client().request(verb, url, **kwargs)
+            try:
+                resp = client.request(verb, url, **kwargs)
+            except Exception as e:  # noqa: BLE001 — the fault is the signal
+                # A fault this side of the answer is the same unknown as a 5xx:
+                # the request may well have been received. Left raw it reaches
+                # a write caller as a bare connection error, which reads as
+                # "nothing happened".
+                if may_replay:
+                    raise
+                raise SourceWriteUncertain(
+                    f"{self.system} did not answer {verb} {url} "
+                    f"({type(e).__name__}: {e}). Whether the record was written "
+                    f"cannot be told from here, so it has not been sent again — "
+                    f"check {self.system} before sending it again.") from e
             self._last_call_at = time.monotonic()
             self.calls += 1
 
@@ -178,9 +198,11 @@ class RestTransport:
                 continue
             if resp.status_code >= 500:
                 if not may_replay:
-                    raise IngestionError(
+                    raise SourceWriteUncertain(
                         f"{self.system} returned HTTP {resp.status_code} to "
-                        f"{verb} {url} and the call is not safely replayable.")
+                        f"{verb} {url}. Whether the record was written cannot "
+                        f"be told from here, so it has not been retried — check "
+                        f"{self.system} before sending it again.")
                 last = f"HTTP {resp.status_code}"
                 self._sleep(min(self.max_backoff_seconds, 2 ** attempt))
                 continue

@@ -20,6 +20,7 @@ from app.ingestion.connections import (
     ZOHO_CONNECTOR,
     ConnectionNotFound,
     book_for_customer,
+    connect_erp,
     set_zoho_credentials,
 )
 
@@ -145,3 +146,87 @@ def test_another_organizations_connection_does_not_answer(session):
 
     with pytest.raises(ConnectionNotFound):
         book_for_customer(session, org_a, customer)
+
+
+def _connect_netsuite(session, org, label="US Books", company_id="1234567"):
+    """A connected company in another system, through the generic ERP path so
+    the row is shaped exactly as a real one is."""
+    return connect_erp(session, org, connector="netsuite", label=label, values={
+        "consumer_key": "ck", "consumer_secret": "cs", "token_id": "ti",
+        "token_secret": "ts", "company_id": company_id})
+
+
+def test_a_non_zoho_company_never_stands_in_for_a_missing_zoho_one(session):
+    """The only connected book reads NetSuite, so there is no Zoho ledger here
+    at all. Counting it as "the one connected company" placed the quote in it,
+    and the failure surfaced one call later out of ``credentials_for`` as a
+    bare ValueError — which ``books_for_quote`` does not catch, so an HTTP 500
+    stood where a refusal belongs."""
+    org = _org(session)
+    _connect_netsuite(session, org)
+    customer = _customer(session, org, connection_id=None, connector=None)
+
+    with pytest.raises(ConnectionNotFound) as e:
+        book_for_customer(session, org, customer)
+    assert "netsuite" in str(e.value)
+
+
+def test_the_customers_own_non_zoho_connection_is_refused_by_name(session):
+    """``connector`` and ``connection_id`` are nullable independently, so a row
+    can carry the company without carrying the system. It still resolves to a
+    book whose credentials are not Zoho's, and the reason given has to be that
+    rather than "disabled" — a refusal naming the wrong cause sends whoever
+    reads it to the connections screen to re-enable something already on."""
+    org = _org(session)
+    ns = _connect_netsuite(session, org)
+    customer = _customer(session, org, connection_id=ns.connection_id,
+                         connector=None)
+
+    with pytest.raises(ConnectionNotFound) as e:
+        book_for_customer(session, org, customer)
+    assert "netsuite" in str(e.value)
+
+
+def test_one_zoho_book_beside_another_system_is_refused_on_provenance(session):
+    """One Zoho book beside one NetSuite book is still two companies an
+    unattributed customer could have come from, so it is still refused — but
+    the reason is not the one the multi-Zoho case gives. There is exactly one
+    Zoho company here, so "which one" is not a question anyone can answer, and
+    a refusal that poses it sends the reader looking for a second set of Zoho
+    books that does not exist. The real reason is that this customer's
+    provenance was never recorded and may be the NetSuite book, so writing the
+    Zoho estimate would invent it."""
+    org = _org(session)
+    _connect(session, org, "60036630487", "SLS Engineers")
+    _connect_netsuite(session, org)
+    customer = _customer(session, org, connection_id=None, connector=None)
+
+    with pytest.raises(ConnectionNotFound) as e:
+        book_for_customer(session, org, customer)
+    msg = str(e.value)
+    # Not a count of Zoho companies, and not a choice between them.
+    assert "connected Zoho companies" not in msg
+    assert "Which one" not in msg
+    # The reason actually given: unrecorded provenance that may be the other
+    # system, which is why the estimate cannot be written.
+    assert "netsuite" in msg
+    assert "invent the provenance" in msg
+    assert "re-sync" in msg.lower()
+
+
+def test_several_zoho_books_still_ask_which_one(session):
+    """The other half of the pair above: with two Zoho companies the question
+    genuinely is which of them, and adding a NetSuite book must not turn that
+    sentence into the provenance one — the count it names is still true."""
+    org = _org(session)
+    _connect(session, org, "60036630487", "SLS Engineers")
+    _connect(session, org, "60036630626", "4U Precision")
+    _connect_netsuite(session, org)
+    customer = _customer(session, org, connection_id=None, connector=None)
+
+    with pytest.raises(ConnectionNotFound) as e:
+        book_for_customer(session, org, customer)
+    msg = str(e.value)
+    assert "2 connected Zoho companies" in msg
+    assert "Which one" in msg
+    assert "netsuite" in msg

@@ -311,14 +311,27 @@ def book_for_customer(session: Session, organization_id: str,
     "ABC Industries" can exist in all three books and be three different
     customers, which is the reason that triple exists.
 
-    Two things are refused rather than resolved. A connection that is disabled
-    or gone cannot be written to. And a row whose ``connection_id`` is NULL —
-    imported before provenance was recorded — is only placeable when the
-    organization has a single connected company; with more than one, choosing
-    would be inventing the provenance the column deliberately leaves blank.
+    Three things are refused rather than resolved. A connection that is
+    disabled or gone cannot be written to. A company in another system holds no
+    Zoho estimate, so it never stands in for one — counted as a Zoho company it
+    both overstated the number in the refusal below and, where it was the only
+    connected company, was returned as the book: ``credentials_for`` then
+    refused it with a bare ``ValueError``, which the caller does not catch, so
+    the answer arrived as a 500 instead of as this refusal. And a row whose
+    ``connection_id`` is NULL — imported before provenance was recorded — is
+    only placeable when the organization has a single connected company; with
+    more than one, choosing would be inventing the provenance the column
+    deliberately leaves blank.
     """
     enabled = {c.connection_id: c
                for c in list_connections(session, organization_id, enabled_only=True)}
+    # Only a Zoho company can hold a Zoho estimate. The rest stay in ``enabled``
+    # because they are still companies an unattributed customer may have come
+    # from, which is the question the ambiguity check below asks.
+    zoho = {cid: c for cid, c in enabled.items()
+            if (getattr(c, "connector", None) or ZOHO_CONNECTOR) == ZOHO_CONNECTOR}
+    other_systems = sorted({(getattr(c, "connector", None) or ZOHO_CONNECTOR)
+                            for c in enabled.values()} - {ZOHO_CONNECTOR})
 
     if customer.connector and customer.connector != ZOHO_CONNECTOR:
         raise ConnectionNotFound(
@@ -327,8 +340,14 @@ def book_for_customer(session: Session, organization_id: str,
             f"written as a Zoho estimate.")
 
     if customer.connection_id:
-        conn = enabled.get(customer.connection_id)
+        conn = zoho.get(customer.connection_id)
         if conn is None:
+            elsewhere = enabled.get(customer.connection_id)
+            if elsewhere is not None:
+                raise ConnectionNotFound(
+                    f"The company {customer.name} came from reads "
+                    f"{elsewhere.connector}, not Zoho Books, so this quote "
+                    f"cannot be written into it as a Zoho estimate.")
             raise ConnectionNotFound(
                 f"The Zoho company {customer.name} came from is no longer "
                 f"connected or has been disabled, so there is no ledger to "
@@ -337,17 +356,50 @@ def book_for_customer(session: Session, organization_id: str,
 
     # Provenance not recorded. One connected company leaves nothing to choose
     # between; more than one is the case that must not be guessed.
-    if len(enabled) == 1 and customer.external_id:
-        return CustomerBook(next(iter(enabled.values())), str(customer.external_id))
-    if not enabled:
+    if not zoho:
         raise ConnectionNotFound(
             f"This organization has no connected Zoho company, so there is no "
-            f"ledger to write {customer.name}'s quote into.")
+            f"ledger to write {customer.name}'s quote into."
+            + (f" Its connected books read {', '.join(other_systems)}, which "
+               f"hold no Zoho estimate." if other_systems else ""))
+    if len(enabled) == 1 and customer.external_id:
+        return CustomerBook(next(iter(zoho.values())), str(customer.external_id))
+
+    # Two different questions are being refused here, and they read as one only
+    # if the count is the whole sentence. With several Zoho companies the
+    # question really is *which one*. With a single Zoho company beside a book
+    # in another system, there is nothing to choose between Zoho companies —
+    # the question is whether this customer is a Zoho customer at all — and
+    # naming a choice between one thing tells the reader to go looking for a
+    # second set of Zoho books that does not exist.
+    unrecorded = (f"{customer.name} was imported before the source company was "
+                  f"recorded, and ")
+    if len(zoho) > 1:
+        raise ConnectionNotFound(
+            unrecorded
+            + f"this organization has {len(zoho)} connected Zoho companies. "
+              f"Which one this quote belongs to cannot be decided from the "
+              f"quote alone — re-sync the company this customer belongs to."
+            + (f" It may equally have come from a book this organization reads "
+               f"through {', '.join(other_systems)}, which holds no Zoho "
+               f"estimate at all." if other_systems else ""))
+    if other_systems:
+        raise ConnectionNotFound(
+            unrecorded
+            + f"this organization also reads {', '.join(other_systems)}. This "
+              f"customer may have come from there rather than from its one "
+              f"connected Zoho company, and a system that holds no Zoho "
+              f"estimate cannot be quoted into — so writing the estimate into "
+              f"that Zoho company would invent the provenance that was never "
+              f"recorded. Re-sync the company this customer belongs to.")
+    # One Zoho company, nothing else connected, and still no answer: the
+    # customer carries no contact id in it. Named for what it is rather than
+    # borrowed from either sentence above — neither is true here.
     raise ConnectionNotFound(
-        f"{customer.name} was imported before the source company was recorded, "
-        f"and this organization has {len(enabled)} connected Zoho companies. "
-        f"Which one this quote belongs to cannot be decided from the quote "
-        f"alone — re-sync the company this customer belongs to.")
+        f"{customer.name} carries no contact id in "
+        f"{next(iter(zoho.values())).label or 'the connected Zoho company'}, "
+        f"so there is no contact to write this quote against — re-sync the "
+        f"company this customer belongs to.")
 
 
 # ── credentials ─────────────────────────────────────────────────────────────

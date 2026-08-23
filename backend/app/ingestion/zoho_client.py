@@ -34,7 +34,7 @@ from typing import Any, Callable, Iterable, Iterator, Optional
 from ..clock import utc_stamp
 from ..config import settings
 from .errors import (IngestionError, SourceAuthError, SourceScopeError,
-                     SourceThrottleError)
+                     SourceThrottleError, SourceWriteUncertain)
 
 log = logging.getLogger("pie_portal.zoho")
 
@@ -140,7 +140,7 @@ class ZohoThrottleError(ZohoError, SourceThrottleError):
     different: wait and resume, rather than fix a credential."""
 
 
-class ZohoWriteUncertain(ZohoError):
+class ZohoWriteUncertain(ZohoError, SourceWriteUncertain):
     """A write was sent and its outcome is unknown.
 
     Raised instead of retrying when a non-idempotent call fails in a way that

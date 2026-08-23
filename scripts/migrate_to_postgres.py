@@ -53,8 +53,14 @@ from typing import Any, Optional
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "backend"))
 
-from sqlalchemy import Float, Numeric, create_engine, func, select, text  # noqa: E402
+from sqlalchemy import create_engine, func, select, text  # noqa: E402
 from sqlalchemy.engine import Engine, make_url  # noqa: E402
+
+# The comparison vocabulary — which columns are money, how they are summed, and
+# how a row compares across dialects. Shared with scripts/restore_drill.py so
+# there is one definition of "the data survived" rather than two that agree
+# until they don't.
+from dbcompare import decimal_sum, money_columns, normalise  # noqa: E402
 
 
 class MigrationRefused(RuntimeError):
@@ -85,17 +91,6 @@ def _require_head(engine: Engine, what: str) -> str:
     if state.state != "CURRENT":
         raise MigrationRefused(f"{what}: {state.summary}")
     return state.current or ""
-
-
-def _aware(value: Any) -> Any:
-    """Timestamps comparable across backends: naive means UTC here (app.clock)."""
-    if isinstance(value, datetime) and value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value
-
-
-def _normalise(row: dict[str, Any]) -> dict[str, Any]:
-    return {k: _aware(v) for k, v in row.items()}
 
 
 def migrate(source_path: Path, target_url: str, *,
@@ -156,23 +151,13 @@ def migrate(source_path: Path, target_url: str, *,
             dst.execute(text("SET timezone = 'UTC'"))
 
             for table in tables:
-                # Money columns for the Σ check below. Decimal columns only:
-                # Float is a Numeric subclass but float Σs are approximate by
-                # nature, so an exact comparison there would cry wolf.
-                money_cols = [c.name for c in table.columns
-                              if isinstance(c.type, Numeric)
-                              and not isinstance(c.type, Float)]
+                money_cols = money_columns(table)
                 src_sums: dict[str, Optional[Decimal]] = dict.fromkeys(money_cols)
 
                 rows = src.execute(select(table)).mappings().all()
                 if rows:
                     payload = [dict(r) for r in rows]
-                    for row in payload:
-                        for cname in money_cols:
-                            v = row[cname]
-                            if v is not None:
-                                v = v if isinstance(v, Decimal) else Decimal(str(v))
-                                src_sums[cname] = (src_sums[cname] or Decimal(0)) + v
+                    src_sums = decimal_sum(payload, money_cols)
                     for i in range(0, len(payload), 1000):
                         dst.execute(table.insert(), payload[i:i + 1000])
                 n_target = dst.execute(
@@ -208,7 +193,7 @@ def migrate(source_path: Path, target_url: str, *,
                 dst_rows = dst.execute(
                     select(table).order_by(*pk).limit(sample_rows)).mappings().all()
                 for a, b in zip(src_rows, dst_rows):
-                    if _normalise(dict(a)) != _normalise(dict(b)):
+                    if normalise(dict(a)) != normalise(dict(b)):
                         mismatches.append(
                             f"{table.name}: representative row differs at "
                             f"pk={[a[c.name] for c in pk]}")

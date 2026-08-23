@@ -7,6 +7,12 @@
 #   scripts/pg_sandbox.sh start   prints the server URL on stdout
 #   scripts/pg_sandbox.sh stop    stops the server and deletes the cluster
 #   scripts/pg_sandbox.sh url     prints the URL of a running sandbox
+#   scripts/pg_sandbox.sh bin     prints the directory the server binaries are in
+#
+# `bin` exists for restore_drill.py's sake: the documented backup procedure runs
+# `pg_dump` and `psql`, and those must be the versioned pair that matches the
+# server — on Debian /usr/bin/pg_dump is a wrapper that picks a cluster, not a
+# binary. One find_pg_bin, used by both.
 #
 # Why this exists: the gate's step 5 migrates an EMPTY database, and until the
 # Postgres leg landed it only ever did so on SQLite — so the dialect production
@@ -91,5 +97,6 @@ case "${1:-}" in
   start) start ;;
   stop)  stop ;;
   url)   url ;;
-  *) echo "usage: $0 start|stop|url" >&2; exit 2 ;;
+  bin)   find_pg_bin ;;
+  *) echo "usage: $0 start|stop|url|bin" >&2; exit 2 ;;
 esac

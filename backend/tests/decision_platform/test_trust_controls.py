@@ -342,11 +342,16 @@ def test_a_receipt_still_verifies_after_it_has_been_stored(session, org):
     way an owner ever looks at one — therefore answered `verified: false` for
     every receipt ever issued, which on the trust screen reads as an accusation.
 
-    `clock.iso` is what makes it hold, and that is not obvious from the call
-    site: it was applied there as part of making timestamps unambiguous for the
-    *browser*, so nothing recorded that a signature depends on it. Anyone
-    "simplifying" it back to `.isoformat()` would break this silently. Hence a
-    test about the signature rather than about the display.
+    `signing.utc_iso` is what makes it hold, and that is not obvious from the
+    call site, so this is a test about the signature rather than the display.
+
+    It used to be `clock.iso`, and that covered only half of the problem — the
+    half SQLite has. `clock.iso` *attaches* UTC to a naive value, which fixes
+    the round trip above; it deliberately leaves an already-aware value's offset
+    alone, which is right for a browser and wrong for a signature. See
+    `test_a_receipt_verifies_whatever_offset_it_is_read_back_in` below for the
+    half that was still broken, and for three years would only have shown up on
+    a non-UTC Postgres.
     """
     row = erasure.erase(session, ORG, reason="Customer requested erasure",
                         actor_user_id="u1")
@@ -359,6 +364,46 @@ def test_a_receipt_still_verifies_after_it_has_been_stored(session, org):
     assert erasure.verify_receipt(row), (
         "A receipt that only verifies before it is stored verifies never.")
     assert erasure.status(session, ORG)["receipt"]["verified"] is True
+
+
+def test_a_receipt_verifies_whatever_offset_it_is_read_back_in(session, org):
+    """The other half of the test above, and the half SQLite cannot show.
+
+    A signature covers a *string*. `erase` signs a UTC-aware `clock.now()`, so
+    what is covered is always `...+00:00`. Verification happens over a value
+    read back from the database — and psycopg renders a `timestamptz` in the
+    *session* TimeZone, which follows the server's. On a Postgres set to
+    Asia/Kolkata (the likely zone for a product whose three legal entities are
+    Indian) every receipt reads back as `...+05:30`, canonicalises to different
+    bytes, and `verify_receipt` returns False on a receipt nobody touched.
+
+    An erasure receipt is the proof of deletion handed to a departing customer.
+    Failing closed here tells them their deletion was tampered with.
+
+    Found by the restore drill, which runs against a real Postgres and inherits
+    the host's TZ — the identical defect had already been fixed in
+    `audit.covered_body` and was left standing in this sibling, which is why the
+    helper now lives in `signing` where both reach it.
+    """
+    from datetime import timedelta, timezone as _tz
+
+    from app.trust import signing
+
+    row = erasure.erase(session, ORG, reason="Customer requested erasure",
+                        actor_user_id="u1")
+    session.commit()
+    session.expire(row)
+    assert erasure.verify_receipt(row)
+
+    covered = erasure.receipt_body(row)
+    shifted = _tz(timedelta(hours=5, minutes=30))
+    row.erased_at = row.erased_at.astimezone(shifted)
+
+    assert erasure.receipt_body(row) == covered, (
+        "the same instant rendered in another zone must sign identically")
+    assert erasure.verify_receipt(row), (
+        "a receipt read back in a non-UTC session must still verify")
+    assert signing.utc_iso(row.erased_at) == covered["erased_at"]
 
 
 def test_an_altered_receipt_fails_verification(session, org):

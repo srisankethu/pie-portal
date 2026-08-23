@@ -35,9 +35,41 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
-from typing import Any
+from datetime import datetime, timezone
+from typing import Any, Optional
 
+from .. import clock
 from ..config import settings
+
+
+def utc_iso(value: Optional[datetime]) -> Optional[str]:
+    """A timestamp as ISO-8601 in UTC, whatever offset it arrives carrying.
+
+    Here rather than in each signer, because it has now been the same defect
+    twice. A signature covers a *string*, so it must depend only on the instant
+    and never on which machine or session rendered it — and ``clock.iso``
+    deliberately preserves whatever offset it is handed, which is right for
+    display and wrong here.
+
+    Both signers write a UTC-aware ``clock.now()`` and sign that, so the
+    signature always covers ``+00:00``. Verification reads the value back from
+    the database, and psycopg renders a ``timestamptz`` in the *session*
+    TimeZone, which follows the server's. On a Postgres set to Asia/Kolkata —
+    the likely zone for this product, whose three legal entities are Indian —
+    every row would read back as ``+05:30``, hash differently, and be reported
+    altered although nothing had touched it.
+
+    ``audit.covered_body`` was fixed for that; ``erasure.receipt_body`` was not,
+    and an erasure receipt is the proof of deletion handed to a departing
+    customer. It would have told them their deletion had been tampered with.
+
+    Normalising on *read* invalidates nothing: what was signed was already
+    ``+00:00``, so this restores the string rather than changing it.
+    """
+    if value is None:
+        return None
+    aware = clock.aware(value)
+    return None if aware is None else aware.astimezone(timezone.utc).isoformat()
 
 
 def canonical(body: Any) -> bytes:

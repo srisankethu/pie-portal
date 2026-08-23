@@ -42,7 +42,6 @@ from typing import Any, Optional
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .. import clock
 from ..domain import models
 from . import keys, signing, vault
 
@@ -532,7 +531,10 @@ def receipt_body(row: models.ErasureReceipt) -> dict[str, Any]:
     attestation = row.attestation or {}
     return {
         "organization_id": row.organization_id,
-        "erased_at": clock.iso(row.erased_at),
+        # signing.utc_iso, not clock.iso — see that function. clock.iso
+        # preserves the offset it is handed, so on a non-UTC Postgres this
+        # receipt would read back shifted and report itself altered.
+        "erased_at": signing.utc_iso(row.erased_at),
         "reason": row.reason,
         "actor_user_id": row.actor_user_id,
         "manifest": row.manifest,

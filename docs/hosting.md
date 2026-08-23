@@ -172,17 +172,55 @@ Postgres holds two kinds of data and only one of them is recoverable
   AI telemetry — **exists nowhere else**. Re-syncing does not bring it back.
 
 ```bash
-# Dump (covers both).
+# Dump (covers both). `pipefail` is load-bearing, see below.
+set -o pipefail
 docker compose --env-file .env.production exec -T db \
   pg_dump -U pie_portal pie_portal | gzip > pie-portal-$(date +%F).sql.gz
 
 # Restore into an empty database, then re-run the sync to bring the read model current.
+set -o pipefail
 gunzip -c pie-portal-2026-08-07.sql.gz | \
-  docker compose --env-file .env.production exec -T db psql -U pie_portal -d pie_portal
+  docker compose --env-file .env.production exec -T db \
+    psql -v ON_ERROR_STOP=1 -U pie_portal -d pie_portal
 ```
+
+**Both of those flags are the difference between a backup and a file.** A shell
+pipeline reports its *last* command's status, so without `pipefail` a `pg_dump`
+that dies halfway still exits 0 and leaves a perfectly valid gzip archive of
+nothing. And `psql` logs a failed statement and carries on by default, so
+without `ON_ERROR_STOP=1` a restore that dropped half the tables also exits 0.
+Neither flag was here until `scripts/restore_drill.py` was written and had to
+decide what "the restore succeeded" meant.
 
 Put that first command on a schedule and copy the output off the machine. A
 backup that lives only on the host it backs up is not one.
+
+### The procedure is tested
+
+`scripts/restore_drill.py` runs exactly the two commands above — the same
+`pg_dump | gzip` and `gunzip -c | psql` pipelines, through `bash`, against a
+disposable server — on every `make verify`. It seeds a database with
+representative data including the platform state a re-sync cannot rebuild, dumps
+it, restores into an empty database, and compares: every table's row count,
+every row column-for-column, every `Decimal` money column's exact Σ, every audit
+chain re-verified through `trust/audit.verify` with its head hash, and every
+erasure receipt re-verified through `trust/erasure.verify_receipt`.
+
+The audit chain is the reason it runs every time rather than once. Its entries
+are HMAC-linked and anchored in `audit_chain_heads`, so **a restore that brings
+the chain back in a state which fails `verify` is indistinguishable, from the
+operator's chair, from somebody having tampered with the log** — and the failure
+mode is real: `timestamptz` renders in the session's TimeZone, so a server set
+to `Asia/Kolkata` would hash every entry differently if `audit.covered_body` did
+not normalise to UTC first.
+
+What the drill does **not** prove is the shorter and more important list. It
+dumps a database it created seconds earlier, so it says nothing about whether
+any *particular* backup file on disk is good, nothing about that file being
+stored anywhere durable or off this host, and nothing about how long a restore
+takes at production volume — the seed is a few hundred rows so the drill costs
+the gate seconds. Verifying an actual backup is still a thing a person has to
+do; this only removes the excuse that the procedure itself was never tried.
 
 Worth keeping too: the `caddy-data` volume, which holds the issued certificate
 and the ACME account key. Losing it is survivable — Caddy re-issues — but it

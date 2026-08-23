@@ -55,7 +55,6 @@ from __future__ import annotations
 import csv
 import io
 import logging
-from datetime import datetime, timezone
 from typing import Any, Iterable, Iterator, Optional
 
 from sqlalchemy import select
@@ -220,18 +219,6 @@ def _move_head(session: Session, organization_id: str,
     head.updated_at = clock.now()
 
 
-def _utc_iso(value: Optional[datetime]) -> Optional[str]:
-    """A timestamp as an ISO-8601 string in UTC, whatever offset it arrives in.
-
-    The signature covers this string, so it must depend only on the instant and
-    never on which machine or session rendered it.
-    """
-    if value is None:
-        return None
-    aware = clock.aware(value)
-    return None if aware is None else aware.astimezone(timezone.utc).isoformat()
-
-
 def covered_body(row: models.AuditEntry) -> dict[str, Any]:
     """The exact structure ``entry_hash`` covers — read from the row, to re-verify.
 
@@ -248,18 +235,11 @@ def covered_body(row: models.AuditEntry) -> dict[str, Any]:
         "organization_id": row.organization_id,
         "seq": int(row.seq),
         "prev_hash": row.prev_hash,
-        # Normalised to UTC here rather than through ``clock.iso``, which
-        # preserves whatever offset it is handed. Signing happens over
-        # ``clock.now()`` (always +00:00); verification happens over a value
-        # read back from the database, and psycopg renders a ``timestamptz`` in
-        # the *session* TimeZone — which follows the server's. On a Postgres
-        # whose TimeZone is Asia/Kolkata every entry would read back as
-        # '...+05:30', hash differently, and report SIGNATURE on a chain nobody
-        # had touched: the whole log failing closed for a server setting. The
-        # instant is identical; only the rendering differs, so the fix belongs
-        # at the signing boundary and not in ``clock.iso``, whose callers render
-        # for display.
-        "at": _utc_iso(row.at),
+        # ``signing.utc_iso``, never ``clock.iso``: the signature covers a
+        # string, so it must depend on the instant and not on which session
+        # rendered it. The reasoning lives with the helper, which is shared
+        # because this was the same defect in two signers.
+        "at": signing.utc_iso(row.at),
         "action": row.action,
         "actor_user_id": row.actor_user_id,
         "actor_label": row.actor_label,
@@ -532,18 +512,11 @@ def _break(row: models.AuditEntry, kind: str, reached: int,
             "kind": kind,
             "entry_id": row.entry_id,
             "seq": int(row.seq),
-            # Normalised to UTC here rather than through ``clock.iso``, which
-        # preserves whatever offset it is handed. Signing happens over
-        # ``clock.now()`` (always +00:00); verification happens over a value
-        # read back from the database, and psycopg renders a ``timestamptz`` in
-        # the *session* TimeZone — which follows the server's. On a Postgres
-        # whose TimeZone is Asia/Kolkata every entry would read back as
-        # '...+05:30', hash differently, and report SIGNATURE on a chain nobody
-        # had touched: the whole log failing closed for a server setting. The
-        # instant is identical; only the rendering differs, so the fix belongs
-        # at the signing boundary and not in ``clock.iso``, whose callers render
-        # for display.
-        "at": _utc_iso(row.at),
+            # ``signing.utc_iso``, never ``clock.iso``: the signature covers a
+        # string, so it must depend on the instant and not on which session
+        # rendered it. The reasoning lives with the helper, which is shared
+        # because this was the same defect in two signers.
+        "at": signing.utc_iso(row.at),
             "action": row.action,
             "explanation": explanation,
         },

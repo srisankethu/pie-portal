@@ -606,7 +606,44 @@ The database holds two very different kinds of data:
 | **Platform state** (signals, decisions, human actions, telemetry) | **Exists nowhere else.** The decision audit trail cannot be reconstructed. Back it up. |
 
 Standard `pg_dump` on the Postgres database covers both. Restore, then re-run
-the sync to bring the read model current.
+the sync to bring the read model current. The exact commands, with the two
+flags that decide whether a failed dump or a half-finished restore reports
+success, are in [hosting.md](hosting.md#backups).
+
+**The procedure is exercised on every `make verify`.** `scripts/restore_drill.py`
+runs those same two shell pipelines against a disposable Postgres: it seeds a
+database, dumps it, restores the dump into an empty one, and compares the two.
+Row counts per table, every row column-for-column, every `Decimal` money
+column's exact Σ, every audit chain re-verified with `trust/audit.verify`
+including its head hash, and every erasure receipt re-verified with
+`trust/erasure.verify_receipt`.
+
+The chain assertion is the point. Audit entries are HMAC-linked and anchored, so
+a restore that brings them back failing `verify` would tell an operator their
+audit log had been altered — and nobody had ever checked that a `pg_dump` round
+trip preserves it.
+
+Read what that buys narrowly, because the gap is where a false sense of safety
+would live:
+
+- It proves **the procedure round-trips this schema with its data intact**. If a
+  column type, a JSON payload or a `timestamptz` stopped surviving a dump, the
+  gate goes red on the change that did it.
+- It proves **nothing about any particular backup**. The drill dumps a database
+  it created seconds earlier. A production archive that is corrupt, truncated,
+  or of the wrong database is entirely outside what it can see.
+- It proves **nothing about the backup existing somewhere durable**. Scheduling
+  the dump and copying it off the host is still a human arrangement, and a
+  backup that lives only on the machine it backs up is not one.
+- It proves **nothing about RTO**. The seed is a few hundred rows, chosen so the
+  drill costs the gate seconds rather than minutes; it measures the procedure,
+  not the clock.
+- It does not exercise the third step, **re-running the sync**. That is covered
+  by the sync's own tests, not by this.
+
+Verifying a real backup — restoring last night's archive somewhere and looking
+at it — is still a thing a person has to do periodically. What the drill removes
+is the possibility that the documented procedure was broken all along.
 
 ### "value too long for type character varying" in a sync
 

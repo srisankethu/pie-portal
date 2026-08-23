@@ -386,3 +386,160 @@ the real output either way.
 > manufacturer would pay for — requires explicit opt-in recorded per tenant and
 > belongs in `trust/` with the rest of the disclosure controls. Shipping it without
 > that loses the customers who were already nervous about the ownership question.
+
+---
+
+# Verified revision — 2026-08-23
+
+Before spawning child sessions, all six ready-to-start prompts were checked
+against the actual repositories by six independent agents, each instructed to
+verify every path, symbol, model name and quoted acceptance number by opening
+files rather than inferring from naming. **Three tasks came back
+BLOCKED_ON_DATA and four acceptance criteria were unsatisfiable or rested on
+something that does not exist.** The findings are recorded here because they are
+permanent knowledge about these repositories, worth more than the sessions that
+prompted them.
+
+## Findings that apply to every pie-portal task
+
+**The `pie-parser` submodule is empty and the gate hides it.** `pie-portal/pie-parser/`
+has no files (`git submodule status` shows `-41ee3d005b2ff`, uninitialised, and
+the repo is private); a full checkout at the pinned commit sits at
+`/home/user/pie-parser`. `settings.PIE_PARSER_ROOT` defaults to the empty
+directory and there is no `.env`. Without `export PIE_PARSER_ROOT=/home/user/pie-parser`:
+`app/catalog.py` raises `PIE corpus not found`, `pie_service._ensure_index` logs
+a warning and returns None, and **`scripts/verify.sh:41-50` prints "pie-parser is
+not checked out", SKIPS every `requires_pie` test, and still stamps the run
+VERIFIED** ("but narrowed"). Any session reporting "make verify green" without
+setting that variable is reporting a narrowed run as a full one. This is the
+same class of failure `CLAUDE.md` §6 records as having survived eight merges.
+
+**There is no local data.** `backend/data/platform.db` is demo seed only — one
+organization, four fabricated products with no SKU, ~20 `SalesTxn` rows. There is
+no `.env`, no `ZOHO_*` credentials, and `settings.ZOHO_SOURCE` defaults to
+`"fixture"` (3 invoices, 2 items). Any coverage number computed here would be
+fabricated.
+
+**The engine chain itself works offline and was proven to.** A verifier ran
+`PIE_PARSER_ROOT=/home/user/pie-parser python3 scripts/build_catalog.py` →
+6,717 products, 0 quarantined, matching the published figure, and
+`AuthoritativeIndex.from_jsonl(...).lookup_material('2001174')` returned the
+record with grade TN2000. So instruments can be built and unit-tested; only the
+real runs are blocked.
+
+## Per-task corrections
+
+### T1 — BLOCKED_ON_DATA, and two structural errors
+
+- **No estimate line-level history exists anywhere.** The prompt said "invoice and
+  estimate lines"; only the invoice half exists. Invoice lines are
+  `models.SalesTxn` / `sales_txns` (models.py:1177, "Invoice-line grain"), product
+  reference `SalesTxn.product_id`. Estimates are **write-only**: `routers/quote.py:356`
+  pushes to Zoho, there is no `_sync_estimates` in `ingestion/sync.py`, no
+  estimates table, no estimate pull in any `ingestion/erp/*.py`. Scope to invoice
+  lines, or add "pull Zoho estimates" as explicit extra scope.
+- **`Product` has no `sku` column** and the sync never persists one, so the
+  SKU→index join the prompt assumed does not exist where a session would look.
+  SKU lives only on `models.ItemConnectorRecord.sku` (models.py:2313). The real
+  path is `SalesTxn.product_id` → `ItemConnectorRecord.product_id` →
+  `ItemConnectorRecord.sku` → `lookup_material`.
+- **The answer is already persisted and never read.** `sync.py:1156 _link_catalog`
+  writes `Product.pie_record_id` / `pie_link_method` / `pie_catalog_version` on
+  every item pull, and nothing in the codebase reads those columns back. On a
+  synced database the identity half of this measurement is a join, not a
+  re-resolution.
+- **Reuse surface is `pie_service.lookup_record()` and `pie_service.catalog_available`**,
+  not `AuthoritativeIndex` directly — the latter exists precisely to separate "the
+  pack does not cover this item" from "nobody asked the pack".
+- Only `lookup_material` resolves against this catalogue: of 6,717 records just
+  **44 carry `catalog_number_full`**, so `lookup_catalog` is effectively dead here.
+- No existing coverage script to reuse — the one that produced the 21.6% was never
+  committed. Copy the convention of `scripts/measure_crossbrand.py`.
+- A live pull is expensive: `zoho_client.list_invoices` fetches per-document detail
+  because `line_items` is not on the list response — one API call per invoice,
+  against ~3,367 invoices for SLS.
+
+### T2 — unblocked by a better experiment design
+
+The verifier found the master side can be **modelled exactly by re-running the same
+corpus rows with the Grade column suppressed**, because what makes the master a
+poorer input is precisely the fields it lacks. That converts T2 from blocked to
+runnable offline, and it is a cleaner experiment than the original.
+
+- There is **no `Item` model** in pie-portal; it is `Product` (models.py:643).
+- The corpus is **nomenclature, not a price file** — `MM# / Material Description /
+  Grade`, no prices anywhere.
+- The 15,028 / 1,420 / 6,146 figures are **prose only** in
+  `docs/concepts/01-application-engineering.md`; they are not reproducible from the
+  repository. Cite them as prior measurements, do not claim to reproduce them.
+- Confirmed reproducible: the §3 "0.00 on every row" finding does reproduce.
+
+### T3 — READY, two small corrections
+
+- The org-scoping rule is **not** in `CLAUDE.md` §3 (that section is Module
+  boundaries). It is the module docstring of `backend/app/domain/models.py`.
+- **There is no cross-tenant consent primitive in `trust/`** — it holds tenant keys,
+  the name vault, pseudonyms, break-glass and erasure. Do not write as though an
+  opt-in mechanism exists.
+
+### T4 — READY, but the acceptance test was broken
+
+- **Acceptance #2 was both unsatisfiable and vacuous.** A verifier ran it: deleting
+  `{group: shape, slot: iso_shape, type: token}` from `G-KMT-TI-TRUNC` does not move
+  the named metrics, and `KMT-VAL-005 / iso_shape` is **already the largest gap on
+  the undamaged pack** (785 rows vs 3 and 1 for its neighbours) — so any "fix next"
+  list ranks it first regardless. Replaced with a **pack-version diff**: the tool
+  compares two pack versions and names the regression.
+- **"Every pattern carries positive and negative examples" is not a rule.**
+  `engine/patterns.py:75-92` fails a pattern only for missing *positive* examples;
+  `examples_nomatch` run only when present. Adding a non-fatal lint warning for
+  missing negatives is a genuine improvement, but it is new, not existing.
+- **"Eleven families" is a corpus property.** The manifest declares **sixteen**;
+  five (cartridge, boring_bar, tap, toolholder, accessory) never occur in the corpus.
+- The corpus is `corpora/kmt_zcnc_2026-07_nomenclature.csv`, 6,717 data rows.
+
+### T5 — READY, and it uncovered a real hole in the gate
+
+- **`scripts/verify.sh` step 4 scans `engine/*.py` only.** It would not catch an
+  `anthropic` or `openai` import landing in `tools/`, `resolver/`, `identity/` or
+  `equivalence/`. Since this task introduces the first plausible route for exactly
+  that, widening the check is worth landing as its own commit.
+- `tools/eval_identity.py`'s Scorecard **already computes** `correct_abstention` /
+  `expected_abstention`. Extend it; do not write a second scorer.
+- "Reruns byte-identically for all arms" cannot hold — a live LLM arm is
+  nondeterministic. Engine and baseline arms are byte-reproducible; the LLM arm must
+  be record/replay with committed transcripts, or stubbed.
+- **Do not add an LLM SDK to `requirements.txt`** — it contradicts §1
+  offline-and-dependency-light. Optional import, skipped with a visible note.
+- The framing "there is no number for what the product does" is overstated: the repo
+  does have abstention semantics and a golden identity eval. This task is about
+  *real inbound text*, not about inventing measurement from nothing.
+
+### T7 — HELD. The task as written has a false premise.
+
+Do not run this prompt as specified. Four of its instructions refer to things that
+do not exist:
+
+- **"Reuse the existing hygiene-watch logic" — there is none in pie-portal.**
+  `rg -i hygiene` over the whole repository returns only prose in `docs/`. It is a
+  Claude skill, not backend code, and is not importable from the backend.
+- **"CSV upload" does not exist and is not a one-line addition.** There is no
+  `UploadFile` or multipart handler anywhere in `backend/app`, and `python-multipart`
+  — which FastAPI requires for form parsing — is not installed.
+- **`ingestion/erp/` is the wrong path for both acceptance entities.**
+  `ingestion/erp/base.py` states in its own module docstring that Zoho deliberately
+  does not register there.
+- **Value-weighted coverage cannot be computed** from what the platform currently
+  ingests.
+- The acceptance number is also **already stale**: the live SLS master holds
+  **15,082** items today (Zoho `/items`, `filter_by=Status.All`, 75×200 + 82), not
+  the published 15,028.
+- And "the measured misroute rate for partial decodes is 11.6%" **mislabels the
+  measurement**: doc 01 §3 says 30.3% of rows route to a named family and 11.6% *of
+  routed rows* carry a named non-Kennametal manufacturer — a contamination rate, not
+  a misroute rate.
+
+Rescope before running: decide whether the report is (a) offline-only over a
+supplied items export, which removes the upload and connector questions entirely,
+or (b) a live-Zoho tool, which needs the paging limit solved first — the connector's
+`page` parameter silently resets to 1 beyond roughly the 10,000-record window.

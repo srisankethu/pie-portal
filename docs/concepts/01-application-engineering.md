@@ -38,6 +38,15 @@ Two populations, and they are not the same population.
 Identity is exact only, via `identity/store.AuthoritativeIndex.lookup_material`.
 `Item.sku` holds the Kennametal MM#; `Item.name` holds the product code.
 
+**The denominator here is the item master, which is a graveyard.**
+[`14-traded-line-coverage.md`](14-traded-line-coverage.md) measures the same two
+halves over invoice lines instead — what actually moved — three ways and per
+entity. It is a lower bound for a structural reason worth knowing before reading
+either number: a line was invoiced because somebody could already identify the
+product, so that denominator conditions on the outcome this product exists to
+change. Its geometry gate is also stricter than the one above (it adds
+`corner_radius_mm`, per §3), so the two geometry figures must not be differenced.
+
 Coverage rises as the population narrows to the live, in-principal range:
 
 | Population | n | Identity | Geometry | Union |

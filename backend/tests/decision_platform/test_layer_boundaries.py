@@ -30,7 +30,14 @@ _APP = pathlib.Path(__file__).resolve().parents[2] / "app"
 #: Packages that compute or persist facts. None of them may import ``ai/`` —
 #: a number that an interpretation layer could reach is a number nobody can
 #: reproduce.
-DETERMINISTIC = ("attribution", "commercial", "signals", "ingestion", "state")
+#:
+#: ``enquiry/`` persists no number at all, and is here for the other half
+#: of the rule: it holds ``raw_text``, a customer's own words about their
+#: project, their volumes and their urgency. A model that could import it
+#: could be handed one tenant's commercial intelligence wholesale, which is
+#: a worse outcome than a number nobody can reproduce.
+DETERMINISTIC = ("attribution", "commercial", "enquiry", "ingestion",
+                 "signals", "state")
 
 #: Packages ``ai/`` must not import, which is the same rule read from the other
 #: side. ``attribution`` is here as well as in ``DETERMINISTIC`` because it is

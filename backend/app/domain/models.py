@@ -3676,3 +3676,196 @@ class ProcessLease(Base):
     #: After this instant anybody may take it. A lease rather than a lock: one a
     #: dead process keeps forever is the failure this shape exists to avoid.
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+# ── Inbound demand (canonical; a re-sync cannot rebuild it) ──────────────────
+#
+# Everything above this line is either a projection of Zoho or something
+# computed from one. These two tables are neither: an enquiry arrives as a
+# WhatsApp message or a PDF and exists nowhere else, so a complete re-sync
+# rebuilds nothing here. That is why they are not in ``state/``, whose whole
+# contract is "derived, never canonical", and why losing them is data loss
+# rather than a recompute.
+
+
+class InboundLine(Base):
+    """One line of one inbound enquiry, exactly as it arrived.
+
+    The instrument three separate things need, which is why it is one table and
+    not three:
+
+    * It is the only **coverage denominator that does not condition on
+      success**. Every other count in this schema starts from a quote, an order
+      or an invoice — a record that exists because something went right — so
+      dividing by any of them measures the wrong population. What "we answered
+      62% of what was asked of us" needs is a row per *ask*, written before
+      anyone knows how it ends.
+    * It is the **corpus an RFQ accuracy benchmark reads**. A benchmark over
+      cleaned text measures the cleaner.
+    * It is the raw material for **unquoted-demand reporting** — the lines that
+      went nowhere, which by construction appear in no other table.
+
+    **No normalisation at capture.** ``raw_text`` is the bytes the customer
+    sent: their casing, their spelling, their line breaks, their trailing
+    whitespace, their mojibake. This is the one rule the whole table rests on,
+    and it is the one a well-meaning change breaks first — a strip() at the
+    capture boundary looks like hygiene and quietly destroys the corpus, because
+    the parser under benchmark is the thing that is *supposed* to cope with the
+    mess. Normalise on the way out, per reader, never on the way in.
+
+    **Append-only, and no deduplication.** A row is never updated; there is no
+    supersede stamp here because there is nothing to supersede — what arrived,
+    arrived. Nor is there a uniqueness key, and that is deliberate rather than
+    an omission: the same customer asking for the same part twice in a week is
+    two enquiries and must count as two, so no key over the content could be
+    correct. A source system that redelivers one message twice is that adapter's
+    problem to solve on ``source_ref`` before calling ``enquiry.capture``, not a
+    constraint this table can express without lying about repeat demand.
+
+    **Per-tenant, and more sharply than most.** ``organization_id`` scopes every
+    row like every other entity (see this module's docstring), but the content
+    raises the stakes: ``raw_text`` is a customer's own words, routinely naming
+    their project, their end customer, their volumes and their urgency. It is
+    the tenant's commercial intelligence, not ours. A cross-tenant aggregate
+    over these rows — "what is the market asking for this quarter" — is an
+    obvious and genuinely valuable idea, and it **cannot be built today**: it
+    would need a consent primitive recording that a tenant agreed to contribute,
+    at what granularity and revocably, and no such record exists anywhere in
+    this codebase. ``trust/`` holds tenant keys, the encrypted name vault,
+    pseudonyms, break-glass and erasure — infrastructure for protecting one
+    tenant's data, not for asking permission to share it. So: strictly
+    per-tenant, and anyone reaching for the aggregate builds the consent record
+    first.
+
+    **No cost, no margin, ever.** Nothing here is economics: it is text, a
+    channel, a customer reference and two timestamps. A line's economics belong
+    to the quote it became (§1), and a column added here to save a join would
+    put cost one table closer to a surface that has no business seeing it.
+
+    ``customer_ref`` is free text, not a ``Customer`` FK. Enquiries arrive from
+    people who are not yet customers, from addresses that resolve to nobody, and
+    from names spelled the way the sender spells them. Resolving at capture
+    means either dropping the unresolvable — which are exactly the lines the
+    coverage report exists to count — or writing a guess into a foreign key.
+    Resolution is a later, lossy, re-runnable step over what was written here.
+    """
+
+    __tablename__ = "inbound_lines"
+    __table_args__ = (
+        # The export and the reporting window: one tenant's lines, by arrival.
+        Index("ix_inbound_lines_org_received", "organization_id", "received_at"),
+        # Coverage by route — "how much of what arrives on WhatsApp do we
+        # answer" is the question this table was asked for first.
+        Index("ix_inbound_lines_org_channel", "organization_id", "channel"),
+    )
+
+    inbound_line_id: Mapped[str] = mapped_column(String(64), primary_key=True,
+                                                 default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+
+    #: The customer's own words. ``Text``, not ``String(n)``: a pasted RFQ can
+    #: be a paragraph, and a truncated corpus is a silently wrong benchmark.
+    raw_text: Mapped[str] = mapped_column(Text)
+    #: An ``InboundChannel``.
+    channel: Mapped[str] = mapped_column(String(16))
+    #: Whatever identified the sender — a name, an email address, a phone
+    #: number. Verbatim, for the reason the class docstring gives.
+    customer_ref: Mapped[str] = mapped_column(String(255), default="")
+    #: Where this was read from: a message id, a file name, a portal request id.
+    #: Provenance, the same way every other persisted fact here carries it, and
+    #: the handle an adapter uses to notice it is redelivering.
+    source_ref: Mapped[str] = mapped_column(String(255), default="")
+
+    #: When the customer sent it — the business fact, and what every coverage
+    #: window filters on. Supplied by the adapter from the message itself.
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),
+                                                  default=_now)
+    #: When this platform wrote it down. Separate from ``received_at`` for the
+    #: reason ``BusinessEvent`` keeps two: a WhatsApp backlog imported on Friday
+    #: is not a Friday of demand.
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),
+                                                  default=_now)
+
+
+class InboundLineDisposition(Base):
+    """How one inbound line ended — and, once, how we used to think it ended.
+
+    Its own table rather than a column on ``InboundLine``, because the
+    requirement is that a disposition is **superseded, never mutated**, and a
+    column cannot hold two answers. A line marked NO_STOCK on Tuesday and
+    QUOTED on Thursday has to keep both readable: the first is what the coverage
+    report said that week, and a number that changed with no record of having
+    changed is a number nobody can defend.
+
+    The live disposition is the row with ``superseded_at IS NULL``, and the
+    partial unique index below is what makes "one live answer per line" a
+    database guarantee rather than a convention. It is the
+    ``uq_value_event_key_live`` idiom, chosen for the same reason: a plain
+    unique constraint would refuse the correction, which is exactly the
+    operation supersession exists to allow.
+
+    ``superseded_at`` is the one stamp written to an existing row, and the table
+    is still append-only in the sense that matters: the *claim* is immutable,
+    and the stamp only records that a newer claim replaced it. This is the rule
+    ``BusinessEvent`` and ``ValueEvent`` follow, and there is no second pattern
+    for it in this schema.
+
+    No ``superseded_by`` pointer, because here — unlike a document re-read — the
+    replacement genuinely is one-for-one, and the pointer would be derivable
+    from the line id and the timestamps. One stamp, following the two tables
+    that already made this choice.
+
+    Nothing here is economics. NO_PRICE is a coverage outcome, not a price; the
+    reason a line had no price is a commercial fact and stays in ``commercial/``
+    (§1). ``source_ref`` names the quote or the note the decision came from and
+    must not be used to smuggle one back.
+    """
+
+    __tablename__ = "inbound_line_dispositions"
+    __table_args__ = (
+        # One *live* disposition per line. Unique over the live rows only: a
+        # correction writes a second row for the same line, and a plain unique
+        # constraint would reject the very write this table is shaped around.
+        # Both backends support partial indexes (SQLite since 3.8, Postgres
+        # always), so this needs no dialect branch beyond naming the predicate
+        # twice.
+        Index("uq_inbound_line_disposition_live",
+              "organization_id", "inbound_line_id",
+              unique=True,
+              sqlite_where=text("superseded_at IS NULL"),
+              postgresql_where=text("superseded_at IS NULL")),
+        # The history read: every version for one line, oldest first.
+        Index("ix_inbound_line_dispositions_line", "inbound_line_id",
+              "recorded_at"),
+        # The report read: this tenant's outcomes by kind.
+        Index("ix_inbound_line_dispositions_org_disposition",
+              "organization_id", "disposition"),
+    )
+
+    disposition_id: Mapped[str] = mapped_column(String(64), primary_key=True,
+                                                default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    #: The line this is about. A real FK: a disposition for a line that does not
+    #: exist is not history, it is corruption, and the coverage numerator would
+    #: quietly exceed its denominator.
+    inbound_line_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("inbound_lines.inbound_line_id"), index=True)
+
+    #: A ``LineDisposition``. Terminal — see that enum for why there is no
+    #: PENDING member and what the absence of a row means.
+    disposition: Mapped[str] = mapped_column(String(16))
+    #: What the decision points at — "quote q7", "no ADR on record". Provenance,
+    #: never a number.
+    source_ref: Mapped[str] = mapped_column(String(255), default="")
+    decided_by_user_id: Mapped[Optional[str]] = mapped_column(String(64))
+
+    #: When the outcome happened. NO_RESPONSE in particular is decided by a
+    #: deadline passing, which is not when somebody got around to recording it.
+    decided_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),
+                                                 default=_now)
+    #: When this platform wrote it down.
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),
+                                                  default=_now)
+    #: Set when a later decision replaced this one. The row stays, and every
+    #: current-state read filters ``IS NULL``.
+    superseded_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True))

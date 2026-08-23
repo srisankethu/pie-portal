@@ -3641,3 +3641,38 @@ class QueuedMessage(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
                                                  index=True)
     finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+
+class ProcessLease(Base):
+    """Which process is currently the one doing a named job.
+
+    One row per named responsibility — ``sync-scheduler`` is the only one today.
+    A process claims it, renews it while it works, and the row's expiry is what
+    hands it on when that process dies.
+
+    It exists because "only one process does this" was a property of the
+    deployment rather than of the code: ``ingestion/scheduler`` reasoned from
+    "this deployment is one uvicorn process", while the image has shipped
+    ``--workers 2`` throughout. Two ticking threads, starting together, both
+    deciding an organization is due, and no constraint behind ``start_sync``'s
+    read of the active runs — so both queue a pull of the same books.
+
+    Derived and disposable: deleting this table costs the schedule a couple of
+    minutes of confusion and nothing else. Nothing computes from it, and no
+    business fact lives here.
+    """
+
+    __tablename__ = "process_leases"
+
+    #: The responsibility, not the holder. "sync-scheduler".
+    name: Mapped[str] = mapped_column(String(64), primary_key=True)
+    #: Which process holds it: "<pid>:<short random>", so an incident has a name
+    #: to grep for rather than a boolean.
+    holder: Mapped[str] = mapped_column(String(128))
+    acquired_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    #: Touched every time the holder renews — the tell that a holder is alive
+    #: rather than merely recorded.
+    renewed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    #: After this instant anybody may take it. A lease rather than a lock: one a
+    #: dead process keeps forever is the failure this shape exists to avoid.
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)

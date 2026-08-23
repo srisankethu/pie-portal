@@ -379,8 +379,14 @@ def queue_state(
             .limit(count)).all()
         return [_message_dict(r) for r in rows]
 
+    # Which process is the one ticking the schedule, so "why has nothing
+    # synced" has an answer on the same screen as "what is queued".
+    from .. import leases
+    from ..ingestion.scheduler import LEASE as SCHEDULER_LEASE
+
     return {
         "dispatch": settings.SYNC_DISPATCH,
+        "scheduler_ticker": leases.current_holder(session, SCHEDULER_LEASE),
         # Whether anything in *this* process drains the queue. False on an API
         # replica beside a dedicated worker is correct, not a fault — which is
         # why it is reported rather than judged here.

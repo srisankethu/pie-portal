@@ -179,8 +179,23 @@ def register_health_checks(engine: Any, session_factory: Any) -> None:
                 "Auto-sync scheduler was started but no live 'sync-scheduler' "
                 "thread remains"
             )
+        # Which process is the one that ticks. Every process runs the thread —
+        # that is what makes the schedule survive a restart of whichever one
+        # held it — so "running" here is not the same claim as "this deployment
+        # is scheduling". A live thread with no holder anywhere means the lease
+        # is stuck, and reporting it healthy would be the benign default.
+        from .. import leases
+
+        with session_factory() as session:
+            holder = leases.current_holder(session, sync_scheduler.LEASE)
+        if holder is None:
+            return HealthStatus.DEGRADED, (
+                f"Auto-sync scheduler thread is up but nothing holds the "
+                f"{sync_scheduler.LEASE} lease, so no process is ticking"
+            )
         return HealthStatus.HEALTHY, (
-            f"Auto-sync scheduler running (tick {sync_scheduler.TICK_SECONDS}s)"
+            f"Auto-sync scheduler running (tick {sync_scheduler.TICK_SECONDS}s); "
+            f"ticker is {holder}"
         )
 
     def check_queue() -> tuple[HealthStatus, Optional[str]]:

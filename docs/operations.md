@@ -577,6 +577,28 @@ interval: `QUEUE_DONE_RETENTION_DAYS` (14) for receipts,
 forever. A deployment with no worker running never prunes — one more reason the
 depth is worth a glance.
 
+### Which process ticks the schedule
+
+Every API process runs the auto-sync thread — that is what makes the schedule
+survive a restart of whichever one was doing the work — but only the holder of
+the `sync-scheduler` lease decides anything. `scheduler_ticker` on
+`GET /api/v1/internal/queue` names it, and `/api/health` reports it on the
+`scheduler` component.
+
+**Nothing is syncing and the thread is up.** If `scheduler_ticker` is null, the
+lease is stuck: no process holds it and none has taken it over. It expires three
+ticks (three minutes) after its holder last renewed, so this state should not
+outlast a restart — if it does, look at `process_leases` directly.
+
+**Two syncs of the same books.** This is the failure the lease exists to
+prevent, and finding it again means the lease is not being held: check that both
+API processes are running the same code, and that `process_leases` is present
+(a database migrated to `b8lease` or later).
+
+The lease is deliberately a *lease*, not a lock — a process killed while holding
+it blocks the schedule until the expiry passes and no longer. There is nothing
+to unstick by hand.
+
 ### Cache counters
 
 ```bash

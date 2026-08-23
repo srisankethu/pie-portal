@@ -9,15 +9,25 @@ bounded backoff, and readable during an incident.
 Append-and-update, and derived: nothing computes a number off these rows.
 Dropping the table loses the account of what ran and breaks nothing else.
 
+Chained after `a7inbound` rather than beside it. Both were written from
+`z6subject` on branches open at the same time, which left the history with two
+heads. The textbook join is a merge revision — and this repository cannot use
+one: `test_migrations_apply_one_at_a_time` and
+`test_the_newest_migration_is_reversible` walk the chain with `upgrade +1` /
+`downgrade -1`, and a revision with two parents makes a relative walk an
+"Ambiguous walk" that Alembic refuses. The tests are the statement that this
+history stays linear. Re-pointing an *unreleased* revision is the permitted
+half of §4's rule; the released one it now follows was not touched.
+
 Revision ID: a7queue
-Revises: z6subject
+Revises: a7inbound
 Create Date: 2026-08-22
 """
 from alembic import op
 import sqlalchemy as sa
 
 revision = "a7queue"
-down_revision = "z6subject"
+down_revision = "a7inbound"
 branch_labels = None
 depends_on = None
 

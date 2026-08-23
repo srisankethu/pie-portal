@@ -1002,6 +1002,150 @@ def test_an_acumatica_quote_kept_with_different_lines_is_unknown():
     assert "0 lines where this quote has 1" in str(e.value)
 
 
+# ── the NetSuite estimate write ─────────────────────────────────────────────
+# The one write here that cannot duplicate. PUT …/estimate/eid:{ref} upserts on
+# the external id, so arriving twice and arriving once are the same result —
+# which is why this call is marked replayable where the other two must not be.
+
+_NS_LINES = [{"code": "CNMG120408", "itemId": "1042", "qty": 4, "rate": "1250.00"}]
+
+
+class _NsHttp:
+    def __init__(self, routes):
+        self.routes = {k: list(v) if isinstance(v, list) else [v]
+                       for k, v in routes.items()}
+        self.calls: list[dict] = []
+
+    @staticmethod
+    def _what(method, url):
+        return (method, "suiteql" if "/query/v1/suiteql" in url else "record")
+
+    def request(self, method, url, **kw):
+        self.calls.append({"method": method, "url": url, **kw})
+        queue = self.routes.get(self._what(method, url))
+        if not queue:
+            return _Resp(404, {"error": "no route"})
+        resp = queue[0] if len(queue) == 1 else queue.pop(0)
+        return resp(kw.get("json")) if callable(resp) else resp
+
+
+def _ns(routes) -> netsuite.NetSuiteSource:
+    client = netsuite.NetSuiteClient(
+        account_id="ACCT", consumer_key="ck", consumer_secret="cs",
+        token_id="ti", token_secret="ts", http=_NsHttp(routes))
+    return netsuite.NetSuiteSource(client)
+
+
+def _ns_sent(src, what):
+    return [c for c in src._client._http.calls
+            if (("/query/v1/suiteql" in c["url"]) == (what == "suiteql"))]
+
+
+def _ns_rows(*rows):
+    return _Resp(200, {"items": list(rows), "hasMore": False})
+
+
+_NS_FOUND = _ns_rows({"id": "77", "tranid": "EST123", "lines": 1})
+_NS_CLEAN = {("PUT", "record"): _Resp(204),
+             ("POST", "suiteql"): _NS_FOUND}
+
+
+def test_a_netsuite_estimate_is_upserted_on_the_external_id():
+    """The reference is the external id, and the external id is the key the
+    upsert turns on — which is what makes sending twice safe here and unsafe
+    everywhere else."""
+    src = _ns(_NS_CLEAN)
+    doc = src.create_sales_quotes("Pitti", _NS_LINES, customer_ref="4400",
+                                  reference="QB-1-abcd")
+    (put,) = _ns_sent(src, "record")
+    assert put["url"].endswith("/services/rest/record/v1/estimate/eid:QB-1-abcd")
+    assert put["json"]["externalId"] == "QB-1-abcd"
+    assert put["json"]["entity"] == {"id": "4400"}
+    assert put["json"]["item"]["items"] == [
+        {"item": {"id": "1042"}, "quantity": "4", "rate": "1250.00"}]
+    assert put["headers"]["NetSuite-Idempotency-Key"] == "QB-1-abcd"
+    assert doc.number == "EST123" and doc.line_count == 1
+
+
+def test_a_5xx_on_the_netsuite_upsert_is_retried_where_the_others_may_not_be():
+    """The behavioural half of "keyed", and the reason it is worth having.
+
+    A 5xx on the Business Central or Acumatica write raises SourceWriteUncertain
+    and is never sent again — the transport cannot tell "never arrived" from
+    "arrived, answer lost", and guessing wrong makes two quotes. On an upsert
+    keyed by external id those two outcomes are the same outcome, so the call
+    keeps its retry budget and simply succeeds.
+    """
+    src = _ns({("PUT", "record"): [_Resp(503), _Resp(204)],
+               ("POST", "suiteql"): _NS_FOUND})
+    doc = src.create_sales_quotes("Pitti", _NS_LINES, customer_ref="4400",
+                                  reference="QB-1-abcd")
+    assert doc.number == "EST123"
+    assert len(_ns_sent(src, "record")) == 2, (
+        "the keyed upsert was refused a retry it is safe to have")
+
+
+def test_a_netsuite_estimate_is_read_back_rather_than_trusted():
+    """An upsert that updated an existing estimate and one that created it look
+    the same in the response. The read is what turns that into a fact."""
+    src = _ns({("PUT", "record"): _Resp(204),
+               ("POST", "suiteql"): _ns_rows()})
+    with pytest.raises(SourceWriteUnknown) as e:
+        src.create_sales_quotes("Pitti", _NS_LINES, customer_ref="4400",
+                                reference="QB-1-abcd")
+    assert "did not return it" in str(e.value)
+
+
+def test_a_netsuite_estimate_kept_with_different_lines_is_unknown():
+    src = _ns({("PUT", "record"): _Resp(204),
+               ("POST", "suiteql"): _ns_rows({"id": "77", "tranid": "EST123",
+                                              "lines": 3})})
+    with pytest.raises(SourceWriteUnknown) as e:
+        src.create_sales_quotes("Pitti", _NS_LINES, customer_ref="4400",
+                                reference="QB-1-abcd")
+    assert "3 lines where this quote has 1" in str(e.value)
+
+
+def test_a_netsuite_refusal_is_a_write_outcome_not_a_bare_transport_error():
+    src = _ns({("PUT", "record"): _Resp(400, {"detail": "invalid entity"}),
+               ("POST", "suiteql"): _NS_FOUND})
+    with pytest.raises(SourceWriteRefused) as e:
+        src.create_sales_quotes("Pitti", _NS_LINES, customer_ref="4400",
+                                reference="QB-1-abcd")
+    assert "refused the estimate" in str(e.value)
+
+
+def test_a_netsuite_estimate_without_a_reference_or_lines_is_refused_unwritten():
+    for kwargs, lines in ((dict(customer_ref="4400", reference=""), _NS_LINES),
+                          (dict(customer_ref="", reference="QB-1-a"), _NS_LINES),
+                          (dict(customer_ref="4400", reference="QB-1-a"), [])):
+        src = _ns(_NS_CLEAN)
+        with pytest.raises(SourceWriteRefused):
+            src.create_sales_quotes("Pitti", lines, **kwargs)
+        assert not _ns_sent(src, "record")
+
+
+def test_a_netsuite_line_with_no_item_id_or_no_price_is_refused():
+    for line in ({"code": "MYSTERY", "qty": 1, "rate": "1"},
+                 {"code": "C1", "itemId": "1042", "qty": 1, "rate": None}):
+        src = _ns(_NS_CLEAN)
+        with pytest.raises(SourceWriteRefused) as e:
+            src.create_sales_quotes("Pitti", [line], customer_ref="4400",
+                                    reference="QB-1-a")
+        assert e.value.codes == [line["code"]]
+        assert not _ns_sent(src, "record")
+
+
+def test_a_reference_carrying_a_quote_cannot_forge_the_suiteql_lookup():
+    """SuiteQL ends a string literal at a single quote exactly as OData does,
+    so the same doubling applies — one rule, one helper, three connectors."""
+    src = _ns(_NS_CLEAN)
+    src.create_sales_quotes("Pitti", _NS_LINES, customer_ref="4400",
+                            reference="QB-1-o'brien")
+    (query,) = _ns_sent(src, "suiteql")
+    assert "o''brien" in query["json"]["q"]
+
+
 def test_transport_backs_off_a_429_and_gives_up_as_a_throttle():
     t = _Quiet(_Http([_Resp(429), _Resp(429), _Resp(429)]))
     with pytest.raises(SourceThrottleError):
@@ -1365,10 +1509,13 @@ def test_the_catalog_declares_every_form_a_client_can_render(client):
     # told "can create quotes here" beside a send that refuses has been told
     # something false, and that gap is a whole window wide while a writer is
     # being built.
-    for key in ("zoho", "dynamics365", "acumatica"):
+    for key in ("zoho", "dynamics365", "acumatica", "netsuite"):
         assert by_key[key]["writes"] == ["sales_quotes"]
         assert by_key[key]["can_write_quotes"] is True
-    for key in ("netsuite", "prophet21", "sagex3", "sage100"):
+    # The three the write spike found no reachable surface for. Their access
+    # copy says read-only and it is true; a screen offering a send here would
+    # ask an owner for a permission that cannot exist.
+    for key in ("prophet21", "sagex3", "sage100"):
         assert by_key[key]["can_write_quotes"] is False, (
             f"{key} offers a send with no writer behind it")
         assert by_key[key]["writes"] == []

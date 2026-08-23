@@ -31,7 +31,7 @@ from ..source import SkipPredicate
 from ..write_settle import settle_by_read
 from .base import (ConnectorSpec, CredentialMaterial, DocumentTally, Field,
                    Permission, WrittenDocument, iso_date, money,
-                   odata_str, register, same_reference)
+                   quote_literal, register, same_reference)
 from .transport import RestTransport
 
 SYSTEM = "dynamics365"
@@ -513,7 +513,7 @@ class BusinessCentralSource:
         rows = self._client.pages(
             "salesQuotes", company_id=self._company,
             params={"$expand": "salesQuoteLines",
-                    "$filter": f"externalDocumentNumber eq '{odata_str(reference)}'"})
+                    "$filter": f"externalDocumentNumber eq '{quote_literal(reference)}'"})
         for row in rows:
             if same_reference(str(row.get("externalDocumentNumber") or ""), reference):
                 return row

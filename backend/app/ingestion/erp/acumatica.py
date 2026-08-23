@@ -28,7 +28,7 @@ from ..source import SkipPredicate
 from ..write_settle import settle_by_read
 from .base import (ConnectorSpec, CredentialMaterial, DocumentTally, Field,
                    Permission, WrittenDocument, first, in_window, iso_date,
-                   money, odata_str, register, same_reference)
+                   money, quote_literal, register, same_reference)
 from .transport import RestTransport
 
 SYSTEM = "acumatica"
@@ -493,7 +493,7 @@ class AcumaticaSource:
         rows = self._client.entities(
             "SalesOrder", expand="Details",
             filter_=(f"OrderType eq '{_QUOTE_ORDER_TYPE}' and "
-                     f"CustomerOrderNbr eq '{odata_str(reference)}'"))
+                     f"CustomerOrderNbr eq '{quote_literal(reference)}'"))
         for row in rows:
             plain = _plain(row)
             if same_reference(str(plain.get("CustomerOrderNbr") or ""), reference):

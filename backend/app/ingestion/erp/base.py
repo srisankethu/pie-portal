@@ -358,10 +358,16 @@ def split_credential_inputs(spec: ConnectorSpec,
 # "safe to send again" about a record that exists.
 
 
-def odata_str(value: str) -> str:
-    """One string literal in an OData filter. A quote in the value ends the
-    literal early, and OData escapes it by doubling — so a reference carrying
-    one would otherwise build a filter that means something else."""
+def quote_literal(value: str) -> str:
+    """One string literal inside a query, whichever grammar is asking.
+
+    A single quote in the value ends the literal early and the rest of it
+    becomes syntax — so a reference carrying one builds a filter that means
+    something other than what was asked. OData and SQL escape it the same way,
+    by doubling, which is why the connectors reading through OData filters and
+    the one reading through SuiteQL share this rather than each keeping a copy
+    of a one-line rule that is easy to write subtly wrong.
+    """
     return value.replace("'", "''")
 
 

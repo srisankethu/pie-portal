@@ -416,7 +416,7 @@ def quote_writer_ready(connector: str) -> bool:
 #: write the quote into a different system's ledger and invent the provenance
 #: the customer's own row never recorded.
 _QUOTE_ADAPTERS: frozenset[str] = frozenset(
-    {ZOHO_CONNECTOR, "dynamics365", "acumatica"})
+    {ZOHO_CONNECTOR, "dynamics365", "acumatica", "netsuite"})
 
 
 def book_for_customer(session: Session, organization_id: str,

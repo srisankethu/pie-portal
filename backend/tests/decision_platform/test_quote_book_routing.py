@@ -229,12 +229,17 @@ def test_another_organizations_connection_does_not_answer(session):
         book_for_customer(session, org_a, customer)
 
 
-def _connect_netsuite(session, org, label="US Books", company_id="1234567"):
-    """A connected company in another system, through the generic ERP path so
-    the row is shaped exactly as a real one is."""
-    return connect_erp(session, org, connector="netsuite", label=label, values={
-        "consumer_key": "ck", "consumer_secret": "cs", "token_id": "ti",
-        "token_secret": "ts", "company_id": company_id})
+def _connect_readonly(session, org, label="US Books", company_id="P21CO"):
+    """A connected company this platform reads and cannot write to.
+
+    Prophet 21 rather than NetSuite: NetSuite gained an estimate writer, and a
+    test that needs a read-only connector must name one that actually is. The
+    write spike found no reachable write surface for P21's OData reads, so this
+    is the honest stand-in and will stay one.
+    """
+    return connect_erp(session, org, connector="prophet21", label=label, values={
+        "base_url": "https://p21.example", "username": "u", "password": "p",
+        "company_id": company_id})
 
 
 def _connect_bc(session, org, label="US Books", company_id="bc-company-guid"):
@@ -285,12 +290,12 @@ def test_a_non_zoho_company_never_stands_in_for_a_missing_zoho_one(session):
     bare ValueError — which ``books_for_quote`` does not catch, so an HTTP 500
     stood where a refusal belongs."""
     org = _org(session)
-    _connect_netsuite(session, org)
+    _connect_readonly(session, org)
     customer = _customer(session, org, connection_id=None, connector=None)
 
     with pytest.raises(ConnectionNotFound) as e:
         book_for_customer(session, org, customer)
-    assert "netsuite" in str(e.value)
+    assert "prophet21" in str(e.value)
 
 
 def test_the_customers_own_non_zoho_connection_is_refused_by_name(session):
@@ -300,13 +305,13 @@ def test_the_customers_own_non_zoho_connection_is_refused_by_name(session):
     rather than "disabled" — a refusal naming the wrong cause sends whoever
     reads it to the connections screen to re-enable something already on."""
     org = _org(session)
-    ns = _connect_netsuite(session, org)
+    ns = _connect_readonly(session, org)
     customer = _customer(session, org, connection_id=ns.connection_id,
                          connector=None)
 
     with pytest.raises(ConnectionNotFound) as e:
         book_for_customer(session, org, customer)
-    assert "netsuite" in str(e.value)
+    assert "prophet21" in str(e.value)
 
 
 def test_one_zoho_book_beside_another_system_is_refused_on_provenance(session):
@@ -320,7 +325,7 @@ def test_one_zoho_book_beside_another_system_is_refused_on_provenance(session):
     Zoho estimate would invent it."""
     org = _org(session)
     _connect(session, org, "60036630487", "SLS Engineers")
-    _connect_netsuite(session, org)
+    _connect_readonly(session, org)
     customer = _customer(session, org, connection_id=None, connector=None)
 
     with pytest.raises(ConnectionNotFound) as e:
@@ -331,7 +336,7 @@ def test_one_zoho_book_beside_another_system_is_refused_on_provenance(session):
     assert "Which one" not in msg
     # The reason actually given: unrecorded provenance that may be the other
     # system, which is why the estimate cannot be written.
-    assert "netsuite" in msg
+    assert "prophet21" in msg
     assert "invent the provenance" in msg
     assert "re-sync" in msg.lower()
 
@@ -343,7 +348,7 @@ def test_several_zoho_books_still_ask_which_one(session):
     org = _org(session)
     _connect(session, org, "60036630487", "SLS Engineers")
     _connect(session, org, "60036630626", "4U Precision")
-    _connect_netsuite(session, org)
+    _connect_readonly(session, org)
     customer = _customer(session, org, connection_id=None, connector=None)
 
     with pytest.raises(ConnectionNotFound) as e:
@@ -351,4 +356,4 @@ def test_several_zoho_books_still_ask_which_one(session):
     msg = str(e.value)
     assert "2 connected companies a quote can be created in" in msg
     assert "Which one" in msg
-    assert "netsuite" in msg
+    assert "prophet21" in msg

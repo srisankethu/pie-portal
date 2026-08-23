@@ -97,12 +97,37 @@ shapes, which is why the same code runs on both backends.
   convention and are copied as exactly that; nothing is reinterpreted.
 - **No per-tenant databases.** `organization_id` is the tenant boundary on
   every owned row (it already was); one database, role-scoped by the API.
-- **Least privilege**: the app's database user owns its own database and
-  nothing else — it needs no SUPERUSER, no CREATEDB, no CREATEROLE. The
-  compose stack's single-purpose user satisfies this by construction; on a
-  shared server, create the role yourself rather than reusing an admin one.
-  Migrations run as the same user (they create tables in its own database),
-  as a deliberate operator step — never automatically at boot.
+- **Least privilege**: the app's database user should own its own database and
+  nothing else — no SUPERUSER, no CREATEDB, no CREATEROLE. Migrations run as
+  that user (they create tables in its own database), as a deliberate operator
+  step, never automatically at boot.
+
+  **The compose stack does not satisfy this, and this bullet used to claim it
+  did — "by construction", which was the opposite of true.** `postgres:17-alpine`
+  runs `initdb -U "$POSTGRES_USER"`, and `initdb -U` creates the cluster's
+  *bootstrap superuser*. So `pie_portal` is a superuser and the owner of every
+  table Alembic builds. On a shared or managed server, where you create the
+  role yourself with `CREATE ROLE … LOGIN NOSUPERUSER`, the bullet is accurate;
+  on the compose stack it never was.
+
+  This matters far beyond tidiness now that row-level security is arriving: a
+  superuser carries `rolbypassrls`, which **no policy can override and
+  `FORCE ROW LEVEL SECURITY` does not touch** — FORCE binds a table's owner,
+  nothing binds BYPASSRLS. Tenant isolation enforced by policy is therefore
+  inert for this connection. Verified rather than reasoned about: a fail-closed
+  policy on a probe table returned every row to it.
+
+  `scripts/pg_sandbox.sh` provisions a second role, `pie_app`
+  (`LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS`, owner of nothing),
+  and prints its URL from `pg_sandbox.sh app-url`. That is the role
+  `tests/decision_platform/test_row_level_security.py` connects as, and it is
+  the shape a production deployment has to reach before policies mean anything
+  there. Reaching it is not just a `CREATE ROLE`: this codebase has one engine
+  and one `DATABASE_URL` (`app/db.py`), shared by request handlers and by every
+  background job and CLI — and a background job legitimately works across
+  tenants, so it cannot connect as a tenant-scoped role. Splitting those two
+  connections is the prerequisite for turning policies on, and it has not been
+  done yet.
 
 ## What stays SQLite, and the honest caveat
 

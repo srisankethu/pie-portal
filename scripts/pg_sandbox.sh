@@ -65,6 +65,53 @@ url() {
   echo "postgresql+psycopg://pie@/pie_verify?host=$SOCKET_DIR&port=$PORT"
 }
 
+# The same database as `url`, reached as the *application* role rather than as
+# the owner. This is the only URL a row-level-security test may use, and the
+# distinction is the whole reason the role exists.
+#
+# `pie` is the cluster's bootstrap superuser: `initdb -U pie` makes it one, and
+# a superuser carries `rolbypassrls`, which means **every** row-level security
+# policy is ignored for it. A policy suite run over `url` would pass while
+# proving nothing — a fail-closed policy returns every row to that role, which
+# was checked rather than assumed before this was written. `ALTER TABLE …
+# FORCE ROW LEVEL SECURITY` binds a table's *owner*; nothing binds BYPASSRLS.
+#
+# So `pie_app` is NOSUPERUSER, NOBYPASSRLS, and deliberately not the owner of
+# anything. It is the closest thing this harness has to how a correctly
+# configured production deployment connects — which is the state
+# `docs/postgres.md` describes and `compose.yaml` does not yet reach.
+app_url() {
+  echo "postgresql+psycopg://pie_app@/pie_verify?host=$SOCKET_DIR&port=$PORT"
+}
+
+# Created on every start rather than only on first init: the data directory
+# outlives a single run (`start` is a no-op when it exists), so a sandbox left
+# over from before this role existed would otherwise never grow one.
+#
+# The grants are on the *schema*, not on tables — Alembic creates those later,
+# and `ALTER DEFAULT PRIVILEGES` makes each one reachable as it appears without
+# a second pass after every migration. USAGE on sequences is what lets an
+# INSERT reach a serial default.
+ensure_app_role() {
+  local PGBIN="$1"
+  as_pg_owner "'$PGBIN/psql' -h '$SOCKET_DIR' -p $PORT -U pie -d pie_verify -v ON_ERROR_STOP=1 -q -c \"
+    DO \\\$\\\$
+    BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'pie_app') THEN
+        CREATE ROLE pie_app LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;
+      END IF;
+    END
+    \\\$\\\$;
+    GRANT USAGE ON SCHEMA public TO pie_app;
+    GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO pie_app;
+    GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO pie_app;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public
+      GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO pie_app;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public
+      GRANT USAGE, SELECT ON SEQUENCES TO pie_app;
+  \" >/dev/null"
+}
+
 start() {
   PGBIN="$(find_pg_bin)"
   if [ -z "${PGBIN:-}" ]; then
@@ -82,6 +129,7 @@ start() {
       -c max_connections=200\" start >/dev/null"
   fi
   as_pg_owner "'$PGBIN/createdb' -h '$SOCKET_DIR' -p $PORT -U pie pie_verify 2>/dev/null" || true
+  ensure_app_role "$PGBIN"
   url
 }
 
@@ -97,6 +145,7 @@ case "${1:-}" in
   start) start ;;
   stop)  stop ;;
   url)   url ;;
+  app-url) app_url ;;
   bin)   find_pg_bin ;;
-  *) echo "usage: $0 start|stop|url|bin" >&2; exit 2 ;;
+  *) echo "usage: $0 start|stop|url|app-url|bin" >&2; exit 2 ;;
 esac

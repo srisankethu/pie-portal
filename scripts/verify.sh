@@ -177,6 +177,7 @@ else
   # silently passed, exactly the pie-parser arrangement above.
   step "6/7  migrations from nothing — PostgreSQL"
   PG_COVERED=1
+  RLS_COVERED=1
   PG_SANDBOX_STARTED=0
   PG_URL="${PG_VERIFY_URL:-}"
   if [ -z "$PG_URL" ]; then
@@ -188,6 +189,7 @@ else
   fi
   if [ -z "$PG_URL" ]; then
     PG_COVERED=0
+    RLS_COVERED=0
     printf '\033[33mnote:\033[0m no PostgreSQL server binaries and no PG_VERIFY_URL.\n'
     printf '      The Postgres migration check will SKIP. Everything else still runs.\n'
     printf '      To cover it: install postgresql (the server), or point\n'
@@ -201,6 +203,38 @@ else
       printf '      re-running to show the failure:\n'
       (cd backend && DATABASE_URL="$PG_URL" $PY ../scripts/verify_pg_migrations.py) 2>&1 | tail -25
       fail "Postgres: alembic upgrade head on an empty database, or drift"
+    fi
+
+    # Row-level security, which cannot be exercised anywhere else in this gate.
+    # Step 3 runs the suite on SQLite, which has no policies and no connection
+    # settings, so these tests skip there — and a security control whose tests
+    # only ever skip is a control nobody has checked.
+    #
+    # They need *two* URLs and the difference between them is the point: the
+    # sandbox's own role is the cluster superuser (`initdb -U pie`), and a
+    # superuser carries `rolbypassrls`, which no policy and no FORCE can
+    # override. Run over that connection the suite would pass while proving
+    # nothing. `app-url` is a role that is neither superuser nor owner.
+    #
+    # Only the sandbox can offer it. A caller-supplied PG_VERIFY_URL points at
+    # a server this script did not provision and has no business creating roles
+    # on, so that path skips with a note rather than guessing a username.
+    if [ "$PG_SANDBOX_STARTED" = 1 ]; then
+      RLS_URL="$(./scripts/pg_sandbox.sh app-url)"
+      if (cd backend && PIE_TEST_RLS_URL="$RLS_URL" PIE_TEST_RLS_OWNER_URL="$PG_URL" \
+            $PY -m pytest tests/decision_platform/test_row_level_security.py -q) >/dev/null 2>&1; then
+        pass "row-level security is fail-closed for a non-bypassing role"
+      else
+        printf '      re-running to show the failure:\n'
+        (cd backend && PIE_TEST_RLS_URL="$RLS_URL" PIE_TEST_RLS_OWNER_URL="$PG_URL" \
+           $PY -m pytest tests/decision_platform/test_row_level_security.py -q) 2>&1 | tail -25
+        fail "row-level security"
+      fi
+    else
+      RLS_COVERED=0
+      printf '\033[33mnote:\033[0m PG_VERIFY_URL points at a server this script did not\n'
+      printf '      provision, so it will not create the non-bypassing role the\n'
+      printf '      row-level-security tests need. That check will SKIP.\n'
     fi
   fi
 
@@ -259,7 +293,7 @@ if [ ${#FAILED[@]} -eq 0 ]; then
     # a stamp that lies is worse than no stamp.
     ./scripts/source_signature.sh > .verify-stamp 2>/dev/null || true
     if [ "$PIE_AVAILABLE" = "0" ] || [ "${PG_COVERED:-1}" = "0" ] \
-       || [ "${DRILL_COVERED:-1}" = "0" ]; then
+       || [ "${DRILL_COVERED:-1}" = "0" ] || [ "${RLS_COVERED:-1}" = "0" ]; then
       # Still stamped: the gate did run, and nagging a developer who simply has
       # no submodule would train them to ignore the hook. But a narrowed run must
       # never read as a full one, so the verdict says which part went uncovered.
@@ -277,6 +311,12 @@ if [ ${#FAILED[@]} -eq 0 ]; then
         printf '      · the restore drill was SKIPPED — no pg_dump/psql client on\n'
         printf '        this machine. CI covers it. Production is the only place a\n'
         printf '        backup matters, so cover it locally before a deploy.\n'
+      fi
+      if [ "${RLS_COVERED:-1}" = "0" ]; then
+        printf '      · the row-level-security checks were SKIPPED — they need a\n'
+        printf '        PostgreSQL role that does not bypass RLS, which only the\n'
+        printf '        sandbox provisions. SQLite has no policies, so nothing\n'
+        printf '        else in this gate says anything about tenant isolation.\n'
       fi
     else
       printf '\033[32mVERIFIED\033[0m — all checks passed.\n'

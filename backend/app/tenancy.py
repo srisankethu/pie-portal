@@ -1,0 +1,106 @@
+"""Which tenant this database connection is currently acting for.
+
+PostgreSQL row-level security decides what a query can see from a *connection
+setting*, not from anything in the SQL. This module owns that setting: one
+name, one place it is written, one place it is read.
+
+**Why a GUC and not a WHERE clause.** Every tenant-scoped query in this
+codebase already filters on ``organization_id``, and 72 of the 74 models carry
+the column. That is the control today and it works exactly as long as nobody
+forgets — and the survey that preceded this module found several places where
+the filter is in Python rather than in SQL (``ingestion/connections.py`` reads
+every credential row and decides in a comprehension). A policy attached to the
+table is the version that holds when the query is the one nobody reviewed.
+
+**Fail-closed by construction, not by care.** ``current_setting(name, true)``
+returns NULL when the setting has never been assigned, and a policy of the form
+``organization_id = current_setting('app.current_org', true)`` is NULL — not
+true — for every row. So a connection that never announced a tenant sees
+**nothing**, rather than everything. That is the opposite of the default this
+codebase keeps finding (§1: absence of evidence is not a pass), and it is worth
+knowing that it comes from SQL's three-valued logic rather than from a check
+somebody remembered to write.
+
+**Why ``set_config`` rather than ``SET LOCAL``.** ``SET LOCAL app.current_org =
+'…'`` cannot take a bind parameter — the value has to be interpolated into the
+statement text, and the value here is a string that arrived over the network.
+``set_config(name, value, is_local => true)`` is the same operation as a
+function call, so the tenant id travels as a parameter and there is no way to
+spell an organization id that ends the statement and starts another one.
+
+**Why ``LOCAL``.** The setting is scoped to the transaction and reverts at
+commit or rollback. ``db.get_session`` opens a session per request and commits
+or rolls back at the end of it, so the tenant cannot outlive the request that
+established it and leak into whatever the pooled connection serves next. A
+session-scoped ``SET`` would do exactly that, and the bug would appear only
+under load.
+
+**SQLite is a no-op, and that is a hole rather than a design.** SQLite has no
+row-level security and no connection settings, so on the dialect that dev and
+most of the test suite run, none of this enforces anything — the Python
+``organization_id`` filters remain the only control there. Anything relying on
+this for isolation must be tested on PostgreSQL, which is what
+``tests/decision_platform/test_row_level_security.py`` exists for.
+"""
+from __future__ import annotations
+
+from typing import Optional
+
+from sqlalchemy import text
+from sqlalchemy.orm import Session
+
+#: The connection setting every policy reads. A custom GUC needs a prefix with
+#: a dot or PostgreSQL rejects it as an unrecognised parameter.
+GUC = "app.current_org"
+
+_SET = text("SELECT set_config(:name, :value, true)")
+_GET = text("SELECT current_setting(:name, true)")
+
+
+def _is_postgres(session: Session) -> bool:
+    bind = session.get_bind()
+    return bool(bind is not None and bind.dialect.name == "postgresql")
+
+
+def set_tenant(session: Session, organization_id: str) -> None:
+    """Announce the tenant this transaction is acting for.
+
+    Call it *before* the first query that reads tenant data, which for a request
+    means before ``load_principal`` looks the user up — the organization is
+    known at that point from the signed token, without a database read.
+
+    An empty id is refused rather than written, because ``set_config(…, '')``
+    sets the GUC to the empty string, and an empty string is not NULL: a policy
+    comparing against it stops being NULL-and-therefore-false and starts being
+    an ordinary mismatch. Both deny, but only one of them still denies if a
+    column somewhere is ever empty too.
+    """
+    if not organization_id:
+        raise ValueError("refusing to set an empty tenant; clear_tenant() is the "
+                         "way to say 'no tenant'")
+    if _is_postgres(session):
+        session.execute(_SET, {"name": GUC, "value": organization_id})
+
+
+def clear_tenant(session: Session) -> None:
+    """Say that this transaction acts for no tenant — so it may see no tenant rows.
+
+    Restores NULL rather than setting an empty string, so the policies stay in
+    their fail-closed state rather than in a state that merely matches nothing.
+    """
+    if _is_postgres(session):
+        session.execute(text("RESET " + GUC))
+
+
+def current_tenant(session: Session) -> Optional[str]:
+    """The tenant this transaction announced, or ``None``.
+
+    A read, for tests and for a health or diagnostic surface. It is deliberately
+    not used to *decide* anything in application code: the authority on which
+    tenant a request belongs to is the principal, and a second source for that
+    is how the two come to disagree.
+    """
+    if not _is_postgres(session):
+        return None
+    value = session.execute(_GET, {"name": GUC}).scalar()
+    return value or None

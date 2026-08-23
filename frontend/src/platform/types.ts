@@ -1448,7 +1448,7 @@ export interface AttributionProductivity {
   approvals_turned_round: number;
 }
 
-/** `GET /api/attribution/summary`.
+/** `GET /api/v1/attribution/summary`.
  *
  *  Everything below `evidence_gaps` is optional because an organization with no
  *  trial on record gets a three-field payload: the trial, a null headline and
@@ -1568,7 +1568,7 @@ export interface FloorBacktest {
   by_customer: { name: string; lines: number; revenue: MoneyString | null }[];
 }
 
-/** `GET /api/attribution/events`. A page of the ledger — never a rollup. */
+/** `GET /api/v1/attribution/events`. A page of the ledger — never a rollup. */
 export interface AttributionEvents {
   events: ValueEventRow[];
   total: number;
@@ -1623,7 +1623,7 @@ export interface AttributionBaseline {
   thresholds_version: string | null;
 }
 
-/** `GET /api/attribution/evaluation` — owner only. The summary, plus the
+/** `GET /api/v1/attribution/evaluation` — owner only. The summary, plus the
  *  before/during comparison and the return on what the platform costs. */
 export interface AttributionEvaluation extends AttributionSummary {
   baseline: AttributionBaseline | null;

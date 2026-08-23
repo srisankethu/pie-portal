@@ -197,17 +197,17 @@ class HeavyQuoteWorkloadScenario:
     @staticmethod
     def create_quote(org_id: str, user_id: int) -> None:
         """Create a new quote."""
-        # POST /api/quotes
+        # POST /api/v1/quotes
 
     @staticmethod
     def parse_intake(org_id: str, user_id: int) -> None:
         """Parse RFQ text."""
-        # POST /api/quotes/{id}/intake
+        # POST /api/v1/quotes/{id}/intake
 
     @staticmethod
     def resolve_supply(org_id: str, user_id: int) -> None:
         """Resolve product via pie-parser."""
-        # POST /api/quotes/{id}/set-supply
+        # POST /api/v1/quotes/{id}/set-supply
 
 
 class HeavyAnalyticsScenario:

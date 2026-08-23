@@ -55,7 +55,7 @@ from ..zoho import (
 )
 
 log = logging.getLogger("pie_portal.quote")
-router = APIRouter(prefix="/api/quotes", tags=["quotes"])
+router = APIRouter(prefix="/api/v1/quotes", tags=["quotes"])
 
 
 def _get_quote(quote_id: str, org: str) -> Quote:

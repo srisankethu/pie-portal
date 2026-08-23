@@ -71,7 +71,7 @@ from ..authz import Principal, require_manager_or_owner, require_owner
 from ..db import get_session
 from ..domain.enums import ValueClass, ValueEventType
 
-router = APIRouter(prefix="/api/attribution", tags=["attribution"])
+router = APIRouter(prefix="/api/v1/attribution", tags=["attribution"])
 
 #: One page of the ledger. Small by default because the drill-down is read
 #: before it is audited, and capped because "show me everything" over an

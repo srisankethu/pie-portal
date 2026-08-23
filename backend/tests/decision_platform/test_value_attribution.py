@@ -463,7 +463,7 @@ def test_the_headline_never_includes_potential_or_estimated(session, trial):
 
 
 def test_the_headline_stays_attributed_only_over_http(client):
-    body = client.get("/api/attribution/summary",
+    body = client.get("/api/v1/attribution/summary",
                       headers=_hdr(client, MANAGER)).json()
     # Money crosses the wire as a JSON string, never a float — a rupee figure
     # that round-trips through binary floating point is not the figure stored.
@@ -509,7 +509,7 @@ def test_the_two_empty_states_read_differently_over_http(client):
     s.query(models.ValueEvent).delete()
     s.commit()
     s.close()
-    empty = client.get("/api/attribution/summary", headers=manager).json()
+    empty = client.get("/api/v1/attribution/summary", headers=manager).json()
     assert empty["attributed_value"] is None
     assert "not a measured zero" in (empty["empty_reason"] or "")
 
@@ -517,7 +517,7 @@ def test_the_two_empty_states_read_differently_over_http(client):
     led.record(s, ORG, _draft(ValueClass.POTENTIAL, POTENTIAL_AMOUNT))
     s.commit()
     s.close()
-    measured = client.get("/api/attribution/summary", headers=manager).json()
+    measured = client.get("/api/v1/attribution/summary", headers=manager).json()
     assert measured["attributed_value"] is not None
     assert Decimal(measured["attributed_value"]) == 0
     assert measured["empty_reason"] is None
@@ -587,11 +587,11 @@ def test_the_report_says_unknown_rather_than_dividing_by_nothing(session, trial)
 
 def test_the_evaluation_endpoint_is_owner_only_and_answers_unknown(client):
     owner = _hdr(client, OWNER)
-    assert client.get("/api/attribution/evaluation",
+    assert client.get("/api/v1/attribution/evaluation",
                       headers=_hdr(client, MANAGER)).status_code == 403
 
     for params in ({}, {"pie_cost": "0"}):
-        body = client.get("/api/attribution/evaluation",
+        body = client.get("/api/v1/attribution/evaluation",
                           headers=owner, params=params).json()
         assert body["roi"] is None, f"{params} produced a ratio from nothing"
         assert body["roi_is_unknown"] is True
@@ -654,7 +654,7 @@ def test_every_unmeasurable_event_type_is_a_named_gap_not_a_measured_zero(
 
 
 def test_the_named_gaps_survive_to_the_screen(client):
-    body = client.get("/api/attribution/summary",
+    body = client.get("/api/v1/attribution/summary",
                       headers=_hdr(client, MANAGER)).json()
     named = {gap["subject"] for gap in body["evidence_gaps"]}
     for event_type in (ValueEventType.LOST_SALE_RECOVERED,
@@ -871,10 +871,10 @@ def test_an_expired_trial_can_still_read_what_pie_was_worth(monkeypatch):
     hdr = _hdr(tc, LAPSED_OWNER)
 
     # The whole surface answers, rather than 403-ing the way it used to.
-    assert tc.get("/api/attribution/summary", headers=hdr).status_code == 200
-    assert tc.get("/api/attribution/evaluation", headers=hdr).status_code == 200
+    assert tc.get("/api/v1/attribution/summary", headers=hdr).status_code == 200
+    assert tc.get("/api/v1/attribution/evaluation", headers=hdr).status_code == 200
 
-    body = tc.get("/api/attribution/events", headers=hdr).json()
+    body = tc.get("/api/v1/attribution/events", headers=hdr).json()
     quotes = {ref["quote_id"] for row in body["events"]
               for ref in row["evidence_refs"]}
     assert "q_in" in quotes, "the trial window's own evidence must stay readable"
@@ -888,7 +888,7 @@ def test_the_ledger_stops_at_the_end_of_the_window_it_was_entitled_to(monkeypatc
     """
     monkeypatch.setattr(settings, "DEFAULT_PLAN", "free")
     tc = _lapsed_client(with_trial=True)
-    body = tc.get("/api/attribution/events",
+    body = tc.get("/api/v1/attribution/events",
                   headers=_hdr(tc, LAPSED_OWNER)).json()
 
     quotes = {ref["quote_id"] for row in body["events"]
@@ -910,7 +910,7 @@ def test_a_paid_plan_reads_the_ledger_unbounded(monkeypatch):
     session.commit()
     session.close()
 
-    body = tc.get("/api/attribution/events",
+    body = tc.get("/api/v1/attribution/events",
                   headers=_hdr(tc, LAPSED_OWNER)).json()
     quotes = {ref["quote_id"] for row in body["events"]
               for ref in row["evidence_refs"]}
@@ -928,7 +928,7 @@ def test_no_trial_and_no_plan_is_refused_rather_than_answered_empty(monkeypatch)
     monkeypatch.setattr(settings, "DEFAULT_PLAN", "free")
     tc = _lapsed_client(with_trial=False)
 
-    r = tc.get("/api/attribution/events", headers=_hdr(tc, LAPSED_OWNER))
+    r = tc.get("/api/v1/attribution/events", headers=_hdr(tc, LAPSED_OWNER))
     assert r.status_code == 403
     assert "Commercial Intelligence" in r.json()["detail"]
 
@@ -951,15 +951,15 @@ def test_the_window_rule_never_lets_a_salesperson_past_their_role(monkeypatch):
     session.close()
 
     hdr = _hdr(tc, "sales@lapsed.example")
-    for path in ("/api/attribution/summary", "/api/attribution/events",
-                 "/api/attribution/evaluation"):
+    for path in ("/api/v1/attribution/summary", "/api/v1/attribution/events",
+                 "/api/v1/attribution/evaluation"):
         assert tc.get(path, headers=hdr).status_code == 403, path
 
 
 def test_a_ledger_page_says_it_is_not_a_total(client):
     """The rows overlap by design — POTENTIAL and ATTRIBUTED describe one line —
     so the drill-down has to warn the one caller who would otherwise add it up."""
-    body = client.get("/api/attribution/events",
+    body = client.get("/api/v1/attribution/events",
                       headers=_hdr(client, MANAGER)).json()
     assert body["total"] == 4
     assert "double count" in body["page_is_not_a_total"]

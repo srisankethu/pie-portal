@@ -41,7 +41,7 @@ Implemented thread-safe metrics collection with three types:
 from app.observability.metrics import metrics
 
 counter = metrics.counter("api_requests_total", "Total API requests")
-counter.inc(labels={"endpoint": "/api/quotes", "status": 200})
+counter.inc(labels={"endpoint": "/api/v1/quotes", "status": 200})
 
 gauge = metrics.gauge("active_jobs", "Currently running jobs")
 gauge.set(5)

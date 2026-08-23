@@ -64,8 +64,8 @@ class TestMetricsRegistry:
 
     def test_counter_with_labels(self):
         counter = Counter("test", "help")
-        counter.inc(labels={"endpoint": "/api/quotes"})
-        counter.inc(labels={"endpoint": "/api/quotes"})
+        counter.inc(labels={"endpoint": "/api/v1/quotes"})
+        counter.inc(labels={"endpoint": "/api/v1/quotes"})
         counter.inc(labels={"endpoint": "/api/data"})
         assert counter.get() == 3
 

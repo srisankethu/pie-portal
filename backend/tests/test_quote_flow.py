@@ -98,12 +98,12 @@ def test_the_quote_builder_has_no_login_of_its_own():
 
 
 def test_auth_required(client):
-    assert client.get("/api/quotes/nope").status_code == 401
+    assert client.get("/api/v1/quotes/nope").status_code == 401
 
 
 def test_a_forged_token_is_refused(client):
     assert client.get(
-        "/api/quotes/nope",
+        "/api/v1/quotes/nope",
         headers={"Authorization": "Bearer not.a.real.token"}).status_code == 401
 
 
@@ -117,9 +117,9 @@ def test_a_quote_is_invisible_to_another_tenant(client):
     one: 404, not 403.
     """
     # A quote owned by org_pie's salesperson.
-    qid = client.post("/api/quotes", json={"customer": "Pitti"},
+    qid = client.post("/api/v1/quotes", json={"customer": "Pitti"},
                       headers=_hdr(client, SALES)).json()["id"]
-    assert client.get(f"/api/quotes/{qid}", headers=_hdr(client, SALES)).status_code == 200
+    assert client.get(f"/api/v1/quotes/{qid}", headers=_hdr(client, SALES)).status_code == 200
 
     # A second, unrelated tenant with its own owner.
     s = client.Maker()
@@ -131,20 +131,20 @@ def test_a_quote_is_invisible_to_another_tenant(client):
     rival = _hdr(client, "o@rival.example")
 
     # Every quote seam refuses the cross-tenant id, and none confirm it exists.
-    assert client.get(f"/api/quotes/{qid}", headers=rival).status_code == 404
-    assert client.post(f"/api/quotes/{qid}/intake", json={"text": "2001174, 20"},
+    assert client.get(f"/api/v1/quotes/{qid}", headers=rival).status_code == 404
+    assert client.post(f"/api/v1/quotes/{qid}/intake", json={"text": "2001174, 20"},
                        headers=rival).status_code == 404
-    assert client.post(f"/api/quotes/{qid}/discount",
+    assert client.post(f"/api/v1/quotes/{qid}/discount",
                        json={"lineIds": [], "percent": 5},
                        headers=rival).status_code == 404
 
 
 @pytest.mark.requires_pie
 def test_intake_builds_resolution_grid(client, mgmt_hdr):
-    q = client.post("/api/quotes", json={"customer": "Pitti Engineering"}, headers=mgmt_hdr).json()
+    q = client.post("/api/v1/quotes", json={"customer": "Pitti Engineering"}, headers=mgmt_hdr).json()
     qid = q["id"]
     rfq = "2001174, 20\nCNMG 120408 KCP25  50\nXZ-CUSTOM-778-NOTREAL, 5"
-    q = client.post(f"/api/quotes/{qid}/intake", json={"text": rfq}, headers=mgmt_hdr).json()
+    q = client.post(f"/api/v1/quotes/{qid}/intake", json={"text": rfq}, headers=mgmt_hdr).json()
     assert q["summary"]["total"] == 3
     rels = {ln["reqCode"]: ln["rel"] for ln in q["lines"]}
     assert rels["2001174"] == "EXACT"
@@ -154,12 +154,12 @@ def test_intake_builds_resolution_grid(client, mgmt_hdr):
 
 
 def test_economics_are_role_gated(client, sales_hdr, mgmt_hdr):
-    qs = client.post("/api/quotes", json={"customer": "Pitti"}, headers=sales_hdr).json()
+    qs = client.post("/api/v1/quotes", json={"customer": "Pitti"}, headers=sales_hdr).json()
     qid = qs["id"]
-    client.post(f"/api/quotes/{qid}/intake", json={"text": "2001174, 10"}, headers=sales_hdr)
+    client.post(f"/api/v1/quotes/{qid}/intake", json={"text": "2001174, 10"}, headers=sales_hdr)
 
-    sales_view = client.get(f"/api/quotes/{qid}", headers=sales_hdr).json()
-    mgmt_view = client.get(f"/api/quotes/{qid}", headers=mgmt_hdr).json()
+    sales_view = client.get(f"/api/v1/quotes/{qid}", headers=sales_hdr).json()
+    mgmt_view = client.get(f"/api/v1/quotes/{qid}", headers=mgmt_hdr).json()
 
     sline = sales_view["lines"][0]
     mline = mgmt_view["lines"][0]
@@ -182,19 +182,19 @@ def test_a_salesperson_cannot_ask_whether_a_line_is_below_the_floor(
     probes bisect the floor price. The floor is cost x (1 + margin floor), so a
     recovered floor is a recovered cost.
     """
-    q = client.post("/api/quotes", json={"customer": "Pitti"}, headers=mgmt_hdr).json()
+    q = client.post("/api/v1/quotes", json={"customer": "Pitti"}, headers=mgmt_hdr).json()
     qid = q["id"]
-    q = client.post(f"/api/quotes/{qid}/intake",
+    q = client.post(f"/api/v1/quotes/{qid}/intake",
                     json={"text": "2001174, 10"}, headers=mgmt_hdr).json()
     lid = q["lines"][0]["id"]
     # A rupee a piece is below any floor this catalogue can produce.
-    mgmt_view = client.post(f"/api/quotes/{qid}/lines/{lid}/price",
+    mgmt_view = client.post(f"/api/v1/quotes/{qid}/lines/{lid}/price",
                             json={"price": 1}, headers=mgmt_hdr).json()
     assert mgmt_view["lines"][0]["economics"]["below_floor"] is True
     assert mgmt_view["filterCounts"]["MFLOOR"] == 1, "manager sees the count"
     assert mgmt_view["marginFloor"]["count"] == 1
 
-    sales_view = client.get(f"/api/quotes/{qid}", headers=sales_hdr).json()
+    sales_view = client.get(f"/api/v1/quotes/{qid}", headers=sales_hdr).json()
     assert "MFLOOR" not in sales_view["filterCounts"], (
         "the below-floor count is a margin oracle and must not be served")
     assert "marginFloor" not in sales_view
@@ -204,46 +204,46 @@ def test_a_salesperson_cannot_ask_whether_a_line_is_below_the_floor(
 
 @pytest.mark.requires_pie
 def test_supply_selection_and_pricing(client, mgmt_hdr):
-    q = client.post("/api/quotes", json={"customer": "Pitti"}, headers=mgmt_hdr).json()
+    q = client.post("/api/v1/quotes", json={"customer": "Pitti"}, headers=mgmt_hdr).json()
     qid = q["id"]
-    q = client.post(f"/api/quotes/{qid}/intake",
+    q = client.post(f"/api/v1/quotes/{qid}/intake",
                     json={"text": "CNMG 120408 KCP25 50"}, headers=mgmt_hdr).json()
     line = q["lines"][0]
     lid = line["id"]
-    opts = client.get(f"/api/quotes/{qid}/lines/{lid}/options", headers=mgmt_hdr).json()
+    opts = client.get(f"/api/v1/quotes/{qid}/lines/{lid}/options", headers=mgmt_hdr).json()
     assert opts["candidates"], "requirement should have candidates"
     alt = opts["candidates"][-1]["code"]
-    q = client.post(f"/api/quotes/{qid}/lines/{lid}/supply",
+    q = client.post(f"/api/v1/quotes/{qid}/lines/{lid}/supply",
                     json={"code": alt}, headers=mgmt_hdr).json()
     assert q["lines"][0]["supplyCode"] == alt
     # set a manual price
-    q = client.post(f"/api/quotes/{qid}/lines/{lid}/price",
+    q = client.post(f"/api/v1/quotes/{qid}/lines/{lid}/price",
                     json={"price": 999}, headers=mgmt_hdr).json()
     assert q["lines"][0]["quoted"] == 999
     assert q["lines"][0]["lineTotal"] == 999 * 50
 
 
 def test_estimate_blocked_by_technical_lines(client, mgmt_hdr):
-    q = client.post("/api/quotes", json={"customer": "Pitti"}, headers=mgmt_hdr).json()
+    q = client.post("/api/v1/quotes", json={"customer": "Pitti"}, headers=mgmt_hdr).json()
     qid = q["id"]
-    client.post(f"/api/quotes/{qid}/intake",
+    client.post(f"/api/v1/quotes/{qid}/intake",
                 json={"text": "XZ-CUSTOM-778-NOTREAL, 5"}, headers=mgmt_hdr)
-    est = client.post(f"/api/quotes/{qid}/estimate", headers=mgmt_hdr).json()
+    est = client.post(f"/api/v1/quotes/{qid}/estimate", headers=mgmt_hdr).json()
     assert est["ok"] is False
     assert est["blockers"]
 
 
 def _clean_quote(client, hdr) -> str:
     """A quote with one in-books, priced, technically-clean line."""
-    q = client.post("/api/quotes", json={"customer": "Pitti"}, headers=hdr).json()
+    q = client.post("/api/v1/quotes", json={"customer": "Pitti"}, headers=hdr).json()
     qid = q["id"]
-    client.post(f"/api/quotes/{qid}/intake", json={"text": "2001174, 10"}, headers=hdr)
-    qd = client.get(f"/api/quotes/{qid}", headers=hdr).json()
+    client.post(f"/api/v1/quotes/{qid}/intake", json={"text": "2001174, 10"}, headers=hdr)
+    qd = client.get(f"/api/v1/quotes/{qid}", headers=hdr).json()
     ln = qd["lines"][0]
     if ln["inBooks"] is False:
-        client.post(f"/api/quotes/{qid}/lines/{ln['id']}/create-item", headers=hdr)
+        client.post(f"/api/v1/quotes/{qid}/lines/{ln['id']}/create-item", headers=hdr)
     if ln["quoted"] is None:
-        client.post(f"/api/quotes/{qid}/lines/{ln['id']}/price",
+        client.post(f"/api/v1/quotes/{qid}/lines/{ln['id']}/price",
                     json={"price": 500}, headers=hdr)
     return qid
 
@@ -264,7 +264,7 @@ def test_estimate_created_when_clean_and_nothing_needs_approval(client, mgmt_hdr
     before, against the packaged default org with no approvals in it.
     """
     qid = _clean_quote(client, mgmt_hdr)
-    est = client.post(f"/api/quotes/{qid}/estimate", headers=mgmt_hdr).json()
+    est = client.post(f"/api/v1/quotes/{qid}/estimate", headers=mgmt_hdr).json()
     assert est["ok"] is True, est
     assert est["estimateNumber"]
 
@@ -280,9 +280,9 @@ def test_a_resolved_line_opens_at_list_and_says_so(client, mgmt_hdr):
     nobody had priced showed a Quotation total in the same weight as a finished
     one.
     """
-    q = client.post("/api/quotes", json={"customer": "Pitti"}, headers=mgmt_hdr).json()
+    q = client.post("/api/v1/quotes", json={"customer": "Pitti"}, headers=mgmt_hdr).json()
     qid = q["id"]
-    q = client.post(f"/api/quotes/{qid}/intake",
+    q = client.post(f"/api/v1/quotes/{qid}/intake",
                     json={"text": "2001174, 10"}, headers=mgmt_hdr).json()
     ln = q["lines"][0]
     assert ln["quoted"] is not None
@@ -290,7 +290,7 @@ def test_a_resolved_line_opens_at_list_and_says_so(client, mgmt_hdr):
     assert q["summary"]["atListPrice"] == 1
     assert q["summary"]["unpriced"] == 0
 
-    q = client.post(f"/api/quotes/{qid}/lines/{ln['id']}/price",
+    q = client.post(f"/api/v1/quotes/{qid}/lines/{ln['id']}/price",
                     json={"price": 777}, headers=mgmt_hdr).json()
     assert q["lines"][0]["priceSource"] == "USER"
     assert q["summary"]["atListPrice"] == 0
@@ -307,9 +307,9 @@ def test_price_source_reaches_a_salesperson_too(client, sales_hdr):
     asserts on a line that *resolved*: without the engine there is no supply
     product, so nothing auto-prices and `priceSource` is correctly null.
     """
-    q = client.post("/api/quotes", json={"customer": "Pitti"}, headers=sales_hdr).json()
+    q = client.post("/api/v1/quotes", json={"customer": "Pitti"}, headers=sales_hdr).json()
     qid = q["id"]
-    q = client.post(f"/api/quotes/{qid}/intake",
+    q = client.post(f"/api/v1/quotes/{qid}/intake",
                     json={"text": "2001174, 10"}, headers=sales_hdr).json()
     assert "economics" not in q["lines"][0]
     assert q["lines"][0]["priceSource"] in ("LIST", "USER")
@@ -324,23 +324,23 @@ def test_a_discount_comes_off_the_rate_on_the_line_not_off_list(client, mgmt_hdr
     at 90% of *list* — up, not down — and a second press changed nothing, because
     the answer never depended on where the line actually was.
     """
-    q = client.post("/api/quotes", json={"customer": "Pitti"}, headers=mgmt_hdr).json()
+    q = client.post("/api/v1/quotes", json={"customer": "Pitti"}, headers=mgmt_hdr).json()
     qid = q["id"]
-    q = client.post(f"/api/quotes/{qid}/intake",
+    q = client.post(f"/api/v1/quotes/{qid}/intake",
                     json={"text": "2001174, 10"}, headers=mgmt_hdr).json()
     lid = q["lines"][0]["id"]
     list_price = q["lines"][0]["quoted"]
     assert list_price > 400, "the fixture item needs headroom for this to mean anything"
 
-    client.post(f"/api/quotes/{qid}/lines/{lid}/price", json={"price": 300},
+    client.post(f"/api/v1/quotes/{qid}/lines/{lid}/price", json={"price": 300},
                 headers=mgmt_hdr)
-    q = client.post(f"/api/quotes/{qid}/discount",
+    q = client.post(f"/api/v1/quotes/{qid}/discount",
                     json={"lineIds": [lid], "percent": 10}, headers=mgmt_hdr).json()
     assert q["applied"] == 1
     assert q["lines"][0]["quoted"] == 270, "10% off the negotiated ₹300"
 
     # And it compounds, which is what pressing it twice plainly means.
-    q = client.post(f"/api/quotes/{qid}/discount",
+    q = client.post(f"/api/v1/quotes/{qid}/discount",
                     json={"lineIds": [lid], "percent": 10}, headers=mgmt_hdr).json()
     assert q["lines"][0]["quoted"] == 243
 
@@ -354,16 +354,16 @@ def test_sending_the_same_quote_twice_returns_the_one_estimate(client, mgmt_hdr)
     unchanged afterwards — the only acknowledgement was a three-second snackbar.
     """
     qid = _clean_quote(client, mgmt_hdr)
-    first = client.post(f"/api/quotes/{qid}/estimate", headers=mgmt_hdr).json()
+    first = client.post(f"/api/v1/quotes/{qid}/estimate", headers=mgmt_hdr).json()
     assert first["ok"] is True, first
-    again = client.post(f"/api/quotes/{qid}/estimate", headers=mgmt_hdr).json()
+    again = client.post(f"/api/v1/quotes/{qid}/estimate", headers=mgmt_hdr).json()
     assert again["ok"] is True
     assert again["estimateNumber"] == first["estimateNumber"]
     assert "already covers" in again["message"]
 
     # The quote itself says what it has sent, so the screen does not have to
     # have been watching when it happened.
-    q = client.get(f"/api/quotes/{qid}", headers=mgmt_hdr).json()
+    q = client.get(f"/api/v1/quotes/{qid}", headers=mgmt_hdr).json()
     assert q["estimate"]["number"] == first["estimateNumber"]
     assert q["estimate"]["current"] is True
 
@@ -372,28 +372,28 @@ def test_sending_the_same_quote_twice_returns_the_one_estimate(client, mgmt_hdr)
 def test_amending_a_sent_quote_produces_a_new_estimate(client, mgmt_hdr):
     """Re-sending an amended quote is ordinary work, so this is not a lock."""
     qid = _clean_quote(client, mgmt_hdr)
-    first = client.post(f"/api/quotes/{qid}/estimate", headers=mgmt_hdr).json()
-    lid = client.get(f"/api/quotes/{qid}", headers=mgmt_hdr).json()["lines"][0]["id"]
+    first = client.post(f"/api/v1/quotes/{qid}/estimate", headers=mgmt_hdr).json()
+    lid = client.get(f"/api/v1/quotes/{qid}", headers=mgmt_hdr).json()["lines"][0]["id"]
 
-    q = client.post(f"/api/quotes/{qid}/lines/{lid}/price", json={"price": 8000},
+    q = client.post(f"/api/v1/quotes/{qid}/lines/{lid}/price", json={"price": 8000},
                     headers=mgmt_hdr).json()
     assert q["estimate"]["current"] is False, "the estimate no longer describes this quote"
 
-    second = client.post(f"/api/quotes/{qid}/estimate", headers=mgmt_hdr).json()
+    second = client.post(f"/api/v1/quotes/{qid}/estimate", headers=mgmt_hdr).json()
     assert second["ok"] is True
     assert second["estimateNumber"] != first["estimateNumber"]
 
 
 @pytest.mark.requires_pie
 def test_a_resolved_line_with_no_rate_is_refused_rather_than_sent_blank(client, mgmt_hdr):
-    q = client.post("/api/quotes", json={"customer": "Pitti"}, headers=mgmt_hdr).json()
+    q = client.post("/api/v1/quotes", json={"customer": "Pitti"}, headers=mgmt_hdr).json()
     qid = q["id"]
-    q = client.post(f"/api/quotes/{qid}/intake",
+    q = client.post(f"/api/v1/quotes/{qid}/intake",
                     json={"text": "2001174, 10"}, headers=mgmt_hdr).json()
     lid = q["lines"][0]["id"]
-    client.post(f"/api/quotes/{qid}/lines/{lid}/price", json={"price": None},
+    client.post(f"/api/v1/quotes/{qid}/lines/{lid}/price", json={"price": None},
                 headers=mgmt_hdr)
-    est = client.post(f"/api/quotes/{qid}/estimate", headers=mgmt_hdr).json()
+    est = client.post(f"/api/v1/quotes/{qid}/estimate", headers=mgmt_hdr).json()
     assert est["ok"] is False
     assert lid in est["blockers"]
     assert "no rate" in est["message"]
@@ -402,11 +402,11 @@ def test_a_resolved_line_with_no_rate_is_refused_rather_than_sent_blank(client, 
 @pytest.mark.requires_pie
 def test_a_blocked_estimate_names_the_lines(client, mgmt_hdr):
     """"3 critical line(s) must be resolved first" left the reader to find which."""
-    q = client.post("/api/quotes", json={"customer": "Pitti"}, headers=mgmt_hdr).json()
+    q = client.post("/api/v1/quotes", json={"customer": "Pitti"}, headers=mgmt_hdr).json()
     qid = q["id"]
-    client.post(f"/api/quotes/{qid}/intake",
+    client.post(f"/api/v1/quotes/{qid}/intake",
                 json={"text": "XZ-CUSTOM-778-NOTREAL, 5"}, headers=mgmt_hdr)
-    est = client.post(f"/api/quotes/{qid}/estimate", headers=mgmt_hdr).json()
+    est = client.post(f"/api/v1/quotes/{qid}/estimate", headers=mgmt_hdr).json()
     assert est["ok"] is False
     assert "XZ-CUSTOM-778-NOTREAL" in est["message"]
 
@@ -423,24 +423,24 @@ def test_a_below_floor_line_cannot_be_sent_without_an_approval(client, mgmt_hdr)
     passes its own below-floor lines to the same gate.
     """
     qid = _clean_quote(client, mgmt_hdr)
-    lid = client.get(f"/api/quotes/{qid}", headers=mgmt_hdr).json()["lines"][0]["id"]
-    q = client.get(f"/api/quotes/{qid}", headers=mgmt_hdr).json()
+    lid = client.get(f"/api/v1/quotes/{qid}", headers=mgmt_hdr).json()["lines"][0]["id"]
+    q = client.get(f"/api/v1/quotes/{qid}", headers=mgmt_hdr).json()
     cost = q["lines"][0]["economics"]["cost"]
     # At cost the margin is 0%, well under the floor.
-    q = client.post(f"/api/quotes/{qid}/lines/{lid}/price", json={"price": cost},
+    q = client.post(f"/api/v1/quotes/{qid}/lines/{lid}/price", json={"price": cost},
                     headers=mgmt_hdr).json()
     assert q["lines"][0]["economics"]["below_floor"] is True
     assert q["marginFloor"]["count"] == 1
 
-    refused = client.post(f"/api/quotes/{qid}/estimate", headers=mgmt_hdr)
+    refused = client.post(f"/api/v1/quotes/{qid}/estimate", headers=mgmt_hdr)
     assert refused.status_code == 403, refused.text
     assert "need approval" in refused.json()["detail"]
 
     # Pricing it back above the floor unblocks it, without anyone answering an
     # approval — the gate is about the price now on the line, not about history.
-    client.post(f"/api/quotes/{qid}/lines/{lid}/price", json={"price": cost * 4},
+    client.post(f"/api/v1/quotes/{qid}/lines/{lid}/price", json={"price": cost * 4},
                 headers=mgmt_hdr)
-    est = client.post(f"/api/quotes/{qid}/estimate", headers=mgmt_hdr).json()
+    est = client.post(f"/api/v1/quotes/{qid}/estimate", headers=mgmt_hdr).json()
     assert est["ok"] is True, est
 
 
@@ -453,7 +453,7 @@ def test_a_quote_id_is_not_reused_by_the_next_process(client, mgmt_hdr):
     harmless when the send path began filing snapshots and outcomes under the id,
     because a fresh ``q1`` would be judged on the previous ``q1``'s snapshots.
     """
-    a = client.post("/api/quotes", json={"customer": "Pitti"}, headers=mgmt_hdr).json()
+    a = client.post("/api/v1/quotes", json={"customer": "Pitti"}, headers=mgmt_hdr).json()
     assert a["id"] != "q1"
     assert "-" in a["id"], "the id carries a per-process part"
 
@@ -521,12 +521,12 @@ def test_a_live_items_cost_never_reaches_a_sales_response(client, sales_hdr, mgm
     server omitting it is the whole mechanism — there is nothing in the payload
     for a network tab to reveal."""
     with _books(client, _live_service()):
-        q = client.post("/api/quotes", json={"customer": "Pitti"}, headers=sales_hdr).json()
+        q = client.post("/api/v1/quotes", json={"customer": "Pitti"}, headers=sales_hdr).json()
         qid = q["id"]
-        client.post(f"/api/quotes/{qid}/intake", json={"text": "2001174, 10"},
+        client.post(f"/api/v1/quotes/{qid}/intake", json={"text": "2001174, 10"},
                     headers=sales_hdr)
-        sales_raw = client.get(f"/api/quotes/{qid}", headers=sales_hdr).text
-        mgmt_view = client.get(f"/api/quotes/{qid}", headers=mgmt_hdr).json()
+        sales_raw = client.get(f"/api/v1/quotes/{qid}", headers=sales_hdr).text
+        mgmt_view = client.get(f"/api/v1/quotes/{qid}", headers=mgmt_hdr).json()
 
     assert "980.5" not in sales_raw and "economics" not in sales_raw
     assert mgmt_view["lines"][0]["economics"]["cost"] == 980.5, \
@@ -539,7 +539,7 @@ def test_a_live_items_cost_never_reaches_a_sales_response(client, sales_hdr, mgm
 def test_a_refused_estimate_does_not_report_one(client, mgmt_hdr):
     with _books(client, _StubBooks(ZohoWriteRefused("no ledger for this customer"))):
         qid = _clean_quote(client, mgmt_hdr)
-        est = client.post(f"/api/quotes/{qid}/estimate", headers=mgmt_hdr).json()
+        est = client.post(f"/api/v1/quotes/{qid}/estimate", headers=mgmt_hdr).json()
     assert est["ok"] is False
     assert est["estimateNumber"] is None
     assert "no ledger for this customer" in est["message"]
@@ -549,11 +549,11 @@ def test_a_refused_estimate_does_not_report_one(client, mgmt_hdr):
 def test_a_refusal_points_at_the_lines_that_caused_it(client, mgmt_hdr):
     with _books(client, _StubBooks()):
         qid = _clean_quote(client, mgmt_hdr)
-        qd = client.get(f"/api/quotes/{qid}", headers=mgmt_hdr).json()
+        qd = client.get(f"/api/v1/quotes/{qid}", headers=mgmt_hdr).json()
     code = qd["lines"][0]["supplyCode"]
 
     with _books(client, _StubBooks(ZohoWriteRefused("not in these books", codes=[code]))):
-        est = client.post(f"/api/quotes/{qid}/estimate", headers=mgmt_hdr).json()
+        est = client.post(f"/api/v1/quotes/{qid}/estimate", headers=mgmt_hdr).json()
     assert est["ok"] is False and est["blockers"] == [qd["lines"][0]["id"]]
 
 
@@ -564,7 +564,7 @@ def test_an_unknown_write_outcome_is_neither_success_nor_silence(client, mgmt_hd
     with _books(client, _StubBooks(ZohoWriteUnknown(
             "sent, reply lost — look for reference QB-1-abcd", reference="QB-1-abcd"))):
         qid = _clean_quote(client, mgmt_hdr)
-        est = client.post(f"/api/quotes/{qid}/estimate", headers=mgmt_hdr).json()
+        est = client.post(f"/api/v1/quotes/{qid}/estimate", headers=mgmt_hdr).json()
     assert est["ok"] is False and est["estimateNumber"] is None
     assert "QB-1-abcd" in est["message"]
 
@@ -574,12 +574,12 @@ def test_a_failed_item_creation_leaves_the_line_in_create_failed(client, mgmt_hd
     """It used to leave the line on "CREATING…" and 500 the request: the mock
     could not fail, so the CREATE FAILED state had no path into it."""
     with _books(client, _StubBooks(ZohoWriteRefused("Zoho would not create item 2001174"))):
-        q = client.post("/api/quotes", json={"customer": "Pitti"}, headers=mgmt_hdr).json()
+        q = client.post("/api/v1/quotes", json={"customer": "Pitti"}, headers=mgmt_hdr).json()
         qid = q["id"]
-        q = client.post(f"/api/quotes/{qid}/intake", json={"text": "2001174, 10"},
+        q = client.post(f"/api/v1/quotes/{qid}/intake", json={"text": "2001174, 10"},
                         headers=mgmt_hdr).json()
         lid = q["lines"][0]["id"]
-        r = client.post(f"/api/quotes/{qid}/lines/{lid}/create-item", headers=mgmt_hdr)
+        r = client.post(f"/api/v1/quotes/{qid}/lines/{lid}/create-item", headers=mgmt_hdr)
 
     assert r.status_code == 200, "one failed line must not take the whole quote down"
     body = r.json()
@@ -588,7 +588,7 @@ def test_a_failed_item_creation_leaves_the_line_in_create_failed(client, mgmt_hd
 
 
 def test_every_quote_carries_a_reference_a_person_could_search_for(client, mgmt_hdr):
-    a = client.post("/api/quotes", json={"customer": "Pitti"}, headers=mgmt_hdr).json()
-    b = client.post("/api/quotes", json={"customer": "Pitti"}, headers=mgmt_hdr).json()
+    a = client.post("/api/v1/quotes", json={"customer": "Pitti"}, headers=mgmt_hdr).json()
+    b = client.post("/api/v1/quotes", json={"customer": "Pitti"}, headers=mgmt_hdr).json()
     assert a["reference"] and a["reference"] != b["reference"], \
         "the reference is this quote's idempotency key; two quotes may never share one"

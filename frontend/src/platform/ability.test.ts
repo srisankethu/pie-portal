@@ -97,7 +97,7 @@ describe("the owner's table — mirrors require_owner", () => {
   });
 
   it("reads the evaluation report a manager cannot", () => {
-    // Mirrors `require_owner` on `GET /api/attribution/evaluation`. The value
+    // Mirrors `require_owner` on `GET /api/v1/attribution/evaluation`. The value
     // ledger the report is computed from is manager-or-owner, so this is the
     // one rule where a manager holds the screen and not one panel on it.
     expect(owner.can("read", "evaluation")).toBe(true);

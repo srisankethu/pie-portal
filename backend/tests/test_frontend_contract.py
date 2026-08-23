@@ -246,16 +246,16 @@ def test_the_checker_reports_a_drift_it_should_catch(types):
 
 # ── the contract, against real responses ────────────────────────────────────
 def test_a_new_quote_matches_the_quote_interface(client, mgmt_hdr, types):
-    q = client.post("/api/quotes", json={"customer": "Pitti Engineering"},
+    q = client.post("/api/v1/quotes", json={"customer": "Pitti Engineering"},
                     headers=mgmt_hdr)
     assert q.status_code == 200, q.text
     assert_matches(q.json(), "Quote", types)
 
 
 def test_a_fetched_quote_matches_the_quote_interface(client, mgmt_hdr, types):
-    qid = client.post("/api/quotes", json={"customer": "Pitti"},
+    qid = client.post("/api/v1/quotes", json={"customer": "Pitti"},
                       headers=mgmt_hdr).json()["id"]
-    got = client.get(f"/api/quotes/{qid}", headers=mgmt_hdr)
+    got = client.get(f"/api/v1/quotes/{qid}", headers=mgmt_hdr)
     assert got.status_code == 200, got.text
     assert_matches(got.json(), "Quote", types)
 
@@ -264,9 +264,9 @@ def test_a_fetched_quote_matches_the_quote_interface(client, mgmt_hdr, types):
 def test_an_intake_response_matches_line_and_economics(client, mgmt_hdr, types):
     """The whole grid in one payload: Line, LineStatus, LineFlags, Candidate and
     the manager's Economics, each checked field by field."""
-    qid = client.post("/api/quotes", json={"customer": "Pitti Engineering"},
+    qid = client.post("/api/v1/quotes", json={"customer": "Pitti Engineering"},
                       headers=mgmt_hdr).json()["id"]
-    q = client.post(f"/api/quotes/{qid}/intake",
+    q = client.post(f"/api/v1/quotes/{qid}/intake",
                     json={"text": "2001174, 20"}, headers=mgmt_hdr)
     assert q.status_code == 200, q.text
     body = q.json()
@@ -284,9 +284,9 @@ def test_a_salespersons_payload_matches_the_same_interface_without_economics(
     are declared optional. A salesperson's payload passing the same check as a
     manager's is the point: the shape does not fork by role, the fields do.
     """
-    qid = client.post("/api/quotes", json={"customer": "Pitti Engineering"},
+    qid = client.post("/api/v1/quotes", json={"customer": "Pitti Engineering"},
                       headers=sales_hdr).json()["id"]
-    body = client.post(f"/api/quotes/{qid}/intake",
+    body = client.post(f"/api/v1/quotes/{qid}/intake",
                        json={"text": "2001174, 20"}, headers=sales_hdr).json()
     assert_matches(body, "Quote", types)
     assert "marginFloor" not in body

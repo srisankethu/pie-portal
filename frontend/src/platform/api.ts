@@ -627,9 +627,9 @@ export const papi = {
   // sits behind, because every row of this ledger is gross-profit arithmetic
   // over the rows those screens read.
   //
-  // Not under `/api/v1/`: `routers/attribution.py` mounts at `/api/attribution`.
+  // Not under `/api/v1/`: `routers/attribution.py` mounts at `/api/v1/attribution`.
   attributionSummary: (t: string) =>
-    req<AttributionSummary>("/api/attribution/summary", {}, t),
+    req<AttributionSummary>("/api/v1/attribution/summary", {}, t),
 
   /** One page of the ledger. Rows, never a rollup — `page_is_not_a_total`
    *  travels with them, and the headline comes from the summary. */
@@ -644,7 +644,7 @@ export const papi = {
     if (q.offset) p.set("offset", String(q.offset));
     const qs = p.toString();
     return req<AttributionEvents>(
-      `/api/attribution/events${qs ? "?" + qs : ""}`, {}, t);
+      `/api/v1/attribution/events${qs ? "?" + qs : ""}`, {}, t);
   },
 
   /** The 30-day report. Owner only.
@@ -656,7 +656,7 @@ export const papi = {
    *  signs against. */
   attributionEvaluation: (t: string, pieCost?: string | null) =>
     req<AttributionEvaluation>(
-      "/api/attribution/evaluation"
+      "/api/v1/attribution/evaluation"
       + (pieCost ? `?pie_cost=${encodeURIComponent(pieCost)}` : ""), {}, t),
 
   dataStatus: (t: string) => req<DataStatus>("/api/v1/data/status", {}, t),

@@ -281,7 +281,7 @@ be joined; every row reports `deadline_start_basis` as `BILL_DATE`.
 
 ## Quote Builder integration
 
-**One identity.** `/api/quotes` authenticates the platform user in
+**One identity.** `/api/v1/quotes` authenticates the platform user in
 `Authorization`, exactly as `/api/v1/*` does, and `is_manager_or_owner` decides
 whether a response carries economics. It used to authenticate a Quote Builder
 principal of its own — two fixed accounts, any password — and read the real,

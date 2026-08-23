@@ -44,6 +44,7 @@ from ..zoho import (
     ZohoWriteUnknown,
 )
 from .normalize import NormalizationError, _parse_decimal
+from .write_settle import settle_by_read
 from .zoho_client import (
     ZohoCredentials,
     ZohoError,
@@ -268,23 +269,18 @@ class ZohoBooksService(ZohoTransport):
         record the read just proved is not there.
         """
         log.warning("zoho quote: item write outcome unclear for %s (%s)", code, detail)
-        try:
-            raw = self._find_item(code)
-        except Exception as e:                       # noqa: BLE001
-            # Not only ZohoError. The fault that lost the write is usually a
-            # dropped connection, and it does not heal in the moment before
-            # this read — so this is the likely path, not the exotic one. A raw
-            # transport fault escaping here would leave create_item unwrapped,
-            # which is the 500 this whole path exists to prevent.
-            raise ZohoWriteUnknown(
+        return settle_by_read(
+            lambda: self._find_item(code),
+            lambda raw: self._quotable_item(code, raw),
+            unknown_message=lambda e: (
                 f"Item {code} could not be completed ({detail}), and Zoho could not be "
                 f"re-read to find out ({e}) — whether it reached Zoho cannot be "
-                f"established. Look for {code} in Zoho before adding it again.") from e
-        if raw is not None:
-            return self._quotable_item(code, raw)
-        raise ZohoWriteRefused(
-            f"Item {code} was not created ({detail}). Zoho holds nothing under that "
-            f"code, so adding it again is safe.", codes=[code])
+                f"established. Look for {code} in Zoho before adding it again."),
+            refused_message=(
+                f"Item {code} was not created ({detail}). Zoho holds nothing under that "
+                f"code, so adding it again is safe."),
+            codes=[code],
+            unknown_error=ZohoWriteUnknown, refused_error=ZohoWriteRefused)
 
     def _quotable_item(self, code: str, raw: dict[str, Any]) -> ZohoItem:
         """The item Zoho holds, refusing the one state that cannot be quoted."""
@@ -430,17 +426,17 @@ class ZohoBooksService(ZohoTransport):
         """
         log.warning("zoho quote: estimate write outcome unclear for %s (%s)",
                     reference, detail)
-        try:
-            landed = self._estimate_by_reference(reference)
-        except Exception as e:                       # noqa: BLE001 — see _settle_item
-            raise ZohoWriteUnknown(
+        return settle_by_read(
+            lambda: self._estimate_by_reference(reference),
+            lambda landed: self._estimate_from(landed, customer, line_count,
+                                               already_existed=True),
+            unknown_message=lambda e: (
                 f"The estimate could not be completed ({detail}), and Zoho could not be "
                 f"re-read to find out ({e}) — whether it reached Zoho cannot be "
                 f"established. Look for reference {reference} in Zoho before sending "
-                f"this quote again.",
-                reference=reference) from e
-        if landed is not None:
-            return self._estimate_from(landed, customer, line_count, already_existed=True)
-        raise ZohoWriteRefused(
-            f"The estimate was not created ({detail}). Zoho holds nothing under "
-            f"reference {reference}, so sending again is safe.")
+                f"this quote again."),
+            refused_message=(
+                f"The estimate was not created ({detail}). Zoho holds nothing under "
+                f"reference {reference}, so sending again is safe."),
+            reference=reference,
+            unknown_error=ZohoWriteUnknown, refused_error=ZohoWriteRefused)

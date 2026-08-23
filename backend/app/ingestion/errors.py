@@ -8,6 +8,14 @@ here, with no connector in them, and each connector's client raises these (or
 its own subclasses of them, as ``zoho_client`` does, so callers that already
 catch the Zoho names keep working).
 
+Two directions live here, and the distinction is why their bases differ.
+The classes above the divider are raised *by* a source client and read by the
+sync layer. The three below it are the outcomes an adapter reports *outward*,
+to the application: they answer "what happened to my write" rather than "why
+did this call fail". Those three stay on :class:`RuntimeError` rather than
+:class:`IngestionError` deliberately — an ``except IngestionError`` guarding a
+read path must not silently start catching a write outcome.
+
 What does **not** belong here: message text that presumes a connector.
 The raiser writes the sentence; this module only fixes the taxonomy.
 """
@@ -63,3 +71,47 @@ class SourceScopeError(SourceAuthError):
         super().__init__(message)
         self.path = path
         self.scope = scope
+
+
+# ── outward: what an adapter reports happened to a write ────────────────────
+# Exactly three, and there is deliberately no fourth meaning "probably fine".
+# A caller that cannot tell these apart cannot tell a customer anything true.
+class SourceUnavailable(RuntimeError):
+    """The source could not be read.
+
+    Every read-side adapter failure collapses to this so a single unreachable
+    record cannot fail a whole intake: the line reads OFFLINE, which is what
+    that state is for.
+    """
+
+
+class SourceWriteRefused(RuntimeError):
+    """The write was not attempted, or the source answered and said no.
+
+    Either way nothing is stored, so fixing the named problem and sending
+    again is safe — and saying so is the point of this class. Carries the
+    record codes responsible where there are any, so a screen can point at the
+    lines rather than at the whole document.
+    """
+
+    def __init__(self, message: str, codes: Optional[list] = None) -> None:
+        super().__init__(message)
+        self.codes = list(codes or [])
+
+
+class SourceWriteUnknown(RuntimeError):
+    """The write was sent and its outcome could not be established.
+
+    The one state that must never be reported as either success or failure.
+    Carries the reference the record would have been written under, because
+    looking that up is the only thing that resolves this state — and because
+    sending again under the same reference is then safe.
+
+    Distinct from :class:`SourceWriteUncertain` above, which is the transport
+    saying "I cannot tell". This is the adapter's verdict *after* trying to
+    settle that by reading the record back and failing to.
+    """
+
+    def __init__(self, message: str, reference: Optional[str] = None) -> None:
+        super().__init__(message)
+        self.reference = reference

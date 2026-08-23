@@ -23,11 +23,10 @@ from typing import Any, Dict, List, Optional
 
 from . import pricing
 from .pie_service import Bands, Candidate, Resolution, pie_service
+from .ingestion.errors import (SourceUnavailable, SourceWriteRefused,
+                               SourceWriteUnknown)
 from .zoho import (
     ZohoService,
-    ZohoUnavailable,
-    ZohoWriteRefused,
-    ZohoWriteUnknown,
 )
 
 _REL_LABELS = {
@@ -711,7 +710,7 @@ class QuoteStore:
             return
         try:
             item = zoho.get_item(ln.supplyCode)
-        except ZohoUnavailable:
+        except SourceUnavailable:
             # A live adapter can fail mid-intake — a revoked token, a throttle,
             # a price Zoho sent in a shape that is not a number. That is the
             # BOOKS OFFLINE state on this line, not a 500 for the whole RFQ.
@@ -824,7 +823,7 @@ class QuoteStore:
         ln.createPhase = "progress"
         try:
             item = zoho.create_item(ln.supplyCode, ln.supplyDesc or ln.reqDesc, ln.listPrice)
-        except (ZohoWriteRefused, ZohoWriteUnknown, ZohoUnavailable) as e:
+        except (SourceWriteRefused, SourceWriteUnknown, SourceUnavailable) as e:
             ln.createPhase = "failed"
             return str(e)
         ln.inBooks = True

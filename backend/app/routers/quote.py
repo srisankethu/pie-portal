@@ -46,10 +46,9 @@ from ..schemas import (
 )
 from ..pie_service import Bands
 from ..store import Line, Quote, store
+from ..ingestion.errors import SourceWriteRefused, SourceWriteUnknown
 from ..zoho import (
     ZohoService,
-    ZohoWriteRefused,
-    ZohoWriteUnknown,
     select_zoho_service,
 )
 
@@ -452,13 +451,13 @@ def create_estimate(quote_id: str,
         est = books.zoho.create_estimate(q.customer, lines,
                                          customer_ref=books.contact_id,
                                          reference=q.reference)
-    except ZohoWriteRefused as e:
+    except SourceWriteRefused as e:
         refused = {c for c in e.codes if c}
         return EstimateResponse(
             ok=False,
             blockers=[ln.id for ln in q.lines if ln.supplyCode in refused],
             message=str(e))
-    except ZohoWriteUnknown as e:
+    except SourceWriteUnknown as e:
         return EstimateResponse(ok=False, message=str(e))
 
     # Past here the estimate exists — including when Zoho recognised the

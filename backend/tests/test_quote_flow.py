@@ -558,6 +558,62 @@ def test_a_refusal_points_at_the_lines_that_caused_it(client, mgmt_hdr):
 
 
 @pytest.mark.requires_pie
+def test_a_sent_quote_is_still_sent_after_the_process_forgets_it(client, mgmt_hdr):
+    """The whole point of persisting the document, and what nothing did before.
+
+    Everything about a sent estimate lived on an in-memory dataclass in a
+    process-wide dict. A restart erased it, so the duplicate check said "never
+    sent" and pressed the source again — relying on the reference round trip to
+    undo what it had just asked for, on every send, for ever. Clearing the
+    in-memory quote store is what a restart does to this state.
+    """
+    from app import store as store_mod
+
+    with _books(client, _StubBooks()):
+        qid = _clean_quote(client, mgmt_hdr)
+        first = client.post(f"/api/quotes/{qid}/estimate", headers=mgmt_hdr).json()
+        assert first["ok"] is True and first["estimateNumber"]
+
+        # The process forgets. The ledger does not.
+        quote = store_mod.store.get(qid)
+        quote.estimateNumber = None
+        quote.estimateFingerprint = None
+
+        again = client.post(f"/api/quotes/{qid}/estimate", headers=mgmt_hdr).json()
+
+    assert again["ok"] is True
+    assert again["estimateNumber"] == first["estimateNumber"], (
+        "a restart made the platform send the same quote a second time")
+    assert "already covers this quote" in again["message"]
+
+
+@pytest.mark.requires_pie
+def test_the_document_a_send_produced_names_its_system_and_its_policy(
+        client, mgmt_hdr):
+    """A row nobody can read back is not a record.
+
+    ``external_system`` rather than an assumed "zoho", because the write seam
+    exists so this will not always say Zoho — and ``thresholds_version``,
+    because an append-only row that a human's send is recorded in keeps the
+    policy that was in force, which is what makes a past send explainable after
+    the margin policy is edited.
+    """
+    with _books(client, _StubBooks()):
+        qid = _clean_quote(client, mgmt_hdr)
+        sent = client.post(f"/api/quotes/{qid}/estimate", headers=mgmt_hdr).json()
+    assert sent["ok"] is True
+
+    with client.Maker() as s:
+        rows = s.query(models.QuoteDocument).filter_by(quote_id=qid).all()
+    assert len(rows) == 1, "one send, one row"
+    (doc,) = rows
+    assert doc.external_document_number == sent["estimateNumber"]
+    assert doc.external_system, "the row does not say which system holds it"
+    assert doc.thresholds_version, "a signed send with no policy stamp"
+    assert doc.fingerprint, "without the content stamp the duplicate check is blind"
+
+
+@pytest.mark.requires_pie
 def test_an_unknown_write_outcome_is_neither_success_nor_silence(client, mgmt_hdr):
     """The state that must never be rounded off. The response says the outcome
     is unresolved and carries the reference to look up in Zoho."""

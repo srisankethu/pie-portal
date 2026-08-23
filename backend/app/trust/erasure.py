@@ -145,6 +145,12 @@ EXPORTED: tuple[tuple[str, Any], ...] = (
     ("quote_drafts", models.QuoteDraft),
     ("quote_decisions", models.QuoteDecision),
     ("quote_outcomes", models.QuoteOutcome),
+    # Which quotes went out, into whose ledger, under which document number.
+    # Exported rather than excluded as "derived": a re-sync rebuilds what the
+    # source system holds, not the fact that *this* platform wrote it there on
+    # a given day under a given policy. For a customer reconciling their own
+    # records against ours, that is the row that matches the two up.
+    ("quote_documents", models.QuoteDocument),
     ("outcomes", models.Outcome),
     # The baseline frozen when a recommendation was accepted. Exported rather
     # than excluded as "derived": the whole point of the capture is that a

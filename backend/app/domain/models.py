@@ -1978,6 +1978,64 @@ class QuoteOutcome(Base):
                                                  onupdate=_now)
 
 
+class QuoteDocument(Base):
+    """A quote as it was written into a source system — one row per send.
+
+    The durable half of a send. Everything about the estimate a quote produced
+    lived on an in-memory dataclass in a process-wide dict, so the number died
+    with the process: after a restart the screen could not say a quote had been
+    sent, the local duplicate check could not answer, and nothing anywhere
+    linked a quote to the document it had created in anybody's ledger. That
+    link is what outcome attribution needs and never had.
+
+    Append-only, and history in the §1 sense — it records what was written,
+    when, under which policy — so it is never updated. A re-send of amended
+    content writes another row; the newest is the current one. That is also why
+    there is no unique key on ``fingerprint``: a crash between the source write
+    and this insert must be recoverable by writing the row late, not by turning
+    a recorded send into an integrity error.
+
+    ``external_system`` is the connector key rather than a fixed word, because
+    the whole point of the write seam is that this row will not always say
+    "zoho" — and a column that assumed it would be the thing to migrate later.
+    """
+
+    __tablename__ = "quote_documents"
+
+    quote_document_id: Mapped[str] = mapped_column(String(64), primary_key=True,
+                                                   default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    quote_id: Mapped[str] = mapped_column(String(64), index=True)
+
+    #: The connector this was written into — ``connections.ZOHO_CONNECTOR`` and,
+    #: in time, whatever else declares ``sales_quotes`` in its writes.
+    external_system: Mapped[str] = mapped_column(String(32), default="")
+    #: That system's own id for the document, where it returns one.
+    external_document_id: Mapped[Optional[str]] = mapped_column(String(64))
+    #: The number a person sees and can search for in that system.
+    external_document_number: Mapped[str] = mapped_column(String(64), default="")
+    #: The caller-stable key the write carried, which is what lets the source
+    #: recognise a repeat whose reply was lost. Kept because settling that
+    #: question by hand means looking this up.
+    reference: Mapped[str] = mapped_column(String(128), default="")
+    line_count: Mapped[int] = mapped_column(Integer, default=0)
+    #: The priced content this document was written from. The local duplicate
+    #: check compares it: equal means the quote has not changed since it was
+    #: sent, and pressing again should return this document rather than make
+    #: another.
+    fingerprint: Mapped[str] = mapped_column(String(128), default="", index=True)
+    #: True where the source recognised the reference and returned a document it
+    #: already held, rather than creating one. Recorded because "sent" and "was
+    #: already there" are different facts and the screen says so.
+    already_existed: Mapped[bool] = mapped_column(Boolean, default=False)
+    #: The commercial policy in force when this went out. A signed, append-only
+    #: row keeps the version that judged it — the same rule approvals and
+    #: snapshots follow, and the reason a past send stays explainable after the
+    #: margin policy is edited.
+    thresholds_version: Mapped[str] = mapped_column(String(64), default="")
+    written_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
 class Outcome(Base):
     __tablename__ = "outcomes"
 

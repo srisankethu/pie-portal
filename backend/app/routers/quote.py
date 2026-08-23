@@ -85,6 +85,10 @@ class QuoteBooks:
 
     zoho: ZohoService
     contact_id: str = ""
+    #: The connector this quote's book belongs to. Recorded on the document the
+    #: send produces, so a row says which system holds it rather than assuming
+    #: the one connector that could write when the column was added.
+    system: str = conn.ZOHO_CONNECTOR
 
 
 def books_for_quote(quote_id: str,
@@ -117,7 +121,9 @@ def books_for_quote(quote_id: str,
         creds = conn.credentials_for(session, book.connection)
     except (conn.ConnectionNotFound, conn.CredentialNotUsable) as e:
         return QuoteBooks(zoho=select_zoho_service(reason=str(e)))
-    return QuoteBooks(zoho=select_zoho_service(creds), contact_id=book.contact_id)
+    return QuoteBooks(zoho=select_zoho_service(creds), contact_id=book.contact_id,
+                      system=(getattr(book.connection, "connector", None)
+                              or conn.ZOHO_CONNECTOR))
 
 
 def zoho_for_quote(books: QuoteBooks = Depends(books_for_quote)) -> ZohoService:
@@ -432,11 +438,17 @@ def create_estimate(quote_id: str,
     # Zoho can recognise a repeat whose reply we never heard. Both are needed:
     # this one saves the round trip, that one survives a lost answer.
     fingerprint = store.priced_fingerprint(q)
-    if q.estimateNumber and q.estimateFingerprint == fingerprint:
+    # Answered from the persisted row rather than from the in-memory quote. The
+    # in-memory copy is erased by a restart, and the send it was remembering is
+    # not — so after one the check said "never sent", pressed the source again,
+    # and relied on the reference round trip to undo what it had just asked for.
+    sent = quote_service.latest_document(session, org, quote_id=quote_id)
+    if sent is not None and sent.fingerprint == fingerprint:
         return EstimateResponse(
-            ok=True, estimateNumber=q.estimateNumber, lineCount=q.estimateLineCount,
-            message=(f"Zoho estimate {q.estimateNumber} already covers this quote — "
-                     "nothing has changed since it was created."))
+            ok=True, estimateNumber=sent.external_document_number,
+            lineCount=sent.line_count,
+            message=(f"{sent.external_document_number} already covers this quote "
+                     "— nothing has changed since it was created."))
 
     lines = [{"code": ln.supplyCode, "itemId": ln.itemId,
               "qty": ln.reqQty, "rate": ln.quoted}
@@ -467,6 +479,22 @@ def create_estimate(quote_id: str,
     # and typed on the client, and nothing ever moved a quote off DRAFT.
     store.record_estimate(q, number=est.number, line_count=est.line_count,
                           fingerprint=fingerprint)
+    # The durable half, and the reason this whole endpoint can be pressed twice
+    # safely. Written before the outcome transition because it is the record of
+    # something that has already happened in somebody's ledger: if the status
+    # bookkeeping below fails, the document must still be on file.
+    try:
+        quote_service.record_document(
+            session, org, quote_id=quote_id,
+            external_system=books.system, number=est.number,
+            document_id=est.estimate_id, line_count=est.line_count,
+            fingerprint=fingerprint, reference=q.reference or "",
+            already_existed=est.already_existed,
+            thresholds_version=policy_service.load_for_org(session, org).version)
+        session.commit()
+    except Exception:  # noqa: BLE001 — the estimate exists; bookkeeping must not undo it
+        log.exception("could not record the document for quote %s", quote_id)
+        session.rollback()
     try:
         quote_service.set_outcome(
             session, org, quote_id=quote_id, status=QuoteOutcomeStatus.SENT,

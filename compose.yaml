@@ -59,8 +59,15 @@ x-backend-env: &backend-env
   REDIS_URL: redis://redis:6379/0
 
   # Postgres pool. The defaults' arithmetic is documented on the settings in
-  # config.py: 2 uvicorn workers × (5 + 10) = 30 worst case, against stock
-  # max_connections=100. Redo it before raising anything here.
+  # config.py, and this stack's total is:
+  #
+  #   api     2 uvicorn workers × (5 + 10)          = 30
+  #   worker  N containers × (3 + 2), see below     = 5 per worker
+  #   release runs alone, briefly                    ~ 5
+  #
+  # So one worker is 40 and `--scale worker=6` is 65, against stock
+  # max_connections=100 — with room for psql and a replica. Redo this
+  # arithmetic before raising anything here or scaling workers past ~10.
   DB_POOL_SIZE: ${DB_POOL_SIZE:-5}
   DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-10}
   DB_POOL_TIMEOUT: ${DB_POOL_TIMEOUT:-30}
@@ -166,11 +173,15 @@ services:
     environment:
       <<: *backend-env
       QUEUE_WORKER: "1"
-      # It serves no requests, so it needs neither the web process manager nor
-      # the catalogue warm-up on boot — but it *does* resolve product codes if a
-      # queued job asks, so PIE_WARM is left to the shared default rather than
-      # forced off here.
-      UVICORN_WORKERS: "1"
+      # Its own pool arithmetic, because it is not shaped like the API. One
+      # process, and at most three connections in flight at once: the drain
+      # loop's session, the heartbeat's (a running handler must keep its
+      # message alive on a session of its own), and the handler's own. 3+2 is
+      # that with room, and it is what keeps `--scale worker=N` inside the
+      # budget the header above computes — six workers at the API's 5+10 would
+      # be 90 connections on their own.
+      DB_POOL_SIZE: ${WORKER_DB_POOL_SIZE:-3}
+      DB_MAX_OVERFLOW: ${WORKER_DB_MAX_OVERFLOW:-2}
     command: ["python", "-m", "app.worker"]
     depends_on:
       db:

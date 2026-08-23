@@ -8,9 +8,24 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Optional
 
 # backend/app/config.py -> repo root is three parents up.
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _optional_positive_int(raw: Optional[str]) -> Optional[int]:
+    """A positive int from the environment, or ``None`` when it does not say.
+
+    ``None`` and a number are different facts, so an unset, blank or unparseable
+    value returns ``None`` rather than a default — the caller publishes it as
+    "not declared". A zero or negative count is not a worker count either.
+    """
+    try:
+        value = int((raw or "").strip())
+    except ValueError:
+        return None
+    return value if value > 0 else None
 
 
 def _load_dotenv(path: Path) -> None:
@@ -188,6 +203,19 @@ class Settings:
     # duration, never parameter values — bind parameters hold customer names
     # and credentials, and trust/ exists so those never reach a log file.
     DB_SLOW_QUERY_MS: int = int(os.environ.get("DB_SLOW_QUERY_MS", "1000"))
+
+    # How many API workers the supervisor was told to start — read by the
+    # metrics export, which is per-process and says so.
+    #
+    # **Declared, not observed.** A worker cannot see its siblings: this is the
+    # number the deploy asked for (`deploy/backend.Dockerfile` and both compose
+    # stacks set it), not a count of what is running. When nothing declares it
+    # the value is `None`, which the export publishes as `null` — "unknown",
+    # never "one". Defaulting it to 1 would be a lie in exactly the case a
+    # reader most needs the truth: a scraper that believes there is one worker
+    # stops after one scrape and reports a fraction of the traffic as the whole.
+    UVICORN_WORKERS: Optional[int] = _optional_positive_int(
+        os.environ.get("UVICORN_WORKERS"))
 
     # ── Redis (provisioned infrastructure; no feature requires it yet) ──────
     # Both compose stacks run a Redis next to the API for the state that must

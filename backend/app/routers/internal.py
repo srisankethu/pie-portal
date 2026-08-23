@@ -246,7 +246,7 @@ def observability_dashboard(
 ) -> dict:
     """Complete observability dashboard data: health, metrics, capacity (owner/manager only)."""
     from ..observability.dashboard import DashboardService
-    service = DashboardService(session)
+    service = DashboardService(session, principal.organization_id)
     return service.get_full_dashboard()
 
 
@@ -257,7 +257,7 @@ def observability_health(
 ) -> dict:
     """System health status for all components (owner/manager only)."""
     from ..observability.dashboard import DashboardService
-    service = DashboardService(session)
+    service = DashboardService(session, principal.organization_id)
     return service.get_system_health()
 
 
@@ -268,7 +268,7 @@ def observability_capacity(
 ) -> dict:
     """Capacity analysis and safe headroom calculation (owner/manager only)."""
     from ..observability.dashboard import DashboardService
-    service = DashboardService(session)
+    service = DashboardService(session, principal.organization_id)
     return service.get_capacity()
 
 
@@ -277,7 +277,25 @@ def observability_metrics(
     principal: Principal = Depends(require_manager_or_owner),
     session: Session = Depends(get_session),
 ) -> dict:
-    """Raw metrics export for external monitoring systems (owner/manager only)."""
+    """Raw metrics export — **one API worker's counters** (owner/manager only).
+
+    Not the deployment's. The registry behind this is a per-process singleton
+    fed by per-process middleware, and the deployment runs several workers, so
+    a request is answered by whichever one the load balancer picked: roughly
+    ``1/N`` of the traffic, a different ``1/N`` on the next scrape. A p99 read
+    from a single response is computed from that worker's samples alone.
+
+    The response says so. ``scope`` is ``"worker"``, ``worker`` is this
+    process's identity (the same ``host:pid:rand`` string the scheduler lease
+    uses), ``workers_configured`` is how many the supervisor was told to start
+    or ``null`` if nothing declared it, and ``composition`` states how to
+    combine several workers' payloads — counters and gauges sum, percentiles do
+    not. Scrape until the worker ids repeat to cover the whole deployment.
+
+    There is deliberately no shared backing store: metrics are written on every
+    request, and putting that write on the request path is the SQLite locking
+    incident CLAUDE.md §4 documents.
+    """
     from ..observability.metrics import metrics
     return metrics.export()
 
@@ -290,7 +308,7 @@ def observability_api_performance(
 ) -> dict:
     """API performance metrics over a time window (owner/manager only)."""
     from ..observability.dashboard import DashboardService
-    service = DashboardService(session)
+    service = DashboardService(session, principal.organization_id)
     return service.get_api_performance(window_minutes)
 
 
@@ -301,7 +319,7 @@ def observability_database(
 ) -> dict:
     """Database performance and status metrics (owner/manager only)."""
     from ..observability.dashboard import DashboardService
-    service = DashboardService(session)
+    service = DashboardService(session, principal.organization_id)
     return service.get_database_status()
 
 
@@ -310,9 +328,16 @@ def observability_jobs(
     principal: Principal = Depends(require_manager_or_owner),
     session: Session = Depends(get_session),
 ) -> dict:
-    """Background job status and metrics (owner/manager only)."""
+    """Background job status for this organization (owner/manager only).
+
+    Read from ``sync_runs``, the persisted job model — authoritative, visible
+    to every worker, and it survives a restart. The ERP sync is the only
+    background job kind this deployment records, which the payload states in
+    ``job_kinds`` so an empty block reads as "no sync running" rather than as
+    some other job type silently unmeasured.
+    """
     from ..observability.dashboard import DashboardService
-    service = DashboardService(session)
+    service = DashboardService(session, principal.organization_id)
     return service.get_background_jobs()
 
 
@@ -321,9 +346,15 @@ def observability_syncs(
     principal: Principal = Depends(require_manager_or_owner),
     session: Session = Depends(get_session),
 ) -> dict:
-    """Zoho synchronization status and metrics (owner/manager only)."""
+    """ERP sync status for this organization (owner/manager only).
+
+    Read from ``sync_runs``. A run whose heartbeat has gone cold is reported
+    under ``stalled`` rather than counted as active, and a throughput that
+    cannot be computed comes back ``null`` with ``throughput_basis`` naming
+    what is missing — never zero, which is what a failing sync looks like.
+    """
     from ..observability.dashboard import DashboardService
-    service = DashboardService(session)
+    service = DashboardService(session, principal.organization_id)
     return service.get_zoho_sync_status()
 
 
@@ -335,5 +366,5 @@ def observability_tenants(
 ) -> dict:
     """Tenant usage rankings (owner/manager only)."""
     from ..observability.dashboard import DashboardService
-    service = DashboardService(session)
+    service = DashboardService(session, principal.organization_id)
     return service.get_tenant_usage(limit)

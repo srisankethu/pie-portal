@@ -3,7 +3,11 @@
 Provides in-memory metrics aggregation with structured export for external systems.
 Tracks: counters, gauges, histograms with optional labels (tenant, endpoint, operation).
 
-Thread-safe. Metrics are timestamped and can be queried/exported on demand.
+Thread-safe **within one process, and that is the whole of it.** There is no
+shared backing store: every counter, gauge and histogram here lives in an
+instance attribute of a module-level registry, so each API worker accumulates
+its own. See ``MetricRegistry.export`` for what the payload says about that and
+why the fix is disclosure rather than a shared store.
 """
 from __future__ import annotations
 
@@ -15,6 +19,9 @@ from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Optional
+
+from ..config import settings
+from ..lease import holder_id
 
 log = logging.getLogger("pie_portal.observability.metrics")
 
@@ -324,12 +331,63 @@ class MetricRegistry:
             return self._metrics[name]
 
     def export(self) -> dict[str, Any]:
-        """Export all metrics."""
+        """Every metric **this process** holds, labelled as such.
+
+        The numbers below are one worker's. Nothing here is shared: the
+        registry is a module-level singleton per process, traffic reaches it
+        through per-process middleware, and the deployment runs
+        ``UVICORN_WORKERS`` of them. So a scrape returns whichever worker the
+        load balancer happened to route it to — roughly ``1/N`` of the traffic,
+        a different ``1/N`` each time.
+
+        That was previously presented as the whole platform's figures, which is
+        the failure this codebase objects to most: an operator debugging a
+        latency problem read a p99 computed from half the samples with nothing
+        in the payload to say so, and could not tell which half.
+
+        **Why the fix is disclosure and not a shared store.** Putting a write on
+        the request path is the incident CLAUDE.md §4 documents — a long or
+        contended write on SQLite blocked every reader including ``/api/health``
+        — and metrics are written on *every* request, which is the worst
+        possible shape for that. Redis is provisioned next to the API but
+        nothing imports it and no feature may require it (``config.REDIS_URL``
+        says so). So the honest thing is for the payload to state what it is,
+        and to carry the identity of the process that produced it:
+
+        - ``scope`` — ``"worker"``. Not the deployment.
+        - ``worker`` — this process, from ``lease.holder_id()``: the same
+          ``host:pid:rand`` string the scheduler lease is arbitrated with,
+          reused rather than reinvented so one process has one name everywhere
+          it appears. Stable for the life of the process and re-derived after a
+          fork, which is what makes two scrapes comparable — same id means the
+          same worker's counters and the deltas mean something; a different id
+          means a different population and subtracting them is meaningless.
+        - ``workers_configured`` — how many workers the supervisor was *told*
+          to start, or ``null`` when nothing declared it. Declared, not
+          observed: this process cannot see its siblings. It is here so a
+          scraper knows how many distinct ``worker`` values it should expect to
+          collect before it has the whole picture, and ``null`` says "unknown",
+          never "one".
+        - ``composition`` — how to combine several workers' payloads, because
+          it differs by metric type and getting it wrong is silent. Counters
+          and gauges sum. Percentiles do **not**: p99 of a union is not the mean
+          of the p99s, so they are compared per worker, not averaged.
+        """
         with self.lock:
-            return {
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "metrics": [m.export() for m in self._metrics.values()],
-            }
+            exported = [m.export() for m in self._metrics.values()]
+        return {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "scope": "worker",
+            "worker": holder_id(),
+            "workers_configured": settings.UVICORN_WORKERS,
+            "composition": (
+                "One API worker's counters, not the deployment's. Scrape until "
+                "the worker ids repeat to cover them all. Across workers, "
+                "counters and gauges sum; percentiles (p50/p95/p99) do not — "
+                "compare them per worker rather than averaging."
+            ),
+            "metrics": exported,
+        }
 
     def clear(self) -> None:
         """Clear all metrics (for testing)."""

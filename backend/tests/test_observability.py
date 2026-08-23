@@ -5,10 +5,49 @@ import threading
 
 import pytest
 
+from datetime import timedelta
+
+from sqlalchemy.orm import sessionmaker
+
+import dbsupport
+from app.clock import now
+from app.domain import models
 from app.observability.capacity import Utilization, CapacityCalculator
+from app.observability.dashboard import DashboardService
 from app.observability.health import ComponentHealth, HealthRegistry, HealthStatus
 from app.observability.metrics import Counter, Gauge, Histogram, MetricRegistry
-from app.observability.workload import JobStatus, SyncType, WorkloadTracker
+
+
+ORG = "org_obs"
+OTHER_ORG = "org_next_door"
+
+
+@pytest.fixture()
+def session():
+    s = sessionmaker(bind=dbsupport.fresh_engine(), future=True)()
+    yield s
+    s.close()
+
+
+def _run(session, run_id: str, status: str, *, org: str = ORG,
+         started_minutes_ago: float = 30, heartbeat_minutes_ago=None,
+         finished_minutes_ago=None, connection_id=None, phase=None,
+         error=None, **counters):
+    """One sync_runs row, positioned in time relative to now."""
+    t = now()
+
+    def _at(minutes):
+        return None if minutes is None else t - timedelta(minutes=minutes)
+
+    run = models.SyncRun(
+        sync_run_id=run_id, organization_id=org, source="api", status=status,
+        connection_id=connection_id, phase=phase, error=error,
+        started_at=_at(started_minutes_ago),
+        heartbeat_at=_at(heartbeat_minutes_ago),
+        finished_at=_at(finished_minutes_ago), **counters)
+    session.add(run)
+    session.commit()
+    return run
 
 
 class TestMetricsRegistry:
@@ -240,66 +279,202 @@ class TestHealthRegistry:
         assert registry.get_overall_status() == HealthStatus.UNHEALTHY
 
 
-class TestWorkloadTracker:
-    """Tests for workload metrics."""
+class TestMetricsExportSaysWhoseNumbersTheseAre:
+    """The export must not present one worker's counters as the platform's.
 
-    def test_job_lifecycle(self):
-        tracker = WorkloadTracker()
-        job_id = tracker.start_job("test_job", "org_123")
-        assert job_id is not None
+    There is no shared backing store and there deliberately is not going to be
+    one: metrics are written on every request, and putting that write on the
+    request path is the SQLite locking incident CLAUDE.md §4 documents. So the
+    registry is per-process, the deployment runs several, and a scrape returns
+    whichever worker answered — roughly 1/N of the traffic, a different 1/N
+    next time.
 
-        active = tracker.get_active_jobs()
-        assert job_id in active
-        assert active[job_id].job_type == "test_job"
+    That is defensible only while the payload says so. An operator reading a
+    p99 needs to know it came from one worker's samples, and needs a stable
+    identity on it so two scrapes can be told apart: same id, the deltas mean
+    something; different id, a different population, and subtracting them is
+    meaningless.
+    """
 
-        tracker.update_job(job_id, JobStatus.COMPLETED, records_processed=100)
-        active = tracker.get_active_jobs()
-        assert job_id not in active
+    def test_the_payload_names_its_scope_and_its_worker(self):
+        from app.lease import holder_id
 
-        recent = tracker.get_recent_jobs(hours=1)
-        assert len(recent) == 1
-        assert recent[0].records_processed == 100
+        registry = MetricRegistry()
+        registry.counter("scoped_counter", "help").inc()
+        payload = registry.export()
 
-    def test_sync_lifecycle(self):
-        tracker = WorkloadTracker()
-        sync_id = tracker.start_sync(SyncType.INVOICE, "org_123", "conn_456")
-        assert sync_id is not None
+        assert payload["scope"] == "worker", "not the deployment"
+        assert payload["worker"] == holder_id(), (
+            "the process identity the scheduler lease already uses, reused "
+            "rather than reinvented")
+        assert "percentile" in payload["composition"].lower(), (
+            "counters sum across workers and percentiles do not; combining "
+            "them wrongly is silent, so the payload has to say which is which")
 
-        active = tracker.get_active_syncs()
-        assert sync_id in active
+    def test_the_worker_id_is_stable_across_scrapes(self):
+        first, second = MetricRegistry().export(), MetricRegistry().export()
+        assert first["worker"] == second["worker"]
 
-        tracker.update_sync(
-            sync_id,
-            records_fetched=1000,
-            records_inserted=800,
-            records_updated=150,
-            records_failed=50,
-            completed=True,
-        )
+    def test_an_undeclared_worker_count_is_null_not_one(self, monkeypatch):
+        """`null` is "nobody said"; `1` would tell a scraper it had them all."""
+        from app.config import settings
 
-        active = tracker.get_active_syncs()
-        assert sync_id not in active
+        monkeypatch.setattr(settings, "UVICORN_WORKERS", None)
+        assert MetricRegistry().export()["workers_configured"] is None
 
-        recent = tracker.get_recent_syncs(hours=1)
-        assert len(recent) == 1
-        assert recent[0].records_fetched == 1000
-        assert recent[0].duration_seconds >= 0
+        monkeypatch.setattr(settings, "UVICORN_WORKERS", 2)
+        assert MetricRegistry().export()["workers_configured"] == 2
 
-    def test_parsing_metrics(self):
-        tracker = WorkloadTracker()
-        tracker.record_parsing(0.5, success=True)
-        tracker.record_parsing(1.0, success=False)
-        # Verify no exceptions
 
-    def test_quote_resolution_metrics(self):
-        tracker = WorkloadTracker()
-        tracker.record_quote_resolution(
-            duration=0.3,
-            exact_matches=5,
-            equivalent_matches=2,
-            unresolved=1,
-        )
-        # Verify no exceptions
+class TestJobAndSyncEndpointsReadTheRunTable:
+    """`/observability/jobs` and `/observability/syncs`, from `sync_runs`.
+
+    These two endpoints used to be served by an in-memory `WorkloadTracker`
+    that no application code ever called. Every field was structurally zero —
+    forever, on every deployment — and zero active jobs reads as "all quiet".
+    That is the benign default CLAUDE.md §1 forbids: the evidence was not thin,
+    it was absent, and the screen said the platform was fine.
+
+    The tracker is deleted rather than wired up. `sync_runs` already held these
+    facts and holds them better: it is authoritative, every worker sees the same
+    rows, and it survives a restart, none of which a per-process dict does.
+
+    What these tests pin is the honesty of the payload, not its prettiness —
+    a number that cannot be known comes back null with a sentence naming what
+    is missing, a run that stopped reporting is not counted as running, and one
+    organization's activity never appears in another's.
+    """
+
+    def test_no_runs_reports_unknown_throughput_rather_than_zero(self, session):
+        payload = DashboardService(session, ORG).get_zoho_sync_status()
+        window = payload["recent_24h"]
+
+        assert window["throughput_records_per_sec"] is None, (
+            "0 rec/s is what a sync moving no data looks like; an idle window "
+            "must not be reported as one")
+        assert "No run ended" in window["throughput_basis"]
+        assert payload["active"]["count"] == 0
+
+    def test_a_finished_run_supplies_the_window_figures(self, session):
+        _run(session, "r_ok", "OK", started_minutes_ago=40,
+             finished_minutes_ago=30, documents_fetched=120,
+             customers=10, products=20, sales_txns=70)
+
+        window = DashboardService(session, ORG).get_zoho_sync_status()["recent_24h"]
+
+        assert window["completed"] == 1
+        assert window["total_records_fetched"] == 120
+        assert window["total_records_processed"] == 100
+        # 100 records over ten minutes.
+        assert window["throughput_records_per_sec"] == pytest.approx(100 / 600, abs=0.01)
+        assert window["throughput_runs_excluded"] == 0
+
+    def test_a_run_with_no_finish_time_is_excluded_and_counted(self, session):
+        """The denominator must not silently absorb a run it cannot time.
+
+        `finished_at` is nullable, and the previous implementation summed
+        `duration_seconds or 0` — so a run with no end time contributed its
+        records to the numerator and nothing to the denominator, inflating the
+        rate. Excluding it is right; excluding it *quietly* is not.
+        """
+        _run(session, "r_timed", "OK", started_minutes_ago=40,
+             finished_minutes_ago=30, sales_txns=100)
+        _run(session, "r_untimed", "OK", started_minutes_ago=50, sales_txns=900)
+
+        window = DashboardService(session, ORG).get_zoho_sync_status()["recent_24h"]
+
+        assert window["throughput_runs_excluded"] == 1
+        assert window["throughput_records_per_sec"] == pytest.approx(100 / 600, abs=0.01)
+
+    def test_a_stalled_run_is_reported_apart_from_a_live_one(self, session):
+        _run(session, "r_live", "RUNNING", started_minutes_ago=5,
+             heartbeat_minutes_ago=0, phase="Reading invoices")
+        _run(session, "r_cold", "RUNNING", started_minutes_ago=180,
+             heartbeat_minutes_ago=120, connection_id="conn_a")
+
+        payload = DashboardService(session, ORG).get_background_jobs()
+
+        assert payload["active"]["count"] == 1, "a cold run is not work in progress"
+        assert payload["active"]["by_phase"] == {"Reading invoices": 1}
+        assert payload["stalled"]["count"] == 1, "nor is it nothing"
+        assert payload["stalled"]["detail"]
+
+    def test_reporting_does_not_reap_a_stalled_run(self, session):
+        """A GET anyone may poll must not write somebody else's job off as failed.
+
+        `jobs.active_run` reaps deliberately — a dead row must not hold the
+        next sync's slot. A dashboard has no such need, and reaping from it
+        would mean an observability screen racing the worker that owns the run.
+        """
+        _run(session, "r_cold", "RUNNING", started_minutes_ago=180,
+             heartbeat_minutes_ago=120)
+
+        DashboardService(session, ORG).get_background_jobs()
+
+        assert session.get(models.SyncRun, "r_cold").status == "RUNNING"
+
+    def test_partial_is_counted_as_itself(self, session):
+        _run(session, "r_part", "PARTIAL", started_minutes_ago=40,
+             finished_minutes_ago=35, error="Zoho stopped answering",
+             sales_txns=5)
+
+        payload = DashboardService(session, ORG).get_background_jobs()
+
+        assert payload["recent_24h"]["partial"] == 1
+        assert payload["recent_24h"]["completed"] == 0, (
+            "a run that did not finish must not be counted as one that did")
+        assert payload["recent_24h"]["failed"] == 0
+        assert [f["status"] for f in payload["failures"]] == ["PARTIAL"]
+
+    def test_a_run_older_than_the_window_is_not_in_it(self, session):
+        _run(session, "r_old", "OK", started_minutes_ago=60 * 30,
+             finished_minutes_ago=60 * 29, sales_txns=10)
+
+        payload = DashboardService(session, ORG).get_background_jobs()
+
+        assert payload["recent_24h"]["completed"] == 0
+        assert payload["recent_24h"]["basis"], "the window must say what it selected"
+
+    def test_another_organizations_runs_are_not_reported(self, session):
+        _run(session, "r_theirs", "RUNNING", org=OTHER_ORG,
+             started_minutes_ago=5, heartbeat_minutes_ago=0)
+        _run(session, "r_theirs_done", "OK", org=OTHER_ORG,
+             started_minutes_ago=40, finished_minutes_ago=30, sales_txns=50)
+
+        payload = DashboardService(session, ORG).get_zoho_sync_status()
+
+        assert payload["organization_id"] == ORG
+        assert payload["active"]["count"] == 0
+        assert payload["recent_24h"]["completed"] == 0
+
+    def test_worker_utilization_counts_every_organizations_live_runs(self, session):
+        """Capacity is a property of the deployment, not of one tenant.
+
+        A tenant-scoped count would understate what the workers are carrying.
+        Only the integer crosses — no other organization's rows, names or
+        numbers appear.
+        """
+        calc = CapacityCalculator(session)
+        assert calc.calculate_worker_utilization() == 0.0
+
+        _run(session, "r_mine", "RUNNING", started_minutes_ago=2,
+             heartbeat_minutes_ago=0)
+        _run(session, "r_theirs", "RUNNING", org=OTHER_ORG,
+             started_minutes_ago=2, heartbeat_minutes_ago=0)
+        # A connection of its own: the partial unique index allows one active
+        # umbrella run per organization, and `r_mine` already holds that slot.
+        _run(session, "r_cold", "RUNNING", connection_id="conn_z",
+             started_minutes_ago=180, heartbeat_minutes_ago=120)
+
+        assert calc.calculate_worker_utilization() == pytest.approx(
+            2 / calc.worker_limit), "the stalled run occupies no worker"
+
+    def test_the_load_block_does_not_invent_an_active_request_count(self, session):
+        """Nothing tracks in-flight requests, so the answer is null, not 0."""
+        api = DashboardService(session, ORG).get_current_load()["api"]
+
+        assert api["active_requests"] is None
+        assert api["basis"], "and the payload says why"
 
 
 class TestCapacityCalculator:
@@ -324,16 +499,34 @@ class TestCapacityCalculator:
         # (0.90 - 0.9) / 0.9 ≈ 0
         assert util.safe_capacity_multiplier < 0.01
 
-    def test_capacity_calculator_get_utilizations(self):
-        calc = CapacityCalculator()
+    def test_capacity_calculator_get_utilizations(self, session):
+        """Every component is either a real fraction or an explained UNKNOWN.
+
+        The looser form of this test (`0 <= current <= 1` for all) is what let
+        `api_requests` report a lifetime request count divided by a per-second
+        limit: the value was in range, so the assertion passed while the number
+        meant nothing. What matters is that a figure nobody measured cannot
+        masquerade as one that was — so an unknown must be null, must band as
+        `unknown` rather than `healthy`, and must say what is missing.
+        """
+        calc = CapacityCalculator(session)
         utils = calc.get_utilizations()
         assert len(utils) > 0
         for util in utils:
-            assert 0 <= util.current <= 1
-            assert util.status in ("healthy", "warning", "critical")
+            if util.current is None:
+                assert util.status == "unknown", (
+                    f"{util.name}: an unmeasured component must not band as a "
+                    f"load level, got {util.status!r}")
+                assert util.basis, (
+                    f"{util.name}: a null must name what is missing")
+                assert util.safe_capacity_multiplier is None, (
+                    f"{util.name}: headroom over an unmeasured base is meaningless")
+            else:
+                assert 0 <= util.current <= 1
+                assert util.status in ("healthy", "warning", "critical")
 
-    def test_overall_capacity(self):
-        calc = CapacityCalculator()
+    def test_overall_capacity(self, session):
+        calc = CapacityCalculator(session)
         capacity = calc.get_overall_capacity()
         assert "timestamp" in capacity
         assert "components" in capacity
@@ -341,8 +534,8 @@ class TestCapacityCalculator:
         assert "safe_capacity_headroom" in capacity
         assert "recommended_action" in capacity
 
-    def test_growth_capacity_without_history(self):
-        calc = CapacityCalculator()
+    def test_growth_capacity_without_history(self, session):
+        calc = CapacityCalculator(session)
         forecast = calc.estimate_growth_capacity()
         assert forecast["status"] == "insufficient_data"
 

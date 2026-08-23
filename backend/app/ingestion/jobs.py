@@ -73,7 +73,7 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Callable, Iterator, Optional
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -210,6 +210,92 @@ def last_successful_run(session: Session, organization_id: str) -> Optional[mode
                models.SyncRun.status == "OK")
         .order_by(models.SyncRun.started_at.desc())
         .limit(1)).first()
+
+
+#: The entity counters a run keeps of rows it actually wrote. Named once
+#: because two readers add them up, and a list that drifted between them would
+#: make the same run report two different totals. All are non-nullable integer
+#: columns, so this sums real values — no ``or 0`` hiding a missing one.
+#:
+#: Three columns are deliberately outside it. ``documents_fetched`` and
+#: ``documents_resumed`` count what was *read* from the source, which is the
+#: other side of the ledger and is reported separately; ``assignments`` counts
+#: links drawn between rows already written, so adding it would count the same
+#: pull twice.
+RECORD_COUNTERS = ("customers", "products", "sales_txns", "cost_records",
+                   "vendors", "stock_snapshots", "payments", "purchase_orders",
+                   "sales_orders", "vendor_payments")
+
+
+def records_written(run: models.SyncRun) -> int:
+    """How many rows of read model this run wrote."""
+    return sum(getattr(run, name) for name in RECORD_COUNTERS)
+
+
+def unfinished_runs(session: Session, *,
+                    organization_id: Optional[str] = None) -> list[models.SyncRun]:
+    """Every run the table still calls active — **read-only, and unreaped**.
+
+    ``active_run`` and ``active_runs`` answer the same question for the paths
+    that need the *slot*: they mark a run that stopped reporting as FAILED,
+    because a dead row must not lock the next sync out. This one does not, and
+    the difference is deliberate rather than an oversight.
+
+    A reporting endpoint is a GET that any manager may poll every thirty
+    seconds. Reaping from there would mean an observability screen deciding
+    somebody else's job had died and writing that verdict — a side effect the
+    caller never asked for, on a read path, racing whichever worker actually
+    owns the run. So this reads, and the caller splits live from stalled with
+    ``is_stale``. Both are reported: a stalled run counted as active would
+    overstate what is happening, and one dropped silently would understate it.
+
+    ``organization_id`` omitted means every organization, which is what a
+    deployment-wide capacity figure needs. Anything tenant-facing passes it.
+    """
+    stmt = select(models.SyncRun).where(models.SyncRun.status.in_(ACTIVE))
+    if organization_id is not None:
+        stmt = stmt.where(models.SyncRun.organization_id == organization_id)
+    return list(session.scalars(stmt.order_by(models.SyncRun.started_at.desc())).all())
+
+
+def runs_touching(session: Session, organization_id: str,
+                  since: datetime) -> list[models.SyncRun]:
+    """Runs of one organization that began *or ended* inside a window.
+
+    Not keyed on ``started_at`` alone. ``finished_at`` alone would be worse —
+    it is nullable, so a window built on it silently drops every run still
+    going and every row a dead process left without an end time — but
+    ``started_at`` alone loses the mirror case, and that one is the case an
+    operator cares about most: a first-time backfill that begins Monday 09:00
+    and fails Tuesday 14:00 is 30 hours old at Tuesday 15:00, so a
+    started-in-the-last-24h window reports zero failures for the day it failed.
+
+    The disjunction catches both. A long run still in flight, begun before the
+    window, is deliberately absent from here and reported in the active block
+    instead: it is current state, not something that happened in the window.
+    """
+    return list(session.scalars(
+        select(models.SyncRun)
+        .where(models.SyncRun.organization_id == organization_id,
+               or_(models.SyncRun.started_at >= since,
+                   models.SyncRun.finished_at >= since))
+        .order_by(models.SyncRun.started_at.desc())).all())
+
+
+def last_run(session: Session, organization_id: str, *,
+             status: Optional[str] = None) -> Optional[models.SyncRun]:
+    """The most recent run, optionally of one status. ``None`` if there is none.
+
+    The anchor that lets a caller tell "nothing was due" from "nothing has
+    happened for a week". A window count of zero is the same integer either
+    way; the date of the last success is not.
+    """
+    stmt = (select(models.SyncRun)
+            .where(models.SyncRun.organization_id == organization_id))
+    if status is not None:
+        stmt = stmt.where(models.SyncRun.status == status)
+    return session.scalars(
+        stmt.order_by(models.SyncRun.started_at.desc()).limit(1)).first()
 
 
 # ── slicing a long pull into calendar windows ───────────────────────────────

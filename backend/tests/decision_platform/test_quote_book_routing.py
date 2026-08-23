@@ -85,9 +85,15 @@ def test_a_disabled_connection_is_refused_not_substituted(session):
         book_for_customer(session, org, customer)
 
 
-def test_a_customer_from_another_connector_is_refused(session):
-    """A Tally customer has no Zoho contact to write an estimate against, and
-    the id it carries belongs to a different system entirely."""
+def test_a_customer_from_a_connector_that_cannot_write_is_refused(session):
+    """A Tally customer has no contact to write a quote against, and the id it
+    carries belongs to a different system entirely.
+
+    The refusal names the system and says what is actually true of it — that
+    this platform reads it and cannot create a quote in it. It used to say "not
+    Zoho Books", which is a fact about the wrong end: an owner reading it
+    learns which system we happen to write today rather than what is missing.
+    """
     org = _org(session)
     _connect(session, org, "60036630487", "SLS Engineers")
     customer = _customer(session, org, connection_id=None, connector="tally",
@@ -96,6 +102,54 @@ def test_a_customer_from_another_connector_is_refused(session):
     with pytest.raises(ConnectionNotFound) as e:
         book_for_customer(session, org, customer)
     assert "tally" in str(e.value)
+    assert "cannot create a quote" in str(e.value)
+
+
+def test_the_refusal_asks_what_a_connector_can_write_not_what_it_is_called(
+        session, monkeypatch):
+    """The point of the whole seam, and the only test that can prove it.
+
+    Every connector but Zoho declares ``writes=()`` today, so a refusal keyed on
+    capability and a refusal keyed on ``connector != "zoho"`` are indistinguishable
+    on the real registry — both refuse everything. Registering a connector that
+    *does* declare the write separates them: this one must not be refused for
+    being unable to write, because it can.
+
+    Without this the seam could be quietly name-based and no test would notice
+    until the first real connector write, which is the point at which finding
+    out is most expensive.
+    """
+    from app.ingestion import connections as conn
+    from app.ingestion.erp import base as erp_base
+
+    spec = erp_base.ConnectorSpec(
+        key="writeable", label="Writeable Test ERP", company_term="company",
+        credential_fields=(), connection_fields=(), external_id_field="company_id",
+        setup_note="A test connector that declares it can create a quote.",
+        build_source=lambda *a, **k: None,
+        permissions=(erp_base.Permission("quotes.create", "Creating quotes",
+                                         writes=("sales_quotes",)),))
+    monkeypatch.setitem(erp_base._REGISTRY, "writeable", spec)
+
+    assert conn.can_write_quotes("writeable") is True
+    assert conn.can_write_quotes("tally") is False, "unknown connectors write nothing"
+
+    org = _org(session)
+    _connect(session, org, "60036630487", "SLS Engineers")
+    customer = _customer(session, org, connection_id=None, connector="writeable",
+                         external_id="17")
+
+    # Still refused — nothing here knows how to write into it yet — but for
+    # that reason and not the capability one. Both refusals matter: the wrong
+    # one misinforms, and no refusal at all would resolve this customer into
+    # whichever book happened to be connected and put its quote on another
+    # system's ledger.
+    with pytest.raises(ConnectionNotFound) as e:
+        book_for_customer(session, org, customer)
+    assert "cannot create a quote" not in str(e.value), (
+        "a connector that declares the write was refused for being unable to "
+        "write — the dispatch is reading the connector's name, not its capability")
+    assert "no writer for it yet" in str(e.value)
 
 
 def test_an_unattributed_customer_resolves_when_there_is_one_book(session):

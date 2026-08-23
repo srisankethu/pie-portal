@@ -320,6 +320,57 @@ class CustomerBook:
         return self.connection.label or self.connection.zoho_organization_id
 
 
+def writes_for(connector: str) -> tuple[str, ...]:
+    """What this connector can *create* in its system, in ``WRITE_STAGES`` terms.
+
+    The one place that knows capability is answered from two registries, and
+    the reason it has to exist: every other connector declares itself through a
+    ``ConnectorSpec`` in ``ingestion/erp``, while Zoho's grants live in
+    ``REQUIRED_SCOPES`` above, because its connect flow predates that registry
+    and is richer than a field list. Zoho is therefore invisible to
+    ``erp.get_spec`` — which raises for it — and it is the one connector that
+    can actually write.
+
+    Callers ask this instead of comparing a connector key, so the quote path
+    holds no connector name at all: ``erp/__init__``'s rule is that generic code
+    reads the registry and never branches on a key, and this function is how
+    that rule survives a connector the registry cannot hold. Both sides are
+    pinned to their implementations in both directions — ``test_connector_writes``
+    for the registry, ``test_zohos_declared_writes_match_what_the_adapter_can_
+    actually_create`` for Zoho — so a wrong answer here fails a test rather than
+    silently refusing a send.
+
+    An unknown connector writes nothing. That is the safe direction: a refusal
+    naming a system is recoverable, a write into one nobody declared is not.
+    """
+    if connector == ZOHO_CONNECTOR:
+        return tuple(sorted({stage for p in REQUIRED_SCOPES for stage in p.writes}))
+    from . import erp
+    try:
+        return erp.get_spec(connector).writes
+    except erp.UnknownConnectorError:
+        return ()
+
+
+def can_write_quotes(connector: str) -> bool:
+    """Whether a quote can be created in this connector's system at all."""
+    return "sales_quotes" in writes_for(connector)
+
+
+#: Connectors this platform has a quote-write adapter wired for, as opposed to
+#: merely permitted to write. The two are different questions and both have to
+#: be Yes: ``writes_for`` says the *grant* covers creating a quote there, this
+#: says there is code that knows how. Today they coincide at one entry and this
+#: set is what the Business Central work replaces with real dispatch.
+#:
+#: It exists because capability alone is not enough to route on. A customer
+#: from a connector that declares the write but has no adapter must still be
+#: refused — falling through to whichever book happens to be connected would
+#: write the quote into a different system's ledger and invent the provenance
+#: the customer's own row never recorded.
+_QUOTE_ADAPTERS: frozenset[str] = frozenset({ZOHO_CONNECTOR})
+
+
 def book_for_customer(session: Session, organization_id: str,
                       customer: models.Customer) -> CustomerBook:
     """The one set of books this customer belongs to. Refuses to guess.
@@ -353,11 +404,20 @@ def book_for_customer(session: Session, organization_id: str,
     other_systems = sorted({(getattr(c, "connector", None) or ZOHO_CONNECTOR)
                             for c in enabled.values()} - {ZOHO_CONNECTOR})
 
-    if customer.connector and customer.connector != ZOHO_CONNECTOR:
+    if customer.connector and not can_write_quotes(customer.connector):
         raise ConnectionNotFound(
-            f"{customer.name} was imported from "
-            f"{customer.connector}, not Zoho Books, so this quote cannot be "
-            f"written as a Zoho estimate.")
+            f"{customer.name} was imported from {customer.connector}, which "
+            f"this platform reads but cannot create a quote in, so there is "
+            f"nowhere to write this quote.")
+    if customer.connector and customer.connector not in _QUOTE_ADAPTERS:
+        # Permitted to write there, but nothing here knows how yet. Refused
+        # rather than resolved: the books below are another system's, and
+        # writing this quote into one of them would put it on a ledger this
+        # customer was never imported from.
+        raise ConnectionNotFound(
+            f"{customer.name} was imported from {customer.connector}. Quotes "
+            f"can be created there, but this platform has no writer for it "
+            f"yet, and its quote cannot be written into another system.")
 
     if customer.connection_id:
         conn = zoho.get(customer.connection_id)
@@ -365,9 +425,10 @@ def book_for_customer(session: Session, organization_id: str,
             elsewhere = enabled.get(customer.connection_id)
             if elsewhere is not None:
                 raise ConnectionNotFound(
-                    f"The company {customer.name} came from reads "
-                    f"{elsewhere.connector}, not Zoho Books, so this quote "
-                    f"cannot be written into it as a Zoho estimate.")
+                    f"The company {customer.name} came from is a "
+                    f"{elsewhere.connector} connection, which this platform "
+                    f"reads but cannot create a quote in, so this quote cannot "
+                    f"be written into it.")
             raise ConnectionNotFound(
                 f"The Zoho company {customer.name} came from is no longer "
                 f"connected or has been disabled, so there is no ledger to "

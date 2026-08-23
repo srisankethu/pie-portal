@@ -415,7 +415,8 @@ def quote_writer_ready(connector: str) -> bool:
 #: refused — falling through to whichever book happens to be connected would
 #: write the quote into a different system's ledger and invent the provenance
 #: the customer's own row never recorded.
-_QUOTE_ADAPTERS: frozenset[str] = frozenset({ZOHO_CONNECTOR, "dynamics365"})
+_QUOTE_ADAPTERS: frozenset[str] = frozenset(
+    {ZOHO_CONNECTOR, "dynamics365", "acumatica"})
 
 
 def book_for_customer(session: Session, organization_id: str,

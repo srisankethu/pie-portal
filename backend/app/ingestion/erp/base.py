@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field as dc_field
 from datetime import date, datetime
+from decimal import Decimal
 from typing import Any, Callable, Iterable, Optional
 
 from ..errors import IngestionError
@@ -349,6 +350,58 @@ def split_credential_inputs(spec: ConnectorSpec,
 # arrive in that system's dress, and the canonical shape wants ISO dates —
 # without ever inventing a value: an unreadable date comes back as None, and
 # ``normalize`` then refuses the row by name instead of this layer guessing.
+
+# ── writing: the three things every connector's write needs ─────────────────
+# Shared because they are, and because the first two are each a way a write can
+# quietly become a duplicate: a reference that escapes its filter matches the
+# wrong rows, and a reference compared too strictly matches none and so reports
+# "safe to send again" about a record that exists.
+
+
+def odata_str(value: str) -> str:
+    """One string literal in an OData filter. A quote in the value ends the
+    literal early, and OData escapes it by doubling — so a reference carrying
+    one would otherwise build a filter that means something else."""
+    return value.replace("'", "''")
+
+
+def same_reference(held: str, sent: str) -> bool:
+    """Whether a row the server matched really carries the reference we sent.
+
+    Case- and space-insensitive on purpose. ``externalDocumentNumber`` is an AL
+    ``Code[35]``, which upper-cases and trims what is stored in it, while the
+    references generated here carry lowercase hex. An exact comparison can only
+    turn *found* into *not found* — and *not found* is the branch that tells an
+    operator retrying is safe. So a strict re-check here does not tighten the
+    protocol, it authorises the duplicate it exists to prevent.
+    """
+    return held.strip().casefold() == sent.strip().casefold()
+
+
+def money(value: Any) -> Any:
+    """A quantity or a price, as JSON should carry it.
+
+    Money goes out as a string, whatever it arrived as. ``Decimal`` is not
+    JSON-serialisable, and a ``float`` serialises to whatever repr it has —
+    which is the live path here, since ``store.Line.quoted`` is a float. Both
+    are routed through ``Decimal(str(...))``, the same normalisation the Zoho
+    adapter applies, so the number on the document is the number that was
+    priced rather than a binary approximation of it.
+
+    No arithmetic, deliberately: what this writes was computed in
+    ``commercial`` and must not be recomputed at the boundary (§1).
+    """
+    if value is None:
+        return None
+    if isinstance(value, (Decimal, float, int, str)):
+        try:
+            return str(Decimal(str(value)))
+        except (ArithmeticError, ValueError):
+            # Unparseable is not something to guess at: send it on and let
+            # Business Central refuse it by name.
+            return value
+    return value
+
 
 def iso_date(value: Any) -> Optional[str]:
     """A date in whatever dress the source wears → ``YYYY-MM-DD``, or None.

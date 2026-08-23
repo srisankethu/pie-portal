@@ -637,6 +637,25 @@ def test_the_preflight_match_is_not_defeated_by_the_case_bc_stores():
     assert not _sent(src, "POST")
 
 
+def test_a_bc_preflight_match_with_different_lines_is_unknown_not_already_sent():
+    """The pre-flight asks whether the thing already there is *this* quote.
+
+    It compared the found document's line count against itself, so the check
+    could never fire: a document sitting under this reference with different
+    lines was reported as "already sent — nothing was created twice", and the
+    quote on screen was never sent at all. Found by the Acumatica writer's
+    equivalent test, and present in both from the same shape.
+    """
+    src = _bc({**_CLEAN,
+               ("GET", "salesQuotes"): _Resp(
+                   200, {"value": [_bc_row(salesQuoteLines=[{"id": "a"}, {"id": "b"}])]})})
+    with pytest.raises(SourceWriteUnknown) as e:
+        src.create_sales_quotes("Pitti", _BC_LINES, customer_ref="C-001",
+                                reference="QB-1-abcd")
+    assert "2 lines where this quote has 1" in str(e.value)
+    assert not _sent(src, "POST"), "nothing may be written while this is unresolved"
+
+
 def test_a_5xx_on_the_bc_header_settles_by_reading_and_is_sent_once():
     """The write may have landed. One read answers it, and the document found
     is reported rather than a second one created."""
@@ -800,6 +819,187 @@ def test_a_throttled_write_is_uncertain_rather_than_waited_out_and_resent():
                                      reference="QB-1-abcd")
     assert doc.already_existed is True and doc.number == "SQ-1001"
     assert len(_sent(landed, "POST")) == 1
+
+
+# ── the Acumatica quote write ───────────────────────────────────────────────
+# The same contract again. What differs is worth knowing: Acumatica takes one
+# PUT carrying its own lines, so "found" means "complete" and the header-without-
+# lines state Business Central has cannot arise; and its session holds a
+# licensed seat, so the write signs out however it ends.
+
+_ACU_LINES = [{"code": "CNMG120408", "qty": 4, "rate": "1250.00"}]
+
+
+def _acu_row(**over):
+    row = {"id": "guid-1", "OrderNbr": {"value": "QT000123"},
+           "OrderType": {"value": "QT"},
+           "CustomerOrderNbr": {"value": "QB-1-abcd"},
+           "Details": [{"InventoryID": {"value": "CNMG120408"}}]}
+    row.update(over)
+    return row
+
+
+class _AcuHttp:
+    def __init__(self, routes):
+        self.routes = {k: list(v) if isinstance(v, list) else [v]
+                       for k, v in routes.items()}
+        self.calls: list[dict] = []
+
+    @staticmethod
+    def _what(method, url):
+        if url.endswith("/logout"):
+            return ("POST", "logout")
+        if url.endswith("/login"):
+            return ("POST", "login")
+        return (method, url.rsplit("/", 1)[-1].split("?")[0])
+
+    def request(self, method, url, **kw):
+        self.calls.append({"method": method, "url": url, **kw})
+        queue = self.routes.get(self._what(method, url))
+        if not queue:
+            return _Resp(404, {"error": "no route"})
+        resp = queue[0] if len(queue) == 1 else queue.pop(0)
+        return resp(kw.get("json")) if callable(resp) else resp
+
+    # The client signs in and out through the bare http object, not `request`.
+    def post(self, url, **kw):
+        return self.request("POST", url, **kw)
+
+
+def _acu(routes) -> acumatica.AcumaticaSource:
+    http = _AcuHttp(routes)
+    client = acumatica.AcumaticaClient(
+        base_url="https://acu.example", username="u", password="p",
+        tenant="Company", http=http)
+    client._signed_in = True
+    return acumatica.AcumaticaSource(client)
+
+
+def _acu_sent(src, method):
+    return [c for c in src._client._http.calls
+            if c["method"] == method and not c["url"].endswith(("/login", "/logout"))]
+
+
+_ACU_CLEAN = {("GET", "SalesOrder"): _Resp(200, []),
+              ("PUT", "SalesOrder"): _Resp(200, _acu_row()),
+              ("POST", "logout"): _Resp(204)}
+
+
+def test_an_acumatica_quote_puts_the_reference_and_the_customer_on_the_wire():
+    """Acumatica reads and writes the same record in different clothes — every
+    scalar leaves as {"value": …}. ``_plain`` undressed on the way in and
+    nothing dressed on the way out, because until now nothing wrote."""
+    src = _acu(_ACU_CLEAN)
+    doc = src.create_sales_quotes("Pitti", _ACU_LINES, customer_ref="C000001",
+                                  reference="QB-1-abcd")
+    (put,) = _acu_sent(src, "PUT")
+    assert put["json"] == {
+        "OrderType": {"value": "QT"},
+        "CustomerID": {"value": "C000001"},
+        "CustomerOrderNbr": {"value": "QB-1-abcd"},
+        "Details": [{"InventoryID": {"value": "CNMG120408"},
+                     "OrderQty": {"value": "4"},
+                     "UnitPrice": {"value": "1250.00"}}]}
+    assert doc.number == "QT000123" and doc.line_count == 1
+    assert doc.already_existed is False
+
+
+def test_an_acumatica_write_signs_out_however_it_ends():
+    """The session holds a licensed seat. This is a one-shot rather than a
+    sync, so a send that leaks a seat per press exhausts them."""
+    ok = _acu(_ACU_CLEAN)
+    ok.create_sales_quotes("Pitti", _ACU_LINES, customer_ref="C1", reference="QB-1-a")
+    assert any(c["url"].endswith("/logout") for c in ok._client._http.calls)
+
+    refused = _acu(_ACU_CLEAN)
+    with pytest.raises(SourceWriteRefused):
+        refused.create_sales_quotes("Pitti", _ACU_LINES, customer_ref="C1",
+                                    reference="")
+    assert any(c["url"].endswith("/logout") for c in refused._client._http.calls), (
+        "a refused send held the seat")
+
+
+def test_a_quote_already_in_acumatica_is_never_sent_twice():
+    """PUT is Acumatica's insert-or-update, but with no OrderNbr it always
+    inserts — so it is not idempotent by itself, and the pre-flight read is
+    what stops a second press making a second quote."""
+    src = _acu({**_ACU_CLEAN, ("GET", "SalesOrder"): _Resp(200, [_acu_row()])})
+    doc = src.create_sales_quotes("Pitti", _ACU_LINES, customer_ref="C1",
+                                  reference="QB-1-abcd")
+    assert doc.already_existed is True and doc.number == "QT000123"
+    assert not _acu_sent(src, "PUT"), "it was already there and was sent anyway"
+
+
+def test_an_acumatica_quote_with_no_stock_code_is_refused_and_names_the_line():
+    """Acumatica addresses stock by InventoryID, which *is* the SKU string
+    rather than an internal id — so this is the line's code, not the itemId
+    Business Central needs. Same guard, different field."""
+    src = _acu(_ACU_CLEAN)
+    with pytest.raises(SourceWriteRefused) as e:
+        src.create_sales_quotes("Pitti", [{"code": "", "qty": 1, "rate": "1"}],
+                                customer_ref="C1", reference="QB-1-a")
+    assert not _acu_sent(src, "PUT")
+    assert "InventoryID" in str(e.value)
+
+
+def test_an_acumatica_quote_with_no_lines_or_no_price_is_refused():
+    for lines in ([], [{"code": "C1", "qty": 2, "rate": None}]):
+        src = _acu(_ACU_CLEAN)
+        with pytest.raises(SourceWriteRefused):
+            src.create_sales_quotes("Pitti", lines, customer_ref="C1",
+                                    reference="QB-1-a")
+        assert not _acu_sent(src, "PUT")
+
+
+def test_a_5xx_on_the_acumatica_write_settles_by_reading_and_is_sent_once():
+    src = _acu({("GET", "SalesOrder"): [_Resp(200, []), _Resp(200, [_acu_row()])],
+                ("PUT", "SalesOrder"): _Resp(503),
+                ("POST", "logout"): _Resp(204)})
+    doc = src.create_sales_quotes("Pitti", _ACU_LINES, customer_ref="C1",
+                                  reference="QB-1-abcd")
+    assert doc.already_existed is True
+    assert len(_acu_sent(src, "PUT")) == 1, "the write must never be replayed"
+
+
+def test_an_acumatica_write_the_read_proves_never_landed_is_safe_to_retry():
+    src = _acu({**_ACU_CLEAN, ("PUT", "SalesOrder"): _Resp(503)})
+    with pytest.raises(SourceWriteRefused) as e:
+        src.create_sales_quotes("Pitti", _ACU_LINES, customer_ref="C1",
+                                reference="QB-1-abcd")
+    assert "sending again is safe" in str(e.value)
+
+
+def test_an_acumatica_write_whose_settling_read_also_fails_is_unknown():
+    def die(_body):
+        raise TimeoutError("connection timed out")
+
+    src = _acu({("GET", "SalesOrder"): [_Resp(200, []), die],
+                ("PUT", "SalesOrder"): _Resp(503),
+                ("POST", "logout"): _Resp(204)})
+    with pytest.raises(SourceWriteUnknown) as e:
+        src.create_sales_quotes("Pitti", _ACU_LINES, customer_ref="C1",
+                                reference="QB-1-abcd")
+    assert e.value.reference == "QB-1-abcd"
+
+
+def test_an_acumatica_refusal_is_a_write_outcome_not_a_bare_transport_error():
+    src = _acu({**_ACU_CLEAN,
+                ("PUT", "SalesOrder"): _Resp(400, {"message": "CustomerID invalid"})})
+    with pytest.raises(SourceWriteRefused) as e:
+        src.create_sales_quotes("Pitti", _ACU_LINES, customer_ref="C1",
+                                reference="QB-1-abcd")
+    assert "refused the sales quote" in str(e.value)
+
+
+def test_an_acumatica_quote_kept_with_different_lines_is_unknown():
+    """One PUT carries the lines, so a mismatch means Acumatica kept something
+    other than what was sent — neither a success to report nor safe to resend."""
+    src = _acu({**_ACU_CLEAN,
+                ("GET", "SalesOrder"): _Resp(200, [_acu_row(Details=[])])})
+    with pytest.raises(SourceWriteUnknown) as e:
+        src.create_sales_quotes("Pitti", _ACU_LINES, customer_ref="C1",
+                                reference="QB-1-abcd")
+    assert "0 lines where this quote has 1" in str(e.value)
 
 
 def test_transport_backs_off_a_429_and_gives_up_as_a_throttle():
@@ -1165,10 +1365,10 @@ def test_the_catalog_declares_every_form_a_client_can_render(client):
     # told "can create quotes here" beside a send that refuses has been told
     # something false, and that gap is a whole window wide while a writer is
     # being built.
-    assert by_key["dynamics365"]["writes"] == ["sales_quotes"]
-    assert by_key["dynamics365"]["can_write_quotes"] is True
-    assert by_key["zoho"]["can_write_quotes"] is True
-    for key in ("netsuite", "acumatica", "prophet21", "sagex3", "sage100"):
+    for key in ("zoho", "dynamics365", "acumatica"):
+        assert by_key[key]["writes"] == ["sales_quotes"]
+        assert by_key[key]["can_write_quotes"] is True
+    for key in ("netsuite", "prophet21", "sagex3", "sage100"):
         assert by_key[key]["can_write_quotes"] is False, (
             f"{key} offers a send with no writer behind it")
         assert by_key[key]["writes"] == []

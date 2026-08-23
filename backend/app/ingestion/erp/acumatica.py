@@ -21,10 +21,14 @@ from __future__ import annotations
 from datetime import date
 from typing import Any, Iterable, Iterator, Optional
 
-from ..errors import SourceAuthError
+from ..errors import (IngestionError, SourceAuthError, SourceScopeError,
+                      SourceWriteRefused, SourceWriteUncertain,
+                      SourceWriteUnknown)
 from ..source import SkipPredicate
+from ..write_settle import settle_by_read
 from .base import (ConnectorSpec, CredentialMaterial, DocumentTally, Field,
-                   Permission, first, in_window, iso_date, register)
+                   Permission, WrittenDocument, first, in_window, iso_date,
+                   money, odata_str, register, same_reference)
 from .transport import RestTransport
 
 SYSTEM = "acumatica"
@@ -63,6 +67,12 @@ class AcumaticaClient(RestTransport):
             self._http = httpx.Client(timeout=self.timeout_seconds,
                                       follow_redirects=False)
         return self._http
+
+    @property
+    def entity(self) -> str:
+        """This tenant's contract endpoint root, for the writes that do not go
+        through ``entities``."""
+        return self._entity
 
     def _auth_headers(self) -> dict[str, str]:
         if not self._signed_in:
@@ -146,6 +156,36 @@ def _plain(record: dict[str, Any]) -> dict[str, Any]:
 
 
 # ── translators: unwrapped entities → canonical payloads ─────────────────────
+def _wrapped(value: Any) -> Any:
+    """The inverse of :func:`_plain`: dress a plain value for a write.
+
+    Acumatica reads and writes the same records in different clothes — every
+    scalar arrives and must leave as ``{"value": …}``. ``_plain`` undresses on
+    the way in; nothing undid it, because until now nothing wrote.
+
+    Written as the mirror of that function rather than as a payload builder so
+    the two stay recognisable as one pair: a field the reader learns to unwrap
+    is a field the writer already knows how to wrap.
+    """
+    if isinstance(value, dict):
+        return {k: _wrapped(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_wrapped(v) for v in value]
+    return {"value": value}
+
+
+#: The reference goes out as ``CustomerOrderNbr``. Acumatica's own limit for it
+#: is not something the documentation settles, so this is the smallest cap
+#: *documented* by any system this platform writes to — Business Central's 35.
+#: Refusing a reference no known field is proven to hold is the safe direction:
+#: a reference silently truncated on the way in is one the settle read cannot
+#: find, and "cannot find" is the branch that authorises sending again.
+_EXTERNAL_REF_MAX = 35
+
+#: A quote, in Acumatica's own vocabulary for the SalesOrder entity.
+_QUOTE_ORDER_TYPE = "QT"
+
+
 def translate_customer(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "contact_id": str(first(row, "CustomerID", "id") or ""),
@@ -338,6 +378,180 @@ class AcumaticaSource:
         finally:
             self._client.logout()
 
+    # ── writing ─────────────────────────────────────────────────────────────
+    def create_sales_quotes(self, customer: str, lines: list[dict], *,
+                            customer_ref: Optional[str] = None,
+                            reference: Optional[str] = None) -> WrittenDocument:
+        """Create one sales quote in this tenant, or say what happened instead.
+
+        One PUT, lines included. That is the shape Acumatica gives and it is a
+        better one than a header-then-lines write: there is no state where the
+        document exists and its lines do not, so "found" means "complete" and
+        the settle read has one question to answer rather than two.
+
+        PUT is Acumatica's insert-or-update, but with ``OrderNbr`` unset it
+        always inserts — so it is not idempotent by itself and the pre-flight
+        read below is what stops a second press making a second quote.
+
+        Releases the licence seat on the way out, whatever happened. A cookie
+        session holds one, this is a one-shot operation rather than a sync, and
+        a send that leaks a seat per press exhausts them.
+        """
+        try:
+            return self._create_quote(customer, lines, customer_ref, reference)
+        finally:
+            self._client.logout()
+
+    def _create_quote(self, customer: str, lines: list[dict],
+                      customer_ref: Optional[str],
+                      reference: Optional[str]) -> WrittenDocument:
+        if not reference:
+            raise SourceWriteRefused(
+                "This quote has no reference, so a sales quote created in "
+                "Acumatica could not be found again if the reply were lost. "
+                "Nothing was sent.")
+        if not customer_ref:
+            raise SourceWriteRefused(
+                "This quote is not attached to an Acumatica customer, so there "
+                "is no account to create it against. Nothing was sent.")
+        if len(reference) > _EXTERNAL_REF_MAX:
+            raise SourceWriteRefused(
+                f"The reference {reference!r} is longer than the "
+                f"{_EXTERNAL_REF_MAX} characters this platform will send as a "
+                f"customer order number, so it could not be read back reliably. "
+                f"Nothing was sent.")
+        if not lines:
+            raise SourceWriteRefused(
+                "This quote has no priced lines, so there is nothing to create "
+                "in Acumatica. An empty quote in a customer's ledger is worse "
+                "than none. Nothing was sent.")
+        # Acumatica addresses stock by its own InventoryID, which *is* the SKU
+        # string rather than an internal id — so this is the line's code, not
+        # the ``itemId`` Business Central needs. Same guard, different field.
+        missing = [str(ln.get("code") or "?") for ln in lines if not ln.get("code")]
+        if missing:
+            raise SourceWriteRefused(
+                "These lines carry no stock code, and an Acumatica quote line "
+                "must name an InventoryID that already exists there: "
+                + ", ".join(missing), codes=[c for c in missing if c != "?"])
+        unpriced = [str(ln.get("code") or "?") for ln in lines
+                    if ln.get("rate") is None or ln.get("qty") is None]
+        if unpriced:
+            raise SourceWriteRefused(
+                "These lines have no price or no quantity, and Acumatica would "
+                "fill an omitted price from the stock item — quoting a number "
+                "nobody here chose: " + ", ".join(unpriced),
+                codes=[c for c in unpriced if c != "?"])
+
+        already = self._settled_quote(reference, customer, len(lines))
+        if already is not None:
+            return already
+
+        payload = _wrapped({
+            "OrderType": _QUOTE_ORDER_TYPE,
+            "CustomerID": str(customer_ref),
+            "CustomerOrderNbr": reference,
+            "Details": [{"InventoryID": str(ln["code"]),
+                         "OrderQty": money(ln.get("qty")),
+                         "UnitPrice": money(ln.get("rate"))} for ln in lines],
+        })
+        try:
+            created = self._client.request(
+                "PUT", f"{self._client.entity}/SalesOrder",
+                params={"$expand": "Details"}, json=payload)
+        except SourceWriteUncertain as e:
+            detail = str(e)
+            return settle_by_read(
+                lambda: self._quote_by_reference(reference),
+                lambda row: self._found(row, customer, len(lines), reference),
+                unknown_message=lambda err: (
+                    f"The sales quote could not be completed ({detail}), and "
+                    f"Acumatica could not be re-read to find out ({err}) — "
+                    f"whether it was created cannot be established. Look for "
+                    f"customer order number {reference} before sending again."),
+                refused_message=(
+                    f"The sales quote was not created ({detail}). Acumatica holds "
+                    f"nothing under customer order number {reference}, so sending "
+                    f"again is safe."),
+                reference=reference)
+        except (SourceScopeError, SourceAuthError):
+            raise
+        except IngestionError as e:
+            raise SourceWriteRefused(
+                f"Acumatica refused the sales quote: {e}") from e
+
+        return self._found(_plain(created if isinstance(created, dict) else {}),
+                           customer, len(lines), reference, already_existed=False)
+
+    def _quote_by_reference(self, reference: str) -> Optional[dict[str, Any]]:
+        """The quote carrying this customer order number, or None.
+
+        Raises rather than returning None when the read itself fails — "not
+        there" and "could not look" are the two answers the settle protocol
+        exists to keep apart, and only one of them permits sending again.
+        """
+        rows = self._client.entities(
+            "SalesOrder", expand="Details",
+            filter_=(f"OrderType eq '{_QUOTE_ORDER_TYPE}' and "
+                     f"CustomerOrderNbr eq '{odata_str(reference)}'"))
+        for row in rows:
+            plain = _plain(row)
+            if same_reference(str(plain.get("CustomerOrderNbr") or ""), reference):
+                return plain
+        return None
+
+    def _settled_quote(self, reference: str, customer: str,
+                       sent_lines: int) -> Optional[WrittenDocument]:
+        """This reference's quote as Acumatica holds it, or None.
+
+        ``sent_lines`` is what *this* quote has, not what the found document
+        has — the question is whether the thing already there is this quote.
+        Passing the held count would compare a number against itself and make
+        the mismatch check below unable to fire, which is a pre-flight that
+        waves through a collision.
+
+        A read that *fails* here propagates rather than reading as "not there":
+        refusing to send because we could not check is recoverable, sending a
+        duplicate is not.
+        """
+        row = self._quote_by_reference(reference)
+        if row is None:
+            return None
+        return self._found(row, customer, sent_lines, reference)
+
+    def _found(self, row: dict[str, Any], customer: str, sent_lines: int,
+               reference: str, *, already_existed: bool = True) -> WrittenDocument:
+        """A quote Acumatica holds, reported as what it *is*.
+
+        The count is read back, never echoed from what was sent — the whole
+        point of asking. One PUT carries the lines with the header, so a
+        mismatch here means Acumatica kept something different from what was
+        sent, which is neither a success to report nor safe to send again.
+        """
+        held = row.get("Details")
+        if held is None:
+            raise SourceWriteUnknown(
+                f"Acumatica holds a sales quote under customer order number "
+                f"{reference} but did not return its lines, so whether it is "
+                f"complete cannot be established. Check it before sending this "
+                f"quote again.", reference=reference)
+        if len(held) != sent_lines:
+            raise SourceWriteUnknown(
+                f"Acumatica holds sales quote {row.get('OrderNbr')} under "
+                f"customer order number {reference}, but with {len(held)} lines "
+                f"where this quote has {sent_lines}. It is not the same "
+                f"document, so it is neither safe to report as sent nor safe to "
+                f"send again — check it.", reference=reference)
+        number = str(row.get("OrderNbr") or "")
+        if not number:
+            raise SourceWriteUnknown(
+                "Acumatica returned a sales quote with no order number, so it "
+                "cannot be named to whoever has to find it.", reference=reference)
+        return WrittenDocument(document_id=str(row.get("id") or ""),
+                               number=number, customer=customer,
+                               line_count=len(held),
+                               already_existed=already_existed)
+
     def _rows(self, entity: str, expand: str = "") -> Iterator[dict[str, Any]]:
         return (_plain(r) for r in self._client.entities(entity, expand=expand))
 
@@ -436,12 +650,15 @@ SPEC = register(ConnectorSpec(
     setup_note=(
         "Reads the contract-based REST API with a session sign-in as a "
         "dedicated integration user. The session is signed out after every "
-        "pull so it never holds one of Acumatica's licensed seats. Only "
-        "reads are ever issued."),
+        "pull so it never holds one of Acumatica's licensed seats — including "
+        "after a quote write, which is a one-shot the same rule applies to. "
+        "Everything is read except one thing: a quote built here can be created "
+        "as a sales quote (order type QT). Nothing else is ever written."),
     permission_note=(
         "Granted on the integration user's role, at User Security → Access "
-        "Rights by Role. View Only is enough everywhere — the platform never "
-        "writes to Acumatica."),
+        "Rights by Role. View Only is enough everywhere except Sales Orders, "
+        "which needs Insert for the quote write — leave it View Only and "
+        "everything reads, and every send refuses."),
     permissions=(
         Permission("API access on the user (Web Service Endpoints → Default)",
                    "The contract-based REST endpoint this reads through. "
@@ -466,10 +683,13 @@ SPEC = register(ConnectorSpec(
                    "Suppliers. Optional: bills still land without it, with the "
                    "supplier known only by its id.",
                    required=False, reads=("vendors",)),
-        Permission("Sales Orders (SO301000) — View Only",
-                   "Sales orders — demand promised but not yet invoiced. "
-                   "Optional.",
-                   required=False, reads=("sales_orders",)),
+        Permission("Sales Orders (SO301000) — View Only, plus Insert to send",
+                   "Sales orders — demand promised but not yet invoiced, and "
+                   "the screen a quote is created on. Reading it is optional; "
+                   "Insert is what the Send action needs, and without it "
+                   "everything else works and every send refuses.",
+                   required=False, reads=("sales_orders",),
+                   writes=("sales_quotes",)),
         Permission("Purchase Orders (PO301000) — View Only",
                    "Purchase orders — what is on the way from suppliers. "
                    "Optional: feeds the Supply screen.",

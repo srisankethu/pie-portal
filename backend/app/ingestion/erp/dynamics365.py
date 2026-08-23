@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import time
 from datetime import date
-from decimal import Decimal
 from typing import Any, Iterable, Iterator, Optional
 
 from ..errors import (IngestionError, SourceAuthError, SourceScopeError,
@@ -31,7 +30,8 @@ from ..errors import (IngestionError, SourceAuthError, SourceScopeError,
 from ..source import SkipPredicate
 from ..write_settle import settle_by_read
 from .base import (ConnectorSpec, CredentialMaterial, DocumentTally, Field,
-                   Permission, WrittenDocument, iso_date, register)
+                   Permission, WrittenDocument, iso_date, money,
+                   odata_str, register, same_reference)
 from .transport import RestTransport
 
 SYSTEM = "dynamics365"
@@ -270,51 +270,6 @@ def _is_trade(payload: dict[str, Any]) -> bool:
 _EXTERNAL_DOC_MAX = 35
 
 
-def _odata_str(value: str) -> str:
-    """One string literal in an OData filter. A quote in the value ends the
-    literal early, and OData escapes it by doubling — so a reference carrying
-    one would otherwise build a filter that means something else."""
-    return value.replace("'", "''")
-
-
-def _same_reference(held: str, sent: str) -> bool:
-    """Whether a row the server matched really carries the reference we sent.
-
-    Case- and space-insensitive on purpose. ``externalDocumentNumber`` is an AL
-    ``Code[35]``, which upper-cases and trims what is stored in it, while the
-    references generated here carry lowercase hex. An exact comparison can only
-    turn *found* into *not found* — and *not found* is the branch that tells an
-    operator retrying is safe. So a strict re-check here does not tighten the
-    protocol, it authorises the duplicate it exists to prevent.
-    """
-    return held.strip().casefold() == sent.strip().casefold()
-
-
-def _number(value: Any) -> Any:
-    """A quantity or a price, as JSON should carry it.
-
-    Money goes out as a string, whatever it arrived as. ``Decimal`` is not
-    JSON-serialisable, and a ``float`` serialises to whatever repr it has —
-    which is the live path here, since ``store.Line.quoted`` is a float. Both
-    are routed through ``Decimal(str(...))``, the same normalisation the Zoho
-    adapter applies, so the number on the document is the number that was
-    priced rather than a binary approximation of it.
-
-    No arithmetic, deliberately: what this writes was computed in
-    ``commercial`` and must not be recomputed at the boundary (§1).
-    """
-    if value is None:
-        return None
-    if isinstance(value, (Decimal, float, int, str)):
-        try:
-            return str(Decimal(str(value)))
-        except (ArithmeticError, ValueError):
-            # Unparseable is not something to guess at: send it on and let
-            # Business Central refuse it by name.
-            return value
-    return value
-
-
 class BusinessCentralSource:
     """The read source for one Business Central company."""
 
@@ -457,7 +412,7 @@ class BusinessCentralSource:
         # a clean repeat never faults. Zoho reads first for exactly this reason
         # and dropping it here left the whole protocol resting on the caller's
         # in-memory fingerprint, which is the check that already failed once.
-        already = self._settled_quote(reference, customer)
+        already = self._settled_quote(reference, customer, len(lines))
         if already is not None:
             return already
 
@@ -511,8 +466,8 @@ class BusinessCentralSource:
 
         for index, line in enumerate(lines, start=1):
             body = {"lineType": "Item", "itemId": str(line["itemId"]),
-                    "quantity": _number(line.get("qty")),
-                    "unitPrice": _number(line.get("rate"))}
+                    "quantity": money(line.get("qty")),
+                    "unitPrice": money(line.get("rate"))}
             try:
                 self._client.request(
                     "POST",
@@ -558,14 +513,21 @@ class BusinessCentralSource:
         rows = self._client.pages(
             "salesQuotes", company_id=self._company,
             params={"$expand": "salesQuoteLines",
-                    "$filter": f"externalDocumentNumber eq '{_odata_str(reference)}'"})
+                    "$filter": f"externalDocumentNumber eq '{odata_str(reference)}'"})
         for row in rows:
-            if _same_reference(str(row.get("externalDocumentNumber") or ""), reference):
+            if same_reference(str(row.get("externalDocumentNumber") or ""), reference):
                 return row
         return None
 
-    def _settled_quote(self, reference: str, customer: str) -> Optional[WrittenDocument]:
+    def _settled_quote(self, reference: str, customer: str,
+                       sent_lines: int) -> Optional[WrittenDocument]:
         """This reference's quote as Business Central holds it, or None.
+
+        ``sent_lines`` is what *this* quote has, not what the found document
+        has. Passing the held count compares a number against itself, so the
+        mismatch check in ``_found`` cannot fire and a document sitting under
+        this reference with different lines is reported as "already sent" — a
+        pre-flight that waves through the collision it exists to catch.
 
         Used before writing, where a read that *fails* must not be mistaken for
         "not there" — that would send a quote that already exists. So the fault
@@ -575,8 +537,7 @@ class BusinessCentralSource:
         row = self._quote_by_reference(reference)
         if row is None:
             return None
-        return self._found(row, customer, len(row.get("salesQuoteLines") or []),
-                           reference)
+        return self._found(row, customer, sent_lines, reference)
 
     def _found(self, row: dict[str, Any], customer: str, sent_lines: int,
                reference: str) -> WrittenDocument:

@@ -172,7 +172,7 @@ def _detail(session: Session, d: models.Decision, principal: Principal) -> dict:
     if d.signal_ids:
         signal = session.get(models.Signal, d.signal_ids[0])
     t1 = time.time()
-    logger.info(f"[_detail] Signal load (id={d.decision_id}): {(t1-t0)*1000:.1f}ms")
+    logger.info("[_detail] Signal load (id=%s): %.1fms", d.decision_id, (t1-t0)*1000)
 
     facts: list[dict] = []
     if signal is not None:
@@ -189,28 +189,28 @@ def _detail(session: Session, d: models.Decision, principal: Principal) -> dict:
             facts.append({"label": label, "value": value, "restricted": restricted,
                           "source": sources or "Zoho"})
     t2 = time.time()
-    logger.info(f"[_detail] Facts extraction (id={d.decision_id}): {(t2-t1)*1000:.1f}ms")
+    logger.info("[_detail] Facts extraction (id=%s): %.1fms", d.decision_id, (t2-t1)*1000)
 
     ai = d.ai or {}
     confidence = dict(d.confidence or {})
 
     subject_label = _subject_label(session, d)
     t3 = time.time()
-    logger.info(f"[_detail] Subject label (id={d.decision_id}): {(t3-t2)*1000:.1f}ms")
+    logger.info("[_detail] Subject label (id=%s): %.1fms", d.decision_id, (t3-t2)*1000)
 
     subject_origin_data = _subject_origin(session, d)
     t4 = time.time()
-    logger.info(f"[_detail] Subject origin (id={d.decision_id}): {(t4-t3)*1000:.1f}ms")
+    logger.info("[_detail] Subject origin (id=%s): %.1fms", d.decision_id, (t4-t3)*1000)
 
     assigned_to = (approvals.user_names(
         session, d.organization_id, [d.assigned_user_id]).get(d.assigned_user_id)
         if d.assigned_user_id else None)
     t5 = time.time()
-    logger.info(f"[_detail] User names (id={d.decision_id}): {(t5-t4)*1000:.1f}ms")
+    logger.info("[_detail] User names (id=%s): %.1fms", d.decision_id, (t5-t4)*1000)
 
     outcome = _outcome(session, d, is_sales=is_sales)
     t6 = time.time()
-    logger.info(f"[_detail] Outcome (id={d.decision_id}): {(t6-t5)*1000:.1f}ms")
+    logger.info("[_detail] Outcome (id=%s): %.1fms", d.decision_id, (t6-t5)*1000)
 
     # AI economics never leak to a salesperson even in the interpretation text
     # (the interpreter already ran on a redacted bundle; this is defense in depth).
@@ -271,8 +271,8 @@ def _detail(session: Session, d: models.Decision, principal: Principal) -> dict:
         "outcome": outcome,
     }
     t7 = time.time()
-    logger.info(f"[_detail] Result dict assembly (id={d.decision_id}): {(t7-t6)*1000:.1f}ms")
-    logger.info(f"[_detail] TOTAL for {d.decision_id}: {(t7-t0)*1000:.1f}ms")
+    logger.info("[_detail] Result dict assembly (id=%s): %.1fms", d.decision_id, (t7-t6)*1000)
+    logger.info("[_detail] TOTAL for %s: %.1fms", d.decision_id, (t7-t0)*1000)
     return result
 
 
@@ -312,29 +312,29 @@ def list_decisions(
     session: Session = Depends(get_session),
 ):
     t0 = time.time()
-    logger.info(f"[decisions:list] START type={type} status={status_filter} org={principal.organization_id}")
+    logger.info("[decisions:list] START type=%s status=%s org=%s", type, status_filter, principal.organization_id)
 
     repo = DecisionRepository(session, principal.organization_id)
     t1 = time.time()
-    logger.info(f"[decisions:list] Repository init: {(t1-t0)*1000:.1f}ms")
+    logger.info("[decisions:list] Repository init: %.1fms", (t1-t0)*1000)
 
     # Scope and the QUOTE_CONTEXT exclusion together, from `authz`, because the
     # landing page's queue tile has to count exactly this list — see
     # `decision_queue_scope`.
     scope = decision_queue_scope(principal, type)
     t2 = time.time()
-    logger.info(f"[decisions:list] Scope calculation: {(t2-t1)*1000:.1f}ms")
+    logger.info("[decisions:list] Scope calculation: %.1fms", (t2-t1)*1000)
 
     rows = repo.list(decision_type=type, status=status_filter, **scope)
     t3 = time.time()
-    logger.info(f"[decisions:list] repo.list() returned {len(rows)} rows: {(t3-t2)*1000:.1f}ms")
+    logger.info("[decisions:list] repo.list() returned %s rows: %.1fms", len(rows), (t3-t2)*1000)
 
     # Which company each decision is about. A queue pooled across three
     # connected books lists "ABC Industries" three times otherwise, and the
     # three are different customers with different problems.
     companies = Companies(session, principal.organization_id)
     t4 = time.time()
-    logger.info(f"[decisions:list] Companies init: {(t4-t3)*1000:.1f}ms")
+    logger.info("[decisions:list] Companies init: %.1fms", (t4-t3)*1000)
 
     masters = {
         SubjectEntityType.CUSTOMER.value: models.Customer,
@@ -344,7 +344,7 @@ def list_decisions(
     # One index per entity kind that actually appears, loaded once rather than
     # per row — and never for a kind this page does not show.
     entity_types_in_rows = {d.subject_entity_type for d in rows}
-    logger.info(f"[decisions:list] Entity types in rows: {entity_types_in_rows}")
+    logger.info("[decisions:list] Entity types in rows: %s", entity_types_in_rows)
 
     indexes = {}
     for kind, model in masters.items():
@@ -353,10 +353,10 @@ def list_decisions(
             idx = index_of(session, principal.organization_id, model)
             t_idx_end = time.time()
             indexes[kind] = idx
-            logger.info(f"[decisions:list] Loaded index for {kind}: {(t_idx_end-t_idx_start)*1000:.1f}ms, size={len(idx)}")
+            logger.info("[decisions:list] Loaded index for %s: %.1fms, size=%s", kind, (t_idx_end-t_idx_start)*1000, len(idx))
 
     t5 = time.time()
-    logger.info(f"[decisions:list] All indexes loaded: {(t5-t4)*1000:.1f}ms")
+    logger.info("[decisions:list] All indexes loaded: %.1fms", (t5-t4)*1000)
 
     out = []
     for i, d in enumerate(rows):
@@ -368,7 +368,7 @@ def list_decisions(
         out.append(read)
 
     t6 = time.time()
-    logger.info(f"[decisions:list] Built {len(out)} result rows: {(t6-t5)*1000:.1f}ms")
+    logger.info("[decisions:list] Built %s result rows: %.1fms", len(out), (t6-t5)*1000)
 
     # If frontend requested full details, include them in one pass to avoid N+1
     if include_detail:
@@ -383,16 +383,16 @@ def list_decisions(
                 merged = {**summary_dict, **detail}
                 result.append(merged)
             except Exception as e:
-                logger.error(f"[decisions:list] Failed to load detail for {d.decision_id}: {e}")
+                logger.error("[decisions:list] Failed to load detail for %s: %s", d.decision_id, e)
                 # Fallback to summary only
                 result.append(out[len(result)])
 
         t7 = time.time()
-        logger.info(f"[decisions:list] Loaded {len(result)} with details: {(t7-t6_detail)*1000:.1f}ms")
-        logger.info(f"[decisions:list] TOTAL (with details): {(t7-t0)*1000:.1f}ms")
+        logger.info("[decisions:list] Loaded %s with details: %.1fms", len(result), (t7-t6_detail)*1000)
+        logger.info("[decisions:list] TOTAL (with details): %.1fms", (t7-t0)*1000)
         return result
 
-    logger.info(f"[decisions:list] TOTAL: {(t6-t0)*1000:.1f}ms")
+    logger.info("[decisions:list] TOTAL: %.1fms", (t6-t0)*1000)
     return out
 
 
@@ -412,16 +412,16 @@ def get_decision_detail(
     session: Session = Depends(get_session),
 ) -> dict:
     t0 = time.time()
-    logger.info(f"[decisions:detail] START decision_id={decision_id} org={principal.organization_id}")
+    logger.info("[decisions:detail] START decision_id=%s org=%s", decision_id, principal.organization_id)
 
     d = _visible(session, principal, decision_id)
     t1 = time.time()
-    logger.info(f"[decisions:detail] _visible(): {(t1-t0)*1000:.1f}ms")
+    logger.info("[decisions:detail] _visible(): %.1fms", (t1-t0)*1000)
 
     detail = _detail(session, d, principal)
     t2 = time.time()
-    logger.info(f"[decisions:detail] _detail(): {(t2-t1)*1000:.1f}ms")
-    logger.info(f"[decisions:detail] TOTAL: {(t2-t0)*1000:.1f}ms")
+    logger.info("[decisions:detail] _detail(): %.1fms", (t2-t1)*1000)
+    logger.info("[decisions:detail] TOTAL: %.1fms", (t2-t0)*1000)
     return detail
 
 
@@ -438,10 +438,9 @@ def get_decisions_bulk_detail(
     call this endpoint once with all decision IDs instead of N separate requests.
     """
     t0 = time.time()
-    logger.info(f"[decisions:bulk-detail] START with {len(decision_ids)} ids org={principal.organization_id}")
+    logger.info("[decisions:bulk-detail] START with %s ids org=%s", len(decision_ids), principal.organization_id)
 
     result = {}
-    repo = DecisionRepository(session, principal.organization_id)
 
     # Load all decisions in one pass (with authorization check per decision)
     for did in decision_ids:
@@ -453,7 +452,7 @@ def get_decisions_bulk_detail(
             pass
 
     t1 = time.time()
-    logger.info(f"[decisions:bulk-detail] Loaded {len(result)}/{len(decision_ids)} details: {(t1-t0)*1000:.1f}ms")
+    logger.info("[decisions:bulk-detail] Loaded %s/%s details: %.1fms", len(result), len(decision_ids), (t1-t0)*1000)
     return result
 
 

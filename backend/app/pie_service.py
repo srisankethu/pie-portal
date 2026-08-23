@@ -189,12 +189,18 @@ def pack_families() -> Optional[tuple]:
         root = str(settings.PIE_PARSER_ROOT)
         if root not in sys.path:
             sys.path.insert(0, root)
-        import yaml  # noqa: PLC0415 — deferred, like every pie-parser import here
-        from engine.pack import families_from_config  # noqa: PLC0415
+        # Asked of the engine rather than read out of the manifest by hand.
+        # This used to yaml.safe_load PIE_PACK/manifest.yaml and pass the raw
+        # document to families_from_config, which worked while a pack was one
+        # flat directory. Packs are layered now — an organisation layer extends
+        # a shared nomenclature layer — and `families` moved to the layer, so
+        # reading the org manifest directly found none and the vocabulary went
+        # silently empty. Following the `nomenclature:` reference here would
+        # mean a second implementation of the engine's layer resolution, which
+        # is the drift CLAUDE.md §2 is about: load_pack already owns it.
+        from engine.pack import load_pack  # noqa: PLC0415
 
-        manifest = settings.PIE_PACK / "manifest.yaml"
-        doc = yaml.safe_load(manifest.read_text(encoding="utf-8"))
-        _families_memo = families_from_config(doc, source=str(manifest))
+        _families_memo = list(load_pack(settings.PIE_PACK).families)
         return _families_memo
     except Exception:  # noqa: BLE001 — an absent pack must not 500 a policy save
         log.warning("PIE pack manifest unreadable; no family vocabulary to "

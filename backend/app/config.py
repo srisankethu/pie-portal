@@ -107,7 +107,19 @@ class Settings:
         "PIE_CORPUS",
         PIE_PARSER_ROOT / "corpora" / "kmt_zcnc_2026-07_nomenclature.csv",
     )
-    PIE_PACK: Path = _path_env("PIE_PACK", PIE_PARSER_ROOT / "packs" / "kennametal_widia")
+    # The ORGANISATION layer, not the manufacturer one. pie-parser packs are
+    # layered as of its 202c0b4: an org layer (routing — how *this* material
+    # master phrases a description) extends a shared nomenclature layer (how the
+    # manufacturer encodes a part number). A pack is loaded by its org
+    # directory; the nomenclature layer is reached through the manifest and is
+    # never named here.
+    #
+    # This is a per-organisation choice by construction, so a deployment serving
+    # a second distributor overrides PIE_PACK for it rather than sharing this
+    # one. The default names the only org layer that exists in the pinned
+    # engine.
+    PIE_PACK: Path = _path_env("PIE_PACK",
+                               PIE_PARSER_ROOT / "packs" / "org" / "zcnc")
 
     # Max ranked alternatives returned per line.
     TOP_N: int = int(os.environ.get("PIE_TOP_N", "6"))
@@ -526,4 +538,5 @@ settings = Settings()
 settings.PIE_CORPUS = _path_env(
     "PIE_CORPUS", settings.PIE_PARSER_ROOT / "corpora" / "kmt_zcnc_2026-07_nomenclature.csv"
 )
-settings.PIE_PACK = _path_env("PIE_PACK", settings.PIE_PARSER_ROOT / "packs" / "kennametal_widia")
+settings.PIE_PACK = _path_env(
+    "PIE_PACK", settings.PIE_PARSER_ROOT / "packs" / "org" / "zcnc")

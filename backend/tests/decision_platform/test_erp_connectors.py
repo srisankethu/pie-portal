@@ -782,6 +782,19 @@ def test_the_catalog_declares_every_form_a_client_can_render(client):
     assert secret_flags["consumer_secret"] and secret_flags["token_secret"]
     assert by_key["dynamics365"]["can_discover"] is True
 
+    # Every row carries the write capability, and every row's answer is true.
+    # The one that matters is Zoho's: it is the only connector that can create
+    # a record and the only one outside the erp registry, so it is the row a
+    # hand-written default would have got wrong — and the both-ways pin that
+    # guards the others iterates the registry and cannot see it.
+    assert all("writes" in c and "can_write_quotes" in c
+               for c in by_key.values()), "a client cannot render what is not served"
+    assert by_key["zoho"]["can_write_quotes"] is True
+    assert by_key["zoho"]["writes"] == ["sales_quotes"]
+    assert not any(by_key[k]["can_write_quotes"] for k in by_key if k != "zoho"), (
+        "a connector advertised a write it has no adapter for — an owner would "
+        "grant a permission for something that cannot happen")
+
 
 def test_connecting_through_the_api_never_echoes_a_secret(client):
     r = client.post("/api/v1/connections/erp", headers=_hdr(client, OWNER),

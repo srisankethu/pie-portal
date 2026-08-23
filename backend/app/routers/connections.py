@@ -884,6 +884,12 @@ def _zoho_catalog_entry() -> dict:
         # a dead button beside a working manual path is what got the previous
         # implementation deleted, and the lesson was about the button.
         "can_authorize": _oauth_available(),
+        # Served from the same source as every other row. Zoho is the one
+        # connector that actually writes and the one the registry cannot hold,
+        # so a hand-written ``[]`` here would be the single most misleading
+        # value in the whole catalogue.
+        "writes": list(conn.writes_for(conn.ZOHO_CONNECTOR)),
+        "can_write_quotes": conn.can_write_quotes(conn.ZOHO_CONNECTOR),
     }
 
 
@@ -927,6 +933,12 @@ def connector_catalog(
                 # No registered ERP has a customer-facing authorization flow;
                 # every one of them is a sign-in entered by hand.
                 "can_authorize": False,
+                # What this platform can create in the system, if anything.
+                # Read through the same function the quote router routes on
+                # rather than off the spec directly, so the screen and the
+                # write path cannot answer this differently.
+                "writes": list(conn.writes_for(spec.key)),
+                "can_write_quotes": conn.can_write_quotes(spec.key),
             }
             for spec in erp.catalog()
         ],

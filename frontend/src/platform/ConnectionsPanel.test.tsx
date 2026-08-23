@@ -28,6 +28,7 @@ function entry(over: Partial<ConnectorCatalogEntry>): ConnectorCatalogEntry {
     external_id_field: "company_id", can_discover: false,
     permissions: [], permission_note: "", permission_string: "",
     permission_string_minimum: "", can_authorize: false,
+    writes: [], can_write_quotes: false,
     ...over,
   };
 }
@@ -36,6 +37,7 @@ const CATALOG: ConnectorCatalogEntry[] = [
   entry({
     key: "zoho", label: "Zoho Books", company_term: "organization",
     setup_note: "Reads Zoho Books over its v3 API.",
+    writes: ["sales_quotes"], can_write_quotes: true,
     permissions: [
       { name: "ZohoBooks.bills.READ", why: "Bills — what it cost.",
         required: true, reads: ["bills"] },

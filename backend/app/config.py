@@ -217,6 +217,25 @@ class Settings:
     UVICORN_WORKERS: Optional[int] = _optional_positive_int(
         os.environ.get("UVICORN_WORKERS"))
 
+    # The bearer token a Prometheus scraper presents to
+    # `/api/v1/internal/observability/prometheus`, and to nothing else.
+    #
+    # A static secret rather than a user, a role or a service account, because a
+    # scraper is not a person: it has no organization, reads no tenant data, and
+    # the exposition it fetches is process-level counters with no cost, price or
+    # margin anywhere in it. Minting a principal for it would put a credential
+    # that can be replayed against every other route into a config file on a
+    # monitoring host. Prometheus supports `bearer_token` natively, so this is
+    # the mechanism it already has.
+    #
+    # **Empty means the endpoint serves nobody**, not that it serves everyone.
+    # An unset secret that opens a door is the failure mode this codebase treats
+    # as a defect, and a deployment that has simply not configured monitoring is
+    # by far the most common way for this to be empty. The endpoint answers 401
+    # either way — the same 401 a wrong token gets — so an unauthenticated
+    # caller cannot learn from the response whether a token is configured.
+    METRICS_SCRAPE_TOKEN: str = os.environ.get("METRICS_SCRAPE_TOKEN", "")
+
     # ── Redis (provisioned infrastructure; no feature requires it yet) ──────
     # Both compose stacks run a Redis next to the API for the state that must
     # one day live outside a process: cross-replica rate limiting (the signup

@@ -116,7 +116,10 @@ class CapacityCalculator:
         "request rate can be derived from it. It previously divided that "
         "cumulative count by a per-second limit, which pinned every worker at "
         "100% 'critical' permanently once it had served api_rps_limit requests "
-        "— a saturation alarm that was really an uptime counter.")
+        "— a saturation alarm that was really an uptime counter. Scrape "
+        "/api/v1/internal/observability/prometheus and use rate() on "
+        "api_requests_total: differencing across scrapes is the second sample "
+        "this process does not have.")
 
     def calculate_api_utilization(self) -> Optional[float]:
         """API request-rate utilization, or ``None`` because it is not derivable.
@@ -132,6 +135,15 @@ class CapacityCalculator:
         acts on. Computing this honestly needs a previous (count, timestamp)
         pair — either held here across scrapes or differenced by whatever
         scrapes it — and that belongs with the exporter, not here.
+
+        **That exporter now exists**, so this is a division of labour rather
+        than an open gap. ``observability/exposition`` publishes
+        ``api_requests_total`` as a raw Prometheus counter and Prometheus's
+        ``rate()`` differences it across scrapes — the second sample this
+        process cannot hold. This method still answers ``None``, and should:
+        the request rate is a *deployment* question, and one worker holding one
+        prior sample of its own traffic would answer a different one while
+        looking like the same number.
         """
         return None
 

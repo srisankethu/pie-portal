@@ -5,10 +5,12 @@ audit endpoints are deferred to later phases.
 """
 from __future__ import annotations
 
+import hmac
 from datetime import date
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
+from fastapi.responses import PlainTextResponse
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -298,6 +300,98 @@ def observability_metrics(
     """
     from ..observability.metrics import metrics
     return metrics.export()
+
+
+def _require_scrape_token(
+    authorization: Optional[str] = Header(default=None),
+) -> None:
+    """Authorize a Prometheus scrape, and nothing else.
+
+    **A static token, checked here and on no other route.** A scraper is not a
+    person: it has no organization, reads no tenant rows, and would be given a
+    credential that lives in a config file on a monitoring host and is presented
+    every 15 seconds forever. Minting a user or a service principal for it would
+    make that credential replayable against every other endpoint; a value read
+    only by this dependency cannot be. Prometheus speaks `bearer_token` natively,
+    so nothing new is invented on the scraper's side either.
+
+    **When the token is unset the answer is 401, the same 401 a wrong token
+    gets.** Three options were on the table and two are wrong:
+
+    - Serve unauthenticated when nothing is configured. This is how an
+      observability endpoint ends up public on the deployment that never
+      configured monitoring — which is most of them — and it is the benign
+      default CLAUDE.md §1 forbids.
+    - Fail with a 500. That turns a deliberate configuration state into an error
+      an operator has to chase, and it announces, to anybody who asks, that this
+      deployment has no scrape token.
+    - Refuse identically to a bad token. An unauthenticated caller sees one
+      response and learns nothing about whether a token exists — which matters,
+      because "this deployment has no scrape secret" is itself worth knowing to
+      someone probing it.
+
+    The compare is `hmac.compare_digest`, in the same spirit as
+    `trust/signing.verify` and `authz` — a token is guessed one character at a
+    time when the comparison stops at the first mismatch. The empty-token guard
+    runs first and deliberately does *not* reach the compare: `compare_digest("",
+    "")` is `True`, so an unset token would otherwise be satisfied by an empty
+    bearer.
+    """
+    configured = settings.METRICS_SCRAPE_TOKEN
+    presented = ""
+    if authorization and authorization.lower().startswith("bearer "):
+        presented = authorization[len("bearer "):].strip()
+
+    # Compared as BYTES, and that is not tidiness. ``hmac.compare_digest`` on
+    # ``str`` raises TypeError the moment either side holds a non-ASCII
+    # character, and Starlette decodes incoming header bytes as latin-1 — so a
+    # caller sending ``Authorization: Bearer \xe9`` reached the compare with a
+    # non-ASCII string. On a deployment WITH a token that raised, and the
+    # unhandled error became a 500; on one WITHOUT, the guard above
+    # short-circuited to 401. One unauthenticated request therefore answered
+    # "does this deployment have a scrape secret?" — the exact question the
+    # paragraph above says a caller cannot ask. Encoding first cannot raise on
+    # content, so both states answer 401 whatever bytes arrive.
+    if not configured or not hmac.compare_digest(
+            configured.encode("utf-8", "surrogateescape"),
+            presented.encode("utf-8", "surrogateescape")):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED,
+                            "Invalid or missing scrape credentials.",
+                            headers={"WWW-Authenticate": "Bearer"})
+
+
+@router.get("/observability/prometheus", response_class=PlainTextResponse)
+def observability_prometheus(_: None = Depends(_require_scrape_token)) -> Response:
+    """This worker's metrics in Prometheus text exposition format.
+
+    Not role-scoped like its neighbours — a static scrape token instead, checked
+    by `_require_scrape_token` and accepted nowhere else. What it exposes is
+    process-level counters: request and query totals, latency quantiles,
+    connection gauges. No cost, no price, no margin, no customer, no tenant, and
+    no metric name or label that answers a margin question — which
+    `tests/decision_platform/test_prometheus_exposition.py` walks the body to
+    assert, because a surface behind a token rather than a role deserves the
+    tightest reading of CLAUDE.md §1 rather than the most convenient one.
+
+    **It touches no database.** No session is injected and none is opened: the
+    registry is in-memory, and this is polled every 15 seconds for the life of
+    the deployment. Putting a read — let alone a write — on that path is how the
+    SQLite locking incident in CLAUDE.md §4 starts.
+
+    Every series carries a `worker` label, because the registry is a per-process
+    singleton and a scrape reaches one of `UVICORN_WORKERS` processes. Without
+    it two workers' counters look like one series sawing up and down.
+    `docs/observability.md` says which types sum across workers and which do not.
+
+    No rate is computed here. `capacity.calculate_api_utilization` refuses to
+    derive one from a lifetime counter, correctly, and says the honest place for
+    it is an exporter — which is this: Prometheus differences the raw counter
+    across scrapes, and the second sample it needs is the next scrape.
+    """
+    from ..observability.exposition import CONTENT_TYPE, render
+    from ..observability.metrics import metrics
+
+    return Response(content=render(metrics.export()), media_type=CONTENT_TYPE)
 
 
 @router.get("/observability/api-performance")

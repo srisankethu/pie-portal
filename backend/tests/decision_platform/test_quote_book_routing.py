@@ -16,6 +16,7 @@ from __future__ import annotations
 import pytest
 
 from app.domain import models
+import app.ingestion.connections as conn_mod
 from app.ingestion.connections import (
     ZOHO_CONNECTOR,
     ConnectionNotFound,
@@ -210,7 +211,7 @@ def test_no_connected_company_is_refused_with_that_reason(session):
 
     with pytest.raises(ConnectionNotFound) as e:
         book_for_customer(session, org, customer)
-    assert "no connected Zoho company" in str(e.value)
+    assert "no connected company this platform can create a quote in" in str(e.value)
 
 
 def test_another_organizations_connection_does_not_answer(session):
@@ -234,6 +235,47 @@ def _connect_netsuite(session, org, label="US Books", company_id="1234567"):
     return connect_erp(session, org, connector="netsuite", label=label, values={
         "consumer_key": "ck", "consumer_secret": "cs", "token_id": "ti",
         "token_secret": "ts", "company_id": company_id})
+
+
+def _connect_bc(session, org, label="US Books", company_id="bc-company-guid"):
+    """A connected Business Central company, through the generic ERP path."""
+    return connect_erp(session, org, connector="dynamics365", label=label, values={
+        "tenant_id": "t", "client_id": "c", "client_secret": "s",
+        "environment": "sandbox", "company_id": company_id})
+
+
+def test_a_business_central_customer_resolves_to_its_own_book(session):
+    """The point of the whole seam: a customer imported from Business Central
+    resolves to the Business Central company it came from, not to a Zoho one
+    and not to a refusal.
+
+    Both books are connected here on purpose. Before the writer existed this
+    customer was refused for being non-Zoho; the danger on the other side is
+    resolving it into the Zoho book, which would put its quote on a ledger it
+    was never imported from.
+    """
+    org = _org(session)
+    _connect(session, org, "60036630487", "SLS Engineers")
+    bc = _connect_bc(session, org)
+    customer = _customer(session, org, connection_id=bc.connection_id,
+                         connector="dynamics365", external_id="BC-CUST-1")
+
+    book = book_for_customer(session, org, customer)
+    assert book.connection.connection_id == bc.connection_id
+    assert conn_mod.connector_of(book.connection) == "dynamics365"
+    assert book.contact_id == "BC-CUST-1", "that system's own id, not a Zoho one"
+
+
+def test_a_zoho_customer_still_resolves_to_zoho_beside_a_bc_book(session):
+    """The other direction of the same risk, asserted rather than assumed."""
+    org = _org(session)
+    zoho = _connect(session, org, "60036630487", "SLS Engineers")
+    _connect_bc(session, org)
+    customer = _customer(session, org, connection_id=zoho.connection_id,
+                         connector=None, external_id="4600000123")
+
+    book = book_for_customer(session, org, customer)
+    assert book.connection.connection_id == zoho.connection_id
 
 
 def test_a_non_zoho_company_never_stands_in_for_a_missing_zoho_one(session):
@@ -307,6 +349,6 @@ def test_several_zoho_books_still_ask_which_one(session):
     with pytest.raises(ConnectionNotFound) as e:
         book_for_customer(session, org, customer)
     msg = str(e.value)
-    assert "2 connected Zoho companies" in msg
+    assert "2 connected companies a quote can be created in" in msg
     assert "Which one" in msg
     assert "netsuite" in msg

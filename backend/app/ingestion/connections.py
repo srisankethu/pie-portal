@@ -31,7 +31,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -320,6 +320,13 @@ class CustomerBook:
         return self.connection.label or self.connection.zoho_organization_id
 
 
+def connector_of(connection: Any) -> str:
+    """A connection's connector, defaulting to Zoho for rows written before the
+    column existed — the same inline idiom used at a dozen sites, named once
+    here because the write path now asks it on every branch."""
+    return getattr(connection, "connector", None) or ZOHO_CONNECTOR
+
+
 def writes_for(connector: str) -> tuple[str, ...]:
     """What this connector can *create* in its system, in ``WRITE_STAGES`` terms.
 
@@ -385,7 +392,7 @@ def quote_writer_ready(connector: str) -> bool:
 #: refused — falling through to whichever book happens to be connected would
 #: write the quote into a different system's ledger and invent the provenance
 #: the customer's own row never recorded.
-_QUOTE_ADAPTERS: frozenset[str] = frozenset({ZOHO_CONNECTOR})
+_QUOTE_ADAPTERS: frozenset[str] = frozenset({ZOHO_CONNECTOR, "dynamics365"})
 
 
 def book_for_customer(session: Session, organization_id: str,
@@ -413,13 +420,16 @@ def book_for_customer(session: Session, organization_id: str,
     """
     enabled = {c.connection_id: c
                for c in list_connections(session, organization_id, enabled_only=True)}
-    # Only a Zoho company can hold a Zoho estimate. The rest stay in ``enabled``
-    # because they are still companies an unattributed customer may have come
-    # from, which is the question the ambiguity check below asks.
-    zoho = {cid: c for cid, c in enabled.items()
-            if (getattr(c, "connector", None) or ZOHO_CONNECTOR) == ZOHO_CONNECTOR}
-    other_systems = sorted({(getattr(c, "connector", None) or ZOHO_CONNECTOR)
-                            for c in enabled.values()} - {ZOHO_CONNECTOR})
+    # Only a company this platform can write to can hold this quote. The rest
+    # stay in ``enabled`` because they are still companies an unattributed
+    # customer may have come from, which is the question the ambiguity check
+    # below asks. Read through ``quote_writer_ready`` rather than compared
+    # against a connector name, so a connector gaining a writer changes this
+    # by declaration rather than by somebody remembering to edit it here.
+    writable = {cid: c for cid, c in enabled.items()
+                if quote_writer_ready(connector_of(c))}
+    read_only = sorted({connector_of(c) for c in enabled.values()
+                        if not quote_writer_ready(connector_of(c))})
 
     if customer.connector and not can_write_quotes(customer.connector):
         raise ConnectionNotFound(
@@ -437,29 +447,30 @@ def book_for_customer(session: Session, organization_id: str,
             f"yet, and its quote cannot be written into another system.")
 
     if customer.connection_id:
-        conn = zoho.get(customer.connection_id)
+        conn = writable.get(customer.connection_id)
         if conn is None:
             elsewhere = enabled.get(customer.connection_id)
             if elsewhere is not None:
                 raise ConnectionNotFound(
                     f"The company {customer.name} came from is a "
-                    f"{elsewhere.connector} connection, which this platform "
+                    f"{connector_of(elsewhere)} connection, which this platform "
                     f"reads but cannot create a quote in, so this quote cannot "
                     f"be written into it.")
             raise ConnectionNotFound(
-                f"The Zoho company {customer.name} came from is no longer "
+                f"The company {customer.name} came from is no longer "
                 f"connected or has been disabled, so there is no ledger to "
                 f"write this quote into.")
         return CustomerBook(conn, str(customer.external_id))
 
     # Provenance not recorded. One connected company leaves nothing to choose
     # between; more than one is the case that must not be guessed.
-    if not zoho:
+    if not writable:
         raise ConnectionNotFound(
-            f"This organization has no connected Zoho company, so there is no "
-            f"ledger to write {customer.name}'s quote into."
-            + (f" Its connected books read {', '.join(other_systems)}, which "
-               f"hold no Zoho estimate." if other_systems else ""))
+            f"This organization has no connected company this platform can "
+            f"create a quote in, so there is nowhere to write {customer.name}'s "
+            f"quote."
+            + (f" Its connected books read {', '.join(read_only)}, which this "
+               f"platform reads but cannot write to." if read_only else ""))
     # A missing contact id blocks every book equally, so it is answered before
     # the which-book question rather than after it. It used to fall through to
     # whichever ambiguity sentence came next, and with two Zoho companies that
@@ -468,14 +479,14 @@ def book_for_customer(session: Session, organization_id: str,
     # no contact in either. The remedy happens to be the same re-sync, which is
     # exactly why the wrong reason survived: it "worked".
     if not customer.external_id:
-        where = (next(iter(zoho.values())).label or "the connected Zoho company"
-                 if len(zoho) == 1 else "any connected Zoho company")
+        where = (next(iter(writable.values())).label or "the connected company"
+                 if len(writable) == 1 else "any connected company")
         raise ConnectionNotFound(
             f"{customer.name} carries no contact id in {where}, so there is no "
             f"contact to write this quote against — re-sync the company this "
             f"customer belongs to.")
     if len(enabled) == 1:
-        return CustomerBook(next(iter(zoho.values())), str(customer.external_id))
+        return CustomerBook(next(iter(writable.values())), str(customer.external_id))
 
     # Two different questions are being refused here, and they read as one only
     # if the count is the whole sentence. With several Zoho companies the
@@ -486,31 +497,32 @@ def book_for_customer(session: Session, organization_id: str,
     # second set of Zoho books that does not exist.
     unrecorded = (f"{customer.name} was imported before the source company was "
                   f"recorded, and ")
-    if len(zoho) > 1:
+    if len(writable) > 1:
         raise ConnectionNotFound(
             unrecorded
-            + f"this organization has {len(zoho)} connected Zoho companies. "
-              f"Which one this quote belongs to cannot be decided from the "
-              f"quote alone — re-sync the company this customer belongs to."
+            + f"this organization has {len(writable)} connected companies a "
+              f"quote can be created in. Which one this quote belongs to cannot "
+              f"be decided from the quote alone — re-sync the company this "
+              f"customer belongs to."
             + (f" It may equally have come from a book this organization reads "
-               f"through {', '.join(other_systems)}, which holds no Zoho "
-               f"estimate at all." if other_systems else ""))
-    if other_systems:
+               f"through {', '.join(read_only)}, which cannot hold a quote at "
+               f"all." if read_only else ""))
+    if read_only:
         raise ConnectionNotFound(
             unrecorded
-            + f"this organization also reads {', '.join(other_systems)}. This "
+            + f"this organization also reads {', '.join(read_only)}. This "
               f"customer may have come from there rather than from its one "
-              f"connected Zoho company, and a system that holds no Zoho "
-              f"estimate cannot be quoted into — so writing the estimate into "
-              f"that Zoho company would invent the provenance that was never "
+              f"connected company a quote can be created in, and a system this "
+              f"platform cannot write to cannot be quoted into — so writing the "
+              f"quote into that one would invent the provenance that was never "
               f"recorded. Re-sync the company this customer belongs to.")
-    # One Zoho company, nothing else connected, a contact id present — and the
+    # One writable company, nothing else connected, a contact id present — and the
     # resolve above did not take it, which means ``enabled`` holds a disabled
     # or otherwise unusable row this function has not accounted for. Refused
     # rather than resolved: reaching here at all is a gap in the reasoning
     # above, and guessing a book to close it is how provenance gets invented.
     raise ConnectionNotFound(
-        f"{customer.name} cannot be placed against a connected Zoho company "
+        f"{customer.name} cannot be placed against a connected company "
         f"from what is recorded on it — re-sync the company this customer "
         f"belongs to.")
 

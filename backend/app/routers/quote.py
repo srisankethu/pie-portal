@@ -48,6 +48,7 @@ from ..pie_service import Bands
 from ..store import Line, Quote, store
 from ..ingestion.errors import SourceWriteRefused, SourceWriteUnknown
 from ..zoho import (
+    QuoteWriter,
     ZohoService,
     select_zoho_service,
 )
@@ -83,12 +84,28 @@ class QuoteBooks:
     ``contact_id`` is empty exactly when ``zoho`` is the refusing adapter.
     """
 
+    #: The catalogue half — live list price, stock, item creation. Named
+    #: ``zoho`` because every caller of it is a Zoho-era read and renaming them
+    #: is churn on a working path; what it *is* is a ``SourceCatalogue``.
     zoho: ZohoService
     contact_id: str = ""
     #: The connector this quote's book belongs to. Recorded on the document the
     #: send produces, so a row says which system holds it rather than assuming
     #: the one connector that could write when the column was added.
     system: str = conn.ZOHO_CONNECTOR
+    #: The write half. The same object as ``zoho`` for Zoho, whose adapter is
+    #: both; a different one for a connector that can be written to without
+    #: being read live. Separate because #8 split the port for exactly this —
+    #: a source that can create a quote but has no live item master would
+    #: otherwise have to stub reads nobody calls on it.
+    writer: Optional[QuoteWriter] = None
+
+    @property
+    def quote_writer(self) -> QuoteWriter:
+        """Whatever this book writes through. Falls back to the catalogue
+        adapter, which for Zoho is the same object and for a refusing adapter
+        is the thing that carries the reason."""
+        return self.writer if self.writer is not None else self.zoho
 
 
 def books_for_quote(quote_id: str,
@@ -118,12 +135,43 @@ def books_for_quote(quote_id: str,
             f"organization, so no set of books can be identified.")))
     try:
         book = conn.book_for_customer(session, org, customer)
-        creds = conn.credentials_for(session, book.connection)
+        # Inside the guard: resolving the adapters is where the credential is
+        # actually read, so a rotated-away secret has to arrive as this refusal
+        # rather than as a 500 from a dependency.
+        return _books_for(session, book)
     except (conn.ConnectionNotFound, conn.CredentialNotUsable) as e:
         return QuoteBooks(zoho=select_zoho_service(reason=str(e)))
-    return QuoteBooks(zoho=select_zoho_service(creds), contact_id=book.contact_id,
-                      system=(getattr(book.connection, "connector", None)
-                              or conn.ZOHO_CONNECTOR))
+
+
+def _books_for(session: Session, book: conn.CustomerBook) -> QuoteBooks:
+    """The adapters this book reads and writes through.
+
+    One branch, on the one connector that is not in the registry: Zoho's
+    connect flow predates it, so its credentials have their own shape and its
+    adapter is both halves at once. Everything else is resolved through the
+    spec — a connector gaining a writer needs no edit here.
+
+    A registry connector gets a *refusing* catalogue rather than a stub. Its
+    item master is synced on a schedule, not read live, so there is no live
+    price to answer with — and the honest answer to "what does this cost right
+    now" is that we do not know, which is what BOOKS OFFLINE already means.
+    """
+    connector = conn.connector_of(book.connection)
+    if connector == conn.ZOHO_CONNECTOR:
+        creds = conn.credentials_for(session, book.connection)
+        return QuoteBooks(zoho=select_zoho_service(creds),
+                          contact_id=book.contact_id, system=connector)
+
+    from ..ingestion import erp
+
+    material = conn.credential_material(session, book.connection)
+    writer = erp.get_spec(connector).build_source(material)
+    return QuoteBooks(
+        zoho=select_zoho_service(reason=(
+            f"This customer's books are {connector}, which this platform syncs "
+            f"on a schedule rather than reading live — so there is no live price "
+            f"or stock to show here. The quote can still be sent.")),
+        contact_id=book.contact_id, system=connector, writer=writer)
 
 
 def zoho_for_quote(books: QuoteBooks = Depends(books_for_quote)) -> ZohoService:
@@ -460,9 +508,9 @@ def create_estimate(quote_id: str,
     # this must not do is report a created estimate that may not exist, which is
     # exactly what the mock could never get wrong and a real ledger can.
     try:
-        est = books.zoho.create_estimate(q.customer, lines,
-                                         customer_ref=books.contact_id,
-                                         reference=q.reference)
+        est = books.quote_writer.create_estimate(q.customer, lines,
+                                                 customer_ref=books.contact_id,
+                                                 reference=q.reference)
     except SourceWriteRefused as e:
         refused = {c for c in e.codes if c}
         return EstimateResponse(

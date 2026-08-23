@@ -1158,16 +1158,20 @@ def test_the_catalog_declares_every_form_a_client_can_render(client):
     # else covers: a row may not advertise a write the quote path would refuse,
     # because ``_QUOTE_ADAPTERS`` is the gate ``book_for_customer`` routes on
     # and it is a different set from "declares the capability".
-    # Business Central declares the grant and has a writer, but the quote path
-    # is not dispatching to it yet — so the screen must not offer the send. The
-    # two questions come apart exactly while a connector's writer is being
-    # built, and this is the window in which an owner would otherwise be told
-    # something false. When the dispatch lands, this flips, and its flipping is
-    # the point rather than a chore.
-    assert by_key["dynamics365"]["writes"] == ["sales_quotes"], (
-        "the grant that must be asked for is still declared")
-    assert by_key["dynamics365"]["can_write_quotes"] is False, (
-        "the screen offers a send the quote path would refuse")
+    # The dispatch has landed, so Business Central now offers the send it can
+    # honour. Both halves are asserted: the grant an owner must ask for, and
+    # that the quote path will actually accept a customer from there. Every
+    # other connector declares no write, so the screen offers none — an owner
+    # told "can create quotes here" beside a send that refuses has been told
+    # something false, and that gap is a whole window wide while a writer is
+    # being built.
+    assert by_key["dynamics365"]["writes"] == ["sales_quotes"]
+    assert by_key["dynamics365"]["can_write_quotes"] is True
+    assert by_key["zoho"]["can_write_quotes"] is True
+    for key in ("netsuite", "acumatica", "prophet21", "sagex3", "sage100"):
+        assert by_key[key]["can_write_quotes"] is False, (
+            f"{key} offers a send with no writer behind it")
+        assert by_key[key]["writes"] == []
 
 
 def test_connecting_through_the_api_never_echoes_a_secret(client):

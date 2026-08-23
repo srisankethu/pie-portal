@@ -98,7 +98,7 @@ def test_live_without_credentials_refuses_rather_than_falling_back(monkeypatch):
     assert isinstance(svc, UnavailableZoho)
     assert svc.available is False
     with pytest.raises(ZohoWriteRefused):
-        svc.create_estimate("Pitti", [], customer_ref="1", reference="r")
+        svc.create_sales_quotes("Pitti", [], customer_ref="1", reference="r")
 
 
 def test_live_with_credentials_selects_the_books_adapter(monkeypatch):
@@ -165,14 +165,14 @@ def test_create_item_returns_what_zoho_actually_stored():
     assert http.posts[0][1]["sku"] == "CNMG120408KCP25"
 
 
-def test_create_estimate_posts_the_resolved_item_ids_and_the_reference():
+def test_create_sales_quotes_posts_the_resolved_item_ids_and_the_reference():
     created = {"estimate_id": "77", "estimate_number": "EST-000123",
                "customer_name": "Pitti Engineering Ltd",
                "line_items": [{"item_id": "4400000001"}]}
     svc, http = _service(routes={"/estimates": _estimates([])},
                          writes={"/estimates": FakeResponse({"code": 0,
                                                              "estimate": created})})
-    est = svc.create_estimate(
+    est = svc.create_sales_quotes(
         "Pitti Engineering Ltd",
         [{"code": "CNMG120408KCP25", "itemId": "4400000001", "qty": 10, "rate": 1250.0}],
         customer_ref="3300000009", reference="QB-01234-abcd1234")
@@ -188,7 +188,7 @@ def test_create_estimate_posts_the_resolved_item_ids_and_the_reference():
 def test_an_estimate_without_a_contact_id_is_refused_not_guessed_by_name():
     svc, http = _service()
     with pytest.raises(ZohoWriteRefused):
-        svc.create_estimate("Pitti Engineering Ltd", [{"code": "X", "itemId": "1",
+        svc.create_sales_quotes("Pitti Engineering Ltd", [{"code": "X", "itemId": "1",
                                                        "qty": 1, "rate": 10}],
                             reference="r")
     assert http.posts == [], "a refusal must not have reached Zoho"
@@ -197,7 +197,7 @@ def test_an_estimate_without_a_contact_id_is_refused_not_guessed_by_name():
 def test_an_estimate_without_a_reference_is_refused_as_unrecheckable():
     svc, http = _service()
     with pytest.raises(ZohoWriteRefused):
-        svc.create_estimate("Pitti", [{"code": "X", "itemId": "1", "qty": 1, "rate": 10}],
+        svc.create_sales_quotes("Pitti", [{"code": "X", "itemId": "1", "qty": 1, "rate": 10}],
                             customer_ref="9")
     assert http.posts == []
 
@@ -205,7 +205,7 @@ def test_an_estimate_without_a_reference_is_refused_as_unrecheckable():
 def test_lines_not_in_these_books_are_refused_and_named():
     svc, http = _service(routes={"/estimates": _estimates([])})
     with pytest.raises(ZohoWriteRefused) as e:
-        svc.create_estimate("Pitti", [{"code": "MISSING-1", "itemId": None,
+        svc.create_sales_quotes("Pitti", [{"code": "MISSING-1", "itemId": None,
                                        "qty": 1, "rate": 10}],
                             customer_ref="9", reference="r")
     assert e.value.codes == ["MISSING-1"]
@@ -217,7 +217,7 @@ def test_an_unpriced_line_is_refused_rather_than_priced_by_zoho():
     salesperson never agreed to, on a document the customer will read."""
     svc, http = _service(routes={"/estimates": _estimates([])})
     with pytest.raises(ZohoWriteRefused) as e:
-        svc.create_estimate("Pitti", [{"code": "CNMG", "itemId": "44", "qty": 1,
+        svc.create_sales_quotes("Pitti", [{"code": "CNMG", "itemId": "44", "qty": 1,
                                        "rate": None}],
                             customer_ref="9", reference="r")
     assert e.value.codes == ["CNMG"]
@@ -230,7 +230,7 @@ def test_sending_the_same_quote_twice_returns_the_first_estimate():
              "reference_number": "QB-1-abcd", "customer_name": "Pitti",
              "line_items": [{"item_id": "44"}]}
     svc, http = _service(routes={"/estimates": _estimates([prior])})
-    est = svc.create_estimate("Pitti", [{"code": "CNMG", "itemId": "44", "qty": 1,
+    est = svc.create_sales_quotes("Pitti", [{"code": "CNMG", "itemId": "44", "qty": 1,
                                          "rate": 10}],
                               customer_ref="9", reference="QB-1-abcd")
     assert est.number == "EST-000123" and est.already_existed is True
@@ -269,7 +269,7 @@ def test_a_rate_limited_write_is_refused_because_it_never_reached_the_ledger():
     svc, _ = _service(routes={"/estimates": _estimates([])},
                       writes={"/estimates": FakeResponse({}, status=429)})
     with pytest.raises(ZohoWriteRefused):
-        svc.create_estimate("Pitti", [{"code": "C", "itemId": "44", "qty": 1, "rate": 10}],
+        svc.create_sales_quotes("Pitti", [{"code": "C", "itemId": "44", "qty": 1, "rate": 10}],
                             customer_ref="9", reference="r")
 
 
@@ -279,7 +279,7 @@ def test_a_write_is_never_replayed_after_a_server_error():
     svc, http = _service(routes={"/estimates": _estimates([])},
                          writes={"/estimates": FakeResponse(None, status=503)})
     with pytest.raises(ZohoWriteRefused):
-        svc.create_estimate("Pitti", [{"code": "C", "itemId": "44", "qty": 1, "rate": 10}],
+        svc.create_sales_quotes("Pitti", [{"code": "C", "itemId": "44", "qty": 1, "rate": 10}],
                             customer_ref="9", reference="r")
     assert len(http.posts) == 1, "the write must be attempted exactly once"
 
@@ -300,7 +300,7 @@ def test_a_network_timeout_is_settled_by_reading_not_by_sending_again():
         raise TimeoutError("connection timed out")
 
     svc, http = _service(routes={"/estimates": estimates}, writes={"/estimates": die})
-    est = svc.create_estimate("Pitti", [{"code": "C", "itemId": "44", "qty": 1, "rate": 10}],
+    est = svc.create_sales_quotes("Pitti", [{"code": "C", "itemId": "44", "qty": 1, "rate": 10}],
                               customer_ref="9", reference="QB-9-zz")
     assert est.number == "EST-000900" and est.already_existed is True
     assert len(http.posts) == 1
@@ -312,7 +312,7 @@ def test_a_timeout_that_left_nothing_behind_is_refused_as_safe_to_retry():
 
     svc, _ = _service(routes={"/estimates": _estimates([])}, writes={"/estimates": die})
     with pytest.raises(ZohoWriteRefused) as e:
-        svc.create_estimate("Pitti", [{"code": "C", "itemId": "44", "qty": 1, "rate": 10}],
+        svc.create_sales_quotes("Pitti", [{"code": "C", "itemId": "44", "qty": 1, "rate": 10}],
                             customer_ref="9", reference="QB-9-zz")
     assert "safe" in str(e.value)
 
@@ -333,7 +333,7 @@ def test_a_timeout_that_cannot_be_re_read_is_reported_as_unknown():
 
     svc, _ = _service(routes={"/estimates": estimates}, writes={"/estimates": die})
     with pytest.raises(ZohoWriteUnknown) as e:
-        svc.create_estimate("Pitti", [{"code": "C", "itemId": "44", "qty": 1, "rate": 10}],
+        svc.create_sales_quotes("Pitti", [{"code": "C", "itemId": "44", "qty": 1, "rate": 10}],
                             customer_ref="9", reference="QB-9-zz")
     assert e.value.reference == "QB-9-zz"
     assert "QB-9-zz" in str(e.value)

@@ -570,7 +570,7 @@ class Quote:
 def _priced_fingerprint(quote: "Quote") -> str:
     """What a Zoho estimate is built from, as one comparable string.
 
-    Exactly the fields that reach ``zoho.create_estimate`` — product, quantity
+    Exactly the fields that reach ``QuoteWriter.create_sales_quotes`` — product, quantity
     and rate, per line, in order. Everything else about a quote can move without
     changing what was sent, and a fingerprint that also covered, say, the filter
     counts would call an unchanged quote changed.

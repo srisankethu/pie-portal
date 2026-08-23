@@ -526,7 +526,7 @@ def create_estimate(quote_id: str,
     # this must not do is report a created estimate that may not exist, which is
     # exactly what the mock could never get wrong and a real ledger can.
     try:
-        est = books.quote_writer.create_estimate(q.customer, lines,
+        est = books.quote_writer.create_sales_quotes(q.customer, lines,
                                                  customer_ref=books.contact_id,
                                                  reference=q.reference)
     except SourceWriteRefused as e:

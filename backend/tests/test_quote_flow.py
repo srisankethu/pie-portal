@@ -485,10 +485,10 @@ class _StubBooks:
             raise self.error
         return self._mock.create_item(code, name, list_price)
 
-    def create_estimate(self, customer, lines, *, customer_ref=None, reference=None):
+    def create_sales_quotes(self, customer, lines, *, customer_ref=None, reference=None):
         if self.error:
             raise self.error
-        return self._mock.create_estimate(customer, lines)
+        return self._mock.create_sales_quotes(customer, lines)
 
     @property
     def available(self) -> bool:

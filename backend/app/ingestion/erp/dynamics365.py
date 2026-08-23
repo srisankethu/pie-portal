@@ -540,16 +540,6 @@ class BusinessCentralSource:
 
         return self._written(created, customer, len(lines), already_existed=False)
 
-    #: The quote port's name for the write above. Two names, one method, and
-    #: the seam between two vocabularies: ``test_connector_writes`` requires
-    #: ``create_<stage>`` for the stage this platform calls ``sales_quotes``,
-    #: while ``QuoteWriter`` in ``app/zoho.py`` says ``create_estimate`` because
-    #: that is what Zoho's ledger calls the document. An alias rather than a
-    #: wrapper class: there is one implementation and §7 says not to build a
-    #: layer around it. Renaming the port to match the stage is the tidier end
-    #: state and is a separate change — it touches every Zoho caller.
-    create_estimate = create_sales_quotes
-
     def _entity(self, path: str) -> str:
         """One entity set under this company, as an absolute URL."""
         return f"{self._client.api}/companies({self._company})/{path}"

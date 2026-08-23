@@ -677,11 +677,11 @@ def test_zohos_declared_writes_match_what_the_adapter_can_actually_create():
     from app.ingestion.zoho_books_service import ZohoBooksService
 
     declared = {stage for p in REQUIRED_SCOPES for stage in p.writes}
-    # Zoho's adapter names the estimate write ``create_estimate`` rather than
+    # Zoho's adapter names the estimate write ``create_sales_quotes`` rather than
     # ``create_sales_quotes``: the stage is the platform's word for the record,
     # the method is Zoho's. The map is stated here rather than guessed from the
     # name, because a rename on either side should fail this test loudly.
-    implements = {"sales_quotes": "create_estimate"}
+    implements = {"sales_quotes": "create_sales_quotes"}
     assert set(implements) <= set(WRITE_STAGES)
     able = {stage for stage, method in implements.items()
             if callable(getattr(ZohoBooksService, method, None))}

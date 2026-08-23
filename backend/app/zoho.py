@@ -120,13 +120,20 @@ class QuoteWriter(Protocol):
     the signature is Zoho-shaped: a customer's id *in the target system*, the
     lines, and a caller-stable reference that makes the write idempotent.
 
+    Named for the write stage rather than for anybody's ledger. It was
+    ``create_estimate`` — Zoho's word — which meant the capability pin looked
+    for ``create_sales_quotes`` on a source while this looked for something
+    else on a writer, and Business Central carried both names for one method to
+    satisfy the two. One name now, and the pin and the port agree by
+    construction rather than by an alias somebody has to keep.
+
     The record types it speaks are still named ``Zoho…`` — the shapes are
     generic (an id, a number, a customer, a line count) but the names have not
     caught up. Renaming them touches every caller and belongs with the change
     that reshapes the response anyway, not here.
     """
 
-    def create_estimate(self, customer: str, lines: List[dict], *,
+    def create_sales_quotes(self, customer: str, lines: List[dict], *,
                         customer_ref: Optional[str] = None,
                         reference: Optional[str] = None) -> ZohoEstimate:
         """Create the estimate for ``customer``.
@@ -220,7 +227,7 @@ class MockZoho:
             self._not_in_books.discard(code)
             return item
 
-    def create_estimate(self, customer: str, lines: List[dict], *,
+    def create_sales_quotes(self, customer: str, lines: List[dict], *,
                         customer_ref: Optional[str] = None,
                         reference: Optional[str] = None) -> ZohoEstimate:
         """Invent an estimate number. ``customer_ref`` and ``reference`` are
@@ -269,7 +276,7 @@ class UnavailableZoho:
                     list_price: Optional[float] = None) -> ZohoItem:
         raise ZohoWriteRefused(self.reason, codes=[code] if code else None)
 
-    def create_estimate(self, customer: str, lines: List[dict], *,
+    def create_sales_quotes(self, customer: str, lines: List[dict], *,
                         customer_ref: Optional[str] = None,
                         reference: Optional[str] = None) -> ZohoEstimate:
         raise ZohoWriteRefused(self.reason)

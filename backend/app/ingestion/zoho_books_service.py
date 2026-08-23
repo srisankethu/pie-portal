@@ -373,7 +373,7 @@ class ZohoBooksService(ZohoTransport):
             raise ZohoWriteRefused("The estimate was not created — it has no lines.")
         return out
 
-    def create_estimate(self, customer: str, lines: List[dict], *,
+    def create_sales_quotes(self, customer: str, lines: List[dict], *,
                         customer_ref: Optional[str] = None,
                         reference: Optional[str] = None) -> ZohoEstimate:
         if not customer_ref:

@@ -179,10 +179,63 @@ def register_health_checks(engine: Any, session_factory: Any) -> None:
                 "Auto-sync scheduler was started but no live 'sync-scheduler' "
                 "thread remains"
             )
+        # Which process is the one that ticks. Every process runs the thread —
+        # that is what makes the schedule survive a restart of whichever one
+        # held it — so "running" here is not the same claim as "this deployment
+        # is scheduling". A live thread with no holder anywhere means the lease
+        # is stuck, and reporting it healthy would be the benign default.
+        from .. import leases
+
+        with session_factory() as session:
+            holder = leases.current_holder(session, sync_scheduler.LEASE)
+        if holder is None:
+            return HealthStatus.DEGRADED, (
+                f"Auto-sync scheduler thread is up but nothing holds the "
+                f"{sync_scheduler.LEASE} lease, so no process is ticking"
+            )
         return HealthStatus.HEALTHY, (
-            f"Auto-sync scheduler running (tick {sync_scheduler.TICK_SECONDS}s)"
+            f"Auto-sync scheduler running (tick {sync_scheduler.TICK_SECONDS}s); "
+            f"ticker is {holder}"
+        )
+
+    def check_queue() -> tuple[HealthStatus, Optional[str]]:
+        """Whether background work is being drained, and whether any of it died.
+
+        Three facts, in the order they change what an operator does: a
+        deployment that does not use the queue has nothing to report; one that
+        does but has no live worker is not running its syncs at all; and a
+        dead-lettered message is work that has failed every attempt and is
+        waiting for a person. Dead letters are DEGRADED rather than UNHEALTHY —
+        the platform is serving, one job is not — and they are *named*, because
+        a queue that reports healthy while holding failed work is the benign
+        default §1 warns about.
+        """
+        from ..config import settings
+        from ..messaging import depth, worker_running
+
+        if not settings.queue_dispatch and not settings.queue_worker_enabled:
+            return HealthStatus.HEALTHY, (
+                f"Queue not in use: SYNC_DISPATCH is {settings.SYNC_DISPATCH!r}"
+            )
+        if not worker_running():
+            return HealthStatus.UNHEALTHY, (
+                "Queue dispatch is on but no live 'queue-worker' thread "
+                "remains: queued jobs will not run"
+            )
+        with session_factory() as session:
+            counts = depth(session)
+        if counts.get("DEAD_LETTER"):
+            return HealthStatus.DEGRADED, (
+                f"{counts['DEAD_LETTER']} queued message(s) failed every "
+                f"attempt and are waiting for a person; "
+                f"{counts.get('PENDING', 0)} pending"
+            )
+        return HealthStatus.HEALTHY, (
+            f"Queue worker running ({counts.get('PENDING', 0)} pending, "
+            f"{counts.get('CLAIMED', 0)} in flight)"
         )
 
     health.register("database", check_database)
     health.register("pie_parser", check_pie_parser)
     health.register("scheduler", check_scheduler)
+    health.register("queue", check_queue)

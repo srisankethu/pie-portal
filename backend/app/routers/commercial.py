@@ -25,7 +25,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import clock
+from ..config import settings
 from ..authz import Principal, require_manager_or_owner
+from ..commercial import jobs as commercial_jobs
 from ..commercial.compute import compute_for, recompute
 from ..commercial.policy import load_for_org
 from ..commercial.diagnosis import diagnose
@@ -340,6 +342,13 @@ class RecomputeRequest(BaseModel):
 
     customer_id: Optional[str] = None
     emit_signals: bool = True
+    #: Queue it instead of running it in this request. A whole-organization
+    #: rebuild is O(customers × items) with a detector pass per pair — the
+    #: shape the sync had before it moved to the background, and it fails the
+    #: same way: a gateway gives up before the work does, and the caller cannot
+    #: tell a slow rebuild from a dead one. Off by default: this endpoint has
+    #: always answered with the report, and a small book still should.
+    background: bool = False
 
 
 @router.post("/recompute")
@@ -348,6 +357,25 @@ def run_recompute(
     principal: Principal = Depends(require_manager_or_owner),
     session: Session = Depends(get_session),
 ) -> dict:
+    if req.background:
+        # Refused rather than accepted where nothing would drain it. A queued
+        # message in a deployment with no worker is work that silently never
+        # happens, which is worse than an answer saying so.
+        if not settings.queue_worker_enabled:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "This deployment has no queue worker (SYNC_DISPATCH=thread), so "
+                "a queued rebuild would never run. Run it in the request, or set "
+                "SYNC_DISPATCH=queue.")
+        message = commercial_jobs.enqueue_recompute(
+            session, principal.organization_id,
+            customer_id=req.customer_id, emit_signals=req.emit_signals)
+        session.commit()
+        return {"queued": True, "message_id": message.message_id,
+                "topic": message.topic, "status": message.status,
+                "note": ("Queued. The rebuild runs in the background; its "
+                         "message carries the outcome.")}
+
     report = recompute(
         session, principal.organization_id,
         customer_ids={req.customer_id} if req.customer_id else None,

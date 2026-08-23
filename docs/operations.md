@@ -41,7 +41,6 @@ always wins over it**. All values have defaults that work for local development.
 | `DB_POOL_TIMEOUT` | `30` | Seconds a request waits for a free connection before failing loudly. |
 | `DB_POOL_RECYCLE` | `1800` | Retire pooled connections before proxy/NAT idle cutoffs drop them first. |
 | `DB_SLOW_QUERY_MS` | `1000` | Log statements slower than this (0 = off; the compose stack sets 500). Statement text only — parameter values never reach the log. |
-| `REDIS_URL` | *(empty)* | Provisioned infrastructure (both compose stacks run one); no feature requires it yet, and nothing may refuse to serve because it is absent. |
 | `AUTO_BOOTSTRAP` | `1` | Create the DB, migrate, and seed users on startup. **Ignored in production.** |
 | `DEMO_SEED_ON_START` | `1` | Seed the demo dataset on startup. **Ignored in production, and ignored whenever `ZOHO_SOURCE=api`** — a live account means no fabricated customer should ever appear. |
 
@@ -531,6 +530,86 @@ curl http://localhost:8000/api/v1/internal/health
 
 Returns database connectivity and the configured Zoho source. It does **not**
 check the AI provider — use the metrics endpoint for that.
+
+### The background queue
+
+Where `SYNC_DISPATCH=queue` (the compose stack's default — see
+`docs/caching-and-queue.md` for why), background work is a committed row in
+`queued_messages` and the `worker` container drains it. Three things to look at,
+in the order they matter.
+
+```bash
+# Depth, the recent messages, and — separately — anything that failed for good.
+curl -H "Authorization: Bearer $OWNER_TOKEN" \
+     http://localhost:8000/api/v1/internal/queue
+```
+
+`dead_letters` is the part that is somebody's job: each one is work that failed
+every attempt, with `last_error` saying why. `/api/health` reports the same
+thing as a DEGRADED `queue` component — the platform is serving, one job is not.
+
+```bash
+# One message, with the payload it was queued with.
+curl -H "Authorization: Bearer $OWNER_TOKEN" \
+     http://localhost:8000/api/v1/internal/queue/$MESSAGE_ID
+
+# Put it back once the cause is fixed. Owner only; refused (409) for a message
+# that is still pending or in flight, because that would run it twice.
+curl -X POST -H "Authorization: Bearer $OWNER_TOKEN" \
+     http://localhost:8000/api/v1/internal/queue/$MESSAGE_ID/retry
+```
+
+**"Nothing is running."** `worker_running` in that response is about *the
+process answering the request* — false on an API replica beside a dedicated
+worker, which is correct, not a fault. What says the workers are keeping up is
+the depth: PENDING that only grows means no container is draining. Check the
+worker is up (`docker compose ps worker`), and that it did not decline to start
+— a worker process with `QUEUE_WORKER=0` exits non-zero saying so.
+
+**A backlog.** `docker compose up -d --scale worker=3`. The claim is a
+conditional UPDATE, so several workers take different messages rather than
+racing for one.
+
+**The table's size.** Finished messages are swept out by the worker on an
+interval: `QUEUE_DONE_RETENTION_DAYS` (14) for receipts,
+`QUEUE_DEAD_LETTER_RETENTION_DAYS` (90) for failures, `0` on either to keep
+forever. A deployment with no worker running never prunes — one more reason the
+depth is worth a glance.
+
+### Which process ticks the schedule
+
+Every API process runs the auto-sync thread — that is what makes the schedule
+survive a restart of whichever one was doing the work — but only the holder of
+the `sync-scheduler` lease decides anything. `scheduler_ticker` on
+`GET /api/v1/internal/queue` names it, and `/api/health` reports it on the
+`scheduler` component.
+
+**Nothing is syncing and the thread is up.** If `scheduler_ticker` is null, the
+lease is stuck: no process holds it and none has taken it over. It expires three
+ticks (three minutes) after its holder last renewed, so this state should not
+outlast a restart — if it does, look at `process_leases` directly.
+
+**Two syncs of the same books.** This is the failure the lease exists to
+prevent, and finding it again means the lease is not being held: check that both
+API processes are running the same code, and that `process_leases` is present
+(a database migrated to `b8lease` or later).
+
+The lease is deliberately a *lease*, not a lock — a process killed while holding
+it blocks the schedule until the expiry passes and no longer. There is nothing
+to unstick by hand.
+
+### Cache counters
+
+```bash
+curl -H "Authorization: Bearer $OWNER_TOKEN" \
+     http://localhost:8000/api/v1/internal/observability/caches
+```
+
+Size, hits, misses and hit rate per cache. **Per process**, so two API
+containers legitimately report different numbers and a freshly started one
+reports a cold cache rather than a fault. A hit rate near zero on a warm
+process is worth a look: it usually means a key is carrying something that
+changes every request.
 
 ### AI cost and health (owner only)
 

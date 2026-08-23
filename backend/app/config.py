@@ -155,6 +155,27 @@ class Settings:
     def is_production(self) -> bool:
         return self.APP_ENV.strip().lower() == "production"
 
+    @property
+    def queue_dispatch(self) -> bool:
+        """Whether background work is dispatched through the durable queue."""
+        return self.SYNC_DISPATCH == "queue"
+
+    @property
+    def queue_worker_enabled(self) -> bool:
+        """Whether this process should run a queue worker.
+
+        Derived rather than a second switch to keep in step: a deployment that
+        chose the queue needs something to drain it, and one that did not would
+        be polling a table nobody writes to. ``QUEUE_WORKER`` overrides in both
+        directions, which is what lets an API process and a worker process run
+        the same image with different jobs.
+        """
+        if self.QUEUE_WORKER in ("1", "true", "yes", "on"):
+            return True
+        if self.QUEUE_WORKER in ("0", "false", "no", "off"):
+            return False
+        return self.queue_dispatch
+
     # ── Commercial Decision Platform (Phase 1 foundation) ────────────────────
     # Single primary database. Dev/test default to SQLite; production sets a
     # Postgres URL. SQLAlchemy URL form, e.g. postgresql+psycopg://user:pw@host/db
@@ -189,17 +210,6 @@ class Settings:
     # and credentials, and trust/ exists so those never reach a log file.
     DB_SLOW_QUERY_MS: int = int(os.environ.get("DB_SLOW_QUERY_MS", "1000"))
 
-    # ── Redis (provisioned infrastructure; no feature requires it yet) ──────
-    # Both compose stacks run a Redis next to the API for the state that must
-    # one day live outside a process: cross-replica rate limiting (the signup
-    # limiter in routers/onboarding.py is in-process and says so), cache, and
-    # background-job coordination if the thread-based sync ever needs to span
-    # replicas. Empty means "none configured", and nothing may *require* Redis
-    # to serve a request — a candidate consumer degrades to its in-process
-    # behaviour, the way the signup limiter behaves today. Kept honest on
-    # purpose: config that pretends a dependency is load-bearing before any
-    # code reads it teaches operators to ignore this file.
-    REDIS_URL: str = os.environ.get("REDIS_URL", "")
 
     # Create the database + schema + demo users on startup, so a fresh clone
     # runs without a separate migrate/seed step. Always disabled in production,
@@ -358,6 +368,79 @@ class Settings:
     # An explicit start date (ISO, e.g. 2025-01-01) wins over the rolling window.
     # A manager picks this per run in the UI; this is only the default offered.
     ZOHO_SYNC_FROM: str = os.environ.get("ZOHO_SYNC_FROM", "")
+
+    # ── Background work: threads, or the durable queue ────────────────────────
+    # How a background sync is dispatched once its run row exists.
+    #
+    #   "thread" — start a daemon thread, the behaviour since the first sync
+    #              took minutes. Nothing else to run; the work dies with the
+    #              process.
+    #   "queue"  — commit a message to `queued_messages` and let the worker
+    #              claim it. The request survives a restart, retries with a
+    #              bounded backoff, and is safe with more than one process.
+    #
+    # "thread" is the default because it is what this deployment has always
+    # done and the queue path needs a worker running to do anything at all — a
+    # default that silently requires a second moving part is a default that
+    # makes a fresh clone's Sync button do nothing. A deployment that replaces
+    # containers under load, or runs more than one, wants "queue".
+    SYNC_DISPATCH: str = os.environ.get("SYNC_DISPATCH", "thread").strip().lower()
+    # Force the worker on (or off) independently of the dispatch above: an API
+    # process with SYNC_DISPATCH=queue and QUEUE_WORKER=0, beside a worker
+    # process that runs nothing else, is the shape this splits into. Empty
+    # means "follow SYNC_DISPATCH".
+    QUEUE_WORKER: str = os.environ.get("QUEUE_WORKER", "").strip().lower()
+    # How long the idle worker waits before looking again. One indexed query
+    # per wake, so this is the latency of starting a queued job.
+    QUEUE_POLL_SECONDS: float = float(os.environ.get("QUEUE_POLL_SECONDS", "2"))
+    # How long a claimed message may go without a heartbeat before it is
+    # treated as a dead worker's and handed back. Matches the sync job's own
+    # patience: a slow pull is not a crash.
+    QUEUE_STALE_MINUTES: int = int(os.environ.get("QUEUE_STALE_MINUTES", "10"))
+    # Attempts before a message is dead-lettered with its last error. Bounded
+    # because a job that fails identically forever should be readable, not
+    # busy.
+    QUEUE_MAX_ATTEMPTS: int = int(os.environ.get("QUEUE_MAX_ATTEMPTS", "3"))
+    QUEUE_BACKOFF_SECONDS: float = float(os.environ.get("QUEUE_BACKOFF_SECONDS", "30"))
+    # How long a finished message is kept. Rows survive completion on purpose —
+    # a queue with no history cannot answer "did that run, and when" — but kept
+    # and kept forever are different promises, and only one of them is a table
+    # that stops growing. The two differ because the rows do: a DONE message is
+    # a receipt, a dead-lettered one is unfinished business somebody may still
+    # act on, and deleting that is deleting the evidence of a failure. 0 on
+    # either means keep forever.
+    QUEUE_DONE_RETENTION_DAYS: int = int(
+        os.environ.get("QUEUE_DONE_RETENTION_DAYS", "14"))
+    QUEUE_DEAD_LETTER_RETENTION_DAYS: int = int(
+        os.environ.get("QUEUE_DEAD_LETTER_RETENTION_DAYS", "90"))
+    # How often the worker sweeps them out. Not per pass: it is a delete over a
+    # date range, and running it every two seconds would be the loop's main
+    # activity on an idle queue.
+    QUEUE_PRUNE_INTERVAL_SECONDS: float = float(
+        os.environ.get("QUEUE_PRUNE_INTERVAL_SECONDS", "3600"))
+    QUEUE_MAX_BACKOFF_SECONDS: float = float(
+        os.environ.get("QUEUE_MAX_BACKOFF_SECONDS", "900"))
+
+    # How long ``/api/health`` may answer the schema question from memory. The
+    # cache key already carries the database's Alembic revision, so a migration
+    # is reflected on the next poll whatever this is; this bounds only the case
+    # the key cannot see — a schema altered by hand under an unchanged stamp.
+    # 0 disables it and every poll reflects all ~70 tables again.
+    SCHEMA_GAP_CACHE_TTL_SECONDS: float = float(
+        os.environ.get("SCHEMA_GAP_CACHE_TTL_SECONDS", "30"))
+
+    # ── Resolution cache ──────────────────────────────────────────────────────
+    # The nomenclature engine's verdict for one product code, keyed by the
+    # catalogue ruleset and the confirmed mappings it read — see app/cache.py
+    # for why those belong in the key. A quote re-resolves the same codes every
+    # time it is rebuilt, and a resolution is a scan of the whole catalogue.
+    # 0 disables the cache without a code change, which is the off switch a
+    # deployment needs if it ever suspects a stale answer.
+    PIE_CACHE_SIZE: int = int(os.environ.get("PIE_CACHE_SIZE", "2048"))
+    # A ceiling on staleness for the one input the key cannot see: a catalogue
+    # rebuilt in place under an unchanged ruleset version.
+    PIE_CACHE_TTL_SECONDS: float = float(
+        os.environ.get("PIE_CACHE_TTL_SECONDS", "1800"))
 
     # Throttling. Zoho Books allows on the order of 100 calls per minute per
     # organization, and a pull costs one call per document — so an unpaced pull

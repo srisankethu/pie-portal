@@ -27,6 +27,8 @@ from typing import Optional
 from sqlalchemy import inspect
 from sqlalchemy.engine import Engine
 
+from . import cache
+from .config import settings
 from .db import Base
 
 log = logging.getLogger("pie_portal.schema")
@@ -64,6 +66,42 @@ def missing_columns(engine: Engine) -> dict[str, list[str]]:
         absent = [c.name for c in table.columns if c.name not in have]
         if absent:
             gaps[table.name] = absent
+    return gaps
+
+
+#: The polled answer to "can this schema serve this code", remembered against
+#: the revision the database is stamped at.
+#:
+#: ``missing_columns`` reflects every mapped table — 73 statements here, and on
+#: Postgres 73 round trips to ``information_schema`` — and ``/api/health`` is
+#: called by a load balancer, a deploy gate and the app itself. What makes it
+#: safe to remember is the key rather than the clock: a migration moves the
+#: stamp, so the next poll after an upgrade reflects again and the health
+#: endpoint goes green without a restart, which is the property its docstring
+#: promises. The TTL is for the case the key cannot see — a schema edited by
+#: hand under an unchanged stamp — so a wrong answer is bounded by seconds
+#: rather than by a deploy.
+#:
+#: Keyed on the URL as SQLAlchemy renders it, which masks the password: a
+#: credential must not end up in a cache key that anything might log.
+_gap_cache = cache.register(cache.Cache(
+    "schema_gaps", maxsize=8,
+    ttl_seconds=settings.SCHEMA_GAP_CACHE_TTL_SECONDS))
+
+
+def gaps_for(engine: Engine, revision: Optional[str]) -> dict[str, list[str]]:
+    """:func:`missing_columns`, for a caller that asks repeatedly.
+
+    The uncached function stays the one every test and the startup check use:
+    a check that answers from memory is the wrong thing to hand to code whose
+    job is to establish the truth once.
+    """
+    key = cache.fingerprint("schema_gaps", str(engine.url), revision)
+    hit = _gap_cache.get(key)
+    if hit is not cache.MISS:
+        return hit
+    gaps = missing_columns(engine)
+    _gap_cache.set(key, gaps)
     return gaps
 
 

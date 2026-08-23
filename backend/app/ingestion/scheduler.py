@@ -22,10 +22,24 @@ modification stamp. The expensive-looking design is the cheap one.
 The cadence lives in ``Organization.config["auto_sync_hours"]`` — per tenant,
 edited from the sync screen, ``0`` meaning off — with
 ``settings.SYNC_AUTO_HOURS`` as the default for an organization that has never
-chosen. Threads, not a broker, for the reason ``jobs`` gives: this deployment
-is one uvicorn process, and the in-process lock in ``start_sync`` is the real
-concurrency guard either way. If this ever runs multi-process, the tick must
-move behind a database lock — and the decision function below would not change.
+chosen.
+
+**One ticker, enforced in the database.** This paragraph used to say the tick
+was safe because "this deployment is one uvicorn process", and that a
+multi-process one would need a database lock. The image has shipped
+``--workers 2`` throughout, so that premise was never true: two threads ticked,
+starting together and therefore landing within the same instant, and
+``start_sync``'s guard is an in-process lock plus a read of the active runs with
+no constraint behind it. Both could read "nothing running" and both queue a pull
+of the same books — double the ERP calls for one job's worth of data, and a
+progress counter that cannot say which run it belongs to. Rare at three tenants;
+routine at a hundred and fifty.
+
+So the loop holds the ``sync-scheduler`` lease (``app/leases.py``) and only
+ticks while it does. Every process still runs the thread — which is what makes
+this survive a restart of whichever one happened to be holding it — but only
+the holder decides anything. The decision function below did not change, and
+neither did what a tick does; what changed is how many processes do it.
 """
 from __future__ import annotations
 
@@ -34,9 +48,10 @@ import threading
 from datetime import date, datetime, timedelta
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from .. import leases
 from ..clock import aware as _aware, now as _now
 from ..config import settings
 from ..domain import models
@@ -52,6 +67,15 @@ _started = threading.Event()
 #: Set to stop the loop — today only tests do, so a suite that started the
 #: thread does not leak ticks into the tests after it.
 _stop = threading.Event()
+
+#: The lease that decides which process ticks. One name, because there is one
+#: schedule; every process runs the thread and only the holder acts.
+LEASE = "sync-scheduler"
+
+#: Comfortably more than a tick, so a slow pass does not lose the lease to a
+#: peer mid-tick, and short enough that a killed holder stops the schedule for
+#: two ticks rather than an afternoon.
+LEASE_TTL = timedelta(seconds=TICK_SECONDS * 3)
 
 
 def auto_sync_hours(org: Optional[models.Organization]) -> int:
@@ -133,7 +157,14 @@ def next_run_at(session: Session, org: models.Organization) -> Optional[datetime
 
 def tick(session: Session) -> int:
     """One pass over every organization with a connected book. Returns how many
-    syncs were queued — the observable a test can hold onto."""
+    syncs were queued — the observable a test can hold onto.
+
+    Three queries, whatever the tenant count. It used to be two *per
+    organization* — a row read for the config and a sort of that org's runs for
+    the last start — which at 150 connected books and a wake a minute is most
+    of a million statements a day spent asking a question whose answer is
+    almost always "no". Asking it for everybody at once is the same question.
+    """
     from . import jobs
 
     started = 0
@@ -141,15 +172,24 @@ def tick(session: Session) -> int:
         select(models.ZohoConnection.organization_id)
         .where(models.ZohoConnection.enabled.is_(True))
         .distinct()).all()
+    if not org_ids:
+        return 0
+
+    # Every cadence, and every organization's most recent start, in one query
+    # each. `max(started_at)` rather than an ordered limit per org: the question
+    # is only "when did the newest one begin".
+    orgs = {o.organization_id: o for o in session.scalars(
+        select(models.Organization)
+        .where(models.Organization.organization_id.in_(org_ids)))}
+    last_started = dict(session.execute(
+        select(models.SyncRun.organization_id,
+               func.max(models.SyncRun.started_at))
+        .where(models.SyncRun.organization_id.in_(org_ids))
+        .group_by(models.SyncRun.organization_id)).all())
+
     for org_id in org_ids:
-        org = session.get(models.Organization, org_id)
-        hours = auto_sync_hours(org)
-        last = session.scalar(
-            select(models.SyncRun.started_at)
-            .where(models.SyncRun.organization_id == org_id)
-            .order_by(models.SyncRun.started_at.desc())
-            .limit(1))
-        if not due(last, hours):
+        hours = auto_sync_hours(orgs.get(org_id))
+        if not due(last_started.get(org_id), hours):
             continue
         # `start_sync` re-checks for an active run under its own lock, so a
         # pull a person started thirty seconds ago is handed back, not raced.
@@ -176,22 +216,48 @@ def start_scheduler() -> bool:
         return False
     _started.set()
 
+    holder = leases.holder_name()
+
     def loop() -> None:
         from ..db import SessionLocal
 
+        held = False
         while not _stop.is_set():
             try:
                 session = SessionLocal()
                 try:
-                    tick(session)
-                    session.commit()
+                    # Asked every tick rather than once at startup: this both
+                    # renews the lease while we hold it and picks it up when
+                    # the process that held it has gone.
+                    now_held = leases.acquire(session, LEASE, holder,
+                                              ttl=LEASE_TTL)
+                    if now_held and not held:
+                        log.info("auto-sync scheduler is the ticker (%s)", holder)
+                    held = now_held
+                    if held:
+                        tick(session)
+                        session.commit()
                 finally:
                     session.close()
             except Exception:  # noqa: BLE001 — the schedule must survive one bad tick
                 log.exception("auto-sync tick failed; next tick in %ss", TICK_SECONDS)
             _stop.wait(TICK_SECONDS)
 
+        # Hand it on rather than making the next process wait out the expiry.
+        # Best-effort: a process being killed does not get to run this, which is
+        # exactly why the lease has an expiry at all.
+        if held:
+            try:
+                session = SessionLocal()
+                try:
+                    leases.release(session, LEASE, holder)
+                finally:
+                    session.close()
+            except Exception:  # noqa: BLE001 — shutdown must not fail over this
+                log.exception("could not release the auto-sync lease")
+
     threading.Thread(target=loop, name="sync-scheduler", daemon=True).start()
-    log.info("auto-sync scheduler running (tick %ss, default every %dh)",
-             TICK_SECONDS, settings.SYNC_AUTO_HOURS)
+    log.info("auto-sync scheduler running (tick %ss, default every %dh); "
+             "whether this process is the one that ticks depends on the %s lease",
+             TICK_SECONDS, settings.SYNC_AUTO_HOURS, LEASE)
     return True

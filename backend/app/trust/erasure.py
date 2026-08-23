@@ -193,6 +193,24 @@ EXPORTED: tuple[tuple[str, Any], ...] = (
     # requested and when, particularly where that is part of why they are
     # leaving.
     ("plan_change_requests", models.PlanChangeRequest),
+    # ── what their customers asked them for ─────────────────────────────────
+    #
+    # Exported without hesitation, and it is arguably the most obviously theirs
+    # of anything on this list. ``raw_text`` is not our reading of their
+    # business — it is their customers' own words, sent to them, which this
+    # platform happens to be holding. A departing tenant taking everything
+    # except the enquiries they received would be handed a coverage report they
+    # can no longer reproduce, and an RFQ corpus they paid for in the first
+    # place.
+    #
+    # The dispositions travel with the lines for the reason ``value_events``
+    # and ``evaluation_baselines`` travel together: an export holding the asks
+    # without their outcomes hands back a comparison with one side missing.
+    # Superseded rows are included — they are rows of the table, and an export
+    # that quietly kept only the current answer would be unable to explain a
+    # report the tenant ran before a correction.
+    ("inbound_lines", models.InboundLine),
+    ("inbound_line_dispositions", models.InboundLineDisposition),
 )
 
 #: Never exported, and each one has a reason a customer can read. Keyed by
@@ -360,6 +378,11 @@ SURVIVES_PLAINTEXT: tuple[dict[str, str], ...] = (
     {"table": "users", "column": "name, email",
      "why": "staff account identities, needed to keep the audit trail "
             "attributable"},
+    {"table": "inbound_lines", "column": "raw_text, customer_ref, source_ref",
+     "why": "inbound enquiries are stored exactly as received and are never "
+            "encrypted — the corpus an RFQ parser is measured against has to "
+            "be the bytes the customer sent. So destroying the key does not "
+            "unread them; only row deletion removes this text"},
     {"table": "every transactional table", "column":
      "quantities, prices, dates, document and reference numbers",
      "why": "the analytical layer computes on plaintext rows by design; only "

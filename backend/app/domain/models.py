@@ -3599,3 +3599,39 @@ class ConfirmedCodeMapping(Base):
     superseded_by: Mapped[Optional[str]] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
                                                  index=True)
+
+
+# ── Process coordination (not tenant data) ───────────────────────────────────
+class ProcessLease(Base):
+    """A named, expiring claim that at most one process holds at a time.
+
+    The deployment runs two uvicorn workers (``deploy/backend.Dockerfile``,
+    ``compose.yaml``), and some work is correct exactly once per cluster rather
+    than once per worker. ``app/lease.py`` is the mechanism; this is the row it
+    turns on. One row per lease name, claimed by a conditional UPDATE whose
+    rowcount decides the winner — see that module for why an UPDATE and not
+    ``pg_try_advisory_lock``.
+
+    **No ``organization_id``, deliberately.** Every other model here carries one
+    because it is tenant data; this is infrastructure about *processes*, and
+    giving it a tenant column would invite a per-tenant lease that the thing
+    holding it (a single scheduler thread) is not scoped to anyway. A lease
+    whose scope belongs in its identity puts it in the name.
+    """
+
+    __tablename__ = "process_leases"
+
+    #: The thing being claimed, chosen by the caller (e.g. ``sync-scheduler``).
+    #: Primary key, so the row is the lease and there can only be one.
+    name: Mapped[str] = mapped_column(String(64), primary_key=True)
+    #: Who holds it — opaque, generated per process, meaningful only for
+    #: equality and for naming the leader in a log line or a health message.
+    #: Nullable so a lease can exist and be free; nothing writes NULL today.
+    holder: Mapped[Optional[str]] = mapped_column(String(128))
+    #: When the current holder took it. Never read by the mechanism — it is
+    #: there so an operator looking at the row can see how long this leader has
+    #: been leading, which is the first question after "who leads".
+    acquired_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    #: When the claim lapses. A holder that stops renewing loses the lease here
+    #: and nowhere else, which is what makes failover need no supervisor.
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))

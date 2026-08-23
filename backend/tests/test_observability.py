@@ -366,12 +366,22 @@ class TestRegisteredHealthChecks:
 
     @pytest.fixture()
     def checks(self):
-        """The registered check functions, with the global registry restored after."""
+        """The registered check functions, with the global registry restored after.
+
+        The session factory is real because the scheduler check reads which
+        worker holds the scheduler lease; the engine stays a placeholder,
+        because the only check that touches it is the database one and these
+        tests do not drive it.
+        """
+        from sqlalchemy.orm import sessionmaker
+
+        import dbsupport
         from app.observability.health import health, register_health_checks
 
+        maker = sessionmaker(bind=dbsupport.fresh_engine(), future=True)
         saved = dict(health._components)
         health._components.clear()
-        register_health_checks(object(), object())
+        register_health_checks(object(), maker)
         yield {name: comp.check_fn for name, comp in health._components.items()}
         health._components.clear()
         health._components.update(saved)

@@ -1431,6 +1431,57 @@ def _lost(s, quote_id: str, *, sent: bool = False,
     return row
 
 
+def test_a_book_with_no_writable_connector_can_still_record_a_win(session, trial):
+    """The path a read-only connector needs, pinned because it is true by
+    accident of two independent things rather than by anyone's decision.
+
+    The automatic writer of SENT sits after a successful external write, so an
+    org on NetSuite or Prophet 21 — which this platform reads and cannot write
+    — never reaches it that way. It was believed that this left WON structurally
+    unrecordable for them, which would have made the whole attribution chain
+    dead for most US clients.
+
+    It does not: ``POST /outcome`` is a second, human-driven writer that accepts
+    SENT, and the transition table allows DRAFT to SENT. A quote emailed by hand
+    is recorded by hand. Nothing guaranteed that combination would survive
+    somebody tightening either half, though, which is what this test is for.
+    """
+    quote_service.set_outcome(session, ORG, quote_id="q_manual", status=QuoteOutcomeStatus.DRAFT)
+    quote_service.set_outcome(session, ORG, quote_id="q_manual", status=QuoteOutcomeStatus.SENT)
+    row = quote_service.set_outcome(session, ORG, quote_id="q_manual",
+                                    status=QuoteOutcomeStatus.WON)
+
+    assert row.status == QuoteOutcomeStatus.WON.value
+    assert row.sent_at is not None, (
+        "a win with no sent stamp reads as unrecordable to every win rate")
+
+
+def test_a_hand_recorded_send_is_distinguishable_from_a_delivered_one(session, trial):
+    """Two ways a quote reaches SENT, and they are not the same claim.
+
+    One says this platform wrote the document into a ledger and can name it; the
+    other says a person says they sent it. Both are legitimate and only the
+    first is evidence. They are told apart by whether a ``QuoteDocument`` exists
+    — no extra column, no flag to keep in step, and nothing to set wrongly.
+    """
+    from app.domain import models
+
+    quote_service.set_outcome(session, ORG, quote_id="q_byhand", status=QuoteOutcomeStatus.DRAFT)
+    quote_service.set_outcome(session, ORG, quote_id="q_byhand", status=QuoteOutcomeStatus.SENT)
+    assert quote_service.latest_document(session, ORG, quote_id="q_byhand") is None
+
+    quote_service.set_outcome(session, ORG, quote_id="q_sent", status=QuoteOutcomeStatus.DRAFT)
+    quote_service.set_outcome(session, ORG, quote_id="q_sent", status=QuoteOutcomeStatus.SENT)
+    quote_service.record_document(
+        session, ORG, quote_id="q_sent", external_system="zoho",
+        number="EST-000123", line_count=3, fingerprint="fp-1",
+        reference="QB-1-abcd", thresholds_version="ci_test")
+
+    doc = quote_service.latest_document(session, ORG, quote_id="q_sent")
+    assert doc is not None and doc.external_document_number == "EST-000123"
+    assert isinstance(doc, models.QuoteDocument)
+
+
 def test_a_win_can_only_be_recorded_by_way_of_sent(session, trial):
     """The premise the two tests below rest on, asserted rather than assumed.
 

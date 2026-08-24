@@ -358,6 +358,15 @@ def split_credential_inputs(spec: ConnectorSpec,
 # "safe to send again" about a record that exists.
 
 
+#: The longest reference a write may carry. Business Central's
+#: ``externalDocumentNumber`` is a documented ``Code[35]`` and is the smallest
+#: field any of these systems stores a reference in, so it bounds all of them.
+#: A reference silently truncated on the way in is one the settle read cannot
+#: find, and "cannot find" is the branch that authorises sending again — so
+#: refusing a reference no known field is proven to hold is the safe direction.
+EXTERNAL_REF_MAX = 35
+
+
 def quote_literal(value: str) -> str:
     """One string literal inside a query, whichever grammar is asking.
 

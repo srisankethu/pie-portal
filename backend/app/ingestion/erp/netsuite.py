@@ -43,9 +43,10 @@ from ..errors import (IngestionError, SourceAuthError, SourceScopeError,
                       SourceWriteUnknown)
 from ..source import SkipPredicate
 from ..write_settle import settle_by_read
-from .base import (ConnectorSpec, CredentialMaterial, DocumentTally, Field,
-                   Permission, WrittenDocument, first, group_lines,
-                   iso_date, money, quote_literal, register)
+from .base import (EXTERNAL_REF_MAX, ConnectorSpec, CredentialMaterial,
+                   DocumentTally, Field, Permission, WrittenDocument,
+                   first, group_lines, iso_date, money, quote_literal,
+                   register)
 from .transport import RestTransport
 
 SYSTEM = "netsuite"
@@ -398,6 +399,12 @@ class NetSuiteSource:
             raise SourceWriteRefused(
                 "This quote is not attached to a NetSuite customer, so there is "
                 "no entity to create it against. Nothing was sent.")
+        if len(reference) > EXTERNAL_REF_MAX:
+            raise SourceWriteRefused(
+                f"The reference {reference!r} is longer than the "
+                f"{EXTERNAL_REF_MAX} characters this platform will send as an "
+                f"external id, so it could not be read back reliably. Nothing "
+                f"was sent.")
         if not lines:
             raise SourceWriteRefused(
                 "This quote has no priced lines, so there is nothing to create "
@@ -417,6 +424,13 @@ class NetSuiteSource:
                 "price an omitted rate from the item record — quoting a number "
                 "nobody here chose: " + ", ".join(unpriced),
                 codes=[c for c in unpriced if c != "?"])
+
+        # The pre-flight is not here for safety — the upsert cannot duplicate,
+        # which is the whole point of keying it. It is here for *honesty*: an
+        # upsert answers 204 and cannot say whether it created an estimate or
+        # updated one already there, and those are different things to tell
+        # somebody. Asking first is the only way to know which claim to make.
+        existed = self._estimate_by_reference(reference) is not None
 
         body = {
             "externalId": reference,
@@ -442,7 +456,8 @@ class NetSuiteSource:
             detail = str(e)
             return settle_by_read(
                 lambda: self._estimate_by_reference(reference),
-                lambda row: self._found(row, customer, len(lines), reference),
+                lambda row: self._found(row, customer, len(lines), reference,
+                                        already_existed=True),
                 unknown_message=lambda err: (
                     f"The estimate could not be completed ({detail}), and "
                     f"NetSuite could not be re-read to find out ({err}) — "
@@ -468,7 +483,8 @@ class NetSuiteSource:
                 f"and then did not return it, so whether it is there cannot be "
                 f"established. Look it up before sending again.",
                 reference=reference)
-        return self._found(landed, customer, len(lines), reference)
+        return self._found(landed, customer, len(lines), reference,
+                           already_existed=existed)
 
     def _estimate_by_reference(self, reference: str) -> Optional[dict[str, Any]]:
         """The estimate carrying this external id, with its line count.
@@ -486,14 +502,19 @@ class NetSuiteSource:
         return rows[0] if rows else None
 
     def _found(self, row: dict[str, Any], customer: str, sent_lines: int,
-               reference: str) -> WrittenDocument:
+               reference: str, *, already_existed: bool) -> WrittenDocument:
         """The estimate NetSuite holds, reported as what it *is*.
 
-        ``already_existed`` is decided by the line count rather than by the
-        upsert's status, because an upsert cannot tell the caller which it did.
-        A count that matches is this quote; one that does not is a different
-        document under our external id, and that is neither a send to report nor
-        safe to overwrite silently.
+        ``already_existed`` is passed in because nothing here can derive it: the
+        upsert answers 204, and a record read back afterwards looks identical
+        whether this call created it or found it. Only the caller, which looked
+        before writing, knows. It used to be hardcoded ``False``, so sending the
+        same quote twice reported "created" both times — about an estimate the
+        second call had merely updated.
+
+        The line count is still read back and still checked: a count that does
+        not match is a different document under our external id, which is
+        neither a send to report nor safe to overwrite silently.
         """
         held = row.get("lines")
         if held is None:
@@ -516,7 +537,8 @@ class NetSuiteSource:
                 "cannot be named to whoever has to find it.", reference=reference)
         return WrittenDocument(document_id=str(row.get("id") or ""),
                                number=number, customer=customer,
-                               line_count=int(held), already_existed=False)
+                               line_count=int(held),
+                               already_existed=already_existed)
 
     def list_contacts(self) -> Iterable[dict[str, Any]]:
         return (translate_entity(r) for r in self._client.suiteql(

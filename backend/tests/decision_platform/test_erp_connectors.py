@@ -1085,6 +1085,40 @@ def test_a_5xx_on_the_netsuite_upsert_is_retried_where_the_others_may_not_be():
         "the keyed upsert was refused a retry it is safe to have")
 
 
+def test_an_upsert_that_updated_an_estimate_does_not_report_it_as_created():
+    """The claim an upsert cannot make for itself.
+
+    PUT …/eid: answers 204 whether it created the estimate or updated one
+    already there, and the record read back afterwards looks identical either
+    way. ``already_existed`` was hardcoded False, so sending the same quote
+    twice said "created" both times — about an estimate the second call had
+    merely updated. Only the caller, which looked before writing, knows.
+    """
+    fresh = _ns({("PUT", "record"): _Resp(204),
+                 ("POST", "suiteql"): [_ns_rows(), _NS_FOUND]})
+    assert fresh.create_sales_quotes(
+        "Pitti", _NS_LINES, customer_ref="4400",
+        reference="QB-1-abcd").already_existed is False
+
+    # Same reference, and NetSuite already holds it. The upsert updates; the
+    # screen must say so rather than claiming a second document.
+    again = _ns({("PUT", "record"): _Resp(204), ("POST", "suiteql"): _NS_FOUND})
+    assert again.create_sales_quotes(
+        "Pitti", _NS_LINES, customer_ref="4400",
+        reference="QB-1-abcd").already_existed is True
+
+
+def test_a_netsuite_reference_too_long_for_the_field_is_refused():
+    """The cap the other three carried and this one did not. One constant now,
+    bounded by the smallest field any of these systems stores a reference in."""
+    src = _ns(_NS_CLEAN)
+    with pytest.raises(SourceWriteRefused) as e:
+        src.create_sales_quotes("Pitti", _NS_LINES, customer_ref="4400",
+                                reference="Q" * 36)
+    assert "35 characters" in str(e.value)
+    assert not _ns_sent(src, "record")
+
+
 def test_a_netsuite_estimate_is_read_back_rather_than_trusted():
     """An upsert that updated an existing estimate and one that created it look
     the same in the response. The read is what turns that into a fact."""
@@ -1142,8 +1176,11 @@ def test_a_reference_carrying_a_quote_cannot_forge_the_suiteql_lookup():
     src = _ns(_NS_CLEAN)
     src.create_sales_quotes("Pitti", _NS_LINES, customer_ref="4400",
                             reference="QB-1-o'brien")
-    (query,) = _ns_sent(src, "suiteql")
-    assert "o''brien" in query["json"]["q"]
+    queries = _ns_sent(src, "suiteql")
+    assert queries, "no lookup went out"
+    # Both the pre-flight and the read-back carry it, and either one built with
+    # a bare quote would ask a different question than the one intended.
+    assert all("o''brien" in q["json"]["q"] for q in queries)
 
 
 def test_transport_backs_off_a_429_and_gives_up_as_a_throttle():

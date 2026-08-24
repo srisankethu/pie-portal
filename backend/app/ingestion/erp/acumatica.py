@@ -26,7 +26,7 @@ from ..errors import (IngestionError, SourceAuthError, SourceScopeError,
                       SourceWriteUnknown)
 from ..source import SkipPredicate
 from ..write_settle import settle_by_read
-from .base import (ConnectorSpec, CredentialMaterial, DocumentTally, Field,
+from .base import (EXTERNAL_REF_MAX, ConnectorSpec, CredentialMaterial, DocumentTally, Field,
                    Permission, WrittenDocument, first, in_window, iso_date,
                    money, quote_literal, register, same_reference)
 from .transport import RestTransport
@@ -174,13 +174,6 @@ def _wrapped(value: Any) -> Any:
     return {"value": value}
 
 
-#: The reference goes out as ``CustomerOrderNbr``. Acumatica's own limit for it
-#: is not something the documentation settles, so this is the smallest cap
-#: *documented* by any system this platform writes to — Business Central's 35.
-#: Refusing a reference no known field is proven to hold is the safe direction:
-#: a reference silently truncated on the way in is one the settle read cannot
-#: find, and "cannot find" is the branch that authorises sending again.
-_EXTERNAL_REF_MAX = 35
 
 #: A quote, in Acumatica's own vocabulary for the SalesOrder entity.
 _QUOTE_ORDER_TYPE = "QT"
@@ -414,10 +407,10 @@ class AcumaticaSource:
             raise SourceWriteRefused(
                 "This quote is not attached to an Acumatica customer, so there "
                 "is no account to create it against. Nothing was sent.")
-        if len(reference) > _EXTERNAL_REF_MAX:
+        if len(reference) > EXTERNAL_REF_MAX:
             raise SourceWriteRefused(
                 f"The reference {reference!r} is longer than the "
-                f"{_EXTERNAL_REF_MAX} characters this platform will send as a "
+                f"{EXTERNAL_REF_MAX} characters this platform will send as a "
                 f"customer order number, so it could not be read back reliably. "
                 f"Nothing was sent.")
         if not lines:

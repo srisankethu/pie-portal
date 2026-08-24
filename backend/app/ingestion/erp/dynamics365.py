@@ -29,7 +29,7 @@ from ..errors import (IngestionError, SourceAuthError, SourceScopeError,
                       SourceWriteUncertain, SourceWriteUnknown)
 from ..source import SkipPredicate
 from ..write_settle import settle_by_read
-from .base import (ConnectorSpec, CredentialMaterial, DocumentTally, Field,
+from .base import (EXTERNAL_REF_MAX, ConnectorSpec, CredentialMaterial, DocumentTally, Field,
                    Permission, WrittenDocument, iso_date, money,
                    quote_literal, register, same_reference)
 from .transport import RestTransport
@@ -266,8 +266,6 @@ def _is_trade(payload: dict[str, Any]) -> bool:
     return str(payload.get("status") or "").strip().lower() not in _EXCLUDED_STATUS
 
 
-#: Business Central stores externalDocumentNumber in a 35-character field.
-_EXTERNAL_DOC_MAX = 35
 
 
 class BusinessCentralSource:
@@ -378,10 +376,10 @@ class BusinessCentralSource:
         # BC caps externalDocumentNumber at 35 characters and silently refuses
         # past it. Checked here rather than trusted: a truncated reference is a
         # reference that cannot be looked up, which defeats the whole protocol.
-        if len(reference) > _EXTERNAL_DOC_MAX:
+        if len(reference) > EXTERNAL_REF_MAX:
             raise SourceWriteRefused(
                 f"The reference {reference!r} is longer than the "
-                f"{_EXTERNAL_DOC_MAX} characters Business Central stores, so it "
+                f"{EXTERNAL_REF_MAX} characters Business Central stores, so it "
                 f"could not be read back. Nothing was sent.")
         if not lines:
             raise SourceWriteRefused(

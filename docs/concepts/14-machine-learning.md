@@ -100,7 +100,7 @@ purpose-built ones.
 | Table | The label it carries | Who supplies it | Arrives |
 |---|---|---|---|
 | `payment_applications` | `paid_on − invoice_due_date` | **Nobody — it is arithmetic over synced dates** | Automatically |
-| `quote_outcomes` | `status` | **Zoho's estimate status** — `invoiced`/`accepted` is a won label the business maintains for its own accounting (§5.1). Not ingested today | Automatically, once read |
+| `quote_outcomes` | `status` | **Zoho's estimate status** — `invoiced`/`accepted` is a won label the business maintains for its own accounting (§5.1). Ingested since `a344f6d` | Automatically |
 | `quote_outcomes` | `loss_reason`, `lost_to` | A salesperson — the ERP has a `declined` flag and no field for *why* | Only if asked |
 | `inbound_line_dispositions` | `disposition` (QUOTED / NO_STOCK / …) | Whoever worked the enquiry | Only if asked |
 | `decisions` | `status`, `human_action` | Whoever worked the queue | Only if worked |
@@ -416,9 +416,12 @@ Books API:
 | Status `declined` — **lost**, carrying `declined_date` | **6** |
 | Draft / sent / viewed / expired / pending — **outcome unrecorded** | **~215** |
 
-Zoho estimates are **not ingested at all** — there is no `list_estimates` in
-`ingestion/zoho_client.py` — so none of this reaches `QuoteOutcome`, which is
-fed only by hand today.
+Zoho estimates were **not ingested at all** when this was written — there was no
+`list_estimates` in `ingestion/zoho_client.py`, so none of it reached
+`QuoteOutcome`, which was fed only by hand. That was the finding, and it is
+fixed: `a344f6d` reads them. The paragraph stays in the past tense on purpose, the
+way `CLAUDE.md`'s own grid rule does — the measurement is what made the case,
+and deleting it would leave the recommendation with nothing behind it.
 
 Three things follow, and they are not what the earlier draft said:
 
@@ -813,16 +816,20 @@ different owners and only the first is a backlog:
 
 ### 7a. Platform work — the actual backlog
 
-1. **Ingest Zoho estimates.** A `list_estimates` in `ingestion/zoho_client.py`
-   mapping `invoiced`/`accepted` → WON with `accepted_date`, `declined` → LOST
-   with `declined_date`, and **everything else to unknown, never to LOST**
-   (§5.1). This is the highest-value item in the document: it turns ~55–70 won
-   labels from a habit nobody has into a connector method, and it brings the
-   business's own `cf_quote_type` / `cf_pricing_type` taxonomy with it for free.
-2. **Suggest, on the ~215 quotes with no recorded outcome.** Rank by value and
-   age past expiry, and ask the one question Zoho has no field for: *why*. This
-   is the read-then-suggest shape, and it is the only part of quote outcomes that
-   needs a person.
+1. ~~**Ingest Zoho estimates.**~~ **SHIPPED in `a344f6d`.** `list_estimates` maps
+   `invoiced`/`accepted` → WON and `declined` → LOST, each requiring its decision
+   date, and **everything else to unrecorded, never to LOST** — enforced by a
+   `classify_outcome` whose signature has no expiry-date parameter, so the
+   tempting mistake is unreachable rather than merely guarded. Synced facts live
+   in their own derived table; the human row keeps the loss reason and points at
+   a document, so the sync's write set and a person's are disjoint *tables*
+   rather than disjoint columns. It brought the business's own `cf_quote_type` /
+   `cf_pricing_type` taxonomy with it, as predicted.
+2. ~~**Suggest, on the quotes with no recorded outcome.**~~ **SHIPPED in `a344f6d`.**
+   `commercial/insight/unrecorded.py` ranks them by value at stake and age past
+   expiry; a quote with no expiry has an *unanswerable* age rather than a zero,
+   and one with no total is counted but never valued at zero. What remains is the
+   capture screen that actually asks *why* — see the open ends below.
 3. **Promote the unset-reorder-level count to a headline.** The reading is built
    (`below_reorder`, `BELOW_REORDER`, `no_policy`); what is missing is that a
    group which can never contain a row currently says nothing about why.
@@ -843,6 +850,22 @@ different owners and only the first is a backlog:
    once item 4 has given it something to be evaluated against.
 9. **The Kaplan–Meier over inter-order intervals** (§5.6) — last, and only on
    §8's trigger.
+
+**Open ends left by 1 and 2, recorded so they are not rediscovered:**
+
+- **The capture screen.** `unrecorded.py` ranks the pile; nothing yet asks the
+  question. That screen is what turns six recorded losses into the §5.1
+  contingency table, and it is the next thing worth building.
+- **`AmbiguousQuoteDocument` has no router mapping**, because no endpoint reaches
+  the ERP-only path yet. Whoever lands the capture screen maps it — 409, as
+  `MissingLossReason` and `InvalidTransition` already are.
+- **The outcome pointer carries no `(connector, connection_id)` qualifier.** An
+  ambiguous reference is refused rather than guessed, so nothing is destroyed —
+  but in a two-book org whose ERP reuses quote ids, *neither* person can record
+  an outcome. Accepted deliberately: nothing calling it today can say which book
+  it means, so the column would be NULL from every current caller. It belongs
+  with the capture screen that can supply it, and `_sole_erp_quote`'s docstring
+  says so. Not reachable on this book — Zoho estimate ids are globally unique.
 
 ### 7b. Suggestions the platform should make — not tasks it should carry
 
@@ -876,7 +899,7 @@ condition, and all of them are checkable rather than arguable:
 
 | Technique | Build it when |
 |---|---|
-| Quote win/loss ranker (§5.1) | Estimates ingested (§7a.1), then ≥100 losses with reasons **and** the loss-reason table has stopped being surprising. Six losses are on record today, so this is quarters away, not weeks |
+| Quote win/loss ranker (§5.1) | Estimates are ingested (§7a.1, done), so the gate is now ≥100 losses with reasons **and** a loss-reason table that has stopped being surprising. Six losses are on record, and the capture screen does not exist yet — quarters away, not weeks |
 | Inter-order survival (§5.6) | `/api/v1/internal/detector-outcomes` bands dormancy HIGH over a worked quarter |
 | Queue LTR (§5.22) | Same trigger, **and** moving `queue_margin_drop_pp` did not fix it |
 | Enquiry text models (§5.18, §5.21) | `inbound_lines` holds a few thousand rows with live dispositions |

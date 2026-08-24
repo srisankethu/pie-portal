@@ -41,6 +41,7 @@ nothing, macOS/Linux and Windows, in about 15 minutes.
 | [Role reviews](docs/reviews/) | What each role actually experienced, end to end, and the disposition of every finding |
 | [Application engineering](docs/concepts/01-application-engineering.md) | How much of the item master reaches the PIE catalogue, measured — and what that does and does not justify building |
 | [Confidence and input completeness](docs/concepts/13-confidence-and-input-completeness.md) | Whether `row_confidence 0.00` over the item master is the engine failing or the engine abstaining, settled by suppressing one column |
+| [Machine learning](docs/concepts/14-machine-learning.md) | Which grain this book can be learned at, what each technique needs against what is there, and why a fitted model discloses cost more freely than a rule |
 
 ---
 

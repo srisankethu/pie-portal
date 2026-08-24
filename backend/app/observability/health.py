@@ -174,42 +174,7 @@ def register_health_checks(engine: Any, session_factory: Any) -> None:
         DEGRADED. The thread name mirrors the one ``start_scheduler`` gives it;
         it is in the message so a rename shows up as a nameable false alarm
         rather than a silent amber light.
-
-        **A follower is HEALTHY.** Only one worker holds the scheduler lease at
-        a time and the rest tick without acting, so following is the normal
-        state for all but one process — reporting it as a fault would make
-        this component amber on most workers and flap depending on which one
-        answered, which is exactly the noise this check was fixed to stop
-        making. (The component checks are served by
-        ``/api/v1/internal/observability/health`` via ``check_all``, not by
-        ``/api/health``, which reads migration state directly.)
-
-        The verdict stays the local, per-process fact: is this worker's thread
-        up. Which worker leads is *context*, appended to the message so an
-        operator reading two workers' health can tell one story from two.
-
-        The lease is read, never written. A health check that claims a lease
-        would elect a leader by being asked how things are, and one that could
-        only pass while the database accepts writes would duplicate
-        ``check_database`` badly.
-
-        That read *is* guarded, unlike the rest of this function, and the
-        exception it swallows is the point rather than an oversight. The
-        verdict above is the local per-process fact — is this worker's thread
-        up — and the lease only decorates it. Letting the read decide would
-        make the scheduler component UNHEALTHY on the ordinary BEHIND state
-        (§4): deploy this code against a database still at ``a7syncguard``,
-        ``process_leases`` does not exist yet, and an operator is told the
-        scheduler is broken when the thread is running fine and the real answer
-        — a pending migration — is already reported by ``check_database`` and
-        by ``/api/health``, which reports migration state directly and is the
-        endpoint an operator is pointed at for it. Misattributing a schema
-        gap to a healthy subsystem
-        is the "degrade, not lie" rule read backwards.
         """
-        from sqlalchemy.exc import SQLAlchemyError
-
-        from .. import lease
         from ..config import settings
         from ..ingestion import scheduler as sync_scheduler
 
@@ -225,28 +190,23 @@ def register_health_checks(engine: Any, session_factory: Any) -> None:
                 "Auto-sync scheduler was started but no live 'sync-scheduler' "
                 "thread remains"
             )
-        try:
-            with session_factory() as session:
-                leader = lease.held_by(session, sync_scheduler.LEASE_NAME)
-        except SQLAlchemyError as e:
-            # See the docstring: the thread is up, which is this check's
-            # verdict. Name what could not be read rather than dropping the
-            # context silently — an operator who sees this alongside a red
-            # `database` component has the whole story.
-            role = f"leadership unreadable ({type(e).__name__})"
-        else:
-            if leader is None:
-                # Nobody holds it — the gap between a leader lapsing and the
-                # next tick claiming it. Named rather than smoothed over: if it
-                # persists across several checks, no worker is scheduling.
-                role = "lease unheld; the next tick claims it"
-            elif leader == lease.holder_id():
-                role = "this worker holds the lease"
-            else:
-                role = f"following {leader}"
+        # Which process is the one that ticks. Every process runs the thread —
+        # that is what makes the schedule survive a restart of whichever one
+        # held it — so "running" here is not the same claim as "this deployment
+        # is scheduling". A live thread with no holder anywhere means the lease
+        # is stuck, and reporting it healthy would be the benign default.
+        from .. import leases
+
+        with session_factory() as session:
+            holder = leases.current_holder(session, sync_scheduler.LEASE)
+        if holder is None:
+            return HealthStatus.DEGRADED, (
+                f"Auto-sync scheduler thread is up but nothing holds the "
+                f"{sync_scheduler.LEASE} lease, so no process is ticking"
+            )
         return HealthStatus.HEALTHY, (
-            f"Auto-sync scheduler running (tick {sync_scheduler.TICK_SECONDS}s; "
-            f"{role})"
+            f"Auto-sync scheduler running (tick {sync_scheduler.TICK_SECONDS}s); "
+            f"ticker is {holder}"
         )
 
     def check_backups() -> tuple[HealthStatus, Optional[str]]:
@@ -404,8 +364,46 @@ def register_health_checks(engine: Any, session_factory: Any) -> None:
             "policies apply to"
         )
 
+    def check_queue() -> tuple[HealthStatus, Optional[str]]:
+        """Whether background work is being drained, and whether any of it died.
+
+        Three facts, in the order they change what an operator does: a
+        deployment that does not use the queue has nothing to report; one that
+        does but has no live worker is not running its syncs at all; and a
+        dead-lettered message is work that has failed every attempt and is
+        waiting for a person. Dead letters are DEGRADED rather than UNHEALTHY —
+        the platform is serving, one job is not — and they are *named*, because
+        a queue that reports healthy while holding failed work is the benign
+        default §1 warns about.
+        """
+        from ..config import settings
+        from ..messaging import depth, worker_running
+
+        if not settings.queue_dispatch and not settings.queue_worker_enabled:
+            return HealthStatus.HEALTHY, (
+                f"Queue not in use: SYNC_DISPATCH is {settings.SYNC_DISPATCH!r}"
+            )
+        if not worker_running():
+            return HealthStatus.UNHEALTHY, (
+                "Queue dispatch is on but no live 'queue-worker' thread "
+                "remains: queued jobs will not run"
+            )
+        with session_factory() as session:
+            counts = depth(session)
+        if counts.get("DEAD_LETTER"):
+            return HealthStatus.DEGRADED, (
+                f"{counts['DEAD_LETTER']} queued message(s) failed every "
+                f"attempt and are waiting for a person; "
+                f"{counts.get('PENDING', 0)} pending"
+            )
+        return HealthStatus.HEALTHY, (
+            f"Queue worker running ({counts.get('PENDING', 0)} pending, "
+            f"{counts.get('CLAIMED', 0)} in flight)"
+        )
+
     health.register("database", check_database)
     health.register("pie_parser", check_pie_parser)
     health.register("scheduler", check_scheduler)
+    health.register("queue", check_queue)
     health.register("backups", check_backups)
     health.register("tenant_isolation", check_tenant_isolation)

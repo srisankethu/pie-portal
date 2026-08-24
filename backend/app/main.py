@@ -139,6 +139,18 @@ async def lifespan(_app: FastAPI):
         start_scheduler()
     except Exception:  # noqa: BLE001
         log.exception("auto-sync scheduler failed to start; manual sync still works.")
+
+    # The queue worker. Declines unless this deployment dispatches through the
+    # queue (see settings.SYNC_DISPATCH), so a default install starts nothing
+    # and behaves exactly as it did. Non-fatal for the same reason as the
+    # scheduler: a platform that cannot drain its queue is degraded, and one
+    # that will not start over it is down.
+    try:
+        from .messaging import start_worker
+
+        start_worker()
+    except Exception:  # noqa: BLE001
+        log.exception("queue worker failed to start; queued jobs will wait.")
     yield
 
 
@@ -356,13 +368,18 @@ def health(response: Response) -> dict:
     """
     from .db import engine
     from .migration_state import inspect_database
-    from .schema_check import describe, missing_columns
+    from .schema_check import describe, gaps_for
 
     body: dict = {"ok": True, "service": "pie-portal", "version": app.version}
     try:
         state = inspect_database(engine)
         body["migration"] = state.to_dict()
-        gap = describe(missing_columns(engine))
+        # ``gaps_for`` rather than ``missing_columns``: the reflection behind it
+        # is ~70 statements, this endpoint is polled by a load balancer, and the
+        # answer is remembered against the revision ``state`` just read — so a
+        # migrated deployment still goes green on the next poll without a
+        # restart. See schema_check._gap_cache.
+        gap = describe(gaps_for(engine, state.current))
         body["schema_gap"] = gap
         # Which dialect this process is actually serving, and how full its
         # pool is. Informational, never part of `ok`: a busy pool is load, not

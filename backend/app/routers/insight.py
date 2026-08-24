@@ -62,7 +62,10 @@ from ..commercial.insight import series
 from ..state.engine import latest_as_of, load as load_state
 from ..state.reducers.trade import CUSTOMER_MONTH
 from ..state import engine as state_engine
-from ..state.reducers.cash import CASH_SCHEDULE
+# The direction spellings belong to the reducer that writes them, both here
+# and in `insight/cashflow`. Two string literals would be two places to
+# drift from one fold.
+from ..state.reducers.cash import CASH_SCHEDULE, IN as CASH_IN, OUT as CASH_OUT
 from ..state.reducers.commitments import COMMITMENTS
 from ..state.reducers.inventory import INVENTORY
 from ..state.reducers import receivables as receivables_reducer
@@ -665,6 +668,40 @@ def _settlements(session: Session, org: str,
     ]
 
 
+def _cash_movements(session: Session, org: str) -> list[cashflow.Movement]:
+    """Every payment this book has actually made or received, at payment grain.
+
+    Two tables, one shape. ``PaymentReceipt`` is money in and
+    ``VendorPaymentDoc`` is money out — both are the payment itself rather than
+    the documents it cleared, which is the grain cash is denominated in. The
+    application tables beside them are the grain *lateness* is measured at, and
+    reading cash off those would silently drop an advance, an unapplied receipt
+    and every payment made to a supplier the contact pull never returned.
+
+    Nothing is filtered by party. A payment out to a vendor nobody can name
+    still left the account.
+
+    **Unbounded by date, deliberately.** A window filter here would be cheaper
+    and would make ``before_window`` a lie: the reader is told how much moved
+    before the sheet opened, and a query that fetched one extra week would
+    answer that with one extra week's worth. Same read as ``_settlements``
+    above, which this endpoint already does unbounded.
+    """
+    receipts = session.scalars(
+        select(models.PaymentReceipt).where(
+            models.PaymentReceipt.organization_id == org)).all()
+    made = session.scalars(
+        select(models.VendorPaymentDoc).where(
+            models.VendorPaymentDoc.organization_id == org)).all()
+    return (
+        [cashflow.Movement(on=r.date, direction=CASH_IN,
+                           amount=Decimal(str(r.amount or 0)))
+         for r in receipts]
+        + [cashflow.Movement(on=p.date, direction=CASH_OUT,
+                             amount=Decimal(str(p.amount or 0)))
+           for p in made])
+
+
 def _annotate_with_credit(session: Session, org: str, rows: list[dict]) -> None:
     """Put each account's standing against its limit onto its payment row.
 
@@ -1194,6 +1231,7 @@ def _decided_quotes(outcomes: list[models.QuoteOutcome],
             customer_label=(customer_names.get(row.customer_id or "")
                             or row.customer_ref or "Unattributed"),
             won=won,
+            ever_sent=row.sent_at is not None,
             loss_reason=("" if won
                          else (row.loss_reason or LOSS_REASON_NOT_RECORDED)),
             decided_on=clock.aware(row.decided_at).date(),
@@ -1445,23 +1483,30 @@ def cash_projection(weeks: int = Query(cashflow.WEEKS, ge=1, le=26),
                         missing="receivable or payable")
     agreed = _agreed_terms(session, org)
     settled_bills, _unattributed = _bill_settlements(session, org, terms=agreed)
-    return _envelope(
-        cashflow.project(
-            state_engine.load(session, org, CASH_SCHEDULE, on),
-            state_engine.load(session, org, COMMITMENTS, on),
-            state_engine.load(session, org, RECEIVABLES, on),
-            # The state's own build date, not today: a projection dated today
-            # from a fold that last ran on Friday would silently age its own
-            # first bucket into the overdue column over the weekend.
-            as_of=on, weeks=weeks,
-            lags=payments.lags(_settlements(session, org)),
-            payable_lags=payments.lags(settled_bills),
-            # Read from the bills rather than the fold, because the fold has
-            # already aggregated away the individual due dates a re-dating needs
-            # to measure itself against. The money still comes from the fold —
-            # this only says how far each supplier's week moves.
-            term_shifts=vendor_terms.shifts(_open_bills(session, org), agreed)),
-        th=th)
+    projection = cashflow.project(
+        state_engine.load(session, org, CASH_SCHEDULE, on),
+        state_engine.load(session, org, COMMITMENTS, on),
+        state_engine.load(session, org, RECEIVABLES, on),
+        # The state's own build date, not today: a projection dated today from a
+        # fold that last ran on Friday would silently age its own first bucket
+        # into the overdue column over the weekend.
+        as_of=on, weeks=weeks,
+        lags=payments.lags(_settlements(session, org)),
+        payable_lags=payments.lags(settled_bills),
+        # Read from the bills rather than the fold, because the fold has already
+        # aggregated away the individual due dates a re-dating needs to measure
+        # itself against. The money still comes from the fold — this only says
+        # how far each supplier's week moves.
+        term_shifts=vendor_terms.shifts(_open_bills(session, org), agreed))
+    # The route that arrived at the datum, over the same number of weeks the
+    # projection looks forward. Read at the payment grain rather than from the
+    # settlements above: those are documents being cleared, and three kinds of
+    # real cash — an advance, an unapplied receipt, a payment to a supplier who
+    # never resolved — have no document row to be counted on. See
+    # ``cashflow.actual``.
+    projection["actual"] = cashflow.actual(
+        _cash_movements(session, org), as_of=on, weeks=weeks)
+    return _envelope(projection, th=th)
 
 
 # ── the cash conversion cycle ───────────────────────────────────────────────

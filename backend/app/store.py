@@ -23,11 +23,10 @@ from typing import Any, Dict, List, Optional
 
 from . import pricing
 from .pie_service import Bands, Candidate, Resolution, pie_service
+from .ingestion.errors import (SourceUnavailable, SourceWriteRefused,
+                               SourceWriteUnknown)
 from .zoho import (
     ZohoService,
-    ZohoUnavailable,
-    ZohoWriteRefused,
-    ZohoWriteUnknown,
 )
 
 _REL_LABELS = {
@@ -418,13 +417,6 @@ class Quote:
     reference: str = ""
     lines: List[Line] = field(default_factory=list)
     savedAt: Optional[str] = None
-    #: The Zoho estimate this quote has already produced, and the priced content
-    #: it was produced from. Nothing remembered either, so pressing the send
-    #: button three times created three estimates and the screen looked
-    #: identical after the first as before it.
-    estimateNumber: Optional[str] = None
-    estimateLineCount: Optional[int] = None
-    estimateFingerprint: Optional[str] = None
 
     @property
     def customer_ref(self) -> str:
@@ -529,13 +521,10 @@ class Quote:
             # zero. §1 asks for absent, and here the difference is not cosmetic:
             # see `_filter_counts`.
             **({"marginFloor": self._margin_floor()} if mgmt else {}),
-            # What has already gone to Zoho from this quote, so the screen can
-            # say so rather than leaving an unchanged primary button as the only
-            # evidence that anything happened.
-            "estimate": ({"number": self.estimateNumber,
-                          "lineCount": self.estimateLineCount,
-                          "current": self.estimateFingerprint == _priced_fingerprint(self)}
-                         if self.estimateNumber else None),
+            # ``estimate`` is added by the router, from the persisted document
+            # rather than from this object. It used to be three attributes
+            # here, which a restart erased — so a quote that had been sent
+            # looked unsent, and the send button offered to send it again.
         }
 
     def _filter_counts(self, mgmt: bool) -> Dict[str, int]:
@@ -581,7 +570,7 @@ class Quote:
 def _priced_fingerprint(quote: "Quote") -> str:
     """What a Zoho estimate is built from, as one comparable string.
 
-    Exactly the fields that reach ``zoho.create_estimate`` — product, quantity
+    Exactly the fields that reach ``QuoteWriter.create_sales_quotes`` — product, quantity
     and rate, per line, in order. Everything else about a quote can move without
     changing what was sent, and a fingerprint that also covered, say, the filter
     counts would call an unchanged quote changed.
@@ -711,7 +700,7 @@ class QuoteStore:
             return
         try:
             item = zoho.get_item(ln.supplyCode)
-        except ZohoUnavailable:
+        except SourceUnavailable:
             # A live adapter can fail mid-intake — a revoked token, a throttle,
             # a price Zoho sent in a shape that is not a number. That is the
             # BOOKS OFFLINE state on this line, not a 500 for the whole RFQ.
@@ -824,7 +813,7 @@ class QuoteStore:
         ln.createPhase = "progress"
         try:
             item = zoho.create_item(ln.supplyCode, ln.supplyDesc or ln.reqDesc, ln.listPrice)
-        except (ZohoWriteRefused, ZohoWriteUnknown, ZohoUnavailable) as e:
+        except (SourceWriteRefused, SourceWriteUnknown, SourceUnavailable) as e:
             ln.createPhase = "failed"
             return str(e)
         ln.inBooks = True
@@ -854,13 +843,6 @@ class QuoteStore:
     def priced_fingerprint(quote: Quote) -> str:
         """The quote's sendable content, for deciding whether a re-send is one."""
         return _priced_fingerprint(quote)
-
-    @staticmethod
-    def record_estimate(quote: Quote, *, number: str, line_count: int,
-                        fingerprint: str) -> None:
-        quote.estimateNumber = number
-        quote.estimateLineCount = line_count
-        quote.estimateFingerprint = fingerprint
 
 
 store = QuoteStore()

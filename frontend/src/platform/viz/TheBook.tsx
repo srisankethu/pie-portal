@@ -20,22 +20,20 @@ import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
 import { useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { scaleBand, scaleLinear } from "d3-scale";
 import { money } from "../../money";
 import { formatDate } from "../../when";
 import { papi } from "../api";
 import { abilityFor } from "../ability";
 import { EntityName } from "../EntityName";
-import { ChartTip, InlineLink, MetricCard, StatusChip, VarianceIndicator } from "../kit";
+import { InlineLink, MetricCard, StatusChip } from "../kit";
 import type { Tone } from "../kit";
 import { CompanyFilter, useCompanyFilter } from "../CompanyFilter";
 import { DataGrid, numeric } from "../DataGrid";
 import type { ColDef } from "../DataGrid";
 import type { EntityOrigin, PlatformSession, Sourced } from "../types";
-import { Figure, Panel, ValueAxis, stateOf } from "./Panel";
-import { Seg } from "./Seg";
+import { CashJourney } from "./CashJourney";
+import { Figure, Panel, stateOf } from "./Panel";
 import { pct, pp, useInsight } from "./useInsight";
-import { compactMoney, useMeasure } from "./useMeasure";
 
 type Row = Record<string, unknown>;
 
@@ -59,22 +57,15 @@ function Unavailable({ items }: { items: Row[] }) {
 
 // ── Cash: what the committed book does next ─────────────────────────────────
 //
-// The one forward-looking view in the product, and it is forward-looking only
-// in the sense that it reads *dates already written on documents*. Every rupee
-// on this chart is an invoice raised or a bill received; nothing is a forecast
-// of trade that has not happened, and nothing is weighted by how likely it is
-// to be paid.
+// In `CashJourney.tsx` now, drawn as a plan-view channel either side of a
+// datum at today rather than as bars with a band over them. It reads the same
+// `/insight/cashflow` response and makes the same refusals; what it added is
+// the route behind the datum — cash that actually moved — which is the half of
+// "where is this book going" that a forward-only chart could not answer.
 //
-// **It says movement, never position.** PIE reads payments, not balances, so
-// there is no opening figure to run a balance from. "The committed book moves
-// cash by −₹4.2L over thirteen weeks, worst in week six" is answerable;
-// "you run out on 12 October" is not, and the difference is the whole reason
-// this panel is trustworthy.
-//
-// Four totals sit beside the chart rather than inside it — overdue, past the
-// horizon, undated, and open orders. Each is real money that cannot honestly be
-// drawn as a bar in a particular week, and a projection whose parts do not add
-// up to the book is a projection people stop trusting.
+// The panel is imported rather than left here because this file is already the
+// shelf, the suppliers and the settlement histories, and a fifth screen in it
+// was the reason nobody could find the fourth.
 
 // ── Self-funding: what we kept, against what the growth had to be paid for ──
 //
@@ -190,350 +181,6 @@ function SelfFunding({ session }: { session: PlatformSession }) {
         <p className="viz-muted viz-footnote">{String(data?.limit_note ?? "")}</p>
       </Stack>
     </Panel>
-  );
-}
-
-const HORIZONS: [string, string][] = [["13", "13 weeks"], ["26", "26 weeks"]];
-
-function CashProjection({ session }: { session: PlatformSession }) {
-  const [weeks, setWeeks] = useState("13");
-  const { data, loading, error, reload } = useInsight(
-    "cashflow",
-    () => papi.cashflow(session.token, Number(weeks)), [session.token, weeks]);
-  const [ref, room] = useMeasure<HTMLDivElement>();
-
-  const buckets = rows(data?.buckets);
-  const overdue = (data?.overdue ?? {}) as Row;
-  const undated = (data?.undated ?? {}) as Row;
-  const beyond = (data?.beyond_horizon ?? {}) as Row;
-  const unscheduled = (data?.unscheduled ?? {}) as Row;
-  const unattributed = (data?.unattributed ?? {}) as Row;
-  const net = num(data?.net_over_horizon);
-  const lowest = num(data?.lowest_cumulative);
-  // The band, named for what each corner costs the week rather than for how
-  // fast anybody is: `worst` is customers at their slowest *and* us paying at
-  // our fastest, which is the genuinely deepest trough now that both sides can
-  // move. `requirement` is still taken from the server, which minimises across
-  // all three rather than leaving the client to assume which one wins.
-  const scenarios = (data?.scenarios ?? {}) as Record<string, Row>;
-  const basis = (data?.basis ?? {}) as Row;
-  const requirement = num(data?.requirement);
-  const best = rows(scenarios.best?.buckets);
-  const expected = rows(scenarios.expected?.buckets);
-  const worst = rows(scenarios.worst?.buckets);
-  const measuredShare = num(basis.share_measured);
-  const outflowShare = num(basis.outflow_share_measured);
-  const outflowShifted = Boolean(basis.outflow_shifted);
-  const banded = expected.length > 0 && (measuredShare > 0 || outflowShare > 0);
-
-  /** Named beside the chart, never drawn on it. Zero rows are dropped rather
-   *  than shown as "₹0" — an empty row teaches a reader to skip the list. */
-  const aside = [
-    { key: "overdue", label: "Already due, not settled",
-      why: "Real, and not week-one movement — being overdue is what disproves that.",
-      inflow: num(overdue.inflow), outflow: num(overdue.outflow) },
-    { key: "beyond", label: `Dated past ${formatDate(data?.horizon_ends_on as string)}`,
-      why: "Counted so the parts still add up to the book.",
-      inflow: num(beyond.inflow), outflow: num(beyond.outflow) },
-    { key: "undated", label: "No terms on record",
-      why: "Owed, with no due date to place it. Defaulting one would invent terms nobody gave.",
-      inflow: num(undated.inflow), outflow: num(undated.outflow) },
-    { key: "orders", label: "Open orders",
-      why: "Committed, and carrying no due date — only the invoice or bill that follows has one.",
-      inflow: num(unscheduled.open_sales_value),
-      outflow: num(unscheduled.open_purchase_value) },
-  ].filter((r) => r.inflow > 0 || r.outflow > 0);
-
-  return (
-    <Panel
-      title="Cash from the committed book"
-      question="What does what we have already promised do to cash"
-      state={stateOf(loading, error, data?.empty_reason as string)}
-      error={error} emptyReason={data?.empty_reason as string} onRetry={reload} wide
-      actions={
-        <div className="seg-controls">
-          <Seg label="Horizon" value={weeks} onChange={setWeeks} options={HORIZONS} />
-        </div>
-      }
-    >
-      <p className="viz-headline">
-        Over {String(data?.weeks ?? "")} weeks the committed book moves cash by{" "}
-        <strong>{net >= 0 ? "+" : "−"}{money(Math.abs(net))}</strong>
-        {lowest < 0 && Boolean(data?.lowest_week_starts_on) && (
-          <> · deepest at <strong>−{money(Math.abs(lowest))}</strong> in the week
-          of {formatDate(String(data?.lowest_week_starts_on))} if everyone pays
-          to terms</>
-        )}.{" "}
-        {/* The number somebody funding a week actually wants. Due dates assume
-            every party moves on the day; the headline says what the worst
-            measured timing needs, and the band shows the space between. */}
-        {banded && requirement < lowest && (
-          <>
-            At the speed money has actually moved, the deepest point is{" "}
-            <strong>−{money(Math.abs(requirement))}</strong>
-            {Boolean(scenarios.worst?.lowest_week_starts_on) && (
-              <> in the week of{" "}
-              {formatDate(String(scenarios.worst?.lowest_week_starts_on))}</>
-            )}.{" "}
-          </>
-        )}
-        <span className="viz-muted">
-          Movement, not a balance — the platform reads payments, never bank
-          balances, so there is no position to run this from.
-          {banded && (
-            <>
-              {" "}The band covers {pct(measuredShare)} of the money coming in
-              {outflowShifted && <> and {pct(outflowShare)} of the money going
-              out</>}: the rest has too little settled history to measure and is
-              left on its due date rather than given a made-up one.{" "}
-              {outflowShifted
-                ? "The worst case is the corner, not the slow line — customers "
-                  + "at their slowest and us paying at our fastest, because "
-                  + "money leaving later is what the week needs less of."
-                : "Bills do not move: nothing has settled often enough to "
-                  + "measure how this book pays its suppliers, so the outflow "
-                  + "sits on its due dates and the best case is conservative."}
-            </>
-          )}
-        </span>
-      </p>
-
-      <div ref={ref}>
-        <Figure
-          caption={banded
-            ? "Bars are invoices and bills falling due, in the week their own document names. The shaded band is the running total between the best and worst case for the week: best is customers at their fastest and us paying at our slowest, worst is the reverse. The line inside it is everybody at their own median. Nothing here is a forecast of trade that has not happened — it is the same committed money, on the dates the payers have used."
-            : "Bars are invoices and bills falling due, in the week their own document names. The line is the running total of those bars, from zero. Nothing here is a forecast of trade that has not happened."}
-          summary={buckets.map((b) =>
-            `Week of ${formatDate(b.starts_on as string)}: in ${money(num(b.inflow))}, out ${money(num(b.outflow))}, running ${money(num(b.cumulative))}`,
-          ).join("; ")}
-          table={
-            <DataGrid<Row>
-              ariaLabel="Committed cash by week"
-              pageSize={26}
-              filters={false}
-              rows={buckets}
-              columns={[
-                {
-                  field: "starts_on", headerName: "Week of", width: 150, flex: 0,
-                  valueFormatter: (p) => (p.value ? formatDate(String(p.value)) : "—"),
-                },
-                numeric<Row>("inflow", "Money in", (v) => money(v),
-                             { width: 160, flex: 0 }),
-                numeric<Row>("outflow", "Money out", (v) => money(v),
-                             { width: 160, flex: 0 }),
-                numeric<Row>("net", "Net", (v) =>
-                  `${v >= 0 ? "+" : "−"}${money(Math.abs(v))}`,
-                  { width: 160, flex: 0 }),
-                numeric<Row>("cumulative", "Running total", (v) => money(v), {
-                  width: 180, flex: 0,
-                  headerTooltip: "The bars added up from zero, week by week. "
-                    + "Movement, not a balance — the platform reads payments, "
-                    + "never bank balances.",
-                }),
-              ]}
-            />
-          }
-        >
-          {room.width > 0 && buckets.length > 0 && (
-            <CashChart buckets={buckets} width={room.width}
-                       currency={String(data?.currency ?? "INR")}
-                       best={banded ? best : []}
-                       expected={banded ? expected : []}
-                       worst={banded ? worst : []} />
-          )}
-        </Figure>
-      </div>
-
-      {aside.length > 0 && (
-        <div className="tier3-list">
-          <h4>Not on the timeline, and why</h4>
-          <ul className="cash-aside">
-            {aside.map((r) => (
-              <li key={r.key}>
-                <span className="cash-aside-head">
-                  <strong>{r.label}</strong>
-                  {/* "in" and "out" stay as words — they are the direction,
-                      and an arrow alone would leave the reader to work out
-                      which way is which. The colour now comes from the theme. */}
-                  <span className="cash-aside-figures">
-                    {r.inflow > 0 && <VarianceIndicator value={r.inflow} label="in" />}
-                    {r.outflow > 0 && <VarianceIndicator value={-r.outflow} label="out" />}
-                  </span>
-                </span>
-                <span className="viz-muted">{r.why}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      {/* The one reconciliation worth stating out loud: the schedule counts an
-          obligation whether or not its party resolved, and the receivables and
-          supplier screens cannot. Saying so is what stops two screens with
-          different totals looking like a bug in one of them. */}
-      {(num(unattributed.inflow) > 0 || num(unattributed.outflow) > 0) && (
-        <p className="viz-muted viz-footnote">
-          {money(num(unattributed.inflow) + num(unattributed.outflow))} of this
-          belongs to a customer or supplier the contact pull did not return. It
-          is real money and it is counted here; it simply has no name to file it
-          under, which is why the Customers and Suppliers screens show less.
-        </p>
-      )}
-    </Panel>
-  );
-}
-
-/** Weekly in-and-out against a zero rule, with the running total over it.
- *
- *  Two bars per week rather than one net bar: a week that takes ₹5L in and
- *  pays ₹5L out is not the same week as one where nothing happens, and a net
- *  bar draws them identically. */
-function CashChart({
-  buckets, width, currency, best = [], expected = [], worst = [],
-}: {
-  buckets: Row[]; width: number; currency: string;
-  /** The same committed book at the two corners and the middle: `best` is
-   *  customers at their fastest and us paying at our slowest, `worst` the
-   *  reverse. Empty when nothing is measured, in which case the chart is
-   *  exactly what it was: bars and one running line. */
-  best?: Row[]; expected?: Row[]; worst?: Row[];
-}) {
-  const H = 260;
-  const PAD = { top: 14, right: 10, bottom: 46, left: 62 };
-
-  const flows = buckets.flatMap((b) => [num(b.inflow), -num(b.outflow)]);
-  const running = buckets.map((b) => num(b.cumulative));
-  const bestRun = best.map((b) => num(b.cumulative));
-  const expectedRun = expected.map((b) => num(b.cumulative));
-  const worstRun = worst.map((b) => num(b.cumulative));
-  const banded = expectedRun.length === buckets.length
-    && bestRun.length === buckets.length && worstRun.length === buckets.length;
-  // The scale has to hold the whole band, or the worst case — the one number
-  // this chart exists to show — is drawn off the bottom of its own axis.
-  const y = scaleLinear()
-    .domain([Math.min(...flows, ...running, ...worstRun, ...bestRun, 0),
-             Math.max(...flows, ...running, ...worstRun, ...bestRun, 0)])
-    .range([H - PAD.bottom, PAD.top])
-    .nice();
-  const band = scaleBand<number>()
-    .domain(buckets.map((_, i) => i))
-    .range([PAD.left, Math.max(PAD.left + 1, width - PAD.right)])
-    .paddingInner(0.34);
-  // Two bars share a band, so each gets half of it minus a hairline gap.
-  const barW = Math.max(2, band.bandwidth() / 2 - 1);
-  const zero = y(0);
-
-  return (
-    <svg width={width} height={H} viewBox={`0 0 ${width} ${H}`}
-         className="viz-svg" role="presentation">
-      <ValueAxis scale={y} x0={PAD.left} x1={width - PAD.right}
-                 format={(v) => compactMoney(v, currency)} />
-
-      {buckets.map((b, i) => {
-        const left = band(i) ?? PAD.left;
-        const inflow = num(b.inflow);
-        const outflow = num(b.outflow);
-        const label = String(b.starts_on ?? "");
-        const net = num(b.net);
-        // One tooltip for the whole week, on a transparent strip covering the
-        // band. Per-bar tooltips would mean hovering a 6px rectangle to learn
-        // what a week does, and the out-bar of a week with no outflow does not
-        // exist to hover at all.
-        const tip = (
-          <>
-            <strong>Week of {formatDate(label)}</strong>
-            <br />
-            Money in {money(inflow)}
-            <br />
-            Money out {money(outflow)}
-            <br />
-            Net {net >= 0 ? "+" : "−"}{money(Math.abs(net))} this week
-            <br />
-            <span style={{ opacity: 0.85 }}>
-              Running total from zero: {money(num(b.cumulative))}
-            </span>
-            <br />
-            <span style={{ opacity: 0.8 }}>
-              Invoices and bills already raised — not a forecast
-            </span>
-          </>
-        );
-        return (
-          <g key={i}>
-            {inflow > 0 && (
-              <rect x={left} y={y(inflow)} width={barW}
-                    height={Math.max(1, zero - y(inflow))}
-                    className="cash-bar cash-bar-in" rx="1.5" />
-            )}
-            {outflow > 0 && (
-              <rect x={left + barW + 2} y={zero} width={barW}
-                    height={Math.max(1, y(-outflow) - zero)}
-                    className="cash-bar cash-bar-out" rx="1.5" />
-            )}
-            <ChartTip title={tip}>
-              <rect x={left} y={PAD.top} width={band.bandwidth()}
-                    height={Math.max(1, H - 26 - PAD.top)}
-                    className="cash-hit" />
-            </ChartTip>
-            {/* Every fourth week carries a date. Thirteen dates at this width
-                overlap into a grey smear, and a label nobody can read is worse
-                than none because it still costs the space. */}
-            {i % 4 === 0 && (
-              <text x={left + band.bandwidth() / 2} y={H - 26}
-                    textAnchor="middle" className="viz-axis">
-                {formatDate(label)}
-              </text>
-            )}
-          </g>
-        );
-      })}
-
-      <line x1={PAD.left} x2={width - PAD.right} y1={zero} y2={zero}
-            stroke="var(--viz-rule)" strokeWidth="1" />
-      {/* The band between the two corners. Drawn under the lines so neither is
-          obscured, and filled rather than outlined because its *width* is the
-          message: a narrow band is a book that can be planned, a wide one is
-          not. */}
-      {banded && (
-        <path
-          className="cash-band"
-          d={[
-            ...bestRun.map((v, i) =>
-              `${i === 0 ? "M" : "L"}${(band(i) ?? PAD.left) + band.bandwidth() / 2},${y(v)}`),
-            // Back along the worst edge, so the two lines close into one shape.
-            ...worstRun.map((_, j) => {
-              const i = worstRun.length - 1 - j;
-              return `L${(band(i) ?? PAD.left) + band.bandwidth() / 2},${y(worstRun[i])}`;
-            }),
-            "Z",
-          ].join(" ")}
-        />
-      )}
-      {/* The running total. A line rather than a third bar: it is a level at a
-          point in time, not a quantity arriving in that week.
-
-          On terms — every document settled on the day it says — kept as the
-          reference line because it is the only one that asserts nothing beyond
-          what the documents say. Note it is no longer the best case: a book
-          that habitually pays its suppliers late does better than its terms. */}
-      <polyline
-        className="cash-running"
-        points={buckets.map((_, i) =>
-          `${(band(i) ?? PAD.left) + band.bandwidth() / 2},${y(running[i])}`).join(" ")}
-      />
-      {banded && (
-        <polyline
-          className="cash-running cash-running-expected"
-          points={expectedRun.map((v, i) =>
-            `${(band(i) ?? PAD.left) + band.bandwidth() / 2},${y(v)}`).join(" ")}
-        />
-      )}
-      <text x={PAD.left} y={H - 8} className="viz-axis-note">
-        {banded
-          ? "running total from zero · solid: on terms · dashed: how money actually moves · band: best case to worst"
-          : "running total, from zero"}
-      </text>
-    </svg>
   );
 }
 
@@ -1282,7 +929,7 @@ export function PaymentsScreen({
           money at its due date; the panel below is the measured evidence
           about whether that date is honoured, which is the right order to
           read them in. */}
-      {mayReadCommitments && <CashProjection session={session} />}
+      {mayReadCommitments && <CashJourney session={session} />}
       {/* Thirteen weeks of committed movement, then the year behind it. The
           projection says what the book does next; this says whether last
           year's growth was paid for out of what the book kept. */}

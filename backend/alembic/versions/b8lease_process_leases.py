@@ -1,57 +1,40 @@
-"""A named, expiring lease so one process at a time does cluster-wide work.
+"""One process at a time ticks the schedule, across processes rather than within one.
 
-The deployment runs two uvicorn workers, so every worker starts its own
-auto-sync scheduler thread and both tick in the same minute. ``a7syncguard``
-made that harmless — the partial unique indexes on ``sync_runs`` let only one
-run start — but harmless is not free: the loser spends a query and writes a
-confusing log line, every tick, forever.
+`ingestion/scheduler` reasoned that its tick was safe because "this deployment
+is one uvicorn process"; the image has shipped `--workers 2` throughout, so two
+threads have always ticked, starting together and landing at nearly the same
+instant. Both can read "no sync running" and both queue a pull of the same
+books. This table is the lease that makes one of them the decider.
 
-What this is *not*: sufficient on its own for the hash-chained audit log that
-follows. That needs a single writer, and an expiring lease with no fence token
-cannot promise one — a leader frozen past its expiry can wake believing it still
-leads. ``app/lease.py`` says so at length; read it before building on this.
-
-``process_leases`` is the row behind ``app/lease.py``: one row per lease name,
-holder and expiry, claimed by a conditional UPDATE whose rowcount decides. A
-table rather than ``pg_try_advisory_lock`` because dev and test run SQLite and
-an advisory lock does not exist there — the production primitive would be the
-one nothing tests.
-
-No ``organization_id``: this is about processes, not tenants. Scope, where a
-lease needs any, lives in its name.
+Derived and disposable: dropping it costs the schedule a couple of minutes of
+confusion and nothing else.
 
 Revision ID: b8lease
-Revises: a7syncguard
+Revises: a7queue
 Create Date: 2026-08-23
 """
 from alembic import op
 import sqlalchemy as sa
 
 revision = "b8lease"
-down_revision = "a7syncguard"
+down_revision = "a7queue"
 branch_labels = None
 depends_on = None
 
 
 def upgrade() -> None:
-    # Columns written out literally rather than imported from the models (§4):
-    # this runs against schemas from months ago, and the models describe today.
     op.create_table(
         "process_leases",
-        # The lease *is* the row, so the name is the primary key and the
-        # database is what makes "one holder" true rather than a convention.
-        sa.Column("name", sa.String(length=64), nullable=False),
-        # Nullable: a lease may exist and be free. Widths match the models.
-        sa.Column("holder", sa.String(length=128), nullable=True),
-        sa.Column("acquired_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("expires_at", sa.DateTime(timezone=True), nullable=True),
-        sa.PrimaryKeyConstraint("name"),
+        sa.Column("name", sa.String(64), primary_key=True),
+        sa.Column("holder", sa.String(128), nullable=False),
+        sa.Column("acquired_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("renewed_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
     )
+    op.create_index("ix_process_leases_expires_at", "process_leases",
+                    ["expires_at"])
 
 
 def downgrade() -> None:
-    # Safe to drop outright: the table holds no history and no tenant data, and
-    # a lease that vanishes is a lease nobody holds — the code that reads it is
-    # gone in the same rollback, and the work it gated goes back to running on
-    # every worker, which is where it was before this revision.
+    op.drop_index("ix_process_leases_expires_at", table_name="process_leases")
     op.drop_table("process_leases")

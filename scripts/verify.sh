@@ -236,6 +236,28 @@ else
       printf '      provision, so it will not create the non-bypassing role the\n'
       printf '      row-level-security tests need. That check will SKIP.\n'
     fi
+
+    # The queue, on the dialect that can actually race. Its claim is a
+    # conditional UPDATE so that two processes take different messages, and
+    # that property is untestable on the SQLite fixture: it hands every session
+    # one shared connection, so a thread race there tests the pool, not the
+    # queue. Here each session is a real connection — so this is the only place
+    # the concurrency test in test_queue_operations is not skipped.
+    #
+    # Only the messaging suites, not the whole backend: `docs/postgres.md` has
+    # the loop for running everything on Postgres, and adding four minutes to
+    # every gate run is how a gate stops being run.
+    if (cd backend && PIE_TEST_DATABASE_URL="$PG_URL" $PY -m pytest -q \
+          tests/decision_platform/test_message_queue.py \
+          tests/decision_platform/test_queue_operations.py) >/dev/null 2>&1; then
+      pass "queue behaves on Postgres, concurrent claim included"
+    else
+      printf '      re-running to show the failure:\n'
+      (cd backend && PIE_TEST_DATABASE_URL="$PG_URL" $PY -m pytest -q \
+          tests/decision_platform/test_message_queue.py \
+          tests/decision_platform/test_queue_operations.py) 2>&1 | tail -25
+      fail "queue suites on Postgres"
+    fi
   fi
 
   # ── 7. The documented backup, actually performed ───────────────────────────

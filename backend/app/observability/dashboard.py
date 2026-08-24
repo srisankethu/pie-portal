@@ -30,7 +30,7 @@ from typing import Any, Iterable, Optional
 from sqlalchemy.orm import Session
 
 from ..clock import aware as _aware, iso as _iso
-from ..lease import holder_id
+from ..leases import holder_id
 from ..ingestion import jobs
 from .capacity import CapacityCalculator
 from .health import health
@@ -471,10 +471,16 @@ class DashboardService:
             org_counts = (
                 self.session.query(
                     models.Signal.organization_id,
-                    func.count(models.Signal.id).label("signals_count"),
+                    # ``signal_id``, not ``id``: the model has never had an
+                    # ``id``, so this raised AttributeError on every call and
+                    # the broad handler below turned it into an empty tenant
+                    # list with a logged traceback — a panel that reported
+                    # "no tenants" while looking healthy. Found by counting the
+                    # queries this endpoint issues, which was none.
+                    func.count(models.Signal.signal_id).label("signals_count"),
                 )
                 .group_by(models.Signal.organization_id)
-                .order_by(func.count(models.Signal.id).desc())
+                .order_by(func.count(models.Signal.signal_id).desc())
                 .limit(limit)
                 .all()
             )

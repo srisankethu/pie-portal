@@ -18,6 +18,7 @@ key that disagrees produces a lookup miss, and a miss is indistinguishable from
 """
 from __future__ import annotations
 
+import hashlib
 from typing import Any, Dict, Optional
 
 from sqlalchemy.orm import Session
@@ -79,3 +80,27 @@ class OrgMappingStore:
 
     def __len__(self) -> int:
         return len(self._by_key)
+
+    def fingerprint(self) -> str:
+        """A value that changes when what this store answers changes.
+
+        Read by the resolution cache: an engine result depends on the mappings
+        the engine could see, so the cache key has to carry them. Content, not
+        a row count or a timestamp — a confirmation that supersedes another
+        leaves the count identical while changing the answer, and a clock is
+        not evidence about content.
+
+        Cheap by construction: this is one pass over a snapshot that was just
+        built from the database, and it is computed once per resolution batch,
+        not once per line.
+        """
+        digest = hashlib.sha256()
+        for key in sorted(self._by_key):
+            row = self._by_key[key]
+            for field in (key, row.target_record_id, row.relationship):
+                # Every field terminated rather than joined: a separator that
+                # can appear inside a value makes two different mapping sets
+                # hash the same, which is a stale cache with no way to see it.
+                digest.update(str(field).encode("utf-8"))
+                digest.update(b"\x00")
+        return digest.hexdigest()[:32]

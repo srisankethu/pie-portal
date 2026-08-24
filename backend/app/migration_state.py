@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
@@ -109,8 +110,19 @@ def _script_directory():
     return ScriptDirectory.from_config(cfg)
 
 
+@lru_cache(maxsize=1)
 def head_revision() -> Optional[str]:
-    """The revision this codebase ends at, read from the scripts on disk."""
+    """The revision this codebase ends at, read from the scripts on disk.
+
+    Memoised for the life of the process, because that is exactly the lifetime
+    of the answer: ``_script_directory`` re-parses ``alembic.ini`` and walks
+    every migration file, and the files it walks are code — a change to them
+    arrives as a new process. Uncached it was 16 ms of filesystem work on every
+    ``/api/health`` poll, which is a load balancer's whole reason to call.
+
+    ``head_revision.cache_clear()`` for a test that writes a migration and
+    expects this to notice it.
+    """
     try:
         return _script_directory().get_current_head()
     except Exception:  # noqa: BLE001

@@ -249,6 +249,9 @@ backend/app/
                  normalisation, connections, credentials. A new source's
                  knowledge lives in its own erp/ module; the sync stays
                  connector-blind.
+  enquiry/       Inbound demand: every enquiry line as it arrived, and how
+                 each ended. Canonical, not derived — a re-sync rebuilds
+                 nothing here. Raw customer text; never imports ai/.
   identity/      Cross-connector record linking. Never merges, only links.
   trust/         Tenant keys, name vault, pseudonyms, break-glass, disclosure,
                  erasure. Infrastructure — imports neither commercial/ nor ai/.
@@ -275,6 +278,12 @@ Rules with teeth:
 - A new Zoho concern goes in `ingestion/`, not in the router that first needed it.
 - Anything a screen renders as a number was computed in `commercial/` or
   `signals/` and persisted with a `thresholds_version`.
+- `state/` is **derived by contract**: Zoho is the system of record and a
+  complete re-sync rebuilds it from nothing. Something a re-sync *cannot*
+  rebuild is not state, whatever its shape. An enquiry that arrived as a
+  WhatsApp message exists in no ERP, which is why `enquiry/` is its own
+  package and not a third pattern inside `state/` — it borrows that
+  package's supersede convention and none of its lifecycle.
 
 ---
 
@@ -546,7 +555,11 @@ in parallel · `tsc -b` and the production build · `alembic upgrade head` **on 
 empty database**, then the drift test and the single-head check — first on
 SQLite, then again on a disposable **PostgreSQL** (the dialect production runs;
 provisioned by `scripts/pg_sandbox.sh`, skipped with a visible note where no
-server binaries exist) · and, on that same server, the **restore drill**
+server binaries exist) · on that same server, the **row-level security** suite
+against a role that is neither superuser nor owner (the only place the policies
+are not inert) and the two **queue** suites (the only place a concurrent claim
+is a real race rather than one shared connection) · and, still on that server,
+the **restore drill**
 (`scripts/restore_drill.py`): the backup procedure in `docs/hosting.md`
 performed rather than described — seed, `pg_dump`, restore into an empty
 database, then compare every row, every `Decimal` money Σ, every audit chain

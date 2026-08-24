@@ -1,13 +1,13 @@
 """A forked chain must be impossible, not unlikely.
 
-``app/lease.py`` refuses, in writing, to be the single writer a hash chain
+``app/leases.py`` refuses, in writing, to be the single writer a hash chain
 needs: it has no fence token, so a leader can hold an unexpired claim while
 frozen and resume after another worker has taken it, acting in the belief that
 it still leads. Its closing paragraph says what to do instead — enforce the
 ordering where the write lands — and this file is the check that we did.
 
 Real threads and a real database file in WAL mode, the idiom
-``test_process_lease.py`` and ``test_parallel_sync.py`` already use and for the
+``test_scheduler_lease.py`` and ``test_parallel_sync.py`` already use and for the
 same reason: none of this reproduces in-memory or single-threaded. An in-memory
 SQLite database is private to the connection that opened it, so two "concurrent"
 appenders against one would be two chains that never meet.

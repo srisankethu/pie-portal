@@ -371,7 +371,7 @@ def quote_submission_block(session: Session, org: str, quote_id: str,
     """Why this quote may not be sent, or None if it may.
 
     Called from the endpoint that actually sends. A gate evaluated in the
-    browser is a suggestion; this one is the reason ``create_estimate`` returns
+    browser is a suggestion; this one is the reason ``create_sales_quotes`` returns
     403 rather than an estimate number.
 
     The check runs against the *latest* snapshot per line, because a line

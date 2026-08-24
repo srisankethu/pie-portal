@@ -226,6 +226,15 @@ def payloads_for(session: Session, organization_id: str,
         .limit(limit)).all())
 
 
+#: The two unreadable answers, named once so :func:`reveal` and
+#: :func:`reveal_many` cannot describe the same state two ways — and so the
+#: distinction the docstring below insists on survives a copy.
+DESTROYED_NOTE = "(unavailable — this organization's data key has been destroyed)"
+UNREADABLE_NOTE = ("(unavailable — this payload was encrypted under a data key "
+                   "that can no longer be read; the record survives, its "
+                   "contents do not)")
+
+
 def reveal(session: Session, row: models.ModelPayload) -> str:
     """The plaintext of one logged payload, for the tenant that owns it.
 
@@ -239,11 +248,46 @@ def reveal(session: Session, row: models.ModelPayload) -> str:
     try:
         return keys.decrypt_for(session, row.organization_id, row.payload_ciphertext)
     except keys.KeyDestroyed:
-        return "(unavailable — this organization's data key has been destroyed)"
+        return DESTROYED_NOTE
     except keys.KeyUnavailable:
-        return ("(unavailable — this payload was encrypted under a data key "
-                "that can no longer be read; the record survives, its contents "
-                "do not)")
+        return UNREADABLE_NOTE
+
+
+def reveal_many(session: Session, rows: Iterable[models.ModelPayload]
+                ) -> dict[str, str]:
+    """The plaintext of a page of payloads, opening the data key once.
+
+    Same answers as calling :func:`reveal` per row — including the two
+    distinguishable unreadable states — but the key is read and unwrapped once
+    for the page rather than once per payload. A hundred rows was a hundred
+    key-row reads.
+
+    Rows are grouped by organization because nothing here promises a page holds
+    only one; today's caller is owner-scoped and it always does.
+    """
+    rows = list(rows)
+    out: dict[str, str] = {}
+    by_org: dict[str, list[models.ModelPayload]] = {}
+    for row in rows:
+        by_org.setdefault(row.organization_id, []).append(row)
+
+    for organization_id, group in by_org.items():
+        try:
+            cipher = keys.cipher_for(session, organization_id)
+        except keys.KeyDestroyed:
+            for row in group:
+                out[row.payload_id] = DESTROYED_NOTE
+            continue
+        except keys.KeyUnavailable:
+            for row in group:
+                out[row.payload_id] = UNREADABLE_NOTE
+            continue
+        for row in group:
+            try:
+                out[row.payload_id] = cipher.decrypt(row.payload_ciphertext)
+            except keys.KeyUnavailable:
+                out[row.payload_id] = UNREADABLE_NOTE
+    return out
 
 
 def findings_summary(rows: Iterable[models.ModelPayload]) -> dict[str, int]:

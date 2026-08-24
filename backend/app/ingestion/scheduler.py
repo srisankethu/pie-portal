@@ -22,30 +22,24 @@ modification stamp. The expensive-looking design is the cheap one.
 The cadence lives in ``Organization.config["auto_sync_hours"]`` — per tenant,
 edited from the sync screen, ``0`` meaning off — with
 ``settings.SYNC_AUTO_HOURS`` as the default for an organization that has never
-chosen. Threads, not a broker, for the reason ``jobs`` gives.
+chosen.
 
-**Every worker runs its own tick, and one of them acts on it.** The deployment
-is two uvicorn workers by default, so this thread exists twice and both copies
-find the same organization due in the same minute. Correctness was never the
-problem — the tick does not start pulls itself, it calls ``jobs.start_sync``,
-and the partial unique indexes on ``sync_runs`` allow only one active run per
-connection, so the loser is handed the winner's run. What that leaves is waste:
-a query and a puzzling log line on every worker but one, every minute, forever.
-So the loop takes a ``lease`` before it acts, and a worker that does not hold it
-does nothing this tick.
+**One ticker, enforced in the database.** This paragraph used to say the tick
+was safe because "this deployment is one uvicorn process", and that a
+multi-process one would need a database lock. The image has shipped
+``--workers 2`` throughout, so that premise was never true: two threads ticked,
+starting together and therefore landing within the same instant, and
+``start_sync``'s guard is an in-process lock plus a read of the active runs with
+no constraint behind it. Both could read "nothing running" and both queue a pull
+of the same books — double the ERP calls for one job's worth of data, and a
+progress counter that cannot say which run it belongs to. Rare at three tenants;
+routine at a hundred and fifty.
 
-**The thread still starts on every worker.** Not starting it on followers is the
-tempting version and it is wrong twice over. The health check
-(``observability/health.check_scheduler``) reads *this process* for a live
-``sync-scheduler`` thread, so a deployment of followers would report DEGRADED on
-every worker but the leader, and ``/api/v1/internal/observability/health`` would flap depending on which
-one answered. And a running thread on every worker is what makes failover free:
-when the leader's process dies its lease lapses and another worker's
-already-running loop claims it on its next tick — no supervisor, no restart.
-
-The lease goes in the loop, never inside ``tick``. ``tick`` is a decision
-function tested directly against a session, and a primitive that reaches for the
-database before answering could not be.
+So the loop holds the ``sync-scheduler`` lease (``app/leases.py``) and only
+ticks while it does. Every process still runs the thread — which is what makes
+this survive a restart of whichever one happened to be holding it — but only
+the holder decides anything. The decision function below did not change, and
+neither did what a tick does; what changed is how many processes do it.
 """
 from __future__ import annotations
 
@@ -54,10 +48,10 @@ import threading
 from datetime import date, datetime, timedelta
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .. import lease
+from .. import leases
 from ..clock import aware as _aware, now as _now
 from ..config import settings
 from ..domain import models
@@ -69,28 +63,19 @@ log = logging.getLogger("pie_portal.sync_scheduler")
 #: the *first* scheduled run after a restart, not about load.
 TICK_SECONDS = 60
 
-#: The lease this loop competes for. One name for the whole cluster: the tick
-#: sweeps every organization, so there is nothing per-tenant to divide.
-LEASE_NAME = "sync-scheduler"
-
-#: How long a claim lives, in ticks.
-#:
-#: The arithmetic, stated the way ``config`` states the pool's. Longer than a
-#: tick or the leader would lose its own lease between renewals and the workers
-#: would trade leadership every minute; three ticks leaves two whole missed
-#: renewals of slack, so a tick that runs long or a moment of database
-#: contention does not cause a hand-off. Short enough that a dead leader is
-#: replaced promptly: worst case is the full lease (180s) plus the survivor's
-#: wait for its next tick (60s), so at most four minutes with nobody
-#: scheduling — against a cadence measured in hours, and with the manual Sync
-#: button untouched throughout. Raise it and failover slows; lower it past one
-#: tick and leadership thrashes.
-LEASE_SECONDS = TICK_SECONDS * 3
-
 _started = threading.Event()
 #: Set to stop the loop — today only tests do, so a suite that started the
 #: thread does not leak ticks into the tests after it.
 _stop = threading.Event()
+
+#: The lease that decides which process ticks. One name, because there is one
+#: schedule; every process runs the thread and only the holder acts.
+LEASE = "sync-scheduler"
+
+#: Comfortably more than a tick, so a slow pass does not lose the lease to a
+#: peer mid-tick, and short enough that a killed holder stops the schedule for
+#: two ticks rather than an afternoon.
+LEASE_TTL = timedelta(seconds=TICK_SECONDS * 3)
 
 
 def auto_sync_hours(org: Optional[models.Organization]) -> int:
@@ -172,7 +157,14 @@ def next_run_at(session: Session, org: models.Organization) -> Optional[datetime
 
 def tick(session: Session) -> int:
     """One pass over every organization with a connected book. Returns how many
-    syncs were queued — the observable a test can hold onto."""
+    syncs were queued — the observable a test can hold onto.
+
+    Three queries, whatever the tenant count. It used to be two *per
+    organization* — a row read for the config and a sort of that org's runs for
+    the last start — which at 150 connected books and a wake a minute is most
+    of a million statements a day spent asking a question whose answer is
+    almost always "no". Asking it for everybody at once is the same question.
+    """
     from . import jobs
 
     started = 0
@@ -180,15 +172,24 @@ def tick(session: Session) -> int:
         select(models.ZohoConnection.organization_id)
         .where(models.ZohoConnection.enabled.is_(True))
         .distinct()).all()
+    if not org_ids:
+        return 0
+
+    # Every cadence, and every organization's most recent start, in one query
+    # each. `max(started_at)` rather than an ordered limit per org: the question
+    # is only "when did the newest one begin".
+    orgs = {o.organization_id: o for o in session.scalars(
+        select(models.Organization)
+        .where(models.Organization.organization_id.in_(org_ids)))}
+    last_started = dict(session.execute(
+        select(models.SyncRun.organization_id,
+               func.max(models.SyncRun.started_at))
+        .where(models.SyncRun.organization_id.in_(org_ids))
+        .group_by(models.SyncRun.organization_id)).all())
+
     for org_id in org_ids:
-        org = session.get(models.Organization, org_id)
-        hours = auto_sync_hours(org)
-        last = session.scalar(
-            select(models.SyncRun.started_at)
-            .where(models.SyncRun.organization_id == org_id)
-            .order_by(models.SyncRun.started_at.desc())
-            .limit(1))
-        if not due(last, hours):
+        hours = auto_sync_hours(orgs.get(org_id))
+        if not due(last_started.get(org_id), hours):
             continue
         # `start_sync` re-checks for an active run under its own lock, and the
         # unique indexes on `sync_runs` re-check across workers, so a pull a
@@ -204,33 +205,11 @@ def tick(session: Session) -> int:
     return started
 
 
-def run_once(session: Session, *, holder: Optional[str] = None) -> bool:
-    """One pass of the loop's body: take the lease, and tick only if it is ours.
-
-    Returns whether this process led. Separated from the thread so the thing
-    that actually changed is testable — two workers ticking in the same minute
-    and only one of them acting. Inside the closure it could only be exercised
-    by starting two schedulers, which one process cannot do (``_started`` is
-    per-process, and rightly).
-
-    ``holder`` is a parameter rather than read from the module for the same
-    reason: a test playing both workers has one process and therefore one
-    ``lease.holder_id()``, so without it both passes would renew the same claim
-    and both would lead. Production never passes it, and ``lease.hold`` resolves
-    ``None`` to this process's identity.
-    """
-    if not lease.hold(session, LEASE_NAME, seconds=LEASE_SECONDS, holder=holder):
-        return False
-    tick(session)
-    session.commit()
-    return True
-
-
 def start_scheduler() -> bool:
     """Start the daemon thread, once per process. Returns whether it started.
 
     Every worker starts one — see the module docstring. Starting is not
-    leading: the loop takes ``LEASE_NAME`` each tick and only the holder acts.
+    leading: the loop takes ``LEASE`` each tick and only the holder acts.
 
     Guarded on the live source: a fixture deployment has nothing to keep fresh,
     and a scheduler that "syncs" sample data every six hours is noise in the
@@ -242,34 +221,48 @@ def start_scheduler() -> bool:
         return False
     _started.set()
 
+    holder = leases.holder_name()
+
     def loop() -> None:
         from ..db import SessionLocal
 
-        #: Whether this process led on the previous pass. Only for logging: a
-        #: line every tick saying "still not the leader" is noise on every
-        #: worker but one, while the moment leadership *moves* is the line an
-        #: operator wants and cannot reconstruct from a lease that reads the
-        #: same whether it was just claimed or renewed.
-        leading = False
-
+        held = False
         while not _stop.is_set():
             try:
                 session = SessionLocal()
                 try:
-                    led = run_once(session)
-                    if led and not leading:
-                        log.info("auto-sync lease acquired by %s", lease.holder_id())
-                    elif leading and not led:
-                        log.info("auto-sync lease lost by %s; another worker "
-                                 "is scheduling", lease.holder_id())
-                    leading = led
+                    # Asked every tick rather than once at startup: this both
+                    # renews the lease while we hold it and picks it up when
+                    # the process that held it has gone.
+                    now_held = leases.acquire(session, LEASE, holder,
+                                              ttl=LEASE_TTL)
+                    if now_held and not held:
+                        log.info("auto-sync scheduler is the ticker (%s)", holder)
+                    held = now_held
+                    if held:
+                        tick(session)
+                        session.commit()
                 finally:
                     session.close()
             except Exception:  # noqa: BLE001 — the schedule must survive one bad tick
                 log.exception("auto-sync tick failed; next tick in %ss", TICK_SECONDS)
             _stop.wait(TICK_SECONDS)
 
+        # Hand it on rather than making the next process wait out the expiry.
+        # Best-effort: a process being killed does not get to run this, which is
+        # exactly why the lease has an expiry at all.
+        if held:
+            try:
+                session = SessionLocal()
+                try:
+                    leases.release(session, LEASE, holder)
+                finally:
+                    session.close()
+            except Exception:  # noqa: BLE001 — shutdown must not fail over this
+                log.exception("could not release the auto-sync lease")
+
     threading.Thread(target=loop, name="sync-scheduler", daemon=True).start()
-    log.info("auto-sync scheduler running (tick %ss, lease %ss, default every %dh)",
-             TICK_SECONDS, LEASE_SECONDS, settings.SYNC_AUTO_HOURS)
+    log.info("auto-sync scheduler running (tick %ss, default every %dh); "
+             "whether this process is the one that ticks depends on the %s lease",
+             TICK_SECONDS, settings.SYNC_AUTO_HOURS, LEASE)
     return True

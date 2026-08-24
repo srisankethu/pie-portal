@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from ..config import settings
-from ..lease import holder_id
+from ..leases import holder_id
 
 log = logging.getLogger("pie_portal.observability.metrics")
 
@@ -476,7 +476,7 @@ class MetricRegistry:
         and to carry the identity of the process that produced it:
 
         - ``scope`` — ``"worker"``. Not the deployment.
-        - ``worker`` — this process, from ``lease.holder_id()``: the same
+        - ``worker`` — this process, from ``leases.holder_id()``: the same
           ``host:pid:rand`` string the scheduler lease is arbitrated with,
           reused rather than reinvented so one process has one name everywhere
           it appears. Stable for the life of the process and re-derived after a

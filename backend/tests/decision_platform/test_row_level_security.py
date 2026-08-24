@@ -368,6 +368,14 @@ EXPECTED_POLICIED = {
     # unauthenticated path that reaches it.
     "organizations", "users", "user_sessions",
     "audit_entries", "audit_chain_heads", "oauth_states",
+    # d4rls — three tables that landed on `main` while these policies were
+    # being written. All three hold something a neighbouring tenant reading it
+    # would be a leak: the customer's own enquiry text, their document number
+    # in their own ERP, and a per-organization job payload. The queue worker
+    # drains across tenants on the privileged engine, so it is not bound by
+    # this and does not need an exemption.
+    "inbound_lines", "inbound_line_dispositions", "quote_documents",
+    "queued_messages",
 }
 
 #: Tenant-scoped and deliberately uncovered — and after `d3rls` there is only

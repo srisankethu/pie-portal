@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from ..authz import Principal, require_manager_or_owner, require_owner
 from ..config import settings
 from ..db import get_session
+from ..domain import models
 from ..ingestion.sync import SyncService, get_source
 from ..seed import ensure_org_and_users
 from ..signals.engine import run_detectors
@@ -469,3 +470,148 @@ def observability_tenants(
     from ..observability.dashboard import DashboardService
     service = DashboardService(session, principal.organization_id)
     return service.get_tenant_usage(limit)
+
+
+# ── the background queue ─────────────────────────────────────────────────────
+#
+# A queued job that nothing can look up is a job that answers "message_id" and
+# then goes silent — which is what `POST /commercial/recompute` with
+# `background: true` did before these. Three endpoints, in the order an
+# operator needs them: what is in the queue, what one message did, and putting
+# a failed one back.
+#
+# Scoped to the principal's organization throughout. A queued message carries a
+# tenant, and a queue view that showed every tenant's work would be a
+# cross-tenant read on the one surface built for reading.
+
+@router.get("/queue")
+def queue_state(
+    principal: Principal = Depends(require_manager_or_owner),
+    session: Session = Depends(get_session),
+    limit: int = Query(20, ge=1, le=100),
+) -> dict:
+    """What this organization has queued, in flight, done and dead-lettered.
+
+    ``dead_letters`` is listed separately rather than left for the reader to
+    filter: it is the only part of this response that is somebody's job.
+    """
+    from sqlalchemy import select as _select
+
+    from ..messaging import depth, worker_running
+    from ..messaging.handlers import topics
+
+    org = principal.organization_id
+
+    def _rows(statuses: tuple, count: int) -> list[dict]:
+        rows = session.scalars(
+            _select(models.QueuedMessage)
+            .where(models.QueuedMessage.organization_id == org,
+                   models.QueuedMessage.status.in_(statuses))
+            .order_by(models.QueuedMessage.created_at.desc())
+            .limit(count)).all()
+        return [_message_dict(r) for r in rows]
+
+    # Which process is the one ticking the schedule, so "why has nothing
+    # synced" has an answer on the same screen as "what is queued".
+    from .. import leases
+    from ..ingestion.scheduler import LEASE as SCHEDULER_LEASE
+
+    return {
+        "dispatch": settings.SYNC_DISPATCH,
+        "scheduler_ticker": leases.current_holder(session, SCHEDULER_LEASE),
+        # Whether anything in *this* process drains the queue. False on an API
+        # replica beside a dedicated worker is correct, not a fault — which is
+        # why it is reported rather than judged here.
+        "worker_running": worker_running(),
+        "topics": topics(),
+        "depth": depth(session, organization_id=org),
+        "recent": _rows(("PENDING", "CLAIMED", "DONE"), limit),
+        "dead_letters": _rows(("DEAD_LETTER",), limit),
+    }
+
+
+def _message_dict(row: models.QueuedMessage) -> dict:
+    """One message, without its payload.
+
+    The payload is the argument to a job and can name anything the caller put
+    in it; this endpoint exists to answer "did it run", and a listing that
+    prints arguments is a listing that eventually prints something it should
+    not. ``GET /queue/{message_id}`` shows one on purpose.
+    """
+    from .. import clock
+
+    return {
+        "message_id": row.message_id,
+        "topic": row.topic,
+        "status": row.status,
+        "attempts": row.attempts,
+        "max_attempts": row.max_attempts,
+        "available_at": clock.iso(row.available_at),
+        "created_at": clock.iso(row.created_at),
+        "finished_at": clock.iso(row.finished_at),
+        "claimed_by": row.claimed_by,
+        "last_error": row.last_error,
+    }
+
+
+def _owned_message(session: Session, principal: Principal,
+                   message_id: str) -> models.QueuedMessage:
+    """One message belonging to this principal's organization, or 404.
+
+    A message from another tenant is answered as *missing* rather than
+    forbidden: "that id is not yours" still confirms the id exists.
+    """
+    row = session.get(models.QueuedMessage, message_id)
+    if row is None or row.organization_id != principal.organization_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such queued message")
+    return row
+
+
+@router.get("/queue/{message_id}")
+def queue_message(
+    message_id: str,
+    principal: Principal = Depends(require_manager_or_owner),
+    session: Session = Depends(get_session),
+) -> dict:
+    """One message, with the payload it was queued with."""
+    row = _owned_message(session, principal, message_id)
+    return {**_message_dict(row), "payload": row.payload or {}}
+
+
+@router.post("/queue/{message_id}/retry")
+def queue_retry(
+    message_id: str,
+    principal: Principal = Depends(require_owner),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Put a dead-lettered message back on the queue.
+
+    Owner only, and only for a message that has actually failed: this is a
+    person asserting that the cause is fixed. Retrying something still PENDING
+    or CLAIMED would mean two workers on one job, so it is refused with the
+    state it is in rather than quietly doing nothing.
+    """
+    from ..messaging import queue as queue_api
+
+    row = _owned_message(session, principal, message_id)
+    try:
+        queue_api.requeue(session, row)
+    except ValueError as e:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(e)) from e
+    return {**_message_dict(row), "note": "Requeued. A worker will pick it up."}
+
+
+@router.get("/observability/caches")
+def observability_caches(
+    principal: Principal = Depends(require_manager_or_owner),
+) -> dict:
+    """What every in-process cache is doing — size, hits, misses, hit rate.
+
+    Process-local by construction (see ``app/cache.py``), so these are this
+    replica's numbers, not the deployment's. Said here rather than left to be
+    misread: two API containers legitimately report different figures, and a
+    hit rate of zero on a freshly-started one is a cold cache, not a fault.
+    """
+    from .. import cache
+
+    return {"caches": cache.stats()}

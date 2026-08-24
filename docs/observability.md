@@ -354,7 +354,7 @@ The payload now says so:
   used to carry was an unbounded dict — removed, the way `Histogram`'s was.
 
 - `worker` is this process's identity — `host:pid:rand`, the same string the
-  scheduler lease is arbitrated with (`app/lease.py:holder_id`), so one process
+  scheduler lease is arbitrated with (`app/leases.py:holder_id`), so one process
   has one name wherever it appears. It is stable for the life of the process and
   re-derived after a fork.
 - `workers_configured` is what the supervisor was *told* to start, or `null`

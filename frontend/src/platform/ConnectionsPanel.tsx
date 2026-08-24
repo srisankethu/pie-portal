@@ -1315,8 +1315,21 @@ function Access({ entry }: { entry: ConnectorCatalogEntry }) {
     <div className="cx-access">
       <div className="section-h">
         <Labelled tip="Access is granted per grant, and a sign-in missing one still authenticates — the endpoint it needed refuses, and the sync reports zero rows of that kind with nothing obviously wrong. Granting fewer does not fail loudly; it fails quietly, later.">
-          What {entry.label} must let it read
+          What {entry.label} must let it {entry.can_write_quotes ? "read and write" : "read"}
         </Labelled>
+        {/* Stated on the screen where access is granted, because this is the
+            moment an owner decides how much to hand over — and "we can create
+            records in your ledger" is the part of that decision they should
+            not have to infer from a scope name. A Chip rather than coloured
+            text, per the UI standard. */}
+        <Chip
+          size="small"
+          variant="outlined"
+          color={entry.can_write_quotes ? "primary" : "default"}
+          label={entry.can_write_quotes
+            ? "Can create quotes here"
+            : "Read-only — quotes cannot be sent here"}
+        />
       </div>
       {entry.permission_note && <p className="st-help">{entry.permission_note}</p>}
       <Box sx={{ overflowX: "auto" }}>

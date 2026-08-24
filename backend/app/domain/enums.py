@@ -600,6 +600,57 @@ class ValueClass(str, Enum):
 HEADLINE_VALUE_CLASSES = frozenset({ValueClass.ATTRIBUTED})
 
 
+class InboundChannel(str, Enum):
+    """How an enquiry reached us.
+
+    Closed, and deliberately about the *arrival path* rather than the medium's
+    vendor: WHATSAPP rather than a messaging-app name, PHONE_NOTE rather than
+    "call", because what a coverage report asks is which route a customer used,
+    not which application was open. A seventh route is a schema decision — a
+    new member here and nothing else — and until it is made, an enquiry that
+    arrived some other way has no honest value to store.
+    """
+
+    EMAIL = "EMAIL"
+    WHATSAPP = "WHATSAPP"
+    PDF = "PDF"
+    PORTAL = "PORTAL"
+    PHONE_NOTE = "PHONE_NOTE"
+
+
+class LineDisposition(str, Enum):
+    """How an inbound enquiry line ended.
+
+    Terminal, and every member is an *ending* — there is no PENDING. A line
+    whose fate is not yet known has no disposition row at all, which is what
+    keeps "not answered yet" distinguishable from "answered with nothing".
+    Inventing an OPEN member would put those two in one bucket and make the
+    unquoted-demand report unreadable.
+
+    ``QUOTED`` is the only success, and it is a *coverage* fact rather than a
+    commercial one: it says a price went back, not that it was accepted or that
+    it was any good. ``LOST`` records a quote that did not convert, which is a
+    different question and belongs to the quote's own outcome — it is here so
+    that a line's story can be told without a join.
+
+    The four failures are separated because each names a different thing to fix:
+    ABSTAINED is ours (we could not read the requirement), NO_STOCK and NO_PRICE
+    are the book's, and NO_RESPONSE is the customer's. Collapsing them into one
+    "not quoted" would leave the report unable to say which.
+
+    None of these is a number, and none may become one. A disposition says what
+    happened to a line; the economics of the line it became live where economics
+    live (§1).
+    """
+
+    QUOTED = "QUOTED"
+    ABSTAINED = "ABSTAINED"
+    NO_STOCK = "NO_STOCK"
+    NO_PRICE = "NO_PRICE"
+    LOST = "LOST"
+    NO_RESPONSE = "NO_RESPONSE"
+
+
 # Data classes for permission redaction (§14). RESTRICTED fields are visible to
 # SALES_MANAGER and OWNER only. Enforced downstream (context assembly / API);
 # defined here so every layer references one source of truth.

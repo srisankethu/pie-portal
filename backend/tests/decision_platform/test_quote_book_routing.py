@@ -16,10 +16,12 @@ from __future__ import annotations
 import pytest
 
 from app.domain import models
+import app.ingestion.connections as conn_mod
 from app.ingestion.connections import (
     ZOHO_CONNECTOR,
     ConnectionNotFound,
     book_for_customer,
+    connect_erp,
     set_zoho_credentials,
 )
 
@@ -84,9 +86,41 @@ def test_a_disabled_connection_is_refused_not_substituted(session):
         book_for_customer(session, org, customer)
 
 
-def test_a_customer_from_another_connector_is_refused(session):
-    """A Tally customer has no Zoho contact to write an estimate against, and
-    the id it carries belongs to a different system entirely."""
+def test_a_customer_with_no_contact_id_is_refused_for_that_not_for_ambiguity(
+        session):
+    """A missing contact id blocks every book equally, so it is not a question
+    about which book.
+
+    With two connected Zoho companies this used to fall through to the
+    which-one sentence, sending whoever read it to compare two ledgers when the
+    blocker was that this customer has no contact in either. The remedy is the
+    same re-sync either way, which is precisely why the wrong reason survived:
+    following it happened to work, so nobody learned the message was wrong.
+    """
+    org = _org(session)
+    _connect(session, org, "60036630487", "SLS Engineers")
+    _connect(session, org, "60036630488", "4U Precision")
+    customer = _customer(session, org, connection_id=None, connector=None,
+                         external_id="")
+
+    with pytest.raises(ConnectionNotFound) as e:
+        book_for_customer(session, org, customer)
+    msg = str(e.value)
+    assert "no contact id" in msg
+    assert "Which one" not in msg, (
+        "the refusal blamed a choice between books for a blocker that applies "
+        "to all of them")
+
+
+def test_a_customer_from_a_connector_that_cannot_write_is_refused(session):
+    """A Tally customer has no contact to write a quote against, and the id it
+    carries belongs to a different system entirely.
+
+    The refusal names the system and says what is actually true of it — that
+    this platform reads it and cannot create a quote in it. It used to say "not
+    Zoho Books", which is a fact about the wrong end: an owner reading it
+    learns which system we happen to write today rather than what is missing.
+    """
     org = _org(session)
     _connect(session, org, "60036630487", "SLS Engineers")
     customer = _customer(session, org, connection_id=None, connector="tally",
@@ -95,6 +129,54 @@ def test_a_customer_from_another_connector_is_refused(session):
     with pytest.raises(ConnectionNotFound) as e:
         book_for_customer(session, org, customer)
     assert "tally" in str(e.value)
+    assert "cannot create a quote" in str(e.value)
+
+
+def test_the_refusal_asks_what_a_connector_can_write_not_what_it_is_called(
+        session, monkeypatch):
+    """The point of the whole seam, and the only test that can prove it.
+
+    Every connector but Zoho declares ``writes=()`` today, so a refusal keyed on
+    capability and a refusal keyed on ``connector != "zoho"`` are indistinguishable
+    on the real registry — both refuse everything. Registering a connector that
+    *does* declare the write separates them: this one must not be refused for
+    being unable to write, because it can.
+
+    Without this the seam could be quietly name-based and no test would notice
+    until the first real connector write, which is the point at which finding
+    out is most expensive.
+    """
+    from app.ingestion import connections as conn
+    from app.ingestion.erp import base as erp_base
+
+    spec = erp_base.ConnectorSpec(
+        key="writeable", label="Writeable Test ERP", company_term="company",
+        credential_fields=(), connection_fields=(), external_id_field="company_id",
+        setup_note="A test connector that declares it can create a quote.",
+        build_source=lambda *a, **k: None,
+        permissions=(erp_base.Permission("quotes.create", "Creating quotes",
+                                         writes=("sales_quotes",)),))
+    monkeypatch.setitem(erp_base._REGISTRY, "writeable", spec)
+
+    assert conn.can_write_quotes("writeable") is True
+    assert conn.can_write_quotes("tally") is False, "unknown connectors write nothing"
+
+    org = _org(session)
+    _connect(session, org, "60036630487", "SLS Engineers")
+    customer = _customer(session, org, connection_id=None, connector="writeable",
+                         external_id="17")
+
+    # Still refused — nothing here knows how to write into it yet — but for
+    # that reason and not the capability one. Both refusals matter: the wrong
+    # one misinforms, and no refusal at all would resolve this customer into
+    # whichever book happened to be connected and put its quote on another
+    # system's ledger.
+    with pytest.raises(ConnectionNotFound) as e:
+        book_for_customer(session, org, customer)
+    assert "cannot create a quote" not in str(e.value), (
+        "a connector that declares the write was refused for being unable to "
+        "write — the dispatch is reading the connector's name, not its capability")
+    assert "no writer for it yet" in str(e.value)
 
 
 def test_an_unattributed_customer_resolves_when_there_is_one_book(session):
@@ -129,7 +211,7 @@ def test_no_connected_company_is_refused_with_that_reason(session):
 
     with pytest.raises(ConnectionNotFound) as e:
         book_for_customer(session, org, customer)
-    assert "no connected Zoho company" in str(e.value)
+    assert "no connected company this platform can create a quote in" in str(e.value)
 
 
 def test_another_organizations_connection_does_not_answer(session):
@@ -145,3 +227,133 @@ def test_another_organizations_connection_does_not_answer(session):
 
     with pytest.raises(ConnectionNotFound):
         book_for_customer(session, org_a, customer)
+
+
+def _connect_readonly(session, org, label="US Books", company_id="P21CO"):
+    """A connected company this platform reads and cannot write to.
+
+    Prophet 21 rather than NetSuite: NetSuite gained an estimate writer, and a
+    test that needs a read-only connector must name one that actually is. The
+    write spike found no reachable write surface for P21's OData reads, so this
+    is the honest stand-in and will stay one.
+    """
+    return connect_erp(session, org, connector="prophet21", label=label, values={
+        "base_url": "https://p21.example", "username": "u", "password": "p",
+        "company_id": company_id})
+
+
+def _connect_bc(session, org, label="US Books", company_id="bc-company-guid"):
+    """A connected Business Central company, through the generic ERP path."""
+    return connect_erp(session, org, connector="dynamics365", label=label, values={
+        "tenant_id": "t", "client_id": "c", "client_secret": "s",
+        "environment": "sandbox", "company_id": company_id})
+
+
+def test_a_business_central_customer_resolves_to_its_own_book(session):
+    """The point of the whole seam: a customer imported from Business Central
+    resolves to the Business Central company it came from, not to a Zoho one
+    and not to a refusal.
+
+    Both books are connected here on purpose. Before the writer existed this
+    customer was refused for being non-Zoho; the danger on the other side is
+    resolving it into the Zoho book, which would put its quote on a ledger it
+    was never imported from.
+    """
+    org = _org(session)
+    _connect(session, org, "60036630487", "SLS Engineers")
+    bc = _connect_bc(session, org)
+    customer = _customer(session, org, connection_id=bc.connection_id,
+                         connector="dynamics365", external_id="BC-CUST-1")
+
+    book = book_for_customer(session, org, customer)
+    assert book.connection.connection_id == bc.connection_id
+    assert conn_mod.connector_of(book.connection) == "dynamics365"
+    assert book.contact_id == "BC-CUST-1", "that system's own id, not a Zoho one"
+
+
+def test_a_zoho_customer_still_resolves_to_zoho_beside_a_bc_book(session):
+    """The other direction of the same risk, asserted rather than assumed."""
+    org = _org(session)
+    zoho = _connect(session, org, "60036630487", "SLS Engineers")
+    _connect_bc(session, org)
+    customer = _customer(session, org, connection_id=zoho.connection_id,
+                         connector=None, external_id="4600000123")
+
+    book = book_for_customer(session, org, customer)
+    assert book.connection.connection_id == zoho.connection_id
+
+
+def test_a_non_zoho_company_never_stands_in_for_a_missing_zoho_one(session):
+    """The only connected book reads NetSuite, so there is no Zoho ledger here
+    at all. Counting it as "the one connected company" placed the quote in it,
+    and the failure surfaced one call later out of ``credentials_for`` as a
+    bare ValueError — which ``books_for_quote`` does not catch, so an HTTP 500
+    stood where a refusal belongs."""
+    org = _org(session)
+    _connect_readonly(session, org)
+    customer = _customer(session, org, connection_id=None, connector=None)
+
+    with pytest.raises(ConnectionNotFound) as e:
+        book_for_customer(session, org, customer)
+    assert "prophet21" in str(e.value)
+
+
+def test_the_customers_own_non_zoho_connection_is_refused_by_name(session):
+    """``connector`` and ``connection_id`` are nullable independently, so a row
+    can carry the company without carrying the system. It still resolves to a
+    book whose credentials are not Zoho's, and the reason given has to be that
+    rather than "disabled" — a refusal naming the wrong cause sends whoever
+    reads it to the connections screen to re-enable something already on."""
+    org = _org(session)
+    ns = _connect_readonly(session, org)
+    customer = _customer(session, org, connection_id=ns.connection_id,
+                         connector=None)
+
+    with pytest.raises(ConnectionNotFound) as e:
+        book_for_customer(session, org, customer)
+    assert "prophet21" in str(e.value)
+
+
+def test_one_zoho_book_beside_another_system_is_refused_on_provenance(session):
+    """One Zoho book beside one NetSuite book is still two companies an
+    unattributed customer could have come from, so it is still refused — but
+    the reason is not the one the multi-Zoho case gives. There is exactly one
+    Zoho company here, so "which one" is not a question anyone can answer, and
+    a refusal that poses it sends the reader looking for a second set of Zoho
+    books that does not exist. The real reason is that this customer's
+    provenance was never recorded and may be the NetSuite book, so writing the
+    Zoho estimate would invent it."""
+    org = _org(session)
+    _connect(session, org, "60036630487", "SLS Engineers")
+    _connect_readonly(session, org)
+    customer = _customer(session, org, connection_id=None, connector=None)
+
+    with pytest.raises(ConnectionNotFound) as e:
+        book_for_customer(session, org, customer)
+    msg = str(e.value)
+    # Not a count of Zoho companies, and not a choice between them.
+    assert "connected Zoho companies" not in msg
+    assert "Which one" not in msg
+    # The reason actually given: unrecorded provenance that may be the other
+    # system, which is why the estimate cannot be written.
+    assert "prophet21" in msg
+    assert "invent the provenance" in msg
+    assert "re-sync" in msg.lower()
+
+
+def test_several_zoho_books_still_ask_which_one(session):
+    """The other half of the pair above: with two Zoho companies the question
+    genuinely is which of them, and adding a NetSuite book must not turn that
+    sentence into the provenance one — the count it names is still true."""
+    org = _org(session)
+    _connect(session, org, "60036630487", "SLS Engineers")
+    _connect(session, org, "60036630626", "4U Precision")
+    _connect_readonly(session, org)
+    customer = _customer(session, org, connection_id=None, connector=None)
+
+    with pytest.raises(ConnectionNotFound) as e:
+        book_for_customer(session, org, customer)
+    msg = str(e.value)
+    assert "2 connected companies a quote can be created in" in msg
+    assert "Which one" in msg
+    assert "prophet21" in msg

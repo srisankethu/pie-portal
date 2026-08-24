@@ -34,7 +34,7 @@ from typing import Any, Callable, Iterable, Iterator, Optional
 from ..clock import utc_stamp
 from ..config import settings
 from .errors import (IngestionError, SourceAuthError, SourceScopeError,
-                     SourceThrottleError)
+                     SourceThrottleError, SourceWriteUncertain)
 
 log = logging.getLogger("pie_portal.zoho")
 
@@ -140,7 +140,7 @@ class ZohoThrottleError(ZohoError, SourceThrottleError):
     different: wait and resume, rather than fix a credential."""
 
 
-class ZohoWriteUncertain(ZohoError):
+class ZohoWriteUncertain(ZohoError, SourceWriteUncertain):
     """A write was sent and its outcome is unknown.
 
     Raised instead of retrying when a non-idempotent call fails in a way that
@@ -189,11 +189,34 @@ SCOPE_FOR_PATH: dict[str, str] = {
     "salesorders": "ZohoBooks.salesorders.READ",
     "vendorpayments": "ZohoBooks.vendorpayments.READ",
     "users": "ZohoBooks.users.READ",
+    # Read back to settle a write, and to refuse a duplicate before sending —
+    # so this one is needed by the *write* path even though it is a GET, and it
+    # probes like any other read.
+    "estimates": "ZohoBooks.estimates.READ",
+}
+
+#: The same map for the writes, keyed the same way. Separate because a path is
+#: not enough to name the grant: ``POST /items`` and ``GET /items`` are two
+#: different permissions behind one word, and a single table keyed by path can
+#: only hold one of them. It cannot feed ``probe_paths`` either — there is no
+#: way to ask "may I create?" that does not create something.
+WRITE_SCOPE_FOR_PATH: dict[str, str] = {
+    "estimates": "ZohoBooks.estimates.CREATE",
+    "items": "ZohoBooks.settings.CREATE",
 }
 
 
-def scope_for_path(path: str) -> Optional[str]:
-    return SCOPE_FOR_PATH.get(path.lstrip("/").split("/", 1)[0].split("?", 1)[0])
+def scope_for_path(path: str, verb: str = "GET") -> Optional[str]:
+    """The scope a call needs, which depends on the verb as well as the path.
+
+    Defaulted to ``GET`` so every existing read caller is unchanged. A refusal
+    that names the wrong scope sends an owner to grant a permission they
+    already hold, and then to conclude the platform is broken.
+    """
+    head = path.lstrip("/").split("/", 1)[0].split("?", 1)[0]
+    if verb.upper() != "GET":
+        return WRITE_SCOPE_FOR_PATH.get(head)
+    return SCOPE_FOR_PATH.get(head)
 
 
 #: Paths that cannot answer on their own — they need ids a previous call
@@ -411,7 +434,7 @@ class ZohoTransport:
                 # A *second* 401 on a freshly minted token is not a bad token —
                 # the token endpoint just issued it. It is this endpoint being
                 # outside the grant, and Zoho says so in the body.
-                scope = scope_for_path(path)
+                scope = scope_for_path(path, verb)
                 if scope and self._is_scope_refusal(resp):
                     raise ZohoScopeError(
                         f"Zoho refused {path}: this connection was not granted "

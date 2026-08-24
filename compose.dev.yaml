@@ -1,4 +1,4 @@
-# Local development infrastructure: Postgres and Redis, nothing else.
+# Local development infrastructure: Postgres, and nothing else.
 #
 #   docker compose -f compose.dev.yaml up -d
 #   export DATABASE_URL=postgresql+psycopg://pie_portal:pie_portal@localhost:5432/pie_portal
@@ -37,16 +37,6 @@ services:
       interval: 5s
       timeout: 5s
       retries: 24
-
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "127.0.0.1:6379:6379"
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 12
 
 volumes:
   dev-db-data:

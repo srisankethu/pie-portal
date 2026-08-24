@@ -189,17 +189,64 @@ def _dek(session: Session, organization_id: str) -> Fernet:
         raise KeyUnavailable(UNREADABLE_EXPLANATION) from e
 
 
+class TenantCipher:
+    """One organization's data key, opened once and used for many values.
+
+    Opening the key is what a per-value call actually spends itself on, and it
+    is spent again for every value. Measured on this codebase: 515 µs to
+    ``decrypt_for`` one name, of which 53 µs is the decryption — the rest is
+    reading the key row (a SQL statement *per value*, so a network round trip
+    each on Postgres) and unwrapping the DEK under the KEK. Vaulting the names
+    at the end of a sync did that once per customer, product and vendor.
+
+    So a caller with a batch opens the key once and decrypts N values with it:
+    one statement and one unwrap for the batch instead of N of each.
+
+    Deliberately **not** a cache. A cached DEK would keep a *destroyed* key
+    usable — in this process until it expired, and in every other process for
+    as long as its own copy lived — and "destroy the key and the ciphertext is
+    unreadable everywhere" is the promise the erasure receipt makes to a
+    customer. A cipher's lifetime is one batch, held by the caller, and
+    ``destroy`` is honoured by the next batch that opens a key.
+    """
+
+    __slots__ = ("_fernet", "organization_id")
+
+    def __init__(self, fernet: Fernet, organization_id: str) -> None:
+        self._fernet = fernet
+        self.organization_id = organization_id
+
+    def encrypt(self, plaintext: str) -> str:
+        return self._fernet.encrypt(plaintext.encode()).decode()
+
+    def decrypt(self, ciphertext: str) -> str:
+        try:
+            return self._fernet.decrypt(ciphertext.encode()).decode()
+        except InvalidToken as e:
+            raise KeyUnavailable(
+                "Stored ciphertext did not decrypt under this organization's "
+                "data key.") from e
+
+
+def cipher_for(session: Session, organization_id: str) -> TenantCipher:
+    """Open this organization's data key once, for a batch of values.
+
+    Raises exactly what the per-value functions raise, and at the same moment —
+    the key is read and unwrapped here — so a caller that opens a cipher and
+    then loops sees a destroyed key before it starts rather than part-way
+    through.
+    """
+    return TenantCipher(_dek(session, organization_id), organization_id)
+
+
 def encrypt_for(session: Session, organization_id: str, plaintext: str) -> str:
-    return _dek(session, organization_id).encrypt(plaintext.encode()).decode()
+    """One value. For many, open a :func:`cipher_for` and reuse it."""
+    return cipher_for(session, organization_id).encrypt(plaintext)
 
 
 def decrypt_for(session: Session, organization_id: str, ciphertext: str) -> str:
-    try:
-        return _dek(session, organization_id).decrypt(ciphertext.encode()).decode()
-    except InvalidToken as e:
-        raise KeyUnavailable(
-            "Stored ciphertext did not decrypt under this organization's data key."
-        ) from e
+    """One value. For many, open a :func:`cipher_for` and reuse it."""
+    return cipher_for(session, organization_id).decrypt(ciphertext)
 
 
 def is_destroyed(session: Session, organization_id: str) -> bool:

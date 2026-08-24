@@ -297,7 +297,7 @@ class TestMetricsExportSaysWhoseNumbersTheseAre:
     """
 
     def test_the_payload_names_its_scope_and_its_worker(self):
-        from app.lease import holder_id
+        from app.leases import holder_id
 
         registry = MetricRegistry()
         registry.counter("scoped_counter", "help").inc()
@@ -561,21 +561,26 @@ class TestRegisteredHealthChecks:
     def checks(self):
         """The registered check functions, with the global registry restored after.
 
-        The session factory is real because the scheduler check reads which
-        worker holds the scheduler lease; the engine stays a placeholder,
-        because the only check that touches it is the database one and these
-        tests do not drive it.
+        A real session factory rather than a stub: the scheduler check reads the
+        ``sync-scheduler`` lease — every process runs the thread, so a live
+        thread is no longer the same claim as "this deployment is ticking" — and
+        the queue check reads the depth. A check that needs the database is
+        given one here rather than being loosened to suit the test.
         """
+        import dbsupport
         from sqlalchemy.orm import sessionmaker
 
-        import dbsupport
         from app.observability.health import health, register_health_checks
 
-        maker = sessionmaker(bind=dbsupport.fresh_engine(), future=True)
+        engine = dbsupport.fresh_engine()
+        maker = sessionmaker(bind=engine, autoflush=False,
+                             expire_on_commit=False, future=True)
         saved = dict(health._components)
         health._components.clear()
-        register_health_checks(object(), maker)
-        yield {name: comp.check_fn for name, comp in health._components.items()}
+        register_health_checks(engine, maker)
+        checks = {name: comp.check_fn for name, comp in health._components.items()}
+        checks["_session"] = maker                       # for a test that seeds
+        yield checks
         health._components.clear()
         health._components.update(saved)
 
@@ -631,6 +636,16 @@ class TestRegisteredHealthChecks:
         started.set()
         monkeypatch.setattr(sync_scheduler, "_started", started)
 
+        # A live thread *and* this deployment's lease held: both halves of
+        # "something is actually ticking".
+        from app import leases
+
+        session = checks["_session"]()
+        try:
+            leases.acquire(session, sync_scheduler.LEASE, "process-under-test")
+        finally:
+            session.close()
+
         stop = threading.Event()
         thread = threading.Thread(target=stop.wait, name="sync-scheduler", daemon=True)
         thread.start()
@@ -640,6 +655,31 @@ class TestRegisteredHealthChecks:
             stop.set()
             thread.join(timeout=5)
         assert status is HealthStatus.HEALTHY, message
+        assert "process-under-test" in message, message
+
+    def test_the_scheduler_check_notices_that_nobody_is_ticking(self, checks,
+                                                                monkeypatch):
+        """A live thread with no lease holder anywhere is the state that looks
+        healthy and schedules nothing — reporting it green would be exactly the
+        benign default the invariants forbid."""
+        from app.config import settings
+        from app.ingestion import scheduler as sync_scheduler
+
+        monkeypatch.setattr(settings, "ZOHO_SOURCE", "api")
+        started = threading.Event()
+        started.set()
+        monkeypatch.setattr(sync_scheduler, "_started", started)
+
+        stop = threading.Event()
+        thread = threading.Thread(target=stop.wait, name="sync-scheduler", daemon=True)
+        thread.start()
+        try:
+            status, message = checks["scheduler"]()
+        finally:
+            stop.set()
+            thread.join(timeout=5)
+        assert status is HealthStatus.DEGRADED, message
+        assert "lease" in message
 
     def test_the_scheduler_check_notices_a_thread_that_has_stopped(self, checks, monkeypatch):
         """Started, then gone: the one state a monitor exists to catch."""

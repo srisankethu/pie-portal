@@ -118,6 +118,15 @@ fill (shape + edge + radius, 2,057 rows), definite misroutes fall to **1
 
 **ISO slot fill validates itself; a family route does not.** That is the gate.
 
+The 0.00 itself was ambiguous for a fortnight — "the engine cannot decide on real
+data" and "the engine correctly abstains on an input that lacks the evidence" fit
+it equally well and imply opposite things.
+[`13-confidence-and-input-completeness.md`](13-confidence-and-input-completeness.md)
+settles it by re-running these same corpus rows with the grade column suppressed:
+the abstention reading is correct, 100% of the gap is the absent column, and the
+gate above survives grade-less input unchanged. It also records what that costs —
+half the emitted attributes, and specifically the material-and-application half.
+
 ---
 
 ## 4. Entity scope

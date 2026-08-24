@@ -43,14 +43,14 @@ while this may run months later, and the last moment the run is known to have
 been alive is the honest answer.
 
 Revision ID: a7syncguard
-Revises: z6subject
+Revises: e1heads
 Create Date: 2026-08-22
 """
 from alembic import op
 import sqlalchemy as sa
 
 revision = "a7syncguard"
-down_revision = "z6subject"
+down_revision = "e1heads"
 branch_labels = None
 depends_on = None
 

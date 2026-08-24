@@ -21,7 +21,7 @@ deployment secret (``trust/signing``), so re-signing a doctored history needs
 more than the database.
 
 **Ordered by the database, not by a lock.** This is the design, and it is the
-thing ``app/lease.py`` refuses to provide. Read its closing paragraph: there is
+thing ``app/leases.py`` refuses to provide. Read its closing paragraph: there is
 no fence token, so a leader can hold an unexpired claim while frozen and resume
 after another worker has taken it, acting in the belief that it still leads. A
 chain built on that forks silently. So the order is enforced where the write
@@ -331,13 +331,13 @@ def _head(session: Session, organization_id: str) -> Optional[models.AuditEntry]
 def _source() -> str:
     """Which process is writing. Best-effort and never fatal.
 
-    ``lease.holder_id()`` is host:pid:random and is already this deployment's
+    ``leases.holder_id()`` is host:pid:random and is already this deployment's
     answer to "which worker". Imported here rather than at module scope only to
     keep ``trust/`` free of an import it does not otherwise need; a failure to
     identify the writer must never be the reason an audit entry is not written.
     """
     try:
-        from ..lease import holder_id
+        from ..leases import holder_id
         return holder_id()[:128]
     except Exception:                                   # noqa: BLE001
         return ""

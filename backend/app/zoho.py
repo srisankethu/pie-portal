@@ -29,6 +29,10 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Dict, List, Optional, Protocol
 
+from .ingestion.erp.base import WrittenDocument
+from .ingestion.errors import (SourceUnavailable, SourceWriteRefused,
+                               SourceWriteUnknown)
+
 if TYPE_CHECKING:                     # pragma: no cover - typing only
     from .ingestion.zoho_client import ZohoCredentials
 
@@ -62,67 +66,74 @@ class ZohoItem:
     tax_percentage: Optional[float] = None
 
 
-@dataclass
-class ZohoEstimate:
-    estimate_id: str
-    number: str
-    customer: str
-    line_count: int
-    # True when the estimate already existed under this reference and was read
-    # back rather than created. Sending the same quote twice must not put two
-    # estimates in front of the customer.
-    already_existed: bool = False
+#: The Zoho name for the neutral record every connector's write returns. Kept
+#: as an alias rather than a second dataclass: one concept, one shape, and the
+#: name callers already use goes on meaning what it meant. ``estimate_id`` is
+#: ``document_id`` — see ``WrittenDocument``.
+ZohoEstimate = WrittenDocument
 
 
 # ── the three ways this boundary is allowed to fail ─────────────────────────
-class ZohoUnavailable(RuntimeError):
-    """The books could not be read.
-
-    Every read-side adapter failure collapses to this so a single unreachable
-    item cannot 500 the whole intake: the line reads BOOKS OFFLINE, which is
-    what that state is for.
-    """
-
-
-class ZohoWriteRefused(RuntimeError):
-    """The write was not attempted, and this is why.
-
-    Carries the item codes responsible where there are any, so the screen can
-    point at the lines rather than at the quote. Nothing was sent to Zoho, so
-    fixing the named problem and sending again is safe.
-    """
-
-    def __init__(self, message: str, codes: Optional[List[str]] = None) -> None:
-        super().__init__(message)
-        self.codes = list(codes or [])
+# The meanings are the connector-neutral ones in ``ingestion.errors`` — nothing
+# in "unreadable", "nothing stored" or "sent, outcome unestablished" is about
+# Zoho. The Zoho names survive as subclasses because callers and tests already
+# catch them and a rename would be churn without a reader; new callers should
+# catch the neutral base, which a second connector's adapter will also raise.
+class ZohoUnavailable(SourceUnavailable):
+    """The books could not be read."""
 
 
-class ZohoWriteUnknown(RuntimeError):
-    """The write was sent and its outcome could not be established.
-
-    The one state that must never be reported as either success or failure. It
-    carries the reference the estimate would have been written under, because
-    the only way to resolve it is for a person to look that up in Zoho — and
-    because sending again under the same reference is then safe.
-    """
-
-    def __init__(self, message: str, reference: Optional[str] = None) -> None:
-        super().__init__(message)
-        self.reference = reference
+class ZohoWriteRefused(SourceWriteRefused):
+    """The write was not attempted, and this is why. Carries the item codes."""
 
 
-class ZohoService(Protocol):
-    """The contract the portal depends on.
+class ZohoWriteUnknown(SourceWriteUnknown):
+    """The write was sent and its outcome could not be established."""
 
-    Implemented by ``MockZoho``, ``UnavailableZoho`` and the live
-    ``ZohoBooksService``.
+
+class SourceCatalogue(Protocol):
+    """Reading and extending a source system's item master.
+
+    Split from :class:`QuoteWriter` below because the two have different
+    callers with different needs: ``store`` resolves and creates items and
+    asks whether the books are readable at all, while the quote router only
+    ever writes a document. Forcing one contract on both would mean a
+    connector that can create a quote but has no item master to offer — which
+    is the ordinary case outside Zoho — could not satisfy the port without
+    stubbing methods nobody calls on it.
     """
 
     def get_item(self, code: str) -> Optional[ZohoItem]: ...
 
     def create_item(self, code: str, name: str, list_price: Optional[float] = None) -> ZohoItem: ...
 
-    def create_estimate(self, customer: str, lines: List[dict], *,
+    @property
+    def available(self) -> bool:
+        """Whether the books can be read right now (design's BOOKS OFFLINE state)."""
+        ...
+
+
+class QuoteWriter(Protocol):
+    """Writing a quote into a source system, whichever system that is.
+
+    The one member, because writing the document is the whole job. Nothing in
+    the signature is Zoho-shaped: a customer's id *in the target system*, the
+    lines, and a caller-stable reference that makes the write idempotent.
+
+    Named for the write stage rather than for anybody's ledger. It was
+    ``create_estimate`` — Zoho's word — which meant the capability pin looked
+    for ``create_sales_quotes`` on a source while this looked for something
+    else on a writer, and Business Central carried both names for one method to
+    satisfy the two. One name now, and the pin and the port agree by
+    construction rather than by an alias somebody has to keep.
+
+    The record types it speaks are still named ``Zoho…`` — the shapes are
+    generic (an id, a number, a customer, a line count) but the names have not
+    caught up. Renaming them touches every caller and belongs with the change
+    that reshapes the response anyway, not here.
+    """
+
+    def create_sales_quotes(self, customer: str, lines: List[dict], *,
                         customer_ref: Optional[str] = None,
                         reference: Optional[str] = None) -> ZohoEstimate:
         """Create the estimate for ``customer``.
@@ -139,10 +150,14 @@ class ZohoService(Protocol):
         """
         ...
 
-    @property
-    def available(self) -> bool:
-        """Whether the books can be read right now (design's BOOKS OFFLINE state)."""
-        ...
+
+class ZohoService(SourceCatalogue, QuoteWriter, Protocol):
+    """Both halves at once — the contract the Zoho adapters actually provide.
+
+    Kept under its own name because every annotation in the portal already
+    says ``ZohoService`` and means exactly this. A connector that implements
+    only one half satisfies that half's protocol directly.
+    """
 
 
 class MockZoho:
@@ -212,7 +227,7 @@ class MockZoho:
             self._not_in_books.discard(code)
             return item
 
-    def create_estimate(self, customer: str, lines: List[dict], *,
+    def create_sales_quotes(self, customer: str, lines: List[dict], *,
                         customer_ref: Optional[str] = None,
                         reference: Optional[str] = None) -> ZohoEstimate:
         """Invent an estimate number. ``customer_ref`` and ``reference`` are
@@ -221,7 +236,7 @@ class MockZoho:
         with self._lock:
             self._estimate_seq += 1
             num = f"EST-{self._estimate_seq:05d}"
-            return ZohoEstimate(estimate_id=f"zoho-{int(time.time())}-{self._estimate_seq}",
+            return ZohoEstimate(document_id=f"zoho-{int(time.time())}-{self._estimate_seq}",
                                 number=num, customer=customer, line_count=len(lines))
 
     @property
@@ -261,7 +276,7 @@ class UnavailableZoho:
                     list_price: Optional[float] = None) -> ZohoItem:
         raise ZohoWriteRefused(self.reason, codes=[code] if code else None)
 
-    def create_estimate(self, customer: str, lines: List[dict], *,
+    def create_sales_quotes(self, customer: str, lines: List[dict], *,
                         customer_ref: Optional[str] = None,
                         reference: Optional[str] = None) -> ZohoEstimate:
         raise ZohoWriteRefused(self.reason)

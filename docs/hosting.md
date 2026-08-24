@@ -26,21 +26,23 @@ copies of a configuration reference is how one of them ends up wrong.
                           │  never enters the picture
                      ┌────▼──────────────────────────────┐
                      │  api   uvicorn · FastAPI          │
-                     └────┬──────────────┬───────────────┘
-                          │              │
-                     ┌────▼─────────┐ ┌──▼────────────────┐
-                     │  db          │ │  redis            │
-                     │  Postgres 17 │ │  provisioned; no  │
-                     │  (volume)    │ │  feature requires │
-                     └──────────────┘ │  it yet (volume)  │
-                                      └───────────────────┘
+                     │        queues background work     │
+                     └────┬──────────────────────────────┘
+                          │
+                     ┌────▼─────────┐   ┌────────────────────┐
+                     │  db          │◄──┤  worker            │
+                     │  Postgres 17 │   │  drains the queue: │
+                     │  (volume)    │   │  syncs, rebuilds   │
+                     └──────────────┘   │  (scale to taste)  │
+                                        └────────────────────┘
 
    release   one-shot: alembic upgrade head, then seed. Behind a profile,
              so `up` can never migrate anything.
 ```
 
-Only `web` publishes ports. Postgres and Redis are reachable on the compose
-network and nowhere else.
+Only `web` publishes ports. Postgres is reachable on the compose network and
+nowhere else, and `worker` serves nothing at all — it takes its work from the
+`queued_messages` table (`docs/caching-and-queue.md`).
 
 ### The files
 

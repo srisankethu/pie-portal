@@ -12,10 +12,11 @@ row's hash, and its own hash is an HMAC over a canonical rendering of its body,
 keyed by the deployment secret — so editing one row invalidates it and every row
 after it, and re-signing the lot needs more than database access.
 
-**The ordering is the constraint, not a lock.** ``b8lease`` added a process lease
-and said in its own docstring that it is not sufficient for this: it has no fence
-token, so a leader can hold an unexpired claim while frozen and resume after
-another worker has taken it. So the position is enforced where the write lands.
+**The ordering is the constraint, not a lock.** ``b8lease`` added a process lease,
+and it settles which worker *schedules* rather than which write lands first: it
+carries no fence token, so a leader can hold an unexpired claim while frozen and
+resume after another worker has taken it. So the position is enforced where the
+write lands.
 ``uq_audit_entry_org_seq`` refuses two entries at one position;
 ``uq_audit_entry_org_prev`` refuses two entries naming one predecessor, which is
 what a fork *is* rather than what it follows from. The loser of a race gets an
@@ -27,14 +28,14 @@ not equal to NULL, so a nullable column would let a unique index admit two
 genesis entries.
 
 Revision ID: c9audit
-Revises: b8lease
+Revises: a7syncguard
 Create Date: 2026-08-23
 """
 from alembic import op
 import sqlalchemy as sa
 
 revision = "c9audit"
-down_revision = "b8lease"
+down_revision = "a7syncguard"
 branch_labels = None
 depends_on = None
 

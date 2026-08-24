@@ -376,6 +376,8 @@ without credentials.
 | Frontend | React 18, Vite, TypeScript — screen-state driven, plain `fetch` |
 | Product intelligence | PIE (pie-parser) for RFQ resolution |
 | Source of record | Zoho Books, read-only |
+| Background work | A thread by default; a durable database-backed queue where a deployment asks for one — see [Caching and the message queue](caching-and-queue.md) |
+| Caching | Bounded, versioned, in-process (`app/cache.py`); nothing money-shaped in it |
 
 ---
 

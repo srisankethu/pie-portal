@@ -896,12 +896,26 @@ that accept a `quote_id`. Three findings from that pass are worth keeping:
 - **Two residuals, stated rather than engineered around.** `POST /snapshot`
   cannot fail closed — a quote priced for the first time has no outcome row and
   no trail — so 201 vs 404 does distinguish a free id from another desk's there,
-  at the cost of a written, attributed, auditable row per probe. And on
-  `POST /assess`, `store.line_cost` runs *before* the guard; it is org-scoped but
-  not desk-scoped. Whether any number derived from it reaches the caller depends
-  on `project`'s `boundary_refs` withholding, which was **not probed**. It
-  predates this work and the guard neither creates nor worsens it, but somebody
-  should decide deliberately whether that check belongs above `_inputs`.
+  at the cost of a written, attributed, auditable row per probe.
+
+**The second residual was probed, and it was a real leak.** `store.line_cost` ran
+*before* the guard on `POST /assess`, org-scoped but not desk-scoped. The reason
+it is a leak rather than the residual §1 already licenses is the fallback:
+`quote_intelligence` consults `item_master_cost` only where the books hold **no**
+cost for the product, so borrowing another desk's line **manufactured a boundary
+where none existed**. Measured on a product with no `cost_records` row and a
+borrowed cost of 500, sweeping `proposed_price` moved the verdict at 568.18 and
+again at 588.24 — `cost/(1 − min_margin)` and `cost/(1 − margin_floor)` exactly —
+while the identical sweep with no `quote_id` answered `NO_COST_BASIS` at every
+price. §1's budget is one boundary per action the recipient can take, and on
+another desk's uncosted line they can take none. Fixed by resolving the guard
+once, before the costs are read; an unheld id now answers exactly as no id does,
+degrading rather than refusing so the refusal cannot confirm the quote exists.
+
+The general lesson is worth more than the instance: **a guard placed after the
+value it protects has been read is not a guard.** It was checked, and it was
+correctly checking the outcome echoed at the bottom of the same handler — three
+lines below the call that had already read the cost.
 
 ### 7b. Suggestions the platform should make — not tasks it should carry
 

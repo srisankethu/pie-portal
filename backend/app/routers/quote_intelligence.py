@@ -433,18 +433,45 @@ def _validate(body: AssessRequest | SnapshotRequest, *, what: str) -> None:
     _reject_price_sweep(list(body.lines))
 
 
-def _inputs(body: AssessRequest, org: str) -> list[QuoteLineInput]:
+def _inputs(body: AssessRequest, org: str, *, holds_quote: bool) -> list[QuoteLineInput]:
+    """The assessment's line inputs, including the server-held cost per line.
+
+    ``holds_quote`` decides whether the named quote's costs are read at all, and
+    it is a required keyword because getting it wrong is silent. ``line_cost``
+    is scoped to the *organization* and says so — it refuses another tenant's
+    ``quote_id`` — but the store is one process-wide dict with enumerable ids
+    (``store.py`` ``Quote.organizationId``), so inside one book a salesperson
+    could name any desk's quote and borrow the cost sitting on its line.
+
+    That is not the accepted residual §1 licenses. The accepted one is that a
+    salesperson who is entitled to a line's negotiation floor can do algebra on
+    it. This was different in kind: ``quote_intelligence`` takes
+    ``item_master_cost`` as the *fallback* used when the books hold no cost for
+    the product, so borrowing another desk's line **manufactured a boundary
+    where none existed**. Measured before the fix, on a product with no
+    ``cost_records`` row and a borrowed cost of 500: sweeping ``proposed_price``
+    moved the verdict at 568.18 and again at 588.24 — ``cost/(1 - min_margin)``
+    and ``cost/(1 - margin_floor)`` exactly — while the same sweep with no
+    ``quote_id`` answered ``NO_COST_BASIS`` at every price. Two boundaries for a
+    number the platform otherwise refuses to hold, on a line the caller cannot
+    act on. §1's budget is one boundary per action the recipient can take, and
+    they can take none here.
+
+    Refused by *degrading*, not by raising: no id and an id the caller does not
+    hold produce the identical ``NO_COST_BASIS`` answer, which is the same
+    choice ``_visible_customer_ref`` makes one line down and for the same
+    reason — a refusal that stood out would confirm the quote exists.
+    """
     return [
         QuoteLineInput(line_id=ln.line_id, product_ref=ln.product,
                        qty=ln.qty, proposed_price=ln.proposed_price,
                        family=ln.family,
-                       # Only when the caller named the quote. Without an id
-                       # there is no server-held line to read a cost from, and
-                       # the assessment falls back to bills alone as before.
-                       # `org` is passed so a quote_id belonging to another
-                       # tenant reads as no cost, not as that tenant's cost.
+                       # Only when the caller named a quote they hold. Without
+                       # one there is no server-held line to read a cost from
+                       # and the assessment falls back to bills alone, which is
+                       # exactly what a caller who does not hold it now gets.
                        item_master_cost=(store.line_cost(body.quote_id, ln.line_id, org)
-                                         if body.quote_id else None))
+                                         if holds_quote else None))
         for ln in body.lines
     ]
 
@@ -460,11 +487,17 @@ def assess(
     _validate(body, what="request")
 
     org = principal.organization_id
+    # Resolved once, and BEFORE the costs are read. It used to be checked after,
+    # guarding only the outcome echoed at the bottom of this handler — so the
+    # cost on another desk's line had already been read into the assessment by
+    # the time anybody asked whether the caller held the quote. See ``_inputs``.
+    holds_quote = bool(body.quote_id) and _holds_platform_quote(
+        session, principal, body.quote_id, when_unattributed=False)
     result = assess_quote(
         session, org,
         customer_ref=_visible_customer_ref(session, principal,
                                            body.customer.strip()),
-        lines=_inputs(body, org), as_of=body.as_of)
+        lines=_inputs(body, org, holds_quote=holds_quote), as_of=body.as_of)
     refs = {ln.line_id: ln.product for ln in body.lines}
 
     # Withheld unless this reader holds the quote. ``_visible_customer_ref``
@@ -474,10 +507,7 @@ def assess(
     # reference-to-identity enumeration running backwards. Resolved to None
     # rather than refused, so a quote on another desk and an id that names
     # nothing are one answer here too.
-    outcome = get_outcome(session, org, body.quote_id) if body.quote_id else None
-    if outcome is not None and not _holds_platform_quote(
-            session, principal, body.quote_id, when_unattributed=False):
-        outcome = None
+    outcome = get_outcome(session, org, body.quote_id) if holds_quote else None
     return {
         "customer": {
             "customer_id": result.customer_id,

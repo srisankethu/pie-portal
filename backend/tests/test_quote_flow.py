@@ -577,7 +577,7 @@ def test_a_restart_does_not_make_a_sent_quote_look_unsent(client, mgmt_hdr):
 
     with _books(client, _StubBooks()):
         qid = _clean_quote(client, mgmt_hdr)
-        sent = client.post(f"/api/quotes/{qid}/estimate", headers=mgmt_hdr).json()
+        sent = client.post(f"/api/v1/quotes/{qid}/estimate", headers=mgmt_hdr).json()
     assert sent["ok"] is True
 
     # The process forgets everything it held about this quote's send.
@@ -585,7 +585,7 @@ def test_a_restart_does_not_make_a_sent_quote_look_unsent(client, mgmt_hdr):
     assert not hasattr(quote, "estimateNumber"), (
         "the in-memory copy is back, and it is the one that lies after a restart")
 
-    q = client.get(f"/api/quotes/{qid}", headers=mgmt_hdr).json()
+    q = client.get(f"/api/v1/quotes/{qid}", headers=mgmt_hdr).json()
     assert q["estimate"] is not None, "a sent quote read as unsent"
     assert q["estimate"]["number"] == sent["documentNumber"]
     assert q["estimate"]["current"] is True
@@ -598,14 +598,14 @@ def test_an_edit_after_sending_marks_the_document_out_of_date(client, mgmt_hdr):
     moved since."""
     with _books(client, _StubBooks()):
         qid = _clean_quote(client, mgmt_hdr)
-        client.post(f"/api/quotes/{qid}/estimate", headers=mgmt_hdr)
-        qd = client.get(f"/api/quotes/{qid}", headers=mgmt_hdr).json()
+        client.post(f"/api/v1/quotes/{qid}/estimate", headers=mgmt_hdr)
+        qd = client.get(f"/api/v1/quotes/{qid}", headers=mgmt_hdr).json()
         assert qd["estimate"]["current"] is True
 
         line = qd["lines"][0]
-        client.post(f"/api/quotes/{qid}/lines/{line['id']}/price",
+        client.post(f"/api/v1/quotes/{qid}/lines/{line['id']}/price",
                     headers=mgmt_hdr, json={"price": 9999.0})
-        after = client.get(f"/api/quotes/{qid}", headers=mgmt_hdr).json()
+        after = client.get(f"/api/v1/quotes/{qid}", headers=mgmt_hdr).json()
 
     assert after["estimate"]["current"] is False, (
         "the quote was re-priced and still claimed the sent document describes it")
@@ -622,7 +622,7 @@ def test_the_send_names_the_system_it_wrote_into(client, mgmt_hdr):
     """
     with _books(client, _StubBooks()):
         qid = _clean_quote(client, mgmt_hdr)
-        sent = client.post(f"/api/quotes/{qid}/estimate", headers=mgmt_hdr).json()
+        sent = client.post(f"/api/v1/quotes/{qid}/estimate", headers=mgmt_hdr).json()
 
     assert sent["ok"] is True
     assert sent["system"] == "zoho"
@@ -633,7 +633,7 @@ def test_the_send_names_the_system_it_wrote_into(client, mgmt_hdr):
 
     # And the second press is a different claim, not the same one reworded.
     with _books(client, _StubBooks()):
-        again = client.post(f"/api/quotes/{qid}/estimate", headers=mgmt_hdr).json()
+        again = client.post(f"/api/v1/quotes/{qid}/estimate", headers=mgmt_hdr).json()
     assert again["alreadyExisted"] is True
     assert "already covers this quote" in again["message"]
 
@@ -649,7 +649,7 @@ def test_the_send_response_carries_no_economics(client, mgmt_hdr):
     """
     with _books(client, _StubBooks()):
         qid = _clean_quote(client, mgmt_hdr)
-        sent = client.post(f"/api/quotes/{qid}/estimate", headers=mgmt_hdr).json()
+        sent = client.post(f"/api/v1/quotes/{qid}/estimate", headers=mgmt_hdr).json()
 
     assert set(sent) == {"ok", "documentNumber", "lineCount", "blockers",
                          "message", "system", "systemLabel", "documentTerm",
@@ -675,7 +675,7 @@ def test_a_sent_quote_is_still_sent_after_the_process_forgets_it(client, mgmt_hd
 
     with _books(client, _StubBooks()):
         qid = _clean_quote(client, mgmt_hdr)
-        first = client.post(f"/api/quotes/{qid}/estimate", headers=mgmt_hdr).json()
+        first = client.post(f"/api/v1/quotes/{qid}/estimate", headers=mgmt_hdr).json()
         assert first["ok"] is True and first["documentNumber"]
 
         # The process forgets. The ledger does not.
@@ -683,7 +683,7 @@ def test_a_sent_quote_is_still_sent_after_the_process_forgets_it(client, mgmt_hd
         quote.estimateNumber = None
         quote.estimateFingerprint = None
 
-        again = client.post(f"/api/quotes/{qid}/estimate", headers=mgmt_hdr).json()
+        again = client.post(f"/api/v1/quotes/{qid}/estimate", headers=mgmt_hdr).json()
 
     assert again["ok"] is True
     assert again["documentNumber"] == first["documentNumber"], (
@@ -704,7 +704,7 @@ def test_the_document_a_send_produced_names_its_system_and_its_policy(
     """
     with _books(client, _StubBooks()):
         qid = _clean_quote(client, mgmt_hdr)
-        sent = client.post(f"/api/quotes/{qid}/estimate", headers=mgmt_hdr).json()
+        sent = client.post(f"/api/v1/quotes/{qid}/estimate", headers=mgmt_hdr).json()
     assert sent["ok"] is True
 
     with client.Maker() as s:

@@ -181,6 +181,32 @@ def pack_families() -> Optional[tuple]:
     manifest could only ever disagree with the engine already running. A
     *failed* read is not cached — the pack may be fetched after boot, and a
     memoized failure would keep refusing family edits until a restart.
+
+    **One pack per deployment, not per organisation, and that is a stated limit
+    rather than an oversight.** ``settings.PIE_PACK`` is a deployment-wide
+    setting, so a deployment serves one organisation layer. pie-parser's packs
+    are layered precisely so a second distributor can have its own
+    (``packs/org/<source>/`` over a shared ``packs/nomenclature/``), and the
+    obvious next step — an ``Organization.config["pie_pack"]`` resolved per
+    request — was deliberately **not** taken here.
+
+    The reason is the catalogue. ``app/catalog.py`` builds one JSONL index by
+    running the corpus through *one* pack, and ``PieService._ensure_index``
+    loads exactly that file into one process-wide index; every identity lookup
+    and every line resolution reads it. Making the *vocabulary* per
+    organisation while the index stayed deployment-wide would leave two
+    organisations validating family names against different packs and resolving
+    products against the same one — a half-measure that is less coherent than
+    the single-pack state it replaced, and the kind of thing §1 means by not
+    weakening a rule to make output appear.
+
+    Doing it properly is a design question with an answer this function cannot
+    supply: whether the index is built per organisation and held per
+    organisation (memory, and a build step per tenant), or resolution becomes
+    index-per-request (a load on the hot path), or the deployment stays
+    single-pack and a second distributor gets a second deployment — which is
+    what happens today and is a legitimate answer for three legal entities
+    selling the same manufacturer's product.
     """
     global _families_memo
     if _families_memo is not _FAMILIES_UNREAD:

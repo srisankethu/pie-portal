@@ -14,6 +14,20 @@ cryptography>=41.0
 pyyaml>=6.0
 openpyxl>=3.1
 
+# Outbound HTTP: the Zoho client, the ERP connector transports, the AI
+# providers, and the single sign-on discovery fetch. Listed here rather than
+# under `# tests` where it used to sit — it is imported at module scope by
+# `app/oauth.py` and `app/sso/verify.py`, so a deployment that trusted the
+# heading and installed without it would fail at import, not in a test run.
+httpx>=0.27
+
 # tests
 pytest>=8.0
-httpx>=0.27
+
+# Verifying an identity provider's ID token on the single sign-on path.
+# Declared rather than relied on as a transitive dependency: this is the
+# security boundary of that feature, and the failure modes it closes — `alg:
+# none`, an RS256 token re-signed HS256 against the public key — are exactly
+# what a hand-rolled sixty lines gets wrong. 2.4 is the floor that requires
+# `algorithms=` explicitly (CVE-2022-29217); this asks for more than that.
+PyJWT>=2.7

@@ -74,6 +74,28 @@ Every connection is checked at connect time and can be re-checked from its
 card; rotation replaces the whole stored sign-in in one operation for every
 company using it (`POST /api/v1/connections/{id}/rotate-erp`).
 
+## What a connector may create
+
+Reading a system and writing to it are different grants, different code and
+different days, so they are declared separately: `READ_STAGES` names what a
+connector pulls, `WRITE_STAGES` names what the platform can create there. Today
+`WRITE_STAGES` is `("sales_quotes",)` and two connectors declare it — `zoho`
+and `dynamics365`. The rest read only, and their access copy says so.
+
+Both lists are pinned against the implementation **in both directions**. A
+declared capability with no `create_<stage>` method sends an owner to grant a
+permission for something that cannot happen; a `create_<stage>` method nobody
+declared creates records in a system nobody was asked to permit it in. Zoho is
+pinned separately (`test_zohos_declared_writes_match_what_the_adapter_can_actually_create`)
+because it is not in the `ingestion/erp` registry and the registry-wide pin
+cannot see it — which is exactly how its write scopes went years undeclared.
+
+A write is never replayed. A non-idempotent call that fails without an answer
+raises `SourceWriteUncertain`, and the adapter settles it by reading the record
+back under a caller-supplied reference — see `ingestion/write_settle.py`. A
+connector whose target system cannot carry a re-checkable reference cannot
+support a write at all, and should declare none.
+
 ## What each sign-in must already be granted
 
 A half-granted sign-in is the most common way a connection authenticates and
@@ -83,7 +105,7 @@ declares its own access requirements, and the **Add a company** panel lists
 them under the connector the tabs have selected — the same panel, so the two
 have nowhere to disagree.
 
-They are declared as `Permission(name, why, required, reads)` on the connector's
+They are declared as `Permission(name, why, required, reads, writes)` on the connector's
 own spec, and Zoho's scope list is the same type in `ingestion/connections.py`
 (Zoho is a row in the catalog, not a separate panel — that separation is what
 let the screen show `ZohoBooks.*.READ` while NetSuite was selected). `name` is
@@ -92,9 +114,9 @@ person granting it is reading:
 
 | Connector | Where it is granted | Shape |
 |---|---|---|
-| `zoho` | Zoho API console, scope field | Ten `ZohoBooks.*.READ` scopes, pasted as one string |
+| `zoho` | Zoho API console, scope field | Ten `ZohoBooks.*.READ` scopes plus `estimates.CREATE`, `estimates.READ` and `settings.CREATE` for the write, pasted as one string |
 | `netsuite` | Setup → Users/Roles → Manage Roles, on the token's role | Setup and Reports permissions plus View on each list/transaction |
-| `dynamics365` | Entra ID app registration + permission sets on the app's user | `API.ReadWrite.All` with admin consent (BC publishes no read-only variant), then read on each entity |
+| `dynamics365` | Entra ID app registration + permission sets on the app's user | `API.ReadWrite.All` with admin consent (BC publishes no read-only variant), then read on each entity plus create on sales quotes |
 | `acumatica` | User Security → Access Rights by Role | Endpoint access plus View Only per screen |
 | `prophet21` | P21 user API flag + the middleware's exposed views | Per OData view |
 | `sagex3` | Syracuse role | SData access plus read per X3 table |
@@ -128,6 +150,50 @@ names each skipped row. Nothing estimates around a gap.
 A US client organization sets its own `currency` (e.g. USD) and timezone; a
 document denominated in anything else is refused at the seam and named on the
 sync report, exactly as the Zoho pull refuses them.
+
+## What each connector cannot be written to, and why
+
+Desk research against each vendor's own documentation, so the next person does
+not repeat it. None of these three changes anything today — all five ERPs still
+declare `writes=()` — but the answers differ enough that "add a writer" is a
+different size of job for each.
+
+The question in each case is the one the settle protocol forces: **is there a
+write surface reachable from the transport this connector already speaks, and
+can it carry a caller-supplied reference that a later read can find?** Without
+the second, a write must be refused outright rather than sent — an uncertain
+write that cannot be looked up is unanswerable.
+
+- **Prophet 21 — viable, on a surface the connector does not yet speak.** The
+  OData Data Services API this connector reads through is for retrieval; on
+  cloud P21 the underlying SQL access is read-only. Writes go through the
+  separate **Transaction API**, which creates native `oe_hdr` / `oe_line`
+  records and returns a real P21 order number. Its header carries a customer
+  **PO number**, which is the re-checkable reference the protocol needs. The
+  token sign-in the connector already performs reaches it, so the credential
+  shape does not change — the API surface does.
+
+- **Sage X3 — uncertain, and site-specific.** X3's REST layer creates records
+  only for modules exposed through Classes and representations
+  (`POST …/x3/$$prod/<ENTITY>?representation=<ENTITY>.$edit`). Whether the
+  sales-order object `SOH` has such a representation on a given installation is
+  not something the documentation settles; the route the community documents
+  for creating an order is a **SOAP web service against `SOH` using its `save`
+  method**, which is neither REST nor the SData surface this connector reads
+  through. Two hops away from where the connector stands, and the answer likely
+  varies per site. Do not plan a writer for X3 without a specific
+  installation's own API configuration in hand.
+
+- **Sage 100 — negative, and that is a complete answer.** There is no native
+  REST write. SData, which this connector reads through, is **deprecated**.
+  Writes go through the **Business Object Interface**, a COM component invoked
+  in-process on Windows — not something a Python service reaches over HTTP at
+  all. A Sage 100 book cannot be written to from this platform without
+  third-party middleware standing in front of it, and that middleware would be
+  the thing this platform integrated with, not Sage 100.
+
+  The SData deprecation is worth knowing for the **read** path too: it is the
+  surface this connector's entire sync depends on.
 
 ## Adding connector number seven
 

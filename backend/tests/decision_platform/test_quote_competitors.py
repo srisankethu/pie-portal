@@ -63,7 +63,8 @@ def _lost(quote_id: str, *, lost_to: str = "", customer: str = "c1",
           ) -> outcomes.DecidedQuote:
     return outcomes.DecidedQuote(
         quote_id=quote_id, customer_id=customer, customer_label=customer.upper(),
-        won=False, loss_reason=reason, decided_on=AS_OF - timedelta(days=10),
+        won=False, ever_sent=True, loss_reason=reason,
+        decided_on=AS_OF - timedelta(days=10),
         lines=1, value=Decimal(value), product_lines=product_lines,
         lost_to=lost_to)
 
@@ -72,7 +73,8 @@ def _won(quote_id: str, *, customer: str = "c1",
          value: str = "1000") -> outcomes.DecidedQuote:
     return outcomes.DecidedQuote(
         quote_id=quote_id, customer_id=customer, customer_label=customer.upper(),
-        won=True, loss_reason="", decided_on=AS_OF - timedelta(days=10),
+        won=True, ever_sent=True, loss_reason="",
+        decided_on=AS_OF - timedelta(days=10),
         lines=1, value=Decimal(value), product_lines=("CUTTING_TOOLS",))
 
 

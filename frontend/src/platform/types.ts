@@ -1091,6 +1091,14 @@ export interface ConnectorCatalogEntry {
    *  system — false where no application is registered, so the screen omits the
    *  button rather than offering one that cannot complete. */
   can_authorize: boolean;
+  /** What this platform can *create* in the system, as opposed to read. Empty
+   *  for a connection that is read-only here — which is every ERP but Zoho
+   *  today, and is a fact an owner granting access deserves to be told rather
+   *  than to discover at the moment a send refuses. */
+  writes: string[];
+  /** The one capability a screen asks about directly: whether a quote built
+   *  here can be pushed into that system at all. */
+  can_write_quotes: boolean;
 }
 
 /** One grant a connector's sign-in needs, and what the platform loses without it. */

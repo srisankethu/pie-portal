@@ -24,10 +24,14 @@ import time
 from datetime import date
 from typing import Any, Iterable, Iterator, Optional
 
-from ..errors import SourceAuthError, SourceScopeError
+from ..errors import (IngestionError, SourceAuthError, SourceScopeError,
+                      SourceThrottleError, SourceWriteRefused,
+                      SourceWriteUncertain, SourceWriteUnknown)
 from ..source import SkipPredicate
-from .base import (ConnectorSpec, CredentialMaterial, DocumentTally, Field,
-                   Permission, iso_date, register)
+from ..write_settle import settle_by_read
+from .base import (EXTERNAL_REF_MAX, ConnectorSpec, CredentialMaterial, DocumentTally, Field,
+                   Permission, WrittenDocument, iso_date, money,
+                   quote_literal, register, same_reference)
 from .transport import RestTransport
 
 SYSTEM = "dynamics365"
@@ -54,6 +58,12 @@ class BusinessCentralClient(RestTransport):
                      f"{self._tenant}/{self._environment}/api/v2.0")
         self._token: Optional[str] = None
         self._token_expires_at = 0.0
+
+    @property
+    def api(self) -> str:
+        """This environment's API root. Read by the source to address an entity
+        set directly, for the writes that do not go through ``pages``."""
+        return self._api
 
     def _auth_headers(self) -> dict[str, str]:
         if not self._token or time.time() >= self._token_expires_at:
@@ -256,6 +266,8 @@ def _is_trade(payload: dict[str, Any]) -> bool:
     return str(payload.get("status") or "").strip().lower() not in _EXCLUDED_STATUS
 
 
+
+
 class BusinessCentralSource:
     """The read source for one Business Central company."""
 
@@ -334,6 +346,239 @@ class BusinessCentralSource:
                             for r in self._rows("salesOrders", params))
                 if _is_trade(p))
 
+    # ── writing ─────────────────────────────────────────────────────────────
+    def create_sales_quotes(self, customer: str, lines: list[dict], *,
+                            customer_ref: Optional[str] = None,
+                            reference: Optional[str] = None) -> WrittenDocument:
+        """Create one sales quote in this company, or say what happened instead.
+
+        Two POSTs minimum: the header, then a line each. That shape is Business
+        Central's, not a choice — ``salesQuoteLines`` is a child entity set and
+        there is no single call that carries both.
+
+        Refuses without ``reference``. It goes out as ``externalDocumentNumber``
+        and is the only thing that can answer "did this land" after a lost
+        reply, so a write that cannot be re-read must not be attempted — the
+        same precondition the Zoho path holds itself to.
+
+        Refuses without ``customer_ref``. Matching a free-text customer name
+        against a real ledger is how a quote ends up on the wrong account.
+        """
+        if not reference:
+            raise SourceWriteRefused(
+                "This quote has no reference, so a sales quote created in "
+                "Business Central could not be found again if the reply were "
+                "lost. Nothing was sent.")
+        if not customer_ref:
+            raise SourceWriteRefused(
+                "This quote is not attached to a Business Central customer, so "
+                "there is no account to create it against. Nothing was sent.")
+        # BC caps externalDocumentNumber at 35 characters and silently refuses
+        # past it. Checked here rather than trusted: a truncated reference is a
+        # reference that cannot be looked up, which defeats the whole protocol.
+        if len(reference) > EXTERNAL_REF_MAX:
+            raise SourceWriteRefused(
+                f"The reference {reference!r} is longer than the "
+                f"{EXTERNAL_REF_MAX} characters Business Central stores, so it "
+                f"could not be read back. Nothing was sent.")
+        if not lines:
+            raise SourceWriteRefused(
+                "This quote has no priced lines, so there is nothing to create "
+                "in Business Central. An empty sales quote in a customer's "
+                "ledger is worse than none. Nothing was sent.")
+        missing = [str(ln.get("code") or "?") for ln in lines if not ln.get("itemId")]
+        if missing:
+            raise SourceWriteRefused(
+                "These lines carry no Business Central item id, and a quote "
+                "line must name an item that already exists there: "
+                + ", ".join(missing), codes=[c for c in missing if c != "?"])
+        # A line with no price or no quantity is not a line Business Central
+        # can be trusted with: it prices an omitted unitPrice from the item
+        # card, so the customer would be quoted a number nobody here chose.
+        unpriced = [str(ln.get("code") or "?") for ln in lines
+                    if ln.get("rate") is None or ln.get("qty") is None]
+        if unpriced:
+            raise SourceWriteRefused(
+                "These lines have no price or no quantity, and Business Central "
+                "would fill an omitted price from the item card — quoting a "
+                "number nobody here chose: " + ", ".join(unpriced),
+                codes=[c for c in unpriced if c != "?"])
+
+        # Pre-flight. Business Central puts no uniqueness on
+        # externalDocumentNumber, so without this a second press simply creates
+        # a second quote — the settle read only ever runs after a *fault*, and
+        # a clean repeat never faults. Zoho reads first for exactly this reason
+        # and dropping it here left the whole protocol resting on the caller's
+        # in-memory fingerprint, which is the check that already failed once.
+        already = self._settled_quote(reference, customer, len(lines))
+        if already is not None:
+            return already
+
+        header = {"customerNumber": str(customer_ref),
+                  "externalDocumentNumber": reference}
+        try:
+            created = self._client.request(
+                "POST", self._entity("salesQuotes"), json=header)
+        except SourceWriteUncertain as e:
+            # The header may or may not be there. One read settles it, and the
+            # settled document is returned rather than a second one created.
+            # ``detail`` is bound now: Python unbinds ``e`` at the end of this
+            # block, and the messages below are built inside a lambda the settle
+            # helper calls later — by which time ``e`` no longer exists.
+            detail = str(e)
+            return settle_by_read(
+                lambda: self._quote_by_reference(reference),
+                lambda row: self._found(row, customer, len(lines), reference),
+                unknown_message=lambda err: (
+                    f"The sales quote could not be completed ({detail}), and Business "
+                    f"Central could not be re-read to find out ({err}) — whether "
+                    f"it was created cannot be established. Look for external "
+                    f"document number {reference} before sending this again."),
+                refused_message=(
+                    f"The sales quote was not created ({detail}). Business Central "
+                    f"holds nothing under external document number {reference}, "
+                    f"so sending again is safe."),
+                reference=reference)
+        except (SourceScopeError, SourceAuthError):
+            # Not write outcomes: the remedy is a grant or a credential, and
+            # both carry what to fix. Re-wrapping them as "refused" would throw
+            # that away.
+            raise
+        except IngestionError as e:
+            # Business Central answered and said no — a definite "nothing was
+            # written", which is exactly what SourceWriteRefused means. Left as
+            # a bare IngestionError it is outside the three outcomes a caller
+            # handles, so it surfaced as a 500: no message, and a 500 is the
+            # thing people answer by pressing the button again.
+            raise SourceWriteRefused(
+                f"Business Central refused the sales quote: {e}") from e
+
+        quote_id = str(created.get("id") or "")
+        if not quote_id:
+            # A 2xx with no id is not a success this can act on: the lines have
+            # nowhere to go and nothing can be looked up later.
+            raise SourceWriteUnknown(
+                f"Business Central accepted the sales quote but returned no id, "
+                f"so its lines could not be added. Look for external document "
+                f"number {reference}.", reference=reference)
+
+        for index, line in enumerate(lines, start=1):
+            body = {"lineType": "Item", "itemId": str(line["itemId"]),
+                    "quantity": money(line.get("qty")),
+                    "unitPrice": money(line.get("rate"))}
+            try:
+                self._client.request(
+                    "POST",
+                    self._entity(f"salesQuotes({quote_id})/salesQuoteLines"),
+                    json=body)
+            except (SourceScopeError, SourceAuthError, SourceThrottleError):
+                # These name their own remedy — a permission, a credential, a
+                # wait. Flattening them into the unknown below would leave the
+                # header just as orphaned and the reader with nothing to act on.
+                raise
+            except Exception as e:                   # noqa: BLE001
+                # The header exists and this quote is incomplete. Neither
+                # outcome is available: reporting success would put a quote
+                # missing lines in front of a customer, and reporting a refusal
+                # would say nothing was written when a document is sitting
+                # there. So it says exactly that, and names what to go and look
+                # at. Deleting the header would be a third write that can fail
+                # the same way, leaving the same question one step further on.
+                raise SourceWriteUnknown(
+                    f"Business Central created sales quote {created.get('number') or quote_id} "
+                    f"but line {index} of {len(lines)} was refused ({e}), so the "
+                    f"quote there is incomplete. Check external document number "
+                    f"{reference} and finish or delete it before sending again.",
+                    reference=reference) from e
+
+        return self._written(created, customer, len(lines), already_existed=False)
+
+    def _entity(self, path: str) -> str:
+        """One entity set under this company, as an absolute URL."""
+        return f"{self._client.api}/companies({self._company})/{path}"
+
+    def _quote_by_reference(self, reference: str) -> Optional[dict[str, Any]]:
+        """The sales quote carrying this external document number, or None.
+
+        Raises rather than returning None when the read itself fails — the
+        settle protocol needs "not there" and "could not look" kept apart, and
+        collapsing them is how a write that landed gets sent again.
+
+        The lines come back with the header. Without them a caller can only
+        report the count it *sent*, which is a claim about its own intent
+        rather than about the document.
+        """
+        rows = self._client.pages(
+            "salesQuotes", company_id=self._company,
+            params={"$expand": "salesQuoteLines",
+                    "$filter": f"externalDocumentNumber eq '{quote_literal(reference)}'"})
+        for row in rows:
+            if same_reference(str(row.get("externalDocumentNumber") or ""), reference):
+                return row
+        return None
+
+    def _settled_quote(self, reference: str, customer: str,
+                       sent_lines: int) -> Optional[WrittenDocument]:
+        """This reference's quote as Business Central holds it, or None.
+
+        ``sent_lines`` is what *this* quote has, not what the found document
+        has. Passing the held count compares a number against itself, so the
+        mismatch check in ``_found`` cannot fire and a document sitting under
+        this reference with different lines is reported as "already sent" — a
+        pre-flight that waves through the collision it exists to catch.
+
+        Used before writing, where a read that *fails* must not be mistaken for
+        "not there" — that would send a quote that already exists. So the fault
+        propagates: refusing to send because we could not check is recoverable,
+        sending a duplicate is not.
+        """
+        row = self._quote_by_reference(reference)
+        if row is None:
+            return None
+        return self._found(row, customer, sent_lines, reference)
+
+    def _found(self, row: dict[str, Any], customer: str, sent_lines: int,
+               reference: str) -> WrittenDocument:
+        """A quote Business Central already holds, reported as what it *is*.
+
+        The count is read back, never echoed from what was sent. A header that
+        landed while its lines did not is a real state on this connector — the
+        write is two POSTs — and reporting ``len(lines)`` there would claim a
+        complete quote for a document with none, which is precisely the state
+        the line-failure path refuses to call a success.
+        """
+        held = row.get("salesQuoteLines")
+        if held is None:
+            raise SourceWriteUnknown(
+                f"Business Central holds a sales quote under external document "
+                f"number {reference} but did not return its lines, so whether it "
+                f"is complete cannot be established. Check it before sending "
+                f"this quote again.", reference=reference)
+        if len(held) != sent_lines:
+            raise SourceWriteUnknown(
+                f"Business Central holds sales quote "
+                f"{row.get('number') or row.get('id')} under external document "
+                f"number {reference}, but with {len(held)} lines where this quote "
+                f"has {sent_lines}. It is not the same document, so it is neither "
+                f"safe to report as sent nor safe to send again — check it.",
+                reference=reference)
+        return self._written(row, customer, len(held), already_existed=True)
+
+    @staticmethod
+    def _written(row: dict[str, Any], customer: str, line_count: int, *,
+                 already_existed: bool) -> WrittenDocument:
+        number = str(row.get("number") or "")
+        if not number:
+            # An id with no number is not something a person can go and look at,
+            # and "look it up" is the whole remedy this record exists to enable.
+            raise SourceWriteUnknown(
+                "Business Central returned a sales quote with no document "
+                "number, so it cannot be named to whoever has to find it.")
+        return WrittenDocument(
+            document_id=str(row.get("id") or ""),
+            number=number, customer=customer, line_count=line_count,
+            already_existed=already_existed)
+
     def list_purchase_orders(self) -> Iterable[dict[str, Any]]:
         params = self._window_filter("orderDate")
         return (p for p in (translate_purchase_order(r)
@@ -388,7 +633,9 @@ SPEC = register(ConnectorSpec(
         "registration using the client-credentials grant. An administrator "
         "registers the app, grants it the Dynamics 365 Business Central API "
         "application permission with admin consent, and creates one client "
-        "secret. The platform only ever issues reads."),
+        "secret. Everything the platform reads comes through that grant, and "
+        "so does the one thing it writes: a quote built here can be created in "
+        "Business Central as a sales quote. Nothing else is ever written."),
     permission_note=(
         "Two places, and both are needed: the application permission is "
         "granted with admin consent on the Entra ID app registration, and the "
@@ -398,8 +645,10 @@ SPEC = register(ConnectorSpec(
     permissions=(
         Permission("API.ReadWrite.All (application permission, admin consent)",
                    "The only application permission Business Central publishes "
-                   "for its standard API — there is no read-only variant. This "
-                   "platform never writes; the grant is wider than the use."),
+                   "for its standard API — there is no read-only variant. It now "
+                   "covers a write as well as the reads: a quote built here can "
+                   "be created in Business Central as a sales quote.",
+                   writes=("sales_quotes",)),
         Permission("D365 BASIC (permission set on the app's user)",
                    "Lets the app sign in to the company at all. Without it the "
                    "token is valid and every company answers 401."),

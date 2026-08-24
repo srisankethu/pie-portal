@@ -28,7 +28,7 @@ import time
 from typing import Any, Optional
 
 from ..errors import (IngestionError, SourceAuthError, SourceScopeError,
-                      SourceThrottleError)
+                      SourceThrottleError, SourceWriteUncertain)
 
 log = logging.getLogger("pie_portal.erp")
 
@@ -121,8 +121,11 @@ class RestTransport:
 
         ``replayable=True`` marks a POST that is really a read (a query, a
         sign-in) so it keeps the full retry budget; an unmarked non-GET is
-        never replayed past a 5xx, which cannot be told apart from a success
-        whose response was lost.
+        never replayed past a 5xx or a dropped connection, neither of which can
+        be told apart from a success whose response was lost. Those two raise
+        :class:`SourceWriteUncertain` rather than a plain failure, because the
+        caller's next move is different: not "report it failed" but "go and
+        read whether the record is there".
         """
         verb = method.upper()
         may_replay = (verb in self._REPLAYABLE) if replayable is None else replayable
@@ -139,6 +142,10 @@ class RestTransport:
         throttled = False
         refreshed_auth = False
         attempts = max(1, self.max_retries)
+        # Outside the loop and outside the try below: building the client sends
+        # nothing, so a failure here must not be reported as a write whose fate
+        # is unknown. Only the network call itself earns that.
+        client = self._client()
         for attempt in range(attempts):
             sent = {**self._auth_headers(), **(headers or {})}
             self._pace()
@@ -147,7 +154,20 @@ class RestTransport:
                 kwargs["json"] = json
             if data is not None:
                 kwargs["data"] = data
-            resp = self._client().request(verb, url, **kwargs)
+            try:
+                resp = client.request(verb, url, **kwargs)
+            except Exception as e:  # noqa: BLE001 — the fault is the signal
+                # A fault this side of the answer is the same unknown as a 5xx:
+                # the request may well have been received. Left raw it reaches
+                # a write caller as a bare connection error, which reads as
+                # "nothing happened".
+                if may_replay:
+                    raise
+                raise SourceWriteUncertain(
+                    f"{self.system} did not answer {verb} {url} "
+                    f"({type(e).__name__}: {e}). Whether the record was written "
+                    f"cannot be told from here, so it has not been sent again — "
+                    f"check {self.system} before sending it again.") from e
             self._last_call_at = time.monotonic()
             self.calls += 1
 
@@ -157,15 +177,39 @@ class RestTransport:
                     raise scope
                 # One refresh per request: a token can expire mid-run, but a
                 # second refusal on a freshly minted grant is the grant itself.
-                if not refreshed_auth:
+                #
+                # A 401 is *usually* "nothing happened" — but only usually. A
+                # gateway can mint it after the backend accepted the call, and
+                # re-sending an unreplayable write on that reading is how one
+                # quote becomes two. The 5xx branch below already refuses to
+                # guess; this one used to, and the difference was invisible
+                # because no write had ever gone through this transport.
+                if not refreshed_auth and may_replay:
                     refreshed_auth = True
                     self._invalidate_auth()
                     last = f"HTTP {resp.status_code}"
                     continue
+                if not may_replay and not refreshed_auth:
+                    self._invalidate_auth()
+                    raise SourceWriteUncertain(
+                        f"{self.system} answered HTTP {resp.status_code} to "
+                        f"{verb} {url} and the credentials have been refreshed, "
+                        f"but the call has not been sent again — whether the "
+                        f"record was written cannot be told from here. Check "
+                        f"{self.system} before sending it again.")
                 raise SourceAuthError(
                     f"{self.system} rejected the credentials at {url} "
                     f"(HTTP {resp.status_code}): {_body_hint(resp)}")
             if resp.status_code == 429:
+                if not may_replay:
+                    # A front end can throttle a call its backend already
+                    # accepted, and the two are indistinguishable from here.
+                    # Waiting and re-sending a write bets that it did not.
+                    raise SourceWriteUncertain(
+                        f"{self.system} rate-limited {verb} {url} (HTTP 429). "
+                        f"Whether the record was written cannot be told from "
+                        f"here, so it has not been sent again — check "
+                        f"{self.system} before sending it again.")
                 throttled = True
                 last = "HTTP 429 (rate limited)"
                 delay = self._retry_after(resp)
@@ -178,9 +222,11 @@ class RestTransport:
                 continue
             if resp.status_code >= 500:
                 if not may_replay:
-                    raise IngestionError(
+                    raise SourceWriteUncertain(
                         f"{self.system} returned HTTP {resp.status_code} to "
-                        f"{verb} {url} and the call is not safely replayable.")
+                        f"{verb} {url}. Whether the record was written cannot "
+                        f"be told from here, so it has not been retried — check "
+                        f"{self.system} before sending it again.")
                 last = f"HTTP {resp.status_code}"
                 self._sleep(min(self.max_backoff_seconds, 2 ** attempt))
                 continue

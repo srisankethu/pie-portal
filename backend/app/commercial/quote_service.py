@@ -704,6 +704,53 @@ class MissingLossReason(ValueError):
     """
 
 
+def record_document(session: Session, org: str, *, quote_id: str,
+                    external_system: str, number: str, line_count: int,
+                    fingerprint: str, reference: str = "",
+                    document_id: Optional[str] = None,
+                    already_existed: bool = False,
+                    thresholds_version: str = "") -> models.QuoteDocument:
+    """Record that this quote was written into a source system.
+
+    Append-only: one row per send, never updated. A re-send of amended content
+    writes another and the newest wins, so a quote's whole send history is
+    readable — which is what nothing had, the previous document being three
+    attributes on an in-memory object that a restart erased.
+
+    Deliberately does not commit. The caller has just performed an external
+    write it cannot take back, and the transaction boundary belongs to it.
+    """
+    row = models.QuoteDocument(
+        organization_id=org, quote_id=quote_id,
+        external_system=external_system,
+        external_document_id=document_id,
+        external_document_number=number,
+        reference=reference, line_count=line_count,
+        fingerprint=fingerprint, already_existed=already_existed,
+        thresholds_version=thresholds_version)
+    session.add(row)
+    session.flush()
+    return row
+
+
+def latest_document(session: Session, org: str, *,
+                    quote_id: str) -> Optional[models.QuoteDocument]:
+    """The document this quote most recently produced, if any.
+
+    Ordered by the id as well as the timestamp. Two sends inside one clock tick
+    is not a real scenario, but an unordered tie would make the answer depend on
+    row order — and "which document is current" deciding differently on two
+    reads is the kind of defect that is only ever seen once, in production.
+    """
+    return session.scalars(
+        select(models.QuoteDocument)
+        .where(models.QuoteDocument.organization_id == org,
+               models.QuoteDocument.quote_id == quote_id)
+        .order_by(models.QuoteDocument.written_at.desc(),
+                  models.QuoteDocument.quote_document_id.desc())
+        .limit(1)).first()
+
+
 def set_outcome(session: Session, org: str, *, quote_id: str,
                 status: QuoteOutcomeStatus, customer_ref: str = "",
                 customer_id: Optional[str] = None, note: Optional[str] = None,

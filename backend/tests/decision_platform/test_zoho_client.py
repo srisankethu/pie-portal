@@ -637,15 +637,57 @@ def test_every_scope_the_pull_uses_is_declared():
     Asserted as an equality rather than a subset so the reverse also fails: a
     scope asked of an owner that nothing calls is a permission requested for no
     reason, which is its own small breach of trust.
+
+    Both tables, because the write grants drifted the same way and worse. The
+    platform POSTs ``/estimates`` and ``/items``; ``docs/zoho-setup.md`` told
+    owners to grant ``estimates.CREATE``, ``estimates.READ`` and
+    ``settings.CREATE`` for exactly that — and this list, which is what the
+    connections screen actually serves, held none of the three. An owner who
+    granted precisely what the screen asked for got a connection that read
+    prices and refused every send, and the refusal could not even name the
+    missing scope, because ``estimates`` appeared in neither table.
     """
     from app.ingestion.connections import REQUIRED_SCOPES
-    from app.ingestion.zoho_client import SCOPE_FOR_PATH
+    from app.ingestion.zoho_client import SCOPE_FOR_PATH, WRITE_SCOPE_FOR_PATH
 
     declared = {p.name for p in REQUIRED_SCOPES}
-    used = set(SCOPE_FOR_PATH.values())
+    used = set(SCOPE_FOR_PATH.values()) | set(WRITE_SCOPE_FOR_PATH.values())
     assert used == declared, (
         f"used but never requested: {sorted(used - declared)}; "
         f"requested but never used: {sorted(declared - used)}")
+
+
+def test_zohos_declared_writes_match_what_the_adapter_can_actually_create():
+    """The both-ways pin the registry connectors get, for the one that writes.
+
+    ``test_connector_writes`` in ``test_erp_connectors`` holds every registered
+    connector's declared ``writes`` against its ``create_<stage>`` methods. It
+    cannot see Zoho: Zoho is not in ``ingestion/erp``'s registry — its connect
+    flow predates it — and its catalogue row is hand-written. So the one
+    connector that actually writes was the one the pin was structurally blind
+    to, which is how a POST endpoint went years without a declared grant.
+
+    Same assertion, same both directions: a declared write nothing implements
+    sends an owner to grant a permission for something that cannot happen, and
+    an implemented write nobody declared creates records in a system nobody was
+    asked to permit it in.
+    """
+    from app.ingestion.connections import REQUIRED_SCOPES
+    from app.ingestion.erp.base import WRITE_STAGES
+    from app.ingestion.zoho_books_service import ZohoBooksService
+
+    declared = {stage for p in REQUIRED_SCOPES for stage in p.writes}
+    # Zoho's adapter names the estimate write ``create_sales_quotes`` rather than
+    # ``create_sales_quotes``: the stage is the platform's word for the record,
+    # the method is Zoho's. The map is stated here rather than guessed from the
+    # name, because a rename on either side should fail this test loudly.
+    implements = {"sales_quotes": "create_sales_quotes"}
+    assert set(implements) <= set(WRITE_STAGES)
+    able = {stage for stage, method in implements.items()
+            if callable(getattr(ZohoBooksService, method, None))}
+    assert declared == able, (
+        f"declared but not implemented: {sorted(declared - able)}; "
+        f"implemented but not declared: {sorted(able - declared)}")
 
 
 def test_the_minimum_scope_string_is_exactly_the_required_scopes():

@@ -41,7 +41,7 @@ import httpx
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from . import clock, crypto
+from . import clock, crypto, tenancy
 from .config import settings
 from .domain import models
 from .ingestion.zoho_client import ZohoAuthError, ZohoError
@@ -124,7 +124,17 @@ def consume_state(session: Session, token: str) -> models.OAuthState:
     redirect delivered twice — a refresh, a retried request, a replay — cannot
     run the exchange twice.
     """
-    row = session.get(models.OAuthState, _hash(token or ""))
+    state_hash = _hash(token or "")
+    # The callback arrives holding a state token and nothing else — no session,
+    # no principal — so under a policy the lookup below finds nothing until the
+    # tenant is announced. The state row itself says which organization started
+    # the authorization, and its key is already the hash of a single-use secret,
+    # so asking across tenants leaks nothing to a caller who does not hold one.
+    # A no-op where there are no policies; ``None`` for a token nobody issued,
+    # which leaves the refusal below exactly as it was.
+    tenancy.adopt_tenant_for_oauth_state(session, state_hash)
+
+    row = session.get(models.OAuthState, state_hash)
     if row is None:
         raise StateInvalid("This authorization link is not one we issued.")
     if row.consumed_at is not None:

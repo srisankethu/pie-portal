@@ -364,20 +364,25 @@ EXPECTED_POLICIED = {
     "sync_skipped_rows", "tenant_keys", "tender_results",
     "vendor_msme_statuses", "vendor_payment_terms", "vendor_payments",
     "vendor_scheme_slabs", "vendor_targets", "vendors",
+    # d3rls — each behind one narrow SECURITY DEFINER lookup for the
+    # unauthenticated path that reaches it.
+    "organizations", "users", "user_sessions",
+    "audit_entries", "audit_chain_heads", "oauth_states",
 }
 
-#: Tenant-scoped and deliberately uncovered. Three reasons, and the difference
-#: between them is the whole point of writing them down:
+#: Tenant-scoped and deliberately uncovered — and after `d3rls` there is only
+#: one reason left, which is the point of keeping the buckets separate rather
+#: than counting exclusions. Capacity is a property of the *deployment* and
+#: credential sharing is a *feature*: policing either would be a regression
+#: wearing the costume of a control, so these two are permanent rather than
+#: pending.
 #:
-#: * read with no tenant announced — sign-up, the demo workspace and the Zoho
-#:   OAuth callback touch these before any principal exists. Unfinished work.
-#: * cross-tenant *by design* — capacity is a property of the deployment, and
-#:   credential sharing is a feature. A policy there is a regression wearing the
-#:   costume of a control.
-NO_PRINCIPAL_YET = {
-    "users", "organizations", "user_sessions", "audit_entries",
-    "audit_chain_heads", "oauth_states",
-}
+#: The bucket that used to sit beside this one — "read with no tenant
+#: announced" — is empty now. Sign-up, the demo workspace and the Zoho callback
+#: each got a narrow lookup instead of an exemption. It is kept as a name so a
+#: future table can be put in it deliberately rather than quietly landing in
+#: the permanent list.
+NO_PRINCIPAL_YET: set[str] = set()
 CROSS_TENANT_BY_DESIGN = {"sync_runs", "zoho_connections"}
 
 
@@ -599,3 +604,140 @@ def test_the_two_tables_without_a_tenant_column_are_still_the_same_two(migrated)
     unscoped = {t.name for t in Base.metadata.sorted_tables
                 if "organization_id" not in t.c}
     assert unscoped == {"zoho_credentials", "process_leases"}
+
+
+# ── the unauthenticated paths, which have no tenant until they find one ─────
+#
+# `d3rls` policied the last six tables by giving each path that reaches them one
+# narrow SECURITY DEFINER lookup rather than an exemption. What follows checks
+# the two halves that matter: the lookup answers, and it stays a *question* —
+# an argument that matches nothing returns nothing, and there is none that
+# returns a second row.
+def test_signup_can_still_tell_a_taken_address_from_a_free_one(migrated):
+    """The defect this lookup exists to prevent is not a broken feature but a
+    corrupted one: under a policy the ordinary query answers "free" for every
+    address, the refusal never fires, and two organizations end up sharing an
+    owner address — after which sign-in is ambiguous."""
+    Maker = sessionmaker(bind=migrated, future=True)
+    with Maker() as session:
+        if session.get(models.Organization, ORG_A) is None:
+            session.add(models.Organization(organization_id=ORG_A, name=ORG_A))
+            session.flush()
+        if session.execute(text("SELECT 1 FROM users WHERE user_id = 'rls_u2'"
+                                )).first() is None:
+            session.add(models.User(
+                user_id="rls_u2", organization_id=ORG_A,
+                email="taken@example.test", name="Taken", role="OWNER",
+                password_hash="x", active=False))
+        session.commit()
+
+    engine = create_engine(RLS_URL, future=True)
+    Maker = sessionmaker(bind=engine, future=True)
+    try:
+        with Maker() as session:
+            # No tenant announced — a signing-up stranger has none.
+            assert tenancy.current_tenant(session) is None
+            assert tenancy.email_registered(session, "taken@example.test") is True
+            assert tenancy.email_registered(session, "free@example.test") is False
+
+            # And the ordinary query, the one that used to be the authority,
+            # cannot see it — which is exactly why the lookup had to exist.
+            assert session.execute(text(
+                "SELECT 1 FROM users WHERE email = 'taken@example.test'"
+            )).first() is None
+    finally:
+        engine.dispose()
+
+
+def test_a_deactivated_account_still_holds_its_address(migrated):
+    """`app_email_registered` deliberately does not filter on `active`, unlike
+    `app_login_lookup`. The row seeded above is inactive; sign-up must still
+    refuse it, or deactivating a user quietly frees their address."""
+    engine = create_engine(RLS_URL, future=True)
+    Maker = sessionmaker(bind=engine, future=True)
+    try:
+        with Maker() as session:
+            assert tenancy.email_registered(session, "taken@example.test") is True
+            # The sign-in lookup, on the same address, correctly finds nothing.
+            assert tenancy.adopt_tenant_for_login(
+                session, "taken@example.test") is None
+    finally:
+        engine.dispose()
+
+
+def test_provisioning_can_see_an_id_collision_it_would_otherwise_walk_past(
+        migrated):
+    """The org-id walk stops at the first free candidate. Under a policy every
+    candidate looks free, so it would stop at the first and the insert would
+    fail on the primary key — loud, but a sign-up broken by another company
+    having a similar name is still broken."""
+    engine = create_engine(RLS_URL, future=True)
+    Maker = sessionmaker(bind=engine, future=True)
+    try:
+        with Maker() as session:
+            assert tenancy.org_id_taken(session, ORG_A) is True
+            assert tenancy.org_id_taken(session, "org_never_created") is False
+    finally:
+        engine.dispose()
+
+
+def test_the_oauth_callback_learns_its_tenant_from_the_state_it_holds(migrated):
+    """The callback arrives with a state token and nothing else. Its key is
+    already the hash of a single-use secret, so the lookup leaks nothing to a
+    caller who does not hold one — and an unknown hash announces no tenant,
+    leaving the caller's own refusal exactly as it was."""
+    Maker = sessionmaker(bind=migrated, future=True)
+    with Maker() as session:
+        if session.execute(text(
+                "SELECT 1 FROM oauth_states WHERE state_hash = 'rls_state'"
+        )).first() is None:
+            session.add(models.OAuthState(
+                state_hash="rls_state", organization_id=ORG_A,
+                accounts_base="https://accounts.example.test",
+                api_base="https://api.example.test",
+                expires_at=datetime.now(timezone.utc)))
+        session.commit()
+
+    engine = create_engine(RLS_URL, future=True)
+    Maker = sessionmaker(bind=engine, future=True)
+    try:
+        with Maker() as session:
+            assert tenancy.adopt_tenant_for_oauth_state(
+                session, "rls_state") == ORG_A
+            assert tenancy.current_tenant(session) == ORG_A
+        with Maker() as session:
+            assert tenancy.adopt_tenant_for_oauth_state(
+                session, "not-a-state") is None
+            assert tenancy.current_tenant(session) is None
+    finally:
+        engine.dispose()
+
+
+def test_a_tenant_cannot_read_another_tenants_users(migrated):
+    """`users` is the table this whole exercise is most about. Two tenants'
+    owners exist throughout, so "sees one" is a fact about the policy."""
+    Maker = sessionmaker(bind=migrated, future=True)
+    with Maker() as session:
+        for org, uid in ((ORG_A, "rls_u1"), (ORG_B, "rls_u3")):
+            if session.get(models.Organization, org) is None:
+                session.add(models.Organization(organization_id=org, name=org))
+                session.flush()
+            if session.execute(text("SELECT 1 FROM users WHERE user_id = :u"),
+                               {"u": uid}).first() is None:
+                session.add(models.User(
+                    user_id=uid, organization_id=org, email=f"{uid}@example.test",
+                    name=uid, role="OWNER", password_hash="x", active=True))
+        session.commit()
+
+    engine = create_engine(RLS_URL, future=True)
+    Maker = sessionmaker(bind=engine, future=True)
+    try:
+        with Maker() as session:
+            everyone = text("SELECT user_id FROM users WHERE user_id IN "
+                            "('rls_u1', 'rls_u3')")
+            assert set(session.execute(everyone).scalars()) == set()
+
+            tenancy.set_tenant(session, ORG_A)
+            assert set(session.execute(everyone).scalars()) == {"rls_u1"}
+    finally:
+        engine.dispose()

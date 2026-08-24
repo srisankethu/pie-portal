@@ -136,6 +136,77 @@ def adopt_tenant_for_login(session: Session, email: str) -> Optional[str]:
     return None
 
 
+_EMAIL_REGISTERED = text("SELECT app_email_registered(:email)")
+_ORG_ID_TAKEN = text("SELECT app_org_id_taken(:organization_id)")
+_OAUTH_STATE_ORG = text("SELECT app_oauth_state_org(:state_hash)")
+
+
+def email_registered(session: Session, email: str) -> Optional[bool]:
+    """Whether any account already holds this address. ``None`` = ask normally.
+
+    Sign-up's refusal rests on this, and under a policy the ordinary
+    ``select(User).where(email == …)`` returns nothing for a caller with no
+    tenant — so the refusal never fires and two organizations end up sharing an
+    owner address. That is not a broken feature but a corrupted one, which is
+    why this is a lookup rather than something sign-up can be trusted to notice.
+
+    Returns a boolean and nothing else — not a user id, not an organization.
+    Sign-up needs no more, and anything more would make the form an
+    address-to-tenant oracle for anyone who can reach it. It deliberately does
+    not filter on ``active``, unlike ``adopt_tenant_for_login``: a deactivated
+    user still holds their address.
+
+    ``None`` on SQLite, where there is no function and no policy, so the caller
+    falls back to its own query. Two spellings of one predicate would be the
+    §2 failure; one authority per dialect, with the ordinary query clearly the
+    fallback, is the honest shape the dialect split forces.
+    """
+    if not _is_postgres(session):
+        return None
+    return bool(session.execute(_EMAIL_REGISTERED, {"email": email}).scalar())
+
+
+def org_id_taken(session: Session, organization_id: str) -> Optional[bool]:
+    """Whether an organization id already exists. ``None`` = ask normally.
+
+    Provisioning derives ``org_<slug>`` from a company name and walks past
+    collisions. Under a policy the ordinary ``session.get`` sees no other
+    tenant's row, so the walk stops at the first candidate and the insert fails
+    on the primary key — loud rather than silent, but a sign-up broken by
+    another company having a similar name is still broken.
+
+    ``None`` on SQLite, where the caller's own lookup is the authority. Same
+    shape as ``email_registered``, and for the same reason.
+    """
+    if not _is_postgres(session):
+        return None
+    return bool(session.execute(
+        _ORG_ID_TAKEN, {"organization_id": organization_id}).scalar())
+
+
+def adopt_tenant_for_oauth_state(session: Session,
+                                 state_hash: str) -> Optional[str]:
+    """Announce the tenant that issued an OAuth state token. ``None`` if none did.
+
+    The Zoho callback arrives holding a state token and nothing else — no
+    session, no principal — and the row it needs is the one that says which
+    organization started the authorization. The argument is already a hash of a
+    single-use secret, so the lookup leaks nothing to a caller who does not hold
+    one.
+
+    ``None`` leaves no tenant announced, and the caller's own ``session.get``
+    then finds nothing — which is the same refusal an unknown token already
+    gets.
+    """
+    if not _is_postgres(session):
+        return None
+    org = session.execute(_OAUTH_STATE_ORG, {"state_hash": state_hash}).scalar()
+    if org:
+        set_tenant(session, org)
+        return str(org)
+    return None
+
+
 def current_tenant(session: Session) -> Optional[str]:
     """The tenant this transaction announced, or ``None``.
 

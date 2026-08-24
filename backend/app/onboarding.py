@@ -41,6 +41,7 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from . import tenancy
 from .config import settings
 from .domain import models
 from .domain.enums import PlanTier
@@ -152,7 +153,17 @@ def sign_up(session: Session, *, company: str, owner_name: str,
     if problem:
         raise SignupRefused(problem)
 
-    if session.scalar(select(models.User).where(models.User.email == email)):
+    # Under row-level security the query below returns nothing to a caller with
+    # no tenant — and sign-up has none, by definition. `email_registered` asks
+    # the one narrow question through a function that can see across tenants;
+    # it answers `None` where there are no policies, and the ordinary query is
+    # the authority there. Without this the refusal silently stops firing and
+    # two organizations end up sharing an owner address.
+    taken = tenancy.email_registered(session, email)
+    if taken is None:
+        taken = session.scalar(
+            select(models.User).where(models.User.email == email)) is not None
+    if taken:
         # Named rather than generalised to "could not sign up". This is a B2B
         # product where the person filling the form is the account holder, so
         # "you already have one, sign in" is the useful answer; the address is

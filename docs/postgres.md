@@ -178,46 +178,60 @@ added later would silently do nothing.
 
 ## Which tables are under a policy
 
-**64 of the 72 tenant-scoped tables** are under `ENABLE` + `FORCE ROW LEVEL
+**70 of the 72 tenant-scoped tables** are under `ENABLE` + `FORCE ROW LEVEL
 SECURITY` with a fail-closed `tenant_isolation` policy governing reads (`USING`)
-and writes (`WITH CHECK`) — six in
-`alembic/versions/d1rls_tenant_policies.py`, the other 58 in
-`d2rls_tenant_policies_rest.py`.
+and writes (`WITH CHECK`) — six in `d1rls_tenant_policies.py`, 58 in
+`d2rls_tenant_policies_rest.py`, and the last six in
+`d3rls_tenant_policies_unauthenticated.py`.
 
-**Eight are deliberately not, for three different reasons, and the difference
-matters more than the count.**
+### The paths that have no tenant until they find one
 
-*Read with no tenant announced — unfinished work, not a decision:*
+Four requests reach the database before any principal exists. Each gets **one
+narrow `SECURITY DEFINER` function** answering the single question it needs in
+order to announce its tenant — never a policy clause wide enough to permit the
+lookup, because a `WHERE` that matches "the row you asked for" is the same
+`WHERE` that matches every row, one query at a time.
 
-| table | reached with no tenant by | what it needs |
+| path | function | answers |
 |---|---|---|
-| `users` | sign-in, sign-up, demo | sign-in has its answer (below); sign-up and demo do not |
-| `organizations` | sign-up, demo, sign-in | a `set_tenant` once the org is created |
-| `user_sessions` | sign-up, demo, sign-in | follows `users` |
-| `audit_entries`, `audit_chain_heads` | sign-in, both branches | a failed sign-in for an unknown address has no tenant to attribute the row to, so `WITH CHECK` would refuse it |
-| `oauth_states` | the Zoho OAuth callback | the state row carries the organization; something must announce it from there |
+| sign-in | `app_login_lookup(email)` | which organization owns an **active** address |
+| sign-up | `app_email_registered(email)` | whether an address is taken **at all** — active or not, because a deactivated user still holds theirs |
+| provisioning | `app_org_id_taken(id)` | whether `org_<slug>` already exists, so the collision walk does not stop at the first candidate |
+| Zoho OAuth callback | `app_oauth_state_org(hash)` | which organization issued a state token |
 
-*Cross-tenant by design rather than by accident — these are the ones worth
-reading carefully, because policing them would look like tightening and would
-break something:*
+Each has `search_path` pinned in its definition: a `SECURITY DEFINER` function
+resolving `users` through the *caller's* path can be pointed at a table the
+caller made, which is the classic way this construct becomes a privilege
+escalation. Four functions rather than one dispatching on a `kind` argument —
+each is four lines and reads in one sitting.
+
+The demo workspace needs no function: its organization is named in settings, so
+it announces the tenant it already knows.
+
+**Two tables stay out permanently**, and this is the distinction that matters
+most — their cross-tenant reads are the *product*, not leaks:
 
 - **`sync_runs`** is what worker capacity is computed from. Capacity is a
-  property of the *deployment* — how many jobs the cluster is running against
-  how many it can — and a version counting only the caller's own runs would not
-  be a narrower answer, it would be a wrong one.
-- **`zoho_connections`** carries credential sharing, which is a feature: one
-  Zoho grant reaches every company that user can see, and
-  `/data/credentials/{id}/organizations` exists to say which. A policy there
-  does not secure the feature, it removes it.
+  property of the *deployment*, and a version counting only the caller's own
+  runs would not be a narrower answer, it would be a wrong one.
+- **`zoho_connections`** carries credential sharing: one Zoho grant reaches
+  every company that user can see, and `/data/credentials/{id}/organizations`
+  exists to say which. A policy there does not secure the feature, it removes
+  it.
 
-The rule those two make explicit, and the one to apply to the next table
-somebody considers: **a policy belongs on a table whose cross-tenant reads are
-leaks. Where they are the product, a policy is a regression wearing the costume
-of a control.**
+**The rule to apply to the next table somebody considers:** a policy belongs on
+a table whose cross-tenant reads are leaks. Where they are the product, a policy
+is a regression wearing the costume of a control.
 
 *No tenant column at all:* `zoho_credentials` (a Zoho refresh token belongs to a
 person, not a company) and `process_leases` (infrastructure about processes).
 Neither can take this policy shape.
+
+**One named degradation.** `oauth.sweep_expired` runs with a principal, so under
+a policy it reaps only the caller's own expired state rows; an organization that
+never authorizes again keeps a handful of tiny expired rows. That is
+garbage collection, not correctness, and the fix if it ever matters is a
+scheduled sweep on the background connection — not a policy exemption.
 
 `test_every_tenant_scoped_table_is_covered_or_deliberately_named` partitions
 every tenant-scoped table into those three buckets, so a new model lands as a

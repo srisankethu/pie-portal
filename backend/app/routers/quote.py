@@ -469,8 +469,16 @@ def create_estimate(quote_id: str,
     store.record_estimate(q, number=est.number, line_count=est.line_count,
                           fingerprint=fingerprint)
     try:
+        # ``quote_document_ref`` is the platform recording, at the one moment
+        # it learns it, which ERP document its own quote became — and it is the
+        # only durable half of that link. ``QuoteStore`` is an in-process dict
+        # whose ids are ``q{run}-N`` and whose reference never reaches the
+        # database, so without this line the quote pull and the quote builder
+        # would describe the same estimate twice with nothing joining them, and
+        # every win rate would double-count it.
         quote_service.set_outcome(
             session, org, quote_id=quote_id, status=QuoteOutcomeStatus.SENT,
+            quote_document_ref=est.estimate_id,
             customer_ref=q.customer_ref, user_id=principal.user_id)
     except Exception:  # noqa: BLE001 — the estimate exists; bookkeeping must not undo it
         log.exception("could not mark quote %s as sent", quote_id)

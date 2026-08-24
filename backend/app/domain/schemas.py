@@ -16,7 +16,7 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from .enums import CustomerStatus
+from .enums import CustomerStatus, QuoteDocOutcome
 
 
 class SourceRef(BaseModel):
@@ -237,6 +237,87 @@ class SalesOrderIn(BaseModel):
             return None
         # Via str, so a float cannot introduce binary noise into a figure the
         # commitment layer will add up.
+        return v if isinstance(v, Decimal) else Decimal(str(v))
+
+
+class QuoteDocIn(BaseModel):
+    """One quote as an ERP raised it, header grain. What was offered, and how
+    the ERP says it ended.
+
+    The demand-side document the platform has never read. Sales orders are what
+    a customer committed to; this is everything that was *offered* — the ~290
+    estimates behind them, including the ones nobody ordered. Without it a win
+    rate has no denominator and a lost quote leaves no trace anywhere.
+
+    Two status fields, on purpose. ``source_status`` is the ERP's own word,
+    carried verbatim and never mapped on the way in; ``outcome`` is this
+    platform's classification of it. Keeping only the first would put the
+    WON/LOST mapping in every reader that ever asks, and the third copy of that
+    mapping is the one that reads ``expired`` as a loss. Keeping only the
+    second would make the classification unauditable — nothing left to group by
+    when somebody asks which statuses fell through.
+
+    **Nothing here carries a judgement.** No loss reason, no "lost to", no
+    note, no platform status: an ERP list row cannot know why a customer said
+    no, and a field for it would be a field somebody eventually fills in from a
+    payload that never held the answer. Why a quote was lost is a human fact
+    and lives on ``quote_outcomes``, which no sync writes. This type is the
+    second layer of that guarantee — the first being that the table it feeds
+    has no such column either.
+
+    No cost, no margin, no unit economics. ``total`` is the quote's own selling
+    total, which is what was put in front of the customer.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    external_ref: str = Field(min_length=1)
+    number: Optional[str] = None
+    #: The ERP's ``reference_number`` — usually the customer's own enquiry or
+    #: RFQ number, written down by whoever raised the quote. Kept because it is
+    #: the only string on the row that points back at inbound demand.
+    source_reference: Optional[str] = None
+    customer_external_id: Optional[str] = None
+    #: The ERP's own ``customer_name``, carried whether or not
+    #: ``customer_external_id`` resolves to a customer this platform holds. A
+    #: quote to a contact the customer pull did not return is still a quote, and
+    #: without this the row would be unnameable rather than merely unlinked.
+    customer_ref: str = ""
+    date: date
+    #: When the offer lapses. Stored rather than derived from a default
+    #: validity, because "sent last week, awaiting a reply" and "expired in
+    #: March and nobody knows" are the two halves of the unrecorded pile and
+    #: only this field separates them.
+    expires_on: Optional[date] = None
+    #: The ERP's own word for the state of this quote, verbatim.
+    source_status: str = ""
+    outcome: QuoteDocOutcome = QuoteDocOutcome.UNRECORDED
+    #: When it was decided. Non-null whenever ``outcome`` is not UNRECORDED and
+    #: null whenever it is — a decided quote with no date is not usable as
+    #: evidence, so the classifier refuses to call one decided at all.
+    decided_on: Optional[date] = None
+    total: Optional[Decimal] = None
+    salesperson_external_id: Optional[str] = None
+    #: When the customer opened it, where the ERP tracks that. ``None`` means
+    #: nobody has opened it — which is why an unparseable stamp is rejected
+    #: rather than nulled: the two are read as the same thing downstream.
+    client_viewed_at: Optional[datetime] = None
+    #: The business's own taxonomy on the quote — Zoho's ``cf_quote_type``,
+    #: ``cf_pricing_type``, ``cf_procurement_type`` and the branch it was
+    #: raised at — carried verbatim, keys and values as the source wrote them.
+    #: A JSON bag rather than typed columns because one tenant's ERP
+    #: configuration is not a schema every connector has to share, and an
+    #: absent key stays absent: "not set" is not a category.
+    attributes: dict[str, Any] = Field(default_factory=dict)
+    source_ref: SourceRef
+
+    @field_validator("total", mode="before")
+    @classmethod
+    def _to_decimal(cls, v: Any) -> Optional[Decimal]:
+        if v is None or v == "":
+            return None
+        # Via str, so a float cannot introduce binary noise into a figure that
+        # is put in front of a customer and later summed.
         return v if isinstance(v, Decimal) else Decimal(str(v))
 
 

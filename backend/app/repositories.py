@@ -22,9 +22,9 @@ from .domain.enums import DecisionStatus, HumanAction
 from .domain.schemas import (BillIn, CostRecordIn, CreditNoteApplicationIn,
                             CreditNoteIn, CustomerIn, DocumentApplicationIn,
                             InvoiceIn, LocationIn, PaymentReceiptIn, ProductIn,
-                            PurchaseOrderIn, SalesOrderIn, SalesTxnIn,
-                            StockLocationSnapshotIn, StockSnapshotIn, VendorIn,
-                            VendorPaymentIn)
+                            PurchaseOrderIn, QuoteDocIn, SalesOrderIn,
+                            SalesTxnIn, StockLocationSnapshotIn,
+                            StockSnapshotIn, VendorIn, VendorPaymentIn)
 
 
 #: The shape ``clock.utc_stamp`` writes — ``2026-07-02T04:30:00Z``. In SQL LIKE,
@@ -854,6 +854,58 @@ class ReadModelRepository:
         row.total = so.total
         row.salesperson_external_id = so.salesperson_external_id
         row.source_ref = so.source_ref.model_dump()
+        return row
+
+    def upsert_quote_document(self, customer_id: Optional[str],
+                              q: QuoteDocIn) -> models.QuoteDoc:
+        """One quote as its ERP raised it, keyed on the id that ERP gave it.
+
+        Keyed on ``external_ref`` alone through ``_for_upsert``, like every
+        other *document* here and for the reason ``upsert_sales_order`` states:
+        a document already carries a globally unique id from its own system.
+
+        **Every column is assigned unconditionally**, including the ones that
+        arrive as ``None``. Not an oversight and not tidiness — a partial write
+        (``if q.expires_on is not None: row.expires_on = ...``) would make the
+        table look like somewhere a value can be kept, and the first person to
+        notice that would put a loss reason on it. Rewriting the whole row from
+        the payload every pull is what makes it obviously derived, which is what
+        keeps human facts on ``quote_outcomes`` where a re-sync cannot reach
+        them.
+
+        It also has to be a rewrite for a duller reason: ``source_status`` and
+        ``outcome`` are exactly the columns that change after the quote is
+        raised. A row written once and never revisited would report every
+        accepted and every declined quote as still open, which is the same bug
+        ``upsert_invoice`` describes for a settled invoice.
+
+        ``customer_id`` may be ``None``, and the row is kept anyway: a quote to a
+        customer the contact pull did not return is still a quote, and dropping
+        it would silently shrink the denominator of every win rate. The ERP's own
+        ``customer_ref`` is stored beside it so the row is still nameable.
+        """
+        row = self._for_upsert(models.QuoteDoc, q.external_ref,
+                               ref_col="external_ref")
+        if row is None:
+            row = models.QuoteDoc(organization_id=self.org,
+                                  external_ref=q.external_ref,
+                                  connector=self.connector,
+                                  connection_id=self.connection_id)
+            self.s.add(row)
+        row.number = q.number
+        row.source_reference = q.source_reference
+        row.customer_id = customer_id
+        row.customer_ref = q.customer_ref
+        row.date = q.date
+        row.expires_on = q.expires_on
+        row.source_status = q.source_status
+        row.outcome = q.outcome.value
+        row.decided_on = q.decided_on
+        row.total = q.total
+        row.salesperson_external_id = q.salesperson_external_id
+        row.client_viewed_at = q.client_viewed_at
+        row.attributes = dict(q.attributes)
+        row.source_ref = q.source_ref.model_dump()
         return row
 
     def upsert_bill(self, vendor_id: Optional[str], b: BillIn) -> models.BillDoc:

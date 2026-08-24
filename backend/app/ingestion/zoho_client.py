@@ -187,6 +187,10 @@ SCOPE_FOR_PATH: dict[str, str] = {
     "customerpayments": "ZohoBooks.customerpayments.READ",
     "purchaseorders": "ZohoBooks.purchaseorders.READ",
     "salesorders": "ZohoBooks.salesorders.READ",
+    # Quotes. Zoho's noun for the document is "estimate" and the endpoint is
+    # named for it; everything past this module calls it a quote, because the
+    # other connectors do.
+    "estimates": "ZohoBooks.estimates.READ",
     "vendorpayments": "ZohoBooks.vendorpayments.READ",
     "users": "ZohoBooks.users.READ",
 }
@@ -1337,6 +1341,89 @@ class ZohoApiSource(ZohoTransport):
                 "shipped_status": so.get("shipped_status"),
                 "total": so.get("total"),
                 "salesperson_id": so.get("salesperson_id"),
+            }
+
+    def list_quotes(self) -> Iterable[dict[str, Any]]:
+        """Quotes — what was offered, including everything nobody ordered.
+
+        Zoho calls these estimates and the endpoint is named for it; the
+        platform calls them quotes, because NetSuite, Business Central,
+        Acumatica, P21 and Sage do. This is the only place in the pull where
+        that translation happens.
+
+        The demand picture so far starts at the sales order, which is the
+        subset a customer said yes to. That makes a win rate a number with no
+        denominator: an invoiced book cannot show what was quoted and lost, and
+        a loss leaves no trace anywhere. ~290 estimates on this book against
+        the orders that came out of them is the first time the platform can see
+        both halves.
+
+        Header grain, no detail call, for the same reason as sales orders:
+        "what was offered, to whom, for how much, and how did it end" is
+        entirely on the list row. The line breakdown would cost one call per
+        quote to answer questions this does not ask — and when it is worth
+        buying, ``list_vendor_payments`` shows the shape, ``skip`` predicate
+        and all.
+
+        **No status exclusion**, which is the one deliberate divergence from
+        ``list_sales_orders``. A draft sales order is skipped there because it
+        promises nobody anything; a draft *estimate* is quoting activity that
+        really happened, and the classification downstream already keeps every
+        undecided quote — draft, sent, viewed, expired alike — out of every won
+        and lost count by calling it unrecorded. Excluding drafts here would
+        instead destroy the status-and-viewed split that makes the unrecorded
+        pile actionable, invisibly, in a place no reader can audit the
+        judgement.
+
+        Statuses are yielded verbatim. Nothing in this module decides what
+        ``expired`` means.
+        """
+        cutoff = self._cutoff()
+        until = self._until
+        for est in self._paginate("estimates", "estimates",
+                                  sort_column="date", sort_order="D", **self._window()):
+            try:
+                quoted = date.fromisoformat(str(est.get("date") or ""))
+            except ValueError:
+                continue
+            if quoted < cutoff or (until is not None and quoted > until):
+                continue
+            yield {
+                "estimate_id": str(est.get("estimate_id")),
+                "estimate_number": est.get("estimate_number"),
+                # Usually the customer's own enquiry or RFQ number, typed in by
+                # whoever raised the quote. The only string on the row that
+                # points back at inbound demand.
+                "reference_number": est.get("reference_number"),
+                "customer_id": (str(est["customer_id"]) if est.get("customer_id") else None),
+                "customer_name": est.get("customer_name"),
+                "date": est.get("date"),
+                # When the offer lapses. Blank on quotes raised without a
+                # validity, and passed through as-is: an assumed validity would
+                # put a quote on a chase list as overdue on a date nobody set.
+                "expiry_date": est.get("expiry_date"),
+                "status": est.get("status") or "",
+                # The two dates that make a decision usable. Zoho populates
+                # accepted_date on an accepted or invoiced estimate and
+                # declined_date on a declined one; both are blank on everything
+                # else, which is most of the book.
+                "accepted_date": est.get("accepted_date"),
+                "declined_date": est.get("declined_date"),
+                "total": est.get("total"),
+                "currency_code": est.get("currency_code"),
+                "salesperson_id": est.get("salesperson_id"),
+                # When the customer opened it. Distinct from when we sent it,
+                # which this row does not carry at all — reading one as the
+                # other is the benign default this pull keeps refusing.
+                "client_viewed_time": est.get("client_viewed_time"),
+                "branch_id": est.get("branch_id") or est.get("location_id"),
+                # This business's own taxonomy on the quote, verbatim. It was
+                # built by the people quoting; re-deriving any of it from the
+                # lines would be a second answer to a question already
+                # answered on the document.
+                "cf_quote_type": est.get("cf_quote_type"),
+                "cf_pricing_type": est.get("cf_pricing_type"),
+                "cf_procurement_type": est.get("cf_procurement_type"),
             }
 
     def list_vendor_payments(

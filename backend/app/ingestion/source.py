@@ -32,3 +32,11 @@ class ZohoSource(Protocol):
     def list_vendor_payments(
         self, skip: Optional[SkipPredicate] = None) -> Iterable[dict[str, Any]]: ...
     def list_purchase_orders(self) -> Iterable[dict[str, Any]]: ...
+
+    # What was offered, as against what was committed to. Named for the
+    # document rather than for Zoho's word for it: every connector in
+    # ``erp/`` has this document and they disagree about the noun — Zoho and
+    # NetSuite say estimate, Business Central, Acumatica, P21 and Sage say
+    # quote — and ``sync`` probes for the method by name, so a vendor's
+    # vocabulary here would end up inside connector-blind code.
+    def list_quotes(self) -> Iterable[dict[str, Any]]: ...

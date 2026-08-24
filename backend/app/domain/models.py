@@ -1932,17 +1932,60 @@ class QuoteOutcome(Base):
     line. Kept in its own table precisely so that ``QuoteDecision`` can stay
     append-only: the outcome is learned later and must be mutable, the priced
     facts were true at the time and must not be.
+
+    **The one table here a human writes and no sync touches.** Everything a
+    person supplies about how a quote ended — the loss reason, who took it, the
+    note — lives on this row and nowhere else, because ``quote_documents`` is
+    rewritten wholesale from the ERP payload on every pull and anything typed
+    into it would survive exactly until the next one. ``ingestion/`` never
+    opens this table.
+
+    A row names one of two documents, and exactly one:
+
+    * a **platform quote** — ``quote_id`` set, and ``quote_document_ref``
+      filled in at the moment the quote is pushed to the ERP, which is when the
+      platform learns which ERP document its own quote became;
+    * an **ERP-raised quote** the platform never priced — ``quote_id`` NULL,
+      ``quote_document_ref`` set.
+
+    ``quote_id`` is therefore nullable, and NULL is the honest encoding of
+    "there is no platform quote" rather than a sentinel that would have to be
+    excluded by every reader. NULLs are distinct in a unique index on both
+    SQLite and PostgreSQL, so the two constraints below coexist over the same
+    table with no partial index and nothing backfilled.
+
+    "At least one of the two is set" is enforced in
+    ``commercial.quote_service.set_outcome``, which is provably the only writer,
+    rather than by a CHECK constraint: this repo has no CHECK precedent and
+    ``compare_metadata`` does not compare them, so the drift test could never
+    police one.
     """
 
     __tablename__ = "quote_outcomes"
     __table_args__ = (
         UniqueConstraint("organization_id", "quote_id", name="uq_quote_outcome_org_quote"),
+        UniqueConstraint("organization_id", "quote_document_ref",
+                         name="uq_quote_outcome_org_document"),
     )
 
     quote_outcome_id: Mapped[str] = mapped_column(String(64), primary_key=True,
                                                   default=_uuid)
     organization_id: Mapped[str] = mapped_column(String(64), index=True)
-    quote_id: Mapped[str] = mapped_column(String(64), index=True)
+    #: The platform quote this describes. NULL for a quote raised directly in
+    #: the ERP, which the platform reads but never priced.
+    quote_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    #: The ERP document this describes: ``QuoteDoc.external_ref``, a *value* the
+    #: source system issued — never ``QuoteDoc.quote_document_id``, which is a
+    #: surrogate minted at insert. That is what makes a rebuild safe: ``DELETE
+    #: FROM quote_documents`` plus a full re-sync re-mints every surrogate and
+    #: every pointer here still resolves. Written the same way, and for the same
+    #: reason, as ``PaymentApplication.invoice_external_ref``.
+    #:
+    #: It can dangle — an estimate deleted in the ERP, or one that falls outside
+    #: the sync window, leaves a pointer matching no row. That is surfaced as a
+    #: counted data-quality figure and never auto-cleaned: deleting a human's
+    #: recorded loss reason because a document went missing is the larger loss.
+    quote_document_ref: Mapped[Optional[str]] = mapped_column(String(128), index=True)
     customer_ref: Mapped[str] = mapped_column(String(255), default="")
     customer_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
 
@@ -2793,6 +2836,135 @@ class SalesOrderDoc(Base):
     shipped_status: Mapped[Optional[str]] = mapped_column(String(48))
     total: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
     salesperson_external_id: Mapped[Optional[str]] = mapped_column(String(64))
+    source_ref: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
+                                                 onupdate=_now)
+
+
+class QuoteDoc(Base):
+    """A quote as an ERP raised it — what was offered, and how the ERP says it
+    ended.
+
+    The demand-side document the platform has never read. ``SalesOrderDoc`` is
+    what a customer committed to; this is everything that was *offered*,
+    including the majority nobody ordered. Without it a win rate has no
+    denominator — the invoiced side is visible and the declined side is not, so
+    every rate computed from what exists is computed over the winners.
+
+    Header grain, like ``SalesOrderDoc`` and for the same reason: the line-level
+    split would cost one API call per quote and answers a question this does not
+    ask.
+
+    **Two status columns, and both earn their place.** ``source_status`` is the
+    ERP's own word carried verbatim, never mapped on the way in; ``outcome`` is
+    this platform's classification of it, produced by
+    ``ingestion.normalize.classify_outcome``. Keeping only the first would put
+    the WON/LOST mapping in every reader that ever asks, and the third copy of
+    that mapping is the one that reads ``expired`` as a loss. Keeping only the
+    second would make the classification unauditable — a GROUP BY on the pair is
+    what shows which statuses fell through and why. ``outcome`` is NOT NULL with
+    a default of ``UNRECORDED`` rather than nullable, because a nullable
+    classification invites a ``COALESCE`` at the point of reading and silence
+    would start meaning whatever the last reader chose.
+
+    **Derived, and rewritten wholesale.** ``upsert_quote_document`` assigns every
+    column below from the payload on every sync, unconditionally — so a
+    human-supplied fact stored here would survive exactly until the next pull,
+    the same trap ``VendorPaymentTerm`` exists to avoid on the vendor side. That
+    is why there is no ``loss_reason``, no ``lost_to`` and no ``note`` column
+    here, and why there is no endpoint that writes this table: why a quote was
+    lost is a human fact, it lives on ``quote_outcomes``, which no sync opens,
+    and the two are joined by ``QuoteOutcome.quote_document_ref`` holding this
+    row's ``external_ref``. A *value* pointer, deliberately — ``DELETE FROM
+    quote_documents`` followed by a full re-sync re-mints every
+    ``quote_document_id`` here and every human pointer still resolves, which is
+    what makes the harshest rebuild safe. ``PaymentApplication.invoice_external_ref``
+    is written the same way for the same reason.
+
+    No cost, no margin, no unit economics, and no count or flag that answers a
+    margin question. ``total`` is the quote's own selling total — the number
+    that was put in front of the customer — so there is no column here a role
+    projection would have to withhold, and therefore none that can be forgotten.
+    Currency is refused at the ingestion seam like every other document table
+    rather than stored.
+    """
+
+    __tablename__ = "quote_documents"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "connector", "connection_id", "external_ref",
+                         name="uq_quote_document_source"),
+        Index("ix_quote_documents_org_outcome", "organization_id", "outcome"),
+        Index("ix_quote_documents_org_date", "organization_id", "date"),
+    )
+
+    quote_document_id: Mapped[str] = mapped_column(String(64), primary_key=True,
+                                                   default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    # Which system this document came from, and which connected company's
+    # book. The same triple the master tables carry: an external reference is
+    # unique only inside the system that issued it, and only inside one company
+    # of that system. Nullable because a row written before this existed cannot
+    # be attributed after the fact — see the migration for why nothing is
+    # backfilled.
+    connector: Mapped[Optional[str]] = mapped_column(String(32), index=True)
+    connection_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    #: The id the ERP gave this quote. Also the value ``quote_outcomes`` points
+    #: at, which is why it is indexed on its own as well as inside the source
+    #: uniqueness constraint.
+    external_ref: Mapped[str] = mapped_column(String(128), index=True)
+    number: Mapped[Optional[str]] = mapped_column(String(128))
+    #: The ERP's ``reference_number`` — usually the customer's own enquiry or RFQ
+    #: number, typed in by whoever raised the quote. The only string on the row
+    #: that points back at inbound demand, which is why it is indexed.
+    source_reference: Mapped[Optional[str]] = mapped_column(String(128), index=True)
+    customer_id: Mapped[Optional[str]] = mapped_column(String(64),
+                                                       ForeignKey("customers.customer_id"),
+                                                       index=True)
+    #: The ERP's own ``customer_name``, kept even when ``customer_id`` resolves.
+    #: A quote to a customer the contact pull did not return is still a quote,
+    #: and dropping it would lose exactly the rows worth chasing.
+    customer_ref: Mapped[str] = mapped_column(String(255), default="")
+    date: Mapped[date] = mapped_column(Date, index=True)
+    #: When the offer lapses. Stored rather than derived from an assumed
+    #: validity, because "sent last week, awaiting a reply" and "expired in March
+    #: and nobody knows" are the two halves of the unrecorded pile and this is
+    #: the only field that separates them. Whether a quote is *past* expiry is
+    #: computed on read against the day it is asked, never stored: that answer
+    #: changes daily and a frozen one is wrong by tomorrow.
+    expires_on: Mapped[Optional[date]] = mapped_column(Date)
+    #: The ERP's own word for the state of this quote, verbatim and unmapped.
+    source_status: Mapped[str] = mapped_column(String(48), default="")
+    #: A ``QuoteDocOutcome``: WON, LOST or UNRECORDED. Silence is UNRECORDED and
+    #: never LOST — ``expired`` spans "nobody worked it", "the customer never
+    #: answered" and "we lost it to a competitor", and only one of those is a
+    #: loss. See ``classify_outcome`` for the two positive allowlists.
+    outcome: Mapped[str] = mapped_column(String(16), default="UNRECORDED")
+    #: The date the ERP recorded the decision on. Non-null whenever ``outcome``
+    #: is not UNRECORDED, because a decided quote with no date is not usable as
+    #: evidence — ``DecidedQuote.decided_on`` is a required date and the readers
+    #: already skip an undated decision. The classifier refuses to call such a
+    #: quote decided at all, and the sync counts how often that happens rather
+    #: than letting it pass silently.
+    decided_on: Mapped[Optional[date]] = mapped_column(Date)
+    #: The quote's own selling total. Not a cost, not a margin. NULL where the
+    #: ERP gave none, and a NULL is excluded from a value sum and counted, never
+    #: read as zero.
+    total: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
+    salesperson_external_id: Mapped[Optional[str]] = mapped_column(String(64))
+    #: When the customer opened it, where the ERP tracks that. NULL means nobody
+    #: has opened it, and that is read as a fact rather than as missing data —
+    #: which is why normalisation rejects an unplaceable stamp instead of nulling
+    #: it. It is deliberately *not* an input to the outcome classification: a
+    #: customer reading a quote is not a customer deciding on one.
+    client_viewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    #: The business's own taxonomy on the quote — Zoho's ``cf_quote_type``,
+    #: ``cf_pricing_type``, ``cf_procurement_type`` and the branch it was raised
+    #: at — verbatim, keys and values as the source wrote them. A JSON bag rather
+    #: than typed columns because one tenant's ERP configuration is not a schema
+    #: every connector has to share, and an absent key stays absent: "not set" is
+    #: not a category.
+    attributes: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     source_ref: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,

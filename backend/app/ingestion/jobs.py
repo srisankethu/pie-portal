@@ -818,6 +818,22 @@ def execute_sync(session: Session, run: models.SyncRun, *,
         # stored, and silently discarded before anything could read them. They
         # now come back as a return value, which is harder to drop by accident.
         notes.update(analysis_notes)
+        # What the quote pull read, and what the date gate cost it.
+        #
+        # In ``notes`` rather than in a ``sync_runs`` column, which is the
+        # convention the two most recent pulls set — credit notes and locations
+        # added none — and a schema change per pull is not worth a number the
+        # run report already carries.
+        #
+        # ``undated`` is the half that must not be silent. A quote whose ERP
+        # status says accepted or declined but which carries no decision date is
+        # stored unrecorded rather than as a dated-looking win or loss, and a
+        # rule that discards evidence has to say how often it fires. Expected to
+        # be zero; a number that climbs is a question for Zoho, not a reason to
+        # relax the gate.
+        if report.quote_documents or report.quote_documents_undated:
+            notes["quotes"] = {"read": report.quote_documents,
+                               "undated_decisions": report.quote_documents_undated}
         run.notes = notes
         # Everything logged since the last phase boundary, the traceback of a
         # failed run included. The caller commits; `run_job` writes anything

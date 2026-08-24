@@ -114,6 +114,11 @@ REQUIRED_SCOPES: tuple[Permission, ...] = (
                "accounting entry exists; without it the platform sees only what "
                "has already been invoiced.",
                required=False, reads=("sales_orders",)),
+    Permission("ZohoBooks.estimates.READ",
+               "Quotes — what was offered and how each one ended. Without it "
+               "the platform sees only what was invoiced, so a win rate has no "
+               "denominator and a lost quote leaves no trace.",
+               required=False, reads=("quotes",)),
     Permission("ZohoBooks.vendorpayments.READ",
                "Money out. Receipts alone are not cash — they are revenue "
                "collected — so without this, liquidity and working capital "

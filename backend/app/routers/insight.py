@@ -46,6 +46,7 @@ from ..commercial.insight import (absence, adoption, bonds, cadence, capital,
                                   passthrough as pass_through_view, payments,
                                   periods, radar, routing, schemes, selffunding,
                                   simulate, stock,
+                                  unrecorded as unrecorded_view,
                                   story, supply, terms as vendor_terms, wallet,
                                   weather, withholding)
 from ..db import get_session
@@ -1094,6 +1095,35 @@ _DECIDED = ("WON", "LOST")
 _AWAITING = ("DRAFT", "SENT")
 
 
+def _assigned_customer_ids(session: Session,
+                           principal: Principal) -> Optional[frozenset[str]]:
+    """The accounts this principal is narrowed to, or ``None`` for the book.
+
+    ``None`` and an empty set are different answers and the caller must be able
+    to tell them apart: ``None`` is "no narrowing applies", an empty set is "a
+    salesperson who holds no accounts", and collapsing the second into the first
+    would hand them the whole book. Both quote reads below take the same set for
+    the same reason ``_scoped_outcomes`` states — a count taken outside the
+    scope leaks the size of a book the reader cannot see.
+
+    The ids come from ``_customers_in_scope``, which resolves ownership through
+    ``commercial/ownership`` — not from a filter on ``Customer.assigned_user_id``,
+    which is what this used to do and what every screen that reads that column
+    directly gets wrong. ``assigned_user_id`` is Zoho's derived answer, rewritten
+    by ``_sync_assignments`` from the salesperson on the last invoice; a manager
+    handing an account over writes a ``CustomerAccountOwner`` row that beats it.
+    Reading the column alone therefore hides a reassigned account from the person
+    it was given to and leaves it visible to the person it was taken from —
+    verbatim the failure ``authz.can_view_customer`` says the ownership rule
+    exists to prevent, and two disagreeing answers to "whose book is this" in one
+    file.
+    """
+    if not principal.is_salesperson:
+        return None
+    customers, _owners = _customers_in_scope(session, principal)
+    return frozenset(c.customer_id for c in customers)
+
+
 def _scoped_outcomes(session: Session, org: str, principal: Principal,
                      statuses: tuple[str, ...]) -> list[models.QuoteOutcome]:
     """Every quote in these states this principal may see, and nothing else.
@@ -1113,11 +1143,8 @@ def _scoped_outcomes(session: Session, org: str, principal: Principal,
     stmt = select(models.QuoteOutcome).where(
         models.QuoteOutcome.organization_id == org,
         models.QuoteOutcome.status.in_(statuses))
-    if principal.is_salesperson:
-        mine = [c for (c,) in session.execute(
-            select(models.Customer.customer_id).where(
-                models.Customer.organization_id == org,
-                models.Customer.assigned_user_id == principal.user_id)).all()]
+    mine = _assigned_customer_ids(session, principal)
+    if mine is not None:
         stmt = stmt.where(
             models.QuoteOutcome.customer_id.in_(mine)
             | (models.QuoteOutcome.customer_id.is_(None)
@@ -1410,6 +1437,54 @@ def quote_pricing(principal: Principal = Depends(require_manager_or_owner),
                       "the same item at the same quantity band. The margin "
                       "figures above are computed over every fully-costed "
                       "quote and do not need that."))
+
+
+@router.get("/unrecorded-quotes")
+def unrecorded_quotes(limit: int = Query(50, ge=1, le=500),
+                      principal: Principal = Depends(current_principal),
+                      session: Session = Depends(get_session)) -> dict:
+    """The quotes the ERP holds no outcome for, in the order worth asking about.
+
+    Every role, and for the same reason ``/quote-outcomes`` is: nothing in the
+    response is derived from cost. ``value`` is each quote's own selling total —
+    the number that went to the customer — and the rest is dates, the ERP's own
+    status word and counts of them. A salesperson is narrowed to their own
+    accounts by the same rule the win rate applies.
+
+    Thin, by rule. The grouping, the ranking and every count come from
+    ``commercial/insight/unrecorded``; this maps the query parameter, applies
+    role scope and slices the page. The slice is here rather than there on
+    purpose: ``totals`` is taken over the whole list, so the headline says how
+    big the pile is and ``listed`` says how much of it is on the page.
+
+    ``/quote-outcomes`` answers "how often do we win"; this answers "which of
+    the ones nobody wrote down is worth a person's afternoon". They are separate
+    endpoints because the first is a rate over answered quotes and this is a
+    worklist over unanswered ones, and folding the second into the first would
+    put a two-hundred-row list inside a summary.
+    """
+    org, snapshot, th = _labels_only(session, principal)
+    as_of = clock.today(th.timezone)
+    rows = unrecorded_view.build(
+        session, org, as_of=as_of,
+        customer_names=snapshot.customer_names,
+        customer_ids=_assigned_customer_ids(session, principal))
+
+    result = dict(unrecorded_view.totals(rows))
+    result["quotes"] = [row.to_dict() for row in rows[:limit]]
+    result["listed"] = len(result["quotes"])
+    result["as_of"] = as_of.isoformat()
+    #: The order the list is in, published so a reader can recompute it rather
+    #: than infer it. See the module docstring for why it is a lexicographic
+    #: sort over two named quantities and not a score.
+    result["group_order"] = list(unrecorded_view.GROUP_ORDER)
+    return _envelope(
+        result, th=th,
+        empty_reason=(None if rows else
+                      "Every quote this book holds has an outcome the ERP "
+                      "recorded, or no quotes have been synced yet. This list "
+                      "is the ones with neither a win nor a loss against them — "
+                      "silence, which is never read as a loss."))
 
 
 @router.get("/cashflow")

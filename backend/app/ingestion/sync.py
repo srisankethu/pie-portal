@@ -41,6 +41,7 @@ from ..state.events import EventLog, Source
 from ..trust import keys, vault
 from .normalize import (
     NormalizationError,
+    dropped_an_undated_decision,
     normalize_bill,
     normalize_bill_terms,
     normalize_invoice_terms,
@@ -52,6 +53,7 @@ from .normalize import (
     normalize_payment,
     normalize_product,
     normalize_purchase_order,
+    normalize_quote_document,
     normalize_sales_order,
     normalize_stock,
     normalize_vendor,
@@ -78,6 +80,23 @@ class SyncReport:
     payments: int = 0
     purchase_orders: int = 0
     sales_orders: int = 0
+    #: Quotes read from the ERP — what was offered, including everything nobody
+    #: ordered. No ``sync_runs`` column behind it, deliberately: credit notes
+    #: and locations, the two most recent pulls, added none either, and a
+    #: schema change per pull for a number the run report already carries is
+    #: not the convention this module set.
+    quote_documents: int = 0
+    #: Quotes whose ERP status says they were decided and whose decision date
+    #: was absent, so they were stored as unrecorded rather than as a dated-
+    #: looking win or loss. The cost of the date gate, counted rather than
+    #: silent — a rule that discards evidence has to say how much.
+    #:
+    #: Expected to be near zero. A number that climbs means Zoho is reporting
+    #: accepted and declined estimates without ``accepted_date`` /
+    #: ``declined_date``, and the fix is upstream, not a relaxed gate here.
+    #: ``source_status`` is stored verbatim beside ``outcome``, so a GROUP BY
+    #: on the pair names exactly which statuses fell through.
+    quote_documents_undated: int = 0
     vendor_payments: int = 0
     credit_notes: int = 0
     locations: int = 0
@@ -252,6 +271,8 @@ class SyncReport:
             "vendors": self.vendors, "stock_snapshots": self.stock_snapshots,
             "payments": self.payments, "purchase_orders": self.purchase_orders,
             "sales_orders": self.sales_orders,
+            "quote_documents": self.quote_documents,
+            "quote_documents_undated": self.quote_documents_undated,
             "vendor_payments": self.vendor_payments,
             "credit_notes": self.credit_notes,
             "locations": self.locations,
@@ -557,6 +578,21 @@ class SyncService:
         if hasattr(self.source, "list_sales_orders"):
             self._supply_phase("Reading sales orders", "sales_order",
                                self._sync_sales_orders)
+        # And what was offered, which is the half the platform has never read.
+        # Probed and wrapped like the rest, and here rather than anywhere
+        # earlier for two reasons: ``run_supply`` runs after ``run_reference``,
+        # so a quote's customer resolves against a master this pass has already
+        # pulled; and ``estimates`` needs a scope older connections were never
+        # authorised for, so a 401 must record SCOPE_NOT_GRANTED against this
+        # one stage instead of taking bills and invoices down with it — the
+        # failure this method's docstring was written about.
+        #
+        # ``_supply_phase`` flushes; the commit is ``jobs.execute_sync``'s
+        # ``phase`` callback, which is the natural boundary CLAUDE.md §4 asks
+        # for on a long write and the one every other pull here already uses.
+        if hasattr(self.source, "list_quotes"):
+            self._supply_phase("Reading quotes", "quote_document",
+                               self._sync_quote_documents)
         if hasattr(self.source, "list_vendor_payments"):
             self._supply_phase("Reading payments out", "vendor_payment",
                                self._sync_vendor_payments)
@@ -728,6 +764,55 @@ class SyncService:
             self.log.record(ev.SALES_ORDER_PLACED, so.date,
                        Source("sales_order", so.external_ref), so)
             self.report.sales_orders += 1
+
+    def _sync_quote_documents(self) -> None:
+        """Quotes as the ERP raised them — the demand side of the book.
+
+        The other half of ``_sync_sales_orders``. An order is what a customer
+        said yes to; this is everything that was *offered*, including the
+        majority nobody ordered, and without it a win rate has no denominator
+        and a lost quote leaves no trace anywhere.
+
+        **No event is emitted, and that is deliberate**, for the reason
+        ``_sync_credit_notes`` gives about its own silence: every type in
+        ``state.events`` is folded into a Business State by an applier, and
+        ``test_event_log`` pins the two registries as equal sets. There is no
+        quote state to fold into, so a new event type here would be a build
+        failure dressed as provenance. These are plain derived rows, read
+        directly by whatever asks.
+
+        **This pull never opens ``quote_outcomes``** — it does not write to it
+        and does not select from it either. That table is the one a person
+        writes: why a quote was lost, and who it went to. Keeping the sync out
+        of it entirely is what makes "a re-sync cannot destroy what somebody
+        typed" a property of the code rather than a promise in a docstring, and
+        the two tables meet only where a human writes ``quote_document_ref``.
+
+        An unresolved customer keeps the row. A quote to a contact the customer
+        pull did not return is still a quote, and dropping it would silently
+        shrink the denominator of every win rate — the same reasoning that
+        keeps a sales order against an unknown customer.
+        """
+        for raw in self.source.list_quotes():
+            ref = str(raw.get("estimate_id", "?"))
+            try:
+                q = normalize_quote_document(raw, system=self.connector)
+            except NormalizationError as e:
+                self.report.skip("quote_document", ref, e.code, e.detail)
+                continue
+            # Refused at the seam like every other document: no money column in
+            # this schema carries a currency, so a foreign quote read here would
+            # be summed against domestic ones for ever after.
+            if self._refuses_currency("quote_document", ref, raw):
+                continue
+            customer_id = None
+            if q.customer_external_id:
+                customer = self.repo.get_customer_by_external(q.customer_external_id)
+                customer_id = customer.customer_id if customer else None
+            self.repo.upsert_quote_document(customer_id, q)
+            if dropped_an_undated_decision(q, system=self.connector):
+                self.report.quote_documents_undated += 1
+            self.report.quote_documents += 1
 
     def _sync_locations(self) -> None:
         """The branch list. Small, and read once per company."""

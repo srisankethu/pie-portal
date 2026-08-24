@@ -83,6 +83,12 @@ EXPORTED: tuple[tuple[str, Any], ...] = (
     ("invoices", models.InvoiceDoc),
     ("purchase_orders", models.PurchaseOrderDoc),
     ("sales_orders", models.SalesOrderDoc),
+    # What was offered, alongside what was ordered. Exported rather than
+    # excluded for the reason the sales order is: it is this customer's own
+    # trading record with us, and an export holding every order while
+    # withholding the quotes behind them would hand back the half that closed
+    # and hide the half that did not.
+    ("quote_documents", models.QuoteDoc),
     # Which orders each invoice billed against. Exported rather than excluded:
     # it is this customer's own trading record, and an export holding the orders
     # and the invoices but not the joins between them would hand back two lists

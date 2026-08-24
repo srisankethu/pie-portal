@@ -92,6 +92,50 @@ def clear_tenant(session: Session) -> None:
         session.execute(text("RESET " + GUC))
 
 
+#: The one query allowed to cross the tenant boundary, and it is a *function*
+#: rather than a policy exemption on purpose — see `adopt_tenant_for_login`.
+_LOGIN_LOOKUP = text("SELECT organization_id FROM app_login_lookup(:email)")
+
+
+def adopt_tenant_for_login(session: Session, email: str) -> Optional[str]:
+    """Find which tenant an email belongs to, and announce it. The one hole.
+
+    Sign-in is the single request that cannot know its tenant in advance: there
+    is no token yet, and the organization is a property of the row being looked
+    for. Under a fail-closed policy the ordinary
+    ``select(User).where(email == …)`` returns nothing, and every sign-in fails
+    — so something has to be able to answer this one question across tenants.
+
+    **Why a SECURITY DEFINER function and not a policy that permits it.** A
+    policy clause wide enough to let an unauthenticated caller find a user by
+    email is a policy clause wide enough to enumerate the table; a WHERE that
+    matches "the row you asked for" is the same WHERE that matches every row,
+    one query at a time. A function is narrow in a way a predicate cannot be:
+    it takes one email, returns two columns, and there is no argument that
+    makes it return a third or a second row. Its body is the audited surface,
+    and it is four lines long.
+
+    ``search_path`` is pinned inside the function (the migration does it, not
+    this call) because a SECURITY DEFINER function that resolves ``users``
+    through the caller's ``search_path`` can be pointed at a table the caller
+    made. That is the classic way this construct becomes a privilege
+    escalation, and it is a one-line mitigation.
+
+    Returns the organization, or ``None`` when the email matches nothing — in
+    which case no tenant is announced and the caller's own query comes back
+    empty, which is the same answer sign-in already gives for an unknown
+    address. On SQLite it returns ``None`` and announces nothing, because there
+    is no policy to satisfy and the caller's plain query works unchanged.
+    """
+    if not _is_postgres(session):
+        return None
+    org = session.execute(_LOGIN_LOOKUP, {"email": email}).scalar()
+    if org:
+        set_tenant(session, org)
+        return str(org)
+    return None
+
+
 def current_tenant(session: Session) -> Optional[str]:
     """The tenant this transaction announced, or ``None``.
 

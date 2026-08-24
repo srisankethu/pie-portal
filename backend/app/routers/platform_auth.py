@@ -29,7 +29,7 @@ from ..authz import (
     is_login_throttled,
     open_session, record_login_failure, reset_login_failures, revoke_all_sessions,
     revoke_session, set_session_cookie)
-from .. import clock
+from .. import clock, tenancy
 from ..config import settings
 from ..db import get_session
 from ..domain import models
@@ -94,6 +94,16 @@ class LoginResponse(BaseModel):
 def login(body: LoginRequest, request: Request, response: Response,
           session: Session = Depends(get_session)) -> LoginResponse:
     email = (body.email or "").strip().lower()
+
+    # Sign-in is the one request that cannot know its tenant before it queries:
+    # there is no token yet, and the organization is a property of the row being
+    # looked for. Under row-level security the lookup below would return nothing
+    # and every sign-in would fail, so this asks the one narrow question that is
+    # allowed to cross the boundary and announces the answer. A no-op where
+    # there are no policies; `None` for an unknown address, which leaves the
+    # query below to come back empty exactly as it does today.
+    tenancy.adopt_tenant_for_login(session, email)
+
     user = session.scalar(select(models.User).where(models.User.email == email))
 
     # Check throttling early to deny early without exposing account existence.

@@ -32,6 +32,7 @@ them it expected to be missing.
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone
 
 import pytest
 from sqlalchemy import create_engine, text
@@ -96,9 +97,16 @@ def probe():
                           "TO pie_app"))
         conn.execute(text(f"ALTER TABLE {TABLE} ENABLE ROW LEVEL SECURITY"))
         conn.execute(text(f"ALTER TABLE {TABLE} FORCE ROW LEVEL SECURITY"))
+        # Named `probe_isolation`, not `tenant_isolation`. The structural
+        # tests further down ask `pg_policies` which tables the *migration*
+        # policied; a scratch table sharing that policy name puts itself in the
+        # answer, and the first version of this file failed for exactly that
+        # reason. The shape is otherwise identical, WITH CHECK included.
         conn.execute(text(
-            f"CREATE POLICY tenant_isolation ON {TABLE} "
-            f"USING (organization_id = current_setting('{tenancy.GUC}', true))"))
+            f"CREATE POLICY probe_isolation ON {TABLE} "
+            f"USING (organization_id = current_setting('{tenancy.GUC}', true)) "
+            f"WITH CHECK (organization_id = "
+            f"current_setting('{tenancy.GUC}', true))"))
     try:
         yield owner
     finally:
@@ -312,3 +320,205 @@ def test_a_non_bypassing_serving_role_is_reported_healthy(monkeypatch):
         status, message = check()
         assert status == HealthStatus.HEALTHY
         assert "pie_app" in (message or "")
+
+
+# ── the policies on real tables, over a migrated schema ─────────────────────
+#
+# Everything above pins the *mechanism* on a scratch table. These pin what the
+# migration actually did, on the schema Alembic builds — which is the only place
+# a policy that was written but never applied, or applied without FORCE, shows
+# up. `verify.sh` runs the migration chain against this database in the step
+# before this file, so the schema here is the real one.
+from app.domain import models  # noqa: E402
+
+#: What `d1rls` declares. Duplicated here on purpose rather than imported from
+#: the migration: a test that reads its expectations out of the thing it is
+#: testing agrees with it by construction and can never disagree. Adding a table
+#: to the migration must fail this until somebody has thought about whether an
+#: unauthenticated path reads it.
+EXPECTED_POLICIED = {
+    "value_events", "quote_decisions", "signals", "decisions",
+    "customer_item_metrics", "approval_requests",
+}
+
+
+def _migrated(owner) -> bool:
+    with owner.connect() as conn:
+        return bool(conn.execute(text(
+            "SELECT to_regclass('public.value_events') IS NOT NULL")).scalar())
+
+
+@pytest.fixture()
+def migrated(probe):
+    """The owner engine over a migrated schema, with the app role able to reach it.
+
+    The grants are re-applied here for the same reason `probe` grants schema
+    USAGE: `verify_pg_migrations.py` runs against this database in the step
+    before these tests and drops and recreates schema `public`, taking every
+    grant with it. Without this the app role gets
+    `relation "value_events" does not exist` — a table it cannot reach reads as
+    a table that is not there — and the isolation assertions below would pass
+    for the wrong reason, which is the one failure mode this whole file is
+    written against.
+    """
+    if not _migrated(probe):
+        pytest.skip("this database has not been migrated; verify.sh step 6 does "
+                    "that before these tests run")
+    with probe.begin() as conn:
+        conn.execute(text("GRANT USAGE ON SCHEMA public TO pie_app"))
+        conn.execute(text("GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES "
+                          "IN SCHEMA public TO pie_app"))
+        conn.execute(text("GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA "
+                          "public TO pie_app"))
+    return probe
+
+
+def test_exactly_the_intended_tables_carry_the_policy(migrated):
+    with migrated.connect() as conn:
+        found = set(conn.execute(text(
+            "SELECT tablename FROM pg_policies WHERE policyname = "
+            "'tenant_isolation'")).scalars())
+    assert found == EXPECTED_POLICIED
+
+
+def test_every_policied_table_is_forced_not_merely_enabled(migrated):
+    """ENABLE does not apply to a table's owner, and the owner is the role that
+    runs migrations — on the compose stack it is also a superuser. A table that
+    is enabled but not forced is protected against everyone except the role
+    most able to read it."""
+    with migrated.connect() as conn:
+        rows = conn.execute(text(
+            "SELECT relname, relrowsecurity, relforcerowsecurity FROM pg_class "
+            "WHERE relname = ANY(:names)"),
+            {"names": sorted(EXPECTED_POLICIED)}).all()
+    assert {r.relname for r in rows} == EXPECTED_POLICIED
+    for row in rows:
+        assert row.relrowsecurity, f"{row.relname} has RLS disabled"
+        assert row.relforcerowsecurity, f"{row.relname} is not FORCEd"
+
+
+def test_every_policy_governs_writes_as_well_as_reads(migrated):
+    """`USING` decides what a statement can see; `WITH CHECK` decides what a row
+    may become. Without the second a tenant can INSERT a row carrying another
+    organization's id, or hand one of its own over by UPDATE — and a policy with
+    only the first is the common way that half is left open."""
+    with migrated.connect() as conn:
+        rows = conn.execute(text(
+            "SELECT tablename, qual, with_check FROM pg_policies "
+            "WHERE policyname = 'tenant_isolation'")).all()
+    for row in rows:
+        assert row.qual and "current_setting" in row.qual, row.tablename
+        assert row.with_check and "current_setting" in row.with_check, (
+            f"{row.tablename} scopes reads but not writes")
+
+
+def _seed_two_tenants(owner):
+    """Two organizations and one value event each, written as the owner."""
+    Maker = sessionmaker(bind=owner, future=True)
+    with Maker() as session:
+        for org in (ORG_A, ORG_B):
+            if session.get(models.Organization, org) is None:
+                session.add(models.Organization(organization_id=org, name=org))
+        session.flush()
+        for org, key in ((ORG_A, "rls_a"), (ORG_B, "rls_b")):
+            existing = session.execute(text(
+                "SELECT 1 FROM value_events WHERE event_key = :k"),
+                {"k": key}).first()
+            if existing is None:
+                session.add(models.ValueEvent(
+                    value_event_id=key, organization_id=org,
+                    event_type="MARGIN_PROTECTED", value_class="ATTRIBUTED",
+                    event_key=key, currency="INR", basis={}, evidence_refs=[],
+                    occurred_at=datetime.now(timezone.utc),
+                    thresholds_version="ci_rlstest"))
+        session.commit()
+
+
+def test_a_real_table_is_fail_closed_and_scoped(migrated):
+    """The end-to-end statement, on the ledger whose every row is gross profit.
+
+    Seeded through the owner connection — which bypasses, as background jobs and
+    migrations need it to — and read through the application role, which does
+    not. Both tenants' rows exist throughout, so "sees nothing" is a fact about
+    the policy rather than about an empty table.
+    """
+    _seed_two_tenants(migrated)
+    engine = create_engine(RLS_URL, future=True)
+    Maker = sessionmaker(bind=engine, future=True)
+    try:
+        with Maker() as session:
+            keys = text("SELECT event_key FROM value_events "
+                        "WHERE event_key IN ('rls_a', 'rls_b')")
+            assert set(session.execute(keys).scalars()) == set(), (
+                "no tenant announced: the ledger must be empty, not complete")
+
+            tenancy.set_tenant(session, ORG_A)
+            assert set(session.execute(keys).scalars()) == {"rls_a"}
+
+            # And the other tenant's row is not reachable by naming it.
+            assert session.execute(text(
+                "SELECT event_key FROM value_events WHERE event_key = 'rls_b'"
+            )).first() is None
+    finally:
+        engine.dispose()
+
+
+def test_a_tenant_cannot_write_a_row_belonging_to_another(migrated):
+    """`WITH CHECK`, exercised rather than read off `pg_policies`."""
+    from sqlalchemy.exc import ProgrammingError
+
+    _seed_two_tenants(migrated)
+    engine = create_engine(RLS_URL, future=True)
+    Maker = sessionmaker(bind=engine, future=True)
+    try:
+        with Maker() as session:
+            tenancy.set_tenant(session, ORG_A)
+            with pytest.raises(ProgrammingError) as caught:
+                session.execute(text(
+                    "INSERT INTO value_events (value_event_id, organization_id, "
+                    "event_type, value_class, event_key, currency, basis, "
+                    "evidence_refs, occurred_at, thresholds_version) VALUES "
+                    "('rls_x', :other, 'X', 'ATTRIBUTED', 'rls_x', 'INR', "
+                    "'{}', '[]', now(), 'ci_rlstest')"), {"other": ORG_B})
+            assert "row-level security policy" in str(caught.value)
+            session.rollback()
+    finally:
+        engine.dispose()
+
+
+def test_sign_in_can_find_a_tenant_without_being_able_to_enumerate(migrated):
+    """The one hole, and its shape.
+
+    `app_login_lookup` is what lets sign-in work at all once `users` is under a
+    policy — it answers "which organization owns this address" for a caller with
+    no tenant. What is asserted here is that it stays a *question*: an address
+    that matches nothing returns nothing, and there is no argument that returns
+    a second row.
+    """
+    Maker = sessionmaker(bind=migrated, future=True)
+    with Maker() as session:
+        if session.get(models.Organization, ORG_A) is None:
+            session.add(models.Organization(organization_id=ORG_A, name=ORG_A))
+            session.flush()
+        if session.execute(text("SELECT 1 FROM users WHERE user_id = 'rls_u1'"
+                                )).first() is None:
+            session.add(models.User(
+                user_id="rls_u1", organization_id=ORG_A,
+                email="rls@example.test", name="RLS", role="OWNER",
+                password_hash="x", active=True))
+        session.commit()
+
+    engine = create_engine(RLS_URL, future=True)
+    Maker = sessionmaker(bind=engine, future=True)
+    try:
+        with Maker() as session:
+            assert tenancy.adopt_tenant_for_login(
+                session, "rls@example.test") == ORG_A
+            assert tenancy.current_tenant(session) == ORG_A
+        with Maker() as session:
+            assert tenancy.adopt_tenant_for_login(
+                session, "nobody@example.test") is None
+            assert tenancy.current_tenant(session) is None, (
+                "an unknown address must announce no tenant, not a blank one")
+    finally:
+        engine.dispose()

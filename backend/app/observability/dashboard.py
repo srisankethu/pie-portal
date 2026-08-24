@@ -399,7 +399,28 @@ class DashboardService:
         return self.capacity_calc.get_overall_capacity()
 
     def get_tenant_usage(self, limit: int = 20) -> dict[str, Any]:
-        """Get usage by tenant."""
+        """Signal counts per organization — the caller's own, and no longer every one.
+
+        This query has no organization predicate and never had one, so any
+        manager or owner of any tenant read back the *id and signal count of
+        every organization on the deployment*. It reaches the screen through
+        `/observability/tenants` and again inside `get_full_dashboard`.
+
+        `signals` is now under a row-level security policy
+        (`alembic/versions/d1rls_tenant_policies.py`), so on a deployment whose
+        serving role does not bypass it this returns one row: the caller's. That
+        is the correct answer and the leak is closed — but it is closed *by the
+        database*, silently, and the `except` below would not have fired to tell
+        anyone. Saying so here is the difference between a fix and a behaviour
+        that changed under somebody.
+
+        Two things follow, and they point in opposite directions. The predicate
+        is deliberately still absent: adding one would make this look scoped on
+        every deployment while it is only actually scoped where the policy binds
+        — the appearance of a control instead of the control. And `scope` below
+        is reported so a reader can tell which of the two they are looking at
+        rather than inferring it from a row count.
+        """
         try:
             from ..domain import models
             from sqlalchemy import func
@@ -423,10 +444,19 @@ class DashboardService:
                     "signals_generated": count,
                 })
 
+            others = [t for t in tenants
+                      if t["organization_id"] != self.organization_id]
             return {
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "tenants": tenants,
                 "total_tenants": len(tenants),
+                # Which of the two this is, read off the result rather than
+                # asserted: "only this organization came back" is a fact, and
+                # it is true either because the policy bound the query or
+                # because there is only one tenant. A reader who has to work
+                # that out from a row count will get it wrong the day a
+                # deployment has one customer.
+                "scope": "OWN_ORGANIZATION" if not others else "ALL_ORGANIZATIONS",
             }
         except Exception as e:
             log.exception("failed to fetch tenant usage")

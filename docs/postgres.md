@@ -176,14 +176,45 @@ until `APP_DATABASE_URL` is set**, naming the role and its `rolsuper` /
 exists yet: a connection that cannot be governed is the finding, and policies
 added later would silently do nothing.
 
-**Policies themselves are not on any table yet.** The connection split and the
-tenant setting (`app/tenancy.py`, announced from the signed token before the
-first query of a request) are the prerequisites; the migration that puts real
-tables under `ENABLE`/`FORCE ROW LEVEL SECURITY` is separate, and it has one
-open problem in front of it: sign-in looks a user up by email with no token and
-therefore no tenant, which a fail-closed policy answers with nothing. A
-`SECURITY DEFINER` function returning one user's id and organization is the
-narrow answer.
+## Which tables are under a policy
+
+`alembic/versions/d1rls_tenant_policies.py` puts a **first set** of six under
+`ENABLE` + `FORCE ROW LEVEL SECURITY` with a fail-closed
+`tenant_isolation` policy governing reads (`USING`) and writes (`WITH CHECK`):
+
+`value_events` · `quote_decisions` · `signals` · `decisions` ·
+`customer_item_metrics` · `approval_requests`
+
+It is a first set, and that word is doing work: a reader who assumes every
+tenant table is covered would draw a stronger conclusion than the code supports.
+Sixty more are eligible — every reader behind `current_principal`, which
+announces the tenant before the first row read. Six are **not**, because each is
+touched on a path with no principal yet, and each needs its own answer before it
+can carry a fail-closed policy:
+
+| table | reached with no tenant by | what it would need |
+|---|---|---|
+| `users` | sign-in, sign-up, demo | sign-in has its answer (below); sign-up and demo do not |
+| `organizations` | sign-up, demo, sign-in | a `set_tenant` once the org is created |
+| `user_sessions` | sign-up, demo, sign-in | follows `users` |
+| `audit_entries`, `audit_chain_heads` | sign-in, both branches | a failed sign-in for an unknown address has no tenant to attribute the row to, so `WITH CHECK` would refuse it |
+| `oauth_states` | the Zoho OAuth callback | the state row carries the organization; something must announce it from there |
+
+**Sign-in.** It is the one request that cannot know its tenant in advance —
+there is no token yet and the organization is a property of the row being looked
+for. `app_login_lookup(email)` is a `SECURITY DEFINER` function created by the
+same migration: one email in, two columns out, `search_path` pinned so it cannot
+be redirected at a table the caller made. `tenancy.adopt_tenant_for_login` calls
+it and announces the result. A policy clause wide enough to permit the same
+lookup would be wide enough to enumerate the table one query at a time; a
+function is narrow in a way a predicate is not.
+
+**One behaviour changes, and it changes for the better.**
+`/observability/tenants` had no organization predicate, so any manager or owner
+read back the id and signal count of every organization on the deployment. With
+`signals` policied and the role split, it returns one row — the caller's. The
+response carries `scope` so a reader can tell which of the two they are looking
+at rather than inferring it from a row count.
 
 ## What stays SQLite, and the honest caveat
 

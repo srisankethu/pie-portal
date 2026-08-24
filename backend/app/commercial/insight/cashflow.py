@@ -1,11 +1,19 @@
-"""What the committed book does to cash over the next quarter.
+"""What the committed book does to cash over the next quarter, and what the
+book has actually been doing over the quarter behind it.
 
-Every figure here is an obligation somebody already entered into: an invoice
-raised and unpaid, a bill received and unpaid. Nothing is a forecast of trade
-that has not happened, nothing is weighted by how likely it is to be honoured,
-and nothing is derived from a rate or a trend. Read the ``CASH_SCHEDULE`` fold,
-put each amount in the week its own document says it falls due, subtract one
-side from the other.
+``project`` is the forward half and is the whole of what this module used to
+be; ``actual`` is the backward one, added so the committed channel can be read
+against the route that arrived at it rather than out of nowhere. They share a
+window length, a week convention and a rule — movement, never a position — and
+they never share a number: nothing measured behind the datum is used to shift,
+weight or scale anything in front of it.
+
+Every figure in the forward half is an obligation somebody already entered
+into: an invoice raised and unpaid, a bill received and unpaid. Nothing is a
+forecast of trade that has not happened, nothing is weighted by how likely it
+is to be honoured, and nothing is derived from a rate or a trend. Read the
+``CASH_SCHEDULE`` fold, put each amount in the week its own document says it
+falls due, subtract one side from the other.
 
 **Three timings, one book.** Due dates answer "when is this money promised",
 which is not the question somebody funding a week is asking — and drawing only
@@ -498,4 +506,136 @@ def _unattributed(schedule: dict[str, dict[str, Any]],
     return {
         "inflow": _out(max(scheduled_in - named_in, _ZERO)),
         "outflow": _out(max(scheduled_out - named_out, _ZERO)),
+    }
+
+
+# ── what actually happened, behind the datum ────────────────────────────────
+#
+# ``project`` above answers "what has this book already promised to do next".
+# This answers the other half of the same question — "what has it actually been
+# doing" — and the two are drawn either side of one reference line so the
+# committed future can be read against the route that arrived at it.
+#
+# **Payment grain, not application grain, and the difference is cash.**
+# ``payments.Settlement`` splits one bank transfer across the ten bills it
+# settled, which is exactly right for measuring how late each of those ten was
+# and exactly wrong for measuring money. Three kinds of real movement are
+# missing from that grain: an advance, which is money received against no
+# invoice; a payment to a supplier the contact pull never returned, which left
+# our account whether or not the vendor resolved; and a receipt not yet applied
+# to anything. Each omission understates the movement, and all three understate
+# it in the direction that reads as calm.
+#
+# **The running total is measured back from the datum, and it is still not a
+# balance.** The last past week ends at zero — the point the committed channel
+# opens from — so each earlier week reads "the book has moved this much cash
+# since then". PIE reads payments, never bank balances; there is no opening
+# figure here any more than there is in the projection, and the same sentence
+# governs both. What this series can honestly say is "cash moved +₹6.4L across
+# the last thirteen weeks"; what it must never say is where that left anyone.
+#
+# **A week with no payment in it is a real zero, not a gap.** Unlike the cash
+# cycle, whose stock leg genuinely cannot be stated for a month nobody observed
+# stock in, a week the platform holds no payment for is a week no payment
+# synced — and the honest reading of that is nothing moved. The first week any
+# payment was seen at all is reported as ``observed_from`` so a short history
+# is legible as a short history rather than as a quiet start.
+
+
+@dataclass(frozen=True)
+class Movement:
+    """One payment that actually happened.
+
+    Deliberately not ``payments.Settlement``: that row is a document being
+    settled, keyed to the party and the invoice or bill it clears, and it is
+    the grain lateness is measured at. This is money leaving or entering the
+    account — one transfer, one row — which is the grain cash is measured at.
+    """
+
+    on: date
+    #: ``IN`` or ``OUT``, from the reducer that owns both spellings.
+    direction: str
+    amount: Decimal
+
+
+def actual(movements: Any, *, as_of: date, weeks: int = WEEKS) -> dict:
+    """Cash that actually moved, week by week, over the weeks before ``as_of``.
+
+    ``weeks`` buckets ending with the week ``as_of`` falls in, so the horizon
+    the projection looks forward over is the horizon this looks back over — the
+    two halves of one drawing, at one scale.
+
+    **The last bucket is the current week, and it is short.** It runs to
+    ``as_of`` rather than to Sunday, because the route has to arrive at the
+    datum: ending it last Sunday would leave every payment made since then
+    counted nowhere at all. It is flagged ``partial`` so a bar drawn from four
+    days is not read against twelve bars drawn from seven.
+
+    **It cannot double-count against the projection, and the reason is the
+    fold rather than the dates.** Both halves span the current week, but a
+    settled document schedules nothing — what has already moved has left the
+    balances the forward half is built from. The two series are disjoint in
+    money even where they overlap in time.
+
+    Nothing here is shifted, weighted or attributed. A payment is placed in the
+    week it was made, and the only arithmetic is addition.
+    """
+    first_monday = _monday_of(as_of)
+    mondays = [first_monday - timedelta(weeks=weeks - 1 - i)
+               for i in range(weeks)]
+    window_opens = mondays[0]
+
+    by_week: dict[date, Flow] = {m: Flow() for m in mondays}
+    observed: Optional[date] = None
+    before_window = Flow()
+    for move in movements:
+        if move.direction not in (IN, OUT):
+            continue
+        amount = _money(move.amount)
+        if amount == _ZERO:
+            continue
+        if observed is None or move.on < observed:
+            observed = move.on
+        monday = _monday_of(move.on)
+        if monday in by_week:
+            by_week[monday].add(move.direction, amount, 1)
+        elif monday < window_opens:
+            # Older than the window. Counted, never folded into its first week:
+            # a quarter of payments piled onto one Monday would be a spike this
+            # business never had.
+            before_window.add(move.direction, amount, 1)
+
+    total = sum((by_week[m].net for m in mondays), _ZERO)
+    buckets: list[dict] = []
+    running = _ZERO
+    for monday in mondays:
+        flow = by_week[monday]
+        running += flow.net
+        buckets.append({
+            "week": f"{monday.isocalendar()[0]}-W{monday.isocalendar()[1]:02d}",
+            "starts_on": monday.isoformat(),
+            # Short, because it runs to the datum rather than to Sunday. Said
+            # on the row so a chart can mark it rather than infer it from a
+            # date it would have to reconstruct.
+            "partial": monday == first_monday,
+            # Back from the datum: the final week lands on zero, which is where
+            # the committed channel opens. Movement relative to now — never a
+            # position, for the reason the module docstring gives.
+            "cumulative": _out(running - total),
+            **flow.to_dict(),
+        })
+
+    moved = any(not by_week[m].empty for m in mondays)
+    return {
+        "weeks": weeks,
+        "starts_on": window_opens.isoformat(),
+        "ends_on": as_of.isoformat(),
+        "buckets": buckets,
+        "net_over_window": _out(total),
+        "observed_from": observed.isoformat() if observed else None,
+        "before_window": before_window.to_dict(),
+        "empty_reason": None if moved else (
+            "No customer receipt or supplier payment has synced with a date in "
+            "these weeks, so there is no route behind the datum to draw. The "
+            "committed side of the drawing is unaffected."),
     }

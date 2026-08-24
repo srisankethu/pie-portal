@@ -20,11 +20,20 @@
 //
 // **Hovering a band lights its whole path.** That is the interaction the shape
 // exists for: "where does Kennametal actually end up" is answered by following
-// one ribbon, not by reading twenty.
+// one ribbon, not by reading twenty. The walk that decides what "whole path"
+// means lives in `flow-highlight.ts`, where a fixture can catch it stopping a
+// stage short — which is what it used to do.
+//
+// **A path can be pinned, and reached without a mouse.** Hover alone resets the
+// moment the pointer moves, so the values along a lit path could not be read
+// off one at a time; and the marks carried mouse handlers only, which left the
+// whole interaction unavailable to a keyboard. `FlowTable` was standing in for
+// both, and a table of every band is not an answer to "trace this one".
 
 import { useMemo, useState } from "react";
 import { money } from "../../money";
 import { ChartTip } from "../kit";
+import { type Edge, pathThroughLink, pathThroughNode } from "./flow-highlight";
 import { Figure } from "./Panel";
 import { useMeasure } from "./useMeasure";
 import { pct } from "./useInsight";
@@ -50,9 +59,18 @@ const NODE_W = 13;
 const GAP = 5;
 const PAD_T = 26;
 
+/** What the reader is pointing at, or has pinned: a node, or one band. */
+type Focus =
+  | { kind: "node"; id: string }
+  | { kind: "link"; source: string; target: string };
+
+const sameFocus = (a: Focus | null, b: Focus | null): boolean =>
+  a === b || (a?.kind === "node" && b?.kind === "node" && a.id === b.id);
+
 export function BookFlow({ flow }: { flow: Row }) {
   const [ref, room] = useMeasure<HTMLDivElement>();
-  const [lit, setLit] = useState<string | null>(null);
+  const [hovered, setHovered] = useState<Focus | null>(null);
+  const [pinned, setPinned] = useState<Focus | null>(null);
 
   const nodes = rows(flow.nodes);
   const links = rows(flow.links);
@@ -63,6 +81,19 @@ export function BookFlow({ flow }: { flow: Row }) {
 
   const boxes = useMemo(
     () => layout(nodes, width, height), [nodes, width, height]);
+
+  // A pin outranks the pointer, so moving the mouse away to read a tooltip or
+  // reach for the scroll wheel does not throw the path away.
+  const focus = pinned ?? hovered;
+  const edges = useMemo<Edge[]>(
+    () => links.map((l) => ({
+      source: String(l.source), target: String(l.target),
+    })), [links]);
+  const lit = useMemo(
+    () => (focus === null ? null
+      : focus.kind === "node" ? pathThroughNode(focus.id, edges)
+        : pathThroughLink(focus, edges)),
+    [focus, edges]);
 
   if (!nodes.length) return null;
   const byId = new Map(boxes.map((b) => [b.id, b]));
@@ -75,7 +106,7 @@ export function BookFlow({ flow }: { flow: Row }) {
   return (
     <div ref={ref}>
       <Figure
-        caption={`Every band is revenue. Left to right: the principal whose product it is, the line of the business, and the customer who bought it. ${money(total)} in total.`}
+        caption={`Every band is revenue. Left to right: the principal whose product it is, the line of the business, and the customer who bought it. ${money(total)} in total. Hover a band to trace it end to end; click to hold it, Escape to release.`}
         summary={boxes
           .filter((b) => b.stage === 0)
           .map((b) => `${b.label}: ${money(b.money)}`)
@@ -83,7 +114,15 @@ export function BookFlow({ flow }: { flow: Row }) {
         table={<FlowTable boxes={boxes} total={total} />}
       >
         <svg viewBox={`0 0 ${width} ${height}`} width="100%" height={height}
-             className="flow-map">
+             className="flow-map"
+             onKeyDown={(e) => { if (e.key === "Escape") setPinned(null); }}>
+          {/* Clicking off the bands releases a pin. A backdrop rather than a
+              handler on the svg, so a click that landed on a node is consumed
+              by the node and never reaches this — no stopPropagation, and no
+              ordering between the two to get wrong later. */}
+          <rect x={0} y={0} width={width} height={height} fill="transparent"
+                aria-hidden="true" onClick={() => setPinned(null)} />
+
           <g aria-hidden="true">
             {["Principal", "Line", "Customer"].map((t, i) => (
               <text key={t} className="bond-band-label" y={12}
@@ -94,43 +133,70 @@ export function BookFlow({ flow }: { flow: Row }) {
 
           <g>
             {ribbons.map((r, i) => {
-              const on = lit === null || r.source === lit || r.target === lit;
+              // Both ends lit means the band is on the path. Exact rather than
+              // approximate because the stages are ordered — the argument, and
+              // the fixture that holds it, are in `flow-highlight.ts`.
+              const on = lit === null
+                || (lit.has(r.source) && lit.has(r.target));
               return (
                 <path
                   key={i}
                   d={r.d}
                   className={`flow-ribbon${on ? "" : " dim"}${r.residual ? " residual" : ""}`}
                   style={{ strokeWidth: r.w }}
-                  onMouseEnter={() => setLit(r.source)}
-                  onMouseLeave={() => setLit(null)}
+                  onMouseEnter={() => setHovered(
+                    { kind: "link", source: r.source, target: r.target })}
+                  onMouseLeave={() => setHovered(null)}
                 />
               );
             })}
           </g>
 
-          {boxes.map((b) => (
-            <ChartTip key={b.id}
-                      title={`${b.label} — ${money(b.money)}${total ? `, ${pct(b.money / total, 0)} of revenue` : ""}`}>
-              <g className="flow-node"
-                 onMouseEnter={() => setLit(b.id)}
-                 onMouseLeave={() => setLit(null)}>
-                <rect x={b.x} y={b.y} width={NODE_W} height={b.h}
-                      className={`flow-bar${b.residual ? " residual" : ""}`} />
-                {/* Only labels with room. A band four pixels tall cannot carry
-                    a name, and stacking one on top of its neighbour is worse
-                    than the tooltip that is already there. */}
-                {b.h >= 13 && (
-                  <text
-                    className="flow-label"
-                    x={b.stage === 2 ? b.x - 6 : b.x + NODE_W + 6}
-                    y={b.y + b.h / 2 + 4}
-                    textAnchor={b.stage === 2 ? "end" : "start"}>
-                    {b.label}
-                  </text>
-                )}
-              </g>
-            </ChartTip>
-          ))}
+          {boxes.map((b) => {
+            const self: Focus = { kind: "node", id: b.id };
+            const on = lit === null || lit.has(b.id);
+            const held = sameFocus(pinned, self);
+            // Toggling on the pinned node is the way back out, so a reader who
+            // pinned by accident is never stuck with a lit path they cannot
+            // clear without hunting for blank canvas.
+            const pin = () => setPinned(held ? null : self);
+            return (
+              <ChartTip key={b.id}
+                        title={`${b.label} — ${money(b.money)}${total ? `, ${pct(b.money / total, 0)} of revenue` : ""}`}>
+                <g className={`flow-node${on ? "" : " dim"}${held ? " pinned" : ""}`}
+                   tabIndex={0}
+                   role="button"
+                   aria-pressed={held}
+                   aria-label={`${b.label}, ${money(b.money)}${total ? `, ${pct(b.money / total, 0)} of revenue` : ""}`}
+                   onMouseEnter={() => setHovered(self)}
+                   onMouseLeave={() => setHovered(null)}
+                   onFocus={() => setHovered(self)}
+                   onBlur={() => setHovered(null)}
+                   onClick={pin}
+                   onKeyDown={(e) => {
+                     if (e.key === "Enter" || e.key === " ") {
+                       e.preventDefault();   // Space would scroll the page.
+                       pin();
+                     }
+                   }}>
+                  <rect x={b.x} y={b.y} width={NODE_W} height={b.h}
+                        className={`flow-bar${b.residual ? " residual" : ""}`} />
+                  {/* Only labels with room. A band four pixels tall cannot carry
+                      a name, and stacking one on top of its neighbour is worse
+                      than the tooltip that is already there. */}
+                  {b.h >= 13 && (
+                    <text
+                      className="flow-label"
+                      x={b.stage === 2 ? b.x - 6 : b.x + NODE_W + 6}
+                      y={b.y + b.h / 2 + 4}
+                      textAnchor={b.stage === 2 ? "end" : "start"}>
+                      {b.label}
+                    </text>
+                  )}
+                </g>
+              </ChartTip>
+            );
+          })}
         </svg>
       </Figure>
     </div>

@@ -23,11 +23,12 @@ Three findings are worth the reading time:
    new dependency. It is also of modest value, for the reason
    `02-process-control.md` gives about a different method: the salesperson makes
    the call either way.
-2. **The best target is blocked by capture, not by volume.** Quote win/loss
-   reaches a usable training set in **under a month** of complete outcome
-   recording at this book's observed invoice rate (§5.1). It has been reachable
-   the whole time. Nothing is missing except somebody pressing the button — and
-   the first thing to build on those labels is a contingency table, not a model.
+2. **The best target's labels are already in the ERP, unread.** Zoho holds ~290
+   quotes for this book with statuses and dates; ~55–70 are won and *maintain
+   themselves*, because a quote becomes `invoiced` for accounting reasons rather
+   than because anyone recorded an outcome. Nothing ingests them (§5.1). The
+   half that is genuinely missing is **why a quote was lost** — six on record —
+   and that is the only part a person has to supply.
 3. **A fitted model is a wider cost-disclosure channel than any rule, and the
    machinery that closed `filterCounts.MFLOOR` and `NEGATIVE_MARGIN` cannot
    close it** (§4). `boundary_refs` works because a rule's boundary can be
@@ -99,7 +100,8 @@ purpose-built ones.
 | Table | The label it carries | Who supplies it | Arrives |
 |---|---|---|---|
 | `payment_applications` | `paid_on − invoice_due_date` | **Nobody — it is arithmetic over synced dates** | Automatically |
-| `quote_outcomes` | `status`, `loss_reason`, `lost_to` | A salesperson, after the customer answers | Only if asked |
+| `quote_outcomes` | `status` | **Zoho's estimate status** — `invoiced`/`accepted` is a won label the business maintains for its own accounting (§5.1). Not ingested today | Automatically, once read |
+| `quote_outcomes` | `loss_reason`, `lost_to` | A salesperson — the ERP has a `declined` flag and no field for *why* | Only if asked |
 | `inbound_line_dispositions` | `disposition` (QUOTED / NO_STOCK / …) | Whoever worked the enquiry | Only if asked |
 | `decisions` | `status`, `human_action` | Whoever worked the queue | Only if worked |
 | `quote_decisions` | `overridden`, `override_reason_code` | The pricer, at the moment of pricing | Only on an override |
@@ -121,6 +123,65 @@ Two absences shape the rest, and both are recorded elsewhere as deliberate:
 - **No randomisation, anywhere.** Every price in `sales_txns` was set by a person
   working under the policy in `commercial/config.py`. §5.G is about what that
   costs, and it is more than it sounds.
+
+### 2.1 Read the ERP before asking anyone to type
+
+The rule that decides where a fact should come from, and it is already this
+codebase's rule rather than a new one:
+
+> **The ERP owns the setting. The platform reads it, notices when reality has
+> diverged from it, and suggests. It never sets one, never invents one, and never
+> asks a human to type into the platform what their ERP already holds.**
+
+Every local table that holds something ERP-shaped already justifies itself
+against that rule, in its own docstring:
+
+- `CustomerCreditLimit` — *"Zoho holds no credit limit on a contact in this book
+  … **If a connector ever supplies one it belongs on `Customer` as a synced
+  field**, and this stays the agreement."*
+- `VendorPaymentTerm` — Zoho's dropdown cannot express "45 days from month end",
+  so the agreement is held here and **Zoho's value is never overwritten**: both
+  are shown, *"because the difference between them is the thing worth seeing"*.
+- `VendorTarget` — *"Nothing in Zoho holds a target"*, so it is the one table
+  typed rather than synced.
+- `enquiry/` — a WhatsApp enquiry *"exists in no ERP"*, which is the whole reason
+  that package exists.
+
+So a local copy needs an ERP that genuinely cannot express the fact, and there
+are exactly four documented cases. Anything else is a read.
+
+**The test to apply to any proposal.** Does the ERP have a field for this?
+
+- **Yes** → read it. The platform's contribution is the *suggestion*, never the
+  value. Where the field is unset, report the coverage — do not fill it in.
+- **No** → capture it, and say in the docstring why the ERP cannot hold it.
+
+**Reorder points are the worked example, and the platform already does it
+right.** `insight/stock.py` reads Zoho's `reorder_level`, exposes `below_reorder`
+(guarded so a missing level is never read as zero), groups `BELOW_REORDER`, and
+counts the rows with no level set as `no_policy`. It refuses to compute a reorder
+point, correctly — `08-intermittent-demand.md` asked only that the *unset count*
+be promoted to a headline, since 0 of 3,673 items across both entities has one.
+Nothing more is owed here. That every one of them is unset is a fact the platform
+should state; setting them is work that happens in Zoho.
+
+**Two places the platform is not reading what the ERP holds:**
+
+1. **Estimates.** ~290 quotes with statuses, dates, salesperson and the
+   business's own `cf_quote_type` / `cf_pricing_type` custom fields — and no
+   `list_estimates` in `ingestion/zoho_client.py`. §5.1.
+2. **Vendor credits.** `11-procurement.md` records that `rg -ic "vendor.?credit"`
+   across `backend/` returns nothing, and that is where rebates live — the same
+   document argues a rebate treatment could make every per-line margin
+   understated and unevenly so across principals.
+
+Both were previously framed as things the business should start recording. They
+are not. They are things the ERP is already recording and the platform has not
+read, which is a connector method each, not a habit.
+
+**The failure mode this rule prevents** is a backlog item that reads *"go and
+configure your ERP"*. That is not a task on the platform's backlog. It is an
+output of one — and §7 had it the wrong way round until this section was written.
 
 ---
 
@@ -342,16 +403,41 @@ defaulting to a benign one. The features are the frozen `QuoteDecision` snapshot
 which is append-only and therefore free of the lookahead that ruins most
 retrospective training sets — the row *is* what was known on the day.
 
-How long to a usable training set? At the SLS invoice rate measured 2026-08-09
-(**3,367 invoices over ~16 months ≈ 210/month**), and assuming every won order is
-preceded by a desk-recorded quote at a win rate *w*, losses accrue at
-`210 × (1 − w) / w` per month: **420/month at w = ⅓, 105/month at w = ⅔**. The
-100-loss floor is therefore **under a month of complete capture at either end of
-any plausible win rate**.
+**The labels already exist, in Zoho, unread.** An earlier draft of this section
+derived the arrival rate from the invoice count and a hypothetical win rate. That
+was modelling a quantity that can simply be looked up, and it got the answer
+wrong. Measured against the live SLS Engineers book on 2026-08-24 through the
+Books API:
 
-That assumption is false today — most quotes never reach the desk — and that is
-the whole finding. **This target has never been volume-limited. It is capture-
-limited, and always was.**
+| | |
+|---|---|
+| Quotes raised (`SLS/QTN-01` … `-290`, from 2026-04-02) | **~290**, ~62/month |
+| Status `invoiced` — **won**, carrying `accepted_date` | **~55–70** |
+| Status `declined` — **lost**, carrying `declined_date` | **6** |
+| Draft / sent / viewed / expired / pending — **outcome unrecorded** | **~215** |
+
+Zoho estimates are **not ingested at all** — there is no `list_estimates` in
+`ingestion/zoho_client.py` — so none of this reaches `QuoteOutcome`, which is
+fed only by hand today.
+
+Three things follow, and they are not what the earlier draft said:
+
+- **Won is nearly free, and self-maintaining.** A quote becomes `invoiced`
+  because the business needs the invoice, not because anybody was asked to record
+  an outcome. That is ~55–70 labels that maintain themselves and cost no habit.
+- **Lost is the missing half, and it is missing badly**: 6 recorded against ~215
+  quotes whose fate nobody wrote down. So the minority class today is **6**,
+  against a floor of 100 — NOT_ESTIMABLE, and the binding constraint is loss
+  recording, not quote volume.
+- **An expired quote is not a loss.** It is the §1 trap in a new place: reading
+  `expired` as LOST would manufacture ~200 labels out of silence, and silence is
+  what the queue was never worked, the customer never answered, and the deal was
+  lost to a competitor — three different facts. Unrecorded must map to *unknown*
+  and stay out of the training set.
+
+So the target is capture-limited, as the earlier draft said — but the capture is
+**half done already in the ERP**, and the platform's job is to read it rather than
+to ask anyone to re-type it (§2.1).
 
 Two cautions before anybody fits anything:
 
@@ -364,8 +450,8 @@ Two cautions before anybody fits anything:
   is assigned by `commercial/` from cost and customer, so it is a function of the
   same confounders any elasticity estimate would condition on. See §5.G.
 
-Verdict: **build the capture, then the table, then reconsider.** And a
-salesperson-facing version must be fitted under §4.3.
+Verdict: **read the estimates, ask only for the reason, then the table, then
+reconsider.** And a salesperson-facing version must be fitted under §4.3.
 
 **5.2 Payment lateness — estimable, and already answered better.**
 
@@ -720,35 +806,66 @@ Condensed, so the category is not re-proposed from first principles:
 
 ## 7. What would actually move this, in order
 
-Mostly not machine learning, which is the honest ranking rather than a rhetorical
-one:
+Three kinds of work, and **the first version of this section mixed them**, which
+is how it ended up ranking "go and set reorder levels in Zoho" as the platform's
+top item. §2.1 is the correction. They are separated here because they have
+different owners and only the first is a backlog:
 
-1. **Record quote outcomes.** The single highest-value data act available. The
-   table, the enum and the refusal-without-a-reason are all built; what is
-   missing is the habit. Under a month of complete capture produces a training
-   set, and a fortnight produces the contingency table that is more useful than
-   the model (§5.1).
-2. **Start the enquiry corpus, and defend the no-normalisation rule.**
-   `InboundLine` is empty and every text technique waits on it. The rule that
-   protects it is one line long and the change that breaks it looks like hygiene
-   (§5.21).
-3. **Make `ci_…` dereferenceable.** One fix unblocks model versioning (§4.4) and
-   randomised policy evaluation (§5.25) — the two highest-leverage items here.
-4. **Run `measure_learnability.py` quarterly.** It is the trigger for everything
-   in §5, and it costs one command. Verdicts in this document are hypotheses about
-   a book that trades; the script is what makes them falsifiable.
-5. **Randomise a policy variant.** The threshold hash is already an assignment
+### 7a. Platform work — the actual backlog
+
+1. **Ingest Zoho estimates.** A `list_estimates` in `ingestion/zoho_client.py`
+   mapping `invoiced`/`accepted` → WON with `accepted_date`, `declined` → LOST
+   with `declined_date`, and **everything else to unknown, never to LOST**
+   (§5.1). This is the highest-value item in the document: it turns ~55–70 won
+   labels from a habit nobody has into a connector method, and it brings the
+   business's own `cf_quote_type` / `cf_pricing_type` taxonomy with it for free.
+2. **Suggest, on the ~215 quotes with no recorded outcome.** Rank by value and
+   age past expiry, and ask the one question Zoho has no field for: *why*. This
+   is the read-then-suggest shape, and it is the only part of quote outcomes that
+   needs a person.
+3. **Promote the unset-reorder-level count to a headline.** The reading is built
+   (`below_reorder`, `BELOW_REORDER`, `no_policy`); what is missing is that a
+   group which can never contain a row currently says nothing about why.
+   `08-intermittent-demand.md` asked for exactly this and no more.
+4. **Start the enquiry corpus, and defend the no-normalisation rule.**
+   `InboundLine` is empty and every text technique waits on it. The ERP cannot
+   hold this — that is the package's stated reason for existing — so it is
+   genuine capture rather than an unread field. The rule that protects it is one
+   line long and the change that breaks it looks like hygiene (§5.21).
+5. **Make `ci_…` dereferenceable.** One fix unblocks model versioning (§4.4) and
+   randomised policy evaluation (§5.25).
+6. **Read vendor credits** (§2.1). Not machine learning at all, and it sits
+   upstream of every margin number the platform computes — see
+   `11-procurement.md` for what a rebate treatment does to per-line margin.
+7. **Randomise a policy variant.** The threshold hash is already an assignment
    variable and `backtest.py` is already the analysis (§5.25).
-6. **Then, and only if the queue's dismissal rate says the ordering is wrong,**
-   fit the Kaplan–Meier over inter-order intervals (§5.6).
-7. **The embedding shortlist for RFQ resolution** (§5.17), scoped to recall,
-   once item 2 has given it something to be evaluated against.
+8. **The embedding shortlist for RFQ resolution** (§5.17), scoped to recall,
+   once item 4 has given it something to be evaluated against.
+9. **The Kaplan–Meier over inter-order intervals** (§5.6) — last, and only on
+   §8's trigger.
 
-Two things from the sibling documents outrank every item on this list and are
-repeated because they are still open: **set reorder levels on the top ten stock
-lines** (zero of 3,673 are set) and **fix the eleven dead-stock prices** (76% of
-genuinely dead value cannot be quoted at all). Neither is machine learning.
-Both are worth more than everything above them in this category.
+### 7b. Suggestions the platform should make — not tasks it should carry
+
+These are things that happen *in Zoho*, prompted by a screen. The platform's job
+ends at saying so clearly, with the evidence attached:
+
+- **Set reorder levels on the top ten stock lines.** 0 of 3,673 are set.
+- **Fix the eleven dead-stock prices.** 76% of genuinely dead value cannot be
+  quoted at all — seven lines at ₹0/₹1, two at exactly cost.
+- **Mark declined quotes declined.** Six of ~290 carry the flag the ERP already
+  provides.
+
+All three are worth more to the business than most of 7a. None of them is
+engineering, and putting them on an engineering list was the category error §2.1
+names.
+
+### 7c. Habits — using the platform, not feeding it
+
+- **Work the decision queue for one real quarter**, then read
+  `/api/v1/internal/detector-outcomes`. This is the trigger for §5.6 and §5.22
+  and there is no substitute for it.
+- **Run `measure_learnability.py` quarterly.** One command, and it is what makes
+  every verdict in §5 falsifiable rather than a claim that quietly expires.
 
 ---
 
@@ -759,7 +876,7 @@ condition, and all of them are checkable rather than arguable:
 
 | Technique | Build it when |
 |---|---|
-| Quote win/loss ranker (§5.1) | ≥100 losses with reasons **and** the loss-reason table has stopped being surprising |
+| Quote win/loss ranker (§5.1) | Estimates ingested (§7a.1), then ≥100 losses with reasons **and** the loss-reason table has stopped being surprising. Six losses are on record today, so this is quarters away, not weeks |
 | Inter-order survival (§5.6) | `/api/v1/internal/detector-outcomes` bands dormancy HIGH over a worked quarter |
 | Queue LTR (§5.22) | Same trigger, **and** moving `queue_margin_drop_pp` did not fix it |
 | Enquiry text models (§5.18, §5.21) | `inbound_lines` holds a few thousand rows with live dispositions |

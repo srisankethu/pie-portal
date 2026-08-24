@@ -229,6 +229,32 @@ class Settings:
     ))
     SQL_ECHO: bool = os.environ.get("SQL_ECHO", "0") == "1"
 
+    # ── the request connection, when it is not the privileged one ────────────
+    # PostgreSQL row-level security decides what a query may see from the role
+    # that issued it, and a superuser or a table's owner is exempt — `rolbypassrls`
+    # cannot be forced off per table and `FORCE ROW LEVEL SECURITY` does not
+    # touch it. So a policy is only worth anything if the connection serving
+    # requests is *neither*.
+    #
+    # But this application's one connection is shared. Migrations create the
+    # schema, and every background job and CLI works across tenants on purpose
+    # — the auto-sync scheduler enumerates connections for every organization
+    # with no principal at all. A tenant-scoped role cannot do those things, and
+    # a privileged one cannot be governed by a policy. One URL cannot be both.
+    #
+    # So: `DATABASE_URL` stays the privileged one — Alembic, jobs, CLIs, and the
+    # engine `db.py` builds first — and `APP_DATABASE_URL`, when set, is the
+    # role that *serves requests*. Unset, the two are the same connection and
+    # nothing changes, which is what keeps SQLite dev and the whole test suite
+    # working unaltered.
+    #
+    # Both must name the same database. `db.py` refuses at import if they do
+    # not, because half an application reading a different dataset is a failure
+    # that would first show up as data that intermittently is not there.
+    APP_DATABASE_URL: Optional[str] = (
+        _normalize_database_url(os.environ["APP_DATABASE_URL"])
+        if os.environ.get("APP_DATABASE_URL") else None)
+
     # Postgres connection pool (ignored on SQLite). The defaults are sized for
     # this deployment's actual shape — compose runs UVICORN_WORKERS=2, so the
     # worst case is workers × (size + overflow) = 2 × 15 = 30 connections,

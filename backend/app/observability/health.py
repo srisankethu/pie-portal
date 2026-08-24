@@ -341,7 +341,71 @@ def register_health_checks(engine: Any, session_factory: Any) -> None:
             f"({size / 1_048_576:.1f} MiB); {len(dumps)} retained"
         )
 
+    def check_tenant_isolation() -> tuple[HealthStatus, Optional[str]]:
+        """Whether the connection serving requests is one policies actually bind.
+
+        The companion to ``check_backups``: both answer a question that is
+        otherwise a memory, and both refuse the comfortable answer. Row-level
+        security is the security control most likely to be *installed and
+        inert*, because a PostgreSQL superuser carries ``rolbypassrls`` — which
+        no policy overrides and ``FORCE ROW LEVEL SECURITY`` does not touch,
+        since FORCE binds a table's owner and nothing binds BYPASSRLS. Both the
+        compose role and the sandbox role are superusers by construction
+        (``initdb -U`` makes the bootstrap superuser), so this is the expected
+        state of a deployment that has not been changed, not a hypothetical.
+
+        Asked of ``AppSessionLocal`` rather than ``SessionLocal``, and that is
+        the entire point. The privileged connection is *supposed* to bypass —
+        migrations and cross-tenant background jobs need it to. What must not
+        bypass is the one that serves requests.
+
+        SQLite is healthy and says so. There are no policies on that dialect at
+        all, and amber on every developer's machine is a light nobody reads —
+        the same argument ``check_scheduler`` makes about a fixture source. What
+        it costs is stated in the message rather than hidden: on SQLite the
+        Python ``organization_id`` filters are the only tenant boundary there
+        has ever been.
+
+        No local ``except``. ``check_all`` catches and marks UNHEALTHY, which is
+        the loud outcome — the lesson ``check_pie_parser`` records above.
+        """
+        from sqlalchemy import text
+
+        from ..db import AppSessionLocal, app_engine, engine
+
+        if app_engine.dialect.name != "postgresql":
+            return HealthStatus.HEALTHY, (
+                f"No row-level security on {app_engine.dialect.name}: tenant "
+                "scoping here is the application's own organization_id filters "
+                "and nothing else"
+            )
+
+        with AppSessionLocal() as session:
+            row = session.execute(text(
+                "SELECT current_user AS who, rolsuper, rolbypassrls "
+                "FROM pg_roles WHERE rolname = current_user")).one()
+
+        if row.rolsuper or row.rolbypassrls:
+            # Deliberately not softened by whether any policy exists yet. A
+            # connection that cannot be governed is the finding; policies
+            # arriving later would silently do nothing, which is the shape this
+            # check exists to make impossible.
+            shared = " (the same connection as migrations and background jobs)" \
+                if app_engine is engine else ""
+            return HealthStatus.UNHEALTHY, (
+                f"Requests are served as {row.who!r}{shared}, which bypasses "
+                "every row-level security policy: "
+                f"rolsuper={row.rolsuper}, rolbypassrls={row.rolbypassrls}. "
+                "Set APP_DATABASE_URL to a role that is neither. See "
+                "docs/postgres.md."
+            )
+        return HealthStatus.HEALTHY, (
+            f"Requests are served as {row.who!r}, which row-level security "
+            "policies apply to"
+        )
+
     health.register("database", check_database)
     health.register("pie_parser", check_pie_parser)
     health.register("scheduler", check_scheduler)
     health.register("backups", check_backups)
+    health.register("tenant_isolation", check_tenant_isolation)

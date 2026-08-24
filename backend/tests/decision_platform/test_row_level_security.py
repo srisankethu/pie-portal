@@ -258,3 +258,57 @@ def test_a_tenant_cannot_read_another_tenants_row_by_updating_it(app_session):
     deleted = app_session.execute(text(
         f"DELETE FROM {TABLE} WHERE id = 'b1'")).rowcount
     assert deleted == 0
+
+
+# ── the component that reports whether any of this is enforcing ─────────────
+def _isolation_check(monkeypatch, serving_url: str):
+    """The registered `tenant_isolation` check, over a chosen serving role.
+
+    `app.db` decides its engines at import, so the role cannot be changed by
+    setting an environment variable from inside a test. Patching the two names
+    the check reads is the honest alternative: it exercises the *check's*
+    logic, which is what these two tests are about — that the split itself
+    reaches the request path is pinned in `test_request_connection.py`.
+    """
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from app import db
+    from app.observability.health import health, register_health_checks
+
+    engine = create_engine(serving_url, future=True)
+    monkeypatch.setattr(db, "app_engine", engine)
+    monkeypatch.setattr(db, "AppSessionLocal", sessionmaker(bind=engine,
+                                                            future=True))
+    saved = dict(health._components)
+    health._components.clear()
+    register_health_checks(object(), object())
+    check = health._components["tenant_isolation"].check_fn
+    try:
+        yield check
+    finally:
+        health._components.clear()
+        health._components.update(saved)
+        engine.dispose()
+
+
+def test_a_superuser_serving_role_is_reported_unhealthy(monkeypatch):
+    """The state every deployment of this codebase is in until somebody sets
+    `APP_DATABASE_URL`, and it must not read as fine. Deliberately not softened
+    by whether any policy exists yet: a connection that cannot be governed is
+    the finding, and policies arriving later would silently do nothing."""
+    from app.observability.health import HealthStatus
+
+    for check in _isolation_check(monkeypatch, OWNER_URL):
+        status, message = check()
+        assert status == HealthStatus.UNHEALTHY
+        assert "bypasses every row-level security policy" in (message or "")
+
+
+def test_a_non_bypassing_serving_role_is_reported_healthy(monkeypatch):
+    from app.observability.health import HealthStatus
+
+    for check in _isolation_check(monkeypatch, RLS_URL):
+        status, message = check()
+        assert status == HealthStatus.HEALTHY
+        assert "pie_app" in (message or "")

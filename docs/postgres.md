@@ -120,14 +120,70 @@ shapes, which is why the same code runs on both backends.
   `scripts/pg_sandbox.sh` provisions a second role, `pie_app`
   (`LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS`, owner of nothing),
   and prints its URL from `pg_sandbox.sh app-url`. That is the role
-  `tests/decision_platform/test_row_level_security.py` connects as, and it is
-  the shape a production deployment has to reach before policies mean anything
-  there. Reaching it is not just a `CREATE ROLE`: this codebase has one engine
-  and one `DATABASE_URL` (`app/db.py`), shared by request handlers and by every
-  background job and CLI — and a background job legitimately works across
-  tenants, so it cannot connect as a tenant-scoped role. Splitting those two
-  connections is the prerequisite for turning policies on, and it has not been
-  done yet.
+  `tests/decision_platform/test_row_level_security.py` connects as.
+
+## Two roles on one database
+
+A policy binds the *role that issued the query*, and this application had one
+role for everything. That cannot work: Alembic creates the schema, and every
+background job works across tenants on purpose — the auto-sync scheduler
+enumerates connections for every organization with no principal at all — while
+a policy is worth nothing unless the connection serving requests is one it
+binds. One URL cannot be both.
+
+So there are two, and only the second is new:
+
+| | role | used by |
+|---|---|---|
+| `DATABASE_URL` | privileged, owns the schema | Alembic, background jobs, every CLI, `scripts/` |
+| `APP_DATABASE_URL` | tenant-scoped, owns nothing | HTTP request handlers, via `get_session` |
+
+**Unset, they are the same connection** — the same engine and the same
+sessionmaker, by identity — which is what every existing deployment, all of
+dev, and the whole test suite run on. Setting it is the deliberate act.
+
+Two things are refused at import rather than served: a URL that is not
+PostgreSQL (no other dialect has policies, so it would split the pool and buy
+nothing), and one naming a different *database* (two roles on one database is
+the design; two databases means requests and background jobs read different
+data, which surfaces as rows that are sometimes there).
+
+On a server where you can create roles:
+
+```sql
+CREATE ROLE pie_app LOGIN PASSWORD '…' NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;
+GRANT USAGE ON SCHEMA public TO pie_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO pie_app;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO pie_app;
+-- So each new table Alembic creates is reachable without a second pass:
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO pie_app;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+  GRANT USAGE, SELECT ON SEQUENCES TO pie_app;
+```
+
+Then set `APP_DATABASE_URL` to the same database as `DATABASE_URL` with that
+user, and check it took:
+
+```bash
+curl -s localhost:8000/api/v1/internal/observability/health | python3 -m json.tool
+```
+
+The `tenant_isolation` component answers exactly one question — is the
+connection serving requests one that policies apply to — and it is **unhealthy
+until `APP_DATABASE_URL` is set**, naming the role and its `rolsuper` /
+`rolbypassrls` flags. It is deliberately not softened by whether any policy
+exists yet: a connection that cannot be governed is the finding, and policies
+added later would silently do nothing.
+
+**Policies themselves are not on any table yet.** The connection split and the
+tenant setting (`app/tenancy.py`, announced from the signed token before the
+first query of a request) are the prerequisites; the migration that puts real
+tables under `ENABLE`/`FORCE ROW LEVEL SECURITY` is separate, and it has one
+open problem in front of it: sign-in looks a user up by email with no token and
+therefore no tenant, which a fail-closed policy answers with nothing. A
+`SECURITY DEFINER` function returning one user's id and organization is the
+narrow answer.
 
 ## What stays SQLite, and the honest caveat
 

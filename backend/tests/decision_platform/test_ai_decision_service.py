@@ -100,6 +100,66 @@ def test_idempotent_regeneration_skips(session):
     assert len(keys) == len(set(keys))
 
 
+def test_switching_the_provider_re_infers_rather_than_keeping_the_mocks_words(session):
+    """The bug an owner actually hits: store a key, test it, switch the AI layer
+    onto it — and every card still reads exactly as it did, because the facts
+    behind it did not move. "Live" on the settings screen and the offline mock's
+    sentence on the card, with nothing in the product accounting for the gap.
+
+    Unchanged context is only half of "this decision is still current". The
+    other half is that the same reader would write it again.
+    """
+    _seed_readmodel(session)
+    run_detectors(session, ORG)
+    session.commit()
+    first = DecisionService(session, ORG, provider=MockProvider("ok")).generate()
+    session.commit()
+    assert first["created"] > 0
+
+    live = MockProvider("ok", model="a-real-model")   # same facts, different reader
+    live.name = "openrouter"
+    second = DecisionService(session, ORG, provider=live).generate()
+    session.commit()
+
+    assert second["skipped"] == 0, "a new provider must not reuse the old one's words"
+    assert second["refreshed"] == first["created"]
+    assert {(d.ai or {}).get("provider") for d in session.query(models.Decision).all()} == {
+        "openrouter"}
+
+
+def test_the_same_reader_on_unchanged_facts_still_costs_nothing(session):
+    """The cost guard the above must not have broken: it is the *reader* that
+    was added to the test, not a licence to re-infer on every run."""
+    _seed_readmodel(session)
+    run_detectors(session, ORG)
+    session.commit()
+    first = DecisionService(session, ORG, provider=MockProvider("ok")).generate()
+    session.commit()
+    second = DecisionService(session, ORG, provider=MockProvider("ok")).generate()
+    session.commit()
+    assert second["skipped"] >= first["created"] and second["refreshed"] == 0
+
+
+def test_the_preflight_predicts_that_run_rather_than_the_old_one(session):
+    """`preflight.estimate` prices the next run, and an owner reads it before
+    pointing a live model at a real book. It applies the same reuse test the
+    service does — a preflight that said "0 calls, nothing to pay" while the run
+    re-inferred everything is worse than no preflight at all."""
+    from app.ai.provider import provider_status
+    from app.decisions import preflight
+
+    _seed_readmodel(session)
+    run_detectors(session, ORG)
+    session.commit()
+    created = DecisionService(session, ORG, provider=MockProvider("ok")).generate()["created"]
+    session.commit()
+
+    # The environment runs the mock here, which is what generated those rows.
+    assert provider_status(session, ORG)["effective"] == "mock"
+    est = preflight.estimate(session, ORG)
+    assert est["would_call_provider"] == 0 and est["would_reuse_cached"] >= created
+
+
 def test_ai_failure_still_surfaces_decisions(session):
     _seed_readmodel(session)
     run_detectors(session, ORG)

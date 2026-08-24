@@ -48,7 +48,8 @@ def _get(session: Session, organization_id: str, entity_type: str,
 
 
 def put(session: Session, organization_id: str, entity_type: str,
-        entity_id: str, name: str) -> None:
+        entity_id: str, name: str,
+        cipher: Optional[keys.TenantCipher] = None) -> None:
     """Store (or update) a display name. Idempotent, and safe concurrently.
 
     Read-then-insert is a race, and this is called from the pull — which now
@@ -63,7 +64,10 @@ def put(session: Session, organization_id: str, entity_type: str,
     """
     if not (name or "").strip():
         return
-    ciphertext = keys.encrypt_for(session, organization_id, name.strip())
+    # ``cipher`` when the caller is vaulting a batch: opening the key is the
+    # expensive half of this function and it is the same key for every row.
+    cipher = cipher or keys.cipher_for(session, organization_id)
+    ciphertext = cipher.encrypt(name.strip())
     row = _get(session, organization_id, entity_type, entity_id)
     if row is not None:
         row.name_ciphertext = ciphertext
@@ -118,12 +122,18 @@ def resolve_many(session: Session, organization_id: str, entity_type: str,
             models.NameVaultEntry.organization_id == organization_id,
             models.NameVaultEntry.entity_type == entity_type.upper(),
             models.NameVaultEntry.entity_id.in_(ids))).all()
+    # One key for the page, not one per name. This loop used to call
+    # ``decrypt_for`` per row, and that reads the key row and unwraps the DEK
+    # every time — a SQL statement and a KEK decryption per customer on screen.
+    try:
+        cipher = keys.cipher_for(session, organization_id)
+    except (keys.KeyDestroyed, keys.KeyUnavailable):
+        return out       # every row here is unreadable; pseudonyms stand
     for row in rows:
         try:
-            out[row.entity_id] = keys.decrypt_for(
-                session, organization_id, row.name_ciphertext)
-        except (keys.KeyDestroyed, keys.KeyUnavailable):
-            break        # one destroyed key means every row here is unreadable
+            out[row.entity_id] = cipher.decrypt(row.name_ciphertext)
+        except keys.KeyUnavailable:
+            continue     # this one value will not open; the rest may
     return out
 
 
@@ -134,6 +144,11 @@ def backfill(session: Session, organization_id: str) -> dict[str, int]:
     reaches the vault without a separate job.
     """
     counts = {"CUSTOMER": 0, "PRODUCT": 0, "VENDOR": 0}
+    # The whole book's names go under one key, so the key is opened once. This
+    # runs at the end of every sync, over every customer, product and vendor:
+    # per-row it was a statement and an unwrap per name, which is the sync's
+    # own tail spent on nothing.
+    cipher = keys.cipher_for(session, organization_id)
     for kind, model, id_attr in (
         ("CUSTOMER", models.Customer, "customer_id"),
         ("PRODUCT", models.Product, "product_id"),
@@ -148,6 +163,7 @@ def backfill(session: Session, organization_id: str) -> dict[str, int]:
         for row in rows:
             name = getattr(row, "name", "") or ""
             if name.strip():
-                put(session, organization_id, kind, getattr(row, id_attr), name)
+                put(session, organization_id, kind, getattr(row, id_attr), name,
+                    cipher=cipher)
                 counts[kind] += 1
     return counts

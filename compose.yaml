@@ -46,14 +46,23 @@ x-backend-env: &backend-env
 
   ZOHO_SOURCE: ${ZOHO_SOURCE:-fixture}
 
-  # Provisioned beside the API for cross-replica state (rate limits, cache,
-  # job coordination). No feature requires it yet — config.py says which
-  # candidates exist — so the API must keep serving if Redis is down.
-  REDIS_URL: redis://redis:6379/0
+  # Background work goes through the durable queue here, because this is the
+  # deployment where a thread loses it: `deploy-up` replaces containers, and a
+  # sync that was QUEUED when its container went is never done. The `worker`
+  # service below drains it; the API is told not to (QUEUE_WORKER=0) so the
+  # long jobs run somewhere that is not serving requests.
+  SYNC_DISPATCH: ${SYNC_DISPATCH:-queue}
 
   # Postgres pool. The defaults' arithmetic is documented on the settings in
-  # config.py: 2 uvicorn workers × (5 + 10) = 30 worst case, against stock
-  # max_connections=100. Redo it before raising anything here.
+  # config.py, and this stack's total is:
+  #
+  #   api     2 uvicorn workers × (5 + 10)          = 30
+  #   worker  N containers × (3 + 2), see below     = 5 per worker
+  #   release runs alone, briefly                    ~ 5
+  #
+  # So one worker is 40 and `--scale worker=6` is 65, against stock
+  # max_connections=100 — with room for psql and a replica. Redo this
+  # arithmetic before raising anything here or scaling workers past ~10.
   DB_POOL_SIZE: ${DB_POOL_SIZE:-5}
   DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-10}
   DB_POOL_TIMEOUT: ${DB_POOL_TIMEOUT:-30}
@@ -97,33 +106,17 @@ services:
       retries: 24
     restart: unless-stopped
 
-  redis:
-    image: redis:7-alpine
-    # Append-only so rate-limit and job state survive a restart. Losing this
-    # volume must never lose business data: Postgres is the system of record,
-    # Redis only ever holds state that can be dropped or rebuilt.
-    command: ["redis-server", "--appendonly", "yes"]
-    volumes:
-      - redis-data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 12
-    restart: unless-stopped
-
   api:
     build: *api-build
     image: pie-portal-api:latest
-    environment: *backend-env
+    environment:
+      <<: *backend-env
+      # The API queues work; the worker service runs it. A uvicorn process that
+      # also drains the queue spends its request threads on hour-long pulls.
+      QUEUE_WORKER: "0"
     depends_on:
       db:
         condition: service_healthy
-      # service_started, not service_healthy: Redis being down degrades
-      # candidates to their in-process behaviour, it must not hold the API
-      # hostage — the same reasoning as web→api below.
-      redis:
-        condition: service_started
     healthcheck:
       # /api/health is the one that can fail: it reports 503 when the schema is
       # behind the code, which is exactly the deploy that otherwise looks
@@ -135,6 +128,39 @@ services:
       retries: 5
       # Warming the pie-parser catalogue takes a while on a small box.
       start_period: 90s
+    restart: unless-stopped
+
+  # Drains `queued_messages`: the background sync and the metric rebuilds. Same
+  # image and same environment as the API, one setting apart — which is the
+  # point of `QUEUE_WORKER`, and why a message the API queues is one this
+  # container can run.
+  #
+  # Scale it to taste: `docker compose up -d --scale worker=3`. The claim is a
+  # conditional UPDATE, so several workers take different messages rather than
+  # racing for the same one.
+  #
+  # No healthcheck and no port: it serves nothing. Whether it is draining is
+  # `GET /api/v1/internal/queue` on the API — `worker_running` is false *there*
+  # by design, and the depth is what says this container is keeping up.
+  worker:
+    build: *api-build
+    image: pie-portal-api:latest
+    environment:
+      <<: *backend-env
+      QUEUE_WORKER: "1"
+      # Its own pool arithmetic, because it is not shaped like the API. One
+      # process, and at most three connections in flight at once: the drain
+      # loop's session, the heartbeat's (a running handler must keep its
+      # message alive on a session of its own), and the handler's own. 3+2 is
+      # that with room, and it is what keeps `--scale worker=N` inside the
+      # budget the header above computes — six workers at the API's 5+10 would
+      # be 90 connections on their own.
+      DB_POOL_SIZE: ${WORKER_DB_POOL_SIZE:-3}
+      DB_MAX_OVERFLOW: ${WORKER_DB_MAX_OVERFLOW:-2}
+    command: ["python", "-m", "app.worker"]
+    depends_on:
+      db:
+        condition: service_healthy
     restart: unless-stopped
 
   web:
@@ -179,6 +205,5 @@ services:
 
 volumes:
   db-data:
-  redis-data:
   caddy-data:
   caddy-config:

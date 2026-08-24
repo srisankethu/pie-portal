@@ -29,7 +29,7 @@ which is the whole argument in
 **Local development on the production dialect**:
 
 ```bash
-docker compose -f compose.dev.yaml up -d        # Postgres 17 + Redis, loopback only
+docker compose -f compose.dev.yaml up -d        # Postgres 17, loopback only
 export DATABASE_URL=postgresql+psycopg://pie_portal:pie_portal@localhost:5432/pie_portal
 make bootstrap && make dev
 ```

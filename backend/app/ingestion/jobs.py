@@ -31,11 +31,18 @@ error the screen has to translate.
 the moment the response is sent; the job would then be writing through a dead
 connection.
 
-Deliberately a thread rather than a broker. This deployment is a single uvicorn
-process with no Redis and no worker, and a thread is honest about that: the
-in-process lock below is not distributed, and the module says so rather than
-implying a guarantee it cannot make. If this ever runs multi-process, the lock
-must become a database one — the reaping and status model would not change.
+A thread by default, and a durable message where a deployment asks for one.
+This paragraph used to argue for the thread from "a single uvicorn process with
+no Redis and no worker", which was never quite true — the image has shipped
+``--workers 2`` throughout — and is no longer true at all: ``compose.yaml`` runs
+a ``worker`` container, and ``SYNC_DISPATCH=queue`` sends the dispatch through
+``queued_messages`` (see ``app/messaging`` and ``docs/caching-and-queue.md``).
+
+What the thread *is* honest about is its limit: ``_start_lock`` below is not
+distributed, so it guards this process and says so rather than implying a
+guarantee it cannot make. The thing that made the guard's absence matter — two
+scheduler threads both deciding a pull was due — is now held by a database
+lease (``app/leases.py``), and the reaping and status model did not change.
 """
 from __future__ import annotations
 
@@ -1100,7 +1107,98 @@ def thread_dispatch(sync_run_id: str, since: date, full: bool,
         name=f"sync-{sync_run_id[:8]}", daemon=True).start()
 
 
+#: The queue topic this module owns. Registered below, at import, because the
+#: registry is populated by side effect and a worker that never imported this
+#: module would claim the message and fail it as an unknown topic.
+SYNC_TOPIC = "sync.run"
+
+
+def _run_queued_sync(payload: dict) -> None:
+    """The worker's side of :func:`queue_dispatch` — same job, same session
+    discipline, reached from a message rather than from a thread."""
+    run_job(payload["sync_run_id"],
+            date.fromisoformat(payload["since"]),
+            bool(payload.get("full", False)),
+            payload.get("connection_id"))
+
+
+def register_topics() -> None:
+    """Bind ``sync.run`` to the function above.
+
+    Called at import, so the natural path needs nothing; and called again by
+    ``messaging.worker.load_handlers``, because an import side effect does not
+    re-run for a module that is already imported — a worker started after
+    something cleared the registry would otherwise claim sync messages and fail
+    them as an unknown topic.
+
+    ``replace=True`` for the same reason: re-registering *this* function is not
+    the mistake the registry's duplicate guard exists to catch, which is two
+    different handlers for one topic and so one job that silently never runs.
+    """
+    from ..messaging.handlers import register
+
+    register(SYNC_TOPIC, _run_queued_sync, replace=True)
+
+
+register_topics()
+
+
+def queue_dispatch(sync_run_id: str, since: date, full: bool,
+                   connection_id: Optional[str]) -> None:
+    """Commit the request to run this job, and let a worker pick it up.
+
+    The difference from ``thread_dispatch`` is what survives the process. A
+    thread dies with its uvicorn: a run that was QUEUED when the container was
+    replaced is never done, and ten minutes later ``is_stale`` reaps its row —
+    correctly, and the work is gone. A message is a committed row, so the next
+    process (or another one, right now) claims it and runs it.
+
+    Its own session, for the same reason ``run_job`` opens one: the request's
+    session belongs to a response that is already on its way out.
+
+    ``start_sync`` has committed the run row before calling this, so there is a
+    window where the row exists and the message does not. That is the failure
+    the reaper already handles — a QUEUED run nobody is working on goes stale
+    and stops blocking the next sync — rather than a new one.
+    """
+    from ..db import SessionLocal
+    from ..messaging import enqueue
+
+    session = SessionLocal()
+    try:
+        run = session.get(models.SyncRun, sync_run_id)
+        enqueue(session, SYNC_TOPIC,
+                {"sync_run_id": sync_run_id, "since": since.isoformat(),
+                 "full": bool(full), "connection_id": connection_id},
+                organization_id=run.organization_id if run is not None else None,
+                # The run row is already one-per-connection; keying on it means
+                # a retry of this dispatch cannot produce two messages for one
+                # run.
+                dedupe_key=f"{SYNC_TOPIC}:{sync_run_id}")
+        session.commit()
+    except Exception:  # noqa: BLE001 — a dispatch failure must be readable
+        session.rollback()
+        log.exception("could not queue sync run %s", sync_run_id)
+        raise
+    finally:
+        session.close()
+
+
 Dispatch = Callable[[str, date, bool, Optional[str]], None]
+
+
+def default_dispatch() -> "Dispatch":
+    """How this deployment dispatches background work — see
+    ``settings.SYNC_DISPATCH``.
+
+    Resolved per call rather than captured at import, so that a test which
+    replaces ``thread_dispatch`` (the seam that runs a job inline) still gets
+    its replacement, and so switching the setting does not need a restart to
+    be observable in a test.
+    """
+    if settings.queue_dispatch:
+        return queue_dispatch
+    return thread_dispatch
 
 
 @dataclass(frozen=True)
@@ -1210,7 +1308,7 @@ def start_sync(session: Session, organization_id: str, *,
         # queued job the reaper can resolve.
         session.commit()
 
-    (dispatch or thread_dispatch)(run.sync_run_id, since, full, connection_id)
+    (dispatch or default_dispatch())(run.sync_run_id, since, full, connection_id)
     # An inline dispatcher has just finished the work through a different
     # session, so this one is holding a QUEUED copy of a row that is now
     # finished. Harmless for the threaded path, where the row really is queued.

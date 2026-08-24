@@ -193,6 +193,24 @@ EXPORTED: tuple[tuple[str, Any], ...] = (
     # requested and when, particularly where that is part of why they are
     # leaving.
     ("plan_change_requests", models.PlanChangeRequest),
+    # ── what their customers asked them for ─────────────────────────────────
+    #
+    # Exported without hesitation, and it is arguably the most obviously theirs
+    # of anything on this list. ``raw_text`` is not our reading of their
+    # business — it is their customers' own words, sent to them, which this
+    # platform happens to be holding. A departing tenant taking everything
+    # except the enquiries they received would be handed a coverage report they
+    # can no longer reproduce, and an RFQ corpus they paid for in the first
+    # place.
+    #
+    # The dispositions travel with the lines for the reason ``value_events``
+    # and ``evaluation_baselines`` travel together: an export holding the asks
+    # without their outcomes hands back a comparison with one side missing.
+    # Superseded rows are included — they are rows of the table, and an export
+    # that quietly kept only the current answer would be unable to explain a
+    # report the tenant ran before a correction.
+    ("inbound_lines", models.InboundLine),
+    ("inbound_line_dispositions", models.InboundLineDisposition),
 )
 
 #: Never exported, and each one has a reason a customer can read. Keyed by
@@ -258,6 +276,11 @@ EXCLUDED_REASONS: dict[str, str] = {
         "Whether your books have used their free month of Commercial "
         "Intelligence — our licensing bookkeeping, with no fact about your "
         "business in it beyond the connection date you already have."),
+    "queued_messages": (
+        "Background work we had queued for your books — a sync to run, when it "
+        "was asked for, and whether it succeeded. Our own plumbing: the row "
+        "holds the id of a job and nothing about what it read. What those "
+        "pulls actually brought in is the trading record exported above."),
     "oauth_states": (
         "An authorization that was in flight — the hashed one-time token from a "
         "'Sign in with Zoho' round trip, its data centre, and when it expired. "
@@ -283,6 +306,7 @@ MANIFESTED: tuple[tuple[str, Any], ...] = EXPORTED + (
     ("state_transitions", models.StateTransition),
     ("sync_runs", models.SyncRun),
     ("sync_run_logs", models.SyncRunLog),
+    ("queued_messages", models.QueuedMessage),
     ("ingested_documents", models.IngestedDocument),
     ("zoho_connections", models.ZohoConnection),
     ("ai_provider_keys", models.AIProviderKey),
@@ -360,6 +384,11 @@ SURVIVES_PLAINTEXT: tuple[dict[str, str], ...] = (
     {"table": "users", "column": "name, email",
      "why": "staff account identities, needed to keep the audit trail "
             "attributable"},
+    {"table": "inbound_lines", "column": "raw_text, customer_ref, source_ref",
+     "why": "inbound enquiries are stored exactly as received and are never "
+            "encrypted — the corpus an RFQ parser is measured against has to "
+            "be the bytes the customer sent. So destroying the key does not "
+            "unread them; only row deletion removes this text"},
     {"table": "every transactional table", "column":
      "quantities, prices, dates, document and reference numbers",
      "why": "the analytical layer computes on plaintext rows by design; only "

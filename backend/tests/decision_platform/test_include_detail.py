@@ -5,11 +5,10 @@ from sqlalchemy.orm import sessionmaker
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from .conftest import *
 import dbsupport
 from app.domain import models
 from app.seed import SEED_PASSWORD, ensure_org_and_users
-from app.db import get_session, Base
+from app.db import get_session
 from app.routers import platform_auth, internal, decisions
 
 
@@ -80,7 +79,7 @@ def test_include_detail_parameter(client_and_maker):
     sales = _hdr(_login(client, "r.nair@pie.example"))
 
     # Test without include_detail
-    print(f"\n✓ Test 1: GET /api/v1/decisions (without include_detail)")
+    print("\n✓ Test 1: GET /api/v1/decisions (without include_detail)")
     t0 = time.time()
     r1 = client.get("/api/v1/decisions", headers=sales)
     t1 = time.time()
@@ -92,7 +91,7 @@ def test_include_detail_parameter(client_and_maker):
     assert 'impact' not in list1[0], "Without include_detail should not have impact field"
 
     # Test with include_detail
-    print(f"\n✓ Test 2: GET /api/v1/decisions?include_detail=true (with include_detail)")
+    print("\n✓ Test 2: GET /api/v1/decisions?include_detail=true (with include_detail)")
     t0 = time.time()
     r2 = client.get("/api/v1/decisions?include_detail=true", headers=sales)
     t2 = time.time()
@@ -105,10 +104,10 @@ def test_include_detail_parameter(client_and_maker):
     assert 'facts' in list2[0], "With include_detail should have facts field"
 
     # Verify both responses have same decisions
-    print(f"\n✓ Test 3: Verify responses contain same decisions")
+    print("\n✓ Test 3: Verify responses contain same decisions")
     ids1 = {d['decision_id'] for d in list1}
     ids2 = {d['decision_id'] for d in list2}
     assert ids1 == ids2, "Same decisions should be in both responses"
     print(f"  Both responses have {len(ids1)} decisions: ✓")
 
-    print(f"\n✅ All tests passed!")
+    print("\n✅ All tests passed!")

@@ -30,10 +30,14 @@ static and can't interpolate env vars, so the proxy lives in a small edge
 function instead. That means the backend's URL is a dashboard setting you can
 change without touching the repo.
 
-Redis is not provisioned in this variant. `compose.yaml` provisions it only for
-future cross-replica state; nothing today requires it, so `REDIS_URL` is simply
-left unset and every candidate that would use it runs in its in-process
-fallback (see `docs/operations.md`).
+Neither variant provisions a Redis. `compose.yaml` used to, for cross-replica
+state nothing ever required; `docs/caching-and-queue.md` records why the queue
+went into Postgres and the caches stayed in-process instead.
+
+What this variant *does* need to decide is where background work runs. Railway
+is a single service, so the API process drains its own queue: set
+`SYNC_DISPATCH=queue` and `QUEUE_WORKER=1` on it. The compose stack splits them
+into two containers instead.
 
 ---
 
@@ -206,7 +210,7 @@ repo change needed.
 | Edge / TLS | Caddy, one origin | Vercel edge + Railway edge, joined by `frontend/api/proxy.ts` |
 | `CORS_ORIGINS` | empty (same origin via Caddy) | empty (same origin via the Vercel proxy function) |
 | Backend URL config | `SITE_ADDRESS` in `.env.production` | `BACKEND_URL` env var on the Vercel project |
-| Redis | provisioned, unused today | not provisioned, unused today |
+| Background work | `worker` container drains the queue | API process drains its own (`QUEUE_WORKER=1`) |
 | Release step | `docker compose --profile release run --rm release` | `DATABASE_URL=... bash deploy/release.sh` from a workstation |
 | Images | built and run by Compose | `deploy/backend.Dockerfile` built by Railway; frontend built natively by Vercel, not via `deploy/web.Dockerfile` |
 

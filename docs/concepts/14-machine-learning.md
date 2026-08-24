@@ -875,11 +875,33 @@ different owners and only the first is a backlog:
   `estimate_number` to make references human-readable is a one-line diff that
   would collapse the whole argument.
 
-**Still open, and found while closing the above:** the `quote_id`-only outcome
-path has no scope check either — a salesperson can name any platform `quote_id`
-and move its outcome. It predates this work and is narrower (those ids come from
-an in-process store rather than a shared worklist), but it is real and deserves
-its own pass.
+~~**Still open:** the `quote_id`-only outcome path has no scope check either.~~
+**CLOSED.** `_holds_platform_quote` now scopes all four endpoints on that router
+that accept a `quote_id`. Three findings from that pass are worth keeping:
+
+- **The first fix was walked around within the hour.** Guarding `POST /outcome`
+  alone left `POST /snapshot` writing the same row unguarded — and `set_outcome`
+  rewrites `customer_id` from the body, so a salesperson could relabel a
+  colleague's quote onto their own account and then walk in the front door. Two
+  reviewers found it independently. A per-endpoint guard is how the next endpoint
+  inherits only the check somebody remembered; one rule across four call sites is
+  the fix.
+- **Attribution order is not arbitrary.** The recorder must be consulted before
+  the snapshot trail, because `routers/quote` opens the outcome row with no
+  `customer_id` while the trail already carries one — so the trail always decided,
+  and a salesperson was refused the quote they had priced and sent themselves.
+  `_sync_assignments` rewrites `Customer.assigned_user_id` from the latest
+  invoice on every pull, so an account routinely moves desks between the send and
+  the record.
+- **Two residuals, stated rather than engineered around.** `POST /snapshot`
+  cannot fail closed — a quote priced for the first time has no outcome row and
+  no trail — so 201 vs 404 does distinguish a free id from another desk's there,
+  at the cost of a written, attributed, auditable row per probe. And on
+  `POST /assess`, `store.line_cost` runs *before* the guard; it is org-scoped but
+  not desk-scoped. Whether any number derived from it reaches the caller depends
+  on `project`'s `boundary_refs` withholding, which was **not probed**. It
+  predates this work and the guard neither creates nor worsens it, but somebody
+  should decide deliberately whether that check belongs above `_inputs`.
 
 ### 7b. Suggestions the platform should make — not tasks it should carry
 

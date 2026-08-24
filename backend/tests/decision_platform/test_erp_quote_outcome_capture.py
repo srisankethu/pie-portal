@@ -313,8 +313,29 @@ def test_a_salesperson_may_not_borrow_another_desks_reference_for_their_own_quot
     assert r.status_code == 404, r.text
     assert book.query(models.QuoteOutcome).count() == 0
 
-    # And the ordinary case still records: their own account's quote, both keys.
-    ok = _post(api_client, SALES, quote_id="q-mine", quote_document_ref="est-1",
+    # And it does not run the other way either. ``est-1`` *is* theirs, but
+    # ``q-mine`` is a platform id nothing in this book attributes, and for one
+    # round a held reference waved exactly that through — which made this 404
+    # mean "that id names a live quote on another desk" while an unminted id
+    # answered 200, one request per id. Both keys together stays the normal
+    # shape; what it no longer does is supply the missing half of an id nobody
+    # has priced. ``_holds_platform_quote`` has the walk.
+    both = _post(api_client, SALES, quote_id="q-mine", quote_document_ref="est-1",
+                 status="LOST", loss_reason="PRICE", customer="Acme Engineering")
+    assert both.status_code == 404, both.text
+    # Refused on the platform key, not the ERP one — the reference was fine and
+    # did not unlock the id beside it. Which key failed is the one thing these
+    # two messages may differ about, because each is uniform across every way
+    # its own key can fail; the id being live or empty is not, and
+    # ``test_a_held_reference_does_not_tell_a_live_quote_id_from_an_empty_one``
+    # is where that half is pinned.
+    assert "answers to that id" in both.json()["detail"]
+    assert book.query(models.QuoteOutcome).count() == 0
+
+    # And the ordinary case still records: their own account's ERP quote, named
+    # the way the worklist names it — by the reference alone, which is what
+    # ``intelligence.ts`` sends and the only shape any screen produces.
+    ok = _post(api_client, SALES, quote_document_ref="est-1",
                status="LOST", loss_reason="PRICE", customer="Acme Engineering")
     assert ok.status_code == 200, ok.text
     assert ok.json()["customer_id"] == "c1"

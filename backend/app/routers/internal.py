@@ -398,12 +398,19 @@ def observability_prometheus(_: None = Depends(_require_scrape_token)) -> Respon
 def observability_api_performance(
     principal: Principal = Depends(require_manager_or_owner),
     session: Session = Depends(get_session),
-    window_minutes: int = Query(5, ge=1, le=1440),
 ) -> dict:
-    """API performance metrics over a time window (owner/manager only)."""
+    """This worker's API counters since it started (owner/manager only).
+
+    ``window_minutes`` is gone rather than deprecated. It was accepted,
+    validated, echoed back, and never read — the counters behind it are
+    cumulative from process start and nothing retains a timestamped sample, so
+    a caller asking for five minutes got three weeks with "5" printed above it.
+    A parameter the answer does not depend on is worse than an absent one: it
+    invites the reader to trust a period nobody measured.
+    """
     from ..observability.dashboard import DashboardService
     service = DashboardService(session, principal.organization_id)
-    return service.get_api_performance(window_minutes)
+    return service.get_api_performance()
 
 
 @router.get("/observability/database")

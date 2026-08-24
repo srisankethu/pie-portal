@@ -72,6 +72,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from datetime import date
 from pathlib import Path
 from typing import Any, Optional
 
@@ -121,7 +122,18 @@ def _pg_bin() -> Path:
         return Path(found)
     on_path = shutil.which("pg_dump")
     if on_path:
-        return Path(on_path).parent
+        directory = Path(on_path).parent
+        # Both halves, not just the first. The procedure is `pg_dump | gzip`
+        # *and* `gunzip -c | psql`, and a machine with one and not the other is
+        # a real packaging state — the drill would then get past the dump and
+        # fail the restore, reporting an absent client as the documented
+        # procedure being broken. Which of the two is missing is named, because
+        # "install the client package" is a different instruction from "your
+        # backup procedure does not work".
+        if not (directory / "psql").exists() and not shutil.which("psql"):
+            raise Skip("pg_dump is present but psql is not — half a client "
+                       "cannot exercise a dump-and-restore")
+        return directory
     raise Skip("no PostgreSQL client binaries (pg_dump) found")
 
 
@@ -216,6 +228,21 @@ def _seed(url: URL) -> None:
             reason="drill", thresholds_version="ci_drill")
         session.commit()
 
+        # A business event, purely so a *sequence* has advanced past its start
+        # before the dump. `business_events.seq` is the schema's serial, and a
+        # restore that brings back every row while leaving that sequence at 1
+        # compares perfectly here and then fails on the next insert with a
+        # duplicate key — in production, on the first write after a recovery.
+        # Nothing else the seed writes uses a serial, so without this row the
+        # sequence comparison would be a green check over an untouched value.
+        for n in (1, 2):
+            session.add(models.BusinessEvent(
+                organization_id=org, event_type="DRILL_SEEDED",
+                occurred_on=date(2026, 1, n),
+                source_doc_type="drill", source_doc_id=f"drill_{n:04d}",
+                payload={"why": "advance the serial past its start"}))
+        session.commit()
+
         # Several entries, on more than one chain. `append` links and anchors
         # each one for real, so what is dumped is a genuine chain rather than
         # rows shaped like one.
@@ -282,7 +309,20 @@ def _facts(url: URL) -> dict[str, Any]:
                         select(models.ErasureReceipt)
                         .order_by(models.ErasureReceipt.organization_id)).all()}
 
+        # Sequence state, which every row-by-row comparison in this file is
+        # blind to. A restore that brings back all the rows and leaves a serial
+        # at 1 looks perfect here and fails on the very next insert with a
+        # duplicate key — and it fails in production, on the first write after
+        # a recovery, which is the worst possible moment to discover it.
+        # `pg_dump` emits `setval` for exactly this reason; whether it survived
+        # the round trip is a fact worth checking rather than assuming.
+        sequences = {
+            name: last for name, last in session.execute(text(
+                "SELECT sequencename, last_value FROM pg_sequences "
+                "WHERE schemaname = 'public' ORDER BY sequencename")).all()}
+
         return {"revision": state.current, "state": state.state, "rows": rows,
+                "sequences": sequences,
                 "sums": sums, "chains": chains, "receipts": receipts}
     finally:
         session.close()
@@ -333,12 +373,42 @@ def _compare(before: dict[str, Any], after: dict[str, Any]) -> list[str]:
         problems.append("no erasure receipt was seeded — its signature would "
                         "not have been checked across the restore")
         return problems
+    # The same floor, applied to the sequence check. A serial that never
+    # advanced past its start compares equal across any restore, including one
+    # that dropped `setval` entirely — so "sequences match" over an untouched
+    # sequence is a green check over an empty set, which is the exact shape
+    # this file's opening paragraph is about.
+    # `pg_sequences.last_value` is NULL until a sequence has been read, and 1
+    # after the *first* `nextval` — so `> 1` is the wrong test and excluded the
+    # single-row case it was written for. "Has been called at all" is the
+    # property that makes the comparison mean something: a restore that dropped
+    # `setval` leaves NULL where the source had a number.
+    advanced = {n: v for n, v in before["sequences"].items() if v is not None}
+    if not advanced:
+        problems.append(
+            "no sequence had been called before the backup, so comparing "
+            "them across the restore proves nothing — the seed must write at "
+            "least one row to a table with a serial key")
+        return problems
 
     if after["state"] != "CURRENT" or after["revision"] != before["revision"]:
         problems.append(
             f"the restored database is {after['state']} at "
             f"{after['revision']!r}; the source was CURRENT at "
             f"{before['revision']!r}")
+
+    # Sequence state, which the row comparison below is blind to: a restore
+    # that brings back every row and leaves a serial at 1 looks perfect and
+    # fails on the next insert with a duplicate key — in production, on the
+    # first write after a recovery.
+    for name, last in sorted(before["sequences"].items()):
+        restored_last = after["sequences"].get(name)
+        if restored_last is None:
+            problems.append(f"sequence {name}: absent from the restored database")
+        elif restored_last != last:
+            problems.append(
+                f"sequence {name}: last_value {last} before, {restored_last} "
+                f"after — the next insert would reuse a key")
 
     for name, src_rows in before["rows"].items():
         dst_rows = after["rows"].get(name)
@@ -493,7 +563,22 @@ def drill(server_url: str, workdir: Path) -> tuple[list[str], dict[str, Any]]:
                   "tables": len(before["rows"]),
                   "non_empty": sum(1 for r in before["rows"].values() if r),
                   "rows": sum(len(r) for r in before["rows"].values()),
+                  # Two numbers, because one of them was overstating the
+                  # check. `money_columns` counts the Decimal columns this
+                  # schema *declares* — 61 of them — and is a property of the
+                  # models, not of the run. `money_sums_exercised` counts the
+                  # ones a Σ actually came back non-null for, which is what the
+                  # drill compared. Reporting only the first said "61 money Σ"
+                  # over a seed that put values in eight, which is the shape of
+                  # overstatement §1 objects to: a coverage figure that counts
+                  # what was looked at rather than what was there.
                   "money_columns": sum(len(c) for c in before["sums"].values()),
+                  "money_sums_exercised": sum(
+                      1 for cols in before["sums"].values()
+                      for value in cols.values() if value is not None),
+                  "sequences": len(before["sequences"]),
+                  "sequences_advanced": sum(
+                      1 for v in before["sequences"].values() if v is not None),
                   "chains": before["chains"], "receipts": before["receipts"]}
         return _compare(before, after), report
     finally:
@@ -546,7 +631,11 @@ def main() -> int:
     print(f"{'restored':>18}: into an empty database in "
           f"{report['restore_seconds']:.1f}s")
     print(f"{'compared':>18}: every row column-for-column; "
-          f"{report['money_columns']} Decimal money Σ (values never printed)")
+          f"{report['money_sums_exercised']} of {report['money_columns']} "
+          f"Decimal money Σ carried a value (never printed)")
+    print(f"{'sequences':>18}: {report['sequences_advanced']} of "
+          f"{report['sequences']} had been called at least once "
+          f"(a restore that loses one collides on the next insert)")
     for org, verdict in sorted(report["chains"].items()):
         print(f"{'audit chain':>18}: {org} — {verdict['entries']} entries, "
               f"head {(verdict['head_hash'] or '')[:12]}…")

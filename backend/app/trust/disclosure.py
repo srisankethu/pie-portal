@@ -179,7 +179,9 @@ def record(session: Session, *, organization_id: str, ai_call_log_id: Optional[s
 
 
 def log_result(session: Session, *, organization_id: str, decision_type: str,
-               result: Any) -> Optional[models.ModelPayload]:
+               result: Any,
+               ai_call_log_id: Optional[str] = None
+               ) -> Optional[models.ModelPayload]:
     """Record what an interpretation actually sent, if it sent anything.
 
     Takes the ``AIResult`` rather than the raw strings so both call sites — the
@@ -190,12 +192,27 @@ def log_result(session: Session, *, organization_id: str, decision_type: str,
     Guarded by settings because this is a disclosure feature with a storage
     cost; a deployment that has not enabled it should not quietly accumulate a
     table of everything it ever sent.
+
+    ``ai_call_log_id`` ties the payload to the call it belongs to, and used to
+    be hard-coded ``None`` at both call sites — so the column existed, the
+    foreign key existed, and every row was orphaned. What that cost is specific:
+    ``AiCallLog`` holds the status, latency, tokens and cost of a call and
+    deliberately holds no content; ``ModelPayload`` holds the content and none
+    of the operational facts. Answering "what did we send on the call that
+    failed" meant matching two tables on organization, decision type and a
+    timestamp and hoping the run was quiet. Both callers now record telemetry
+    first and pass the id.
+
+    Still optional, and ``None`` is still a real state rather than a defect: a
+    deployment with ``AI_TELEMETRY_ENABLED`` off writes no call log at all, and
+    a payload is worth keeping even when the operational half was not.
     """
     payload = getattr(result, "prompt_payload", None)
     if not settings.AI_LOG_PAYLOADS or not payload:
         return None
     return record(
-        session, organization_id=organization_id, ai_call_log_id=None,
+        session, organization_id=organization_id,
+        ai_call_log_id=ai_call_log_id,
         decision_type=decision_type, system="", user=payload,
         provider=getattr(result, "provider", ""), model=getattr(result, "model", ""))
 

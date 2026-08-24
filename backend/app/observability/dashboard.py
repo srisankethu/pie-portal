@@ -30,6 +30,7 @@ from typing import Any, Iterable, Optional
 from sqlalchemy.orm import Session
 
 from ..clock import aware as _aware, iso as _iso
+from ..lease import holder_id
 from ..ingestion import jobs
 from .capacity import CapacityCalculator
 from .health import health
@@ -250,8 +251,30 @@ class DashboardService:
             },
         }
 
-    def get_api_performance(self, window_minutes: int = 5) -> dict[str, Any]:
-        """Get API performance metrics for a time window."""
+    def get_api_performance(self) -> dict[str, Any]:
+        """API counters for **this worker, since it started** — not a window.
+
+        It used to take ``window_minutes``, default 5, bounded 1–1440 by the
+        route. It echoed the number back in the payload and computed nothing
+        from it: every counter below is cumulative from process start, and
+        nothing in ``observability/metrics`` retains a timestamped sample, so
+        there was never anything a window could have selected. A reader saw
+        ``"window_minutes": 5`` above an error rate covering three weeks.
+
+        Not fixed by *implementing* windowing, and the reason is the one
+        ``MetricRegistry.export`` gives at length: retaining samples means a
+        write on the request path, which is the incident CLAUDE.md §4 documents,
+        and these counters are per worker anyway — a five-minute window over
+        one process's ``1/N`` of the traffic would be a smaller lie rather than
+        a truth. So the parameter is gone and the payload says what the numbers
+        are: ``counting_since`` is when they were last zero, ``observed_minutes``
+        is the denominator, and ``scope`` says whose they are.
+
+        The same shape as the ``api_requests`` utilization fix, which divided a
+        lifetime counter by a per-second limit and pinned itself at 100%
+        forever. A parameter a caller can supply and the answer does not depend
+        on is a promise the code does not keep.
+        """
         duration_hist = metrics._metrics.get("api_request_duration_seconds")
         errors_counter = metrics._metrics.get("api_errors_total")
         requests_counter = metrics._metrics.get("api_requests_total")
@@ -259,12 +282,31 @@ class DashboardService:
         total_requests = requests_counter.get() if requests_counter else 0
         total_errors = errors_counter.get() if errors_counter else 0
 
+        now = datetime.now(timezone.utc)
+        since = metrics.started_at
+        observed = max(0.0, (now - since).total_seconds() / 60)
+
         return {
-            "window_minutes": window_minutes,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": now.isoformat(),
+            # Whose numbers, and over what. Both were missing, and the second
+            # was actively misstated.
+            "scope": "worker",
+            "worker": holder_id(),
+            "counting_since": since.isoformat(),
+            "observed_minutes": round(observed, 2),
+            "basis": (
+                "Cumulative for this API worker since counting_since — not a "
+                "window, and not the deployment. Other workers hold their own "
+                "counters; a restart returns these to zero."
+            ),
             "requests_total": total_requests,
             "errors_total": total_errors,
-            "error_rate": (total_errors / total_requests * 100) if total_requests > 0 else 0,
+            # A rate over no requests is not zero — it is undefined, and a 0%
+            # error rate on an idle worker reads as healthy rather than as
+            # silent. Same rule the attribution ledger applies to an empty
+            # window (§1).
+            "error_rate": ((total_errors / total_requests * 100)
+                           if total_requests > 0 else None),
             "latency_ms": _latency_ms(duration_hist),
         }
 

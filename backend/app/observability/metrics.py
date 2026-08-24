@@ -422,6 +422,13 @@ class MetricRegistry:
     def __init__(self):
         self.lock = threading.Lock()
         self._metrics: dict[str, Metric] = {}
+        #: When this worker's counters started at zero. Every number here is
+        #: cumulative from that moment — there is no windowing anywhere in this
+        #: module — so a reader who wants a rate needs the denominator, and a
+        #: reader comparing two scrapes needs to know a restart reset them.
+        #: Recorded rather than inferred, because "since the process started"
+        #: is only knowable from inside the process.
+        self.started_at = datetime.now(timezone.utc)
 
     def counter(self, name: str, help_text: str = "") -> Counter:
         """Get or create a counter."""
@@ -493,6 +500,7 @@ class MetricRegistry:
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "scope": "worker",
             "worker": holder_id(),
+            "counting_since": self.started_at.isoformat(),
             "workers_configured": settings.UVICORN_WORKERS,
             "composition": (
                 "One API worker's counters, not the deployment's. Scrape until "
@@ -504,9 +512,15 @@ class MetricRegistry:
         }
 
     def clear(self) -> None:
-        """Clear all metrics (for testing)."""
+        """Clear all metrics (for testing).
+
+        Moves ``started_at`` too. A cleared registry whose start time still
+        pointed at process boot would report a rate over a period during which
+        the counters were deliberately thrown away.
+        """
         with self.lock:
             self._metrics.clear()
+            self.started_at = datetime.now(timezone.utc)
 
 
 # Global metrics registry

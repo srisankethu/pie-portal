@@ -47,6 +47,12 @@ Run it before arguing with anything here. Where this document cites a figure
 measured on a live book, the date and the entity are given; where it *derives* a
 figure, the derivation is shown so it can be checked.
 
+**If the question is "so when do I use the LLM instead", that is §9.** Most of
+what follows is a series of reasons not to fit a model, and the complement of
+each one is a job for a different tool — usually the BYOK provider that is
+already wired, occasionally a `GROUP BY`. §9 is the routing rule, and it turns
+out the safety ordering runs the opposite way from §4's.
+
 ---
 
 ## 1. Three questions, and which one each proposal dies at
@@ -765,7 +771,151 @@ The last row is a gate rather than a trigger, and it does not expire.
 
 ---
 
-## 9. What this document is not
+## 9. ML or LLM: routing a job to the right tool
+
+The complement of "do not fit a model here" is "use something else", and the
+something else is already running. Two LLM paths ship today, both through the
+per-organization BYOK key (`ai/byok.py`): the decision queue's reading of a
+signal (`decisions/service.py` → `ai/interpret.py`), and the Quote Builder's
+reading of a prose enquiry (`routers/quote.py` → `ai/reading.py`). Neither
+produces a number, and that is not a coincidence.
+
+### 9.1 Ask what the output *is*, not how hard the problem is
+
+| The output is | Tool | Where it lives |
+|---|---|---|
+| A number a decision rests on | Arithmetic — or, if it must be learned, a fitted model under §4 | `commercial/` |
+| A choice from a closed set, with a reason a human can check | Deterministic rules and matchers | `commercial/`, `identity/` |
+| Language, or structure recovered from language | An LLM | `ai/` |
+| A ranking over things already scored | ML once labels exist; today a bounded adjustment (±`AI_PRIORITY_ADJUST_BOUND`, 20) | `decisions/` |
+
+Difficulty is the wrong axis, and it is the one that misroutes both jobs at
+once: it sends people to a model for pricing — where §3 says the evidence is not
+there — and to a regular expression for a WhatsApp message, where a pretrained
+model is free. The Quote Builder's intake was that regular expression until
+`ai/reading.py` landed.
+
+### 9.2 The rule is already written in the tree
+
+`ai/reading.py` states it, and nothing here improves on the phrasing: the model
+*"does segmentation and normalisation of language, which is the thing it is
+genuinely good at, and the identity of the tool stays with the engine that was
+built to decide it."*
+
+It returns a code and a quantity per line **and nothing else** — it does not match
+an item, choose a supply option, or price anything. pie-parser then resolves that
+code exactly as it resolves typed input, against the same catalogue and the same
+score bands. In one sentence:
+
+> **The LLM may say what was asked for. It may not say what it is, or what it
+> costs.**
+
+### 9.3 Thin data argues *for* the LLM, which is the counterintuitive part
+
+"LLM for language, ML for numbers" is right, but for a shallower reason than the
+one that binds here. §3 establishes that supervised learning is starved at this
+book's commercially interesting grain — ~5 observations per customer-item pair.
+An LLM needs **zero** examples for the jobs it is good at, because it arrives
+already trained. So the routing follows the evidence:
+
+- Data thick, output a number → a model can learn something. §5.6 is the only
+  place in this document where that is true.
+- Data thin, input is language → the LLM, precisely *because* the book has no
+  training set to offer. It brought its own.
+- Output is a number → arithmetic, however much data there is.
+
+The instinct this inverts is a common one: reach for a model on the sparse
+pricing problem, where it cannot work, and for a regex on the enquiry text, where
+the pretrained model costs a fraction of a rupee.
+
+### 9.4 The economics, and why BYOK changes them
+
+The two tools have opposite cost shapes:
+
+| | Fixed cost | Marginal cost | Who pays |
+|---|---|---|---|
+| Fitted model | High — build, version, the §4.4 manifest, monitoring, re-fitting | ~zero | The platform, once |
+| LLM call | ~zero | Per call | **The tenant**, via their own key |
+
+BYOK is what makes the second row scale-free for the platform: the key is the
+organization's, so the bill is theirs, and adding tenants adds no inference cost
+here. It does *not* make it free for the owner, which is why the discipline is
+already built rather than left to judgement — `decisions/preflight.py` prices a
+run before anything is sent, `service.py` caches on a context hash so unchanged
+context never re-infers, `interpret.py` withholds up front on `INSUFFICIENT`
+without spending a call, and `telemetry.py` prices each call from token counts as
+backend arithmetic — never a figure the model supplies.
+
+The crossover between the two rows is a volume question, and at this book's
+volume it is not close. **At ~210 invoices a month and a few hundred enquiries,
+almost nothing is repetitive enough to amortise a fitted model against an API
+call.** That is a second, independent argument landing where §3 already landed,
+which is worth noticing: the sample-size case and the cost case agree.
+
+### 9.5 The safety ordering is not the one most people would guess
+
+§4 argues a fitted model is a *worse* cost-disclosure channel than a rule. The
+LLM is **better** than either — provided the bundle is redacted, which it is by
+construction:
+
+- `context/assembler.py` removes RESTRICTED facts before assembly — absent, not
+  masked — so the model never sees cost or margin at all.
+- `context/bundle.py` exposes the allowed number set, and `ai/contract.py`
+  rejects any figure in user-facing text that does not trace back to it.
+- A fitted model, by contrast, *encodes* whatever it was trained on and cannot
+  un-see it.
+
+So for anything adjacent to cost or margin the ordering is
+**arithmetic > redacted LLM > fitted model**, and a proposal that reaches for a
+model to avoid "sending data to a provider" has usually got the risk backwards.
+
+One caveat keeps that honest, and `context/quote_bundle.py` already records it:
+`unknowns` is free text *the module writes*, not a fact passing the `data_class`
+gate, and `_suspicious_cost` once stated a comparison between a restricted value
+and one the reader is shown. The gate protects facts. Prose written beside them
+has to be written for the recipient.
+
+### 9.6 What the LLM must never be handed here
+
+- **A number to compute, choose or move**, beyond the clamped
+  `priority_adjustment`. §1, and `contract.py` enforces it.
+- **The final say on identity.** `10-knowledge-representation.md`, and the
+  confirmation gate that admits only the engine's own single-candidate proposal.
+- **An unredacted bundle.** Redaction is upstream of the call, never a
+  post-filter on the answer.
+- **A job with no deterministic floor.** Every path degrades to `fallback.py`
+  rendering the signal's own metrics; a feature whose failure mode is a blank
+  screen is not ready for a provider.
+- **Raw records.** `prompt.py` sends exactly the curated bundle JSON, and treats
+  an instruction inside a data value as content to be ignored.
+- **One tenant's text pooled with another's.** `InboundLine` holds a customer's
+  own words about their project and volumes; no consent primitive exists anywhere
+  in this codebase, so the cross-tenant aggregate cannot be built yet.
+
+### 9.7 Where the next call of each kind should go
+
+**Next LLM (BYOK) jobs, in order:**
+
+1. **Document extraction** — bill, PO and tender PDFs into structured lines.
+   Nothing in the backend does this today: `IngestedDocument` is a Zoho *resume
+   cursor*, not a document store, so the operations skills currently do it
+   outside the platform. Note the architectural constraint before building it —
+   `ingestion/` must not import `ai/` (§1), so the call belongs at a router or
+   service seam that hands **already-structured output** to ingestion. That is
+   exactly the shape `routers/quote.py` uses for `ai/reading.py`, and it is the
+   pattern to copy rather than the rule to argue with.
+2. **Widen `ai/reading.py` to the other inbound channels.** It already reads
+   prose into quotable lines on one path; `InboundLine` is about to carry the
+   same text from five.
+3. **Loss-reason free text into the closed `QuoteLossReason` vocabulary**, as a
+   suggestion a human confirms. Cheap, bounded, reversible — and it feeds the
+   §5.1 contingency table, which is the highest-value item in §7.
+
+**Next fitted model:** §5.6, and only on §8's trigger. There is no second one.
+
+---
+
+## 10. What this document is not
 
 It is not a claim that machine learning is useless in distribution. It is a
 claim about **this book, at this size, given what is already computed

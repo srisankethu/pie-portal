@@ -97,7 +97,7 @@ data-shaped, one my own bad path parameter). 15 write endpoints probed for autho
 (§3). Plus the working calls: `me/password`, `approvals/quote-line`,
 `approvals/{id}/decide` ×5, `commercial/recompute`, `decisions/{id}/action`,
 `insight/simulate`, `insight/negotiate`, `quote-intelligence/assess`, `snapshot` ×2,
-and the `/api/quotes` intake → options → supply → price chain.
+and the `/api/v1/quotes` intake → options → supply → price chain.
 
 **Approval lifecycle.** 4 requests raised (3 by the salesperson, 1 by me), 1 approved,
 3 denial paths exercised, plus the send gate.
@@ -393,7 +393,7 @@ escalation path.
 
 ### 4 · MAJOR · An unparsed RFQ quantity silently becomes 1, and the quotation total follows it — **CONFIRMED**
 
-**Where:** Quote Builder `#/quotes` · `POST /api/quotes/{id}/intake` · `backend/app/store.py:59-82`
+**Where:** Quote Builder `#/quotes` · `POST /api/v1/quotes/{id}/intake` · `backend/app/store.py:59-82`
 **Evidence:** `/tmp/shots/42-quote-lines.png`
 
 `_split_rfq` matches a trailing bare number. A number followed by a unit word, or a leading

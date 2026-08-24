@@ -85,7 +85,7 @@ export function defineAbilityFor(role: Role | undefined): AppAbility {
     // data key, which is not a decision to offer a manager by accident.
     can("read", "trust");
     can("manage", "trust");
-    // Mirrors `require_owner` on `GET /api/attribution/evaluation`. Whether the
+    // Mirrors `require_owner` on `GET /api/v1/attribution/evaluation`. Whether the
     // platform earned its price is the renewal conversation, and it sets one
     // book's performance before the platform against its performance during —
     // an owner's question, not a desk one. The ledger it is computed from stays

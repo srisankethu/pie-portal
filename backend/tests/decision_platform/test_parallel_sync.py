@@ -432,3 +432,76 @@ def test_the_analysis_summaries_survive_onto_the_run(db):
     notes = run.notes or {}
     assert "state" in notes, f"the state summary was dropped again: {sorted(notes)}"
     s.close()
+
+
+def test_analysis_survives_a_fresh_pull_taking_the_connections_active_slot(db):
+    """The regression the duplicate-run guard introduced, pinned.
+
+    ``start_all`` re-activates the finished host run (``status = "RUNNING"``) so
+    the organization-wide analysis has a row to narrate through. Once
+    ``uq_sync_run_active_connection`` exists, that write can be *refused*: a
+    fresh pull for the same connection may have started in the gap between the
+    last pull committing and the re-activation.
+
+    Left to be discovered by the first ``phase()`` commit inside
+    ``execute_analysis``, the IntegrityError lands inside that call's
+    ``except``/``finally``, whose own commit then fails on the rolled-back
+    session — so ``start_all`` raised PendingRollbackError and every pull that
+    had actually succeeded was reported as a crash.
+
+    The window is reproduced exactly rather than approximated with threads:
+    ``session.get(Organization, ...)`` is the last statement before the
+    re-activation, so intruding there *is* the race.
+    """
+    s = db()
+    conn = _connect(s, "SLS", "zoho-0")
+    cid = conn.connection_id
+    s.commit()
+
+    fired: list[str] = []
+    real_get = s.get
+
+    def intruding_get(entity, ident, **kw):
+        # ``start_all`` reads the Organization more than once; only the read
+        # immediately before the re-activation is the race. Distinguish it by
+        # the thing that is only true by then — this connection's pull has
+        # landed in a terminal status.
+        if entity is models.Organization and not fired:
+            probe = db()
+            landed_yet = probe.scalars(select(models.SyncRun).where(
+                models.SyncRun.connection_id == cid,
+                models.SyncRun.status.in_(("OK", "PARTIAL")))).first()
+            probe.close()
+            if landed_yet is None:
+                return real_get(entity, ident, **kw)
+            fired.append(cid)
+            # A second worker starts a pull for this same connection, and
+            # commits it, while this call is between its pull and its analysis.
+            other = db()
+            other.add(models.SyncRun(
+                organization_id=ORG, source="fixture", status="QUEUED",
+                started_at=jobs._now(), heartbeat_at=jobs._now(),
+                phase="Queued", connection_id=cid))
+            other.commit()
+            other.close()
+        return real_get(entity, ident, **kw)
+
+    s.get = intruding_get
+    result = jobs.start_all(s, ORG, triggered_by="test")   # must not raise
+    s.get = real_get
+
+    assert fired, "the intrusion never ran; this test is not exercising the race"
+    # The pulls succeeded and the analysis still ran over them.
+    assert result["analysed"] is True
+    assert {r["status"] for r in result["runs"]} == {"OK"}
+
+    # The host run kept a terminal status rather than fighting for the slot,
+    # and the intruder still holds it.
+    s.expire_all()
+    host = s.get(models.SyncRun, result["analysis_run_id"])
+    assert host.status in ("OK", "PARTIAL")
+    active = list(s.scalars(select(models.SyncRun).where(
+        models.SyncRun.connection_id == cid,
+        models.SyncRun.status.in_(jobs.ACTIVE))))
+    assert len(active) == 1 and active[0].sync_run_id != host.sync_run_id
+    s.close()

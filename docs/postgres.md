@@ -97,12 +97,161 @@ shapes, which is why the same code runs on both backends.
   convention and are copied as exactly that; nothing is reinterpreted.
 - **No per-tenant databases.** `organization_id` is the tenant boundary on
   every owned row (it already was); one database, role-scoped by the API.
-- **Least privilege**: the app's database user owns its own database and
-  nothing else — it needs no SUPERUSER, no CREATEDB, no CREATEROLE. The
-  compose stack's single-purpose user satisfies this by construction; on a
-  shared server, create the role yourself rather than reusing an admin one.
-  Migrations run as the same user (they create tables in its own database),
-  as a deliberate operator step — never automatically at boot.
+- **Least privilege**: the app's database user should own its own database and
+  nothing else — no SUPERUSER, no CREATEDB, no CREATEROLE. Migrations run as
+  that user (they create tables in its own database), as a deliberate operator
+  step, never automatically at boot.
+
+  **The compose stack does not satisfy this, and this bullet used to claim it
+  did — "by construction", which was the opposite of true.** `postgres:17-alpine`
+  runs `initdb -U "$POSTGRES_USER"`, and `initdb -U` creates the cluster's
+  *bootstrap superuser*. So `pie_portal` is a superuser and the owner of every
+  table Alembic builds. On a shared or managed server, where you create the
+  role yourself with `CREATE ROLE … LOGIN NOSUPERUSER`, the bullet is accurate;
+  on the compose stack it never was.
+
+  This matters far beyond tidiness now that row-level security is arriving: a
+  superuser carries `rolbypassrls`, which **no policy can override and
+  `FORCE ROW LEVEL SECURITY` does not touch** — FORCE binds a table's owner,
+  nothing binds BYPASSRLS. Tenant isolation enforced by policy is therefore
+  inert for this connection. Verified rather than reasoned about: a fail-closed
+  policy on a probe table returned every row to it.
+
+  `scripts/pg_sandbox.sh` provisions a second role, `pie_app`
+  (`LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS`, owner of nothing),
+  and prints its URL from `pg_sandbox.sh app-url`. That is the role
+  `tests/decision_platform/test_row_level_security.py` connects as.
+
+## Two roles on one database
+
+A policy binds the *role that issued the query*, and this application had one
+role for everything. That cannot work: Alembic creates the schema, and every
+background job works across tenants on purpose — the auto-sync scheduler
+enumerates connections for every organization with no principal at all — while
+a policy is worth nothing unless the connection serving requests is one it
+binds. One URL cannot be both.
+
+So there are two, and only the second is new:
+
+| | role | used by |
+|---|---|---|
+| `DATABASE_URL` | privileged, owns the schema | Alembic, background jobs, every CLI, `scripts/` |
+| `APP_DATABASE_URL` | tenant-scoped, owns nothing | HTTP request handlers, via `get_session` |
+
+**Unset, they are the same connection** — the same engine and the same
+sessionmaker, by identity — which is what every existing deployment, all of
+dev, and the whole test suite run on. Setting it is the deliberate act.
+
+Two things are refused at import rather than served: a URL that is not
+PostgreSQL (no other dialect has policies, so it would split the pool and buy
+nothing), and one naming a different *database* (two roles on one database is
+the design; two databases means requests and background jobs read different
+data, which surfaces as rows that are sometimes there).
+
+On a server where you can create roles:
+
+```sql
+CREATE ROLE pie_app LOGIN PASSWORD '…' NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;
+GRANT USAGE ON SCHEMA public TO pie_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO pie_app;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO pie_app;
+-- So each new table Alembic creates is reachable without a second pass:
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO pie_app;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+  GRANT USAGE, SELECT ON SEQUENCES TO pie_app;
+```
+
+Then set `APP_DATABASE_URL` to the same database as `DATABASE_URL` with that
+user, and check it took:
+
+```bash
+curl -s localhost:8000/api/v1/internal/observability/health | python3 -m json.tool
+```
+
+The `tenant_isolation` component answers exactly one question — is the
+connection serving requests one that policies apply to — and it is **unhealthy
+until `APP_DATABASE_URL` is set**, naming the role and its `rolsuper` /
+`rolbypassrls` flags. It is deliberately not softened by whether any policy
+exists yet: a connection that cannot be governed is the finding, and policies
+added later would silently do nothing.
+
+## Which tables are under a policy
+
+**70 of the 72 tenant-scoped tables** are under `ENABLE` + `FORCE ROW LEVEL
+SECURITY` with a fail-closed `tenant_isolation` policy governing reads (`USING`)
+and writes (`WITH CHECK`) — six in `d1rls_tenant_policies.py`, 58 in
+`d2rls_tenant_policies_rest.py`, and the last six in
+`d3rls_tenant_policies_unauthenticated.py`.
+
+### The paths that have no tenant until they find one
+
+Four requests reach the database before any principal exists. Each gets **one
+narrow `SECURITY DEFINER` function** answering the single question it needs in
+order to announce its tenant — never a policy clause wide enough to permit the
+lookup, because a `WHERE` that matches "the row you asked for" is the same
+`WHERE` that matches every row, one query at a time.
+
+| path | function | answers |
+|---|---|---|
+| sign-in | `app_login_lookup(email)` | which organization owns an **active** address |
+| sign-up | `app_email_registered(email)` | whether an address is taken **at all** — active or not, because a deactivated user still holds theirs |
+| provisioning | `app_org_id_taken(id)` | whether `org_<slug>` already exists, so the collision walk does not stop at the first candidate |
+| Zoho OAuth callback | `app_oauth_state_org(hash)` | which organization issued a state token |
+
+Each has `search_path` pinned in its definition: a `SECURITY DEFINER` function
+resolving `users` through the *caller's* path can be pointed at a table the
+caller made, which is the classic way this construct becomes a privilege
+escalation. Four functions rather than one dispatching on a `kind` argument —
+each is four lines and reads in one sitting.
+
+The demo workspace needs no function: its organization is named in settings, so
+it announces the tenant it already knows.
+
+**Two tables stay out permanently**, and this is the distinction that matters
+most — their cross-tenant reads are the *product*, not leaks:
+
+- **`sync_runs`** is what worker capacity is computed from. Capacity is a
+  property of the *deployment*, and a version counting only the caller's own
+  runs would not be a narrower answer, it would be a wrong one.
+- **`zoho_connections`** carries credential sharing: one Zoho grant reaches
+  every company that user can see, and `/data/credentials/{id}/organizations`
+  exists to say which. A policy there does not secure the feature, it removes
+  it.
+
+**The rule to apply to the next table somebody considers:** a policy belongs on
+a table whose cross-tenant reads are leaks. Where they are the product, a policy
+is a regression wearing the costume of a control.
+
+*No tenant column at all:* `zoho_credentials` (a Zoho refresh token belongs to a
+person, not a company) and `process_leases` (infrastructure about processes).
+Neither can take this policy shape.
+
+**One named degradation.** `oauth.sweep_expired` runs with a principal, so under
+a policy it reaps only the caller's own expired state rows; an organization that
+never authorizes again keeps a handful of tiny expired rows. That is
+garbage collection, not correctness, and the fix if it ever matters is a
+scheduled sweep on the background connection — not a policy exemption.
+
+`test_every_tenant_scoped_table_is_covered_or_deliberately_named` partitions
+every tenant-scoped table into those three buckets, so a new model lands as a
+failing test naming itself rather than as quiet uncovered surface.
+
+**Sign-in.** It is the one request that cannot know its tenant in advance —
+there is no token yet and the organization is a property of the row being looked
+for. `app_login_lookup(email)` is a `SECURITY DEFINER` function created by the
+same migration: one email in, two columns out, `search_path` pinned so it cannot
+be redirected at a table the caller made. `tenancy.adopt_tenant_for_login` calls
+it and announces the result. A policy clause wide enough to permit the same
+lookup would be wide enough to enumerate the table one query at a time; a
+function is narrow in a way a predicate is not.
+
+**One behaviour changes, and it changes for the better.**
+`/observability/tenants` had no organization predicate, so any manager or owner
+read back the id and signal count of every organization on the deployment. With
+`signals` policied and the role split, it returns one row — the caller's. The
+response carries `scope` so a reader can tell which of the two they are looking
+at rather than inferring it from a row count.
 
 ## What stays SQLite, and the honest caveat
 

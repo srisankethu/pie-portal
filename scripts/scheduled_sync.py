@@ -1,16 +1,26 @@
 #!/usr/bin/env python3
 """Run a sync on a schedule, from cron or a systemd timer.
 
-The platform has no scheduler inside it and this does not add one. It calls the
-same endpoint the Data & connection screen calls, so a scheduled pull and a
-pressed button are the same operation — there is no second code path to keep
-correct, and nothing here can pull differently from the way a person does.
+It calls the same endpoint the Data & connection screen calls, so a scheduled
+pull and a pressed button are the same operation — there is no second code path
+to keep correct, and nothing here can pull differently from the way a person
+does.
 
-**Why a script and not an in-process scheduler.** A scheduler inside the app
-needs to survive more than one worker without two of them firing at once, which
-is leader election for a job the operating system already knows how to run. It
-would also make "is the sync working" a question about application internals
-rather than about a timer you can inspect, disable, and read the logs of.
+**This is not the only scheduler.** ``app/ingestion/scheduler.py`` runs one
+in-process, on ``Organization.config["auto_sync_hours"]``; this script is the
+alternative for deployments that would rather own the timer. The paragraph here
+used to claim "the platform has no scheduler inside it", and then argue that an
+in-process one would need leader election to stop two workers firing at once.
+Both halves were wrong: the in-process scheduler exists, and it needs no leader
+election, because neither scheduler starts a pull itself. Both call
+``jobs.start_sync``, and both ask for every company at once — a NULL
+``connection_id`` — so the partial unique index covering all-companies runs
+allows only one of them to exist, and the second caller is handed the first
+one's run. Two timers are wasteful, not dangerous.
+
+**What a script still buys.** "Is the sync working" becomes a question about a
+timer you can inspect, disable, and read the logs of, rather than about
+application internals. That is why both exist.
 
 **Why it signs in each run rather than carrying a token.** Tokens here have no
 expiry — ``verify_token`` reads the signature and never looks at ``iat`` — so a

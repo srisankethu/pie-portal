@@ -1445,6 +1445,49 @@ class SyncRun(Base):
     """
 
     __tablename__ = "sync_runs"
+    __table_args__ = (
+        # **The guard against two workers starting the same pull.** The check in
+        # ``jobs.start_sync`` reads the active runs and then inserts, under a
+        # ``threading.Lock`` — which is process-local, and the deployment runs
+        # two uvicorn workers. Both reads returned "nothing running" before
+        # either insert committed, so both inserted and both pulled: every
+        # invoice fetched twice, two jobs racing on the same rows, and a
+        # progress display that could not say which job its counter belonged
+        # to. Only the database can exclude across processes, so the index is
+        # the guard and the lock is a fast path in front of it.
+        #
+        # Two indexes rather than one because ``connection_id`` is nullable and
+        # NULL is not equal to NULL: a single unique index over
+        # (organization_id, connection_id) would let two umbrella runs — the
+        # all-companies pull, which carries no connection — both insert. The
+        # first index holds the per-connection case, the second the umbrella
+        # one, and neither constrains the other, which is what keeps two
+        # connected companies pulling at once (they are two independent APIs
+        # and must not serialise).
+        #
+        # Partial, over the active rows only: a finished run must not stop the
+        # next one, and the whole history of a connection's pulls stays in this
+        # table. Both backends support partial indexes (SQLite since 3.8,
+        # Postgres always), so this needs no dialect branch beyond naming the
+        # predicate twice — the ``uq_value_event_key_live`` idiom.
+        #
+        # What the index cannot express, and what therefore stays in
+        # ``start_sync``: the cross-exclusion between an umbrella run and a
+        # per-connection run of the same organization. A unique index has no
+        # way to say "no row in *that* group either".
+        Index("uq_sync_run_active_connection",
+              "organization_id", "connection_id", unique=True,
+              sqlite_where=text(
+                  "status IN ('QUEUED', 'RUNNING') AND connection_id IS NOT NULL"),
+              postgresql_where=text(
+                  "status IN ('QUEUED', 'RUNNING') AND connection_id IS NOT NULL")),
+        Index("uq_sync_run_active_umbrella",
+              "organization_id", unique=True,
+              sqlite_where=text(
+                  "status IN ('QUEUED', 'RUNNING') AND connection_id IS NULL"),
+              postgresql_where=text(
+                  "status IN ('QUEUED', 'RUNNING') AND connection_id IS NULL")),
+    )
 
     sync_run_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
     organization_id: Mapped[str] = mapped_column(String(64), index=True)
@@ -2569,6 +2612,163 @@ class AccessEvent(Base):
     detail: Mapped[str] = mapped_column(String(512), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),
                                                  default=_now, index=True)
+
+
+class AuditEntry(Base):
+    """One tamper-evident link in a tenant's audit chain.
+
+    The question this table exists to answer is "who saw this customer's
+    economics, when, under which policy, and what did the AI say?" — and audit
+    coverage cannot be backfilled, so a day without a row here is permanently
+    unauditable. Six append-only surfaces already existed (``business_events``,
+    ``value_events``, ``access_events``, ``ai_call_logs``, the approval thread,
+    ``identity_events``) and not one of them was both *principal-bearing* and
+    *linked*: an append-only table whose rows can be individually rewritten is
+    append-only by convention, and a convention is what an auditor is being
+    asked to take on faith.
+
+    **The chain.** Each entry carries the ``entry_hash`` of the one before it in
+    ``prev_hash``, and its own ``entry_hash`` is an HMAC over a body that
+    includes that link (``trust/audit.py`` builds it, ``trust/signing.py``
+    signs it). Rewriting one row therefore invalidates it and every row after
+    it, and re-signing them all needs the deployment secret as well as the
+    database.
+
+    **Why the ordering is a constraint and not a lock.** A chain needs a total
+    order and a single writer, and ``app/leases.py`` refuses in writing to be
+    that writer — it has no fence token, so a leader can hold an unexpired claim
+    while frozen and resume after another worker has taken it. The order is
+    therefore enforced where the write lands: ``uq_audit_entry_org_seq`` means
+    two appenders cannot both hold position N, and the loser gets an
+    ``IntegrityError``, re-reads the head and retries. The same idiom as
+    ``uq_sync_run_active_connection`` — the database refuses, rather than a
+    process-local lock being trusted.
+
+    ``uq_audit_entry_org_prev`` states the property directly rather than as a
+    consequence: two entries naming the same parent *is* a fork, whatever their
+    sequence numbers say. The sequence constraint already makes that
+    unreachable while ``seq`` is always ``head.seq + 1``; this one holds even if
+    that arithmetic is ever wrong, which is exactly the case a constraint is
+    for.
+
+    **Scope is the organization.** One chain per tenant, so a tenant's history
+    verifies on its own, exports on its own, and two tenants' writes never
+    contend for a position. There is deliberately no cross-tenant chain: it
+    would serialise every audited action in the deployment behind one row, and
+    a global order is not a question anybody asks of this log.
+    """
+
+    __tablename__ = "audit_entries"
+    __table_args__ = (
+        # The whole ordering argument, in two indexes. Not partial: every row
+        # here is live forever — an audit entry that could be superseded would
+        # be an audit entry that could be edited.
+        UniqueConstraint("organization_id", "seq", name="uq_audit_entry_org_seq"),
+        UniqueConstraint("organization_id", "prev_hash",
+                         name="uq_audit_entry_org_prev"),
+        Index("ix_audit_entries_org_seq", "organization_id", "seq"),
+        Index("ix_audit_entries_org_action", "organization_id", "action"),
+        Index("ix_audit_entries_org_at", "organization_id", "at"),
+    )
+
+    entry_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    #: Position in this organization's chain, 1-based and dense. Allocated by
+    #: reading the head and adding one; the unique constraint above is what
+    #: makes that safe under concurrency rather than merely usual.
+    seq: Mapped[int] = mapped_column(Integer)
+    #: The previous entry's ``entry_hash``. Sixty-four zeros for the genesis
+    #: entry — a literal rather than NULL, because NULL is not equal to NULL and
+    #: a unique index over it would let two genesis entries in.
+    prev_hash: Mapped[str] = mapped_column(String(64))
+    #: HMAC-SHA256 over this entry's covered body, which includes ``prev_hash``.
+    entry_hash: Mapped[str] = mapped_column(String(64))
+
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    #: What happened, from ``trust/audit.Action``. A string rather than an enum
+    #: column so an old row keeps naming what it named after the vocabulary
+    #: grows — a chain whose stored value stops being readable is a chain that
+    #: stops verifying.
+    action: Mapped[str] = mapped_column(String(48))
+
+    #: The account that acted, when there was one. NULL for a failed sign-in
+    #: against an address with no account, and for work no person asked for.
+    actor_user_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    #: Who acted, as a human reads it — an email, or ``SYSTEM``. Never blank,
+    #: the ``IdentityEvent.actor`` rule: "who did this" is the first question
+    #: asked of an entry somebody disagrees with.
+    actor_label: Mapped[str] = mapped_column(String(255), default="SYSTEM")
+    #: The role the actor held *at the time*, which is the one an audit wants —
+    #: a later promotion must not rewrite what authority an act carried.
+    actor_role: Mapped[str] = mapped_column(String(32), default="")
+
+    #: What was acted on: a stable type name and its id (e.g. ``POLICY`` /
+    #: the organization, ``APPROVAL_REQUEST`` / the request id).
+    subject_type: Mapped[str] = mapped_column(String(32), default="")
+    subject_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+
+    #: The structured particulars, covered by the signature like everything
+    #: else. Deliberately not a free-text sentence: a rendered string cannot be
+    #: queried and drifts from what it describes.
+    detail: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+    #: The policy stamp in force when this happened — ``ci_…`` from
+    #: ``CommercialThresholds`` or ``th_…`` from ``SignalThresholds``. §1: these
+    #: are different stamps and must not be read as one, so the value carries
+    #: its own prefix and ``detail`` says which question it answers.
+    thresholds_version: Mapped[Optional[str]] = mapped_column(String(32))
+
+    #: Which process wrote it (``leases.holder_id()``). Not part of authority —
+    #: it is there so a break in the chain can be placed against a deployment.
+    source: Mapped[str] = mapped_column(String(128), default="")
+
+
+class AuditChainHead(Base):
+    """Where a tenant's chain is *supposed* to end. The anchor against truncation.
+
+    Without this the chain is only half tamper-evident, and the missing half is
+    the half an attacker uses. Modifying a row breaks its signature and every
+    link after it; inserting one breaks the sequence. But **deleting from the
+    tail breaks nothing**: remove the newest N entries and what remains is a
+    shorter chain that is internally perfect, verifies clean, and silently heals
+    as soon as the next entry is appended onto the new end. Demonstrated on a
+    real database during review — delete every row and the verdict was still
+    "ok". A log you can chop the incriminating end off is not tamper-evident,
+    and the incriminating end is exactly where the interesting rows are.
+
+    So the expected end is recorded separately and updated in the same
+    transaction as the entry. ``verify`` compares what it walked against this,
+    and a chain shorter than its anchor is reported ``TRUNCATED``.
+
+    **What this proves, stated narrowly, because the difference matters to
+    whoever relies on it.** It raises truncation from a single ``DELETE`` to a
+    consistent edit of two tables — worthwhile, and roughly the bar the rest of
+    this schema holds. It is *not* an external witness: anyone who can write
+    arbitrary SQL can still move the anchor to match a shortened chain, and no
+    same-database scheme can prevent that, because the evidence and the party
+    being constrained share a home. The stronger claim needs the head hash
+    copied somewhere the database cannot reach — an export kept off-box, a
+    counter-signature, a witness service. ``GET /trust/audit/verify`` returns
+    the head hash so that can be done without further code, and until it is,
+    the honest description of this log is "tamper-evident against anything short
+    of database write access", not "tamper-proof".
+    """
+
+    __tablename__ = "audit_chain_heads"
+
+    #: One row per tenant, and the tenant is the identity — there is no
+    #: surrogate key, because a second row for an organization would itself be
+    #: the ambiguity this table exists to remove.
+    organization_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    #: The ``seq`` of the last entry appended. An entry count as well as a
+    #: position, since the chain is dense from 1.
+    seq: Mapped[int] = mapped_column(Integer)
+    #: That entry's ``entry_hash``. Compared as well as the count: a chain
+    #: truncated and then re-grown to the same length has the right seq and the
+    #: wrong hash.
+    entry_hash: Mapped[str] = mapped_column(String(64))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),
+                                                 default=_now)
 
 
 class ModelPayload(Base):

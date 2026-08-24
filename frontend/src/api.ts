@@ -47,49 +47,49 @@ async function req<T>(path: string, opts: RequestInit = {}, token?: string): Pro
 
 export const api = {
   createQuote: (t: string, customer: string, customerId?: string) =>
-    req<Quote>("/api/quotes", {
+    req<Quote>("/api/v1/quotes", {
       method: "POST",
       // The id travels with the name. Downstream resolution tries it first,
       // which is what keeps two books' identically-named customers apart.
       body: JSON.stringify({ customer, customer_id: customerId ?? null }),
     }, t),
 
-  getQuote: (t: string, id: string) => req<Quote>(`/api/quotes/${id}`, {}, t),
+  getQuote: (t: string, id: string) => req<Quote>(`/api/v1/quotes/${id}`, {}, t),
 
   intake: (t: string, id: string, text: string) =>
-    req<Quote>(`/api/quotes/${id}/intake`, { method: "POST", body: JSON.stringify({ text }) }, t),
+    req<Quote>(`/api/v1/quotes/${id}/intake`, { method: "POST", body: JSON.stringify({ text }) }, t),
 
   /** One line at a time, deliberately — see store.confirm_reading. */
   confirmReading: (t: string, id: string, lineId: string) =>
-    req<Quote>(`/api/quotes/${id}/lines/${lineId}/confirm-reading`,
+    req<Quote>(`/api/v1/quotes/${id}/lines/${lineId}/confirm-reading`,
                { method: "POST" }, t),
 
   selectSupply: (t: string, id: string, lineId: string, code: string, manual = false) =>
     req<Quote>(
-      `/api/quotes/${id}/lines/${lineId}/supply`,
+      `/api/v1/quotes/${id}/lines/${lineId}/supply`,
       { method: "POST", body: JSON.stringify({ code, manual }) },
       t,
     ),
 
   setPrice: (t: string, id: string, lineId: string, price: number | null) =>
     req<Quote>(
-      `/api/quotes/${id}/lines/${lineId}/price`,
+      `/api/v1/quotes/${id}/lines/${lineId}/price`,
       { method: "POST", body: JSON.stringify({ price }) },
       t,
     ),
 
   deleteLine: (t: string, id: string, lineId: string) =>
-    req<Quote>(`/api/quotes/${id}/lines/${lineId}`, { method: "DELETE" }, t),
+    req<Quote>(`/api/v1/quotes/${id}/lines/${lineId}`, { method: "DELETE" }, t),
 
   discount: (t: string, id: string, lineIds: string[], percent: number) =>
     req<Quote & { applied: number }>(
-      `/api/quotes/${id}/discount`,
+      `/api/v1/quotes/${id}/discount`,
       { method: "POST", body: JSON.stringify({ lineIds, percent }) },
       t,
     ),
 
   createItem: (t: string, id: string, lineId: string) =>
-    req<Quote>(`/api/quotes/${id}/lines/${lineId}/create-item`, { method: "POST" }, t),
+    req<Quote>(`/api/v1/quotes/${id}/lines/${lineId}/create-item`, { method: "POST" }, t),
 
   /** Create the Zoho estimate.
    *
@@ -99,7 +99,7 @@ export const api = {
    *  to satisfy. */
   createEstimate: (t: string, id: string) =>
     req<EstimateResult>(
-      `/api/quotes/${id}/estimate`,
+      `/api/v1/quotes/${id}/estimate`,
       { method: "POST" },
       t,
     ),

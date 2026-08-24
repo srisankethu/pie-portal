@@ -10,8 +10,9 @@ Desk already wrote, carrying the operands that produced it.
                  and why. Never a benign default.
     ledger       the single writer of ``ValueEvent``. Upserts on ``event_key``,
                  which is what makes double counting structurally impossible.
-    evaluator    set-based rollups: the pre-trial baseline, live progress, and
-                 the report. ATTRIBUTED alone is the headline.
+    evaluator    set-based rollups: the pre-trial baseline, live progress, the
+                 report, and the month-by-month span a renewal after the
+                 first year is argued from. ATTRIBUTED alone is the headline.
 
 The rule that shapes the whole module, and the reason it is worth having at all:
 **no fabricated numbers**. There is no hourly rate here, no assumed win
@@ -40,8 +41,9 @@ from .detectors import (
     run_all,
     skip_summary,
 )
-from .evaluator import (SUMMARY_DAYS, Window, capture_baseline, current_trial,
-                        list_events, summary_window, thirty_day_report,
+from .evaluator import (MAX_ROLLUP_MONTHS, ROLLUP_MONTHS, SUMMARY_DAYS,
+                        Window, capture_baseline, current_trial, list_events,
+                        summary_window, thirty_day_report, value_rollup,
                         value_summary)
 from .ledger import (
     FACT_OF,
@@ -56,6 +58,8 @@ from .ledger import (
 
 __all__ = [
     "DETECTORS",
+    "MAX_ROLLUP_MONTHS",
+    "ROLLUP_MONTHS",
     "DetectionResult",
     "Detector",
     "LedgerRefusal",
@@ -82,6 +86,7 @@ __all__ = [
     "skip_summary",
     "thirty_day_report",
     "summary_window",
+    "value_rollup",
     "value_summary",
     "Window",
     "SUMMARY_DAYS",

@@ -20,7 +20,10 @@
 #                          (scripts/pg_sandbox.sh — the runner image ships the
 #                          server binaries), because production migrates
 #                          Postgres and a chain proven only on SQLite isn't
-#                          proven.
+#                          proven. Then the restore drill on that same server:
+#                          docs/hosting.md's backup procedure, actually
+#                          performed, because an untested backup is a hypothesis
+#                          about a file.
 #   pie-credential         six seconds and one question: is PIE_PARSER_TOKEN
 #                          set? It exists as a job because the `secrets` context
 #                          cannot be read from a job-level `if`, and `needs`
@@ -139,7 +142,8 @@ jobs:
       # suite (parallel, per-worker databases), the frontend production build,
       # and `alembic upgrade head` on an EMPTY database plus the drift test and
       # the single-head check — on SQLite and then on a disposable Postgres
-      # the script provisions itself (scripts/pg_sandbox.sh).
+      # the script provisions itself (scripts/pg_sandbox.sh) — and finally the
+      # restore drill against that same server.
       #
       # The pie-parser submodule is deliberately NOT fetched here. Without the
       # engine, conftest skips the `requires_pie` tests and everything else runs

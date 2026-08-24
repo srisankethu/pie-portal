@@ -85,6 +85,13 @@ def stale_client():
     Base.metadata.create_all(engine)
     with engine.begin() as c:
         c.execute(text("DROP INDEX ix_sync_runs_connection_id"))
+        # Both halves of the start guard name connection_id — the umbrella one
+        # in its predicate rather than its columns — and SQLite refuses to drop
+        # a column an index still references. A database from before the column
+        # existed had neither index either, so dropping them is part of the
+        # staleness being simulated, not a workaround.
+        c.execute(text("DROP INDEX uq_sync_run_active_connection"))
+        c.execute(text("DROP INDEX uq_sync_run_active_umbrella"))
         c.execute(text("ALTER TABLE sync_runs DROP COLUMN connection_id"))
     return _app(engine)
 

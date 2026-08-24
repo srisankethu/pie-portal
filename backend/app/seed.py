@@ -17,6 +17,7 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from . import tenancy
 from .config import settings
 from .domain import models
 from .domain.enums import Role
@@ -98,10 +99,26 @@ def _org_id_from_name(session: Session, name: str) -> str:
     slug = "_".join(filter(None, slug.split("_")))[:40] or "tenant"
     candidate = f"org_{slug}"
     n = 2
-    while session.get(models.Organization, candidate) is not None:
+    while _org_exists(session, candidate):
         candidate = f"org_{slug}_{n}"
         n += 1
     return candidate
+
+
+def _org_exists(session: Session, organization_id: str) -> bool:
+    """Does this id exist — for *any* tenant, not just the announced one.
+
+    Under row-level security the plain ``session.get`` below sees only the
+    caller's own organization, and a caller provisioning a new one has none. So
+    the collision walk above would stop at the first candidate and the insert
+    would fail on the primary key. ``tenancy.org_id_taken`` answers across
+    tenants where there are policies and ``None`` where there are not, leaving
+    the ordinary lookup as the authority on SQLite.
+    """
+    across = tenancy.org_id_taken(session, organization_id)
+    if across is not None:
+        return across
+    return session.get(models.Organization, organization_id) is not None
 
 
 def provision_organization(session: Session, *, name: str, owner_email: str,
@@ -144,9 +161,17 @@ def provision_organization(session: Session, *, name: str, owner_email: str,
     owner_email = owner_email.strip().lower()
     if "@" not in owner_email:
         raise ValueError(f"{owner_email!r} does not look like an email address")
-    if session.scalar(select(models.User).where(models.User.email == owner_email)):
+    # Both refusals have to see across tenants: a caller provisioning a new
+    # organization has none announced, and under a policy the ordinary queries
+    # would answer "free" for an address and an id that are already taken.
+    taken = tenancy.email_registered(session, owner_email)
+    if taken is None:
+        taken = session.scalar(
+            select(models.User).where(
+                models.User.email == owner_email)) is not None
+    if taken:
         raise ValueError(f"An account already exists with email {owner_email!r}")
-    if org_id is not None and session.get(models.Organization, org_id) is not None:
+    if org_id is not None and _org_exists(session, org_id):
         raise ValueError(f"Organization {org_id!r} already exists")
 
     issued = password or generate_password()
@@ -155,6 +180,12 @@ def provision_organization(session: Session, *, name: str, owner_email: str,
         raise ValueError(problem)
 
     org_id = org_id or _org_id_from_name(session, name)
+    # Announced before the first write, not after: both rows below carry this
+    # organization and a policy's WITH CHECK refuses a row whose tenant is not
+    # the announced one. A no-op where there are no policies, and harmless on
+    # the privileged connection the CLI callers use — it sets a setting nothing
+    # there consults.
+    tenancy.set_tenant(session, org_id)
     session.add(models.Organization(
         organization_id=org_id, name=name,
         currency=currency.strip().upper() or "INR", plan=plan, config={}))

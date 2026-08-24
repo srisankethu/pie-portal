@@ -101,17 +101,36 @@ def test_migrations_apply_one_at_a_time(db):
     A migration that only works when run in the same batch as its neighbour
     fails on exactly one deployment: the one that was interrupted halfway.
     """
+    from app.migration_state import _script_directory
+
     sqlite3.connect(db).close()
+
+    # By revision id rather than by ``upgrade +1``. The history branches at
+    # ``z6subject`` and rejoins at ``e1heads``, and at a branch point ``+1``
+    # has two answers and Alembic refuses with "Ambiguous walk" — a property of
+    # the walk, not of the migrations. Naming each revision in topological
+    # order keeps every step exactly one revision wide (all of its ancestors
+    # are already applied by the time it is named), which is the thing this
+    # test is actually about.
+    order = [sc.revision for sc in
+             reversed(list(_script_directory().walk_revisions()))]
+
+    def applied() -> set[str]:
+        # Plural on purpose: while the history is branched, ``alembic_version``
+        # holds one row per open branch tip, so there is no single "current".
+        with _engine(db).connect() as conn:
+            if "alembic_version" not in inspect(_engine(db)).get_table_names():
+                return set()
+            return {r[0] for r in conn.exec_driver_sql(
+                "SELECT version_num FROM alembic_version")}
+
     seen = []
-    while True:
-        r = _alembic(db, "upgrade", "+1")
+    for rev in order:
+        r = _alembic(db, "upgrade", rev)
         assert r.returncode == 0, f"after {seen}: {r.stderr[-1500:]}"
-        rev = inspect_database(_engine(db)).current
-        if rev in seen:
-            break
+        assert rev in applied(), (
+            f"upgrading to {rev} did not leave it applied")
         seen.append(rev)
-        if rev == head_revision():
-            break
     assert len(seen) > 10, "expected the full chain to be walked"
     assert seen[-1] == head_revision()
 

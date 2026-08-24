@@ -55,6 +55,59 @@ def get_request_context() -> dict[str, Any]:
     }
 
 
+#: The endpoint label for a request that matched no route.
+#:
+#: A 404 matches nothing, so there is no template to report. The tempting
+#: fallback — use ``request.url.path`` when the route is missing — reintroduces
+#: unbounded cardinality through the back door, and does it on exactly the
+#: traffic most likely to be a scanner walking random URLs. One constant is the
+#: honest answer: something was requested that this application does not serve,
+#: and *which* thing belongs in the access log, not in a time series.
+UNMATCHED_ROUTE = "<unmatched>"
+
+
+def route_template(request: Request) -> str:
+    """The matched route's template, e.g. ``/api/v1/quotes/{quote_id}``.
+
+    **Never the raw path.** ``request.url.path`` is
+    ``/api/v1/quotes/8f2a.../lines/1b7c.../supply``, one distinct value per
+    quote, and a label with one value per business record is how a Prometheus
+    TSDB falls over. The template collapses all of those onto one series, and
+    the set of templates is the routing table — finite, and it changes only
+    when someone adds a route.
+
+    Starlette puts the matched route on the request scope while it dispatches,
+    so this is only meaningful **after** ``call_next`` has returned; before
+    that, nothing has matched yet.
+
+    Two levels, because only FastAPI's ``APIRoute`` publishes itself on the
+    scope. A route added with Starlette's own ``add_route`` — which is how
+    ``/openapi.json``, ``/docs`` and ``/redoc`` get mounted — leaves ``route``
+    unset and only ``endpoint`` and ``path_params`` behind. Reporting those as
+    misses would file dev-console traffic alongside a scanner's random URLs, so:
+
+    1. ``route.path_format`` when the route published itself. Parameterised or
+       not, this is the template.
+    2. Otherwise, if something matched (``endpoint`` is set) and it took **no**
+       path parameters, the literal path *is* that route's template — it is one
+       fixed string drawn from the routing table, so cardinality is unchanged.
+       A route that took parameters and did not publish its template could only
+       be reconstructed from the raw path, which is the unbounded thing this
+       function exists to avoid, so it is a miss instead.
+    3. Otherwise ``UNMATCHED_ROUTE``.
+
+    Every branch's value comes from the routing table or is a constant. None
+    comes from the URL a caller chose, which is the property that matters.
+    """
+    scope = request.scope
+    template = getattr(scope.get("route"), "path_format", None)
+    if template:
+        return template
+    if scope.get("endpoint") is not None and not scope.get("path_params"):
+        return request.url.path
+    return UNMATCHED_ROUTE
+
+
 async def api_instrumentation_middleware(request: Request, call_next: Callable) -> Response:
     """Middleware to track API metrics."""
     # Generate IDs for this request
@@ -68,11 +121,14 @@ async def api_instrumentation_middleware(request: Request, call_next: Callable) 
     if tenant:
         tenant_id.set(tenant)
 
-    # Track request size
+    # Track request size. No labels: a histogram here aggregates across them
+    # (see `metrics.Histogram`), and the only label this ever passed was the raw
+    # path — which is discarded on arrival and cannot be a route template yet
+    # anyway, because nothing has been matched at this point in the request.
     try:
         if hasattr(request, 'body'):
             body = await request.body()
-            api_request_size.observe(len(body), {"endpoint": request.url.path})
+            api_request_size.observe(len(body))
     except Exception:
         pass
 
@@ -84,25 +140,44 @@ async def api_instrumentation_middleware(request: Request, call_next: Callable) 
         response = await call_next(request)
         duration = time.time() - start_time
 
-        # Record metrics
+        # Every label below is bounded: `method` by the HTTP verbs this app
+        # routes, `status` by the codes it returns, `endpoint` by the routing
+        # table. Their product is the ceiling on how many series one worker can
+        # publish for these counters, and it is a number — see
+        # `metrics.MAX_LABEL_SETS`, which backstops it. `request.url.path` was
+        # here and is bounded by nothing.
+        endpoint = route_template(request)
         api_requests.inc(
-            labels={"method": request.method, "endpoint": request.url.path, "status": response.status_code}
+            labels={"method": request.method, "endpoint": endpoint,
+                    "status": response.status_code}
         )
-        api_request_duration.observe(duration, {"endpoint": request.url.path})
+        api_request_duration.observe(duration)
 
         if response.status_code >= 400:
-            api_errors.inc(labels={"endpoint": request.url.path, "status": response.status_code})
+            api_errors.inc(labels={"endpoint": endpoint,
+                                   "status": response.status_code})
 
         # Track response size if possible
         if hasattr(response, 'body'):
-            api_response_size.observe(len(response.body), {"endpoint": request.url.path})
+            api_response_size.observe(len(response.body))
 
         return response
     except Exception as e:
         duration = time.time() - start_time
-        api_errors.inc(labels={"endpoint": request.url.path, "error": type(e).__name__})
-        api_request_duration.observe(duration, {"endpoint": request.url.path})
-        log.exception("unhandled error in request %s", req_id)
+        # The same two label names as the branch above, deliberately. This used
+        # to be `{"endpoint": ..., "error": type(e).__name__}`: a second label
+        # *set* on one metric, so `sum by (status)` swept every unhandled error
+        # into an empty bucket, and the exception class name is bounded only by
+        # what happens to be importable — any dependency's error type could
+        # arrive. The class is what the reader wants, and it is already in the
+        # log line below with a traceback attached, which is where an unbounded
+        # string belongs. `main.unhandled_error` turns this into a 500 for the
+        # client, so 500 is what the counter records.
+        api_errors.inc(labels={"endpoint": route_template(request),
+                               "status": 500})
+        api_request_duration.observe(duration)
+        log.exception("unhandled error in request %s (%s)", req_id,
+                      type(e).__name__)
         raise
 
 

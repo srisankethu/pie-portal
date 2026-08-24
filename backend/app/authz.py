@@ -31,7 +31,7 @@ from fastapi import Depends, Header, HTTPException, Request, Response, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from . import clock
+from . import clock, tenancy
 from .commercial import ownership
 from .config import settings
 from .db import get_session
@@ -192,6 +192,27 @@ def load_principal(session: Session, token: str) -> Optional[Principal]:
     if parsed is None:
         return None
     user_id, org_id, session_id, issued_at = parsed
+
+    # Announce the tenant before the first query, not after it.
+    #
+    # This is the only point in a request where that is possible, and it is
+    # possible only because the organization is in the *signed token*: reading
+    # it costs no query, so the setting is in place before `session.get` below
+    # touches a tenant-scoped table. A setting established in `get_session`
+    # could not know the tenant — `current_principal` depends on `get_session`,
+    # so the session exists first — and one established after these lookups
+    # would leave the two queries that decide who you are as the only ones
+    # running unscoped.
+    #
+    # The token is a *claim*, not proof: it says which tenant this request is
+    # acting as. The two checks below confirm the claim against the rows, and
+    # under row-level security the policy enforces the same thing in SQL — a
+    # user id from another tenant simply does not come back. Both are kept.
+    # The Python check is the one that works on SQLite, where there is no
+    # policy at all, and a control that exists on one dialect only is not a
+    # control.
+    tenancy.set_tenant(session, org_id)
+
     user = session.get(models.User, user_id)
     if user is None or not user.active or user.organization_id != org_id:
         return None

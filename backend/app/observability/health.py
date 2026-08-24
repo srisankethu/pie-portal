@@ -76,17 +76,28 @@ class HealthRegistry:
                 component.message = str(e)
 
     def get_overall_status(self) -> HealthStatus:
-        """Get overall health status."""
+        """The worst thing any component says, where UNKNOWN is worse than fine.
+
+        The ordering used to end ``if HEALTHY in statuses: return HEALTHY``,
+        which meant **one** healthy component made the whole registry healthy
+        while another sat at UNKNOWN — a component whose state could not be
+        determined was invisible in the verdict. Nothing hit it while every
+        registered check returned a real status after ``check_all``, and it is
+        the same shape as every defect §1 lists: absence of evidence read as a
+        pass. A registry that has never been checked now says UNKNOWN rather
+        than reporting the health of whichever component was registered first.
+
+        UNKNOWN ranks above HEALTHY and below DEGRADED deliberately: "we cannot
+        tell" needs attention, and a known impairment needs more.
+        """
         statuses = [c.status for c in self._components.values()]
         if not statuses:
             return HealthStatus.UNKNOWN
-        if HealthStatus.UNHEALTHY in statuses:
-            return HealthStatus.UNHEALTHY
-        if HealthStatus.DEGRADED in statuses:
-            return HealthStatus.DEGRADED
-        if HealthStatus.HEALTHY in statuses:
-            return HealthStatus.HEALTHY
-        return HealthStatus.UNKNOWN
+        for verdict in (HealthStatus.UNHEALTHY, HealthStatus.DEGRADED,
+                        HealthStatus.UNKNOWN):
+            if verdict in statuses:
+                return verdict
+        return HealthStatus.HEALTHY
 
     def to_dict(self) -> dict[str, Any]:
         """Export as dict."""
@@ -198,6 +209,161 @@ def register_health_checks(engine: Any, session_factory: Any) -> None:
             f"ticker is {holder}"
         )
 
+    def check_backups() -> tuple[HealthStatus, Optional[str]]:
+        """Whether a recent, plausible database dump exists where one was promised.
+
+        ``scripts/restore_drill.py`` proves on every ``make verify`` that the
+        *procedure* in ``docs/hosting.md`` round-trips this schema. It says
+        nothing whatever about a backup existing — it dumps a database it
+        created seconds earlier. This is the other half, and it is the half an
+        operator finds out about at the worst possible moment.
+
+        Five outcomes, and each is a different thing to go and do:
+
+        * **Not production and nothing configured** — healthy, and named. A
+          development database is derived: a full re-sync rebuilds it from Zoho
+          and ``app.bootstrap`` builds it from nothing, so there is nothing
+          there worth a retention policy. This mirrors ``check_scheduler``
+          reporting a fixture source as healthy rather than as a fault.
+        * **Production and nothing configured** — the loudest thing this check
+          can say, because it means there are no backups. An unset value is not
+          a statement that backups are handled elsewhere; it is the absence of
+          one, and reading it as good news is the §1 failure this component
+          exists to close.
+        * **Configured but unreadable or empty** — somebody said dumps land
+          here and none do. A missing directory is usually a volume that did
+          not mount; an empty one is a cron that has never once succeeded.
+        * **Newest dump too small to be a database** — freshness alone would
+          let a zero-byte file pass as a backup, which is a green check over an
+          empty set. ``BACKUP_MIN_BYTES`` is the floor.
+        * **Newest dump older than the window** — the cron has stopped. Amber
+          rather than red: a stale backup is still a backup, and the distinction
+          matters at three in the morning.
+
+        The file's own **mtime** is the age, not its name. A name is written by
+        whoever wrote the file and a date in one proves only that somebody typed
+        it; ``backup.sh`` renames into place only after ``gzip -t`` passes, so
+        an mtime here is the moment a *complete* dump landed.
+
+        No local ``except``: ``check_all`` catches, logs the traceback and marks
+        the component UNHEALTHY, which is the loud outcome that gets a broken
+        check fixed rather than a permanently amber one nobody reads — the
+        lesson ``check_pie_parser`` records above.
+        """
+        from ..config import settings
+
+        directory = settings.BACKUP_DIR
+        if directory is None:
+            if not settings.is_production:
+                return HealthStatus.HEALTHY, (
+                    f"Backups not checked: APP_ENV is {settings.APP_ENV!r} and "
+                    "this database is derived — a full sync rebuilds it"
+                )
+            return HealthStatus.UNHEALTHY, (
+                "No BACKUP_DIR is configured on a production deployment, so "
+                "nothing here can say a backup exists. See docs/hosting.md."
+            )
+
+        if not directory.is_dir():
+            return HealthStatus.UNHEALTHY, (
+                f"BACKUP_DIR {directory} is not a readable directory — usually "
+                "a volume that did not mount"
+            )
+
+        dumps = sorted((p for p in directory.glob("*.sql.gz") if p.is_file()),
+                       key=lambda p: p.stat().st_mtime, reverse=True)
+        if not dumps:
+            return HealthStatus.UNHEALTHY, (
+                f"BACKUP_DIR {directory} holds no *.sql.gz dump, so the backup "
+                "job has never once completed"
+            )
+
+        newest = dumps[0]
+        size = newest.stat().st_size
+        if size < settings.BACKUP_MIN_BYTES:
+            return HealthStatus.UNHEALTHY, (
+                f"The newest dump {newest.name} is {size} bytes, below the "
+                f"{settings.BACKUP_MIN_BYTES}-byte floor. That is a file, not a "
+                "database."
+            )
+
+        age = datetime.now(timezone.utc) - datetime.fromtimestamp(
+            newest.stat().st_mtime, tz=timezone.utc)
+        hours = age.total_seconds() / 3600
+        if hours > settings.BACKUP_MAX_AGE_HOURS:
+            return HealthStatus.DEGRADED, (
+                f"The newest dump {newest.name} is {hours:.1f}h old, past the "
+                f"{settings.BACKUP_MAX_AGE_HOURS}h window. The backup job has "
+                f"stopped. {len(dumps)} dump(s) retained."
+            )
+        return HealthStatus.HEALTHY, (
+            f"Newest dump {newest.name} is {hours:.1f}h old "
+            f"({size / 1_048_576:.1f} MiB); {len(dumps)} retained"
+        )
+
+    def check_tenant_isolation() -> tuple[HealthStatus, Optional[str]]:
+        """Whether the connection serving requests is one policies actually bind.
+
+        The companion to ``check_backups``: both answer a question that is
+        otherwise a memory, and both refuse the comfortable answer. Row-level
+        security is the security control most likely to be *installed and
+        inert*, because a PostgreSQL superuser carries ``rolbypassrls`` — which
+        no policy overrides and ``FORCE ROW LEVEL SECURITY`` does not touch,
+        since FORCE binds a table's owner and nothing binds BYPASSRLS. Both the
+        compose role and the sandbox role are superusers by construction
+        (``initdb -U`` makes the bootstrap superuser), so this is the expected
+        state of a deployment that has not been changed, not a hypothetical.
+
+        Asked of ``AppSessionLocal`` rather than ``SessionLocal``, and that is
+        the entire point. The privileged connection is *supposed* to bypass —
+        migrations and cross-tenant background jobs need it to. What must not
+        bypass is the one that serves requests.
+
+        SQLite is healthy and says so. There are no policies on that dialect at
+        all, and amber on every developer's machine is a light nobody reads —
+        the same argument ``check_scheduler`` makes about a fixture source. What
+        it costs is stated in the message rather than hidden: on SQLite the
+        Python ``organization_id`` filters are the only tenant boundary there
+        has ever been.
+
+        No local ``except``. ``check_all`` catches and marks UNHEALTHY, which is
+        the loud outcome — the lesson ``check_pie_parser`` records above.
+        """
+        from sqlalchemy import text
+
+        from ..db import AppSessionLocal, app_engine, engine
+
+        if app_engine.dialect.name != "postgresql":
+            return HealthStatus.HEALTHY, (
+                f"No row-level security on {app_engine.dialect.name}: tenant "
+                "scoping here is the application's own organization_id filters "
+                "and nothing else"
+            )
+
+        with AppSessionLocal() as session:
+            row = session.execute(text(
+                "SELECT current_user AS who, rolsuper, rolbypassrls "
+                "FROM pg_roles WHERE rolname = current_user")).one()
+
+        if row.rolsuper or row.rolbypassrls:
+            # Deliberately not softened by whether any policy exists yet. A
+            # connection that cannot be governed is the finding; policies
+            # arriving later would silently do nothing, which is the shape this
+            # check exists to make impossible.
+            shared = " (the same connection as migrations and background jobs)" \
+                if app_engine is engine else ""
+            return HealthStatus.UNHEALTHY, (
+                f"Requests are served as {row.who!r}{shared}, which bypasses "
+                "every row-level security policy: "
+                f"rolsuper={row.rolsuper}, rolbypassrls={row.rolbypassrls}. "
+                "Set APP_DATABASE_URL to a role that is neither. See "
+                "docs/postgres.md."
+            )
+        return HealthStatus.HEALTHY, (
+            f"Requests are served as {row.who!r}, which row-level security "
+            "policies apply to"
+        )
+
     def check_queue() -> tuple[HealthStatus, Optional[str]]:
         """Whether background work is being drained, and whether any of it died.
 
@@ -239,3 +405,5 @@ def register_health_checks(engine: Any, session_factory: Any) -> None:
     health.register("pie_parser", check_pie_parser)
     health.register("scheduler", check_scheduler)
     health.register("queue", check_queue)
+    health.register("backups", check_backups)
+    health.register("tenant_isolation", check_tenant_isolation)

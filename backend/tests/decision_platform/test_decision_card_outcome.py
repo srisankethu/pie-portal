@@ -113,6 +113,16 @@ def _sale(session, *, customer, on, qty, price, ref):
                     "record_id": ref}))
 
 
+def _org_tz(session) -> str | None:
+    """The tenant's own zone, read the way ``routers.decisions`` reads it.
+
+    Not ``clock.zone(None)``: the card resolves the zone off the organization
+    row, so a test that assumed the deployment default would agree with it only
+    while the seed happens to leave that column unset.
+    """
+    return getattr(session.get(models.Organization, ORG), "timezone", None)
+
+
 def _card(api, headers, decision_id: str) -> dict:
     r = api.get(f"/api/v1/decisions/{decision_id}/detail", headers=headers)
     assert r.status_code == 200, r.text
@@ -135,13 +145,14 @@ def test_the_card_serves_the_realised_outcome_the_tracker_computed(api):
     snap = s.query(models.OutcomeSnapshot).one()
     accepted = clock.now() - timedelta(days=200)
     snap.accepted_at = accepted
-    # The org's date, not UTC's. ``outcome_tracker`` derives the window start
-    # with ``clock.to_local(...).date()`` because a business day belongs to the
-    # business, and this org is Asia/Kolkata — so for the five and a half hours
-    # either side of UTC midnight the two dates differ by one. Taking
-    # ``accepted.date()`` here made this test pass for most of the day and fail
-    # in the evening, against code that was right both times.
-    start = clock.to_local(accepted).date()
+    # The *business's* day, not UTC's. ``outcome_tracker`` converts through
+    # ``clock.to_local`` before taking a date, because which day a decision was
+    # accepted on is a fact about the tenant's calendar. Taking ``.date()`` off
+    # the UTC value here agreed with it for eighteen and a half hours a day and
+    # disagreed for the other five and a half, so this test failed on the clock
+    # rather than on the code — which is worse than failing, because the fix
+    # people reach for is a re-run.
+    start = clock.to_local(accepted, _org_tz(s)).date()
     # Inside the window (start < date ≤ start+90), and one later sale so the
     # book is observed past the window end — otherwise the coverage gate is
     # right to answer UNKNOWN.

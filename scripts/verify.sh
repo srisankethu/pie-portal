@@ -11,8 +11,9 @@
 #   ./scripts/verify.sh          everything (~4 min)
 #   ./scripts/verify.sh --fast   lint, invariants, backend tests (~2.5 min)
 #
-# --fast is for the edit loop, not for merging: it skips the frontend build and
-# the empty-database migration check. CI always runs the full thing.
+# --fast is for the edit loop, not for merging: it skips the frontend build, the
+# empty-database migration check and the restore drill. CI always runs the full
+# thing.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 REPO="$PWD"
@@ -51,7 +52,7 @@ fi
 # ── 1. Lint ──────────────────────────────────────────────────────────────────
 # Rule set in ruff.toml, version pinned in backend/requirements-dev.txt. Both
 # halves are needed; the header of ruff.toml has the incident.
-step "1/6  ruff"
+step "1/7  ruff"
 if $PY -m ruff check . ; then pass "lint"; else fail "ruff check ."; fi
 
 # ── 2. The §1 invariants ─────────────────────────────────────────────────────
@@ -60,7 +61,7 @@ if $PY -m ruff check . ; then pass "lint"; else fail "ruff check ."; fi
 # imports properly and is what actually blocks; it is repeated here because it
 # costs milliseconds and because a failure here is legible without reading a
 # traceback.
-step "2/6  §1 layer invariants"
+step "2/7  §1 layer invariants"
 INV_OK=1
 if grep -rnE '^\s*(from|import)\s+\.*\.?ai[. ]' \
      backend/app/commercial backend/app/signals \
@@ -80,7 +81,7 @@ if [ "$INV_OK" = "1" ]; then pass "deterministic layers never import ai/"; else 
 # Parallel by default. Each xdist worker gets its own SQLite file (see
 # backend/tests/conftest.py) — without that the workers race on one `alembic
 # upgrade head` and lose. Set PYTEST_WORKERS=0 to force the serial path.
-step "3/6  backend tests"
+step "3/7  backend tests"
 WORKERS="${PYTEST_WORKERS:-auto}"
 if [ "$WORKERS" = "0" ]; then NARG=(); else NARG=(-n "$WORKERS"); fi
 if (cd backend && $PY -m pytest tests -q "${NARG[@]}"); then
@@ -90,12 +91,13 @@ else
 fi
 
 if [ "$FAST" = "1" ]; then
-  step "4-6/6  skipped (--fast)"
-  printf '      frontend build and the empty-database migration check not run.\n'
+  step "4-7/7  skipped (--fast)"
+  printf '      frontend build, the empty-database migration checks and the\n'
+  printf '      restore drill not run.\n'
   printf '      Do not merge on --fast.\n'
 else
   # ── 4. Frontend ────────────────────────────────────────────────────────────
-  step "4/6  frontend — tests, types, production build"
+  step "4/7  frontend — tests, types, production build"
   if [ ! -d frontend/node_modules ]; then
     printf '      installing frontend dependencies (npm ci)…\n'
     (cd frontend && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci >/dev/null 2>&1) \
@@ -132,7 +134,7 @@ else
   # CLAUDE.md §6 step 5, and the one check that would have caught the incident
   # in §4. A developer's own database is already migrated and can never exercise
   # the empty case; production always does. Note the `rm`.
-  step "5/6  migrations from nothing — SQLite"
+  step "5/7  migrations from nothing — SQLite"
   MIGDB="$(mktemp -u /tmp/verify-mig-XXXXXX.db)"
   rm -f "$MIGDB"
   if (cd backend && DATABASE_URL="sqlite:///$MIGDB" $PY -m alembic upgrade head >/dev/null 2>&1); then
@@ -173,8 +175,9 @@ else
   #                   (GitHub's ubuntu runners ship them; most laptops do too)
   # With neither, this is SKIPPED and the verdict says so — narrowed, never
   # silently passed, exactly the pie-parser arrangement above.
-  step "6/6  migrations from nothing — PostgreSQL"
+  step "6/7  migrations from nothing — PostgreSQL"
   PG_COVERED=1
+  RLS_COVERED=1
   PG_SANDBOX_STARTED=0
   PG_URL="${PG_VERIFY_URL:-}"
   if [ -z "$PG_URL" ]; then
@@ -186,6 +189,7 @@ else
   fi
   if [ -z "$PG_URL" ]; then
     PG_COVERED=0
+    RLS_COVERED=0
     printf '\033[33mnote:\033[0m no PostgreSQL server binaries and no PG_VERIFY_URL.\n'
     printf '      The Postgres migration check will SKIP. Everything else still runs.\n'
     printf '      To cover it: install postgresql (the server), or point\n'
@@ -199,6 +203,38 @@ else
       printf '      re-running to show the failure:\n'
       (cd backend && DATABASE_URL="$PG_URL" $PY ../scripts/verify_pg_migrations.py) 2>&1 | tail -25
       fail "Postgres: alembic upgrade head on an empty database, or drift"
+    fi
+
+    # Row-level security, which cannot be exercised anywhere else in this gate.
+    # Step 3 runs the suite on SQLite, which has no policies and no connection
+    # settings, so these tests skip there — and a security control whose tests
+    # only ever skip is a control nobody has checked.
+    #
+    # They need *two* URLs and the difference between them is the point: the
+    # sandbox's own role is the cluster superuser (`initdb -U pie`), and a
+    # superuser carries `rolbypassrls`, which no policy and no FORCE can
+    # override. Run over that connection the suite would pass while proving
+    # nothing. `app-url` is a role that is neither superuser nor owner.
+    #
+    # Only the sandbox can offer it. A caller-supplied PG_VERIFY_URL points at
+    # a server this script did not provision and has no business creating roles
+    # on, so that path skips with a note rather than guessing a username.
+    if [ "$PG_SANDBOX_STARTED" = 1 ]; then
+      RLS_URL="$(./scripts/pg_sandbox.sh app-url)"
+      if (cd backend && PIE_TEST_RLS_URL="$RLS_URL" PIE_TEST_RLS_OWNER_URL="$PG_URL" \
+            $PY -m pytest tests/decision_platform/test_row_level_security.py -q) >/dev/null 2>&1; then
+        pass "row-level security is fail-closed for a non-bypassing role"
+      else
+        printf '      re-running to show the failure:\n'
+        (cd backend && PIE_TEST_RLS_URL="$RLS_URL" PIE_TEST_RLS_OWNER_URL="$PG_URL" \
+           $PY -m pytest tests/decision_platform/test_row_level_security.py -q) 2>&1 | tail -25
+        fail "row-level security"
+      fi
+    else
+      RLS_COVERED=0
+      printf '\033[33mnote:\033[0m PG_VERIFY_URL points at a server this script did not\n'
+      printf '      provision, so it will not create the non-bypassing role the\n'
+      printf '      row-level-security tests need. That check will SKIP.\n'
     fi
 
     # The queue, on the dialect that can actually race. Its claim is a
@@ -222,8 +258,50 @@ else
           tests/decision_platform/test_queue_operations.py) 2>&1 | tail -25
       fail "queue suites on Postgres"
     fi
-    [ "$PG_SANDBOX_STARTED" = "1" ] && ./scripts/pg_sandbox.sh stop >/dev/null 2>&1
   fi
+
+  # ── 7. The documented backup, actually performed ───────────────────────────
+  # docs/hosting.md tells an operator to pg_dump this database and restore the
+  # dump into an empty one. Nothing had ever run that instruction, which made it
+  # a hypothesis about a file — and the half of this database a re-sync cannot
+  # rebuild (signals, decisions, approvals, the audit chain) is precisely the
+  # half nobody would find out about until they needed it.
+  #
+  # The sharpest assertion is the audit chain: entries are HMAC-linked and
+  # anchored, so a restore that brings the chain back failing `trust/audit.verify`
+  # is indistinguishable, from the operator's chair, from somebody having altered
+  # the log. The script's docstring states exactly what this does and does not
+  # prove — it is not evidence about any particular production backup.
+  #
+  # Same server as step 6, deliberately: a second sandbox would mean a second
+  # initdb for no coverage. It creates and drops its own two databases on it.
+  step "7/7  restore drill — dump, restore, compare"
+  if [ -z "$PG_URL" ]; then
+    printf '\033[33mnote:\033[0m no PostgreSQL server — the restore drill will SKIP too.\n'
+  else
+    PG_VERIFY_URL="$PG_URL" ./scripts/restore_drill.py >/dev/null 2>&1
+    DRILL_RC=$?
+    # 3 is "no pg_dump here", not "the backup is broken". Reporting that as a
+    # failure would make this the check people learn to re-run and then ignore,
+    # which is how a real one gets waved through.
+    if [ "$DRILL_RC" = "0" ]; then
+      pass "pg_dump → restore round-trips every row, Σ, audit chain and receipt"
+    elif [ "$DRILL_RC" = "3" ]; then
+      # Its own flag. This used to set PG_COVERED=0, which made a skipped drill
+      # report the Postgres MIGRATION check as skipped too — even when step 6
+      # had just run and passed against PG_VERIFY_URL. One flag standing for two
+      # checks is how a verdict starts lying about which one it means.
+      DRILL_COVERED=0
+      printf '\033[33mnote:\033[0m the restore drill SKIPPED — no pg_dump/psql on this\n'
+      printf '      machine. CI covers it.\n'
+    else
+      printf '      re-running to show the failure:\n'
+      PG_VERIFY_URL="$PG_URL" ./scripts/restore_drill.py 2>&1 | tail -30
+      fail "restore drill: the documented backup procedure did not round-trip"
+    fi
+  fi
+
+  [ "$PG_SANDBOX_STARTED" = "1" ] && ./scripts/pg_sandbox.sh stop >/dev/null 2>&1
 fi
 
 # ── Verdict ──────────────────────────────────────────────────────────────────
@@ -236,7 +314,8 @@ if [ ${#FAILED[@]} -eq 0 ]; then
     # from "not run yet". Only a full run stamps: --fast skipped two checks, and
     # a stamp that lies is worse than no stamp.
     ./scripts/source_signature.sh > .verify-stamp 2>/dev/null || true
-    if [ "$PIE_AVAILABLE" = "0" ] || [ "${PG_COVERED:-1}" = "0" ]; then
+    if [ "$PIE_AVAILABLE" = "0" ] || [ "${PG_COVERED:-1}" = "0" ] \
+       || [ "${DRILL_COVERED:-1}" = "0" ] || [ "${RLS_COVERED:-1}" = "0" ]; then
       # Still stamped: the gate did run, and nagging a developer who simply has
       # no submodule would train them to ignore the hook. But a narrowed run must
       # never read as a full one, so the verdict says which part went uncovered.
@@ -247,8 +326,19 @@ if [ ${#FAILED[@]} -eq 0 ]; then
       fi
       if [ "${PG_COVERED:-1}" = "0" ]; then
         printf '      · the PostgreSQL migration check was SKIPPED — no server\n'
-        printf '        binaries and no PG_VERIFY_URL. CI covers it; production\n'
+        printf '        binaries and no PG_VERIFY_URL. CI covers it, and production\n'
         printf '        migrates Postgres, so cover it locally before a deploy.\n'
+      fi
+      if [ "${DRILL_COVERED:-1}" = "0" ]; then
+        printf '      · the restore drill was SKIPPED — no pg_dump/psql client on\n'
+        printf '        this machine. CI covers it. Production is the only place a\n'
+        printf '        backup matters, so cover it locally before a deploy.\n'
+      fi
+      if [ "${RLS_COVERED:-1}" = "0" ]; then
+        printf '      · the row-level-security checks were SKIPPED — they need a\n'
+        printf '        PostgreSQL role that does not bypass RLS, which only the\n'
+        printf '        sandbox provisions. SQLite has no policies, so nothing\n'
+        printf '        else in this gate says anything about tenant isolation.\n'
       fi
     else
       printf '\033[32mVERIFIED\033[0m — all checks passed.\n'

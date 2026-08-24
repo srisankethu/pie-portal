@@ -43,8 +43,22 @@ def build_catalog(force: bool = False) -> Path:
 
     log.info("Building PIE catalogue from %s ...", settings.PIE_CORPUS)
     pack = load_pack(settings.PIE_PACK)
+    # Which headers the corpus uses is the *pack's* to say — it is a fact about
+    # one organisation's export, and pie-parser's org layer declares it. These
+    # three literals were duplicated here and in `tools/run_parser.py`, so a
+    # second distributor's corpus needed the same edit made twice, in two
+    # repositories, and one of them would eventually be missed.
+    #
+    # `getattr` rather than a plain attribute read: the two repositories version
+    # independently, `PIE_PARSER_ROOT` is a pinned checkout, and a portal that
+    # crashed on a slightly older engine would be a worse failure than one that
+    # falls back to the values that engine was using anyway.
+    columns = getattr(pack, "columns", None) or {
+        "record_id": "MM#", "description": "Material Description",
+        "grade": "Grade"}
     mapping = ColumnMapping(
-        record_id="MM#", description="Material Description", grade="Grade"
+        record_id=columns["record_id"], description=columns["description"],
+        grade=columns["grade"]
     )
     records = CsvAdapter(settings.PIE_CORPUS, mapping).read()
     profile = RunProfile()

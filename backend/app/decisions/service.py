@@ -164,10 +164,20 @@ class DecisionService:
             # The label above is a pseudonym. Names re-enter here, at the seam,
             # after interpretation and before anything is persisted or shown.
             rehydrate.result(result, bundle.display_names)
-            disclosure.log_result(self.s,
-                                  organization_id=signal.organization_id,
-                                  decision_type=dtype, result=result)
-            self.telemetry.record(result.telemetry)
+            # Telemetry first, and flushed, so the payload can name the call it
+            # belongs to. The order used to be the other way round and the id
+            # was passed as None — which left `model_payloads.ai_call_log_id`
+            # a column that existed and was never populated, so "what did we
+            # send on the call that failed" meant matching two tables on a
+            # timestamp. `ai_call_log_id` is a Python-side default, so it is
+            # None until the flush.
+            call_log = self.telemetry.record(result.telemetry)
+            if call_log is not None:
+                self.s.flush()
+            disclosure.log_result(
+                self.s, organization_id=signal.organization_id,
+                decision_type=dtype, result=result,
+                ai_call_log_id=call_log.ai_call_log_id if call_log else None)
             if result.status is AiStatus.FAILED:
                 ai_failed += 1
             base = max(0, min(100, int(signal.severity_base)))

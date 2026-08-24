@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import logging
 import os
+import socket
 import uuid
 from datetime import datetime, timedelta
 from typing import Optional
@@ -57,9 +58,48 @@ log = logging.getLogger("pie_portal.leases")
 DEFAULT_TTL = timedelta(seconds=120)
 
 
+#: This process's identity, and the pid it was derived under. Cached rather than
+#: recomputed so that everything attributed to "this worker" — the lease holder,
+#: the ``worker`` label on metrics, the writer stamped on an audit entry — is
+#: one string, and so that two of them cannot disagree about which process they
+#: came from.
+_HOLDER: Optional[str] = None
+_HOLDER_PID: Optional[int] = None
+
+
+def holder_id() -> str:
+    """This process's identity, computed on first use and re-derived after a fork.
+
+    Deliberately not a module constant. A constant is fixed at import, which is
+    unique per worker only while the supervisor *spawns* — as uvicorn's
+    ``--workers`` does today. Under a forking supervisor (gunicorn with
+    ``UvicornWorker``, an ordinary swap for a FastAPI service, and uvicorn itself
+    under ``--preload``) every child would inherit one identity from the parent,
+    and two processes sharing a holder string both take the renewal disjunct of
+    ``acquire``'s UPDATE: each sees ``holder = :me``, each renews, and both
+    believe they lead. That is the one way this mechanism can silently produce
+    two leaders, so it is closed here rather than documented as a caveat.
+
+    Keying the cache on the pid makes the fork case self-correcting: the child's
+    pid differs from the parent's, so the next call re-derives.
+    """
+    global _HOLDER, _HOLDER_PID
+    pid = os.getpid()
+    if _HOLDER is None or _HOLDER_PID != pid:
+        _HOLDER = f"{socket.gethostname()}:{pid}:{uuid.uuid4().hex[:8]}"
+        _HOLDER_PID = pid
+    return _HOLDER
+
+
 def holder_name() -> str:
-    """Who holds it, in words that identify a process during an incident."""
-    return f"{os.getpid()}:{uuid.uuid4().hex[:6]}"
+    """Who holds it, in words that identify a process during an incident.
+
+    ``holder_id()`` rather than a fresh string per call: the scheduler asks once
+    and renews under the same name for the life of the process, and ``metrics``
+    and ``trust.audit`` label their own writes with the same identity. One
+    process, one name, in the lease row and in everything that names a worker.
+    """
+    return holder_id()
 
 
 def acquire(session: Session, name: str, holder: str, *,

@@ -6,7 +6,15 @@ This document summarizes the comprehensive observability and capacity-monitoring
 
 **Status:** IMPLEMENTED AND INTEGRATED  
 **Date:** 2026-08-15  
-**Scope:** Complete observability infrastructure for health, metrics, workload, and capacity monitoring
+**Scope:** Observability infrastructure for health, metrics, background jobs, and capacity monitoring
+
+> **Correction, 2026-08-23.** Section 3 of this report described a background
+> workload tracker as implemented and integrated. It was neither: the class
+> existed, nothing in the application ever called it, and the two endpoints
+> reading it therefore returned zero for every field on every deployment.
+> The section below is rewritten to say what actually runs. A report that
+> describes a feature which does not execute is worse than no report — it is
+> what makes a reader stop checking the rest of the file.
 
 ---
 
@@ -33,7 +41,7 @@ Implemented thread-safe metrics collection with three types:
 from app.observability.metrics import metrics
 
 counter = metrics.counter("api_requests_total", "Total API requests")
-counter.inc(labels={"endpoint": "/api/quotes", "status": 200})
+counter.inc(labels={"endpoint": "/api/v1/quotes", "status": 200})
 
 gauge = metrics.gauge("active_jobs", "Currently running jobs")
 gauge.set(5)
@@ -68,47 +76,60 @@ Automatic tracking of API and database operations:
 
 ---
 
-### 3. Background Workload Tracking
+### 3. Background Job Reporting
 
-**File:** `backend/app/observability/workload.py`
+**File:** `backend/app/observability/dashboard.py`, reading `sync_runs` through
+`backend/app/ingestion/jobs.py`.
 
-PIE-specific workload metrics:
+**What this section used to claim, and what was true.** It described
+`backend/app/observability/workload.py` — a `WorkloadTracker` with job and sync
+lifecycle methods and 25 metric definitions — as implemented and integrated.
+The class was real. The integration was not: its only importers were two
+readers and a unit test, no application code ever called `start_job`,
+`start_sync` or any recorder, and so `/observability/jobs` and
+`/observability/syncs` reported zero active jobs, zero completed, zero failed,
+forever. Zero active jobs reads as "all quiet". That is the benign default
+CLAUDE.md §1 forbids: the evidence was not thin, it was absent, and the
+endpoints answered as if the platform were healthy.
 
-**Background Jobs:**
-- Job creation, completion, failure tracking
-- Job duration histograms
-- Records processed counting
-- Job history tracking (24-hour)
+The tracker has been **deleted**, not wired up. The reason is that the fact it
+was meant to hold already exists, in a better place:
 
-**Zoho Synchronization:**
-- Sync state tracking (QUEUED → RUNNING → OK/FAILED)
-- Records fetched/inserted/updated/failed counting
-- API call tracking
-- Rate limit event counting
-- Sync duration histograms
+| | `WorkloadTracker` | `sync_runs` |
+|---|---|---|
+| Where it lives | one process's memory | the database |
+| Visible to other workers | no | yes |
+| Survives a restart | no | yes |
+| Tenant-scoped | no | yes, by `organization_id` |
+| Written by the sync | no — by nothing | yes, throughout the run |
 
-**Product/Quote Operations:**
-- Product parsing operations and latency
-- Quote resolution operations and latency
-- Match accuracy tracking (exact/equivalent/unresolved)
-- Analytics query tracking
+`SyncRun` is described in its own model docstring as "the whole of the job
+model", and the ERP sync is the only background job kind this deployment runs.
+Wiring the tracker would have produced a second, weaker copy of the same facts
+and inherited the per-process problem the metrics registry has.
 
-**Example:**
-```python
-from app.observability.workload import workload, SyncType
+**What the two endpoints now report**, per organization:
 
-sync_id = workload.start_sync(SyncType.INVOICE, org_id, connection_id)
-# ... do sync work ...
-workload.update_sync(
-    sync_id,
-    records_fetched=1000,
-    records_inserted=800,
-    records_updated=150,
-    completed=True
-)
-```
+- `active` — live runs, grouped by the phase each is in and (for syncs) by the
+  connected company.
+- `stalled` — runs the table still calls active whose heartbeat has gone cold,
+  counted separately. Counting them as active overstates the load; dropping
+  them reports a wedged connection as an idle one. Reporting does **not** reap
+  them: that is a write, and a dashboard GET must not decide somebody else's
+  job has died.
+- `recent_24h` — completed, partial and failed counts over runs that *started*
+  in the window, with `basis` saying exactly that. PARTIAL is counted as
+  itself: it wrote rows and did not finish, so it is neither.
+- `throughput_records_per_sec` — or `null`, with `throughput_basis` naming what
+  is missing and `throughput_runs_excluded` counting the rows that could not be
+  timed. Never zero: zero records per second is what a sync failing to move
+  data looks like.
 
----
+**Where the sync's own counters live.** Each run persists what it read and
+wrote — `documents_fetched`, `customers`, `products`, `sales_txns`,
+`cost_records`, `vendors`, `stock_snapshots`, `payments`, `purchase_orders`,
+`sales_orders`, `vendor_payments` — so per-run detail is on the run, queryable,
+and still there after a restart.
 
 ### 4. Health Check Registry
 
@@ -146,7 +167,8 @@ Standardized component health tracking:
 Dynamic capacity analysis based on actual metrics:
 
 **Measured Resources:**
-1. **API Load** — Requests/second vs configured limit
+1. **API Load** — reported as UNKNOWN. A rate needs two samples; only a
+   lifetime counter exists. See `docs/observability.md`.
 2. **Database Connections** — Active connections vs pool size
 3. **Database CPU** — Estimated from query latency
 4. **Background Workers** — Active jobs vs worker limit
@@ -243,19 +265,20 @@ Comprehensive unit tests covering:
 
 - Counter/Gauge/Histogram functionality
 - Labels and multi-dimensional metrics
+- That the metrics export names the worker it came from, and that an
+  undeclared worker count is `null` rather than `1`
 - Health check registration and status
-- Workload job and sync lifecycle
+- That the job and sync endpoints read `sync_runs`: a stalled run is not
+  counted as running and is not reaped by a read, an untimeable run is
+  excluded *and* counted, another organization's runs never appear, and an
+  unknowable throughput is `null` rather than `0`
 - Capacity utilization calculation
 - Safe headroom multiplier calculation
 
-**Test Coverage:**
-- Metrics: 8 tests
-- Health: 3 tests  
-- Workload: 3 tests
-- Capacity: 4 tests
-- **Total: 18 tests**
-
-All tests passing (verified import).
+**Test Coverage: 40 tests in `backend/tests/test_observability.py`**, run as
+part of `make verify`. The count in an earlier version of this section was
+copied from a run that predated half the file; take the number from pytest,
+not from here.
 
 ---
 
@@ -377,11 +400,10 @@ Comprehensive 500+ line documentation covering:
 
 ### New Files Created
 
-**Backend (10 files):**
+**Backend (9 files):**
 - `backend/app/observability/__init__.py`
 - `backend/app/observability/metrics.py`
 - `backend/app/observability/instrumentation.py`
-- `backend/app/observability/workload.py`
 - `backend/app/observability/health.py`
 - `backend/app/observability/capacity.py`
 - `backend/app/observability/dashboard.py`
@@ -503,8 +525,8 @@ After running observability on a production instance for several days, the syste
 
 **Workload Attribution:**
 - ✓ Which tenant generates the most signals?
-- ✓ What is the per-operation cost? (via duration tracking)
-- ✓ What is Zoho sync throughput?
+- ✓ How long did each sync run take? (from `started_at` / `finished_at` on the run)
+- ✓ What is Zoho sync throughput — or, when it cannot be computed, what is missing?
 
 **Scaling Decisions:**
 - ✓ How much safe capacity remains? (multiplier calculation)
@@ -590,9 +612,9 @@ pytest backend/tests/test_observability.py -v
 ```
 
 **Results:**
-- 18 tests covering all core functionality
-- All tests passing
-- Coverage: metrics, health checks, workload, capacity
+- 40 tests covering the core functionality
+- Coverage: metrics (including the per-worker scope of the export), health
+  checks, the sync-run-derived job and sync endpoints, capacity
 
 ### Load Test Framework
 

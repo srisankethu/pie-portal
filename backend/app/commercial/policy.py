@@ -540,6 +540,9 @@ def save_for_org(session: Session, organization_id: str, updates: dict,
     saved, and only the combination is what quotes are judged against.
     """
     base = _in_org_locale(session, organization_id, load_commercial_thresholds())
+    # What was in force before this edit — read now, because ``row.overrides``
+    # is about to be overwritten in place and there is no other copy of it.
+    before = load_for_org(session, organization_id)
     row = session.get(models.CommercialPolicy, organization_id)
     current = dict(row.overrides or {}) if row is not None else {}
 
@@ -593,7 +596,70 @@ def save_for_org(session: Session, organization_id: str, updates: dict,
     row.overrides = current
     row.updated_by_user_id = user_id
     session.flush()
+
+    # The transition, recorded here and nowhere else it could be.
+    #
+    # ``CommercialPolicy`` is one mutable row whose ``overrides`` JSON is
+    # overwritten in place, so the moment this returns, the ``ci_`` version that
+    # judged every previously computed row is gone — and §1 says a computed row
+    # must be able to say which policy judged it. It still can, for the value it
+    # currently holds; what vanished was the ability to say what that policy
+    # *was*. This entry is the only place that survives, which is why it carries
+    # the version on both sides rather than just the new one.
+    #
+    # Inside ``save_for_org`` rather than in the router that calls it: the
+    # before-version is knowable only here, between reading the row and writing
+    # it, and a caller that forgot to record the transition would leave no trace
+    # that it had. ``append`` does not commit, so this entry and the override it
+    # describes reach disk together or neither does.
+    #
+    # The values travel with the field names. They are RESTRICTED and the read
+    # surface is OWNER-only, which is the same role that can already read the
+    # whole policy from ``describe`` — so this discloses nothing new to anyone
+    # who can reach it, and an entry saying only that "margin_floor changed"
+    # would not settle the argument it exists to settle.
+    from ..trust import audit
+    audit.append(
+        session, organization_id=organization_id, action=audit.POLICY_CHANGED,
+        actor_user_id=user_id, subject_type="COMMERCIAL_POLICY",
+        subject_id=organization_id,
+        # The *new* stamp, because that is the policy in force when the entry is
+        # written. ``detail.from_version`` holds the one it replaced. Both are
+        # ``ci_`` — never a ``th_``; those move independently and reading one as
+        # the other is the confusion §1 names.
+        thresholds_version=candidate.version,
+        detail={
+            "version_kind": "ci",
+            "from_version": before.version,
+            "to_version": candidate.version,
+            "fields": sorted(updates),
+            "changes": {
+                field: {"from": _readable(getattr(before, field, None)),
+                        "to": _readable(getattr(candidate, field, None))}
+                for field in sorted(updates) if field in EDITABLE
+            },
+            "overrides_cleared": sorted(f for f, v in updates.items() if v is None),
+        })
     return candidate
+
+
+def _readable(value: Any) -> Any:
+    """A policy value as JSON. ``Decimal`` and the family-target pairs included.
+
+    Small and local on purpose: this renders exactly the value types ``EDITABLE``
+    can hold, and a general-purpose serializer would be a second answer to a
+    question ``_rows`` in ``trust/erasure`` already answers for a different
+    shape of input.
+    """
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, (list, tuple)):
+        return [_readable(item) for item in value]
+    if isinstance(value, dict):
+        return {str(k): _readable(v) for k, v in value.items()}
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
 
 
 def describe(session: Session, organization_id: str) -> dict:

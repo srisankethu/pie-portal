@@ -38,7 +38,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import clock, entitlements, onboarding
+from .. import clock, entitlements, onboarding, tenancy
 from ..authz import Principal, current_principal, open_session, set_session_cookie
 from ..config import settings
 from ..db import get_session
@@ -225,6 +225,11 @@ def _demo_user(session: Session):
     email = (settings.PUBLIC_DEMO_EMAIL or "").strip().lower()
     if not org_id or not email:
         return None
+    # Announced from configuration, not discovered. The demo's organization is
+    # named in settings, so unlike sign-in this path needs no lookup that can
+    # see across tenants — it already knows which tenant it wants, and a policy
+    # then makes the mismatch check below true in SQL as well as in Python.
+    tenancy.set_tenant(session, org_id)
     user = session.scalar(select(models.User).where(models.User.email == email))
     if user is None or not user.active or user.organization_id != org_id:
         return None

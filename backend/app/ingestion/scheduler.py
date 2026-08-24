@@ -191,8 +191,10 @@ def tick(session: Session) -> int:
         hours = auto_sync_hours(orgs.get(org_id))
         if not due(last_started.get(org_id), hours):
             continue
-        # `start_sync` re-checks for an active run under its own lock, so a
-        # pull a person started thirty seconds ago is handed back, not raced.
+        # `start_sync` re-checks for an active run under its own lock, and the
+        # unique indexes on `sync_runs` re-check across workers, so a pull a
+        # person started thirty seconds ago — or the other worker's tick started
+        # this millisecond — is handed back, not raced.
         _run, fresh = jobs.start_sync(
             session, org_id,
             since=scheduled_since(session, org_id),
@@ -205,6 +207,9 @@ def tick(session: Session) -> int:
 
 def start_scheduler() -> bool:
     """Start the daemon thread, once per process. Returns whether it started.
+
+    Every worker starts one — see the module docstring. Starting is not
+    leading: the loop takes ``LEASE`` each tick and only the holder acts.
 
     Guarded on the live source: a fixture deployment has nothing to keep fresh,
     and a scheduler that "syncs" sample data every six hours is noise in the

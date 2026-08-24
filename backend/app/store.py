@@ -394,7 +394,7 @@ class Quote:
     #: only by ``quote_id``, and the ids are enumerable (``q{run}-{counter}``),
     #: so without this every read seam authorized on the caller's *session* but
     #: never on the quote's *tenant*: another org's owner could pass a guessed id
-    #: to ``GET /api/quotes/{id}``, ``/intake``, the approval gate or
+    #: to ``GET /api/v1/quotes/{id}``, ``/intake``, the approval gate or
     #: ``quote-intelligence/assess`` and read — or mutate — it, cost and margin
     #: included. Stamped at ``create`` from ``principal.organization_id`` and
     #: checked at every seam (``_get_quote``, ``line_cost``, ``_below_floor_lines``).

@@ -7,6 +7,7 @@ calling the model (cost control + honesty).
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import time
 from dataclasses import dataclass, field
@@ -100,6 +101,12 @@ def interpret(bundle: ContextBundle, provider: AIProvider, *, signal_type: str,
         tel.ai_status = result.status.value
         tel.failure_reason = reason.value if reason else None
         tel.input_tokens, tel.output_tokens = usage_of(provider)
+        # Hashed here rather than at the call site, for the reason ``sent``
+        # exists: this is the one funnel every return path goes through, so
+        # there is no path that sends something and records no hash of it.
+        tel.prompt_sha256 = (
+            hashlib.sha256(sent["payload"].encode()).hexdigest()
+            if sent["payload"] else None)
         result.telemetry = tel.finalize_cost()
         result.prompt_payload = sent["payload"]
         return result

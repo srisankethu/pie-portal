@@ -34,6 +34,7 @@ def run(session):
     session.add(models.Organization(organization_id=ORG, name="SLS Engineers",
                                     currency="INR", config={}))
     row = models.SyncRun(sync_run_id="run_1", organization_id=ORG, source="fixture",
+                         connection_id="conn_1",
                          status="RUNNING", phase="Starting")
     session.add(row)
     session.flush()
@@ -104,7 +105,12 @@ def test_the_sequence_continues_across_flushes(session, run):
 def test_one_pull_does_not_collect_another_pulls_lines(session, run):
     """Three connected companies sync at once, each on its own thread. Three
     logs, not one interleaved one that describes no particular pull."""
+    # Named connections, because that is what the story says: two companies
+    # pulling at once. Two active rows with no connection at all would be two
+    # all-companies runs of one organization, which is the overlap
+    # `uq_sync_run_active_umbrella` exists to refuse.
     other = models.SyncRun(sync_run_id="run_2", organization_id=ORG,
+                           connection_id="conn_2",
                            source="fixture", status="RUNNING")
     session.add(other)
     session.flush()

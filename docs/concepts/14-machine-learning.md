@@ -880,7 +880,7 @@ condition, and all of them are checkable rather than arguable:
 | Inter-order survival (§5.6) | `/api/v1/internal/detector-outcomes` bands dormancy HIGH over a worked quarter |
 | Queue LTR (§5.22) | Same trigger, **and** moving `queue_margin_drop_pp` did not fix it |
 | Enquiry text models (§5.18, §5.21) | `inbound_lines` holds a few thousand rows with live dispositions |
-| Embedding shortlist (§5.17) | The enquiry corpus exists (§7, item 2), so recall can be measured rather than asserted |
+| Embedding shortlist (§5.17) | The enquiry corpus exists (§7a.4), so recall can be measured rather than asserted |
 | Anything at item grain (§5.7–5.10) | Never, absent a change in what this business sells |
 | Any model exposed to a salesperson | §4.3 is satisfied by construction, not by a projection |
 
@@ -1025,8 +1025,9 @@ has to be written for the recipient.
    prose into quotable lines on one path; `InboundLine` is about to carry the
    same text from five.
 3. **Loss-reason free text into the closed `QuoteLossReason` vocabulary**, as a
-   suggestion a human confirms. Cheap, bounded, reversible — and it feeds the
-   §5.1 contingency table, which is the highest-value item in §7.
+   suggestion a human confirms. Cheap, bounded, reversible — and it supplies the
+   one half of a quote outcome the ERP has no field for, which is what §7a.2
+   otherwise has to ask a person for one quote at a time.
 
 **Next fitted model:** §5.6, and only on §8's trigger. There is no second one.
 

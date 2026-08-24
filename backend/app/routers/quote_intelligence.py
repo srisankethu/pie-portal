@@ -13,7 +13,9 @@ salesperson went ahead anyway.
 DRAFT → SENT → WON/LOST, so a price can later be joined to whether it won. A
 loss carries a reason from ``QuoteLossReason`` and is refused without one —
 ``/api/v1/insight/quote-outcomes`` reads that column directly, and a loss
-recorded without it is a row that can be counted and never learned from.
+recorded without it is a row that can be counted and never learned from. A
+quote raised by the ERP is named there by its own reference, and that reference
+is scoped like any other account read: ``_may_record_erp_quote``.
 
 No endpoint here calls a model. Every number is computed by ``app.commercial``.
 Role scoping is enforced server-side: a salesperson's response contains no cost,
@@ -49,9 +51,11 @@ from ..authz import Principal, can_view_customer, current_principal
 from ..store import store
 from ..commercial.policy import load_for_org
 from ..commercial.quote_service import (
+    AmbiguousQuoteDocument,
     InvalidTransition,
     MissingLossReason,
     QuoteLineInput,
+    QuoteOutcomeRepointed,
     assess_and_record,
     assess_quote,
     get_outcome,
@@ -61,9 +65,11 @@ from ..commercial.quote_service import (
     snapshot_to_dict,
     snapshots_for_quote,
     set_outcome,
+    sole_erp_quote,
     summarize,
 )
 from ..db import get_session
+from ..domain import models
 from ..domain.enums import QuoteLossReason, QuoteOutcomeStatus
 
 router = APIRouter(prefix="/api/v1/quote-intelligence", tags=["quote-intelligence"])
@@ -142,6 +148,82 @@ def _visible_customer_ref(session: Session, principal: Principal, ref: str) -> s
     if customer is not None and not can_view_customer(principal, customer, session):
         return ""
     return ref
+
+
+#: The one answer a salesperson gets for every ERP reference that is not one of
+#: theirs: a quote raised on another desk, a quote nobody attributed, a
+#: reference that names nothing, and a reference that names two. Identical on
+#: purpose — a refusal that told them apart would answer "does this reference
+#: exist" for the whole book, which is the enumeration ``_visible_customer_ref``
+#: degrades rather than confirms one field further up.
+_NO_SUCH_ERP_QUOTE = (
+    "No quote on your list answers to that reference. A quote raised for an "
+    "account you do not hold is recorded by whoever holds it.")
+
+
+def _may_record_erp_quote(session: Session, principal: Principal,
+                          quote_document_ref: str) -> bool:
+    """Whether this principal may write an outcome onto the ERP quote named.
+
+    ``_visible_customer_ref`` scopes the customer *name the caller typed* and
+    nothing else, which was the whole rule while ``quote_id`` was the only key:
+    a quote this platform priced is reached through a store the caller already
+    holds. ``quote_document_ref`` is different in kind — it is the ERP's own id
+    for a quote nobody here priced, it identifies the row by itself, and the
+    worklist that hands those references out is scoped while the write was not.
+    So a salesperson could name any estimate in the organization and put a
+    terminal WON or LOST on it. Won and lost are terminal by design, so the
+    account's rightful owner is then refused forever; and because the typed
+    name is blanked rather than refused, the row carries no ``customer_id`` and
+    slips past ``insight._scoped_outcomes``' narrowing into every manager's loss
+    analysis. Reading the row back was the other half of it: ``outcome_to_dict``
+    echoes ``customer_id``, the customer's real name and whatever free text a
+    colleague wrote about the account, which is ``_visible_customer_ref``'s own
+    enumeration running backwards — reference to identity — on the one field
+    the caller supplied being correctly withheld.
+
+    The rule is the one ``/insight/unrecorded-quotes`` narrows its worklist
+    with, so that what a person may record is exactly what they were shown:
+    ``commercial.insight.unrecorded._load`` keeps a quote for a narrowed reader
+    only where its ``customer_id`` is one of theirs, and drops an unattributed
+    one rather than showing a stranger's quote on somebody's list. Expressed
+    through ``authz.can_view_customer`` rather than re-derived from
+    ``assigned_user_id``, for the reason that function's docstring gives.
+
+    **Four different failures answer False and the caller cannot tell them
+    apart** — hence one message for all four, and hence the ambiguous reference
+    being answered here rather than left to the 409 below: that message names
+    both connected books a reference is torn between, and those are quotes this
+    reader may not see. The manager who can see both books is the one who can
+    do anything about it, and they still get the 409.
+
+    Applied whenever a reference is supplied, including beside a ``quote_id``.
+    Both keys together is the normal shape for a platform quote pushed to the
+    ERP, and letting the reference through unchecked because a ``quote_id`` sat
+    next to it would be this same defect in a second costume: ``set_outcome``
+    writes the reference onto that row, and the rightful owner's next call —
+    keyed on the reference — finds it and is refused by it. The cost is narrow
+    and stated: a salesperson naming both before the sync has read the new
+    estimate is refused and records against the ``quote_id`` alone, which
+    identifies the row anyway, and the ERP link was already written by
+    ``routers.quote`` at the moment it pushed.
+
+    A manager or owner is not narrowed to any subset of the book, so nothing is
+    resolved for them at all: they keep today's behaviour exactly, including
+    recording against a reference the sync holds no document for, which
+    ``_opening_status`` deliberately treats as a dangling pointer rather than
+    as evidence of a send.
+    """
+    if not principal.is_salesperson:
+        return True
+    try:
+        document = sole_erp_quote(session, principal.organization_id,
+                                  quote_document_ref)
+    except AmbiguousQuoteDocument:
+        return False
+    customer = (session.get(models.Customer, document.customer_id)
+                if document is not None and document.customer_id else None)
+    return can_view_customer(principal, customer, session)
 
 
 def _reject_price_sweep(lines: list[LineIn]) -> None:
@@ -318,14 +400,25 @@ def quote_audit(
 
 
 class OutcomeRequest(BaseModel):
-    quote_id: str
+    #: A quote this platform priced. Optional since ``quote_document_ref``
+    #: exists: it was a required ``str``, which made the ERP-raised quote —
+    #: most of the book — impossible to name over HTTP at all.
+    quote_id: Optional[str] = None
+    #: The id the source ERP gave a quote it raised itself, as carried in
+    #: ``quote_documents.external_ref``.
+    quote_document_ref: Optional[str] = None
     status: QuoteOutcomeStatus
     customer: str = ""
     note: Optional[str] = None
     #: Required when ``status`` is LOST. Not enforced here as a Pydantic
     #: constraint on purpose — ``quote_service.set_outcome`` owns the rule, so
     #: the CLI, a future importer and this endpoint cannot drift about what
-    #: counts as a recordable loss.
+    #: counts as a recordable loss. "At least one document to be about" is
+    #: likewise that function's rule and not a Pydantic one, for the same
+    #: reason and with the same consequence if it were restated here: both
+    #: keys together is the *normal* shape for a platform quote pushed to the
+    #: ERP, and a stricter model here would refuse what the service documents
+    #: as ordinary.
     loss_reason: Optional[QuoteLossReason] = None
     lost_to: Optional[str] = None
 
@@ -342,9 +435,20 @@ def quote_outcome(
     # any customer's name to their platform id.
     customer_ref = _visible_customer_ref(session, principal, body.customer.strip())
     customer = resolve_customer(session, org, customer_ref) if customer_ref else None
+
+    document_ref = (body.quote_document_ref or "").strip() or None
+    if document_ref is not None and not _may_record_erp_quote(session, principal,
+                                                              document_ref):
+        # 404 rather than 403, and the same 404 the reference naming nothing
+        # gets: see ``_NO_SUCH_ERP_QUOTE``. Before the call and not inside it,
+        # so a refused request writes nothing at all.
+        raise HTTPException(status.HTTP_404_NOT_FOUND, _NO_SUCH_ERP_QUOTE)
     try:
         row = set_outcome(
-            session, org, quote_id=body.quote_id.strip(), status=body.status,
+            session, org,
+            quote_id=(body.quote_id or "").strip() or None,
+            quote_document_ref=document_ref,
+            status=body.status,
             customer_ref=customer_ref,
             customer_id=customer.customer_id if customer else None,
             note=body.note, loss_reason=body.loss_reason,
@@ -354,8 +458,33 @@ def quote_outcome(
         # legal, one required field is absent, and the message names the
         # choices. A 409 would send the caller looking at the lifecycle.
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e)) from e
+    except AmbiguousQuoteDocument as e:
+        # 409 rather than the 422 above, and the test that separates them is
+        # "is there a body this caller could send that fixes it?" — here, no,
+        # by design and permanently: ``OutcomeRequest`` carries no qualifier
+        # naming which connected book the reference came from, and deliberately
+        # does not. The 422 clause's own three-part test also fails at its
+        # second part: ``sole_erp_quote`` refuses before the ``QuoteOutcome``
+        # lookup and before ``_opening_status``, so there is no current status
+        # the transition could have been legal against, and answering 422 would
+        # assert a premise nothing established.
+        #
+        # ``detail`` is a plain string on purpose. It already names the count
+        # and both books, which is the only thing that explains this to the
+        # person who hit it, and the client reads ``parsed.detail`` straight
+        # into a message — a list there renders as "[object Object]".
+        raise HTTPException(status.HTTP_409_CONFLICT, str(e)) from e
+    except QuoteOutcomeRepointed as e:
+        # A conflict with a row that already exists, not a malformed request.
+        raise HTTPException(status.HTTP_409_CONFLICT, str(e)) from e
     except InvalidTransition as e:
         raise HTTPException(status.HTTP_409_CONFLICT, str(e)) from e
+    except ValueError as e:
+        # Last, and only for the "names neither document" guard: all four
+        # clauses above are ``ValueError`` subclasses, so any of them ordered
+        # after this one would be unreachable. That message already reads as a
+        # missing-field message and names both fields that would satisfy it.
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e)) from e
     return outcome_to_dict(row) or {}
 
 

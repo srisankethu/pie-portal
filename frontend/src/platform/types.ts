@@ -1640,3 +1640,131 @@ export interface AttributionEvaluation extends AttributionSummary {
   roi_is_unknown: boolean;
   during?: AttributionWindowMetrics;
 }
+
+// ── the quotes nobody wrote an outcome on ────────────────────────────────────
+// `GET /api/v1/insight/unrecorded-quotes`, and the one insight response on this
+// surface that is typed rather than read as `Record<string, unknown>`.
+//
+// That is a deliberate exception to the convention beside it, and the reason is
+// the reason the endpoint exists. Every other insight screen reaches its figures
+// through a local `num = (v: unknown) => Number(v ?? 0)` — the shape
+// `viz/QuoteOutcomes.tsx` opens with — which is exactly the `sum(... or 0)` tell
+// CLAUDE.md §1 names, wearing a TypeScript hat: an untyped response makes
+// inventing a zero the path of least resistance, and *only* the untyped ones
+// need it. This payload's whole argument is that a missing expiry date and a
+// missing total are facts rather than zeroes; `unrecorded.py` refuses to fold
+// them at some length. A type that forces `=== null` at the use site is how that
+// refusal survives the trip into a component.
+
+/** Which of the three named piles a quote sits in.
+ *
+ *  Not a ranking, not a score: `unrecorded.py` sorts lexicographically over two
+ *  published quantities inside these groups, and both are on every row, so a
+ *  reader can recompute the order by hand. `EXPIRY_NOT_RECORDED` is the one
+ *  that carries an argument — a quote with no expiry date is not known to be
+ *  lapsed and not known to be live, so it is filed as neither rather than
+ *  ranked as one. */
+export type UnrecordedQuoteGroup =
+  | "PAST_EXPIRY"
+  | "EXPIRY_NOT_RECORDED"
+  | "STILL_OPEN";
+
+/** One unanswered quote — `commercial/insight/unrecorded.PendingQuote`.
+ *
+ *  Every nullable field below is `| null` rather than `?`, and the difference is
+ *  not stylistic. `?` says the server may omit the key; it never does —
+ *  `to_dict` writes all eleven every time. What the payload carries is a
+ *  recorded *absence*, which is a fact, and `| null` is the spelling that makes
+ *  a reader handle it instead of letting `undefined` slide into `?? 0`. */
+export interface UnrecordedQuote {
+  /** The source system's own id, which is what an outcome is recorded against.
+   *  Never `quote_documents.quote_document_id` — that surrogate is re-minted by
+   *  a full re-sync and a pointer written to it would not survive one. */
+  quote_document_ref: string;
+  /** The human-facing number the ERP printed on it. Null where it has none. */
+  number: string | null;
+  /** Null where the quote's customer never resolved to a platform record — a
+   *  walk-in, or a spelling the contact pull did not match. `customer_label`
+   *  still names somebody: the ERP's own typed customer name. */
+  customer_id: string | null;
+  customer_label: string;
+  /** The ERP's own word for this quote's state, verbatim and unmapped, so a
+   *  reader can tell a draft from a sent quote without this client owning a
+   *  vocabulary that belongs to `ingestion.normalize`. */
+  source_status: string;
+  /** ISO date the quote was raised. The one date the ERP always supplies. */
+  raised_on: string;
+  /** ISO date the offer lapses. Null is why `EXPIRY_NOT_RECORDED` exists. */
+  expires_on: string | null;
+  group: UnrecordedQuoteGroup;
+  /** Days since the offer lapsed. Null wherever `expires_on` is absent *or*
+   *  still ahead — an unanswerable age and a future one are both refused rather
+   *  than folded to zero, and folding either would file the row with the
+   *  freshest quotes in the book, where nobody would see it again. */
+  days_past_expiry: number | null;
+  /** The quote's own selling total: the number that was put in front of the
+   *  customer, which is neither cost nor margin and is why every role may read
+   *  this list. Null where the ERP gave none — such a row is kept and counted,
+   *  because "why did this go quiet" is worth the same on it, and only its
+   *  ranking key is missing. */
+  value: number | null;
+  /** ISO timestamp of an open the ERP saw. Null means **no open was recorded**,
+   *  which is not "the customer never opened it": the quote may never have been
+   *  sent, tracking may be off, or they may have read a forwarded PDF. Render
+   *  the absence as an absence. */
+  opened_at: string | null;
+}
+
+/** The headline counts, each a count of something stated exactly.
+ *
+ *  Taken over the whole pile rather than over the page, so the screen can say
+ *  how much of it is not on screen. Flattened into the response beside the rows
+ *  rather than nested — see `UnrecordedQuotes`. */
+export interface UnrecordedQuoteTotals {
+  /** How many unanswered quotes this reader may see, in total. */
+  count: number;
+  by_group: Record<UnrecordedQuoteGroup, number>;
+  /** The sum of the rows that carry a total, and of no others.
+   *  `quotes_without_a_value` says how many it left out — read the two
+   *  together or the figure looks complete and is not. */
+  value_at_stake: number;
+  quotes_without_a_value: number;
+  /** The oldest lapse on the list, so a thin-looking screen can still say how
+   *  long the pile has been growing. Null when nothing on it has an expiry date
+   *  to have passed — no lapse exists, and a 0 there would read as "the oldest
+   *  one lapsed today". */
+  longest_lapse_days: number | null;
+  /** Quotes the ERP recorded an open on. A positive fact. */
+  opened: number;
+  /** Quotes with no open on record, named as the absence it is. Deliberately
+   *  not `never_opened`, which is a claim the data cannot support. */
+  opening_not_recorded: number;
+}
+
+/** `GET /api/v1/insight/unrecorded-quotes`.
+ *
+ *  Extends the totals rather than nesting them because the server spreads them
+ *  into the envelope: `_envelope(result, …)` flattens `totals(rows)` alongside
+ *  `quotes`, so `count` and `value_at_stake` sit at the top level. Modelled the
+ *  way it arrives — a nested `totals` here would be a shape the client invents
+ *  and then has to build on every fetch. */
+export interface UnrecordedQuotes extends UnrecordedQuoteTotals {
+  /** The page. At most `limit` rows, ranked; `count` is the whole pile. */
+  quotes: UnrecordedQuote[];
+  /** How many rows are on this page. `listed < count` means the rest are real
+   *  and unshown, never that they do not exist. */
+  listed: number;
+  /** The business day the ages were measured against, in the organization's
+   *  own timezone rather than the browser's. */
+  as_of: string;
+  /** The order the groups are in, published by the server so a reader can
+   *  recompute the list rather than infer the ranking. Iterate this for
+   *  section order instead of hardcoding it — a second copy is one that
+   *  disagrees the day the ordering argument changes. */
+  group_order: UnrecordedQuoteGroup[];
+  /** Why the list is empty, written where the query happened. Null when it is
+   *  not empty. The client never decides this — it could only guess. */
+  empty_reason: string | null;
+  currency: string;
+  thresholds_version: string;
+}

@@ -719,7 +719,18 @@ class AmbiguousQuoteDocument(ValueError):
     """
 
 
-def _sole_erp_quote(session: Session, org: str,
+class QuoteOutcomeRepointed(ValueError):
+    """An outcome moved off the ERP quote it was recorded about.
+
+    Its own type for the reason ``MissingLossReason`` has one, and the router
+    is the caller that needs the distinction: this is a conflict with a row
+    that already exists — nothing the caller puts in the body fixes it — while
+    the "names neither document" refusal one guard up is a missing field. A
+    bare ``ValueError`` collapses a 409 and a 422 into one clause.
+    """
+
+
+def sole_erp_quote(session: Session, org: str,
                     quote_document_ref: str) -> Optional[models.QuoteDoc]:
     """The one ERP quote this reference names, or ``None`` where it names none.
 
@@ -746,8 +757,31 @@ def _sole_erp_quote(session: Session, org: str,
     only a person held, silently, and afterwards nothing distinguishes it from a
     fact that was entered. The durable fix is a qualified pointer — the
     connection stored beside the reference, the way every document table stores
-    it — and it belongs with the capture screen that will need to *supply* the
-    qualifier, since nothing calling this today can say which book it means.
+    it.
+
+    It is deliberately not built yet, and the capture screen was not enough to
+    build it: two preconditions of the collision both fail, in different
+    packages. ``normalize.normalize_quote_document`` keys ``external_ref`` on
+    ``estimate_id``, Zoho's system-wide record id, not the per-book
+    ``estimate_number`` it carries beside it — so three connected Zoho books
+    issue disjoint id spaces. And no connector in ``ingestion/erp`` implements
+    ``list_quotes`` at all, so the six ERPs whose quote numbers *are*
+    per-company sequences cannot write a ``quote_documents`` row to collide
+    with. The capture screen can echo a qualifier it was handed; it cannot know
+    one, and a column every caller writes NULL into is an ``is not None`` guard
+    around the objection.
+
+    What builds this is the first ``list_quotes`` in ``ingestion/erp`` whose
+    ``external_ref`` is a per-company sequence rather than a system-wide
+    surrogate: that commit knows which field disambiguates and has a caller
+    that can supply it.
+
+    Public rather than private because a second caller now needs the document
+    itself rather than the outcome written from it: ``routers.quote_intelligence``
+    asks whether the principal may record against the quote a reference names,
+    and *which accounts a role may see* is a question ``commercial/`` does not
+    answer. Two resolutions of one reference in a request is the cost, and it is
+    an indexed lookup on the column the human table already points at.
     """
     rows = list(session.scalars(
         select(models.QuoteDoc).where(
@@ -889,7 +923,7 @@ def set_outcome(session: Session, org: str, *, quote_id: Optional[str] = None,
     # platform-quote path — ``quote_id`` is the identity there, the caller has
     # just created the estimate it names, and refusing a link the ERP write
     # already made would leave the two tables describing one estimate twice.
-    document = (_sole_erp_quote(session, org, quote_document_ref)
+    document = (sole_erp_quote(session, org, quote_document_ref)
                 if quote_id is None and quote_document_ref is not None else None)
 
     # Looked up by the platform quote when there is one, because that is the
@@ -919,7 +953,7 @@ def set_outcome(session: Session, org: str, *, quote_id: Optional[str] = None,
     # indistinguishable from a real one.
     if (quote_document_ref is not None
             and row.quote_document_ref not in (None, quote_document_ref)):
-        raise ValueError(
+        raise QuoteOutcomeRepointed(
             f"This outcome already describes ERP quote "
             f"{row.quote_document_ref}; it cannot be moved onto "
             f"{quote_document_ref}. Record the second quote's outcome "

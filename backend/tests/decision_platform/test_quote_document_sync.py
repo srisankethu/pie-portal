@@ -31,9 +31,11 @@ import pytest
 from sqlalchemy import text
 
 from app.commercial import quote_service
+from app.config import settings
 from app.domain import models
 from app.domain.enums import QuoteLossReason, QuoteOutcomeStatus
 from app.ingestion.sync import SyncService
+from app.seed import SEED_PASSWORD
 
 _INGESTION = pathlib.Path(__file__).resolve().parents[2] / "app" / "ingestion"
 
@@ -84,6 +86,13 @@ def _sync(session, quotes, org="org_a", **kw):
     report = SyncService(session, _Source(quotes), org, **kw).run()
     session.commit()
     return report
+
+
+def _hdr(client, email: str) -> dict:
+    """Signed-in headers for one of the seeded users."""
+    r = client.post("/api/v1/auth/login",
+                    json={"email": email, "password": SEED_PASSWORD})
+    return {"Authorization": f"Bearer {r.json()['token']}"}
 
 
 def _docs(session, org="org_a"):
@@ -605,6 +614,41 @@ def test_a_reference_naming_two_books_quotes_is_refused_not_guessed(session):
     # Refused before anything was written, so there is no half-made row for the
     # next recording to walk into.
     assert session.query(models.QuoteOutcome).count() == 0
+
+
+def test_the_ambiguous_reference_refusal_survives_the_trip_through_http(
+        session, api_client):
+    """And it arrives as 409 with both books still named in a readable string.
+
+    The half above pins the service. This pins what the person at the capture
+    screen actually receives, which is the part a router can quietly lose:
+    ``AmbiguousQuoteDocument`` is a ``ValueError`` like the other three, so a
+    single ``except ValueError`` clause would map it to the 422 that means "one
+    field is missing, here are the choices" — and there is no field, no choice,
+    and nothing the caller can put in the body that would fix it. 409 says the
+    conflict is with what is stored, and stays true however long the screen
+    lives.
+
+    ``detail`` being a string rather than a list is asserted because it is the
+    only thing that reaches the reader: the web client renders ``detail``
+    directly, and a list arrives as "[object Object]" — on the one refusal
+    whose prose is all the caller gets.
+    """
+    org = settings.DEFAULT_ORG_ID
+    _sync(session, [_quote("1001", "sent")], org=org, connection_id="conn-a")
+    _sync(session, [_quote("1001", "sent")], org=org, connection_id="conn-b")
+
+    r = api_client.post(
+        "/api/v1/quote-intelligence/outcome",
+        json={"quote_document_ref": "1001", "status": "LOST",
+              "loss_reason": "PRICE", "lost_to": "Sandvik"},
+        headers=_hdr(api_client, "m.rao@pie.example"))
+    assert r.status_code == 409, r.text
+    detail = r.json()["detail"]
+    assert isinstance(detail, str)
+    assert "conn-a" in detail and "conn-b" in detail
+    assert session.query(models.QuoteOutcome).filter(
+        models.QuoteOutcome.organization_id == org).count() == 0
 
 
 def test_a_platform_quote_that_became_an_erp_quote_is_one_row_not_two(session):

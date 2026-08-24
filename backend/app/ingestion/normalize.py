@@ -587,6 +587,17 @@ def normalize_quote_document(raw: dict[str, Any], *, system: str = ZOHO) -> Quot
         _parse_date(declined, ctx) if declined else None,
         won=won, lost=lost)
     return QuoteDocIn(
+        # ``estimate_id``, not ``estimate_number``, and that choice is
+        # load-bearing outside this function. Zoho's record id is system-wide,
+        # so three connected books issue disjoint id spaces: that is why
+        # ``quote_service.sole_erp_quote``'s refusal is unreachable on this
+        # book, and why the capture grid can key its rows on the bare reference
+        # and know they are unique. ``estimate_number`` is a per-company
+        # sequence and is carried below as ``number`` for a person to read.
+        # Re-keying this onto the human-readable number — which a capture
+        # screen is exactly the kind of screen to ask for — changes both of
+        # those properties, not the display. This is the one place the property
+        # is asserted; the other two point here.
         external_ref=qid,
         number=(str(raw["estimate_number"]) if raw.get("estimate_number") else None),
         source_reference=(str(raw["reference_number"]) if raw.get("reference_number")

@@ -95,6 +95,8 @@ const LostRevenueScreen = lazy(() =>
   import("./viz/Screens").then((m) => ({ default: m.LostRevenueScreen })));
 const QuoteOutcomesScreen = lazy(() =>
   import("./viz/QuoteOutcomes").then((m) => ({ default: m.QuoteOutcomesScreen })));
+const UnrecordedQuotesScreen = lazy(() =>
+  import("./UnrecordedQuotes").then((m) => ({ default: m.UnrecordedQuotesScreen })));
 const OpportunityScreen = lazy(() =>
   import("./viz/Screens").then((m) => ({ default: m.OpportunityScreen })));
 const SimulatorScreen = lazy(() =>
@@ -812,6 +814,18 @@ export default function PlatformApp() {
     // own accounts. The margin behind the losses is a second request the
     // server only answers for a manager, so the nav item is not scoped.
     { key: "quoteOutcomes", label: "Won & lost", group: "decide" },
+    // The other three quarters of the same loop, and the only screen on which a
+    // loss reason can be recorded against a quote the ERP raised. Every role
+    // and unscoped for the reason "Won & lost" is: the list carries each
+    // quote's own selling total and nothing derived from cost, and the server
+    // narrows a salesperson to their own accounts.
+    // No count badge, deliberately. The pile is ~215 and moves only when
+    // somebody records an outcome, so a badge would sit at three digits for
+    // months — and the only way to fill it is a second request on every
+    // navigation, which is a real cost for a number nobody would act on faster
+    // for having seen it in the sidebar. The screen's own headline says how big
+    // the pile is, where it is next to the thing that shrinks it.
+    { key: "unrecordedQuotes", label: "Unanswered", group: "decide" },
     { key: "approvals", label: "Approvals", group: "decide", count: pendingApprovals },
 
     // ── Understand ──
@@ -1113,6 +1127,7 @@ export default function PlatformApp() {
             <Route path={PATH.catalogue} element={<CatalogueScreen session={session} />} />
             <Route path={PATH.negotiate} element={<NegotiateScreen session={session} />} />
             <Route path={PATH.quoteOutcomes} element={<QuoteOutcomesScreen session={session} />} />
+            <Route path={PATH.unrecordedQuotes} element={<UnrecordedQuotesScreen session={session} />} />
 
             {/* ── WHAT PIE CHANGED ──
                 The value ledger, and what it could not measure. Routed for

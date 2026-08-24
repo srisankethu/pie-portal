@@ -15,6 +15,14 @@ import { useState } from "react";
 import type { QuoteLossReason, QuoteOutcome, QuoteOutcomeStatus } from "../types";
 import { Tip } from "../Tip";
 import { StatusChip, TOUCH, type Tone } from "../platform/kit";
+// The five reasons and what each one means downstream, from the one place
+// they are written. They used to live here, and the platform's two outcome
+// screens needed the same wording — a second copy of "the requirement went
+// away" is how one fact acquires two meanings on two screens.
+import {
+  LOSS_REASON_LABELS as REASON_LABELS,
+  LOSS_REASON_MEANING as REASON_HELP,
+} from "../platform/RecordOutcomeDialog";
 
 /**
  * What happened to this quote after it went out.
@@ -41,24 +49,6 @@ import { StatusChip, TOUCH, type Tone } from "../platform/kit";
  * A `Paper`, not a `Card` (ui-standards §2): this is an action panel about a
  * quote, not a surface wrapping an entity with an identity of its own.
  */
-
-const REASON_LABELS: Record<QuoteLossReason, string> = {
-  PRICE: "Price — somebody quoted lower",
-  DELIVERY: "Delivery — somebody could supply and we could not",
-  COMPETITOR: "Went to a competitor, for another reason",
-  CUSTOMER_CANCELLED: "The requirement went away — nobody supplied it",
-  NO_DECISION: "Still undecided, and gone quiet",
-};
-
-/** What each answer means for everything downstream, said where it is chosen.
- *  A reason picked to close a dialog is a reason nobody can rely on later. */
-const REASON_HELP: Record<QuoteLossReason, string> = {
-  PRICE: "Counts as spend that went to a competitor.",
-  DELIVERY: "Counts as spend that went to a competitor.",
-  COMPETITOR: "Counts as spend that went to a competitor.",
-  CUSTOMER_CANCELLED: "Counts as nobody's — no supplier gained this.",
-  NO_DECISION: "Counted neither way; it may still move.",
-};
 
 const STATUS_TONE: Record<QuoteOutcomeStatus, Tone> = {
   DRAFT: "neutral", SENT: "info", WON: "good", LOST: "bad",

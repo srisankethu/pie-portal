@@ -1,4 +1,4 @@
-import type { AccessReport, Account, AccountItem, AiByokView, AiKeyTestResult, AiMetricsReport, AiReadiness, ApprovalRequest, AttributionEvaluation, AttributionEvents, AttributionSummary, ConnectionCheck, ConnectionsView, ConnectorCatalog, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, DecisionTrace, DemoOffer, DisclosureStatement, Entitlements, EntityKind, ErasureState, ErpConnectInput, ErpDiscoveredCompany, FixedThresholds, FloorBacktest, Identity, IdentityCoverage, IdentityPolicy, IdentitySuggestion, MarginPolicy, MarginPolicyPatch, NewConnectionInput, OnboardingView, OrgPolicy, PayloadsReport, PlatformSession, PlatformUser, QuoteGate, Retrospective, Role, SignupOffer, SkippedRows, StatusFilter, SyncOptions, SyncRunLogPage, SyncStartResponse, SyncState, ThresholdView, ZohoConnection, ZohoConnectionInput, ZohoCredential, ZohoVisibleOrg } from "./types";
+import type { AccessReport, Account, AccountItem, AiByokView, AiKeyTestResult, AiMetricsReport, AiReadiness, ApprovalRequest, AttributionEvaluation, AttributionEvents, AttributionSummary, ConnectionCheck, ConnectionsView, ConnectorCatalog, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, DecisionTrace, DemoOffer, DisclosureStatement, Entitlements, EntityKind, ErasureState, ErpConnectInput, ErpDiscoveredCompany, FixedThresholds, FloorBacktest, Identity, IdentityCoverage, IdentityPolicy, IdentitySuggestion, MarginPolicy, MarginPolicyPatch, NewConnectionInput, OnboardingView, OrgPolicy, PayloadsReport, PlatformSession, PlatformUser, QuoteGate, Retrospective, Role, SignupOffer, SkippedRows, StatusFilter, SyncOptions, SyncRunLogPage, SyncStartResponse, SyncState, ThresholdView, UnrecordedQuotes, ZohoConnection, ZohoConnectionInput, ZohoCredential, ZohoVisibleOrg } from "./types";
 
 import { setMoneyCurrency } from "../money";
 import { setBusinessTimezone } from "../when";
@@ -394,6 +394,28 @@ export const papi = {
   quoteOutcomes: (t: string, months = 12) =>
     req<Record<string, unknown>>(
       `/api/v1/insight/quote-outcomes?months=${months}`, {}, t),
+
+  /** The quotes the ERP holds no outcome for, in the order worth asking about.
+   *
+   *  Every role, for the reason `quoteOutcomes` is: nothing in it is derived
+   *  from cost. `value` is each quote's own selling total — the number that
+   *  went to the customer — and the rest is dates, the ERP's own status word
+   *  and counts of them. A salesperson is narrowed to their own accounts by the
+   *  server, which is where role lives.
+   *
+   *  `limit` pages the rows and **not** the counts: `totals` is taken over the
+   *  whole pile server-side, so `count` says how big it is and `listed` says
+   *  how much of it came back. Raising the limit shows more rows; it never
+   *  changes the headline.
+   *
+   *  Typed, where its neighbours above return `Record<string, unknown>`. See
+   *  the note above `UnrecordedQuoteGroup` in `types.ts`: this payload's whole
+   *  point is that a missing expiry and a missing total are facts, and an
+   *  untyped response is what makes `Number(v ?? 0)` the shortest path to
+   *  rendering one. */
+  unrecordedQuotes: (t: string, limit = 50) =>
+    req<UnrecordedQuotes>(
+      `/api/v1/insight/unrecorded-quotes?limit=${limit}`, {}, t),
 
   // Where a losing price sat, against what wins and against what that customer
   // has paid — and the margin behind both. Manager and above, scoped like

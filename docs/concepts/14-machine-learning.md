@@ -853,19 +853,33 @@ different owners and only the first is a backlog:
 
 **Open ends left by 1 and 2, recorded so they are not rediscovered:**
 
-- **The capture screen.** `unrecorded.py` ranks the pile; nothing yet asks the
-  question. That screen is what turns six recorded losses into the §5.1
-  contingency table, and it is the next thing worth building.
-- **`AmbiguousQuoteDocument` has no router mapping**, because no endpoint reaches
-  the ERP-only path yet. Whoever lands the capture screen maps it — 409, as
-  `MissingLossReason` and `InvalidTransition` already are.
-- **The outcome pointer carries no `(connector, connection_id)` qualifier.** An
-  ambiguous reference is refused rather than guessed, so nothing is destroyed —
-  but in a two-book org whose ERP reuses quote ids, *neither* person can record
-  an outcome. Accepted deliberately: nothing calling it today can say which book
-  it means, so the column would be NULL from every current caller. It belongs
-  with the capture screen that can supply it, and `_sole_erp_quote`'s docstring
-  says so. Not reachable on this book — Zoho estimate ids are globally unique.
+- ~~The capture screen.~~ **SHIPPED.** `platform/UnrecordedQuotes.tsx` and
+  `RecordOutcomeDialog.tsx` work the pile through a `DataGrid`, and the loss
+  reason is now recordable against an ERP-raised quote. The §5.1 contingency
+  table can finally grow past six.
+- ~~`AmbiguousQuoteDocument` has no router mapping.~~ **SHIPPED, as 409.** The
+  argument is worth keeping: the existing 422 comment states a three-part test —
+  well-formed, *transition legal*, one field absent — and an ambiguous reference
+  fails the second part, because `sole_erp_quote` raises before any status is
+  loaded. Answering 422 would assert a premise nothing established.
+- **The outcome pointer still carries no `(connector, connection_id)`
+  qualifier**, and after a second adversarial look that is now a *decision*
+  rather than a deferral. The deferral's condition was never "a caller exists"
+  but "a caller that can say which book it means", and the worklist row carries
+  neither field — it would be handed two opaque strings solely to echo them back.
+  Independently, `external_ref` is keyed on Zoho's system-wide `estimate_id`
+  rather than the per-book `estimate_number`, and no other connector implements
+  the quote pull at all, so the colliding state is unreachable twice over. The
+  refusal stands. What ships instead is a comment in `normalize.py` recording
+  that the `estimate_id` keying is load-bearing — re-keying it onto
+  `estimate_number` to make references human-readable is a one-line diff that
+  would collapse the whole argument.
+
+**Still open, and found while closing the above:** the `quote_id`-only outcome
+path has no scope check either — a salesperson can name any platform `quote_id`
+and move its outcome. It predates this work and is narrower (those ids come from
+an in-process store rather than a shared worklist), but it is real and deserves
+its own pass.
 
 ### 7b. Suggestions the platform should make — not tasks it should carry
 

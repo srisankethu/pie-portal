@@ -331,15 +331,54 @@ def test_a_non_bypassing_serving_role_is_reported_healthy(monkeypatch):
 # before this file, so the schema here is the real one.
 from app.domain import models  # noqa: E402
 
-#: What `d1rls` declares. Duplicated here on purpose rather than imported from
-#: the migration: a test that reads its expectations out of the thing it is
-#: testing agrees with it by construction and can never disagree. Adding a table
-#: to the migration must fail this until somebody has thought about whether an
-#: unauthenticated path reads it.
+#: What `d1rls` and `d2rls` declare, together. Duplicated here on purpose rather
+#: than imported from the migrations: a test that reads its expectations out of
+#: the thing it is testing agrees with it by construction and can never
+#: disagree. Adding a table must fail this until somebody has thought about
+#: whether an unauthenticated path reads it.
+#:
+#: The complement is the interesting half and is asserted separately below —
+#: eight tenant-scoped tables are deliberately *not* here, for three different
+#: reasons, and a list that only says what is covered lets the uncovered ones
+#: drift in unnoticed.
 EXPECTED_POLICIED = {
+    # d1rls
     "value_events", "quote_decisions", "signals", "decisions",
     "customer_item_metrics", "approval_requests",
+    # d2rls
+    "access_events", "access_grants", "ai_call_logs", "ai_provider_keys",
+    "bill_payment_applications", "bills", "business_events", "business_states",
+    "commercial_policies", "confirmed_code_mappings", "cost_records",
+    "credit_note_applications", "credit_notes", "customer_account_owners",
+    "customer_connector_records", "customer_credit_limits",
+    "customer_identities", "customers", "erasure_receipts",
+    "evaluation_baselines", "identity_events", "identity_policies",
+    "identity_suggestions", "ingested_documents", "intelligence_trials",
+    "invoice_sales_orders", "invoices", "item_category_overrides",
+    "item_connector_records", "item_identities", "locations", "model_payloads",
+    "name_vault", "org_policies", "outcome_snapshots", "outcomes",
+    "payment_applications", "payment_receipts", "plan_change_requests",
+    "products", "purchase_orders", "quote_drafts", "quote_outcomes",
+    "sales_orders", "sales_txns", "state_transitions",
+    "stock_location_snapshots", "stock_snapshots", "sync_run_logs",
+    "sync_skipped_rows", "tenant_keys", "tender_results",
+    "vendor_msme_statuses", "vendor_payment_terms", "vendor_payments",
+    "vendor_scheme_slabs", "vendor_targets", "vendors",
 }
+
+#: Tenant-scoped and deliberately uncovered. Three reasons, and the difference
+#: between them is the whole point of writing them down:
+#:
+#: * read with no tenant announced — sign-up, the demo workspace and the Zoho
+#:   OAuth callback touch these before any principal exists. Unfinished work.
+#: * cross-tenant *by design* — capacity is a property of the deployment, and
+#:   credential sharing is a feature. A policy there is a regression wearing the
+#:   costume of a control.
+NO_PRINCIPAL_YET = {
+    "users", "organizations", "user_sessions", "audit_entries",
+    "audit_chain_heads", "oauth_states",
+}
+CROSS_TENANT_BY_DESIGN = {"sync_runs", "zoho_connections"}
 
 
 def _migrated(owner) -> bool:
@@ -522,3 +561,41 @@ def test_sign_in_can_find_a_tenant_without_being_able_to_enumerate(migrated):
                 "an unknown address must announce no tenant, not a blank one")
     finally:
         engine.dispose()
+
+
+def test_every_tenant_scoped_table_is_covered_or_deliberately_named(migrated):
+    """The complement, asserted rather than left implicit.
+
+    `test_exactly_the_intended_tables_carry_the_policy` says what is covered. It
+    cannot say anything about a table nobody thought about — a new model with an
+    `organization_id` lands uncovered and that test stays green, which is how a
+    partial control quietly becomes a smaller one.
+
+    So this partitions *every* tenant-scoped table into covered, waiting on a
+    tenant-announcing path, or cross-tenant on purpose. A model added without a
+    decision fails here, naming itself, which is the moment to make one.
+    """
+    from app.db import Base
+
+    scoped = {t.name for t in Base.metadata.sorted_tables
+              if "organization_id" in t.c}
+    accounted = EXPECTED_POLICIED | NO_PRINCIPAL_YET | CROSS_TENANT_BY_DESIGN
+
+    assert scoped - accounted == set(), (
+        "a tenant-scoped table is neither policied nor deliberately excluded — "
+        "decide which it is and say so here")
+    assert accounted - scoped == set(), (
+        "a table named here no longer carries organization_id")
+
+
+def test_the_two_tables_without_a_tenant_column_are_still_the_same_two(migrated):
+    """`zoho_credentials` belongs to a person rather than a company and
+    `process_leases` is infrastructure about processes, so neither can take this
+    policy shape at all. A *third* one appearing means a model was added without
+    a tenant column, which is a decision worth making on purpose rather than
+    discovering when it leaks."""
+    from app.db import Base
+
+    unscoped = {t.name for t in Base.metadata.sorted_tables
+                if "organization_id" not in t.c}
+    assert unscoped == {"zoho_credentials", "process_leases"}

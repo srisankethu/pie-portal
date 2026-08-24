@@ -178,27 +178,50 @@ added later would silently do nothing.
 
 ## Which tables are under a policy
 
-`alembic/versions/d1rls_tenant_policies.py` puts a **first set** of six under
-`ENABLE` + `FORCE ROW LEVEL SECURITY` with a fail-closed
-`tenant_isolation` policy governing reads (`USING`) and writes (`WITH CHECK`):
+**64 of the 72 tenant-scoped tables** are under `ENABLE` + `FORCE ROW LEVEL
+SECURITY` with a fail-closed `tenant_isolation` policy governing reads (`USING`)
+and writes (`WITH CHECK`) — six in
+`alembic/versions/d1rls_tenant_policies.py`, the other 58 in
+`d2rls_tenant_policies_rest.py`.
 
-`value_events` · `quote_decisions` · `signals` · `decisions` ·
-`customer_item_metrics` · `approval_requests`
+**Eight are deliberately not, for three different reasons, and the difference
+matters more than the count.**
 
-It is a first set, and that word is doing work: a reader who assumes every
-tenant table is covered would draw a stronger conclusion than the code supports.
-Sixty more are eligible — every reader behind `current_principal`, which
-announces the tenant before the first row read. Six are **not**, because each is
-touched on a path with no principal yet, and each needs its own answer before it
-can carry a fail-closed policy:
+*Read with no tenant announced — unfinished work, not a decision:*
 
-| table | reached with no tenant by | what it would need |
+| table | reached with no tenant by | what it needs |
 |---|---|---|
 | `users` | sign-in, sign-up, demo | sign-in has its answer (below); sign-up and demo do not |
 | `organizations` | sign-up, demo, sign-in | a `set_tenant` once the org is created |
 | `user_sessions` | sign-up, demo, sign-in | follows `users` |
 | `audit_entries`, `audit_chain_heads` | sign-in, both branches | a failed sign-in for an unknown address has no tenant to attribute the row to, so `WITH CHECK` would refuse it |
 | `oauth_states` | the Zoho OAuth callback | the state row carries the organization; something must announce it from there |
+
+*Cross-tenant by design rather than by accident — these are the ones worth
+reading carefully, because policing them would look like tightening and would
+break something:*
+
+- **`sync_runs`** is what worker capacity is computed from. Capacity is a
+  property of the *deployment* — how many jobs the cluster is running against
+  how many it can — and a version counting only the caller's own runs would not
+  be a narrower answer, it would be a wrong one.
+- **`zoho_connections`** carries credential sharing, which is a feature: one
+  Zoho grant reaches every company that user can see, and
+  `/data/credentials/{id}/organizations` exists to say which. A policy there
+  does not secure the feature, it removes it.
+
+The rule those two make explicit, and the one to apply to the next table
+somebody considers: **a policy belongs on a table whose cross-tenant reads are
+leaks. Where they are the product, a policy is a regression wearing the costume
+of a control.**
+
+*No tenant column at all:* `zoho_credentials` (a Zoho refresh token belongs to a
+person, not a company) and `process_leases` (infrastructure about processes).
+Neither can take this policy shape.
+
+`test_every_tenant_scoped_table_is_covered_or_deliberately_named` partitions
+every tenant-scoped table into those three buckets, so a new model lands as a
+failing test naming itself rather than as quiet uncovered surface.
 
 **Sign-in.** It is the one request that cannot know its tenant in advance —
 there is no token yet and the organization is a property of the row being looked

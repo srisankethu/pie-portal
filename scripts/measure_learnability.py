@@ -95,6 +95,33 @@ CROSTON_MIN_INTERVALS = 6
 #: not a stocking policy.
 CROSTON_MIN_SKU_COVERAGE_PCT = 20.0
 
+#: What "a few thousand rows with live dispositions" is being read as. §8 claims
+#: its conditions are "checkable rather than arguable", and a phrase is
+#: arguable — so it gets a number here, where changing it is a visible act. Two
+#: thousand is the low end of the doc's own phrase, chosen so the trigger fires
+#: at the point the doc would call it fired rather than later.
+TEXT_MODEL_MIN_LABELLED = 2_000
+
+#: Quotes a month at which a two-armed policy trial resolves a 10 pp win-rate
+#: lift inside two quarters. §5.25 derives it: ~350 per arm at a 30% baseline,
+#: so ~700 quotes, so ~250 a month over the better part of three months.
+RANDOMISED_POLICY_MIN_QUOTES_PER_MONTH = 250
+
+#: How the §8 triggers report. ``UNKNOWN`` is the one that earns its place: a
+#: trigger whose *measurement* has no evidence behind it is not "not yet". An
+#: empty corpus on a book where nothing was ever captured says nothing about
+#: how much demand arrives, and reporting it as 0 of 2,000 would be a
+#: measurement where there is an absence — §1, in the field that decides
+#: whether work starts.
+FIRED = "FIRED"
+NOT_YET = "NOT_YET"
+UNKNOWN = "UNKNOWN"
+#: The countable half is met and what remains is a person's call. Distinct from
+#: FIRED because the doc asks for a judgement and this script must not make it.
+JUDGEMENT = "JUDGEMENT"
+#: Closed by argument rather than by data, and it does not expire.
+NEVER = "NEVER"
+
 ESTIMABLE = "ESTIMABLE"
 MARGINAL = "MARGINAL"
 NOT_ESTIMABLE = "NOT_ESTIMABLE"
@@ -425,6 +452,206 @@ def feature_completeness(session, org: str) -> dict[str, Any]:
     }
 
 
+# ── 9. the §8 triggers, evaluated rather than remembered ─────────────────────
+#
+# `14-machine-learning.md` §8 says of its own conditions that they are
+# "checkable rather than arguable". They were arguable in one respect nobody
+# noticed: **nothing checked them.** Each gated technique waits for a condition,
+# and the condition is evaluated by a person holding the doc in one hand and
+# this census in the other, if they remember to. A trigger nobody evaluates is a
+# backlog item that stays blocked whatever the data says.
+#
+# So this section answers, per technique: has the condition fired, how far off
+# is it, and — the part that matters most — is the distance even a measurement.
+#
+# **UNKNOWN is not a softer NOT_YET.** Where the evidence behind a count is
+# itself missing, the honest answer is that nothing is known. An empty enquiry
+# corpus on a book that has never captured one is not "0 of 2,000 and climbing";
+# a dismissal rate over an unworked queue is not "the detector is fine". Both
+# would be §1's benign default in the field that decides whether work starts,
+# and this file's whole purpose is to make verdicts falsifiable.
+
+
+def _trigger(technique: str, section: str, status: str, why: str,
+             measured: Any = None, needs: Any = None) -> dict[str, Any]:
+    return {"technique": technique, "section": section, "status": status,
+            "measured": measured, "needs": needs, "why": why}
+
+
+def triggers(session, org: str, census: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every §8 condition, evaluated against this book.
+
+    Reads the sections already computed above rather than re-querying for them:
+    two counts of the same thing in one report is how a census starts
+    disagreeing with itself.
+    """
+    quotes = census["quote_outcomes"]
+    corpus = census["enquiry_corpus"]
+
+    out: list[dict[str, Any]] = []
+
+    # ── §5.1 quote win/loss ranker ──────────────────────────────────────────
+    erp_quotes = session.scalar(
+        select(func.count()).select_from(models.QuoteDoc)
+        .where(models.QuoteDoc.organization_id == org)) or 0
+    losses = quotes["losses_with_a_reason"]
+    if erp_quotes == 0 and quotes["quotes_with_an_outcome_row"] == 0:
+        out.append(_trigger(
+            "Quote win/loss ranker", "§5.1", UNKNOWN,
+            "No quote has been read from an ERP and none has been recorded by "
+            "hand, so there is no denominator and no numerator. A book whose "
+            "ZohoBooks.estimates.READ scope was never granted looks exactly "
+            "like a book that raises no quotes.",
+            measured=0, needs=MIN_MINORITY_EVENTS))
+    elif losses >= MIN_MINORITY_EVENTS:
+        out.append(_trigger(
+            "Quote win/loss ranker", "§5.1", JUDGEMENT,
+            f"{losses} losses carry a reason, past the {MIN_MINORITY_EVENTS} "
+            "floor. The second half of this trigger is a judgement this script "
+            "must not make: whether the loss-reason table has stopped being "
+            "surprising. Read `loss_reasons` above and decide.",
+            measured=losses, needs=MIN_MINORITY_EVENTS))
+    else:
+        out.append(_trigger(
+            "Quote win/loss ranker", "§5.1", NOT_YET,
+            f"{losses} of {MIN_MINORITY_EVENTS} losses carry a reason. The "
+            "quotes are being read; what is missing is somebody saying why each "
+            "one went. That is the capture screen's whole job.",
+            measured=losses, needs=MIN_MINORITY_EVENTS))
+
+    # ── §5.6 inter-order survival, and §5.22 behind it ──────────────────────
+    #
+    # Delegated to `dismissal_band`, not restated. That function already orders
+    # its answers so the two "we do not know" cases come first, which is exactly
+    # the distinction this section exists to preserve — a second copy here would
+    # be the one that forgets.
+    from app.decisions.outcomes import REJECTED_STATUS, JUDGED_STATUSES, dismissal_band
+
+    dormancy = [d for d in session.execute(
+        select(models.Decision.status)
+        .where(models.Decision.organization_id == org,
+               models.Decision.decision_type == "CUSTOMER_DORMANCY"))]
+    judged = sum(1 for (s,) in dormancy if s in JUDGED_STATUSES)
+    dismissed = sum(1 for (s,) in dormancy if s == REJECTED_STATUS)
+    rate = (dismissed / judged) if judged else None
+    band, note = dismissal_band(rate, judged)
+
+    if band in ("NOT_REVIEWED", "INSUFFICIENT_DATA"):
+        status, why = UNKNOWN, note
+    elif band == "HIGH":
+        status, why = FIRED, (
+            note + " That is this trigger's condition: the ordering is wrong "
+            "often enough to be worth modelling rather than re-thresholding.")
+    else:
+        status, why = NOT_YET, (
+            note + " The trigger asks for HIGH specifically — a detector inside "
+            "its band is one a survival model would not improve.")
+    out.append(_trigger("Inter-order survival (Kaplan–Meier)", "§5.6", status,
+                        why, measured=band, needs="HIGH"))
+    out.append(_trigger(
+        "Queue learning-to-rank", "§5.22",
+        status if status is not FIRED else NOT_YET,
+        (why + " And a second condition behind it, which is an act rather than "
+         "a measurement: moving `queue_margin_drop_pp` first, and finding it "
+         "did not fix the ordering. Nothing here can observe that having been "
+         "tried.") if status is not UNKNOWN else why,
+        measured=band, needs="HIGH, then a threshold change that did not help"))
+
+    # ── §5.18 / §5.21 enquiry text models ───────────────────────────────────
+    labelled = corpus["with_a_live_disposition"]
+    if corpus["inbound_lines"] == 0:
+        out.append(_trigger(
+            "Enquiry routing and coverage (text models)", "§5.18, §5.21",
+            UNKNOWN,
+            "The corpus is empty. Since the capture door shipped that means "
+            "nothing has come through it — which is a fact about capture, not "
+            "about how much demand arrives. 0 of "
+            f"{TEXT_MODEL_MIN_LABELLED} would read as progress toward a bar; "
+            "there is no measurement here at all.",
+            measured=0, needs=TEXT_MODEL_MIN_LABELLED))
+    else:
+        out.append(_trigger(
+            "Enquiry routing and coverage (text models)", "§5.18, §5.21",
+            FIRED if labelled >= TEXT_MODEL_MIN_LABELLED else NOT_YET,
+            f"{labelled} of {corpus['inbound_lines']} captured lines carry a "
+            f"live disposition, against a bar of {TEXT_MODEL_MIN_LABELLED}. The "
+            "label is the scarce half: text arrives on its own, a disposition "
+            "is somebody saying what became of the line.",
+            measured=labelled, needs=TEXT_MODEL_MIN_LABELLED))
+
+    # ── §5.17 embedding shortlist ───────────────────────────────────────────
+    #
+    # The one trigger with a subtlety the row count hides. `source_ref` carries
+    # `quote:<id>` for a line captured at the Quote Builder — an ask somebody
+    # chose to work. That subset is the right corpus for a *benchmark* and the
+    # wrong one for coverage, and §7a.4 says so; reporting the split is what
+    # keeps a later reader from taking one for the other.
+    worked = session.scalar(
+        select(func.count()).select_from(models.InboundLine)
+        .where(models.InboundLine.organization_id == org,
+               models.InboundLine.source_ref.like("quote:%"))) or 0
+    lines = corpus["inbound_lines"]
+    if lines == 0:
+        out.append(_trigger(
+            "Embedding shortlist for RFQ resolution", "§5.17", UNKNOWN,
+            "No captured wording at all, so recall cannot be measured and "
+            "cannot be said to be unmeasurable either.",
+            measured=0, needs=TEXT_MODEL_MIN_LABELLED))
+    else:
+        out.append(_trigger(
+            "Embedding shortlist for RFQ resolution", "§5.17",
+            FIRED if lines >= TEXT_MODEL_MIN_LABELLED else NOT_YET,
+            f"{lines} captured lines, {worked} of them from a worked quote "
+            f"({_pct(worked, lines)}%). The worked subset is the benchmark "
+            "corpus and is fine for measuring recall; it is *not* a coverage "
+            "denominator, because every line in it is an ask somebody chose to "
+            "work (§7a.4).",
+            measured=lines, needs=TEXT_MODEL_MIN_LABELLED))
+
+    # ── §5.25 randomised policy evaluation ──────────────────────────────────
+    span = session.execute(
+        select(func.min(models.QuoteDoc.date), func.max(models.QuoteDoc.date))
+        .where(models.QuoteDoc.organization_id == org)).one()
+    first, last = span
+    if erp_quotes == 0 or first is None or last is None:
+        out.append(_trigger(
+            "Randomised policy evaluation", "§5.25", UNKNOWN,
+            "No quotes read, so the arrival rate this trigger is about cannot "
+            "be computed. Withdrawn as work in §7a.7 on the rate measured when "
+            "the doc was written; this is the number that would reopen it.",
+            measured=None,
+            needs=RANDOMISED_POLICY_MIN_QUOTES_PER_MONTH))
+    else:
+        months = max(1.0, ((last - first).days or 1) / 30.44)
+        per_month = round(erp_quotes / months, 1)
+        out.append(_trigger(
+            "Randomised policy evaluation", "§5.25",
+            FIRED if per_month >= RANDOMISED_POLICY_MIN_QUOTES_PER_MONTH
+            else NOT_YET,
+            f"{per_month} quotes a month over {round(months, 1)} months, "
+            f"against {RANDOMISED_POLICY_MIN_QUOTES_PER_MONTH}. §5.25 also "
+            "requires a unit where the treatment does not leak between arms, "
+            "and this book has three legal entities and three Books users — "
+            "volume alone does not reopen it.",
+            measured=per_month,
+            needs=RANDOMISED_POLICY_MIN_QUOTES_PER_MONTH))
+
+    # ── the two that are not waiting on anything ────────────────────────────
+    out.append(_trigger(
+        "Anything at item grain", "§5.7–§5.10", NEVER,
+        "Closed by argument rather than by data: scaling this book multiplies "
+        "subjects, not observations per subject. Only selling fewer, deeper "
+        "lines would change it, and that is a strategy decision.",
+        measured=None, needs=None))
+    out.append(_trigger(
+        "Any model exposed to a salesperson", "§4.3", NEVER,
+        "A gate rather than a trigger, and it does not expire: §4.3 has to be "
+        "satisfied by construction, never by a projection. Listed so this "
+        "report is the whole of §8 rather than the countable part of it.",
+        measured=None, needs=None))
+    return out
+
+
 def _print(census: dict[str, Any]) -> None:
     shape = census["book_shape"]
     print(f"\nLearnability census — {shape['organization_id']}")
@@ -488,6 +715,42 @@ def _print(census: dict[str, Any]) -> None:
         print("says which of them the business can change and which it cannot.")
 
 
+#: Ordered so the two answers a reader must not conflate sit apart, and the
+#: one that needs a person comes first — it is the only line that is a
+#: prompt rather than a status.
+_TRIGGER_ORDER = (JUDGEMENT, FIRED, NOT_YET, UNKNOWN, NEVER)
+
+
+def _print_triggers(rows: list[dict[str, Any]]) -> None:
+    print("\n\nThe §8 triggers — what each gated technique is waiting for")
+    print("=" * 72)
+    print("`14-machine-learning.md` §8 says these conditions are checkable "
+          "rather than")
+    print("arguable. Until this section existed nothing checked them.\n")
+    for status in _TRIGGER_ORDER:
+        for row in [r for r in rows if r["status"] == status]:
+            print(f"  {status:<10} {row['technique']}  ({row['section']})")
+            if row["measured"] is not None:
+                print(f"{'':>13}measured {row['measured']}   "
+                      f"needs {row['needs']}")
+            for line in _wrap(row["why"], 56):
+                print(f"{'':>13}{line}")
+            print()
+    unknown = sum(1 for r in rows if r["status"] == UNKNOWN)
+    if unknown:
+        print(f"  {unknown} trigger(s) report UNKNOWN rather than NOT_YET. That "
+              "is not a softer")
+        print("  no: the evidence behind the count is itself missing, so the "
+              "distance to")
+        print("  the bar is not a measurement. §1 — absence of evidence is not "
+              "a pass.")
+
+
+def _wrap(text: str, width: int) -> list[str]:
+    import textwrap
+    return textwrap.wrap(text, width) or [""]
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--org", help="organization_id; required when more than one exists")
@@ -513,10 +776,16 @@ def main() -> None:
                 "min_survival_events": MIN_SURVIVAL_EVENTS,
                 "min_subjects": MIN_SUBJECTS,
                 "croston_min_intervals": CROSTON_MIN_INTERVALS,
+                "text_model_min_labelled": TEXT_MODEL_MIN_LABELLED,
+                "randomised_policy_min_quotes_per_month":
+                    RANDOMISED_POLICY_MIN_QUOTES_PER_MONTH,
             },
         }
+        # After the sections, because it reads them rather than re-querying.
+        census["triggers"] = triggers(session, org, census)
 
     _print(census)
+    _print_triggers(census["triggers"])
     if args.json:
         args.json.write_text(json.dumps(census, indent=2, sort_keys=True))
         print(f"\nJSON written to {args.json}")

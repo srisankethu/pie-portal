@@ -1094,6 +1094,41 @@ condition, and all of them are checkable rather than arguable:
 
 The last row is a gate rather than a trigger, and it does not expire.
 
+**These are checked now, not remembered.** The sentence above this table says
+the conditions are "checkable rather than arguable", and for a while they were
+arguable in one respect nobody noticed: *nothing checked them*. Each gated
+technique waited on a condition, and the condition was evaluated by a person
+holding this document in one hand and the census in the other, if they thought
+to. A trigger nobody evaluates is a backlog item that stays blocked whatever the
+data says.
+
+`scripts/measure_learnability.py` now ends with the whole of this table,
+evaluated:
+
+```bash
+cd backend && python3 ../scripts/measure_learnability.py
+```
+
+Five statuses, and the fourth is the one that earns its place:
+
+| | |
+|---|---|
+| `FIRED` | the condition is met — start reading §5 for what ships |
+| `NOT_YET` | a real distance to a real bar, with both numbers beside it |
+| `JUDGEMENT` | the countable half is met and the rest is a person's call. §5.1 is the only one: a loss-reason table that has "stopped being surprising" is not something a script may decide |
+| `UNKNOWN` | **the evidence behind the count is itself missing.** Not a softer no |
+| `NEVER` | closed by argument rather than by data, and it does not expire |
+
+`UNKNOWN` is the reason this is worth having rather than a status printer. An
+empty enquiry corpus on a book that has never captured one is not "0 of 2,000
+and climbing" — a scope nobody granted looks exactly like a demand nobody has.
+A dismissal rate over an unworked queue is not "the detector is fine": that
+distinction is already made correctly by `decisions.outcomes.dismissal_band`,
+whose two "we do not know" answers come *before* any rate, and the trigger
+delegates to it rather than restating the bands. On a freshly seeded book every
+measurable trigger reports `UNKNOWN`, which is the true answer and not the one a
+progress bar would give.
+
 ---
 
 ## 9. ML or LLM: routing a job to the right tool

@@ -1775,6 +1775,17 @@ function DetailScreen({
         reason="It may have been closed, or it may belong to somebody else's queue." />
     );
   }
+  // Distinct from "not found", because it is a different fact and the wrong
+  // explanation is worse than none: this decision exists and is yours, and the
+  // server could not build its detail. Without this branch the card rendered
+  // every panel blank, which reads as a decision with nothing behind it.
+  if (d.detail_unavailable) {
+    return (
+      <EmptyState
+        title="This decision's detail could not be loaded"
+        reason="The decision is in your queue; the facts and interpretation behind it failed to build. Reload, and if it persists the server log names the decision." />
+    );
+  }
   const state = aiState(d.interpretation.status);
   const closed = d.status !== "OPEN" && d.status !== "VIEWED";
   // Two producers, two kinds of claim, two cards. Read from the row rather

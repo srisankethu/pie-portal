@@ -40,14 +40,14 @@ def _clean_process_memory():
     """
     registry._PRE_IMAGES.clear()
     registry._COLLISIONS.clear()
-    registry._MISSING_PRE_IMAGE["count"] = 0
-    registry._POST_EPOCH_GAPS["count"] = 0
+    registry._MISSING_PRE_IMAGE.clear()
+    registry._POST_EPOCH_GAPS.clear()
     registry._RECORDING_FAILURES["count"] = 0
     yield
     registry._PRE_IMAGES.clear()
     registry._COLLISIONS.clear()
-    registry._MISSING_PRE_IMAGE["count"] = 0
-    registry._POST_EPOCH_GAPS["count"] = 0
+    registry._MISSING_PRE_IMAGE.clear()
+    registry._POST_EPOCH_GAPS.clear()
     registry._RECORDING_FAILURES["count"] = 0
 
 
@@ -489,7 +489,7 @@ def test_a_stamp_with_no_pre_image_records_nothing_and_says_so(session, caplog):
 
     assert session.get(models.ThresholdVersion, (ORG, carried_in)) is None
     assert "never minted" in caplog.text
-    assert registry._MISSING_PRE_IMAGE["count"] == 1
+    assert registry._MISSING_PRE_IMAGE.get(ORG) == 1
 
 
 def test_recording_never_fails_the_business_write(session, monkeypatch):
@@ -540,9 +540,9 @@ def test_a_failed_recording_write_is_counted_rather_than_only_logged(session,
     session.commit()
 
     report = registry.coverage(session, ORG)
-    assert report.recording_failures >= 1
+    assert report.process_recording_failures >= 1
     assert not report.healthy
-    assert report.to_dict()["recording_failures"] >= 1
+    assert report.to_dict()["process_recording_failures"] >= 1
 
 
 def test_a_policy_edit_survives_a_registry_that_cannot_be_written(session,
@@ -595,6 +595,48 @@ def test_an_ordinary_update_to_an_already_recorded_row_is_not_a_gap(session,
         row.transaction_count = (row.transaction_count or 0) + 1
         session.commit()
 
-    assert registry._MISSING_PRE_IMAGE["count"] == 0
+    assert registry._MISSING_PRE_IMAGE.get(ORG, 0) == 0
     assert "never minted" not in caplog.text
     assert registry.coverage(session, ORG).healthy
+
+
+def test_one_tenants_gap_is_not_reported_as_another_tenants(session):
+    """``CoverageReport`` carried an organization_id and four process-wide
+    counters, so a gap raised while resolving org B's stamps made
+    ``coverage(session, org_a).healthy`` False and told org A it had a defect in
+    its recording path. Two of the four know whose stamp they were about and are
+    keyed by it now; the two that cannot — a content-hash collision, a failed
+    INSERT — are named for the process in the payload instead of implying a
+    tenant.
+    """
+    _org(session)
+    _org(session, OTHER)
+    policy.save_for_org(session, ORG, {"min_margin": 0.10})
+    policy.save_for_org(session, OTHER, {"min_margin": 0.10})
+    session.commit()
+
+    orphan = replace(CommercialThresholds(), min_margin=0.4321).version
+    with pytest.raises(registry.UnresolvedStamp):
+        registry.resolve(session, OTHER, orphan,
+                         stamped_at=datetime.now(timezone.utc) + timedelta(minutes=1))
+
+    assert registry.coverage(session, OTHER).post_epoch_gaps == 1
+    assert not registry.coverage(session, OTHER).healthy
+    # The book that did nothing wrong.
+    assert registry.coverage(session, ORG).post_epoch_gaps == 0
+    assert registry.coverage(session, ORG).healthy
+
+
+def test_the_report_says_which_counts_are_the_processs_and_which_are_the_books(
+        session):
+    """Scope in the name, because the flat shape was what invited the mistake."""
+    _org(session)
+    policy.save_for_org(session, ORG, {"min_margin": 0.10})
+    session.commit()
+
+    keys = set(registry.coverage(session, ORG).to_dict())
+
+    assert {"post_epoch_gaps", "stamps_without_a_pre_image"} <= keys
+    assert {"process_collisions", "process_recording_failures"} <= keys
+    # The names that could be read either way are gone.
+    assert "collisions" not in keys and "recording_failures" not in keys

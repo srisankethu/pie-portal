@@ -276,13 +276,18 @@ def register_health_checks(engine: Any, session_factory: Any) -> None:
                 "Threshold registry is not installed: threshold versions "
                 "stamped from now on will not be dereferenceable"
             )
-        gaps = registry._POST_EPOCH_GAPS["count"]
+        # Summed across tenants here on purpose, and *said* to be: this is one
+        # process's health, not one book's. The two per-organization counters
+        # are keyed by org since a review found `CoverageReport` reporting one
+        # tenant's gaps as another's; a health check legitimately wants the
+        # whole process, and the message below no longer claims otherwise.
+        gaps = sum(registry._POST_EPOCH_GAPS.values())
         collisions = sum(registry._COLLISIONS.values())
-        orphans = registry._MISSING_PRE_IMAGE["count"]
+        orphans = sum(registry._MISSING_PRE_IMAGE.values())
         failures = registry._RECORDING_FAILURES["count"]
         if gaps:
             return HealthStatus.UNHEALTHY, (
-                f"{gaps} threshold stamp(s) were minted after this tenant's "
+                f"{gaps} threshold stamp(s) were minted after a tenant's "
                 f"registry epoch and never recorded; the rows carrying them "
                 f"cannot be explained. This is a defect in the recording path"
             )

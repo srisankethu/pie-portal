@@ -53,6 +53,10 @@ class OrgMappingStore:
         from identity.model import Namespace, ScopedIdentifier
 
         self._by_key: Dict[str, Any] = {}
+        #: Memoised on first use. ``_by_key`` is built here and never mutated
+        #: afterwards — the store is a *snapshot*, which is the property that
+        #: makes this safe and the one to preserve if a writer is ever added.
+        self._fingerprint: Optional[str] = None
         for row in service.active_code_mappings(session, organization_id):
             key = ScopedIdentifier(
                 namespace=Namespace.CUSTOMER_ITEM,
@@ -90,10 +94,17 @@ class OrgMappingStore:
         leaves the count identical while changing the answer, and a clock is
         not evidence about content.
 
-        Cheap by construction: this is one pass over a snapshot that was just
-        built from the database, and it is computed once per resolution batch,
-        not once per line.
+        Cheap by construction: one pass over a snapshot that was just built from
+        the database, and — now — computed once per store rather than once per
+        line. That sentence used to say "once per resolution batch" and was
+        simply false: ``pie_service.resolve`` builds a cache key per line and
+        the key carries this, so a 200-line RFQ against 5,000 confirmed
+        mappings hashed a million fields to look *up* a cache. Memoised here
+        rather than fixed at the call site, because every caller wants the same
+        answer and the snapshot cannot change underneath it.
         """
+        if self._fingerprint is not None:
+            return self._fingerprint
         digest = hashlib.sha256()
         for key in sorted(self._by_key):
             row = self._by_key[key]
@@ -103,4 +114,5 @@ class OrgMappingStore:
                 # hash the same, which is a stale cache with no way to see it.
                 digest.update(str(field).encode("utf-8"))
                 digest.update(b"\x00")
-        return digest.hexdigest()[:32]
+        self._fingerprint = digest.hexdigest()[:32]
+        return self._fingerprint

@@ -265,6 +265,13 @@ export interface DecisionTrace {
 }
 
 export interface DecisionDetail {
+  /** Set by the server when this card's detail could not be built, so the
+   *  screen can say so instead of rendering empty panels.
+   *
+   *  The queue folds detail into the list, and a row whose detail failed used
+   *  to arrive as a summary in a detail's shape: every panel blank, with no way
+   *  to tell "this decision has no interpretation" from "loading it failed". */
+  detail_unavailable?: boolean;
   /** Which connected company the *subject* belongs to. Distinct from `origin`
    *  below, which says whether this decision was folded from state or raised
    *  from a signal — two different questions, so two different keys. */

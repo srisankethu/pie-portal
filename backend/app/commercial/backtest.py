@@ -362,6 +362,14 @@ def run(session: Session, org: str, *, min_margin: float,
     #: fallback to today's policy is still counted on every line it happens to,
     #: not only on the first line of each version.
     resolved: dict[str, tuple[Optional[CommercialThresholds], str]] = {}
+    #: The variant derived from each distinct baseline, memoised beside it. The
+    #: baseline was already cached per stamp and the variant was rebuilt on
+    #: every row — one dataclass construction per quote line over a year of
+    #: them, and because ``serialized`` and ``version`` are ``cached_property``
+    #: *per instance*, any path that reads ``.version`` off the variant re-ran
+    #: json.dumps + sha256 per line. That per-row cost is exactly what
+    #: ``commercial/config.py`` added ``cached_property`` to remove.
+    variants: dict[int, CommercialThresholds] = {}
 
     report = BacktestReport(
         organization_id=org,
@@ -403,7 +411,15 @@ def run(session: Session, org: str, *, min_margin: float,
         # away, because a report that silently mixes exact and approximate rows
         # is one nobody can act on.
         line_baseline = _baseline_for(session, org, row, baseline, resolved, report)
-        line_variant = replace(line_baseline, **changes)
+        # Keyed on the baseline object's identity rather than its stamp: two
+        # rows resolving to the same policy get the same instance out of
+        # ``resolved``, and a row whose stamp did not resolve falls back to the
+        # single ``baseline`` object, so identity covers both without a second
+        # notion of which policy this is.
+        line_variant = variants.get(id(line_baseline))
+        if line_variant is None:
+            line_variant = replace(line_baseline, **changes)
+            variants[id(line_baseline)] = line_variant
 
         before = verdict_for(quantity=quantity, quoted_unit_price=price,
                              unit_cost=cost, as_of=row.as_of, th=line_baseline)

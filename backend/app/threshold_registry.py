@@ -117,8 +117,15 @@ _PERSISTED_KEY = "_threshold_versions_persisted"
 #: Counters for ``coverage``. All three are *observations*, not estimates:
 #: something happened in this process and was counted at the moment it happened.
 _COLLISIONS: dict[tuple[str, str], int] = {}
-_MISSING_PRE_IMAGE = {"count": 0}
-_POST_EPOCH_GAPS = {"count": 0}
+#: Per organization, both of them, and that is the fix rather than a detail. A
+#: review found ``CoverageReport`` labelled with one tenant's id while four of
+#: its fields were process-global, so a gap raised while resolving org B's
+#: stamps made ``coverage(session, org_a).healthy`` False and told org A it had
+#: a recording-path defect. Both increment sites know which organization they
+#: are about; the two counters below this comment do not, and are reported as
+#: what they are.
+_MISSING_PRE_IMAGE: dict[str, int] = {}
+_POST_EPOCH_GAPS: dict[str, int] = {}
 
 #: Bookkeeping writes this process could not make — a table that is not there
 #: yet in a deploy-before-migrate window, a permission error, a dialect with no
@@ -220,22 +227,36 @@ class CoverageReport:
 
     ``epochs`` is the load-bearing field: below a kind's epoch an unresolvable
     stamp is expected history, above it is a bug in the recording path. The
-    four counters are process-local observations since start-up — they are
-    deliberately not persisted, because a defect counter that survives a restart
-    invites reading it as a rate.
+    counters are process-local observations since start-up — deliberately not
+    persisted, because a defect counter that survives a restart invites reading
+    it as a rate.
+
+    **Two scopes, named apart.** ``post_epoch_gaps`` and
+    ``stamps_without_a_pre_image`` are *this organization's*: both increment
+    sites know whose stamp they were resolving. ``collisions`` and
+    ``recording_failures`` are the process's and cannot be otherwise — a stamp
+    is a content hash with no tenant in it, and a failed INSERT means the
+    recording path is broken for everyone sharing this process. All four
+    previously read as this tenant's, so one book's fault was reported as
+    another's; the fields keep their scope in their names now.
     """
 
     organization_id: str
     epochs: dict[str, Optional[datetime]]
     recorded: dict[str, int]
-    collisions: int
+    #: This organization's.
     post_epoch_gaps: int
     stamps_without_a_pre_image: int
-    #: Recording writes that could not be made — see ``_RECORDING_FAILURES``.
-    #: Counted here as well as on ``/api/health`` because ``healthy`` below
-    #: would otherwise answer True for a process whose every INSERT failed,
-    #: which is the same benign default in a second place.
-    recording_failures: int = 0
+    #: The process's. A collision is two policies sharing one stamp, which makes
+    #: that stamp ambiguous on every tenant's rows, so it still counts against
+    #: ``healthy`` below — it is genuinely everyone's defect, not a
+    #: misattribution.
+    process_collisions: int = 0
+    #: The process's. Recording writes that could not be made — see
+    #: ``_RECORDING_FAILURES``. Counted because ``healthy`` would otherwise
+    #: answer True for a process whose every INSERT failed, which is the same
+    #: benign default in a second place.
+    process_recording_failures: int = 0
 
     @property
     def healthy(self) -> bool:
@@ -243,9 +264,9 @@ class CoverageReport:
         tenant nothing has stamped yet, and calling that unhealthy would be the
         benign default's mirror image: a loud failure with no fault behind it.
         """
-        return (self.collisions == 0 and self.post_epoch_gaps == 0
+        return (self.process_collisions == 0 and self.post_epoch_gaps == 0
                 and self.stamps_without_a_pre_image == 0
-                and self.recording_failures == 0)
+                and self.process_recording_failures == 0)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -253,10 +274,12 @@ class CoverageReport:
             "epochs": {k: (v.isoformat() if v else None)
                        for k, v in self.epochs.items()},
             "recorded": dict(self.recorded),
-            "collisions": self.collisions,
+            # Keyed by scope, so a reader cannot take a process-wide count for
+            # this tenant's — which is exactly what the flat shape invited.
             "post_epoch_gaps": self.post_epoch_gaps,
             "stamps_without_a_pre_image": self.stamps_without_a_pre_image,
-            "recording_failures": self.recording_failures,
+            "process_collisions": self.process_collisions,
+            "process_recording_failures": self.process_recording_failures,
         }
 
 
@@ -657,7 +680,7 @@ def _record_stamped_rows(session: Session, _flush_context: Any = None,
             if unknown:
                 unknown = _still_unrecorded(conn, session, unknown)
             for (_org, _kind, version), (model_name, attr) in unknown.items():
-                _MISSING_PRE_IMAGE["count"] += 1
+                _MISSING_PRE_IMAGE[_org] = _MISSING_PRE_IMAGE.get(_org, 0) + 1
                 log.warning(
                     "threshold registry: %s.%s is being written with %s, whose "
                     "values this process never minted and which no row in "
@@ -835,7 +858,8 @@ def _unresolved(session: Session, organization_id: str, version: str,
     # true statement — history older than the registry is expected, finite and
     # shrinking.
     if stamped_at is not None and clock.aware(stamped_at) >= epoch:
-        _POST_EPOCH_GAPS["count"] += 1
+        _POST_EPOCH_GAPS[organization_id] = _POST_EPOCH_GAPS.get(
+            organization_id, 0) + 1
         why = (f"the row carrying it is dated {clock.iso(stamped_at)}, at or "
                f"after the epoch")
         message = (
@@ -967,10 +991,10 @@ def coverage(session: Session, organization_id: str) -> CoverageReport:
     return CoverageReport(
         organization_id=organization_id,
         epochs=epochs, recorded=recorded,
-        collisions=sum(_COLLISIONS.values()),
-        post_epoch_gaps=_POST_EPOCH_GAPS["count"],
-        stamps_without_a_pre_image=_MISSING_PRE_IMAGE["count"],
-        recording_failures=_RECORDING_FAILURES["count"])
+        process_collisions=sum(_COLLISIONS.values()),
+        post_epoch_gaps=_POST_EPOCH_GAPS.get(organization_id, 0),
+        stamps_without_a_pre_image=_MISSING_PRE_IMAGE.get(organization_id, 0),
+        process_recording_failures=_RECORDING_FAILURES["count"])
 
 
 def record_current_policies(session: Session, organization_id: str) -> None:

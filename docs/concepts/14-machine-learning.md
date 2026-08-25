@@ -892,9 +892,16 @@ different owners and only the first is a backlog:
    expiry; a quote with no expiry has an *unanswerable* age rather than a zero,
    and one with no total is counted but never valued at zero. What remains is the
    capture screen that actually asks *why* — see the open ends below.
-3. **Promote the unset-reorder-level count to a headline.** The reading is built
-   (`below_reorder`, `BELOW_REORDER`, `no_policy`); what is missing is that a
-   group which can never contain a row currently says nothing about why.
+3. ~~**Promote the unset-reorder-level count to a headline.**~~ **SHIPPED.**
+   The reading was already built (`below_reorder`, `BELOW_REORDER`,
+   `no_policy`) and the count already existed at the foot of the screen; what
+   was missing is that a group which can never contain a row said nothing about
+   why — and the client filled that silence with *"Nothing here. That is the
+   good answer."* An impossible zero rendered as health. `empty_means` on the
+   group (the server decides, because only the server holds the population
+   behind it) plus a `NO_REORDER_POINT` card that drills through to the lines it
+   counted, suppressed at zero so a book that has set them all is not nagged.
+   The refusal to invent a reorder point is untouched and pinned by a test —
    `08-intermittent-demand.md` asked for exactly this and no more.
 4. **Start the enquiry corpus, and defend the no-normalisation rule.**
    `InboundLine` is empty and every text technique waits on it. The ERP cannot

@@ -1851,7 +1851,16 @@ export function StockScreen({ session }: { session: PlatformSession }) {
           <h4>{String(g.label)} <span className="tier3-count">{String(g.count)}</span></h4>
           <p className="viz-muted">{String(g.meaning)}</p>
           {rows(g.items).length === 0 ? (
-            <p className="tier3-none">Nothing here. That is the good answer.</p>
+            /* "Nothing here" is only good news when something *could* have
+               been here. The server says when it could not — an empty
+               BELOW_REORDER on a book where no item has a reorder point at
+               all is a statement about the stocking policy on record, and
+               this line used to read it back as a clean bill of health. */
+            g.empty_means ? (
+              <p className="tier3-none">{String(g.empty_means)}</p>
+            ) : (
+              <p className="tier3-none">Nothing here. That is the good answer.</p>
+            )
           ) : (
             <ol className="cadence-rows">
               {rows(g.items).slice(0, 8).map((item, j) => (

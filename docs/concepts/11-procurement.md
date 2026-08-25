@@ -330,8 +330,34 @@ Credited bills are counted **distinctly**, because one credit spreads over
 several bills and one bill can draw several credits; counting applications would
 report a supplier as having more corrections than invoices.
 
-*Price stability* is still open and was never blocked by the ingestion — it comes
-straight out of `cost_records` and is independent of everything here.
+**Price stability is built too**, and it was never blocked by the ingestion — it
+comes straight out of `cost_records`, one `GROUP BY` over bill lines with
+`HAVING count >= 2`. Same discipline: the spread `(max − min) / min` per
+(supplier, item), the median across a supplier's repeat-bought lines, and a
+refusal below three such lines because a "typical" over two items is two items.
+Ratios only, no rupee levels — `/supply` is manager-and-above so cost would be
+permitted, but a spread is scale-free and the levels are not, and keeping it
+scale-free is what would let this be shown more widely later without reopening
+the question.
+
+**On this book the refusal is the common case**, and that is worth stating rather
+than discovering. `08-intermittent-demand.md` measured that most of the catalogue
+moves once; a line bought from the same supplier twice is the exception, so the
+spread appears for a minority of lines. Those are the lines an annual negotiation
+is about anyway, which is why this is still worth having.
+
+**What a spread cannot tell you.** A supplier that raised its price once at the
+annual revision and one whose price bounces on every order can produce the *same*
+spread, and only the second is unstable. Separating them needs the ordered series
+— how far the cost ended up from where it started, against how far it ranged in
+between — and that is deliberately not fetched: the aggregate is one `GROUP BY`,
+and pulling the series for every pair to answer a second question is a cost this
+screen has not been asked to pay. Read a wide spread as *worth opening the line*,
+not as *this supplier is erratic*. If the negotiation pack ever wants the
+distinction, that is where it belongs.
+
+With this, all three dimensions §3 names are built or already existed, and the
+two that were refused — lead time and OTIF — stay refused.
 
 **The annual negotiation pack.** Mostly assembly rather than computation:
 purchases by principal by period, downstream revenue riding on the line, the

@@ -1,4 +1,22 @@
-"""A supplier with no credits against four bills has not earned a clean record.
+"""The two supplier dimensions this book can measure, and what they refuse.
+
+``11-procurement.md`` §3 names three answerable supplier dimensions and rules out
+the rest — lead time and OTIF stay refused, because promised dates are blank on
+effectively every order here. Settlement behaviour already lives in
+``insight/payments.py``. The other two are here: the **credit-note rate**, which
+needed vendor credits ingested, and **price stability**, which never did.
+
+Both are mostly refusals on this book, and that is the interesting part of each.
+Almost every supplier has issued no credit; most of the catalogue is bought once.
+A scorecard whose columns were dutifully filled in for every supplier would be
+handing out clean records and stable prices nobody measured — `CLAUDE.md` §1's
+*absence of evidence is not a pass*, in a place where it flatters the wrong
+party. So each dimension states the sample it was allowed to come from, and the
+counts travel with the figure rather than behind it.
+
+---
+
+A supplier with no credits against four bills has not earned a clean record.
 
 ``11-procurement.md`` §3 names the credit-note rate as one of three supplier
 dimensions this book has evidence for — *once vendor credits are ingested*, which
@@ -34,8 +52,9 @@ def _order(vendor_id: str = "v1", **over) -> supply.SupplierOrder:
     return supply.SupplierOrder(**fields)
 
 
-def _build(orders, bills=None) -> dict:
-    return supply.build(orders, AS_OF, bills_by_vendor=bills)
+def _build(orders, bills=None, ranges=None) -> dict:
+    return supply.build(orders, AS_OF, bills_by_vendor=bills,
+                        cost_ranges=ranges)
 
 
 def _row(built: dict, vendor_id: str) -> dict:
@@ -255,3 +274,134 @@ def test_two_credits_against_one_bill_is_one_credited_bill(api_client, session):
         "the bill-to-credit join is counting applications, or matching nothing")
     assert body["counts"]["bills_read"] == 3
     assert body["counts"]["bills_with_a_credit"] == 1
+
+
+# ── price stability: the third dimension, and its long refusal ──────────────
+#
+# `11-procurement.md` §3's third answerable supplier dimension. It needs an item
+# bought from the same supplier twice, and `08-intermittent-demand.md` measured
+# that most of this catalogue moves once — so the refusal is the common case and
+# the figure is the exception, which is the opposite of how a scorecard column
+# usually behaves and the reason the counts travel with it.
+
+def _range(vendor_id="v1", product_id="p1", purchases=2, lowest="100",
+           highest="120") -> supply.ItemCostRange:
+    from decimal import Decimal
+    return supply.ItemCostRange(
+        vendor_id=vendor_id, product_id=product_id, purchases=purchases,
+        lowest=Decimal(lowest), highest=Decimal(highest))
+
+
+def test_a_spread_is_how_far_the_cost_ranged():
+    assert _range(lowest="100", highest="120").spread == 0.2
+    assert _range(lowest="400", highest="401.25").spread == 0.0031
+
+
+def test_one_purchase_has_no_movement_to_report():
+    """Not zero. A single purchase is not a stable price, it is a price — and a
+    0% spread is the strongest possible claim about stability."""
+    assert _range(purchases=1).spread is None
+
+
+def test_a_zero_lowest_cost_reports_nothing_rather_than_infinity():
+    """A free line is a data-entry artefact, and dividing by it would put an
+    infinite spread on a supplier's headline. `master-hygiene-watch` exists
+    because placeholder costs are real in these books."""
+    assert _range(lowest="0", highest="120").spread is None
+    assert _range(lowest="-5", highest="120").spread is None
+
+
+def test_a_typical_spread_needs_more_than_two_items():
+    """A "typical" over two items is two items — the same rule and the same
+    number as the lead time directly above it on this screen."""
+    two = _build([_order("v1")], ranges=[_range(product_id="p1"),
+                                         _range(product_id="p2")])
+    three = _build([_order("v1")], ranges=[_range(product_id="p1"),
+                                           _range(product_id="p2"),
+                                           _range(product_id="p3")])
+
+    assert _row(two, "v1")["typical_price_spread"] is None
+    assert _row(two, "v1")["repeat_bought_items"] == 2
+    assert _row(three, "v1")["typical_price_spread"] == 0.2
+
+
+def test_the_typical_spread_is_a_median_so_one_wild_line_cannot_set_it():
+    """One item whose cost trebled must not become the supplier's headline —
+    the reason `typical_lead_time` is a median, applied to the same screen."""
+    built = _build([_order("v1")], ranges=[
+        _range(product_id="p1", lowest="100", highest="105"),
+        _range(product_id="p2", lowest="100", highest="110"),
+        _range(product_id="p3", lowest="100", highest="400"),
+    ])
+
+    assert _row(built, "v1")["typical_price_spread"] == 0.1
+
+
+def test_a_supplier_with_no_repeat_lines_says_so_and_claims_nothing():
+    built = _build([_order("v1")])
+    row = _row(built, "v1")
+
+    assert row["typical_price_spread"] is None
+    assert row["repeat_bought_items"] == 0
+    note = next(u for u in built["unavailable"]
+                if u["series"] == "supplier_price_spread")
+    assert "bought from them more than once" in note["reason"]
+
+
+def test_the_spread_carries_no_rupee_figure():
+    """§1-adjacent, and a design choice rather than a requirement: /supply is
+    manager-and-above so cost would be permitted. A spread is scale-free and the
+    levels are not, and a scorecard needs how far a price moved rather than what
+    it was — which is what would let this be shown more widely later without the
+    question being reopened."""
+    built = _build([_order("v1")], ranges=[
+        _range(product_id=f"p{i}", lowest="9999", highest="19998")
+        for i in range(3)])
+    row = _row(built, "v1")
+
+    assert row["typical_price_spread"] == 1.0
+    for key, value in row.items():
+        assert "9999" not in str(value), f"{key} leaked a cost level"
+
+
+
+def test_only_repeat_bought_lines_reach_the_price_spread(api_client, session):
+    """The other half the unit tests cannot reach: ``HAVING count >= 2``.
+
+    The catalogue is mostly bought-once, so the ``GROUP BY`` has to drop those
+    at the database rather than hand them up to be filtered — and a HAVING that
+    is off by one either loads the whole catalogue or silently reports nothing.
+    Three items here: one bought twice at different costs, one bought twice at
+    the same cost, one bought once.
+    """
+    from decimal import Decimal
+
+    from app.config import settings
+    from app.domain import models
+    from app.seed import SEED_PASSWORD
+
+    org = settings.DEFAULT_ORG_ID
+    _seed_supplier_book(session, org)
+    costs = [("moved", "100"), ("moved", "125"),
+             ("flat", "50"), ("flat", "50"),
+             ("once", "900")]
+    for i, (product, unit) in enumerate(costs):
+        session.add(models.CostRecord(
+            organization_id=org, external_ref=f"bill-x:{i}", product_id=product,
+            vendor_id="ven1", date=date(2026, 7, 3), qty=Decimal("1"),
+            unit_cost=Decimal(unit)))
+    session.commit()
+
+    token = api_client.post("/api/v1/auth/login",
+                            json={"email": "m.rao@pie.example",
+                                  "password": SEED_PASSWORD}).json()["token"]
+    body = api_client.get("/api/v1/insight/supply",
+                          headers={"Authorization": f"Bearer {token}"}).json()
+
+    row = next(s for s in body["suppliers"] if s["vendor_id"] == "ven1")
+    # "once" is dropped by the HAVING; "flat" is a real observation of a price
+    # that did not move and must count as one, not be mistaken for no data.
+    assert row["repeat_bought_items"] == 2
+    assert body["counts"]["repeat_bought_items"] == 2
+    # Two items is still below the floor, so no typical spread is claimed.
+    assert row["typical_price_spread"] is None

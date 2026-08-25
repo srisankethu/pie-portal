@@ -1981,6 +1981,19 @@ export function SupplyScreen({ session }: { session: PlatformSession }) {
             .map((s) => `${s.label} ${pct(num(s.credit_rate), 0)} of ${num(s.bills)}`)
             .join(" · ") || "no supplier has sent enough bills yet."}
         </p>
+        {/* The third dimension `11-procurement.md` §3 names, and the one whose
+            refusal is the common case: a spread needs a line bought from the
+            same supplier twice, and most of this catalogue is bought once. Read
+            a wide spread as "worth opening the line" — it cannot tell an annual
+            revision apart from a price that bounces every order. */}
+        <p className="viz-muted viz-footnote">
+          How far unit cost has ranged on the lines bought from a supplier more
+          than once, median across those lines:{" "}
+          {shownSuppliers
+            .filter((s) => s.typical_price_spread != null)
+            .map((s) => `${s.label} ${pct(num(s.typical_price_spread), 0)} across ${num(s.repeat_bought_items)} lines`)
+            .join(" · ") || "no supplier has enough repeat-bought lines yet."}
+        </p>
       </div>
 
       <div className="tier3-list">

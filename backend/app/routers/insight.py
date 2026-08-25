@@ -2130,6 +2130,46 @@ def _bills_by_vendor(session: Session,
             for vid, n in counts.items()}
 
 
+def _item_cost_ranges(session: Session, org: str) -> list[supply.ItemCostRange]:
+    """How far each repeat-bought item's unit cost has ranged, per supplier.
+
+    One ``GROUP BY`` over ``cost_records``, and the aggregation is in SQL on
+    purpose. ``cost_records`` is bill-*line* grain — a book with a few thousand
+    items and a few years of bills holds tens of thousands of rows — and this
+    endpoint would otherwise pull all of them on every request to compute one
+    ratio per pair. ``HAVING count > 1`` also drops the majority of the
+    catalogue at the database: on this book most items are bought once, and a
+    single purchase has no movement to report.
+
+    ``min``/``max`` rather than the ordered series, and
+    ``ItemCostRange``'s docstring says what that costs: a spread cannot
+    distinguish one annual revision from a price that bounces every order.
+    Fetching the series for every pair to answer the second question is a cost
+    this screen has not been asked to pay.
+
+    Rows with no ``vendor_id`` group under ``None`` and match no supplier on the
+    screen. Kept rather than filtered in SQL, because a bill from a supplier the
+    vendor pull did not return is still a real cost — the same reasoning the
+    column's own docstring gives for leaving it null instead of guessing.
+    """
+    rows = session.execute(
+        select(models.CostRecord.vendor_id,
+               models.CostRecord.product_id,
+               func.count(),
+               func.min(models.CostRecord.unit_cost),
+               func.max(models.CostRecord.unit_cost))
+        .where(models.CostRecord.organization_id == org)
+        .group_by(models.CostRecord.vendor_id, models.CostRecord.product_id)
+        .having(func.count() >= supply.MIN_PURCHASES_FOR_A_MOVE)).all()
+    return [
+        supply.ItemCostRange(vendor_id=vendor_id, product_id=product_id,
+                             purchases=n, lowest=Decimal(str(low)),
+                             highest=Decimal(str(high)))
+        for vendor_id, product_id, n, low, high in rows
+        if low is not None and high is not None
+    ]
+
+
 @router.get("/supply")
 def supplier_position(principal: Principal = Depends(require_manager_or_owner),
                       session: Session = Depends(get_session)) -> dict:
@@ -2181,7 +2221,8 @@ def supplier_position(principal: Principal = Depends(require_manager_or_owner),
         orders, as_of,
         terms_by_vendor={vid: days for vid, days in effective.items()
                          if days is not None},
-        bills_by_vendor=_bills_by_vendor(session, org))
+        bills_by_vendor=_bills_by_vendor(session, org),
+        cost_ranges=_item_cost_ranges(session, org))
     # A supplier is per connected company too: the same vendor invoicing two of
     # the books is two rows, and concentration read across them without saying
     # so would look like one dependency where there are two relationships.

@@ -155,6 +155,11 @@ export interface QuoteEstimate {
 export interface QuoteIntake {
   read_by: "ai" | "pattern";
   detail: string;
+  /** Whether the customer's own words reached the enquiry corpus. False is the
+   *  ordinary case today — the capture only happens when the desk said how the
+   *  enquiry arrived — so the screen has to be able to tell "not captured" from
+   *  "captured", rather than reading silence as either. */
+  captured: boolean;
 }
 
 export interface MarginFloor {

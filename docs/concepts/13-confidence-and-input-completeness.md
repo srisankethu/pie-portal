@@ -20,7 +20,10 @@ leave out, recorded in §5.
 
 Measured 2026-08-23 on the pinned pie-parser submodule
 (`kennametal_widia@0.10.0`, ruleset checksum `6be04ced55b4a239`) over
-`corpora/kmt_zcnc_2026-07_nomenclature.csv`, 6,717 data rows.
+`corpora/kmt_zcnc_2026-07_nomenclature.csv`, 6,717 data rows — and replicated
+2026-08-25 against a **different pack build** (`zcnc@0.10.0`, checksum
+`f67131512eb97513`), which reproduced every figure below to the digit. §6 is
+that replication, and the repository defect it had to clear first.
 
 ---
 
@@ -242,7 +245,103 @@ the score is reporting.
 
 ---
 
-## 6. What this does **not** establish — recorded UNKNOWN
+## 6. Replication, and the stale pin that made it unrunnable
+
+Re-run 2026-08-25 by the documented route — `./scripts/setup_pie_parser.sh`,
+which is to say the submodule at the commit this repository pins, not a
+standalone checkout that happens to be lying around. Two things came out of it,
+and only the first was expected.
+
+### 6a. The finding replicates on a pack that is not the same artefact
+
+Every number in §2 through §5 reproduces exactly: the paired distribution
+(5,538 / 48 / 1,123 / 5 / 3, mean 0.9444 → 0.0000), the whole flag census, the
+binding term at 6,714 / 3, the 311 confidence-only slot differences, the
+0.918675 → 0.919555 residual pointing the wrong way for reading (1), and the
+68,000 → 33,753 attribute count. Two consecutive runs are byte-identical, so
+§1's determinism claim holds on this build too.
+
+What makes that worth recording rather than assuming is that the pack changed
+underneath it. The original run loaded `kennametal_widia@0.10.0`, checksum
+`6be04ced55b4a239`; the replication loaded `zcnc@0.10.0`, checksum
+`f67131512eb97513`. Between the two, pie-parser split its pack into `org/` and
+`nomenclature/` layers, so the pack the portal loads has a new id, a new path
+and a new checksum — and the rules inside it did not move. A result that
+survives its own ruleset being re-packaged is a result about the input, which is
+what this document claims it is. That is one replication across one refactor,
+not a general invariance claim.
+
+`backend/tests/test_confidence_config_unchanged.py` passed unchanged across the
+split, which is the narrowness §1 promised working as designed: it pins the
+arithmetic and the validator inventory rather than a checksum over the pack, so
+a legitimate re-layering does not turn it red while a retuned scorer still
+would.
+
+### 6b. The pin and the config had disagreed for seventeen merges
+
+The replication could not run at first. `backend/app/config.py` resolves
+`PIE_PACK` to `pie-parser/packs/org/zcnc`, and the pinned submodule (`41ee3d0`)
+predates the layer split and has no such directory. `94102e4`, "Follow
+pie-parser's layered packs" (2026-08-23 14:55), moved the config without moving
+the pin in the same commit — five hours after this document's own measurement
+was taken, against the flat pack that was then still correct.
+
+The consequence was not a narrowed run. It was 61 errors:
+
+```
+engine.model.ConfigError: missing config artifact: …/packs/org/zcnc/manifest.yaml
+```
+
+— every `requires_pie` test in the backend suite, `test_confidence_config_unchanged.py`
+among them. The file that guards this document's hard constraint had not
+executed since the pin went skew, and neither had the measurement script §1
+tells a reader to run. 17 merges landed on `main` in that window.
+
+Why it was not loud: the `verify` job in `.github/workflows/gate.yml`
+deliberately does not fetch the submodule, so it skips those tests and stays
+green without needing a credential. The job that would have caught it is
+`pie-contract`, whose own comment names it "the check that would have caught the
+pin skew" — and it runs only when the `PIE_PARSER_TOKEN` secret is present.
+**Whether it ran during this window is UNKNOWN from inside the repository**, and
+the workflow records that no secret had been added at least once before. So this
+is not evidence that CI missed it. It is evidence that a developer taking the
+documented local route got 61 errors, and that this document's method was
+unreproducible while that lasted.
+
+The pin is now `16e449e`, whose own gate is green (406 tests, corpus 6,717 rows
+/ 11 families / 0 quarantined). All 61 tests pass, and the backend suite is
+3,459 passed / 34 skipped — the 34 being the Postgres-only tests `verify.sh`
+runs separately against its own sandbox. **No pie test skipped**, which is the
+distinction §1's honesty depends on.
+
+Two branches reached that pin independently and within the hour: PR #176 hit the
+same wall from the enquiry-capture side and moved it to the same commit, which is
+why the diff carrying this section no longer contains the move. Worth recording
+rather than tidying away — a defect that two unrelated pieces of work trip over
+on the same morning is a defect in the gate, not a coincidence, and it is the
+second time this repository has found a check it could not tell from a check that
+had passed.
+
+### 6c. One drift the skew had been hiding
+
+With the engine tests running again, `test_frontend_contract.py` failed at once:
+`/api/v1/quotes/{id}/intake` sends `intake.captured`, and
+`frontend/src/types.ts` declared only `read_by` and `detail`. The field is
+deliberate on the server — the screen has to tell "not captured because nobody
+stated the channel" apart from a capture that was refused — so the fix is the
+declaration. PR #176 landed it first, from the same collision described above,
+and also wired the field into the Quote Builder so leaving the channel unset has
+a visible cost; this branch carries none of that work.
+
+Nothing about the confidence finding depends on it. It is recorded because it is
+the measurable cost of the window in 6b: a contract test that cannot run is a
+contract nobody is checking, and this is the one it stopped checking. It went
+undeclared from `7298ef4` until the engine tests could run again — the drift did
+not begin with the pin, but the pin is why nothing said so.
+
+---
+
+## 7. What this does **not** establish — recorded UNKNOWN
 
 The experiment isolates field completeness cleanly, which means it is silent on
 everything else. Each of these is UNKNOWN on this branch, and none should be read
@@ -282,7 +381,7 @@ as favourable.
 
 ---
 
-## 7. Verdict
+## 8. Verdict
 
 The 15,028-row 0.00 is **the engine abstaining correctly on an input that lacks
 the evidence**, and this is now demonstrated rather than asserted: the same rows,

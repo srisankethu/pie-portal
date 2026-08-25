@@ -20,11 +20,12 @@ from .config import settings
 from .observability import logs
 from .observability.instrumentation import api_instrumentation_middleware
 from .pie_service import pie_service
-from .routers import (accounts, admin, ai_settings, approvals, attribution,
+from .routers import (accounts, admin, ai_settings, api_keys, approvals,
+                      attribution,
                       commercial, connections, data_status,
                       decisions, enquiries, entitlements, identity, internal,
                       onboarding, organizations, outcomes, platform_auth,
-                      quote,
+                      quote, resolve,
                       insight, quote_intelligence, quote_support,
                       retrospective, trust)
 
@@ -344,6 +345,12 @@ app.include_router(entitlements.router)
 # can go. No plan gate: knowing which organizations you belong to
 # is not a feature, it is how you reach the one that is paying.
 app.include_router(organizations.router)
+# The public resolution API, and the credentials it takes. Two routers rather
+# than one: `resolve` is authenticated by an API key and is the surface a
+# partner integrates against; `api_keys` is owner-only and signed in, because a
+# key that could mint another key turns one leak into a permanent foothold.
+app.include_router(resolve.router)
+app.include_router(api_keys.router)
 
 
 # ── the two prefixes that were never versioned ───────────────────────────────

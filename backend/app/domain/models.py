@@ -4751,3 +4751,81 @@ class InboundLineDisposition(Base):
     #: current-state read filters ``IS NULL``.
     superseded_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True))
+
+
+class ApiKey(Base):
+    """One machine credential for one organization's use of the public API.
+
+    An ERP or CPQ partner calling ``POST /api/v1/resolve`` holds one of these
+    and nothing else — no user, no session, no cookie. The row is what makes
+    that credential answerable: it names the tenant the call acts for, the role
+    the answer is projected to, and the moment it stopped being valid.
+
+    **The role column is the point, not a convenience.** A key is a recipient
+    like any other (CLAUDE.md §1), so the cost/margin withholding that decides
+    what a salesperson's screen contains has to decide what this caller's JSON
+    contains, by the same code path. Storing the role here is what lets
+    ``authz.Principal`` be the *same* dataclass for both, and therefore
+    ``commercial.quote_service.project`` the same function. A key without a
+    role would have had to be given one at the call site, which is where the
+    two would eventually disagree.
+
+    **Only a hash is stored, and the secret is shown once.** The same rule as
+    ``users.password_hash`` and for the same reason: a credential a support
+    engineer can read out of a table is a credential the organization cannot
+    say only they hold. ``key_id`` is the non-secret half — it travels in the
+    presented key as a lookup handle, appears in logs, and identifies the row
+    on the revoke endpoint.
+
+    ``revoked_at`` is set, never deleted. A key that was used to resolve a
+    line six months ago must still be nameable when somebody asks who did.
+    """
+
+    __tablename__ = "api_keys"
+    __table_args__ = (
+        # The management screen's read: this tenant's keys, live ones first.
+        # `revoked_at` is out of the index for the reason `user_sessions` gives
+        # — it is null for exactly the rows the query wants.
+        Index("ix_api_keys_org", "organization_id", "created_at"),
+    )
+
+    #: The non-secret half of the presented credential, and the lookup handle.
+    #: Random rather than derived: it is quoted in error messages and logs, so
+    #: it must carry nothing about the organization holding it.
+    key_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+
+    #: What a person recognises this key by on the management screen — "Acme
+    #: CPQ sandbox". Not a secret and not an identifier; two keys may share it.
+    name: Mapped[str] = mapped_column(String(120), default="")
+
+    #: PBKDF2 over the secret half, in ``app/passwords.py``'s format. Verified
+    #: with the same constant-time comparison a password is.
+    secret_hash: Mapped[str] = mapped_column(String(256))
+    #: The last four characters of the secret, so a person can tell two keys
+    #: apart in a list without either being reconstructable from four
+    #: characters of a 43-character random string.
+    secret_hint: Mapped[str] = mapped_column(String(8), default="")
+
+    #: A ``Role``. The recipient this key's responses are projected to — see
+    #: the class docstring. Defaults to the narrowest role rather than the
+    #: creator's, because a key inheriting whoever happened to mint it is how an
+    #: integration ends up reading cost it never needed.
+    role: Mapped[str] = mapped_column(String(32), default="SALESPERSON")
+
+    #: Requests per minute this key may make. Per key rather than per tenant so
+    #: one partner's runaway loop cannot spend another integration's allowance,
+    #: and zero means unlimited — see ``app/ratelimit.too_many``.
+    rate_limit_per_minute: Mapped[int] = mapped_column(Integer, default=60)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, index=True)
+    created_by_user_id: Mapped[Optional[str]] = mapped_column(String(64))
+    #: Advanced lazily, like ``user_sessions.last_seen_at`` and for the same
+    #: reason: writing it on every call would put a write in front of every
+    #: read. Null means "never used", which is the answer a key that was minted
+    #: and forgotten should give.
+    last_used_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True))
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True))

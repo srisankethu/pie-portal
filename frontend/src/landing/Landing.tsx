@@ -357,7 +357,7 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
                 <p>
                   Drop a customer&rsquo;s RFQ in as they wrote it; PIE reads it
                   into quote lines and resolves each code against your catalog.{" "}
-                  <b>Free forever.</b>
+                  <b>In your 30-day trial.</b>
                 </p>
               </div>
               <div className="lp-feat">
@@ -366,7 +366,7 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
                 <p>
                   Your policy sets the floor per line. A breach doesn&rsquo;t send
                   quietly — it routes for sign-off, and the sign-off is on record.{" "}
-                  <b>Free forever.</b>
+                  <b>In your 30-day trial.</b>
                 </p>
               </div>
               <div className="lp-feat">
@@ -591,7 +591,7 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
         <section id="pricing">
           <div className="lp-wrap">
             <div className="lp-sec-head">
-              <h2>Free to quote. Cheap to know. Priced per organization.</h2>
+              <h2>Thirty days free. Then priced per organization.</h2>
               <p>
                 Unlimited users on every plan — nothing here counts seats.
                 Early-adopter rates, locked for 24 months; yearly billing gets
@@ -612,21 +612,32 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
                   in the sentence about what we will do rather than among the
                   claims about what the product does. */}
               <p className="lp-pricing-how">
-                To move plan you ask from inside the product and a person
-                confirms it — there is no card and no checkout. The free desk
-                needs no conversation at all.
+                Every organization starts on a full 30-day trial — no card, no
+                conversation. To subscribe you ask from inside the product and a
+                person confirms it; there is still no checkout. If the trial
+                ends without one, the decision layer locks and{" "}
+                <b>everything you have put in stays exactly where it is</b>.
               </p>
             </div>
             <div className="lp-grid3">
+              {/* Not a tier any more. This panel used to sell "Quote Desk,
+                  free forever" as somewhere a business could choose and stay,
+                  which made the trial a month of extra on top of a permanent
+                  free product. There is one free thing now and it is the
+                  trial, so the panel describes that — and says plainly what
+                  happens after it, because a price list that goes quiet about
+                  the end of the free period is the one people feel cheated by. */}
               <div className="lp-panel lp-plan">
-                <h3>Quote Desk</h3>
-                <div className="p">Free</div>
+                <h3>Trial</h3>
+                <div className="p">30 days free</div>
                 <p>
-                  <b>Quote faster.</b> The quote desk, RFQ reading, margin floors
-                  and approvals — for as long as you like, no card.
+                  <b>All of it, from the day you sign up.</b> Quoting, margin
+                  floors, approvals, the attention list and the insight screens.
+                  No card. When it ends the decision layer locks and your data
+                  is untouched.
                 </p>
-                <a className="lp-btn solid" href="#signin" onClick={startOn("free")}>
-                  Start free
+                <a className="lp-btn solid" href="#signin" onClick={startOn("intelligence")}>
+                  Start your trial
                 </a>
               </div>
               <div className="lp-panel lp-plan mid">
@@ -675,8 +686,8 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
             </p>
             <p className="lp-pricing-note">
               One-time catalog builds from <span className="lp-num">₹4,999</span>,
-              yours permanently. Every account starts on the free Quote Desk and
-              works the same day — the paid plans are enabled with you, and
+              yours permanently. Every organization starts on the 30-day trial
+              and works the same day — the paid plans are enabled with you, and
               nothing is charged when you sign up.
             </p>
           </div>

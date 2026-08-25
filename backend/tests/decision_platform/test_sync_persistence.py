@@ -7,6 +7,8 @@ from typing import Any
 
 import pytest
 
+from app import memberships
+from app.domain.enums import Role
 from app.domain import models
 from app.ingestion.sync import SyncService
 from app.repositories import ReadModelRepository
@@ -216,6 +218,12 @@ def _user(session, org, email):
     u = models.User(organization_id=org, email=email, name="R. Nair", role="SALESPERSON")
     session.add(u)
     session.flush()
+    # And the membership, which is what "belongs to this organization" means
+    # since the two were separated. `repositories.users_by_email` — the map the
+    # sync resolves a Zoho salesperson through — reads memberships, so a user
+    # row without one is somebody the ownership mapping correctly cannot see.
+    memberships.add_member(session, organization_id=org, user_id=u.user_id,
+                           role=Role.SALESPERSON)
     return u
 
 

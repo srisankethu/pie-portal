@@ -385,6 +385,14 @@ EXPECTED_POLICIED = {
     # readable form.
     "erp_quotes", "threshold_versions",
     "vendor_credits", "vendor_credit_applications",
+    # e1org — the grants and the commercial relationship. A neighbouring tenant
+    # reading either would learn who works for this business and what they are
+    # paying, so both take the ordinary shape. The *widened* half of that
+    # revision is on `users` rather than here: a member of this organization is
+    # visible to it even when their identity row is filed under another, which
+    # is what makes a members list correct for somebody who holds two
+    # workspaces. See `test_a_foreign_member_is_visible_but_not_writable`.
+    "organization_memberships", "organization_subscriptions",
 }
 
 #: Tenant-scoped and deliberately uncovered — and after `d3rls` there is only
@@ -756,5 +764,216 @@ def test_a_tenant_cannot_read_another_tenants_users(migrated):
 
             tenancy.set_tenant(session, ORG_A)
             assert set(session.execute(everyone).scalars()) == {"rls_u1"}
+    finally:
+        engine.dispose()
+
+
+# ── memberships: the grant, and the one place the policy is deliberately wide ─
+def test_a_tenant_cannot_read_another_tenants_memberships(migrated):
+    """Who works for a business is as much theirs as what they sell."""
+    Maker = sessionmaker(bind=migrated, future=True)
+    with Maker() as session:
+        for org, uid in ((ORG_A, "rls_m1"), (ORG_B, "rls_m2")):
+            if session.get(models.Organization, org) is None:
+                session.add(models.Organization(organization_id=org, name=org))
+                session.flush()
+            if session.execute(text("SELECT 1 FROM users WHERE user_id = :u"),
+                               {"u": uid}).first() is None:
+                session.add(models.User(
+                    user_id=uid, organization_id=org, email=f"{uid}@example.test",
+                    name=uid, role="OWNER", password_hash="x", active=True))
+                session.flush()
+            if session.execute(
+                    text("SELECT 1 FROM organization_memberships "
+                         "WHERE user_id = :u"), {"u": uid}).first() is None:
+                session.add(models.OrganizationMembership(
+                    membership_id=f"mem_{uid}", organization_id=org, user_id=uid,
+                    role="OWNER", status="ACTIVE",
+                    created_at=datetime.now(timezone.utc),
+                    updated_at=datetime.now(timezone.utc)))
+        session.commit()
+
+    engine = create_engine(RLS_URL, future=True)
+    Maker = sessionmaker(bind=engine, future=True)
+    try:
+        with Maker() as session:
+            both = text("SELECT user_id FROM organization_memberships "
+                        "WHERE user_id IN ('rls_m1', 'rls_m2')")
+            assert set(session.execute(both).scalars()) == set(), (
+                "with no tenant announced, a membership table must be empty")
+
+            tenancy.set_tenant(session, ORG_A)
+            assert set(session.execute(both).scalars()) == {"rls_m1"}
+    finally:
+        engine.dispose()
+
+
+def test_a_foreign_member_is_visible_but_not_writable(migrated):
+    """The widened `users` policy, and both halves of why it is that shape.
+
+    A person can belong to two organizations while their identity row is filed
+    under one of them. Under the original policy the *other* organization's
+    members list could not print their name — the row simply was not there —
+    so the read half is widened: a user is visible to a tenant that holds a
+    membership for them.
+
+    The write half is left narrow on purpose, and that is the part worth
+    pinning. `WITH CHECK` still compares `organization_id` against the
+    announced tenant, so a tenant that can *see* a foreign member cannot
+    re-home them, and cannot create one either. Seeing a colleague's name is
+    not the same permission as taking their account.
+    """
+    Maker = sessionmaker(bind=migrated, future=True)
+    with Maker() as session:
+        for org in (ORG_A, ORG_B):
+            if session.get(models.Organization, org) is None:
+                session.add(models.Organization(organization_id=org, name=org))
+                session.flush()
+        if session.execute(text("SELECT 1 FROM users WHERE user_id = 'rls_two'"
+                                )).first() is None:
+            # Filed under A…
+            session.add(models.User(
+                user_id="rls_two", organization_id=ORG_A,
+                email="two@example.test", name="Two", role="OWNER",
+                password_hash="x", active=True))
+            session.flush()
+        if session.execute(
+                text("SELECT 1 FROM organization_memberships "
+                     "WHERE membership_id = 'mem_two_b'")).first() is None:
+            # …and a member of B as well.
+            session.add(models.OrganizationMembership(
+                membership_id="mem_two_b", organization_id=ORG_B,
+                user_id="rls_two", role="SALESPERSON", status="ACTIVE",
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc)))
+        session.commit()
+
+    engine = create_engine(RLS_URL, future=True)
+    Maker = sessionmaker(bind=engine, future=True)
+    try:
+        with Maker() as session:
+            tenancy.set_tenant(session, ORG_B)
+            found = session.execute(
+                text("SELECT user_id FROM users WHERE user_id = 'rls_two'")
+            ).scalars().all()
+            assert found == ["rls_two"], (
+                "B holds a membership for this person, so B's members screen "
+                "must be able to name them")
+
+            # But B cannot take the account — and the two halves of "cannot"
+            # fail differently, which is worth asserting separately because
+            # only one of them is loud.
+            #
+            # The UPDATE **matches nothing**. `tenant_isolation` is the only
+            # policy that applies to UPDATE, its USING still compares
+            # `organization_id` against the announced tenant, and a row it does
+            # not select is a row that is not there: no error, no rows, and the
+            # account stays exactly where it was. That is the silent half, and
+            # asserting it as a raise (which this test first did) would pass
+            # against a policy that had no UPDATE clause at all.
+            updated = session.execute(text(
+                "UPDATE users SET organization_id = :b "
+                "WHERE user_id = 'rls_two'"), {"b": ORG_B})
+            assert updated.rowcount == 0, (
+                "B can read this member and must not be able to re-home them")
+            session.commit()
+        with Maker() as session:
+            tenancy.set_tenant(session, ORG_A)
+            assert session.execute(text(
+                "SELECT organization_id FROM users WHERE user_id = 'rls_two'"
+            ).bindparams()).scalar() == ORG_A, "still filed under A"
+        with Maker() as session:
+            tenancy.set_tenant(session, ORG_B)
+            # The INSERT is the loud half: WITH CHECK governs what a row may
+            # *become*, so writing one that carries another tenant's id is an
+            # error rather than a no-op.
+            with pytest.raises(Exception):
+                session.execute(text(
+                    "INSERT INTO users (user_id, organization_id, email, name, "
+                    "role, active, must_change_password, login_failures_count, "
+                    "created_at) VALUES ('rls_new', :a, 'new@example.test', "
+                    "'New', 'OWNER', true, false, 0, now())"), {"a": ORG_A})
+                session.flush()
+    finally:
+        engine.dispose()
+
+
+def test_a_person_can_find_their_own_workspaces_across_tenants(migrated):
+    """`app_user_memberships`, the second and narrower hole.
+
+    A request acting for A is by construction forbidden to see B's membership
+    rows, so "where else can I go" needs a lookup that crosses the boundary.
+    What is asserted here is that it stays a *question about one person*: it
+    answers for the id it is given and there is no argument that widens it.
+    """
+    Maker = sessionmaker(bind=migrated, future=True)
+    with Maker() as session:
+        for org in (ORG_A, ORG_B):
+            if session.get(models.Organization, org) is None:
+                session.add(models.Organization(organization_id=org, name=org))
+                session.flush()
+        for uid, home in (("rls_multi", ORG_A), ("rls_solo", ORG_B)):
+            if session.execute(text("SELECT 1 FROM users WHERE user_id = :u"),
+                               {"u": uid}).first() is None:
+                session.add(models.User(
+                    user_id=uid, organization_id=home,
+                    email=f"{uid}@example.test", name=uid, role="OWNER",
+                    password_hash="x", active=True))
+                session.flush()
+        for mid, org, uid in (("mem_multi_a", ORG_A, "rls_multi"),
+                              ("mem_multi_b", ORG_B, "rls_multi"),
+                              ("mem_solo_b", ORG_B, "rls_solo")):
+            if session.get(models.OrganizationMembership, mid) is None:
+                session.add(models.OrganizationMembership(
+                    membership_id=mid, organization_id=org, user_id=uid,
+                    role="OWNER", status="ACTIVE",
+                    created_at=datetime.now(timezone.utc),
+                    updated_at=datetime.now(timezone.utc)))
+        session.commit()
+
+    engine = create_engine(RLS_URL, future=True)
+    Maker = sessionmaker(bind=engine, future=True)
+    try:
+        with Maker() as session:
+            # No tenant announced at all, which is the state the switcher's
+            # caller is *not* in — but the strongest place to assert from.
+            rows = tenancy.user_memberships(session, "rls_multi")
+            assert {r[0] for r in rows} == {ORG_A, ORG_B}
+            # And it answers for that person only.
+            assert {r[0] for r in tenancy.user_memberships(session, "rls_solo")
+                    } == {ORG_B}
+            assert tenancy.user_memberships(session, "nobody") == []
+    finally:
+        engine.dispose()
+
+
+def test_an_ended_membership_stops_answering_for_the_switcher(migrated):
+    """A grant that ended is not a door. The function filters on ACTIVE, so a
+    removed member cannot even find the workspace to try it."""
+    Maker = sessionmaker(bind=migrated, future=True)
+    with Maker() as session:
+        if session.get(models.Organization, ORG_B) is None:
+            session.add(models.Organization(organization_id=ORG_B, name=ORG_B))
+            session.flush()
+        if session.execute(text("SELECT 1 FROM users WHERE user_id = 'rls_gone'"
+                                )).first() is None:
+            session.add(models.User(
+                user_id="rls_gone", organization_id=ORG_B,
+                email="gone@example.test", name="Gone", role="SALESPERSON",
+                password_hash="x", active=True))
+            session.flush()
+        if session.get(models.OrganizationMembership, "mem_gone") is None:
+            session.add(models.OrganizationMembership(
+                membership_id="mem_gone", organization_id=ORG_B,
+                user_id="rls_gone", role="SALESPERSON", status="REMOVED",
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc)))
+        session.commit()
+
+    engine = create_engine(RLS_URL, future=True)
+    Maker = sessionmaker(bind=engine, future=True)
+    try:
+        with Maker() as session:
+            assert tenancy.user_memberships(session, "rls_gone") == []
     finally:
         engine.dispose()

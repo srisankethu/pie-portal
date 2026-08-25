@@ -13,7 +13,7 @@ is what is missing from it, so an honest 403 beats a hollowed-out answer, as
 
 Plan gating is applied at ``include_router`` in ``main.py`` with the other
 intelligence surfaces. That is the right default here, unlike the value ledger:
-a book that has just connected is inside its free month, so the reader this
+a book that has just connected is usually inside its trial, so the reader this
 screen exists for has it.
 """
 from __future__ import annotations

@@ -195,9 +195,35 @@ means the stored interpretation is reused rather than re-inferred.
 
 ---
 
-## Permissions and isolation
+## Identity, tenancy and entitlement
 
-| Role | Sees | Cost / margin |
+Three questions, three modules, and keeping them apart is the point:
+
+| Question | Answered by | Stored as |
+|---|---|---|
+| Who is this person? | `platform_auth.py`, `authz.py` | `users` + `user_sessions` |
+| Which organizations may they open, and as what? | `memberships.py` | `organization_memberships` |
+| What may this organization use? | `entitlements.py` | `organization_subscriptions` |
+
+**The organization is the customer.** It is the tenant, the owner of every
+business record, and the party PIE has a commercial relationship with. A user is
+a login; a membership is the grant that connects the two, with its own role,
+status, author and end.
+
+Nothing anchors an organization to the person who created it — there is no
+`owner_user_id` anywhere, and the owner is whoever currently holds an ACTIVE
+membership with that role. So the founder can be removed, a colleague promoted,
+and the organization's id, data, subscription and configuration are untouched.
+That is a property of the schema rather than a procedure somebody follows.
+
+A user may hold memberships in several organizations. A session names one of
+them; switching mints a new session against another (`POST
+/api/v1/organizations/{id}/switch`) and never repoints the one in hand.
+`users.organization_id` survives as the *home* organization — where the identity
+row is filed, which the RLS policy and the sign-in lookup need — and nothing
+authorizes on it.
+
+| Role (per membership) | Sees | Cost / margin |
 |---|---|---|
 | Salesperson | Own assigned customers; the two restricted categories are excluded entirely. | **Never** |
 | Sales manager | The whole organization. | Yes |
@@ -209,8 +235,27 @@ scope returns **404, not 403**, so scope is not probeable.
 
 **Organization isolation:** every record carries an `organization_id`, and every
 repository query is scoped to one organization. There is deliberately no
-cross-organization query surface. V1 runs a single organization; the seam is
-built in rather than bolted on.
+cross-organization query surface. On PostgreSQL that convention is backed by
+row-level security (`app/tenancy.py`), which is fail-closed: a connection that
+announced no tenant sees nothing.
+
+The organization on a request comes from the signed session token, and is
+therefore a *claim*. `authz.load_principal` honours it only by finding an ACTIVE
+membership for the pair — so a token naming another organization resolves to no
+principal at all, and a membership that ends kills every session riding on it.
+That is the difference between a check and a comparison: the previous test was
+`user.organization_id == token_org`, which a column can satisfy and cannot
+revoke.
+
+**Entitlement is evaluated at the organization**, in one function
+(`entitlements.resolve`), which every gate reads: the `require_feature`
+dependency, `assert_feature`, `can_use`, and the payload the client renders.
+A new organization gets a 30-day trial of Commercial Intelligence when it is
+created; when the trial ends the decision layer locks and **no data is
+deleted**. There is no always-free plan — the free tier is the floor an
+unsubscribed organization sits on, not a product. Expiry is derived from
+`trial_ends_at` at read time rather than swept by a job, so there is no run to
+miss.
 
 **Taking it all with you, and proving it is gone.** `trust/erasure.py` keeps two
 lists, and they answer different questions. `EXPORTED` is what travels in the

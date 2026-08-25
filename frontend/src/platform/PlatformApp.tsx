@@ -1,4 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { DataGrid, numeric } from "./DataGrid";
 import { EntityName, EntitySource } from "./EntityName";
 import { CompanyFilter, useCompanyFilter } from "./CompanyFilter";
@@ -380,6 +381,11 @@ function ActionModal({
 
 // ── main ─────────────────────────────────────────────────────────────────────
 export default function PlatformApp() {
+  // Held so switching workspace can drop every cached row belonging to the one
+  // being left. Query keys carry the organization id, so most would re-key on
+  // their own; clearing is the version that does not depend on every future
+  // key remembering to.
+  const queryClient = useQueryClient();
   const { enqueueSnackbar, closeSnackbar } = useSnackbar();
   const [session, setSession] = useState<PlatformSession | null>(loadPlatformSession());
   // Signed out, there are three doors: the public landing page (the default),
@@ -610,6 +616,50 @@ export default function PlatformApp() {
       return next;
     });
   }, []);
+
+  /** Act for another workspace, and rebuild the shell around it.
+   *
+   *  A full reload of the session rather than a patch of the organization id,
+   *  because almost everything on screen is scoped to the workspace: the role
+   *  can differ, the currency and the business timezone can differ, and every
+   *  cached query holds another customer's rows. So the new session envelope
+   *  replaces the old one and the caches are dropped — the same thing signing
+   *  in as somebody else does, which is the closest analogy to what this is.
+   *
+   *  The server is the authority on whether the switch is allowed; a refusal
+   *  leaves the current session exactly as it was.
+   */
+  const switchOrganization = useCallback(async (organizationId: string) => {
+    if (!session || organizationId === session.organization_id) return;
+    try {
+      const r = await papi.switchOrganization(session.token, organizationId);
+      const target = (session.organizations || []).find(
+        (o) => o.organization_id === organizationId);
+      const next: PlatformSession = {
+        ...session,
+        token: r.token,
+        organization_id: r.organization_id,
+        organization_name: r.name || target?.name || "",
+        // From the server's answer, not from the menu row that was clicked: the
+        // list in a stored session can be stale, and the role decides what the
+        // nav offers.
+        role: r.role as PlatformSession["role"],
+      };
+      savePlatformSession(next);
+      setSession(next);
+      // Everything cached belongs to the workspace that was just left.
+      queryClient.clear();
+      setSummaries(null);
+      setDetails({});
+      setError(null);
+      navigate(PATH.home, { replace: true });
+    } catch {
+      // Deliberately quiet beyond the toast: a refused switch means the
+      // membership is gone or was never there, and the honest response is to
+      // stay exactly where the person already is.
+      setNotice("That workspace could not be opened. It may no longer be yours.");
+    }
+  }, [session, navigate, queryClient]);
 
   const refresh = useCallback(async (id?: string) => {
     if (!session) return;
@@ -969,6 +1019,10 @@ export default function PlatformApp() {
       current={screen}
       userName={session.name}
       roleLabel={roleShort}
+      organizationName={session.organization_name}
+      organizations={session.organizations}
+      currentOrganizationId={session.organization_id}
+      onSwitchOrganization={switchOrganization}
       onSignOut={signOut}
     >
       <div>

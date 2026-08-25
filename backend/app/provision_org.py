@@ -22,6 +22,7 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from . import entitlements, memberships
 from .config import settings
 from .domain import models
 from .domain.enums import Role
@@ -73,7 +74,15 @@ def provision_organization(
                             password_hash=hash_password(password),
                             must_change_password=settings.ISSUED_ACCOUNTS_MUST_CHANGE_PASSWORD)
         session.add(owner)
+        session.flush()
+        memberships.add_member(session, organization_id=organization_id,
+                               user_id=owner.user_id, role=Role.OWNER)
         provisioned_password[owner_email] = password
+    session.flush()
+    # Idempotent, like the rest of this function: an organization provisioned
+    # twice keeps the trial it already had rather than being walked back to day
+    # one. See ``entitlements.start_trial``.
+    entitlements.start_trial(session, organization_id)
     session.flush()
     return org
 
@@ -103,6 +112,11 @@ def add_user(session: Session, *, organization_id: str, email: str, name: str,
                        must_change_password=settings.ISSUED_ACCOUNTS_MUST_CHANGE_PASSWORD)
     session.add(user)
     session.flush()
+    # Adding a person to an organization is a membership and nothing else. It
+    # touches no subscription: the organization's trial is the organization's,
+    # and a colleague joining neither starts a second one nor extends the first.
+    memberships.add_member(session, organization_id=organization_id,
+                           user_id=user.user_id, role=role)
     provisioned_password[email] = issued
     return user
 

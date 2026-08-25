@@ -1,13 +1,26 @@
-"""Plans, the one-per-books trial, and the boundaries they put teeth behind.
+"""Plans, the organization's trial, and the boundaries they put teeth behind.
 
-The pricing terms this enforces were prose until now, and prose is a
-suggestion to a strategic customer. Three claims get pinned. A plan resolves
-safely: NULL falls back to the deployment default, and an unrecognised value
-degrades to free — a typo must never widen what a tenant may use. The free
-intelligence month belongs to the *connected books*: reconnecting the same
-Zoho company under a fresh organization finds the trial already spent. And a
-second connected company is refused below the platform plan at the moment of
-connection — the licence unit is the one thing that can be enforced
+The pricing terms this enforces were prose until now, and prose is a suggestion
+to a strategic customer. Four claims get pinned.
+
+A plan resolves safely: NULL falls back to the deployment default, and an
+unrecognised value degrades to free — a typo must never widen what a tenant may
+use.
+
+**The trial belongs to the organization.** It starts when the organization
+does, it survives every user who comes and goes, and a second person joining
+reads it rather than starting one. That is the change these tests are mostly
+about: it used to belong to the *connected books* and to begin at first
+connection, which meant a new customer had nothing during the days they were
+most deciding whether to buy.
+
+What survived from that shape is the duplicate-trial check, and only that: the
+books still record a claim, and books already claimed by another organization
+end the new organization's trial. One boundary, at one moment, and deliberately
+not a fingerprinting scheme.
+
+And a second connected company is refused below the platform plan at the moment
+of connection — the licence unit is the one thing that can be enforced
 mechanically.
 """
 from __future__ import annotations
@@ -23,7 +36,7 @@ from app import clock, entitlements
 import dbsupport
 from app.db import get_session
 from app.domain import models
-from app.domain.enums import PlanTier
+from app.domain.enums import PlanTier, SubscriptionStatus
 from app.ingestion import connections as conn
 from app.seed import SEED_PASSWORD, ensure_org_and_users
 
@@ -33,6 +46,15 @@ ORG2 = "org_t2"
 
 @pytest.fixture()
 def orgs(session):
+    """Two bare organizations, deliberately without subscriptions.
+
+    Provisioning gives every new organization a trial (`start_trial`), and the
+    tests that are about the trial call it explicitly so the moment it starts
+    is visible in the test rather than in a fixture. What this fixture pins is
+    the *other* case, which is real and has to keep working: an organization
+    from before subscriptions existed, whose entitlement comes from the legacy
+    ``organizations.plan`` column.
+    """
     session.add(models.Organization(organization_id=ORG, name="T"))
     session.add(models.Organization(organization_id=ORG2, name="T2"))
     session.flush()
@@ -73,37 +95,212 @@ def test_an_unrecognised_plan_degrades_to_free_never_wider(session, orgs, monkey
     assert entitlements.effective_plan(session, ORG) is PlanTier.FREE
 
 
-# ── the trial belongs to the books ───────────────────────────────────────────
-def test_the_free_month_is_per_books_not_per_signup(session, orgs, monkeypatch):
+# ── the trial belongs to the organization ────────────────────────────────────
+def test_a_new_organization_gets_its_trial_when_it_is_created(session, orgs,
+                                                              monkeypatch):
+    """Not when it connects books. The days a buyer spends deciding are days
+    they can use the product."""
     _free_default(monkeypatch)
-    trial = entitlements.begin_trial(session, ORG, "60005555")
-    assert trial is not None
+    assert entitlements.effective_plan(session, ORG) is PlanTier.FREE
+    entitlements.start_trial(session, ORG)
     assert entitlements.effective_plan(session, ORG) is PlanTier.INTELLIGENCE
 
-    # The farming move: a fresh organization reconnects the same company.
-    assert entitlements.begin_trial(session, ORG2, "60005555") is None
-    assert entitlements.effective_plan(session, ORG2) is PlanTier.FREE
 
-    # Different books are a different business — they get their own month.
-    assert entitlements.begin_trial(session, ORG2, "60007777") is not None
+def test_the_trial_runs_for_the_configured_number_of_days(session, orgs):
+    from app.config import settings
+
+    sub = entitlements.start_trial(session, ORG)
+    span = clock.aware(sub.trial_ends_at) - clock.aware(sub.trial_started_at)
+    assert round(span.total_seconds() / 86400) == settings.INTELLIGENCE_TRIAL_DAYS
 
 
-def test_an_expired_trial_is_spent_not_deleted(session, orgs, monkeypatch):
+def test_starting_a_trial_twice_does_not_extend_it(session, orgs):
+    """The property that makes "a second person joined" cost nothing.
+
+    Idempotent means the existing row comes back untouched — not re-dated, not
+    re-statused. Otherwise re-running provisioning, or any future join path
+    that reached for this, would walk an organization back to day one.
+    """
+    first = entitlements.start_trial(session, ORG)
+    ends = first.trial_ends_at
+    again = entitlements.start_trial(session, ORG)
+    assert again.organization_id == first.organization_id
+    assert again.trial_ends_at == ends
+
+
+def test_a_second_user_joining_neither_starts_nor_extends_a_trial(session, orgs):
+    """The requirement stated as the code path a joiner actually takes.
+
+    `add_member` is the whole of adding somebody, and it touches no
+    subscription — which is why this test can assert on the row rather than on
+    a claim about intent.
+    """
+    from app import memberships
+    from app.domain.enums import Role
+
+    entitlements.start_trial(session, ORG)
+    before = entitlements.subscription_for(session, ORG)
+    ends, started = before.trial_ends_at, before.trial_started_at
+
+    for i, role in enumerate((Role.SALES_MANAGER, Role.SALESPERSON)):
+        user = models.User(user_id=f"u{i}", organization_id=ORG,
+                           email=f"u{i}@t.example", name=f"U{i}", role=role.value)
+        session.add(user)
+        session.flush()
+        memberships.add_member(session, organization_id=ORG, user_id=user.user_id,
+                               role=role)
+
+    after = entitlements.subscription_for(session, ORG)
+    assert (after.trial_ends_at, after.trial_started_at) == (ends, started)
+    assert session.query(models.OrganizationSubscription).count() == 1
+
+
+def test_an_expired_trial_locks_intelligence_and_deletes_nothing(session, orgs,
+                                                                 monkeypatch):
     _free_default(monkeypatch)
-    trial = entitlements.begin_trial(session, ORG, "60005555")
-    trial.ends_at = clock.now() - timedelta(days=1)
+    sub = entitlements.start_trial(session, ORG)
+    customer = models.Customer(customer_id="c_keep", organization_id=ORG,
+                               external_id="c1", name="Acme")
+    session.add(customer)
+    sub.trial_ends_at = clock.now() - timedelta(days=1)
+    session.flush()
+
+    assert entitlements.effective_plan(session, ORG) is PlanTier.FREE
+    with pytest.raises(entitlements.PlanRefused):
+        entitlements.assert_feature(session, ORG, "intelligence")
+    # And the organization's own data is exactly where it was. Ending a
+    # subscription is not the same act as deleting a customer.
+    assert session.get(models.Customer, "c_keep") is not None
+    assert entitlements.subscription_for(session, ORG) is not None
+
+
+def test_expiry_is_derived_from_the_date_not_written_by_a_job(session, orgs,
+                                                              monkeypatch):
+    """No sweep to miss. A stored status of TRIALING past its date is expired.
+
+    The failure this prevents is the one CLAUDE.md §1 names: a nightly job that
+    did not run would leave an organization entitled to something it stopped
+    paying for, and the absence of the job would look exactly like the absence
+    of a problem.
+    """
+    _free_default(monkeypatch)
+    sub = entitlements.start_trial(session, ORG)
+    sub.trial_ends_at = clock.now() - timedelta(seconds=1)
+    session.flush()
+    # The row still *says* TRIALING — nothing has rewritten it.
+    assert sub.status == "TRIALING"
+    ent = entitlements.resolve(session, ORG)
+    assert ent.status is SubscriptionStatus.EXPIRED
+    assert ent.effective is PlanTier.FREE
+
+
+def test_upgrading_after_expiry_brings_intelligence_back(session, orgs, monkeypatch):
+    _free_default(monkeypatch)
+    sub = entitlements.start_trial(session, ORG)
+    sub.trial_ends_at = clock.now() - timedelta(days=2)
     session.flush()
     assert entitlements.effective_plan(session, ORG) is PlanTier.FREE
-    # The record remains, which is exactly what the next attempt must find.
-    assert entitlements.begin_trial(session, ORG, "60005555") is None
+
+    entitlements.set_plan(session, ORG, PlanTier.INTELLIGENCE)
+    ent = entitlements.resolve(session, ORG)
+    assert ent.status is SubscriptionStatus.ACTIVE
+    assert ent.effective is PlanTier.INTELLIGENCE
+    assert ent.trial_ends_at is not None, "the trial it had is still on record"
+
+
+def test_the_paid_relationship_is_dated_and_survives_a_tier_change(session, orgs):
+    entitlements.start_trial(session, ORG)
+    entitlements.set_plan(session, ORG, PlanTier.INTELLIGENCE)
+    began = entitlements.subscription_for(session, ORG).subscription_started_at
+    assert began is not None
+    entitlements.set_plan(session, ORG, PlanTier.PLATFORM)
+    assert entitlements.subscription_for(session, ORG).subscription_started_at == began
+
+
+def test_cancelling_does_not_hand_out_a_second_trial(session, orgs, monkeypatch):
+    """The whole point of the trial belonging to the organization: it happened
+    once, at the beginning."""
+    _free_default(monkeypatch)
+    sub = entitlements.start_trial(session, ORG)
+    sub.trial_ends_at = clock.now() - timedelta(days=1)
+    session.flush()
+    entitlements.set_plan(session, ORG, PlanTier.INTELLIGENCE)
+    entitlements.set_plan(session, ORG, PlanTier.FREE)
+
+    ent = entitlements.resolve(session, ORG)
+    assert ent.status is SubscriptionStatus.CANCELLED
+    assert ent.effective is PlanTier.FREE
 
 
 def test_a_trial_lifts_to_intelligence_never_to_platform(session, orgs, monkeypatch):
     _free_default(monkeypatch)
-    entitlements.begin_trial(session, ORG, "60005555")
+    entitlements.start_trial(session, ORG)
     entitlements.assert_feature(session, ORG, "intelligence")  # no raise
     with pytest.raises(entitlements.PlanRefused):
         entitlements.assert_feature(session, ORG, "multi_company")
+
+
+# ── the books still hold the duplicate-trial check ───────────────────────────
+def test_books_already_trialled_elsewhere_end_this_organizations_trial(
+        session, orgs, monkeypatch):
+    """The farming move, and the one boundary that answers it.
+
+    A platform organization costs nothing to create, so signing up again with
+    another address produces a second organization with a second trial. What it
+    does not produce is a second free month over the same *books*: the claim is
+    already held, and connecting them ends the new trial with a reason on the
+    row.
+    """
+    _free_default(monkeypatch)
+    entitlements.start_trial(session, ORG)
+    entitlements.start_trial(session, ORG2)
+
+    assert entitlements.claim_books(session, ORG, "60005555") is not None
+    assert entitlements.effective_plan(session, ORG) is PlanTier.INTELLIGENCE
+
+    # The fresh organization reconnects the same company.
+    assert entitlements.claim_books(session, ORG2, "60005555") is None
+    assert entitlements.effective_plan(session, ORG2) is PlanTier.FREE
+    sub = entitlements.subscription_for(session, ORG2)
+    assert sub.trial_ended_reason == entitlements.BOOKS_ALREADY_TRIALLED
+
+    # Books nobody has claimed are claimable, and claiming them changes
+    # nothing about the trial of the organization that claims them.
+    assert entitlements.claim_books(session, ORG, "60007777") is not None
+    assert entitlements.effective_plan(session, ORG) is PlanTier.INTELLIGENCE
+    assert entitlements.subscription_for(session, ORG).trial_ended_reason == ""
+
+
+def test_claiming_the_same_books_twice_from_one_organization_is_a_no_op(
+        session, orgs, monkeypatch):
+    """Reconnecting your own company must not end your own trial."""
+    _free_default(monkeypatch)
+    entitlements.start_trial(session, ORG)
+    entitlements.claim_books(session, ORG, "60005555")
+    assert entitlements.claim_books(session, ORG, "60005555") is None
+    assert entitlements.effective_plan(session, ORG) is PlanTier.INTELLIGENCE
+
+
+def test_a_books_collision_never_knocks_down_a_paying_organization(session, orgs,
+                                                                   monkeypatch):
+    _free_default(monkeypatch)
+    entitlements.start_trial(session, ORG)
+    entitlements.claim_books(session, ORG, "60005555")
+    entitlements.start_trial(session, ORG2)
+    entitlements.set_plan(session, ORG2, PlanTier.INTELLIGENCE)
+
+    entitlements.claim_books(session, ORG2, "60005555")
+    assert entitlements.effective_plan(session, ORG2) is PlanTier.INTELLIGENCE
+
+
+def test_a_claim_is_spent_not_deleted(session, orgs, monkeypatch):
+    _free_default(monkeypatch)
+    entitlements.start_trial(session, ORG)
+    claim = entitlements.claim_books(session, ORG, "60005555")
+    claim.ends_at = clock.now() - timedelta(days=1)
+    session.flush()
+    # The record remains, which is exactly what the next attempt must find.
+    assert entitlements.claim_books(session, ORG2, "60005555") is None
 
 
 # ── what a screen is told about the trial ────────────────────────────────────
@@ -125,13 +322,15 @@ def test_describe_counts_the_days_left_and_names_what_expires(session, orgs,
     # is correct; only this fixed-instant assertion needed pinning.
     monkeypatch.setattr(clock, "now",
                         lambda: datetime(2026, 6, 15, 6, 30, tzinfo=timezone.utc))
-    trial = entitlements.begin_trial(session, ORG, "60005555")
-    trial.ends_at = clock.now() + timedelta(days=6, hours=2)
+    sub = entitlements.start_trial(session, ORG)
+    sub.trial_ends_at = clock.now() + timedelta(days=6, hours=2)
     session.flush()
 
     view = entitlements.describe(session, ORG)
     assert view["effective_plan"] == "intelligence"
     assert view["plan"] == "free"                 # the licence underneath
+    assert view["status"] == "TRIALING"
+    assert view["trial"]["active"] is True
     assert view["trial"]["days_remaining"] == 6
     assert view["trial"]["ends_on"]               # a date a person would write
     assert view["loses_on_expiry"] == ["intelligence"]
@@ -151,8 +350,8 @@ def test_the_countdown_is_measured_in_the_businesss_own_day(session, orgs,
     org = session.get(models.Organization, ORG)
     org.timezone = "Pacific/Kiritimati"           # UTC+14, the furthest ahead
     session.flush()
-    trial = entitlements.begin_trial(session, ORG, "60005555")
-    trial.ends_at = clock.now() + timedelta(hours=12)
+    sub = entitlements.start_trial(session, ORG)
+    sub.trial_ends_at = clock.now() + timedelta(hours=12)
     session.flush()
 
     ahead = entitlements.describe(session, ORG)["trial"]
@@ -174,17 +373,28 @@ def test_no_trial_means_no_countdown_and_nothing_to_lose(session, orgs, monkeypa
     assert view["loses_on_expiry"] == []
 
 
-def test_an_expired_trial_stops_being_counted(session, orgs, monkeypatch):
-    """No negative countdown, and nothing claimed to be at stake."""
+def test_an_ended_trial_is_still_described_so_a_screen_can_say_so(session, orgs,
+                                                                  monkeypatch):
+    """No negative countdown, nothing claimed to be at stake — and not silence.
+
+    Going quiet at expiry is what made the decision layer vanish overnight with
+    nothing on screen explaining it. The payload has to be able to tell "ended
+    on the 3rd" from "never had one", so an ended trial is described with
+    ``active: false`` rather than replaced by ``None``.
+    """
     _free_default(monkeypatch)
-    trial = entitlements.begin_trial(session, ORG, "60005555")
-    trial.ends_at = clock.now() - timedelta(days=3)
+    sub = entitlements.start_trial(session, ORG)
+    sub.trial_ends_at = clock.now() - timedelta(days=3)
     session.flush()
 
     view = entitlements.describe(session, ORG)
-    assert view["trial"] is None
+    assert view["trial"] is not None
+    assert view["trial"]["active"] is False
+    assert view["trial"]["days_remaining"] == 0
+    assert view["status"] == "EXPIRED"
     assert view["effective_plan"] == "free"
     assert view["loses_on_expiry"] == []
+    assert "intelligence" in view["locked"]
 
 
 # ── the connection gate ──────────────────────────────────────────────────────
@@ -209,14 +419,27 @@ def test_a_second_company_needs_the_platform_plan(session, orgs, monkeypatch):
     assert len(conn.list_connections(session, ORG)) == 2
 
 
-def test_connecting_starts_the_trial_and_reconnecting_elsewhere_does_not(
+def test_connecting_claims_the_books_and_reconnecting_elsewhere_spends_a_trial(
         session, orgs, monkeypatch):
+    """The whole thing through the connection path, which is where it happens.
+
+    Connecting no longer *starts* anything — the organization's trial began
+    when the organization did — so the first assertion is about the trial being
+    untouched by the connection. The second is the boundary: the same books
+    under a second organization end that organization's trial.
+    """
     _free_default(monkeypatch)
+    entitlements.start_trial(session, ORG)
+    entitlements.start_trial(session, ORG2)
+
     _connect(session, ORG, "60001111")
     assert entitlements.effective_plan(session, ORG) is PlanTier.INTELLIGENCE
+    assert entitlements.subscription_for(session, ORG).trial_ended_reason == ""
 
     _connect(session, ORG2, "60001111")
     assert entitlements.effective_plan(session, ORG2) is PlanTier.FREE
+    assert (entitlements.subscription_for(session, ORG2).trial_ended_reason
+            == entitlements.BOOKS_ALREADY_TRIALLED)
 
 
 # ── over HTTP: the gate answers in plan language ─────────────────────────────

@@ -284,6 +284,15 @@ EXCLUDED_REASONS: dict[str, str] = {
     "users": (
         "Staff accounts and password hashes. Yours to administer, and not "
         "something a data export should carry."),
+    "organization_memberships": (
+        "Who has access to this organization, with what role, and when each "
+        "grant was made or ended. Administration rather than business data — "
+        "the same reason the accounts above are withheld, and the members "
+        "screen is where to read it."),
+    "organization_subscriptions": (
+        "Your plan, your trial dates and when the subscription began. Our "
+        "licensing bookkeeping, with no fact about your business in it; the "
+        "same is shown to you on screen at any time."),
     "user_sessions": (
         "Who is currently signed in, and from what. Each row's id is the "
         "credential the session rides on, so exporting the table would put "
@@ -327,7 +336,7 @@ EXCLUDED_REASONS: dict[str, str] = {
         "Which document was last read at which timestamp — the bookkeeping "
         "that makes a resumed sync cheap. No business content."),
     "intelligence_trials": (
-        "Whether your books have used their free month of Commercial "
+        "Whether your books have already claimed a trial of Commercial "
         "Intelligence — our licensing bookkeeping, with no fact about your "
         "business in it beyond the connection date you already have."),
     "queued_messages": (
@@ -365,6 +374,11 @@ MANIFESTED: tuple[tuple[str, Any], ...] = EXPORTED + (
     ("zoho_connections", models.ZohoConnection),
     ("ai_provider_keys", models.AIProviderKey),
     ("intelligence_trials", models.IntelligenceTrial),
+    # The grants and the commercial relationship. Both are tenant rows that a
+    # complete erasure has to account for: a membership names a person, and a
+    # subscription is the record of what this customer was paying for.
+    ("organization_memberships", models.OrganizationMembership),
+    ("organization_subscriptions", models.OrganizationSubscription),
     ("oauth_states", models.OAuthState),
     ("tenant_keys", models.TenantKey),
     ("users", models.User),

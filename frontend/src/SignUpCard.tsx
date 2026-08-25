@@ -15,7 +15,8 @@
  * ── the plan question, and what it is not ───────────────────────────────────
  *
  * The form asks which plan the business wants, and every answer creates the
- * same account: the free Quote Desk. That is not a bug in the picker, it is the
+ * same account: a new organization on its 30-day trial, with no plan licensed
+ * underneath it. That is not a bug in the picker, it is the
  * product — `entitlements.py` is explicit that plans are set by the operator
  * and never by a tenant, "an owner who could set their own plan would not have
  * one", and there is no billing in this product at all. So the choice is
@@ -91,6 +92,10 @@ export function SignUpCard({
   // The plan every account actually starts on. From the server, because the
   // client asserting "free" would be the client deciding a plan.
   const lands = offer?.plan ?? "";
+  // How long the trial runs, from the server. Zero when the deployment has not
+  // said — in which case the copy below drops the claim rather than guessing a
+  // number at somebody who is about to sign up on the strength of it.
+  const trialDays = offer?.trial_days ?? 0;
   const known = (p?: string) => (p && plans.some((o) => o.plan === p) ? p : "");
   const [plan, setPlan] = useState(() => known(defaultPlan) || known(lands));
   const chosen = plans.find((o) => o.plan === plan);
@@ -101,7 +106,7 @@ export function SignUpCard({
       title="Create your account"
       blurb={
         offer?.note ??
-        "Your own organization, on the free Quote Desk. Connect Zoho Books when you are ready — nothing is read from your books until you do."
+        "Your own organization, with a full trial from today. Connect Zoho Books when you are ready — nothing is read from your books until you do."
       }
       submitLabel="Create account"
       busyLabel="Creating…"
@@ -213,11 +218,20 @@ export function SignUpCard({
               a person who reads only the thing they just clicked should still
               know that. */}
           <Typography color="text.secondary" sx={{ fontSize: 12.5, mt: 0.5 }}>
-            {asksForMore
-              ? `Your account starts on ${planLabel(plans, lands)} today and works `
-                + `straight away. We record that you want ${chosen?.label ?? "more"} `
-                + "and set it up with you — nothing is charged here."
-              : "You can ask for more later. Nothing is charged here."}
+            {/* Names the trial, not the plan the row lands on. The two used to
+                be the same sentence and that sentence is now wrong in the
+                direction that matters: an account starts with *everything*,
+                for `trial_days`, and only falls to the unsubscribed floor
+                afterwards. Telling somebody they are starting on the floor
+                would undersell the thing they are about to try. */}
+            {trialDays > 0
+              ? `Your organization starts with everything for ${trialDays} days, `
+                + "today. "
+                + (asksForMore
+                  ? `We record that you want ${chosen?.label ?? "more"} and set it `
+                    + "up with you — nothing is charged here."
+                  : "Nothing is charged here, and you can ask for a plan any time.")
+              : "You can ask for a plan later. Nothing is charged here."}
           </Typography>
         </FormControl>
       )}
@@ -225,7 +239,3 @@ export function SignUpCard({
   );
 }
 
-/** The label for a plan key, or the key itself if the server stopped sending it. */
-function planLabel(plans: SignupOffer["plans"], key: string): string {
-  return plans.find((o) => o.plan === key)?.label ?? key;
-}

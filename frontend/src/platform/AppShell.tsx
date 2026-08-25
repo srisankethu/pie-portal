@@ -76,6 +76,7 @@ import ExpandMoreOutlined from "@mui/icons-material/ExpandMoreOutlined";
 import { Link as RouterLink } from "react-router-dom";
 
 import AccountMenu from "./AccountMenu";
+import type { OrganizationMembershipView } from "./types";
 import { pathFor, type Screen } from "./route";
 
 export const DRAWER_WIDTH = 232;
@@ -214,6 +215,10 @@ export default function AppShell({
   current,
   userName,
   roleLabel,
+  organizationName,
+  organizations,
+  currentOrganizationId,
+  onSwitchOrganization,
   onSignOut,
   children,
 }: {
@@ -221,6 +226,14 @@ export default function AppShell({
   current: Screen;
   userName: string;
   roleLabel: string;
+  /** Passed straight through to the account menu, which is where the shell
+   *  answers "who am I and whose workspace is this". Optional so the two test
+   *  harnesses that render a shell without a session keep compiling — and so a
+   *  single-workspace deployment can simply not pass them. */
+  organizationName?: string;
+  organizations?: OrganizationMembershipView[];
+  currentOrganizationId?: string;
+  onSwitchOrganization?: (organizationId: string) => void;
   onSignOut: () => void;
   children: ReactNode;
 }) {
@@ -396,7 +409,15 @@ export default function AppShell({
               account, and a control that swapped it would be a control that lets
               anyone read the cost of every line in the book. The role is shown
               in there, and only shown. */}
-          <AccountMenu userName={userName} roleLabel={roleLabel} onSignOut={onSignOut} />
+          <AccountMenu
+            userName={userName}
+            roleLabel={roleLabel}
+            organizationName={organizationName}
+            organizations={organizations}
+            currentOrganizationId={currentOrganizationId}
+            onSwitchOrganization={onSwitchOrganization}
+            onSignOut={onSignOut}
+          />
         </Toolbar>
       </AppBar>
 

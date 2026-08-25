@@ -21,6 +21,8 @@ from sqlalchemy.orm import sessionmaker
 import dbsupport
 from app.config import settings
 from app.db import get_session
+from app import memberships
+from app.domain.enums import Role
 from app.domain import models
 from app.routers import admin, onboarding as onboarding_router, platform_auth
 from app.seed import ensure_org_and_users
@@ -44,6 +46,14 @@ def client(monkeypatch):
     s.add(models.User(user_id="usr_demo", organization_id=DEMO_ORG,
                       email=DEMO_EMAIL, name="Demo Visitor", role="OWNER",
                       password_hash=None, active=True))
+    s.flush()
+    # The grant. A user row is an identity; since memberships landed it is the
+    # membership that says this account may open this workspace and as what, so
+    # a demo visitor without one signs in and resolves no principal. Written
+    # through the service rather than as a second raw row, so this fixture
+    # cannot drift from what `demo.ensure_demo_user` actually does.
+    memberships.add_member(s, organization_id=DEMO_ORG, user_id="usr_demo",
+                           role=Role.OWNER)
     s.commit()
     s.close()
 

@@ -31,7 +31,7 @@ from ..authz import (Principal, can_view_customer, current_principal,
                      decision_queue_scope, require_manager_or_owner,
                      require_owner)
 from ..repositories import DecisionRepository
-from .. import approvals, clock
+from .. import approvals, clock, memberships
 from ..commercial import (economics, floor, incentive, jurisdiction, ownership,
                           policy, portfolio, principals, quote_service)
 from ..commercial.compute import compute_for
@@ -754,8 +754,7 @@ def _settlement_books(session: Session, principal: Principal,
     org = principal.organization_id
     customers, owners = _customers_in_scope(session, principal)
     in_scope = {c.customer_id for c in customers}
-    people = session.scalars(
-        select(models.User).where(models.User.organization_id == org)).all()
+    people = memberships.users_in(session, org)
     return payments.by_owner(
         [s for s in settled if s.party_id in in_scope],
         {cid: owner.user_id for cid, owner in owners.items()
@@ -3473,8 +3472,7 @@ def credit_exposure(principal: Principal = Depends(current_principal),
     exposures = _exposures(session, org, customers)
     limits = _credit_limits(session, org)
     folded = _balances(session, org, [c.customer_id for c in customers])
-    people = {u.user_id: u for u in session.scalars(
-        select(models.User).where(models.User.organization_id == org)).all()}
+    people = {u.user_id: u for u in memberships.users_in(session, org)}
 
     rows = []
     for c in customers:

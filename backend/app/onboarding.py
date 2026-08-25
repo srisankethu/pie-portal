@@ -25,12 +25,22 @@ reports done because a flag was written is exactly the "absence of evidence is
 not a pass" defect in a friendlier costume. So each step is a query, and a step
 whose evidence is missing says what is missing rather than passing quietly.
 
-What this deliberately does **not** do is grant anything. A self-serve tenant
-lands on the free plan and gets its free month of Commercial Intelligence the
-same way every other tenant does — from ``entitlements.begin_trial``, keyed to
-the *connected books* rather than to the platform organization, when a
-connection is added. Signing up twice with two email addresses therefore buys
-nothing, which is the property that made the trial worth keying that way.
+What this does grant is the trial, and it grants it by delegation:
+``seed.provision_organization`` calls ``entitlements.start_trial`` for every
+organization it creates, so a self-serve tenant has its 30 days of Commercial
+Intelligence from the moment it exists rather than from whenever somebody gets
+round to connecting Zoho. It grants no *plan* — every sign-up lands on
+``SIGNUP_PLAN`` whatever the form said, because a form that set its own tier
+would be the plan-setting API that deliberately does not exist.
+
+Signing up twice with two addresses now produces two organizations with two
+trials, and that is the accepted shape rather than an oversight. The boundary
+that survived is the one worth having: the trial is spent against the
+*connected books* (``entitlements.claim_books``), so the second organization's
+trial ends the moment it connects the first one's company. Making account
+recreation impossible would need identity tracking this product does not want,
+and the commercial question — can the same business get the decision layer
+twice for free — is answered without it.
 """
 from __future__ import annotations
 
@@ -41,7 +51,7 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from . import tenancy
+from . import memberships, tenancy
 from .config import settings
 from .domain import models
 from .domain.enums import PlanTier
@@ -50,12 +60,15 @@ from .passwords import password_problem
 
 log = logging.getLogger("pie_portal.onboarding")
 
-#: The plan a self-serve tenant lands on. Named here rather than left to
-#: ``settings.DEFAULT_PLAN``, which defaults to *platform* so that existing
-#: single-tenant deployments keep every feature they have — correct for them,
-#: and the reason inheriting it here would hand the top tier to anyone who can
-#: reach the sign-up form. The upgrade path is the operator CLI, as it is for
-#: every other organization: there is deliberately no API that sets a plan.
+#: The plan a self-serve tenant is *licensed* on — which is none. What it can
+#: actually use for its first 30 days comes from the trial on its subscription,
+#: not from here; FREE is where it lands when that runs out and it has not
+#: subscribed. Named explicitly rather than left to ``settings.DEFAULT_PLAN``,
+#: which defaults to *platform* so that existing single-tenant deployments keep
+#: every feature they have — correct for them, and the reason inheriting it
+#: here would hand the top tier to anyone who can reach the sign-up form. The
+#: upgrade path is the operator CLI, as it is for every other organization:
+#: there is deliberately no API that sets a plan.
 SIGNUP_PLAN = PlanTier.FREE
 
 
@@ -369,9 +382,10 @@ def _policy_step(session: Session, org: str) -> Step:
 
 
 def _team_step(session: Session, org: str) -> Step:
-    others = session.scalars(
-        select(models.User).where(models.User.organization_id == org,
-                                  models.User.active.is_(True))).all()
+    # Members of *this* organization whose login still works — both halves,
+    # because a membership held by a deactivated account is not a colleague who
+    # can quote and a live account with no membership here is not on this team.
+    others = [u for u in memberships.users_in(session, org) if u.active]
     n = max(len(others) - 1, 0)
     return Step(
         key="team", title="Add your team",

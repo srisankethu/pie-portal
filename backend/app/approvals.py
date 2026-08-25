@@ -609,5 +609,11 @@ def user_names(session: Session, org: str, ids: Iterable[str]) -> dict[str, str]
     ids = [i for i in set(ids) if i]
     if not ids:
         return {}
-    return {u.user_id: u.name for u in session.scalars(select(models.User).where(
-        models.User.organization_id == org, models.User.user_id.in_(ids)))}
+    # Scoped through the membership rather than through `users.organization_id`
+    # — see `memberships.users_in`. An approver who also belongs to another
+    # workspace would otherwise come back nameless on the thread they signed.
+    from .memberships import users_in
+
+    wanted = set(ids)
+    return {u.user_id: u.name for u in users_in(session, org)
+            if u.user_id in wanted}

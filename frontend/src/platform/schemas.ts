@@ -53,6 +53,22 @@ export const platformSessionSchema = z.object({
   //: server refuses everything but the change while it is set, so the shell must
   //: show the change and nothing else. Optional for the same reason as above.
   must_change_password: z.boolean().optional(),
+  //: The workspace this session acts for, by name, and every workspace this
+  //: identity may open. Optional for the same reason as everything above it: a
+  //: session stored before they existed is still a session, and the shell
+  //: renders no switcher rather than refusing to boot.
+  //:
+  //: `role` here is per organization, and `catch`-ing an unrecognised one to
+  //: SALESPERSON would be wrong in the widening direction — so the whole entry
+  //: is dropped instead. A workspace missing from the switcher is a menu item
+  //: somebody has to sign in again to reach; a workspace listed with the wrong
+  //: role is a screen that offers what the server will refuse.
+  organization_name: z.string().optional(),
+  organizations: z.array(z.object({
+    organization_id: z.string().min(1),
+    name: z.string(),
+    role: z.enum(["SALESPERSON", "SALES_MANAGER", "OWNER"]),
+  })).optional(),
 });
 
 export type CheckedSession = z.infer<typeof platformSessionSchema>;

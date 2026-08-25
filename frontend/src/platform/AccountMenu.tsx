@@ -34,8 +34,10 @@ import MenuItem from "@mui/material/MenuItem";
 import Typography from "@mui/material/Typography";
 import ExpandMoreRounded from "@mui/icons-material/ExpandMoreRounded";
 import LogoutOutlined from "@mui/icons-material/LogoutOutlined";
+import CheckRounded from "@mui/icons-material/CheckRounded";
 
 import { TOUCH, TOUCH_TARGET } from "./kit";
+import type { OrganizationMembershipView } from "./types";
 
 /** The monogram on the avatar.
  *
@@ -45,6 +47,15 @@ import { TOUCH, TOUCH_TARGET } from "./kit";
  *  "(S)" in them. Empty in, empty out: the avatar falls back to its icon
  *  rather than rendering a placeholder character that looks like a name.
  */
+/** The role, as a person reads it. The same three words the rest of the shell
+ *  uses; here rather than imported because this component takes its own props
+ *  and `PlatformApp` maps the session's role for the trigger already. */
+const ROLE_LABEL: Record<string, string> = {
+  OWNER: "Owner",
+  SALES_MANAGER: "Manager",
+  SALESPERSON: "Salesperson",
+};
+
 export function initials(name: string): string {
   const words = name.split(/\s+/).map((w) => w.replace(/[^\p{L}\p{N}]/gu, "")).filter(Boolean);
   if (!words.length) return "";
@@ -56,15 +67,34 @@ export function initials(name: string): string {
 export default function AccountMenu({
   userName,
   roleLabel,
+  organizationName,
+  organizations,
+  currentOrganizationId,
+  onSwitchOrganization,
   onSignOut,
 }: {
   userName: string;
   roleLabel: string;
+  /** The workspace this session acts for. Shown under the name, because on a
+   *  platform where one login reaches two customers "who am I signed in as" is
+   *  two questions and the menu answers both or neither. */
+  organizationName?: string;
+  /** Every workspace this identity may open. One or none renders no switcher:
+   *  a list of one is a control that teaches people it does nothing. */
+  organizations?: OrganizationMembershipView[];
+  currentOrganizationId?: string;
+  onSwitchOrganization?: (organizationId: string) => void;
   onSignOut: () => void;
 }) {
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const open = Boolean(anchor);
   const mark = initials(userName);
+  // Somewhere else to go. Counted rather than taking `organizations.length > 1`
+  // so that a stale list still containing only the current workspace renders
+  // nothing, which is the safe direction for a control that mints a session.
+  const others = (organizations || []).filter(
+    (o) => o.organization_id !== currentOrganizationId,
+  );
 
   return (
     <>
@@ -180,14 +210,63 @@ export default function AccountMenu({
             </Typography>
             {/* Plain secondary text, not a status chip: a role is who you are,
                 not a state that changes while you watch. There is no role
-                switcher here for the reason `AppShell` gives. */}
-            <Typography variant="caption" color="text.secondary">
-              {roleLabel}
+                switcher here for the reason `AppShell` gives — but there *is*
+                a workspace switcher below, because that is a different kind of
+                fact: a role is granted to you, a workspace is one you are
+                standing in and can leave. */}
+            <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
+              {organizationName ? `${organizationName} · ${roleLabel}` : roleLabel}
             </Typography>
           </Box>
         </Box>
 
         <Divider />
+
+        {/* Only when there is somewhere to go. One workspace renders nothing:
+            a switcher listing the workspace you are already in is a control
+            that teaches people the menu does not work. */}
+        {others.length > 0 && (
+          <Box>
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              sx={{ display: "block", px: 2, pt: 1.25, pb: 0.5 }}
+            >
+              Switch workspace
+            </Typography>
+            {(organizations || []).map((o) => {
+              const here = o.organization_id === currentOrganizationId;
+              return (
+                <MenuItem
+                  key={o.organization_id}
+                  selected={here}
+                  onClick={() => {
+                    setAnchor(null);
+                    // The current workspace is rendered so the list is a
+                    // complete answer to "where can I be", and clicking it does
+                    // nothing rather than posting a switch to where you already
+                    // are — which would mint a second session for no reason.
+                    if (!here) onSwitchOrganization?.(o.organization_id);
+                  }}
+                  sx={{ minHeight: TOUCH_TARGET, mx: 0.5, borderRadius: 1 }}
+                >
+                  <ListItemIcon sx={{ minWidth: 32 }}>
+                    {here ? <CheckRounded sx={{ fontSize: 19 }} /> : null}
+                  </ListItemIcon>
+                  <ListItemText
+                    primary={o.name || o.organization_id}
+                    secondary={ROLE_LABEL[o.role] || o.role}
+                    slotProps={{
+                      primary: { sx: { fontFamily: "var(--font-heading)", fontSize: 14 } },
+                      secondary: { sx: { fontSize: 12 } },
+                    }}
+                  />
+                </MenuItem>
+              );
+            })}
+            <Divider sx={{ mt: 0.5 }} />
+          </Box>
+        )}
 
         <MenuItem
           onClick={() => {

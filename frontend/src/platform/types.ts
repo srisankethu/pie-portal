@@ -28,6 +28,32 @@ export interface PlatformSession {
    *  refuses every request but the change itself, so the shell shows the change
    *  screen instead of the app. */
   must_change_password?: boolean;
+  /** The workspace this session is acting for, by name. Rendered wherever the
+   *  session is: one login can reach two customers, and a screen that does not
+   *  say whose numbers it is showing is a screen somebody will misread. */
+  organization_name?: string;
+  /** Every workspace this identity may open, with the role held in each.
+   *
+   *  Usually one, and the shell renders no switcher for one. Optional because
+   *  a session stored before the field existed is still valid; treat a missing
+   *  value as "just this one" rather than as "none", since the alternative
+   *  hides the workspace the person is standing in.
+   *
+   *  **Not an authorization input.** Switching posts to the server, which
+   *  looks the membership up inside the target tenant and refuses without one.
+   *  This list only decides what the menu offers. */
+  organizations?: OrganizationMembershipView[];
+}
+
+/** One workspace this identity can open, and the role it holds there.
+ *
+ *  `role` is per organization on purpose — the same person can own the company
+ *  they run and read a group company as a salesperson, and the switcher has to
+ *  be able to say so. */
+export interface OrganizationMembershipView {
+  organization_id: string;
+  name: string;
+  role: Role;
 }
 
 /** What `GET /api/v1/signup` answers: whether this deployment has a front door.
@@ -52,6 +78,11 @@ export interface PlanOption {
   plan: string;
   label: string;
   summary: string;
+  /** Whether this is somewhere an organization can move *to*. False for the
+   *  unsubscribed floor, which is where one lands rather than something one
+   *  chooses — the ladder still lists it so a screen can name what an
+   *  organization currently has. */
+  purchasable: boolean;
 }
 
 /** Whether this deployment has a demonstration workspace a stranger can open.
@@ -77,18 +108,39 @@ export interface Entitlements {
   /** What is actually in force right now — a running trial lifts this. */
   effective_plan: string;
   effective_label: string;
+  /** The organization's commercial state, named by the server rather than
+   *  inferred here from three other fields. `TRIALING` and `EXPIRED` are the
+   *  two halves of one trial; `ACTIVE` is a paid subscription and `CANCELLED`
+   *  one that ended. The client could not previously tell "trial ended" from
+   *  "never had one", which is why the locked screen had nothing to say. */
+  status: "TRIALING" | "ACTIVE" | "EXPIRED" | "CANCELLED";
+  /** The trial, running or finished. Present whenever there has ever been one,
+   *  so the notice can say "ended on the 3rd" rather than going quiet on the
+   *  day it matters most. `null` only when this organization never had one. */
   trial: {
+    /** Whether it is still running. False for one that has ended. */
+    active: boolean;
+    started_at: string;
     ends_at: string;
     /** The end date in the business's own zone, as a person would write it. */
     ends_on: string | null;
     /** Counted server-side, in the business's day. A browser subtracting dates
-     *  would use the reader's zone and be off by one for anyone travelling. */
+     *  would use the reader's zone and be off by one for anyone travelling.
+     *  Zero once the trial has ended — never negative. */
     days_remaining: number;
+    /** Why it ended before its date, when something did — today only the
+     *  books-already-trialled case. Empty for a trial that ran its course.
+     *  Rendered verbatim: it is written to be read. */
+    ended_reason: string;
   } | null;
   features: Record<string, boolean>;
   /** Feature keys in force only because of the trial — what expiry costs.
    *  Derived from the server's plan map so the client holds no second copy. */
   loses_on_expiry: string[];
+  /** Feature keys this organization does *not* currently have. The same list
+   *  after the fact, so a locked state can name what subscribing brings back
+   *  instead of describing the plans in the abstract. */
+  locked: string[];
   /** What this organization has asked for and not yet been given. `null` when
    *  nothing is outstanding — the upgrade control keys off this so an owner who
    *  already pressed it is shown what they asked for rather than the button
@@ -800,17 +852,37 @@ export interface QuoteGate {
   policy: { require_approval_for_quotes: boolean };
 }
 
+/** One member of this organization: an identity, plus the grant that admits it.
+ *
+ *  The two halves answer different questions and the screen needs both.
+ *  `active` is whether this login works *anywhere* — deactivating somebody
+ *  closes every door they have. `membership_status` is whether *this*
+ *  workspace admits them, which is what ends when a person leaves the company
+ *  and keeps their own account elsewhere. Either being off means no access
+ *  here, and the grid has to be able to say which. */
 export interface PlatformUser {
   user_id: string;
   email: string | null;
   name: string;
+  /** The role held **here**. Per organization, so the same person can appear
+   *  as an owner on one workspace's screen and a salesperson on another's. */
   role: Role;
   active: boolean;
+  /** `ACTIVE` | `INVITED` | `REMOVED`. Optional so a client talking to a
+   *  server from before memberships landed renders rather than blanking the
+   *  column; treat a missing value as ACTIVE, which is what it was. */
+  membership_status?: "ACTIVE" | "INVITED" | "REMOVED";
   has_password: boolean;
   must_change_password: boolean;
   last_login_at: string | null;
   created_at: string | null;
+  /** When this person was granted access here — which is not when their
+   *  account was created, for anybody who joined an existing workspace. */
+  joined_at?: string | null;
   created_by: string | null;
+  /** Who granted the membership. Null for the founding one: nobody invited the
+   *  person who created the organization. */
+  invited_by?: string | null;
   role_changed_by: string | null;
   role_changed_at: string | null;
 }

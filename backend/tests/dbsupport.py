@@ -102,6 +102,11 @@ _TENANT_LOOKUP_SOURCES = (
     ("d1rls_tenant_policies", ("_LOOKUP",)),
     ("d3rls_tenant_policies_unauthenticated",
      ("_EMAIL_REGISTERED", "_ORG_ID_TAKEN", "_OAUTH_STATE_ORG")),
+    # The switcher's lookup: "which workspaces can this person open", which is
+    # by construction a question about rows the announced tenant's policy hides.
+    # Reached on every sign-in, so a fixture database without it fails the same
+    # way `app_login_lookup` did before this list existed.
+    ("e1org_membership_and_subscription", ("_USER_MEMBERSHIPS",)),
 )
 
 

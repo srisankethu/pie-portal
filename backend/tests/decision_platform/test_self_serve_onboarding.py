@@ -30,7 +30,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
-from app import clock, entitlements, onboarding
+from app import clock, entitlements, memberships, onboarding
 import dbsupport
 from app.config import settings
 from app.db import get_session
@@ -133,10 +133,15 @@ def test_asking_for_the_top_plan_still_creates_a_free_account(client, on):
         org = s.get(models.Organization, org_id)
         assert org.plan == PlanTier.FREE.value
         assert org.requested_plan == PlanTier.PLATFORM.value
-        # And the resolution path has not heard of the request.
-        assert entitlements.effective_plan(s, org_id) is PlanTier.FREE
-        assert entitlements.allows(
-            entitlements.effective_plan(s, org_id), "multi_company") is False
+        # And the resolution path has not heard of the request: the licence is
+        # free whatever the form said. What the tenant *can* use is its trial,
+        # which is a different question — and the trial does not carry the top
+        # tier either, which is what this test is really about. Asserting on the
+        # licence rather than on the effective plan keeps that the subject now
+        # that a new organization is entitled to something on the day it signs
+        # up.
+        assert entitlements.resolve(s, org_id).licensed is PlanTier.FREE
+        assert entitlements.can_use(s, org_id, "multi_company") is False
         assert entitlements.licensed_plan(org) is PlanTier.FREE
 
 
@@ -231,18 +236,29 @@ def test_a_signup_lands_on_free_whatever_the_deployment_default_is(client, on,
         org = s.get(models.Organization, org_id)
         # Stamped on the row, not left NULL to inherit the default.
         assert org.plan == PlanTier.FREE.value
-        assert entitlements.effective_plan(s, org_id) is PlanTier.FREE
-        assert entitlements.allows(
-            entitlements.effective_plan(s, org_id), "multi_company") is False
+        # The *licence* is free, whatever DEFAULT_PLAN says. What the tenant can
+        # use right now is the trial, which is a different question — and the
+        # one that matters here is that the trial does not carry the top tier
+        # either: a sign-up must not reach multi-company by any route.
+        assert entitlements.resolve(s, org_id).licensed is PlanTier.FREE
+        assert entitlements.can_use(s, org_id, "multi_company") is False
 
 
-def test_a_signup_does_not_start_its_own_trial(client, on):
-    """The free month is keyed to the connected books, so signing up buys
-    nothing until a Zoho company is connected — which is what stops a second
-    email address from being a second free month."""
+def test_a_signup_starts_the_organizations_trial(client, on):
+    """It used to buy nothing until a Zoho company was connected, because the
+    free month was keyed to the books. That kept a second address from being a
+    second free month, and it also meant a new customer had nothing during the
+    days they were most deciding whether to buy.
+
+    The trial now starts with the organization. What stops the farming move is
+    the books claim — asserted in ``test_entitlements.py``, where it lives.
+    """
     org_id = client.post("/api/v1/signup", json=GOOD).json()["organization_id"]
     with client.maker() as s:
-        assert entitlements.trial_for(s, org_id) is None
+        ent = entitlements.resolve(s, org_id)
+        assert ent.status.value == "TRIALING"
+        assert ent.effective is PlanTier.INTELLIGENCE
+        assert ent.trial_ends_at is not None
 
 
 # ── refusals ─────────────────────────────────────────────────────────────────
@@ -289,10 +305,14 @@ def test_the_rate_limit_stops_a_loop(client, monkeypatch):
 @pytest.fixture()
 def org(session):
     session.add(models.Organization(organization_id="org_c", name="C"))
-    session.add(models.User(organization_id="org_c", email="o@c.in", name="O",
-                            role=Role.OWNER.value, active=True,
-                            password_hash="x"))
+    owner = models.User(organization_id="org_c", email="o@c.in", name="O",
+                        role=Role.OWNER.value, active=True, password_hash="x")
+    session.add(owner)
     session.flush()
+    # As `seed.provision_organization` does: the founding membership, without
+    # which this organization has an owner row and no owner.
+    memberships.add_member(session, organization_id="org_c",
+                           user_id=owner.user_id, role=Role.OWNER)
     return "org_c"
 
 
@@ -443,10 +463,16 @@ def test_the_optional_steps_do_not_hold_completion_back(session, org):
 def test_policy_and_team_complete_on_real_evidence(session, org):
     session.add(models.CommercialPolicy(organization_id=org,
                                         overrides={"min_margin": 0.18}))
-    session.add(models.User(organization_id=org, email="s@c.in", name="S",
+    colleague = models.User(organization_id=org, email="s@c.in", name="S",
                             role=Role.SALESPERSON.value, active=True,
-                            password_hash="x"))
+                            password_hash="x")
+    session.add(colleague)
     session.flush()
+    # The team step counts members of this organization, not user rows carrying
+    # its id — two different facts since memberships landed, and the membership
+    # is the one that means somebody can actually sign in and quote.
+    memberships.add_member(session, organization_id=org,
+                           user_id=colleague.user_id, role=Role.SALESPERSON)
     steps = _steps(session, org)
     assert steps["policy"]["done"] is True
     assert steps["team"]["done"] is True

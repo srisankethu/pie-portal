@@ -184,6 +184,43 @@ def org_id_taken(session: Session, organization_id: str) -> Optional[bool]:
         _ORG_ID_TAKEN, {"organization_id": organization_id}).scalar())
 
 
+#: One identity's own workspaces. The second hole, and narrower than the first.
+_USER_MEMBERSHIPS = text(
+    "SELECT organization_id, organization_name, role "
+    "FROM app_user_memberships(:user_id)")
+
+
+def user_memberships(session: Session,
+                     user_id: str) -> Optional[list[tuple[str, str, str]]]:
+    """Every organization this user may open, as ``(id, name, role)``.
+    ``None`` = ask normally.
+
+    The one question a multi-workspace product cannot answer from inside a
+    tenant. A request arrives acting for organization A; "which other
+    workspaces does this person have" is by construction about rows A's policy
+    hides, so the ordinary query returns the one membership the caller already
+    knew about and the switcher shows a list of one.
+
+    Narrow in the way ``adopt_tenant_for_login`` argues for. It takes a user id
+    and returns only that user's own active memberships — there is no argument
+    that makes it answer for somebody else, and the caller has already been
+    authenticated *as* that user by ``load_principal`` before it is reached. So
+    what crosses the boundary is a person's own list of doors, which they could
+    equally recite from memory.
+
+    It deliberately does **not** grant anything: switching organization still
+    goes back through ``memberships.active_membership_for`` inside the target
+    tenant, which is where the grant is checked. This only says where to look.
+
+    ``None`` on SQLite, where there is no function and no policy, so the caller
+    falls back to ``memberships.organizations_for``.
+    """
+    if not _is_postgres(session):
+        return None
+    rows = session.execute(_USER_MEMBERSHIPS, {"user_id": user_id}).all()
+    return [(str(r[0]), str(r[1] or ""), str(r[2])) for r in rows]
+
+
 def adopt_tenant_for_oauth_state(session: Session,
                                  state_hash: str) -> Optional[str]:
     """Announce the tenant that issued an OAuth state token. ``None`` if none did.

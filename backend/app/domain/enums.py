@@ -11,21 +11,89 @@ from typing import Optional
 
 
 class Role(str, Enum):
-    """User role (§2). Salesperson is additionally scoped to assigned customers."""
+    """What a person may do **inside one organization** (§2).
+
+    A role is a property of a *membership*, not of a person: the same identity
+    can be an owner of the company they run and a salesperson in a group
+    company, and one column on ``users`` cannot say that. It is stored on
+    ``organization_memberships.role`` and resolved per request from the
+    organization the session is acting for — see ``app/memberships.py``.
+
+    Salesperson is additionally scoped to assigned customers.
+    """
 
     SALESPERSON = "SALESPERSON"
     SALES_MANAGER = "SALES_MANAGER"
     OWNER = "OWNER"
 
 
+class MembershipStatus(str, Enum):
+    """Whether a membership currently grants access to its organization.
+
+    Only ``ACTIVE`` does. The other two are kept rather than deleted because a
+    membership is the record of a relationship, and "Sarah replaced John" is a
+    fact an audit asks about long after John's laptop went back.
+
+    ``INVITED`` is a membership that exists before its holder has accepted —
+    the row is created with the invitation so the seat, the role and who
+    offered it are decided in one place, and acceptance flips one column
+    instead of inventing the membership from an email.
+
+    ``REMOVED`` is a membership that was ended. It is never deleted and never
+    reused: re-adding somebody writes a new row, because the question six
+    months from now is *when* they had access, and a row edited back to ACTIVE
+    answers that wrongly.
+    """
+
+    ACTIVE = "ACTIVE"
+    INVITED = "INVITED"
+    REMOVED = "REMOVED"
+
+
+class SubscriptionStatus(str, Enum):
+    """The organization's commercial relationship with PIE, as a state.
+
+    ``TRIALING`` and ``EXPIRED`` are the two halves of one trial: every new
+    organization starts in the first and falls to the second when
+    ``trial_ends_at`` passes. **Expiry is derived from that timestamp rather
+    than written by a job** — a scheduled sweep that misses a run would leave
+    an organization entitled to something it has stopped paying for, and the
+    absence of the sweep would look exactly like the absence of a problem.
+
+    ``ACTIVE`` is a paid subscription; ``CANCELLED`` is one that ended. Neither
+    is reachable from the API — an organization that could set its own status
+    would not have one — and both are set through ``entitlements.set_plan`` /
+    ``decide_request``.
+    """
+
+    TRIALING = "TRIALING"
+    ACTIVE = "ACTIVE"
+    EXPIRED = "EXPIRED"
+    CANCELLED = "CANCELLED"
+
+
 class PlanTier(str, Enum):
     """What an organization is licensed to use (see ``app/entitlements.py``).
 
-    FREE is the Quote Desk: quoting, margin floors, approvals. INTELLIGENCE adds
-    the decision layer — signals, decision cards, the insight screens. PLATFORM
-    adds multi-company groups. Stored lowercase because the value travels
-    through config (``DEFAULT_PLAN``) and a CLI, where lowercase is what people
-    type.
+    FREE is **not a product**. It is the floor an organization sits on when it
+    is paying for nothing — before a trial has been granted, and again once one
+    has run out. It keeps the quote desk, margin floors and approvals working,
+    because taking away the screens somebody has their working week in would be
+    deleting their business rather than ending a subscription, and the trial's
+    own promise is that the data survives it. What it does not include is the
+    decision layer, which is the thing being sold.
+
+    That reading is a change: FREE used to be marketed as "the Quote Desk, free
+    forever", a tier a business could deliberately choose and stay on. There is
+    no always-free plan any more — a new organization gets a 30-day trial of
+    Commercial Intelligence and then either subscribes or lands here. The value
+    is unchanged so that no stored row, no ``DEFAULT_PLAN`` and no operator
+    command has to be rewritten to mean what it already meant mechanically.
+
+    INTELLIGENCE adds the decision layer — signals, decision cards, the insight
+    screens. PLATFORM adds multi-company groups. Stored lowercase because the
+    value travels through config (``DEFAULT_PLAN``) and a CLI, where lowercase
+    is what people type.
     """
 
     FREE = "free"

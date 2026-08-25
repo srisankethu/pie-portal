@@ -20,6 +20,7 @@ from sqlalchemy.orm import sessionmaker
 
 import dbsupport
 from app.db import get_session
+from app import memberships
 from app.domain import models
 from app.domain.enums import DecisionStatus, Role
 from app.passwords import hash_password, verify_password
@@ -267,6 +268,14 @@ def test_the_last_owner_cannot_be_demoted_or_deactivated(client):
     s.add(models.User(user_id="usr_o3", organization_id=ORG, email="o3@pie.example",
                       name="Third", role=Role.OWNER.value, active=True,
                       password_hash=hash_password(SEED_PASSWORD)))
+    s.flush()
+    # The grant, and not an optional extra: a user row is an identity, and
+    # since memberships landed it is the membership that says this person may
+    # open this organization and as what. Written through the service rather
+    # than as a second raw row, so this fixture cannot drift from what
+    # `POST /admin/users` actually does.
+    memberships.add_member(s, organization_id=ORG, user_id="usr_o3",
+                           role=Role.OWNER)
     s.commit()
     s.close()
     r = client.patch("/api/v1/admin/users/usr_owner", json={"active": False},

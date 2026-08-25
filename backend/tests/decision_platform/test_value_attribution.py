@@ -40,7 +40,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from sqlalchemy.orm import sessionmaker
 
-from app import clock, entitlements
+from app import clock, entitlements, memberships
 import dbsupport
 from app.attribution import detectors as det
 from app.attribution import evaluator as ev
@@ -53,7 +53,7 @@ from app.config import settings
 from app.db import get_session
 from app.domain import models
 from app.domain.enums import (PlanTier, QuoteLossReason, QuoteOutcomeStatus,
-                              ValueClass, ValueEventType)
+                              Role, ValueClass, ValueEventType)
 from app.passwords import hash_password
 from app.routers import attribution as attribution_router
 from app.routers import platform_auth
@@ -101,7 +101,7 @@ def _occurred(days_ago: int = OCCURRED_DAYS_AGO) -> datetime:
 def _start_trial(s) -> models.IntelligenceTrial:
     """A live trial window wide enough to contain everything seeded below.
 
-    Written directly rather than through ``entitlements.begin_trial`` because
+    Written directly rather than through ``entitlements.claim_books`` because
     that starts the window at *now*, and every event this file records happened
     a few days ago — a window opening after its own evidence would make these
     tests pass for the wrong reason.
@@ -816,6 +816,12 @@ def _lapsed_client(*, with_trial: bool):
     s.add(models.User(user_id="usr_lapsed", organization_id=LAPSED_ORG,
                       email=LAPSED_OWNER, name="Lapsed Owner", role="OWNER",
                       password_hash=hash_password(SEED_PASSWORD), active=True))
+    s.flush()
+    # The grant. Since memberships landed, a user row is an identity and the
+    # membership is what admits it to a workspace — sign-in resolves the role
+    # from one, so an owner row without a membership cannot sign in at all.
+    memberships.add_member(s, organization_id=LAPSED_ORG, user_id="usr_lapsed",
+                           role=Role.OWNER)
     now = clock.now()
     ended = now - timedelta(days=5)
     if with_trial:
@@ -949,6 +955,9 @@ def test_the_window_rule_never_lets_a_salesperson_past_their_role(monkeypatch):
         user_id="usr_lapsed_sales", organization_id=LAPSED_ORG,
         email="sales@lapsed.example", name="Lapsed Sales", role="SALESPERSON",
         password_hash=hash_password(SEED_PASSWORD), active=True))
+    session.flush()
+    memberships.add_member(session, organization_id=LAPSED_ORG,
+                           user_id="usr_lapsed_sales", role=Role.SALESPERSON)
     session.commit()
     session.close()
 

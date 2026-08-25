@@ -34,15 +34,32 @@ function session(role: Role = "OWNER"): PlatformSession {
 function view(days: number | null): Entitlements {
   return {
     plan: "free",
-    plan_label: "Quote Desk (free)",
+    plan_label: "Quote Desk (no subscription)",
     effective_plan: days === null ? "free" : "intelligence",
     effective_label: "Commercial Intelligence",
+    status: days === null ? "EXPIRED" : "TRIALING",
     trial: days === null
       ? null
-      : { ends_at: "2026-09-01T00:00:00Z", ends_on: "2026-09-01", days_remaining: days },
+      : { active: true, started_at: "2026-08-02T00:00:00Z",
+          ends_at: "2026-09-01T00:00:00Z", ends_on: "2026-09-01",
+          days_remaining: days, ended_reason: "" },
     features: { intelligence: days !== null, multi_company: false },
     loses_on_expiry: days === null ? [] : ["intelligence"],
+    locked: days === null ? ["intelligence", "multi_company"] : ["multi_company"],
     pending_request: null,
+  };
+}
+
+/** An organization whose trial has run out. Distinct from `view(null)`, which
+ *  is "never had one" — and the distinction is the point: the two used to be
+ *  the same payload, so the notice could not say "ended on the 3rd" and went
+ *  silent on the day the decision layer disappeared. */
+function ended(reason = ""): Entitlements {
+  return {
+    ...view(null),
+    trial: { active: false, started_at: "2026-07-02T00:00:00Z",
+             ends_at: "2026-08-01T00:00:00Z", ends_on: "2026-08-01",
+             days_remaining: 0, ended_reason: reason },
   };
 }
 
@@ -108,8 +125,8 @@ describe("TrialNotice", () => {
 
   it("promises the quote desk keeps working, because it does", async () => {
     await show(view(5));
-    expect(screen.getByRole("alert")).toHaveTextContent(/free plan/i);
-    expect(screen.getByRole("alert")).toHaveTextContent(/nothing you have synced is deleted/i);
+    expect(screen.getByRole("alert")).toHaveTextContent(/quoting, margin\s+floors and approvals carry on/i);
+    expect(screen.getByRole("alert")).toHaveTextContent(/nothing you have synced\s+is deleted/i);
   });
 
   it("offers an ask, and does not dress it as a purchase", async () => {
@@ -177,8 +194,56 @@ describe("TrialNotice", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
-  it("disappears once there is no trial", async () => {
+  it("disappears when there has never been a trial", async () => {
     await show(view(null));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  // ── after the trial ────────────────────────────────────────────────────────
+  //
+  // The case this component was written for and did not cover. It returned
+  // null the moment the trial did, so the decision layer vanished overnight
+  // with nothing on screen saying why — which reads as a fault, and sends
+  // somebody to support instead of to the plan.
+  it("keeps speaking once the trial has ended", async () => {
+    await show(ended());
+    expect(screen.getByRole("alert")).toHaveTextContent(/trial ended on 2026-08-01/i);
+  });
+
+  it("says the data is untouched, which is the first thing an owner needs", async () => {
+    await show(ended());
+    const alert = screen.getByRole("alert");
+    expect(alert).toHaveTextContent(/exactly where you left it/i);
+    expect(alert).toHaveTextContent(/nothing was deleted/i);
+  });
+
+  it("names what is locked from the server's list, not a copy of the plan map", async () => {
+    await show(ended());
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      /decision queue and the insight screens/i);
+  });
+
+  it("gives the reason when something ended the trial early", async () => {
+    // The books-already-trialled case. A decision layer that switches off on
+    // the day somebody connects their books reads as a fault unless the screen
+    // says otherwise, and the sentence is the server's — written to be read.
+    await show(ended("These books have already had their trial."));
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      /these books have already had their trial/i);
+  });
+
+  it("offers the ask again, worded for an organization that has none", async () => {
+    await show(ended());
+    expect(screen.getByRole("button")).toHaveTextContent(/ask for commercial intelligence/i);
+  });
+
+  it("reads as urgent once it has ended", async () => {
+    await show(ended());
+    expect(screen.getByRole("alert").className).toMatch(/Warning/);
+  });
+
+  it("still says nothing to a salesperson after expiry", async () => {
+    await show(ended(), "SALESPERSON");
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 });

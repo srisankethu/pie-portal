@@ -23,7 +23,8 @@ from .pie_service import pie_service
 from .routers import (accounts, admin, ai_settings, approvals, attribution,
                       commercial, connections, data_status,
                       decisions, enquiries, entitlements, identity, internal,
-                      onboarding, outcomes, platform_auth, quote,
+                      onboarding, organizations, outcomes, platform_auth,
+                      quote,
                       insight, quote_intelligence, quote_support,
                       retrospective, trust)
 
@@ -319,8 +320,10 @@ app.include_router(insight.router,
                    dependencies=[Depends(plan.require_feature("intelligence"))])
 # The first-run look-back: what a newly connected book already contains, and how
 # much of it the detectors could judge. Gated with the queue whose detectors it
-# runs — and the reader it exists for has that plan, because connecting books
-# starts the free month.
+# runs — and the reader it exists for usually has that plan, because an
+# organization connects its books during the trial it was given when it signed
+# up. "Usually" is honest: an organization that connects after its trial has run
+# gets the plan refusal, which names what is needed and what they are on.
 app.include_router(retrospective.router,
                    dependencies=[Depends(plan.require_feature("intelligence"))])
 # What the intelligence layer was worth, measured. **Deliberately not gated
@@ -337,6 +340,10 @@ app.include_router(retrospective.router,
 app.include_router(attribution.router)
 app.include_router(ai_settings.router)
 app.include_router(entitlements.router)
+# Which workspace this request acts for, and where else the holder
+# can go. No plan gate: knowing which organizations you belong to
+# is not a feature, it is how you reach the one that is paying.
+app.include_router(organizations.router)
 
 
 # ── the two prefixes that were never versioned ───────────────────────────────

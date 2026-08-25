@@ -377,7 +377,10 @@ class Settings:
     # upgrades organizations explicitly. An unrecognised value resolves to
     # "free" and logs: a typo must never widen what a tenant may use.
     DEFAULT_PLAN: str = os.environ.get("DEFAULT_PLAN", "platform")
-    # How long the one-per-books free month of Commercial Intelligence runs.
+    # How long a new organization's trial of Commercial Intelligence runs.
+    # Read once, by ``entitlements.start_trial``, at the moment an
+    # organization is created — changing it moves nobody's existing trial,
+    # because the end date is on the row rather than recomputed on read.
     INTELLIGENCE_TRIAL_DAYS: int = int(os.environ.get("INTELLIGENCE_TRIAL_DAYS", "30"))
 
     # ── Self-serve sign-up (app/onboarding.py) ───────────────────────────────

@@ -409,12 +409,14 @@ class ReadModelRepository:
 
     # ── users (for ownership mapping) ────────────────────────────────────────
     def users_by_email(self) -> dict[str, models.User]:
-        return {
-            u.email.strip().lower(): u
-            for u in self.s.scalars(
-                select(models.User).where(models.User.organization_id == self.org))
-            if u.email
-        }
+        # Through `memberships.users_in`, not a query on `users.organization_id`:
+        # that column is the identity row's *home* since memberships landed, so
+        # a person who also belongs here would be missing from the ownership map
+        # and their accounts would resolve to nobody.
+        from .memberships import users_in
+
+        return {u.email.strip().lower(): u
+                for u in users_in(self.s, self.org) if u.email}
 
     # ── resume cursor ────────────────────────────────────────────────────────
     def ingested_index(self, doc_type: str) -> dict[str, str]:

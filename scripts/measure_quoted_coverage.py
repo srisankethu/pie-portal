@@ -53,6 +53,18 @@ that document measured the difference: 30.3% of master names route to a named
 manufacturer — an EMUGE screwdriver and an ``M3X11`` screw both route to
 ``turning_insert``. Restricted to shape + edge + radius all present, definite
 misroutes fall to 0.05%. So a route is not evidence and does not count here.
+The decode and that gate are ``app/master_health/geometry.py``'s, called rather
+than reimplemented — see :func:`read_geometry`.
+
+**How this differs from the Master Health Report, which is not a duplicate of
+it.** ``app/master_health/`` answers the same coverage question over the *other*
+denominator: an item-master export, read offline with no database, weighted by
+stock value at selling price. This script is its complement — it needs the
+database precisely because trade is the thing a file cannot show, and it weights
+by revenue that was actually billed rather than by stock sitting on a shelf. The
+two share the step where they should (the decode above) and part where the
+question does: the master report says what the pack could reach if everything in
+the catalogue were sold, this one says what it reached on what was.
 
 **Counts, shares and SELLING revenue. No cost, no margin, anywhere in the
 output.** Structurally, not by a filter at the end: nothing below opens
@@ -87,17 +99,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
 from sqlalchemy import func, select                       # noqa: E402
 
-from app.config import settings                           # noqa: E402
 from app.db import SessionLocal                           # noqa: E402
 from app.domain import models                             # noqa: E402
+from app.master_health.geometry import (                  # noqa: E402
+    GATED_SLOTS, decode_names)
+from app.master_health.source import MasterRow            # noqa: E402
 
 # ── the two coverage definitions, and the gate on each ───────────────────────
 
-#: The slots that must ALL be filled before a decoded name counts as geometry.
-#: Named here rather than inlined because this tuple *is* the gate §3 of
-#: `01-application-engineering.md` argues for, and a reader has to be able to
-#: see that it is not `product_family`.
-ISO_SLOTS = ("iso_shape", "edge_length_mm", "corner_radius_mm")
+#: The gate — shape AND edge AND radius — re-exported rather than restated.
+#: ``app/master_health/geometry.py`` owns the one definition and the argument
+#: behind it; a second tuple here would be the responsibility duplication
+#: CLAUDE.md §2 names, and the copy that drifts is always the one nobody reads.
+ISO_SLOTS = GATED_SLOTS
 
 #: Per-product identity states. The last two are the pair `Product.pie_record_id`
 #: cannot distinguish on its own, and separating them is the whole reason this
@@ -288,42 +302,42 @@ def read_identity(session, product_ids: set[str],
 def read_geometry(names: Mapping[str, str]) -> Optional[dict[str, bool]]:
     """Whether each product's NAME fills every slot in :data:`ISO_SLOTS`.
 
-    Returns None when the engine or its pack cannot be loaded — the same
-    refusal :func:`read_identity` makes, for the same reason.
+    The decode itself is ``master_health.geometry.decode_names`` and not a
+    second implementation. That module landed for the *other* denominator — an
+    item-master export read offline, with no database — and the step the two
+    reports share is exactly this one: one batch through one ``ParserPipeline``,
+    quarantined rows merged back in so the denominator does not narrow, and an
+    unloadable engine reported as UNKNOWN rather than as a run of zeroes. Two
+    decoders would eventually disagree about a row nobody looks at, and the
+    disagreement would read as a real difference between the two censuses.
+
+    So this function is an adapter and nothing more: traded products in, the
+    gate's verdict out. ``decode_names`` keys on a row number because a master
+    holds blank and duplicate SKUs; the products here are keyed by
+    ``product_id``, so the mapping is positional over a sorted list — sorted
+    for determinism, which is the property a rerun of this measurement rests on.
+
+    Returns None when the engine or its pack could not be loaded, which is
+    ``DecodeRun.available`` restated in this script's vocabulary.
 
     The decode runs over ``Product.name`` because that is where this master
     keeps the product code (§1: ``Item.sku`` holds the MM#, ``Item.name`` holds
-    the code). Every row will score ``row_confidence`` 0.00 for want of a grade
-    column, which is the engine abstaining rather than failing — measured in
-    ``docs/concepts/13-confidence-and-input-completeness.md`` — so the slot fill
-    is read directly and the confidence is not used as a gate it was never
-    computed to be.
+    the code).
     """
     if not names:
         return {}
-    try:
-        root = str(settings.PIE_PARSER_ROOT)
-        if root not in sys.path:
-            sys.path.insert(0, root)
-        from engine.model import RawRecord           # noqa: PLC0415
-        from engine.pack import load_pack            # noqa: PLC0415
-        from engine.pipeline import ParserPipeline, RunProfile   # noqa: PLC0415
-
-        pack = load_pack(settings.PIE_PACK)
-    except Exception:                                # noqa: BLE001
+    ordered = sorted(names)
+    run = decode_names([
+        MasterRow(row_number=i, sku=None, name=names[pid], manufacturer=None,
+                  rate=None, stock=None, hsn=None, uom=None)
+        for i, pid in enumerate(ordered)
+    ])
+    if not run.available:
+        log_reason = run.unavailable_reason
+        print(f"  note: {log_reason}", file=sys.stderr)
         return None
-
-    ordered = sorted(names)                          # determinism, not taste
-    records = [RawRecord(record_id=pid, description=names[pid] or "", grade=None,
-                         payload={}, source_file="", source_sheet="", source_row=i)
-               for i, pid in enumerate(ordered)]
-    products, _report, quarantine = ParserPipeline(pack, RunProfile()).run(
-        records, input_fingerprint="measure_quoted_coverage")
-    # Quarantined rows are still answers — a row the router could not place has
-    # not filled its ISO slots, and dropping it would narrow the denominator.
-    decoded = {r["record_id"]: r for r in list(products) + list(quarantine)}
-    return {pid: all(decoded.get(pid, {}).get(slot) is not None for slot in ISO_SLOTS)
-            for pid in ordered}
+    return {pid: bool(run.outcomes[i].gated) if i in run.outcomes else False
+            for i, pid in enumerate(ordered)}
 
 
 # ── 4. the three weightings ──────────────────────────────────────────────────

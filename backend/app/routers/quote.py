@@ -25,7 +25,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from .. import approvals
+from .. import approvals, enquiry
 from ..authz import Principal, current_principal
 from ..commercial import policy as policy_service, quote_service
 from ..domain.enums import QuoteOutcomeStatus
@@ -168,12 +168,87 @@ def intake(quote_id: str, body: IntakeRequest,
     if read.used_ai:
         log.info("rfq read by %s into %d line(s) for quote %s",
                  settings.AI_PROVIDER, len(lines), quote_id)
+    captured = _capture_enquiry(session, principal, body, quote_id)
     return {**q.to_dict(principal.is_manager_or_owner),
             # How the lines were produced, so the screen can say "read from
             # your message — check each line" rather than presenting a model's
             # reading as though somebody had typed it.
             "intake": {"read_by": "ai" if read.used_ai else "pattern",
-                       "detail": read.detail}}
+                       "detail": read.detail,
+                       # Reported rather than silent. A capture that did not
+                       # happen because nobody said how the enquiry arrived is
+                       # the ordinary case today, and a screen that cannot see
+                       # the difference between "captured" and "channel not
+                       # stated" is a screen nobody can use to fix it.
+                       "captured": captured}}
+
+
+def _capture_enquiry(session: Session, principal: Principal,
+                     body: IntakeRequest, quote_id: str) -> bool:
+    """Put the customer's own words into the corpus, when the channel is stated.
+
+    **Why here.** ``inbound_lines`` was designed in ``a7inbound`` and had never
+    held a row, so every text technique in ``14-machine-learning.md`` waited on
+    an empty table. This is the one place in the platform where real customer
+    text already arrives — a salesperson pastes the enquiry to have it resolved
+    — and it was being read into lines and then dropped. Capturing it costs the
+    person one dropdown and no new habit.
+
+    **What this subset is, said plainly because the model's docstring makes a
+    stronger claim than this path can support.** ``InboundLine`` is described as
+    the coverage denominator that *does not condition on success*, and a line
+    captured here does: it reached the Quote Builder, so somebody chose to work
+    it. The enquiries nobody worked — the ones a coverage report exists to
+    count — never come through this door and never will. So this fills the
+    **benchmark** corpus (§5.17: real customer text with the reading it
+    produced) and it does **not** make coverage answerable. A coverage report
+    built by dividing by these rows would report that we answer nearly
+    everything, which is `CLAUDE.md` §1's *absence of evidence is not a pass*
+    with a percentage on it. ``source_ref`` carries the quote id precisely so
+    the worked subset stays identifiable and a later adapter's rows can be told
+    apart from it.
+
+    **A refusal here never fails the intake.** The quote is the work; the corpus
+    is a by-product. A bad channel string costs a log line, not somebody's RFQ.
+
+    It also never rolls anything back, and that is deliberate rather than
+    careless: both of ``capture``'s refusals — an unknown channel, an empty ask
+    — raise before it touches the session, so there is nothing written to undo.
+    A ``rollback()`` here would discard whatever else this request had done to
+    protect a by-product, which is the wrong trade in the wrong direction.
+    ``get_session`` commits the successful path with the rest of the request.
+    """
+    if not body.channel:
+        return False
+    try:
+        enquiry.capture(
+            session, principal.organization_id,
+            raw_text=body.text,
+            channel=body.channel,
+            customer_ref=_quote_customer_ref(session, principal, quote_id),
+            # Which quote this arrived on: the handle that marks this row as
+            # part of the worked subset, and the join back to what was made of
+            # the text.
+            source_ref=f"quote:{quote_id}")
+    except enquiry.CaptureRefusal:
+        log.warning("enquiry not captured for quote %s: channel %r is not in "
+                    "the closed set", quote_id, body.channel)
+        return False
+    return True
+
+
+def _quote_customer_ref(session: Session, principal: Principal,
+                        quote_id: str) -> str:
+    """The sender as the desk named them, verbatim and free text.
+
+    Not a ``Customer`` id: enquiries arrive from people who are not customers
+    yet, and resolving at capture means either dropping the unresolvable — the
+    exact rows this table is for — or writing a guess into a key.
+    """
+    try:
+        return _get_quote(quote_id, principal.organization_id).customer_ref or ""
+    except HTTPException:
+        return ""
 
 
 def _mapping_store(session: Session, principal: Principal) -> Optional[Any]:

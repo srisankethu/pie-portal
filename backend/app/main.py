@@ -22,7 +22,7 @@ from .observability.instrumentation import api_instrumentation_middleware
 from .pie_service import pie_service
 from .routers import (accounts, admin, ai_settings, approvals, attribution,
                       commercial, connections, data_status,
-                      decisions, entitlements, identity, internal,
+                      decisions, enquiries, entitlements, identity, internal,
                       onboarding, outcomes, platform_auth, quote,
                       insight, quote_intelligence, quote_support,
                       retrospective, trust)
@@ -309,6 +309,7 @@ app.include_router(accounts.router)
 app.include_router(data_status.router)
 app.include_router(commercial.router)
 app.include_router(quote_intelligence.router)
+app.include_router(enquiries.router)
 app.include_router(approvals.router)
 app.include_router(admin.router)
 app.include_router(identity.router)

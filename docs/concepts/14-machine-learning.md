@@ -694,11 +694,36 @@ deduplication, explicitly documented as the corpus an RFQ benchmark reads and th
 only coverage denominator that does not condition on success.
 `InboundLineDisposition` supplies the label, superseded rather than mutated.
 
-It is also brand new — added in `a7inbound`, third from the head of a migration
-history that ends at `b8lease`. **There is nothing in it.** So the answer for
-every text model is the same: *start collecting, and protect the rule that
-nothing is cleaned on the way in* — a `strip()` at the capture boundary looks
-like hygiene and destroys the exact property that makes the corpus worth having.
+It was also brand new — added in `a7inbound` — and **there was nothing in it**,
+because `enquiry/capture.py` was complete and tested and *nothing called it*. An
+empty table with no door looks exactly like an empty table nobody is filling.
+
+**Now it has a door, and the corpus fills from work that already happens.**
+`routers/enquiries.py` maps the capture surface over HTTP for an adapter, and
+the Quote Builder's intake captures the pasted enquiry when the person says how
+it arrived — the one place in the platform where real customer text was already
+arriving, being read into lines, and then dropped.
+
+**Which half of §5.21 that answers, and which it does not.** The corpus has two
+consumers with different requirements, and this door serves exactly one:
+
+- **The benchmark** (§5.17) needs *real customer wording* with the reading it
+  produced. Intake supplies that from the first RFQ somebody pastes.
+- **Coverage** needs asks nobody worked, and intake supplies none of them, ever.
+  A line captured here reached the Quote Builder, so somebody chose to work it —
+  the denominator conditions on success after all. Dividing by these rows would
+  report that this business answers nearly everything, which is §1's *absence of
+  evidence is not a pass* with a percentage on it. `source_ref` carries the
+  quote id so the worked subset stays identifiable when an adapter starts
+  writing the rest, and the helper's docstring says so where somebody about to
+  build the report will read it.
+
+The rule that nothing is cleaned on the way in is now defended **at the layer
+that breaks it**. `test_inbound_line_capture` pins it at the function and cannot
+see a request body; a `constr(strip_whitespace=True)`, a trimming validator or a
+`.strip()` before the call each reads as hygiene and passes every one of those
+tests. `test_enquiry_api` puts the horrible string over the wire and compares the
+stored bytes, and `test_quote_flow` does the same through the intake path.
 
 ### F. Ranking and sequence
 
@@ -903,11 +928,17 @@ different owners and only the first is a backlog:
    counted, suppressed at zero so a book that has set them all is not nagged.
    The refusal to invent a reorder point is untouched and pinned by a test —
    `08-intermittent-demand.md` asked for exactly this and no more.
-4. **Start the enquiry corpus, and defend the no-normalisation rule.**
-   `InboundLine` is empty and every text technique waits on it. The ERP cannot
-   hold this — that is the package's stated reason for existing — so it is
-   genuine capture rather than an unread field. The rule that protects it is one
-   line long and the change that breaks it looks like hygiene (§5.21).
+4. ~~**Start the enquiry corpus, and defend the no-normalisation rule.**~~
+   **SHIPPED.** `InboundLine` was empty because `enquiry/capture.py` had no
+   caller — complete, tested, unreachable. It has a door now
+   (`routers/enquiries.py`) and, more usefully, the Quote Builder's intake
+   captures the pasted enquiry when the person states the channel, so the corpus
+   fills from work that already happens rather than from a habit somebody has to
+   keep. The channel is **not defaulted**: `InboundChannel` has no UNKNOWN
+   member, so an unstated route captures nothing rather than filing a guess in
+   the one index the corpus is grouped by. The no-normalisation rule is now
+   pinned at the wire as well as at the function — see §5.21 for why that is a
+   different layer, and for the half of §5.21 this does **not** answer.
 5. ~~**Make `ci_…` dereferenceable.**~~ **SHIPPED.** `threshold_versions` stores
    the exact pre-image bytes that were hashed, keyed `(organization_id,
    version)`, recorded **inside the same flush as the first row stamped with
@@ -947,8 +978,10 @@ different owners and only the first is a backlog:
    experiment and already ships. See §5.25 for the arithmetic, the collider that
    makes "measure margin on won lines instead" worse rather than cheaper, and
    §8 for the volume at which this becomes a question again.
-8. **The embedding shortlist for RFQ resolution** (§5.17), scoped to recall,
-   once item 4 has given it something to be evaluated against.
+8. **The embedding shortlist for RFQ resolution** (§5.17), scoped to recall.
+   Item 4 has opened the tap; this waits on the corpus having enough real
+   wording in it to measure against, which is now a matter of quotes being
+   worked rather than of code.
 9. **The Kaplan–Meier over inter-order intervals** (§5.6) — last, and only on
    §8's trigger.
 
@@ -1053,8 +1086,8 @@ condition, and all of them are checkable rather than arguable:
 | Quote win/loss ranker (§5.1) | Estimates are ingested (§7a.1, done), so the gate is now ≥100 losses with reasons **and** a loss-reason table that has stopped being surprising. Six losses are on record, and the capture screen does not exist yet — quarters away, not weeks |
 | Inter-order survival (§5.6) | `/api/v1/internal/detector-outcomes` bands dormancy HIGH over a worked quarter |
 | Queue LTR (§5.22) | Same trigger, **and** moving `queue_margin_drop_pp` did not fix it |
-| Enquiry text models (§5.18, §5.21) | `inbound_lines` holds a few thousand rows with live dispositions |
-| Embedding shortlist (§5.17) | The enquiry corpus exists (§7a.4), so recall can be measured rather than asserted |
+| Enquiry text models (§5.18, §5.21) | `inbound_lines` holds a few thousand rows with live dispositions. The door is open (§7a.4) — this is now a matter of enquiries arriving, not of code |
+| Embedding shortlist (§5.17) | The enquiry corpus holds enough real wording for recall to be measured rather than asserted. §7a.4 built the way in; what it cannot supply is volume |
 | Randomised policy evaluation (§5.25) | ~250 quotes a month, **or** several books poolable under one policy with the sales desk as the unit — enough of either that a 10 pp lift is decidable inside two quarters. This is a volume condition, not a code one; nothing in the tree is missing |
 | Anything at item grain (§5.7–5.10) | Never, absent a change in what this business sells |
 | Any model exposed to a salesperson | §4.3 is satisfied by construction, not by a projection |

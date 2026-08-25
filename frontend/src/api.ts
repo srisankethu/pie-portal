@@ -56,8 +56,15 @@ export const api = {
 
   getQuote: (t: string, id: string) => req<Quote>(`/api/quotes/${id}`, {}, t),
 
-  intake: (t: string, id: string, text: string) =>
-    req<Quote>(`/api/quotes/${id}/intake`, { method: "POST", body: JSON.stringify({ text }) }, t),
+  /** `channel` is what turns the pasted words into a corpus row. Sent only when
+   *  the person said how the enquiry arrived — omitted, the server captures
+   *  nothing, because `InboundChannel` has no "unknown" member to file it
+   *  under. */
+  intake: (t: string, id: string, text: string, channel?: string) =>
+    req<Quote>(`/api/quotes/${id}/intake`, {
+      method: "POST",
+      body: JSON.stringify(channel ? { text, channel } : { text }),
+    }, t),
 
   /** One line at a time, deliberately — see store.confirm_reading. */
   confirmReading: (t: string, id: string, lineId: string) =>

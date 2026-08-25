@@ -314,6 +314,14 @@ The pin is now `16e449e`, whose own gate is green (406 tests, corpus 6,717 rows
 runs separately against its own sandbox. **No pie test skipped**, which is the
 distinction §1's honesty depends on.
 
+Two branches reached that pin independently and within the hour: PR #176 hit the
+same wall from the enquiry-capture side and moved it to the same commit, which is
+why the diff carrying this section no longer contains the move. Worth recording
+rather than tidying away — a defect that two unrelated pieces of work trip over
+on the same morning is a defect in the gate, not a coincidence, and it is the
+second time this repository has found a check it could not tell from a check that
+had passed.
+
 ### 6c. One drift the skew had been hiding
 
 With the engine tests running again, `test_frontend_contract.py` failed at once:
@@ -321,11 +329,15 @@ With the engine tests running again, `test_frontend_contract.py` failed at once:
 `frontend/src/types.ts` declared only `read_by` and `detail`. The field is
 deliberate on the server — the screen has to tell "not captured because nobody
 stated the channel" apart from a capture that was refused — so the fix is the
-declaration, and it is in this change.
+declaration. PR #176 landed it first, from the same collision described above,
+and also wired the field into the Quote Builder so leaving the channel unset has
+a visible cost; this branch carries none of that work.
 
 Nothing about the confidence finding depends on it. It is recorded because it is
 the measurable cost of the window in 6b: a contract test that cannot run is a
-contract nobody is checking, and this is the one it stopped checking.
+contract nobody is checking, and this is the one it stopped checking. It went
+undeclared from `7298ef4` until the engine tests could run again — the drift did
+not begin with the pin, but the pin is why nothing said so.
 
 ---
 

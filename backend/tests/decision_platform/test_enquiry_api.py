@@ -210,3 +210,25 @@ def test_no_response_from_this_router_carries_a_number_from_the_books(
     blob = f"{one}{everything}".lower()
     for word in ("cost", "margin", "price", "revenue", "gross_profit"):
         assert word not in blob, f"{word!r} reached the enquiry surface"
+
+
+def test_the_export_ceiling_refuses_before_it_loads_the_corpus(
+        api_client, monkeypatch):
+    """A ceiling checked after the load is a ceiling that has already paid.
+
+    ``enquiry.export`` reads every line and every disposition row and builds a
+    dataclass per line — raw customer text, so the rows are not small. Comparing
+    ``len(lines)`` afterwards meant the refusal fired only once the process had
+    done exactly the work the ceiling exists to prevent. It is a ``count(*)``
+    now, and the message names the real number.
+    """
+    from app.routers import enquiries
+
+    _capture(api_client)
+    _capture(api_client)
+    monkeypatch.setattr(enquiries, "_EXPORT_CEILING", 1)
+
+    r = api_client.get("/api/v1/enquiries", headers=_hdr(api_client, MANAGER))
+
+    assert r.status_code == 413, r.text
+    assert "2 lines is past" in r.json()["detail"]

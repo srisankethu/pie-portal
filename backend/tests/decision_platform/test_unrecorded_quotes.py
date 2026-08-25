@@ -411,3 +411,52 @@ def test_an_empty_worklist_explains_itself_rather_than_showing_nothing(maker):
     assert body["count"] == 0
     assert "silence" in body["empty_reason"]
     assert body["thresholds_version"]
+
+
+# ── the list has to shrink when it is worked ────────────────────────────────
+def test_recording_an_outcome_takes_the_quote_off_the_list(maker):
+    """The defect a review caught, and the one that made this screen useless.
+
+    ``QuoteDoc.outcome`` is the ERP's word and only the sync writes it;
+    ``QuoteOutcome`` is the row a person writes, and ``quote_service``
+    deliberately never touches ``quote_documents``. Both halves are right. The
+    read filtered on the first alone, so recording a loss through the capture
+    dialog changed nothing this query could see: the quote came back on the next
+    reload, the headline never moved, and recording it again as WON answered
+    409. A worklist whose whole purpose is to grow the six-loss sample §5.1
+    needs could not be worked down at all.
+    """
+    from app.commercial import quote_service
+    from app.domain.enums import QuoteLossReason, QuoteOutcomeStatus
+
+    s = maker()
+    _doc(s, "EST-8003", status="expired", expires=date(2026, 6, 1))
+    s.commit()
+    assert [q.quote_document_ref for q in _build(maker)] == ["EST-8003"]
+
+    quote_service.set_outcome(
+        s, ORG, quote_document_ref="EST-8003",
+        status=QuoteOutcomeStatus.LOST, loss_reason=QuoteLossReason.PRICE,
+        customer_id="c1")
+    s.commit()
+
+    assert _build(maker) == []
+
+
+def test_a_quote_only_priced_is_still_unanswered(maker):
+    """The edge the fix must not overshoot. DRAFT and SENT are not endings —
+    the platform put a price on it and nobody has said how it went, which is
+    exactly this list's population. Excluding them would empty the pile by
+    redefining it."""
+    from app.commercial import quote_service
+    from app.domain.enums import QuoteOutcomeStatus
+
+    s = maker()
+    _doc(s, "EST-8004", status="sent", expires=date(2026, 6, 1))
+    s.commit()
+    quote_service.set_outcome(
+        s, ORG, quote_document_ref="EST-8004",
+        status=QuoteOutcomeStatus.SENT, customer_id="c1")
+    s.commit()
+
+    assert [q.quote_document_ref for q in _build(maker)] == ["EST-8004"]

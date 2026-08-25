@@ -405,3 +405,36 @@ def test_only_repeat_bought_lines_reach_the_price_spread(api_client, session):
     assert body["counts"]["repeat_bought_items"] == 2
     # Two items is still below the floor, so no typical spread is claimed.
     assert row["typical_price_spread"] is None
+
+
+def test_a_supplier_with_credits_against_few_bills_is_still_reported():
+    """The asymmetry a review caught. The floor answers one question — after how
+    many bills is *no* credit surprising — and applying it to every claim hid
+    the supplier whose record most warranted opening.
+
+    Three credits against four bills is far past any evidence bar for a non-zero
+    rate. The screen's footnote filters on a present rate, so suppressed here
+    meant absent from the screen entirely.
+    """
+    built = _build([_order("v1"), _order("v2")], bills={
+        "v1": supply.VendorBills("v1", bills=4, credited_bills=3),
+        "v2": supply.VendorBills("v2", bills=200, credited_bills=10),
+    })
+
+    assert _row(built, "v1")["credit_rate"] == 0.75
+    assert _row(built, "v1")["bills"] == 4
+    # And the clean claim still needs the floor, which is the whole point of
+    # having one: nothing here has been loosened for a nought.
+    clean = _build([_order("v1"), _order("v2")], bills={
+        "v1": supply.VendorBills("v1", bills=4, credited_bills=0),
+        "v2": supply.VendorBills("v2", bills=200, credited_bills=10),
+    })
+    assert _row(clean, "v1")["credit_rate"] is None
+
+
+def test_a_supplier_with_no_bills_at_all_claims_nothing_either_way():
+    """Zero over zero is not a rate, however the floor is set."""
+    built = _build([_order("v1")], bills={
+        "v1": supply.VendorBills("v1", bills=0, credited_bills=0)})
+
+    assert _row(built, "v1")["credit_rate"] is None

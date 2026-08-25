@@ -521,6 +521,40 @@ def classify_outcome(source_status: Any,
     return QuoteDocOutcome.UNRECORDED, None
 
 
+def _viewed_at(value: Any, ctx: str) -> Optional[datetime]:
+    """The customer's open, or ``None`` — never an exception.
+
+    The one field in this normaliser allowed to fail on its own. Everything else
+    ``normalize_quote_document`` reads is either required or absent; this is
+    present-but-unreadable, and the choice is between losing a timestamp and
+    losing the quote. See the call site for why the timestamp loses.
+    """
+    if not value:
+        return None
+    try:
+        return _parse_timestamp(value, ctx, "client_viewed_time")
+    except NormalizationError:
+        return None
+
+
+def unreadable_view_stamp(raw: dict[str, Any]) -> bool:
+    """True when the source sent a ``client_viewed_time`` nothing could place.
+
+    The price of the degradation above, made visible — the same bargain
+    ``dropped_an_undated_decision`` makes for the date gate, and here for the
+    same reason: the quote is kept, one fact about it is not, and a rule that
+    quietly discards evidence is the shape of defect §1 is about.
+
+    Reads the raw payload rather than the normalised object because the loss is
+    only visible before it happens: afterwards ``client_viewed_at`` is ``None``,
+    which is indistinguishable from a quote nobody opened. Expected to be zero;
+    a number that climbs means the source's stamps are not what this parser
+    thinks, and the fix is upstream.
+    """
+    value = raw.get("client_viewed_time")
+    return bool(value) and utc_stamp(value) is None
+
+
 def dropped_an_undated_decision(q: QuoteDocIn, *, system: str = ZOHO) -> bool:
     """True when the ERP said this quote was decided and the date it needed to
     be usable was not there, so ``classify_outcome`` called it unrecorded.
@@ -620,8 +654,22 @@ def normalize_quote_document(raw: dict[str, Any], *, system: str = ZOHO) -> Quot
         total=raw.get("total"),
         salesperson_external_id=(str(raw["salesperson_id"])
                                  if raw.get("salesperson_id") else None),
-        client_viewed_at=(_parse_timestamp(viewed, ctx, "client_viewed_time")
-                          if viewed else None),
+        # Degraded, never fatal. ``_parse_timestamp`` raises on a present but
+        # unplaceable stamp, and until a review caught it that refusal took the
+        # whole quote with it — no header, no total, no status — over an
+        # optional read receipt. That is the silent shrinking of the win-rate
+        # denominator this pull exists to build, and `_sync_quote_documents`
+        # refuses to do it for an unresolved customer two paragraphs away.
+        #
+        # ``_parse_timestamp``'s own docstring argues the other way: a silent
+        # None "would be a false statement about the customer", because null is
+        # read as "never opened it". That is not true of the reader. The only
+        # consumer is ``insight/unrecorded``, whose docstring says in as many
+        # words that **"the customer never opened it" is a claim this module
+        # refuses to make** — it counts ``opening_not_recorded`` as an absence
+        # named as an absence. So null is already "unknown" downstream, and the
+        # document is worth more than the field.
+        client_viewed_at=_viewed_at(viewed, ctx),
         # Only the keys the source actually set. An absent custom field is not
         # a category and must not become one: a quote with no cf_quote_type is
         # a quote nobody classified, which is a different fact from every

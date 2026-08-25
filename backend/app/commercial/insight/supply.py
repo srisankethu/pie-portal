@@ -227,14 +227,28 @@ class SupplierSpend:
     def credit_rate(self, floor: Optional[int]) -> Optional[float]:
         """Credited bills over bills, or ``None`` when a zero proves nothing.
 
-        Two different refusals, and neither is a zero: ``floor is None`` means
-        the book has read no credits at all, so no supplier's record is
-        measured; ``bills < floor`` means this supplier has not sent enough for
-        a clean run to be evidence of anything.
+        **The floor gates the clean claim, not every claim** — the first version
+        of this applied it to both, and a review caught what that costs. The
+        floor answers one question: after how many bills is *no* credit
+        surprising. A supplier with three credits against four bills is far past
+        any evidence bar for a non-zero rate, and gating it on the same number
+        hid the one supplier whose record most warranted opening. The screen's
+        footnote filters on a present rate, so hidden there meant absent
+        entirely.
+
+        So: a credit that happened is evidence of itself and reports whatever
+        the sample is, with the counts beside it. A clean run is only evidence
+        once it is long enough — ``floor is None`` means the book has read no
+        credits at all and no supplier's record is measured; ``bills < floor``
+        means this one has not sent enough for a nought to mean anything.
         """
+        if self.bills <= 0:
+            return None
+        if self.credited_bills > 0:
+            return round(self.credited_bills / self.bills, 4)
         if floor is None or self.bills < floor:
             return None
-        return round(self.credited_bills / self.bills, 4)
+        return 0.0
 
     @property
     def typical_lead_time(self) -> Optional[float]:

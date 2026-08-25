@@ -339,3 +339,36 @@ def test_a_salesperson_may_not_borrow_another_desks_reference_for_their_own_quot
                status="LOST", loss_reason="PRICE", customer="Acme Engineering")
     assert ok.status_code == 200, ok.text
     assert ok.json()["customer_id"] == "c1"
+
+
+def test_a_reference_another_row_already_holds_is_refused_not_500ed(
+        api_client, book):
+    """The half the repoint guard above did not cover, found by a review.
+
+    That guard checks *this* row's claim to a reference. It says nothing about
+    another row already holding it — which is the ordinary sequence on this
+    branch: somebody records the ERP quote from the Unanswered worklist, and the
+    platform quote is pushed to Zoho afterwards. ``quote_outcomes`` is unique on
+    ``(organization_id, quote_document_ref)``, so the write raised an
+    IntegrityError at the *outer* commit, outside every ``except`` on the way —
+    a 500, after the Zoho estimate had already been created, rolling back a
+    transaction the ERP knew nothing about.
+
+    Caught in the service, it is the refusal the router already maps to 409.
+    """
+    # The ERP quote, recorded on its own reference from the worklist.
+    assert _post(api_client, MANAGER, quote_document_ref="est-9",
+                 status="LOST", loss_reason="PRICE",
+                 customer="Acme Engineering").status_code == 200
+    # A different platform quote, now trying to claim the same document.
+    assert _post(api_client, MANAGER, quote_id="q1-1", status="SENT",
+                 customer="Acme Engineering").status_code == 200
+
+    r = _post(api_client, MANAGER, quote_id="q1-1", quote_document_ref="est-9",
+              status="WON", customer="Acme Engineering")
+
+    assert r.status_code == 409, r.text
+    assert "est-9" in r.json()["detail"]
+    # Both rows intact, and neither one silently repointed.
+    rows = book.query(models.QuoteOutcome).filter_by(organization_id=ORG).all()
+    assert {r.quote_document_ref for r in rows} == {"est-9", None}

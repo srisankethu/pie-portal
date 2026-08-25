@@ -736,14 +736,17 @@ def resolve(session: Session, organization_id: str, version: str, *,
     accept a 40-bit collision as an answer; checking only the digest would
     accept a row filed under the wrong stamp.
 
-    ``stamped_at`` is optional and is only used to classify a *miss*. It is
-    what a caller holding the stamped row knows and this function cannot
-    otherwise learn — the stamp carries no date — and without it the
-    PRE_EPOCH / POST_EPOCH_GAP split falls back to the one piece of evidence
-    that is always available: whether this process minted the version itself,
-    which proves the registry was running when it was minted. Pass the row's
-    own timestamp where you have one; the classification gets sharper and
-    nothing else changes.
+    ``stamped_at`` is optional and is only used to classify a *miss*. It is what
+    a caller holding the stamped row knows and this function cannot otherwise
+    learn — the stamp carries no date — and it is now the **only** thing that
+    separates PRE_EPOCH from POST_EPOCH_GAP. Pass the row's own timestamp where
+    you have one; a miss with no date is reported as missing history, which is
+    the honest reading when nothing places it.
+
+    It used to fall back to "did this process mint that version itself", and
+    ``_unresolved`` records why that had to go: a stamp is a content hash, so it
+    is org-blind and shared by any policy holding the same numbers, and
+    ``backtest`` mints hypothetical ones on demand.
     """
     from . import clock
     from .domain.models import ThresholdVersion
@@ -813,14 +816,27 @@ def _unresolved(session: Session, organization_id: str, version: str,
             f"record_current_policies for it, and today's policy becomes "
             f"resolvable.")
 
-    minted_here = (kind, version) in _PRE_IMAGES
-    after_epoch = stamped_at is not None and clock.aware(stamped_at) >= epoch
-    if minted_here or after_epoch:
+    # ``(kind, version) in _PRE_IMAGES`` used to be a second reason to call this
+    # a gap — "this process minted that version itself". It is not evidence and
+    # a review caught why. A stamp is a content hash, so it is the same value
+    # for any organization whose policy holds the same numbers, and
+    # ``_PRE_IMAGES`` is deliberately org-blind because collision detection is.
+    # Worse, ``CommercialThresholds.version`` mints on every property access, so
+    # ``backtest.run`` computing a variant from a caller-supplied ``min_margin``
+    # puts a hypothetical policy's hash into that memo — one the organization
+    # may never have run. If the org genuinely *did* run at that floor before
+    # the epoch, its true PRE_EPOCH rows then resolved as POST_EPOCH_GAP,
+    # logging a recording-path bug that did not exist and flipping
+    # ``/api/health`` UNHEALTHY for the life of the process, across tenants.
+    #
+    # What survives is the test that is per-organization and persisted: the
+    # row's own stamp date against this organization's own recorded epoch. A row
+    # with no date cannot be placed and is reported as PRE_EPOCH, which is the
+    # true statement — history older than the registry is expected, finite and
+    # shrinking.
+    if stamped_at is not None and clock.aware(stamped_at) >= epoch:
         _POST_EPOCH_GAPS["count"] += 1
-        why = ("this process minted that version itself, so the registry was "
-               "demonstrably running when the stamp was taken"
-               if minted_here else
-               f"the row carrying it is dated {clock.iso(stamped_at)}, at or "
+        why = (f"the row carrying it is dated {clock.iso(stamped_at)}, at or "
                f"after the epoch")
         message = (
             f"{version} cannot be resolved for {organization_id}, and it is not "

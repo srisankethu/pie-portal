@@ -55,6 +55,7 @@ from .normalize import (
     normalize_product,
     normalize_purchase_order,
     normalize_quote_document,
+    unreadable_view_stamp,
     normalize_sales_order,
     normalize_stock,
     normalize_vendor,
@@ -98,6 +99,12 @@ class SyncReport:
     #: ``source_status`` is stored verbatim beside ``outcome``, so a GROUP BY
     #: on the pair names exactly which statuses fell through.
     quote_documents_undated: int = 0
+    #: Quotes kept whose ``client_viewed_time`` could not be placed on the UTC
+    #: line, so the open is recorded as unknown. The price of degrading that one
+    #: field instead of losing the document — see ``unreadable_view_stamp``.
+    #: Expected to be zero; a number that climbs means the source's stamps are
+    #: not what the parser thinks, and the fix is upstream.
+    quote_documents_unreadable_view: int = 0
     vendor_payments: int = 0
     credit_notes: int = 0
     #: Credit a *supplier* gave back. Counted separately from ``credit_notes``
@@ -280,6 +287,8 @@ class SyncReport:
             "sales_orders": self.sales_orders,
             "quote_documents": self.quote_documents,
             "quote_documents_undated": self.quote_documents_undated,
+            "quote_documents_unreadable_view":
+                self.quote_documents_unreadable_view,
             "vendor_payments": self.vendor_payments,
             "credit_notes": self.credit_notes,
             "vendor_credits": self.vendor_credits,
@@ -830,6 +839,8 @@ class SyncService:
             self.repo.upsert_quote_document(customer_id, q)
             if dropped_an_undated_decision(q, system=self.connector):
                 self.report.quote_documents_undated += 1
+            if unreadable_view_stamp(raw):
+                self.report.quote_documents_unreadable_view += 1
             self.report.quote_documents += 1
 
     def _sync_locations(self) -> None:

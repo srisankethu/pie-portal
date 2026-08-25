@@ -184,27 +184,60 @@ def test_an_unrecorded_stamp_does_not_resolve_to_todays_policy(session):
     assert registry.resolve(session, ORG, current.version).values["min_margin"] == 0.14
 
 
-def test_a_stamp_minted_after_the_epoch_and_never_recorded_is_a_named_defect(session):
+def test_a_row_stamped_after_the_epoch_and_never_recorded_is_a_named_defect(session):
     """PRE_EPOCH and POST_EPOCH_GAP are not the same news and must not read alike.
 
-    Missing history is expected and finite. A stamp minted while the registry
-    was demonstrably running and never recorded is a bug in the recording path,
-    and reporting it as history is the benign default §1 forbids.
+    Missing history is expected and finite. A row written *after* this
+    organization began recording, carrying a stamp nothing recorded, is a bug in
+    the recording path, and reporting it as history is the benign default §1
+    forbids.
+
+    The evidence is the stamped row's own date against this organization's own
+    epoch — both persisted, both per-tenant. It used to be "did this process
+    mint that version", which is neither: see ``_unresolved``.
     """
     _org(session)
     policy.save_for_org(session, ORG, {"min_margin": 0.10})
     session.commit()
 
-    # Minted in this process — proof the registry was live — but never recorded.
     orphan = replace(CommercialThresholds(), min_margin=0.4321).version
+    stamped = datetime.now(timezone.utc) + timedelta(minutes=1)
 
     with pytest.raises(registry.UnresolvedStamp) as caught:
-        registry.resolve(session, ORG, orphan)
+        registry.resolve(session, ORG, orphan, stamped_at=stamped)
 
     assert caught.value.reason == "POST_EPOCH_GAP"
     assert "bug in the recording path" in str(caught.value)
     assert registry.coverage(session, ORG).post_epoch_gaps == 1
     assert not registry.coverage(session, ORG).healthy
+
+
+def test_minting_a_variant_cannot_turn_another_orgs_history_into_a_defect(session):
+    """The regression a review found, and the reason ``minted_here`` is gone.
+
+    A stamp is a *content hash*, so two organizations running the same numbers
+    share it, and ``CommercialThresholds.version`` mints on every property
+    access — ``backtest.run`` computing a variant from a caller-supplied
+    ``min_margin`` therefore puts a policy this book may never have run into the
+    process-wide pre-image memo. Reading membership in that memo as proof the
+    registry was recording turned expected pre-epoch history into a logged
+    recording-path bug and flipped ``/api/health`` UNHEALTHY for the life of the
+    process, for every tenant at once.
+    """
+    _org(session)
+    policy.save_for_org(session, ORG, {"min_margin": 0.10})
+    session.commit()
+
+    # Exactly what a backtest does: mint a variant nobody necessarily ran.
+    minted = replace(CommercialThresholds(), min_margin=0.1234).version
+
+    # An undated pre-epoch row carrying that same stamp is missing history.
+    with pytest.raises(registry.UnresolvedStamp) as caught:
+        registry.resolve(session, ORG, minted)
+
+    assert caught.value.reason == "PRE_EPOCH"
+    assert registry.coverage(session, ORG).post_epoch_gaps == 0
+    assert registry.coverage(session, ORG).healthy
 
 
 def test_a_tenant_with_no_recorded_versions_says_so_rather_than_guessing(session):

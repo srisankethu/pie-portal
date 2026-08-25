@@ -975,11 +975,30 @@ def set_outcome(session: Session, org: str, *, quote_id: Optional[str] = None,
         # quote carry a stale reason from an earlier attempt at the form.
         row.loss_reason = loss_reason.value if loss_reason else None
         row.lost_to = (lost_to or "").strip()[:255] or None
-    if quote_document_ref is not None:
+    if quote_document_ref is not None and row.quote_document_ref is None:
         # Both keys on one row is the *normal* shape for a platform quote that
         # was pushed to the ERP, and it is the only thing that stops the same
         # quote being counted twice — once from the row a person wrote and once
         # from the document the pull read.
+        #
+        # But the reference is unique per organization, and the guard above only
+        # checks *this* row's claim to it. Another row may already hold it —
+        # somebody recorded the ERP quote from the Unanswered worklist before
+        # the platform quote was pushed — and writing it here raised an
+        # IntegrityError at the outer commit, after the Zoho estimate had been
+        # created, rolling the whole request back with a 500. Checked here, it
+        # is the domain refusal the caller already handles.
+        held = session.scalars(
+            select(models.QuoteOutcome).where(
+                models.QuoteOutcome.organization_id == org,
+                models.QuoteOutcome.quote_document_ref == quote_document_ref,
+                models.QuoteOutcome.quote_outcome_id
+                != row.quote_outcome_id)).first()
+        if held is not None:
+            raise QuoteOutcomeRepointed(
+                f"ERP quote {quote_document_ref} already has a recorded "
+                f"outcome of its own. Record this quote's outcome against its "
+                f"own reference, or correct the existing row.")
         row.quote_document_ref = quote_document_ref
     if note is not None:
         row.note = note[:1024]

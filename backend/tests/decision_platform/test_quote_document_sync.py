@@ -34,6 +34,7 @@ from app.commercial import quote_service
 from app.config import settings
 from app.domain import models
 from app.domain.enums import QuoteLossReason, QuoteOutcomeStatus
+from app.ingestion import normalize
 from app.ingestion.sync import SyncService
 from app.seed import SEED_PASSWORD
 
@@ -743,3 +744,43 @@ def test_the_job_reads_quotes_and_commits_at_the_phase_boundary(session, monkeyp
         "est-1": "WON", "est-2": "LOST", "est-3": "UNRECORDED",
         "est-4": "UNRECORDED"}
     assert (run.notes or {}).get("quotes") == {"read": 4, "undated_decisions": 1}
+
+
+def test_an_unreadable_view_stamp_costs_the_field_and_not_the_quote():
+    """The whole document used to go with it.
+
+    ``client_viewed_time`` is an optional read receipt. A stamp nothing could
+    place raised from ``_parse_timestamp``, the sync recorded a skip, and that
+    quote never reached ``quote_documents`` at all — no header, no total, no
+    status. It then appeared in no win-rate denominator and on no worklist,
+    which is the silent shrinking this pull exists to prevent.
+
+    Null is honest here because the only reader says so: ``insight/unrecorded``
+    refuses to read a missing open as "the customer never opened it".
+    """
+    raw = _quote("q-view", "sent", client_viewed_time="2026-05-04")  # naive
+
+    doc = normalize.normalize_quote_document(raw)
+
+    assert doc.external_ref == "q-view"
+    assert doc.total is not None
+    assert doc.client_viewed_at is None
+    # And the loss is countable rather than silent, the same bargain the date
+    # gate makes one function above.
+    assert normalize.unreadable_view_stamp(raw) is True
+
+
+def test_a_placeable_view_stamp_still_comes_through():
+    raw = _quote("q-view", "sent",
+                 client_viewed_time="2026-05-04T10:15:00+0530")
+
+    assert normalize.normalize_quote_document(raw).client_viewed_at is not None
+    assert normalize.unreadable_view_stamp(raw) is False
+
+
+def test_no_view_stamp_is_not_an_unreadable_one():
+    """A quote nobody opened and a quote whose open could not be read are
+    different facts, and only the second is worth investigating."""
+    assert normalize.unreadable_view_stamp(_quote("q1", "sent")) is False
+    assert normalize.unreadable_view_stamp(
+        _quote("q1", "sent", client_viewed_time="")) is False

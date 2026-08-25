@@ -65,7 +65,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ...domain import models
-from ...domain.enums import QuoteDocOutcome
+from ...domain.enums import QuoteDocOutcome, QuoteOutcomeStatus
+
+#: A quote is off this list once *somebody* has said how it ended — either
+#: source. These are the human table's endings; ``QuoteDocOutcome`` covers the
+#: ERP's.
+_RECORDED = (QuoteOutcomeStatus.WON.value, QuoteOutcomeStatus.LOST.value)
 
 #: The offer has lapsed: an expiry date is on record and the day has passed.
 #: The one group where "how long has this been sitting" is answerable.
@@ -186,6 +191,25 @@ def _load(session: Session, org: str,
           customer_ids: Optional[frozenset[str]]) -> list[models.QuoteDoc]:
     """Every quote with no recorded outcome this reader may see.
 
+    **Two sources of "recorded", and the first version of this read only knew
+    one of them.** ``QuoteDoc.outcome`` is the ERP's word, written by the sync
+    and by nothing else; ``QuoteOutcome`` is the row a person writes, and
+    ``quote_service`` deliberately never touches ``quote_documents`` — the two
+    write sets are disjoint *tables* rather than disjoint columns, which is the
+    right design and was the whole argument for the split.
+
+    The consequence, missed until a review caught it: filtering on
+    ``QuoteDoc.outcome`` alone meant recording a loss through the capture dialog
+    changed nothing this query could see. The quote came back on the next reload,
+    the headline count never moved, and re-recording it as WON answered 409. A
+    worklist whose stated purpose is to shrink could not be worked down at all —
+    and the screen exists to grow the six-loss sample §5.1 needs.
+
+    So the ERP's silence and the desk's silence are both required. A ``DRAFT`` or
+    ``SENT`` outcome row is *not* an ending and does not clear the quote: the
+    platform priced it and nobody has said how it went, which is precisely this
+    list's population.
+
     ``customer_ids`` is the caller's role scope: ``None`` means the whole book,
     a set means those accounts and nothing else. Scoping is decided in the
     router — that is where role lives — and applied here so a count taken
@@ -198,9 +222,20 @@ def _load(session: Session, org: str,
     stranger's quote on a salesperson's list. It stays visible unscoped, where
     somebody can attribute it.
     """
+    answered = (
+        select(models.QuoteOutcome.quote_outcome_id)
+        .where(models.QuoteOutcome.organization_id == org,
+               models.QuoteOutcome.quote_document_ref
+               == models.QuoteDoc.external_ref,
+               models.QuoteOutcome.status.in_(_RECORDED))
+        .exists())
     stmt = select(models.QuoteDoc).where(
         models.QuoteDoc.organization_id == org,
-        models.QuoteDoc.outcome == QuoteDocOutcome.UNRECORDED.value)
+        models.QuoteDoc.outcome == QuoteDocOutcome.UNRECORDED.value,
+        # Correlated NOT EXISTS rather than an outer join: the join would
+        # duplicate a quote if the human table ever held two rows for one
+        # reference, and this list's headline is a count.
+        ~answered)
     if customer_ids is not None:
         stmt = stmt.where(models.QuoteDoc.customer_id.in_(customer_ids))
     return list(session.scalars(stmt).all())

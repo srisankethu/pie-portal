@@ -42,6 +42,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from sqlalchemy import func, select
+
 from .. import clock, enquiry
 from ..authz import Principal, current_principal, require_manager_or_owner
 from ..db import get_session
@@ -241,14 +243,23 @@ def export_corpus(principal: Principal = Depends(require_manager_or_owner),
     Manager or owner. These rows are the tenant's customers' own words, routinely
     naming their project, their end customer, their volumes and their urgency.
     """
-    lines = enquiry.export(session, principal.organization_id)
-    if len(lines) > _EXPORT_CEILING:
+    # Counted before it is loaded. The ceiling used to be checked after
+    # ``enquiry.export`` had already read every line and every disposition row
+    # and built a dataclass per line — so the refusal fired only once the
+    # process had done exactly the work the ceiling exists to prevent, on rows
+    # that are raw customer text and are not small.
+    held = session.scalar(
+        select(func.count()).select_from(models.InboundLine)
+        .where(models.InboundLine.organization_id
+               == principal.organization_id)) or 0
+    if held > _EXPORT_CEILING:
         raise HTTPException(
             status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            f"{len(lines)} lines is past this endpoint's ceiling of "
+            f"{held} lines is past this endpoint's ceiling of "
             f"{_EXPORT_CEILING}. A truncated corpus is a benchmark run against "
             "a prefix and a coverage denominator that is quietly too small, so "
             "this refuses rather than trims — the fix is a paged export.")
+    lines = enquiry.export(session, principal.organization_id)
     return {
         "count": len(lines),
         "lines": [

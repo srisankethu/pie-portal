@@ -170,10 +170,13 @@ should state; setting them is work that happens in Zoho.
 1. **Estimates.** ~290 quotes with statuses, dates, salesperson and the
    business's own `cf_quote_type` / `cf_pricing_type` custom fields — and no
    `list_estimates` in `ingestion/zoho_client.py`. §5.1.
-2. **Vendor credits.** `11-procurement.md` records that `rg -ic "vendor.?credit"`
-   across `backend/` returns nothing, and that is where rebates live — the same
-   document argues a rebate treatment could make every per-line margin
-   understated and unevenly so across principals.
+2. **Vendor credits.** `11-procurement.md` recorded that `rg -ic "vendor.?credit"`
+   across `backend/` returned nothing, and that is where a rebate would land if
+   one ever did — the same document argues a rebate treatment could make every
+   per-line margin understated, and unevenly so across principals. Now read
+   (§7a.6), store-only: the platform holds the returns and price corrections and
+   still computes nothing from them, because whether a credit reduces cost at
+   all is an accountant's answer, not an engineer's.
 
 Both were previously framed as things the business should start recording. They
 are not. They are things the ERP is already recording and the platform has not
@@ -913,9 +916,19 @@ different owners and only the first is a backlog:
    unblocked from here forward rather than retroactively. It unblocked §5.25's
    named blocker too — but §5.25 has since been refused on power, so §4.4 is
    where this work earns its keep, and that is enough on its own.
-6. **Read vendor credits** (§2.1). Not machine learning at all, and it sits
-   upstream of every margin number the platform computes — see
-   `11-procurement.md` for what a rebate treatment does to per-line margin.
+6. ~~**Read vendor credits** (§2.1).~~ **SHIPPED, store-only.** Not machine
+   learning at all, and the purest case of the §2.1 rule: the ERP held 21 of
+   these across two books and the platform had never asked for them. Header and
+   bill grain, no line items — a credit line is negative cost against a product
+   and cost already has one owner in `CostRecord`, which is the same argument
+   `list_credit_notes` makes on the sell side. It **adjusts nothing**, and that
+   is the point: `11-procurement.md` §1 establishes that whether a rebate
+   reduces cost, reduces inventory or lands as income cannot be settled from
+   inside this repository, so what ships is the evidence that conversation needs
+   rather than a number that presumes its answer. One field was refused rather
+   than guessed — see `11-procurement.md` §3 for the unlabelled `date` on
+   `bills_credited` and why storing it as `applied_on` would have been a
+   fabricated timeline.
 7. ~~**Randomise a policy variant.**~~ **WITHDRAWN — it does not clear §3's
    bar, and this document had never applied that bar to it.** The two premises
    were true and the conclusion did not follow: the threshold hash *is* an

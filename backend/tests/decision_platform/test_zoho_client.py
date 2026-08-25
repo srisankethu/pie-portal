@@ -1099,3 +1099,68 @@ def test_a_throttled_itemdetails_batch_is_not_bisected(waits):
     with pytest.raises(ZohoThrottleError):
         list(src.list_item_locations(["i1", "i2", "i3", "i4"]))
     assert http.gets <= settings.ZOHO_MAX_RETRIES, "no bisection storm"
+
+
+def test_a_vendor_credit_reaches_the_platform_without_its_line_items():
+    """The projection is the refusal, so it is pinned here rather than argued.
+
+    Two independent reasons a vendor credit's lines stay out, and only the
+    first is shared with the sell side. A credit line is negative cost against a
+    product, and cost already has exactly one owner in ``CostRecord`` built from
+    bill lines — a second signed source for the same quantity is how two screens
+    start disagreeing about what stock cost. The second reason is specific to
+    these books: the lines carry ``bill_item_id: ""``, naming the item without
+    naming the bill line they correct, so any per-line attribution built on them
+    would be an inference wearing a fact's clothes (``11-procurement.md`` §3).
+
+    The bill linkage *is* exact and does come through, because that is the grain
+    the deferred cost adjustment will need when the accounting question behind
+    it is answered.
+    """
+    day = _today(5)
+    listing = {"code": 0, "vendor_credits": [
+        {"vendor_credit_id": "VC1", "date": day, "status": "closed"}],
+        "page_context": {"has_more_page": False}}
+    detail = {"code": 0, "vendor_credit": {
+        "vendor_credit_id": "VC1", "vendor_credit_number": "01/FY25",
+        "vendor_id": "V1", "date": day, "status": "closed",
+        "total": 483328, "balance": 0,
+        "line_items": [{"line_item_id": "L1", "item_id": "I9", "bill_item_id": "",
+                        "quantity": 512, "rate": 800, "item_total": 409600}],
+        "bills_credited": [{"vendor_credit_bill_id": "VCB1", "bill_id": "B1",
+                            "bill_number": "BN-1", "amount": 38394.46,
+                            "date": "2025-04-30"}]}}
+    row = list(_src(http=FakeHttp(
+        {"/vendorcredits/VC1": detail, "/vendorcredits": listing},
+    )).list_vendor_credits())[0]
+
+    assert "line_items" not in row
+    assert (row["vendor_credit_number"], row["vendor_id"]) == ("01/FY25", "V1")
+    assert (row["total"], row["balance"]) == (483328, 0)
+
+    application = row["bills_credited"][0]
+    assert (application["bill_id"], application["amount"]) == ("B1", 38394.46)
+    # Zoho's unlabelled ``date`` on this row is not carried either: its live
+    # values track the bills rather than the days the document's own system
+    # comments record the credit being applied. Passing it through would invite
+    # the next reader to store it as an application date.
+    assert "date" not in application
+
+
+def test_a_drafted_or_voided_vendor_credit_is_not_read_as_money_given_back():
+    """Same two excluded statuses as every other document, and for the same
+    reason: as far as this platform is concerned a void credit never happened."""
+    day = _today(5)
+    listing = {"code": 0, "vendor_credits": [
+        {"vendor_credit_id": "VC1", "date": day, "status": "draft"},
+        {"vendor_credit_id": "VC2", "date": day, "status": "void"},
+        {"vendor_credit_id": "VC3", "date": day, "status": "open"}],
+        "page_context": {"has_more_page": False}}
+    detail = {"code": 0, "vendor_credit": {
+        "vendor_credit_id": "VC3", "date": day, "status": "open",
+        "total": 100, "balance": 100, "bills_credited": []}}
+    rows = list(_src(http=FakeHttp(
+        {"/vendorcredits/VC3": detail, "/vendorcredits": listing},
+    )).list_vendor_credits())
+
+    assert [r["vendor_credit_id"] for r in rows] == ["VC3"]

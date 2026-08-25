@@ -124,6 +124,13 @@ REQUIRED_SCOPES: tuple[Permission, ...] = (
                "collected — so without this, liquidity and working capital "
                "cannot be computed from one side of the ledger.",
                required=False, reads=("vendor_payments",)),
+    Permission("ZohoBooks.vendorcredits.READ",
+               "Vendor credits — returns and price corrections a supplier "
+               "issued. Optional because nothing computes with them yet: they "
+               "are stored so a return can be seen against the purchases it "
+               "reverses, which is the evidence the rebate-treatment question "
+               "in `11-procurement.md` has to be argued from.",
+               required=False),
     Permission("ZohoBooks.purchaseorders.READ",
                "Purchase orders — what is on the way from suppliers, and how "
                "late. Feeds the Supply screen. Optional: without it, stock on "

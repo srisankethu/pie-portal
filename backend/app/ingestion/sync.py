@@ -46,6 +46,7 @@ from .normalize import (
     normalize_bill_terms,
     normalize_invoice_terms,
     normalize_credit_note,
+    normalize_vendor_credit,
     normalize_item_location,
     normalize_location,
     normalize_customer,
@@ -99,6 +100,11 @@ class SyncReport:
     quote_documents_undated: int = 0
     vendor_payments: int = 0
     credit_notes: int = 0
+    #: Credit a *supplier* gave back. Counted separately from ``credit_notes``
+    #: because the two answer different questions and a combined figure would
+    #: hide a pull that returned nothing: ``11-procurement.md`` found 21 vendor
+    #: credits in these books that the platform had never read.
+    vendor_credits: int = 0
     locations: int = 0
     stock_locations: int = 0
     documents_fetched: int = 0
@@ -234,6 +240,7 @@ class SyncReport:
                     or self.stock_snapshots or self.payments
                     or self.purchase_orders or self.sales_orders
                     or self.vendor_payments or self.credit_notes
+                    or self.vendor_credits
                     or self.locations or self.stock_locations)
 
     def merge(self, other: "SyncReport") -> "SyncReport":
@@ -275,6 +282,7 @@ class SyncReport:
             "quote_documents_undated": self.quote_documents_undated,
             "vendor_payments": self.vendor_payments,
             "credit_notes": self.credit_notes,
+            "vendor_credits": self.vendor_credits,
             "locations": self.locations,
             "stock_locations": self.stock_locations,
             "documents_fetched": self.documents_fetched,
@@ -605,6 +613,16 @@ class SyncService:
         if hasattr(self.source, "list_credit_notes"):
             self._supply_phase("Reading credit notes", "credit_note",
                                self._sync_credit_notes)
+        # Credit taken back from a supplier. Probed like the rest: it needs
+        # ``ZohoBooks.vendorcredits.READ``, a scope older connections were never
+        # authorised for, and a 401 here must not take the phases around it
+        # down. A connection that cannot read these loses the returns and price
+        # corrections a principal issued — visibly, as a recorded refusal, which
+        # is the state ``11-procurement.md`` found the whole platform silently
+        # in before this pull existed.
+        if hasattr(self.source, "list_vendor_credits"):
+            self._supply_phase("Reading vendor credits", "vendor_credit",
+                               self._sync_vendor_credits)
         # Where the business trades from, and what sits at each place. Probed
         # like the rest: a source written before locations existed simply does
         # not offer them, and the branch views say so rather than reporting one
@@ -901,6 +919,47 @@ class SyncService:
                 self.repo.upsert_credit_note_application(
                     row.credit_note_id, customer_id, app)
             self.report.credit_notes += 1
+
+    def _sync_vendor_credits(self) -> None:
+        """Vendor credits and the bills they were set against.
+
+        **No event is emitted, and nothing writes to cost.** The only state a
+        vendor credit could plausibly join is ``PAYABLES``, where it would be
+        wrong for the mirror of the reason credit notes stay out of
+        ``RECEIVABLES``: that fold reads ``BillDoc.balance``, which Zoho has
+        already netted applied credit out of, so folding these in as well would
+        subtract the same credit twice and understate what is owed. Stored as
+        plain rows and read directly.
+
+        Cost is the other thing this deliberately does not touch. Reducing a
+        line's cost by the credit that corrected it moves every per-line margin
+        in the platform and turns on an accounting question
+        ``11-procurement.md`` §1 puts to an accountant rather than to an
+        engineer. Ingesting first is what makes that conversation possible.
+        """
+        for raw in self.source.list_vendor_credits(
+                skip=self._skipper("vendorcredit")):
+            ref = str(raw.get("vendor_credit_id", "?"))
+            try:
+                vc, applications = normalize_vendor_credit(
+                    raw, system=self.connector)
+            except NormalizationError as e:
+                self.report.skip("vendor_credit", ref, e.code, e.detail)
+                continue
+            vendor_id = None
+            if vc.vendor_external_id:
+                vendor = self.repo.get_vendor_by_external(vc.vendor_external_id)
+                # Credit from a supplier the vendor pull did not return is still
+                # credit received. Kept with a null vendor rather than dropped,
+                # exactly as a credit note against an unknown customer is kept —
+                # dropping it would overstate what this book owes that supplier.
+                vendor_id = vendor.vendor_id if vendor else None
+            row = self.repo.upsert_vendor_credit(vendor_id, vc)
+            self.s.flush()
+            for app in applications:
+                self.repo.upsert_vendor_credit_application(
+                    row.vendor_credit_id, vendor_id, app)
+            self.report.vendor_credits += 1
 
     def _sync_vendor_payments(self) -> None:
         for raw in self.source.list_vendor_payments(

@@ -3483,6 +3483,111 @@ class CreditNoteApplication(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
+class VendorCreditDoc(Base):
+    """A vendor credit at header grain — what a supplier gave back, and by whom.
+
+    The buy-side mirror of ``CreditNoteDoc``, and the gap it closes is the one
+    ``11-procurement.md`` measured: ``rg -ic "vendor.?credit"`` across
+    ``backend/`` returned nothing while the SLS book held 13 of them, one worth
+    ₹4.83 lakh of returned stock. None of it reduced a line's cost, a
+    principal's slab base, or a supplier's credit-note rate, because none of it
+    was read.
+
+    **Store-only, on purpose.** ``CostRecord`` still has exactly one source —
+    the bill line — and nothing here writes to it. Two distinct effects wait on
+    this table and neither is taken here: a return ought to reduce the slab
+    base, and a bill-specific price credit ought to reduce the cost of the lines
+    it corrects. The second moves every per-line margin in the platform and
+    turns on the accrual-treatment question ``11-procurement.md`` §1 refers to
+    an accountant. It gets its own change and its own review.
+
+    **Not a second payable balance.** ``BillDoc.balance`` is what is owed and
+    Zoho has already netted applied credit out of it; folding these rows in as
+    well would subtract the same credit twice. Whatever reads this reads it
+    directly, the same way ``CreditNoteDoc`` is read.
+    """
+
+    __tablename__ = "vendor_credits"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "connector", "connection_id", "external_ref",
+                         name="uq_vendor_credit_source"),
+        Index("ix_vendor_credit_org_date", "organization_id", "date"),
+    )
+
+    vendor_credit_id: Mapped[str] = mapped_column(String(64), primary_key=True,
+                                                  default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    # Which system this document came from, and which connected company's book.
+    # The same triple every other synced document carries: an external
+    # reference is unique only inside the system that issued it, and only
+    # inside one company of that system.
+    connector: Mapped[Optional[str]] = mapped_column(String(32), index=True)
+    connection_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    external_ref: Mapped[str] = mapped_column(String(128), index=True)
+    number: Mapped[Optional[str]] = mapped_column(String(128))
+    vendor_id: Mapped[Optional[str]] = mapped_column(
+        String(64), ForeignKey("vendors.vendor_id"), index=True)
+    date: Mapped[date] = mapped_column(Date, index=True)
+    status: Mapped[str] = mapped_column(String(48), default="")
+    total: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
+    #: Credit raised but not yet set against any bill. Read from Zoho, never
+    #: derived as total minus the applications below — a refund against the
+    #: credit would make that subtraction overstate what is still available.
+    balance: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
+    source_ref: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
+                                                 onupdate=_now)
+
+
+class VendorCreditApplication(Base):
+    """One vendor credit set against one bill.
+
+    The grain the two deferred effects will need: a bill-specific price credit
+    is placed by the bill it names, and a return is attributed to a principal by
+    the credit it hangs off. One credit is routinely spread across several bills
+    — the Kennametal document above covers eight — so a header total alone
+    cannot say which purchase was corrected.
+
+    **Line attribution is deliberately absent, because it would be an
+    inference.** The credits in these books carry ``bill_item_id: ""`` — naming
+    the item but not the bill line it corrects — and the "Rate Difference"
+    credit names no item at all. Anything finer than this bill is guesswork
+    dressed as a fact, and ``11-procurement.md`` says so in as many words.
+
+    **There is no application date, and it is missing on purpose.** See
+    ``VendorCreditApplicationIn``: Zoho's ``bills_credited`` carries one
+    unlabelled ``date`` whose values match the bills rather than the days the
+    document's own system comments record the credit being applied. A column
+    named ``applied_on`` holding a bill's date is worse than no column.
+    """
+
+    __tablename__ = "vendor_credit_applications"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "connector", "connection_id", "external_ref",
+                         name="uq_vendor_credit_application_source"),
+        Index("ix_vendor_credit_app_org_bill",
+              "organization_id", "bill_external_ref"),
+    )
+
+    vendor_credit_application_id: Mapped[str] = mapped_column(String(64),
+                                                              primary_key=True,
+                                                              default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    connector: Mapped[Optional[str]] = mapped_column(String(32), index=True)
+    connection_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    external_ref: Mapped[str] = mapped_column(String(128), index=True)
+    vendor_credit_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("vendor_credits.vendor_credit_id"), index=True)
+    vendor_id: Mapped[Optional[str]] = mapped_column(
+        String(64), ForeignKey("vendors.vendor_id"), index=True)
+    bill_external_ref: Mapped[str] = mapped_column(String(128), index=True)
+    bill_number: Mapped[Optional[str]] = mapped_column(String(128))
+    amount_applied: Mapped[Any] = mapped_column(Numeric(18, 4))
+    source_ref: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
 class VendorPaymentDoc(Base):
     """Money out, at the payment grain.
 

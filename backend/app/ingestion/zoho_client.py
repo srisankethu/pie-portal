@@ -49,6 +49,9 @@ _EXCLUDED_BILL_STATUS = {"draft", "void"}
 #: back. Neither ever reduced a receivable, so neither belongs in a
 #: reconstruction of what was owed.
 _EXCLUDED_CREDIT_NOTE_STATUS = {"draft", "void"}
+#: Same two as every other document: a drafted or voided credit is not money
+#: given back, so as far as this platform is concerned it never happened.
+_EXCLUDED_VENDOR_CREDIT_STATUS = {"draft", "void"}
 
 
 @dataclass(frozen=True)
@@ -192,6 +195,9 @@ SCOPE_FOR_PATH: dict[str, str] = {
     # other connectors do.
     "estimates": "ZohoBooks.estimates.READ",
     "vendorpayments": "ZohoBooks.vendorpayments.READ",
+    # Credit taken back from a supplier. Its own scope, not `bills` — a
+    # connection that reads bills perfectly still 401s here.
+    "vendorcredits": "ZohoBooks.vendorcredits.READ",
     "users": "ZohoBooks.users.READ",
 }
 
@@ -1187,6 +1193,65 @@ class ZohoApiSource(ZohoTransport):
                     }
                     for li in (bill.get("line_items") or [])
                     if li.get("item_id")
+                ],
+            }
+
+    def list_vendor_credits(self,
+                            skip: Optional[SkipPredicate] = None,
+                            ) -> Iterable[dict[str, Any]]:
+        """Vendor credits, with the bills each was set against.
+
+        Read through ``_documents`` for the same reason ``list_credit_notes``
+        is: ``bills_credited`` lives on the detail payload, the list response
+        carries only ``applied_bills`` as a comma-joined string of bill
+        *numbers* with no amounts, and the detail call is one this helper is
+        already making.
+
+        **Line items are deliberately not passed through**, exactly as on the
+        sell side and for the mirrored reason. A vendor credit's lines would be
+        negative cost against a product, and cost already has one owner in
+        ``CostRecord`` built from bill lines; a second signed source for the
+        same quantity is how two screens start disagreeing about what stock
+        cost. There is a second reason here that the sell side does not have:
+        the lines in these books carry ``bill_item_id: ""``, so they name the
+        item without naming the bill line they correct, and any per-line
+        attribution built on them would be an inference presented as a fact.
+        See ``11-procurement.md`` §3.
+
+        What this pull is for is the *money*, at header and bill grain.
+        """
+        for vc in self._documents("vendorcredits", "vendor_credits",
+                                  "vendor_credit", "vendor_credit_id",
+                                  _EXCLUDED_VENDOR_CREDIT_STATUS, skip=skip):
+            yield {
+                "vendor_credit_id": str(vc.get("vendor_credit_id")),
+                "vendor_credit_number": vc.get("vendor_credit_number"),
+                "vendor_id": (str(vc["vendor_id"]) if vc.get("vendor_id") else None),
+                "date": vc.get("date"),
+                "last_modified_time": vc.get("last_modified_time"),
+                "status": vc.get("status"),
+                "total": vc.get("total"),
+                # What is still unapplied. Zoho's own figure — never derived
+                # from total minus the applications below, because a refund
+                # against the credit would make that subtraction overstate what
+                # the supplier still owes back.
+                "balance": vc.get("balance"),
+                "bills_credited": [
+                    {
+                        "vendor_credit_bill_id": bc.get("vendor_credit_bill_id"),
+                        "bill_id": str(bc.get("bill_id")),
+                        "bill_number": bc.get("bill_number"),
+                        "amount": bc.get("amount"),
+                        # Zoho's own ``date`` on this row is deliberately not
+                        # carried. It is unlabelled and its values track the
+                        # bills rather than the days the document's system
+                        # comments record the credit being applied — see
+                        # ``VendorCreditApplicationIn``. Passing it through
+                        # would invite the next reader to store it as an
+                        # application date.
+                    }
+                    for bc in (vc.get("bills_credited") or [])
+                    if bc.get("bill_id")
                 ],
             }
 

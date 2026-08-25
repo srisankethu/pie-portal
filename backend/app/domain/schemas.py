@@ -532,6 +532,88 @@ class CreditNoteApplicationIn(BaseModel):
         return v if isinstance(v, Decimal) else Decimal(str(v))
 
 
+class VendorCreditIn(BaseModel):
+    """A vendor credit's header — money a supplier gave back, at document grain.
+
+    The buy-side mirror of ``CreditNoteIn``, and read for a different reason. A
+    customer credit note was needed to reconstruct a *past* receivable; a vendor
+    credit is read because ``11-procurement.md`` measured ₹4.83 lakh of stock
+    returned on one Kennametal document alone and found that it reduces nothing
+    the platform computes — not the cost of a line, not a principal's slab base,
+    not a supplier's credit-note rate.
+
+    **This is store-only, and deliberately so.** Nothing here adjusts
+    ``CostRecord`` and nothing here feeds ``economics.line_economics``. Doing
+    that moves every per-line margin in the platform, and it turns on an
+    accounting question ``11-procurement.md`` §1 establishes cannot be settled
+    from inside this repository — whether a rebate is booked as income, as a
+    purchase reduction, or against inventory. Ingesting the evidence is what
+    lets that conversation happen against numbers rather than impressions.
+
+    ``balance`` is what remains unapplied, passed through exactly as Zoho states
+    it and never derived as ``total`` minus the applications below: a refund
+    against the credit (``vendor_credit_refunds``) would make that subtraction
+    overstate the credit still available.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    external_ref: str = Field(min_length=1)
+    number: Optional[str] = None
+    vendor_external_id: Optional[str] = None
+    date: date
+    status: str = ""
+    total: Optional[Decimal] = None
+    #: Credit raised but not yet set against any bill. ``None`` where Zoho did
+    #: not say — never coerced to 0, which would read as "fully applied".
+    balance: Optional[Decimal] = None
+    source_ref: SourceRef
+
+    @field_validator("total", "balance", mode="before")
+    @classmethod
+    def _to_decimal(cls, v: Any) -> Optional[Decimal]:
+        if v is None or v == "":
+            return None
+        return v if isinstance(v, Decimal) else Decimal(str(v))
+
+
+class VendorCreditApplicationIn(BaseModel):
+    """One vendor credit set against one bill.
+
+    **Carries no application date, and that is a refusal rather than an
+    omission.** ``CreditNoteApplicationIn`` has ``applied_on`` because Zoho's
+    ``invoices_credited`` states both the invoice's date and the application's.
+    ``bills_credited`` states one ``date`` and does not say which it is, and the
+    evidence points at the bill: on Kennametal ``01/FY25`` the eight
+    applications carry eight distinct dates spread over five months, while the
+    document's own system comments record every one of them applied on two days
+    in May 2026. Storing that under ``applied_on`` would put money on a timeline
+    it never sat on.
+
+    Nothing this table is for needs it. A return reducing a principal's slab
+    base is dated by the credit's own header date; a bill-specific price credit
+    is placed by the bill it names. So the ambiguous field is dropped rather
+    than guessed, and a re-sync rebuilds this table from Zoho if a later reader
+    settles the question and wants the column — which is the whole point of
+    ``ingestion/`` writing derived rows.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    external_ref: str = Field(min_length=1)
+    vendor_credit_external_ref: str = Field(min_length=1)
+    vendor_external_id: Optional[str] = None
+    bill_external_ref: str = Field(min_length=1)
+    bill_number: Optional[str] = None
+    amount_applied: Decimal
+    source_ref: SourceRef
+
+    @field_validator("amount_applied", mode="before")
+    @classmethod
+    def _amount_to_decimal(cls, v: Any) -> Decimal:
+        return v if isinstance(v, Decimal) else Decimal(str(v))
+
+
 class VendorPaymentIn(BaseModel):
     """One payment out. Amount is required — a payment with no amount is not a
     payment, and defaulting it to zero would understate cash out silently."""

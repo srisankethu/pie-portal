@@ -31,6 +31,7 @@ from ..domain.schemas import (BillIn, CostRecordIn, CreditNoteApplicationIn,
                              PaymentReceiptIn, ProductIn, PurchaseOrderIn,
                              QuoteDocIn, SalesOrderIn, SalesTxnIn, SourceRef,
                              StockLocationSnapshotIn, StockSnapshotIn, VendorIn,
+                             VendorCreditApplicationIn, VendorCreditIn,
                              VendorPaymentIn)
 
 #: The default ``system`` stamped into provenance, for callers written when
@@ -847,6 +848,66 @@ def normalize_credit_note(
             amount_applied=_parse_decimal(amount, ctx, "amount_applied"),
             source_ref=SourceRef(system=system, record_type="credit_note",
                                  record_id=note_id, line_id=invoice_ref),
+        ))
+    return header, applications
+
+
+def normalize_vendor_credit(
+    raw: dict[str, Any], *, system: str = ZOHO,
+) -> tuple[VendorCreditIn, list[VendorCreditApplicationIn]]:
+    """One vendor credit → its header, and each bill it was set against.
+
+    A tuple rather than a nested list, for the same reason
+    ``normalize_credit_note`` returns one: a credit raised and not yet applied
+    is a complete, valid record with an empty list, and nesting invites a reader
+    to treat the empty list as a parse failure. ``OP/C902273`` in the SLS book
+    is exactly that — ₹3.87 lakh open against Renishaw with no bill named.
+
+    **No application date is produced.** ``bills_credited`` carries one
+    unlabelled ``date`` per row and the evidence says it is the bill's, not the
+    application's; ``VendorCreditApplicationIn`` records the measurement. The
+    field is dropped rather than guessed, because a date stored under the wrong
+    name is worse than a date nobody has.
+    """
+    vc_id = str(_require(raw, "vendor_credit_id", "vendor credit"))
+    ctx = f"vendor credit {vc_id}"
+    vendor_ext = str(raw["vendor_id"]) if raw.get("vendor_id") else None
+    header = VendorCreditIn(
+        external_ref=vc_id,
+        number=(str(raw["vendor_credit_number"])
+                if raw.get("vendor_credit_number") else None),
+        vendor_external_id=vendor_ext,
+        date=_parse_date(_require(raw, "date", ctx), ctx),
+        status=str(raw.get("status") or ""),
+        total=raw.get("total"),
+        balance=raw.get("balance"),
+        source_ref=SourceRef(system=system, record_type="vendor_credit",
+                             record_id=vc_id),
+    )
+    applications: list[VendorCreditApplicationIn] = []
+    for i, a in enumerate(raw.get("bills_credited") or []):
+        bill_ref = str(a.get("bill_id") or "")
+        if not bill_ref:
+            # A credit naming no bill is unapplied credit, which the header's
+            # own ``balance`` already reports. Not an error, and not an
+            # application.
+            continue
+        amount = a.get("amount")
+        if amount in (None, ""):
+            # An application with no amount cannot reduce anything. Skipped
+            # rather than read as zero, which would assert the credit was
+            # applied for nothing.
+            continue
+        applications.append(VendorCreditApplicationIn(
+            external_ref=str(a.get("vendor_credit_bill_id")
+                             or f"{vc_id}:{bill_ref}:{i}"),
+            vendor_credit_external_ref=vc_id,
+            vendor_external_id=vendor_ext,
+            bill_external_ref=bill_ref,
+            bill_number=(str(a["bill_number"]) if a.get("bill_number") else None),
+            amount_applied=_parse_decimal(amount, ctx, "amount"),
+            source_ref=SourceRef(system=system, record_type="vendor_credit",
+                                 record_id=vc_id, line_id=bill_ref),
         ))
     return header, applications
 

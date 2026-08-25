@@ -24,7 +24,9 @@ from .domain.schemas import (BillIn, CostRecordIn, CreditNoteApplicationIn,
                             InvoiceIn, LocationIn, PaymentReceiptIn, ProductIn,
                             PurchaseOrderIn, QuoteDocIn, SalesOrderIn,
                             SalesTxnIn, StockLocationSnapshotIn,
-                            StockSnapshotIn, VendorIn, VendorPaymentIn)
+                            StockSnapshotIn, VendorIn,
+                            VendorCreditApplicationIn, VendorCreditIn,
+                            VendorPaymentIn)
 
 
 #: The shape ``clock.utc_stamp`` writes — ``2026-07-02T04:30:00Z``. In SQL LIKE,
@@ -1091,6 +1093,49 @@ class ReadModelRepository:
         row.invoice_number = app.invoice_number
         row.invoice_date = app.invoice_date
         row.applied_on = app.applied_on
+        row.amount_applied = app.amount_applied
+        row.source_ref = app.source_ref.model_dump()
+        return row
+
+    def upsert_vendor_credit(self, vendor_id: Optional[str],
+                             vc: VendorCreditIn) -> models.VendorCreditDoc:
+        """The vendor-credit header. Re-read on every pull that touches it, the
+        same as a customer credit note: ``status`` and ``balance`` move as the
+        credit is set against bills or refunded, and a row written once would
+        keep reporting credit as available long after it was spent."""
+        row = self._for_upsert(models.VendorCreditDoc, vc.external_ref,
+                               ref_col="external_ref")
+        if row is None:
+            row = models.VendorCreditDoc(organization_id=self.org,
+                                         external_ref=vc.external_ref,
+                                         connector=self.connector,
+                                         connection_id=self.connection_id)
+            self.s.add(row)
+        row.number = vc.number
+        row.vendor_id = vendor_id
+        row.date = vc.date
+        row.status = vc.status
+        row.total = vc.total
+        row.balance = vc.balance
+        row.source_ref = vc.source_ref.model_dump()
+        return row
+
+    def upsert_vendor_credit_application(
+        self, vendor_credit_id: str, vendor_id: Optional[str],
+        app: VendorCreditApplicationIn,
+    ) -> models.VendorCreditApplication:
+        """One vendor credit set against one bill."""
+        row = self._for_upsert(models.VendorCreditApplication, app.external_ref,
+                               ref_col="external_ref")
+        if row is None:
+            row = models.VendorCreditApplication(
+                organization_id=self.org, external_ref=app.external_ref,
+                connector=self.connector, connection_id=self.connection_id)
+            self.s.add(row)
+        row.vendor_credit_id = vendor_credit_id
+        row.vendor_id = vendor_id
+        row.bill_external_ref = app.bill_external_ref
+        row.bill_number = app.bill_number
         row.amount_applied = app.amount_applied
         row.source_ref = app.source_ref.model_dump()
         return row

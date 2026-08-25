@@ -25,11 +25,17 @@ settled from inside this repository.
 
 Three facts, each checkable:
 
-**The platform does not ingest vendor credits at all.** `rg -ic "vendor.?credit"`
-across `backend/` returns nothing. `ingestion/zoho_client.py` exposes contacts,
+**The platform did not ingest vendor credits at all.** `rg -ic "vendor.?credit"`
+across `backend/` returned nothing. `ingestion/zoho_client.py` exposed contacts,
 items, invoices, bills, vendors, customer payments, purchase orders, sales
-orders, vendor payments and users. There is no `/vendorcredits` endpoint and no
-`/creditnotes` endpoint.
+orders, vendor payments and users. There was no `/vendorcredits` endpoint.
+
+That is fixed — `list_vendor_credits`, `VendorCreditDoc` and
+`VendorCreditApplication` ship, at header and bill grain, store-only. The
+paragraph stays in the past tense on purpose: the measurement is what made the
+case, and deleting it would leave the recommendation with nothing behind it.
+**The conclusion below is unchanged by the fix**, because ingesting is not
+adjusting — see §5.3.
 
 **Cost has one source and nothing can adjust it afterwards.** `normalize_bill`
 emits `CostRecordIn.unit_cost` as the bill line's effective post-*line*-discount
@@ -261,15 +267,34 @@ booked, never as an allocation inside `economics.py`.
 
 ## 3. The buy-side concepts that earn their place
 
-**Ingest vendor credits.** Wrong today regardless of the rebate answer — a ₹4.83
-lakh stock return across eight bills reduces nothing the platform computes. Two
-distinct effects: returns should reduce the *slab base*, and bill-specific price
-credits should reduce the *cost* of affected lines. The honest difficulty is
-attribution: the credits examined carry `bill_item_id: ""`, naming the item but
-not the bill line, and the "Rate Difference" credit names no item at all. Line
-attribution is therefore an inference and must be stated as one, or held at
-document grain. Ingest and store first; adjusting cost moves every margin in the
-platform and deserves its own change and its own review.
+~~**Ingest vendor credits.**~~ **SHIPPED, store-only.** A ₹4.83 lakh stock
+return across eight bills reduced nothing the platform computed, because nothing
+read it. Two distinct effects were named and **neither is taken**: returns should
+reduce the *slab base*, and bill-specific price credits should reduce the *cost*
+of affected lines. What ships is the evidence, at header and bill grain.
+
+The attribution difficulty decided the schema. The credits examined carry
+`bill_item_id: ""`, naming the item but not the bill line, and the "Rate
+Difference" credit names no item at all — so line attribution would be an
+inference, and the pull **drops line items entirely**, the same way
+`list_credit_notes` does on the sell side and for a reason that mirrors it
+exactly: a credit line is negative cost against a product, and cost already has
+one owner in `CostRecord`. The bill linkage *is* exact and is stored, because
+that is the grain a later cost adjustment will need.
+
+One field was refused rather than stored. `bills_credited` carries a single
+unlabelled `date` per row, and on the Kennametal document its eight values are
+spread over five months while that document's own system comments record every
+application made on two days in May 2026 — so it is the bill's date, not the
+application's. A column named `applied_on` holding a bill's date is worse than no
+column, and nothing this table is for needs one: a return is dated by the
+credit's header, a price correction is placed by the bill it names. The table is
+derived by contract, so a re-sync adds the column if somebody later settles the
+question with Zoho.
+
+`test_a_vendor_credit_does_not_change_what_a_line_cost` is the assertion that
+keeps this honest, and its docstring says what it costs to break: the change that
+makes it fail owes the platform the accountant conversation in §1 first.
 
 **A rebate-aware principal P&L, kept out of line margin.** Once the treatment is
 known: revenue riding on each principal's product (`dependency.py` already
@@ -332,8 +357,10 @@ costs auditability.
    until 1, 2 and 6 are answered, and 6 gates the entire multi-entity strand.
 2. **The marginal number.** Needs no accounting answer and no new data. *Landed
    in this change.*
-3. **Ingest vendor credits**, store only. Independent of everything above, and it
-   corrects a real understatement that exists today.
+3. ~~**Ingest vendor credits**, store only.~~ **DONE.** Independent of
+   everything above, and it puts the evidence on the table the six questions
+   have to be argued over. It corrects no number, because correcting one is
+   step 4's job and step 1's answer decides which correction is right.
 4. **Then** the principal P&L and the negotiation pack.
 
 ---

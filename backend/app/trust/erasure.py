@@ -106,6 +106,13 @@ EXPORTED: tuple[tuple[str, Any], ...] = (
     # were charged.
     ("credit_notes", models.CreditNoteDoc),
     ("credit_note_applications", models.CreditNoteApplication),
+    # The buy-side mirror: credit a supplier gave back, and which bill each was
+    # set against. Exported on the same reasoning as the bills they reduce —
+    # a book handed back its purchases while its returns and price corrections
+    # were withheld would overstate what it paid, by exactly the amount that
+    # came back.
+    ("vendor_credits", models.VendorCreditDoc),
+    ("vendor_credit_applications", models.VendorCreditApplication),
     # ── what a person typed, which no re-sync can rebuild ───────────────────
     #
     # The most important group here and the least obvious. Everything above is

@@ -26,7 +26,7 @@ Nothing here changes a threshold, a confidence weight or a validator, and that
 is the point rather than an omission — a scorer tuned to emit non-zero
 confidence over ``GRADE_MISSING`` would be `CLAUDE.md` §1's "absence of evidence
 read as a pass", and would destroy the measurement it appeared to improve.
-``tests/decision_platform/test_confidence_config_unchanged.py`` pins that.
+``backend/tests/test_confidence_config_unchanged.py`` pins that.
 
 Reads the corpus and writes nothing but its report.
 

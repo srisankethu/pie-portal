@@ -173,3 +173,50 @@ def test_one_customer_s_confirmation_does_not_answer_for_another(session):
     assert pie_service.resolve(CODE, IDENTITY, None, store).supplyCode == "2001174"
     # Same code, a different real-world customer: still unknown.
     assert pie_service.resolve(CODE, "identity-someone-else", None, store).rel == "UNRESOLVED"
+
+
+@pytest.mark.requires_pie
+def test_the_fingerprint_is_computed_once_per_store(session, monkeypatch):
+    """It is in a cache *key*, so it runs per line unless it is memoised.
+
+    ``pie_service.resolve`` builds a key per resolved line and the key carries
+    this digest, so a 200-line RFQ against 5,000 confirmed mappings hashed a
+    million fields purely to look something up — added work on the exact hot
+    path the cache exists to make faster. The method's own docstring claimed it
+    ran "once per resolution batch", which was simply not true of any caller.
+
+    Memoised on the store rather than fixed at the call site, because
+    ``_by_key`` is built in ``__init__`` and never mutated afterwards: the
+    answer cannot change under a caller, and every caller wants the same one.
+    """
+    import hashlib as _hashlib
+
+    from app.identity import mapping_store as module
+
+    _confirm(session)
+    store = OrgMappingStore(session, ORG)
+
+    built = []
+    real = _hashlib.sha256
+    monkeypatch.setattr(module.hashlib, "sha256",
+                        lambda *a, **k: (built.append(1), real(*a, **k))[1])
+
+    first = store.fingerprint()
+    for _ in range(50):
+        assert store.fingerprint() == first
+
+    assert len(built) == 1, (
+        f"the digest was rebuilt {len(built)} times for one snapshot")
+
+
+@pytest.mark.requires_pie
+def test_two_stores_over_different_mappings_still_fingerprint_differently(
+        session):
+    """The memo must not become a shared answer. A confirmation that supersedes
+    another leaves the row count identical while changing what the store
+    answers, which is the whole reason this is content and not a count."""
+    store_before = OrgMappingStore(session, ORG)
+    _confirm(session)
+    store_after = OrgMappingStore(session, ORG)
+
+    assert store_before.fingerprint() != store_after.fingerprint()

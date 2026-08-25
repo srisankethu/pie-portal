@@ -481,6 +481,10 @@ class CommercialPolicy(Base):
     Reproducibility survives editing because ``CommercialThresholds.version`` is
     a content hash: an edited policy has a different version, and every metric
     row, signal and quote snapshot already records the version that produced it.
+    Where such a version *dereferences* — the values behind the hash, not merely
+    the fact that they differ — is ``threshold_versions`` below, because this
+    row holds only today's overrides and only the half of the policy an owner
+    can edit.
     """
 
     __tablename__ = "commercial_policies"
@@ -490,6 +494,106 @@ class CommercialPolicy(Base):
     updated_by_user_id: Mapped[Optional[str]] = mapped_column(String(64))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
                                                  onupdate=_now)
+
+
+class ThresholdVersion(Base):
+    """What a ``ci_…`` or ``th_…`` stamp actually stood for.
+
+    Every computed row in this schema carries a threshold version, and until
+    this table existed none of them could be *dereferenced*: the stamp is a
+    truncated sha256 of the whole threshold dataclass, so an approval carrying
+    ``ci_9f3a…`` proved it had been judged under a policy different from
+    today's and could not say which. ``commercial_policies`` cannot answer it
+    either — that row is mutable, holds only the owner-editable half, and the
+    environment-derived half (window lengths, evidence floors, ``CI_RECENT_DAYS``)
+    never passed through it at all. This table holds the exact bytes that were
+    hashed, written in the same transaction as the first row ever stamped with
+    them, so the answer is verifiable by re-hashing rather than trusted.
+
+    **The primary key is ``(organization_id, version)``, not ``version``.**
+    A shared, version-only key would store each blob once and is the shape most
+    readers reach for first; it was rejected because ``first_seen_at`` only
+    means anything per organization. The epoch — this tenant's earliest sighting
+    of a stamp of a given kind — is what separates "stamped before the registry
+    existed, expected and finite" from "a stamp reached a row without being
+    recorded, which is a bug in the recording path". Under a shared key an
+    organization onboarded last week would inherit another tenant's six-month-old
+    epoch and report its own genuine recording gaps as expected history, which
+    is exactly the benign default §1 forbids. The stamp is already a per-org
+    artefact in any case: ``policy._in_org_locale`` folds the organization's
+    currency and timezone into the hash before it is taken.
+
+    The cost is real and is recorded here rather than discovered later: two
+    tenants on identical policy store the same blob twice, every resolution
+    needs an organization to resolve *within*, and "which tenants run this
+    policy" becomes a scan instead of a lookup. Narrow-first is the reversible
+    direction — a per-org table can be widened to a shared one later, while a
+    shared one cannot be split back into per-org epochs that were never recorded.
+
+    Nothing is ever updated here. A row is written once, by whichever recorder
+    saw the version first, and re-recording is a no-op.
+    """
+
+    __tablename__ = "threshold_versions"
+
+    #: No ``ForeignKey`` to ``organizations``, deliberately. ``CommercialPolicy``
+    #: directly above — the closest sibling and the same tenant-scoped shape —
+    #: has none either. This is bookkeeping that rides inside somebody else's
+    #: business transaction, and an FK here could make a quote save fail on a
+    #: constraint about a registry row, which inverts the priority: the stamped
+    #: row is the thing that must commit.
+    organization_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+
+    #: The stamp as it appears on a computed row: ``ci_`` or ``th_`` plus ten
+    #: hex characters. 64 rather than the 13 a value needs, matching the widest
+    #: existing stamp column (``BusinessState.thresholds_version``) so a join
+    #: never compares two different widths.
+    version: Mapped[str] = mapped_column(String(64), primary_key=True)
+
+    #: "commercial" | "signal". Derivable from the ``ci_``/``th_`` prefix, and
+    #: stored anyway because both real queries — the per-kind epoch and the
+    #: per-kind history listing — filter on it, and a ``LIKE 'ci_%'`` is both
+    #: unindexable in the general case and a place where ``_`` is a wildcard.
+    #: Do not delete it as redundant; it is denormalised on purpose.
+    kind: Mapped[str] = mapped_column(String(16))
+
+    #: The exact bytes that were hashed: ``json.dumps(asdict(th), sort_keys=True)``.
+    #: ``Text`` rather than ``JSON`` because the row must be self-verifying —
+    #: re-hashing has to see the same byte sequence the stamp was taken over,
+    #: and a round-trip through SQLAlchemy's JSON encoder is free to reorder
+    #: keys or respell a float and would break the one check that makes this
+    #: table trustworthy.
+    values_json: Mapped[str] = mapped_column(Text)
+
+    #: The untruncated sha256 of ``values_json``. Not derivable from ``version``,
+    #: which keeps only the first ten hex characters — 40 bits, which is a
+    #: birthday collision somewhere around a million distinct policies per
+    #: tenant. Storing the full digest is what makes such a collision *detectable*
+    #: at resolve time rather than silently served as the wrong policy.
+    content_digest: Mapped[str] = mapped_column(String(64), default="")
+
+    #: When this organization was first *seen* using this version. A sighting,
+    #: not an effective date: the recorders fire when a stamp is loaded, saved
+    #: or flushed, so a policy in force for months before the registry shipped
+    #: is first seen on the day it ships. Renaming this ``effective_from`` would
+    #: manufacture a timeline out of a sighting log and invite readers to date
+    #: a decision from it.
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),
+                                                    default=_now)
+
+    #: Which recorder got here first: "stamp" (a flush carrying the version),
+    #: "boot" (the startup backfill of the current policy), "edit"
+    #: (``policy.save_for_org``). Diagnostic only — it says how a version came
+    #: to be known, never how authoritative it is.
+    first_seen_via: Mapped[str] = mapped_column(String(16), default="stamp")
+
+    __table_args__ = (
+        # The primary key already serves resolution. This one serves the other
+        # two reads: the per-kind epoch (``MIN(first_seen_at)``) and the history
+        # listing for one tenant.
+        Index("ix_threshold_version_org_kind_seen",
+              "organization_id", "kind", "first_seen_at"),
+    )
 
 
 class User(Base):
@@ -1311,7 +1415,11 @@ class Signal(Base):
     subject_entity_id: Mapped[str] = mapped_column(String(160), index=True)
     detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     detector_version: Mapped[str] = mapped_column(String(32))
-    threshold_config_version: Mapped[str] = mapped_column(String(32))
+    threshold_config_version: Mapped[str] = mapped_column(
+        # ``"either"``: a Signal Engine detector stamps ``th_…`` while a
+        # Customer × Item detector stamps ``ci_…``, and both land in this
+        # one column. The registry reads the kind off the prefix.
+        String(32), info={"policy_stamp": "either"})
     window: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     metrics: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     severity_base: Mapped[int] = mapped_column(Integer, default=0)
@@ -1783,7 +1891,8 @@ class CustomerItemMetric(Base):
     cost_missing_txns: Mapped[int] = mapped_column(Integer, default=0)
 
     # ── provenance ───────────────────────────────────────────────────────────
-    thresholds_version: Mapped[str] = mapped_column(String(32), default="")
+    thresholds_version: Mapped[str] = mapped_column(
+        String(32), default="", info={"policy_stamp": "commercial"})
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
@@ -1844,7 +1953,8 @@ class ApprovalRequest(Base):
     # Append-only conversation: [{at, user_id, name, action, note}]
     thread: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
 
-    thresholds_version: Mapped[str] = mapped_column(String(32), default="")
+    thresholds_version: Mapped[str] = mapped_column(
+        String(32), default="", info={"policy_stamp": "commercial"})
 
 
 class OrgPolicy(Base):
@@ -1953,7 +2063,8 @@ class QuoteDecision(Base):
     overridden_exception_codes: Mapped[list[str]] = mapped_column(JSON, default=list)
 
     # ── provenance ───────────────────────────────────────────────────────────
-    thresholds_version: Mapped[str] = mapped_column(String(32), default="")
+    thresholds_version: Mapped[str] = mapped_column(
+        String(32), default="", info={"policy_stamp": "commercial"})
     engine_version: Mapped[str] = mapped_column(String(32), default="")
     # Which pie-parser catalogue resolved the product on this line. Distinct
     # from `engine_version` above, which names the quote-intelligence engine:
@@ -1975,17 +2086,60 @@ class QuoteOutcome(Base):
     line. Kept in its own table precisely so that ``QuoteDecision`` can stay
     append-only: the outcome is learned later and must be mutable, the priced
     facts were true at the time and must not be.
+
+    **The one table here a human writes and no sync touches.** Everything a
+    person supplies about how a quote ended — the loss reason, who took it, the
+    note — lives on this row and nowhere else, because ``quote_documents`` is
+    rewritten wholesale from the ERP payload on every pull and anything typed
+    into it would survive exactly until the next one. ``ingestion/`` never
+    opens this table.
+
+    A row names one of two documents, and exactly one:
+
+    * a **platform quote** — ``quote_id`` set, and ``quote_document_ref``
+      filled in at the moment the quote is pushed to the ERP, which is when the
+      platform learns which ERP document its own quote became;
+    * an **ERP-raised quote** the platform never priced — ``quote_id`` NULL,
+      ``quote_document_ref`` set.
+
+    ``quote_id`` is therefore nullable, and NULL is the honest encoding of
+    "there is no platform quote" rather than a sentinel that would have to be
+    excluded by every reader. NULLs are distinct in a unique index on both
+    SQLite and PostgreSQL, so the two constraints below coexist over the same
+    table with no partial index and nothing backfilled.
+
+    "At least one of the two is set" is enforced in
+    ``commercial.quote_service.set_outcome``, which is provably the only writer,
+    rather than by a CHECK constraint: this repo has no CHECK precedent and
+    ``compare_metadata`` does not compare them, so the drift test could never
+    police one.
     """
 
     __tablename__ = "quote_outcomes"
     __table_args__ = (
         UniqueConstraint("organization_id", "quote_id", name="uq_quote_outcome_org_quote"),
+        UniqueConstraint("organization_id", "quote_document_ref",
+                         name="uq_quote_outcome_org_document"),
     )
 
     quote_outcome_id: Mapped[str] = mapped_column(String(64), primary_key=True,
                                                   default=_uuid)
     organization_id: Mapped[str] = mapped_column(String(64), index=True)
-    quote_id: Mapped[str] = mapped_column(String(64), index=True)
+    #: The platform quote this describes. NULL for a quote raised directly in
+    #: the ERP, which the platform reads but never priced.
+    quote_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    #: The ERP document this describes: ``QuoteDoc.external_ref``, a *value* the
+    #: source system issued — never ``QuoteDoc.quote_document_id``, which is a
+    #: surrogate minted at insert. That is what makes a rebuild safe: ``DELETE
+    #: FROM quote_documents`` plus a full re-sync re-mints every surrogate and
+    #: every pointer here still resolves. Written the same way, and for the same
+    #: reason, as ``PaymentApplication.invoice_external_ref``.
+    #:
+    #: It can dangle — an estimate deleted in the ERP, or one that falls outside
+    #: the sync window, leaves a pointer matching no row. That is surfaced as a
+    #: counted data-quality figure and never auto-cleaned: deleting a human's
+    #: recorded loss reason because a document went missing is the larger loss.
+    quote_document_ref: Mapped[Optional[str]] = mapped_column(String(128), index=True)
     customer_ref: Mapped[str] = mapped_column(String(255), default="")
     customer_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
 
@@ -2075,7 +2229,13 @@ class QuoteDocument(Base):
     #: row keeps the version that judged it — the same rule approvals and
     #: snapshots follow, and the reason a past send stays explainable after the
     #: margin policy is edited.
-    thresholds_version: Mapped[str] = mapped_column(String(64), default="")
+    #:
+    #: Marked, so ``threshold_registry`` records its pre-image on the flush that
+    #: writes it. Without the marker the stamp is stored and the values behind
+    #: it are not, which makes the row an audit trail of a hash — the exact
+    #: state the registry was built to end.
+    thresholds_version: Mapped[str] = mapped_column(
+        String(64), default="", info={"policy_stamp": "commercial"})
     written_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
@@ -2162,7 +2322,13 @@ class OutcomeSnapshot(Base):
     #: The signal's ``window`` — which periods the baseline was measured over,
     #: so a realised figure can say whether its window is comparable.
     baseline_window: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
-    thresholds_version: Mapped[str] = mapped_column(String(32), default="")
+    thresholds_version: Mapped[str] = mapped_column(
+        # ``"either"`` and not ``"commercial"``: this column is copied verbatim
+        # from the signal, so it holds ``th_…`` as often as ``ci_…``. The
+        # registry derives the kind from the prefix for exactly this reason —
+        # a marker asserting the wrong kind would make every engine-signal
+        # acceptance look like an unrecorded commercial policy.
+        String(32), default="", info={"policy_stamp": "either"})
     horizon_days: Mapped[int] = mapped_column(Integer)
     accepted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     accepted_by_user_id: Mapped[Optional[str]] = mapped_column(String(64))
@@ -2258,7 +2424,8 @@ class ValueEvent(Base):
     # A rollup for last month must include an event detected today about a quote
     # won three weeks ago, so every window query reads this column.
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
-    thresholds_version: Mapped[str] = mapped_column(String(32), default="")
+    thresholds_version: Mapped[str] = mapped_column(
+        String(32), default="", info={"policy_stamp": "commercial"})
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     #: Set when a later detection run measured this same fact differently — a
     #: line repriced again, so the earlier amount is now an understatement. The
@@ -2309,7 +2476,8 @@ class EvaluationBaseline(Base):
 
     metrics: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     evidence_gaps: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
-    thresholds_version: Mapped[str] = mapped_column(String(32), default="")
+    thresholds_version: Mapped[str] = mapped_column(
+        String(32), default="", info={"policy_stamp": "commercial"})
 
 
 # ── Identity layer ───────────────────────────────────────────────────────────
@@ -2716,7 +2884,13 @@ class AuditEntry(Base):
     #: ``CommercialThresholds`` or ``th_…`` from ``SignalThresholds``. §1: these
     #: are different stamps and must not be read as one, so the value carries
     #: its own prefix and ``detail`` says which question it answers.
-    thresholds_version: Mapped[Optional[str]] = mapped_column(String(32))
+    #:
+    #: ``"either"`` rather than a fixed kind, because this column genuinely
+    #: carries both: ``kind_of`` reads the prefix off the value. A signed,
+    #: append-only entry is precisely the row that must stay explainable after
+    #: the policy behind it is edited.
+    thresholds_version: Mapped[Optional[str]] = mapped_column(
+        String(32), info={"policy_stamp": "either"})
 
     #: Which process wrote it (``leases.holder_id()``). Not part of authority —
     #: it is there so a break in the chain can be placed against a deployment.
@@ -3051,6 +3225,142 @@ class SalesOrderDoc(Base):
     shipped_status: Mapped[Optional[str]] = mapped_column(String(48))
     total: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
     salesperson_external_id: Mapped[Optional[str]] = mapped_column(String(64))
+    source_ref: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
+                                                 onupdate=_now)
+
+
+class QuoteDoc(Base):
+    """A quote as an ERP raised it — what was offered, and how the ERP says it
+    ended.
+
+    The demand-side document the platform has never read. ``SalesOrderDoc`` is
+    what a customer committed to; this is everything that was *offered*,
+    including the majority nobody ordered. Without it a win rate has no
+    denominator — the invoiced side is visible and the declined side is not, so
+    every rate computed from what exists is computed over the winners.
+
+    **Named ``erp_quotes``, not ``quote_documents``.** That name belongs to a
+    table pointing the other way — ``QuoteDocument`` records a quote *this
+    platform wrote into* a source system, and it landed on main while this was
+    on a branch. Two tables called "quote document" in opposite directions is
+    exactly the collision the merge found, and the released one keeps the name.
+    ``erp_quotes`` also says the direction out loud, which the old name did not.
+
+    Header grain, like ``SalesOrderDoc`` and for the same reason: the line-level
+    split would cost one API call per quote and answers a question this does not
+    ask.
+
+    **Two status columns, and both earn their place.** ``source_status`` is the
+    ERP's own word carried verbatim, never mapped on the way in; ``outcome`` is
+    this platform's classification of it, produced by
+    ``ingestion.normalize.classify_outcome``. Keeping only the first would put
+    the WON/LOST mapping in every reader that ever asks, and the third copy of
+    that mapping is the one that reads ``expired`` as a loss. Keeping only the
+    second would make the classification unauditable — a GROUP BY on the pair is
+    what shows which statuses fell through and why. ``outcome`` is NOT NULL with
+    a default of ``UNRECORDED`` rather than nullable, because a nullable
+    classification invites a ``COALESCE`` at the point of reading and silence
+    would start meaning whatever the last reader chose.
+
+    **Derived, and rewritten wholesale.** ``upsert_quote_document`` assigns every
+    column below from the payload on every sync, unconditionally — so a
+    human-supplied fact stored here would survive exactly until the next pull,
+    the same trap ``VendorPaymentTerm`` exists to avoid on the vendor side. That
+    is why there is no ``loss_reason``, no ``lost_to`` and no ``note`` column
+    here, and why there is no endpoint that writes this table: why a quote was
+    lost is a human fact, it lives on ``quote_outcomes``, which no sync opens,
+    and the two are joined by ``QuoteOutcome.quote_document_ref`` holding this
+    row's ``external_ref``. A *value* pointer, deliberately — ``DELETE FROM
+    quote_documents`` followed by a full re-sync re-mints every
+    ``quote_document_id`` here and every human pointer still resolves, which is
+    what makes the harshest rebuild safe. ``PaymentApplication.invoice_external_ref``
+    is written the same way for the same reason.
+
+    No cost, no margin, no unit economics, and no count or flag that answers a
+    margin question. ``total`` is the quote's own selling total — the number
+    that was put in front of the customer — so there is no column here a role
+    projection would have to withhold, and therefore none that can be forgotten.
+    Currency is refused at the ingestion seam like every other document table
+    rather than stored.
+    """
+
+    __tablename__ = "erp_quotes"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "connector", "connection_id", "external_ref",
+                         name="uq_erp_quote_source"),
+        Index("ix_erp_quotes_org_outcome", "organization_id", "outcome"),
+        Index("ix_erp_quotes_org_date", "organization_id", "date"),
+    )
+
+    quote_document_id: Mapped[str] = mapped_column(String(64), primary_key=True,
+                                                   default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    # Which system this document came from, and which connected company's
+    # book. The same triple the master tables carry: an external reference is
+    # unique only inside the system that issued it, and only inside one company
+    # of that system. Nullable because a row written before this existed cannot
+    # be attributed after the fact — see the migration for why nothing is
+    # backfilled.
+    connector: Mapped[Optional[str]] = mapped_column(String(32), index=True)
+    connection_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    #: The id the ERP gave this quote. Also the value ``quote_outcomes`` points
+    #: at, which is why it is indexed on its own as well as inside the source
+    #: uniqueness constraint.
+    external_ref: Mapped[str] = mapped_column(String(128), index=True)
+    number: Mapped[Optional[str]] = mapped_column(String(128))
+    #: The ERP's ``reference_number`` — usually the customer's own enquiry or RFQ
+    #: number, typed in by whoever raised the quote. The only string on the row
+    #: that points back at inbound demand, which is why it is indexed.
+    source_reference: Mapped[Optional[str]] = mapped_column(String(128), index=True)
+    customer_id: Mapped[Optional[str]] = mapped_column(String(64),
+                                                       ForeignKey("customers.customer_id"),
+                                                       index=True)
+    #: The ERP's own ``customer_name``, kept even when ``customer_id`` resolves.
+    #: A quote to a customer the contact pull did not return is still a quote,
+    #: and dropping it would lose exactly the rows worth chasing.
+    customer_ref: Mapped[str] = mapped_column(String(255), default="")
+    date: Mapped[date] = mapped_column(Date, index=True)
+    #: When the offer lapses. Stored rather than derived from an assumed
+    #: validity, because "sent last week, awaiting a reply" and "expired in March
+    #: and nobody knows" are the two halves of the unrecorded pile and this is
+    #: the only field that separates them. Whether a quote is *past* expiry is
+    #: computed on read against the day it is asked, never stored: that answer
+    #: changes daily and a frozen one is wrong by tomorrow.
+    expires_on: Mapped[Optional[date]] = mapped_column(Date)
+    #: The ERP's own word for the state of this quote, verbatim and unmapped.
+    source_status: Mapped[str] = mapped_column(String(48), default="")
+    #: A ``QuoteDocOutcome``: WON, LOST or UNRECORDED. Silence is UNRECORDED and
+    #: never LOST — ``expired`` spans "nobody worked it", "the customer never
+    #: answered" and "we lost it to a competitor", and only one of those is a
+    #: loss. See ``classify_outcome`` for the two positive allowlists.
+    outcome: Mapped[str] = mapped_column(String(16), default="UNRECORDED")
+    #: The date the ERP recorded the decision on. Non-null whenever ``outcome``
+    #: is not UNRECORDED, because a decided quote with no date is not usable as
+    #: evidence — ``DecidedQuote.decided_on`` is a required date and the readers
+    #: already skip an undated decision. The classifier refuses to call such a
+    #: quote decided at all, and the sync counts how often that happens rather
+    #: than letting it pass silently.
+    decided_on: Mapped[Optional[date]] = mapped_column(Date)
+    #: The quote's own selling total. Not a cost, not a margin. NULL where the
+    #: ERP gave none, and a NULL is excluded from a value sum and counted, never
+    #: read as zero.
+    total: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
+    salesperson_external_id: Mapped[Optional[str]] = mapped_column(String(64))
+    #: When the customer opened it, where the ERP tracks that. NULL means nobody
+    #: has opened it, and that is read as a fact rather than as missing data —
+    #: which is why normalisation rejects an unplaceable stamp instead of nulling
+    #: it. It is deliberately *not* an input to the outcome classification: a
+    #: customer reading a quote is not a customer deciding on one.
+    client_viewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    #: The business's own taxonomy on the quote — Zoho's ``cf_quote_type``,
+    #: ``cf_pricing_type``, ``cf_procurement_type`` and the branch it was raised
+    #: at — verbatim, keys and values as the source wrote them. A JSON bag rather
+    #: than typed columns because one tenant's ERP configuration is not a schema
+    #: every connector has to share, and an absent key stays absent: "not set" is
+    #: not a category.
+    attributes: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     source_ref: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
@@ -3450,6 +3760,111 @@ class CreditNoteApplication(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
+class VendorCreditDoc(Base):
+    """A vendor credit at header grain — what a supplier gave back, and by whom.
+
+    The buy-side mirror of ``CreditNoteDoc``, and the gap it closes is the one
+    ``11-procurement.md`` measured: ``rg -ic "vendor.?credit"`` across
+    ``backend/`` returned nothing while the SLS book held 13 of them, one worth
+    ₹4.83 lakh of returned stock. None of it reduced a line's cost, a
+    principal's slab base, or a supplier's credit-note rate, because none of it
+    was read.
+
+    **Store-only, on purpose.** ``CostRecord`` still has exactly one source —
+    the bill line — and nothing here writes to it. Two distinct effects wait on
+    this table and neither is taken here: a return ought to reduce the slab
+    base, and a bill-specific price credit ought to reduce the cost of the lines
+    it corrects. The second moves every per-line margin in the platform and
+    turns on the accrual-treatment question ``11-procurement.md`` §1 refers to
+    an accountant. It gets its own change and its own review.
+
+    **Not a second payable balance.** ``BillDoc.balance`` is what is owed and
+    Zoho has already netted applied credit out of it; folding these rows in as
+    well would subtract the same credit twice. Whatever reads this reads it
+    directly, the same way ``CreditNoteDoc`` is read.
+    """
+
+    __tablename__ = "vendor_credits"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "connector", "connection_id", "external_ref",
+                         name="uq_vendor_credit_source"),
+        Index("ix_vendor_credit_org_date", "organization_id", "date"),
+    )
+
+    vendor_credit_id: Mapped[str] = mapped_column(String(64), primary_key=True,
+                                                  default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    # Which system this document came from, and which connected company's book.
+    # The same triple every other synced document carries: an external
+    # reference is unique only inside the system that issued it, and only
+    # inside one company of that system.
+    connector: Mapped[Optional[str]] = mapped_column(String(32), index=True)
+    connection_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    external_ref: Mapped[str] = mapped_column(String(128), index=True)
+    number: Mapped[Optional[str]] = mapped_column(String(128))
+    vendor_id: Mapped[Optional[str]] = mapped_column(
+        String(64), ForeignKey("vendors.vendor_id"), index=True)
+    date: Mapped[date] = mapped_column(Date, index=True)
+    status: Mapped[str] = mapped_column(String(48), default="")
+    total: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
+    #: Credit raised but not yet set against any bill. Read from Zoho, never
+    #: derived as total minus the applications below — a refund against the
+    #: credit would make that subtraction overstate what is still available.
+    balance: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
+    source_ref: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
+                                                 onupdate=_now)
+
+
+class VendorCreditApplication(Base):
+    """One vendor credit set against one bill.
+
+    The grain the two deferred effects will need: a bill-specific price credit
+    is placed by the bill it names, and a return is attributed to a principal by
+    the credit it hangs off. One credit is routinely spread across several bills
+    — the Kennametal document above covers eight — so a header total alone
+    cannot say which purchase was corrected.
+
+    **Line attribution is deliberately absent, because it would be an
+    inference.** The credits in these books carry ``bill_item_id: ""`` — naming
+    the item but not the bill line it corrects — and the "Rate Difference"
+    credit names no item at all. Anything finer than this bill is guesswork
+    dressed as a fact, and ``11-procurement.md`` says so in as many words.
+
+    **There is no application date, and it is missing on purpose.** See
+    ``VendorCreditApplicationIn``: Zoho's ``bills_credited`` carries one
+    unlabelled ``date`` whose values match the bills rather than the days the
+    document's own system comments record the credit being applied. A column
+    named ``applied_on`` holding a bill's date is worse than no column.
+    """
+
+    __tablename__ = "vendor_credit_applications"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "connector", "connection_id", "external_ref",
+                         name="uq_vendor_credit_application_source"),
+        Index("ix_vendor_credit_app_org_bill",
+              "organization_id", "bill_external_ref"),
+    )
+
+    vendor_credit_application_id: Mapped[str] = mapped_column(String(64),
+                                                              primary_key=True,
+                                                              default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    connector: Mapped[Optional[str]] = mapped_column(String(32), index=True)
+    connection_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    external_ref: Mapped[str] = mapped_column(String(128), index=True)
+    vendor_credit_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("vendor_credits.vendor_credit_id"), index=True)
+    vendor_id: Mapped[Optional[str]] = mapped_column(
+        String(64), ForeignKey("vendors.vendor_id"), index=True)
+    bill_external_ref: Mapped[str] = mapped_column(String(128), index=True)
+    bill_number: Mapped[Optional[str]] = mapped_column(String(128))
+    amount_applied: Mapped[Any] = mapped_column(Numeric(18, 4))
+    source_ref: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
 class VendorPaymentDoc(Base):
     """Money out, at the payment grain.
 
@@ -3721,7 +4136,8 @@ class BusinessState(Base):
     #: computed from three events and one computed from three hundred deserve
     #: different confidence, and a row with zero is a bug rather than a zero.
     event_count: Mapped[int] = mapped_column(Integer, default=0)
-    thresholds_version: Mapped[str] = mapped_column(String(64), default="")
+    thresholds_version: Mapped[str] = mapped_column(
+        String(64), default="", info={"policy_stamp": "commercial"})
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 

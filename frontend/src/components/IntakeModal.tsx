@@ -7,12 +7,27 @@ import DialogTitle from "@mui/material/DialogTitle";
 import Paper from "@mui/material/Paper";
 import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
+import MenuItem from "@mui/material/MenuItem";
 import Typography from "@mui/material/Typography";
 
 const SAMPLE = `2001174, 20
 CNMG 120408 KCP25  50
 2045826 x30
 XZ-CUSTOM-778-NOTREAL, 5`;
+
+/** The closed set from `domain/enums.InboundChannel`, labelled for a person.
+ *
+ *  Deliberately has no "Other" or "Unknown" entry, because the enum has none:
+ *  "an enquiry that arrived some other way has no honest value to store", and
+ *  the channel is the one index the corpus is grouped by. Leaving it unset is
+ *  the honest answer and the field says what that costs. */
+const CHANNELS: [string, string][] = [
+  ["EMAIL", "Email"],
+  ["WHATSAPP", "WhatsApp"],
+  ["PDF", "A PDF they sent"],
+  ["PORTAL", "Customer portal"],
+  ["PHONE_NOTE", "Phone — my note of it"],
+];
 
 /** Paste an RFQ and resolve it into quote lines.
  *
@@ -25,9 +40,13 @@ export function IntakeModal({
   onSubmit,
 }: {
   onClose: () => void;
-  onSubmit: (text: string) => void;
+  onSubmit: (text: string, channel: string) => void;
 }) {
   const [text, setText] = useState("");
+  // Unset by default. A pre-selected channel would be this screen answering a
+  // question about the customer on their behalf, and every row it wrote would
+  // be filed under a route nobody chose.
+  const [channel, setChannel] = useState("");
   return (
     <Dialog open onClose={onClose} maxWidth="sm" fullWidth>
       <DialogTitle sx={{ pb: 1 }}>
@@ -49,6 +68,25 @@ export function IntakeModal({
           onChange={(e) => setText(e.target.value)}
           slotProps={{ input: { sx: { fontFamily: "ui-monospace, monospace", fontSize: 13 } } }}
         />
+
+        <TextField
+          select
+          label="How did this reach you?"
+          value={channel}
+          onChange={(e) => setChannel(e.target.value)}
+          fullWidth
+          sx={{ mt: 2 }}
+          helperText={channel
+            ? "Kept as you pasted it — spelling, casing and all — so the "
+              + "resolver can be measured against what customers actually write."
+            : "Optional. Say how it arrived and the wording is kept for "
+              + "measuring the resolver; leave it and only the resolved lines "
+              + "are stored."}
+        >
+          {CHANNELS.map(([value, label]) => (
+            <MenuItem key={value} value={value}>{label}</MenuItem>
+          ))}
+        </TextField>
 
         <Stack
           direction={{ xs: "column", sm: "row" }}
@@ -85,7 +123,7 @@ export function IntakeModal({
         <Button
           variant="contained"
           disabled={!text.trim()}
-          onClick={() => onSubmit(text)}
+          onClick={() => onSubmit(text, channel)}
         >
           Resolve &amp; add
         </Button>

@@ -114,11 +114,23 @@ REQUIRED_SCOPES: tuple[Permission, ...] = (
                "accounting entry exists; without it the platform sees only what "
                "has already been invoiced.",
                required=False, reads=("sales_orders",)),
+    Permission("ZohoBooks.estimates.READ",
+               "Quotes — what was offered and how each one ended. Without it "
+               "the platform sees only what was invoiced, so a win rate has no "
+               "denominator and a lost quote leaves no trace.",
+               required=False, reads=("quotes",)),
     Permission("ZohoBooks.vendorpayments.READ",
                "Money out. Receipts alone are not cash — they are revenue "
                "collected — so without this, liquidity and working capital "
                "cannot be computed from one side of the ledger.",
                required=False, reads=("vendor_payments",)),
+    Permission("ZohoBooks.vendorcredits.READ",
+               "Vendor credits — returns and price corrections a supplier "
+               "issued. Optional because nothing computes with them yet: they "
+               "are stored so a return can be seen against the purchases it "
+               "reverses, which is the evidence the rebate-treatment question "
+               "in `11-procurement.md` has to be argued from.",
+               required=False),
     Permission("ZohoBooks.purchaseorders.READ",
                "Purchase orders — what is on the way from suppliers, and how "
                "late. Feeds the Supply screen. Optional: without it, stock on "

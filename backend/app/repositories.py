@@ -22,8 +22,10 @@ from .domain.enums import DecisionStatus, HumanAction
 from .domain.schemas import (BillIn, CostRecordIn, CreditNoteApplicationIn,
                             CreditNoteIn, CustomerIn, DocumentApplicationIn,
                             InvoiceIn, LocationIn, PaymentReceiptIn, ProductIn,
-                            PurchaseOrderIn, SalesOrderIn, SalesTxnIn,
-                            StockLocationSnapshotIn, StockSnapshotIn, VendorIn,
+                            PurchaseOrderIn, QuoteDocIn, SalesOrderIn,
+                            SalesTxnIn, StockLocationSnapshotIn,
+                            StockSnapshotIn, VendorIn,
+                            VendorCreditApplicationIn, VendorCreditIn,
                             VendorPaymentIn)
 
 
@@ -856,6 +858,58 @@ class ReadModelRepository:
         row.source_ref = so.source_ref.model_dump()
         return row
 
+    def upsert_quote_document(self, customer_id: Optional[str],
+                              q: QuoteDocIn) -> models.QuoteDoc:
+        """One quote as its ERP raised it, keyed on the id that ERP gave it.
+
+        Keyed on ``external_ref`` alone through ``_for_upsert``, like every
+        other *document* here and for the reason ``upsert_sales_order`` states:
+        a document already carries a globally unique id from its own system.
+
+        **Every column is assigned unconditionally**, including the ones that
+        arrive as ``None``. Not an oversight and not tidiness — a partial write
+        (``if q.expires_on is not None: row.expires_on = ...``) would make the
+        table look like somewhere a value can be kept, and the first person to
+        notice that would put a loss reason on it. Rewriting the whole row from
+        the payload every pull is what makes it obviously derived, which is what
+        keeps human facts on ``quote_outcomes`` where a re-sync cannot reach
+        them.
+
+        It also has to be a rewrite for a duller reason: ``source_status`` and
+        ``outcome`` are exactly the columns that change after the quote is
+        raised. A row written once and never revisited would report every
+        accepted and every declined quote as still open, which is the same bug
+        ``upsert_invoice`` describes for a settled invoice.
+
+        ``customer_id`` may be ``None``, and the row is kept anyway: a quote to a
+        customer the contact pull did not return is still a quote, and dropping
+        it would silently shrink the denominator of every win rate. The ERP's own
+        ``customer_ref`` is stored beside it so the row is still nameable.
+        """
+        row = self._for_upsert(models.QuoteDoc, q.external_ref,
+                               ref_col="external_ref")
+        if row is None:
+            row = models.QuoteDoc(organization_id=self.org,
+                                  external_ref=q.external_ref,
+                                  connector=self.connector,
+                                  connection_id=self.connection_id)
+            self.s.add(row)
+        row.number = q.number
+        row.source_reference = q.source_reference
+        row.customer_id = customer_id
+        row.customer_ref = q.customer_ref
+        row.date = q.date
+        row.expires_on = q.expires_on
+        row.source_status = q.source_status
+        row.outcome = q.outcome.value
+        row.decided_on = q.decided_on
+        row.total = q.total
+        row.salesperson_external_id = q.salesperson_external_id
+        row.client_viewed_at = q.client_viewed_at
+        row.attributes = dict(q.attributes)
+        row.source_ref = q.source_ref.model_dump()
+        return row
+
     def upsert_bill(self, vendor_id: Optional[str], b: BillIn) -> models.BillDoc:
         """The payable header. Re-read on every pull that touches the bill,
         because ``status`` and ``balance`` change as it is paid — a bill row
@@ -1039,6 +1093,49 @@ class ReadModelRepository:
         row.invoice_number = app.invoice_number
         row.invoice_date = app.invoice_date
         row.applied_on = app.applied_on
+        row.amount_applied = app.amount_applied
+        row.source_ref = app.source_ref.model_dump()
+        return row
+
+    def upsert_vendor_credit(self, vendor_id: Optional[str],
+                             vc: VendorCreditIn) -> models.VendorCreditDoc:
+        """The vendor-credit header. Re-read on every pull that touches it, the
+        same as a customer credit note: ``status`` and ``balance`` move as the
+        credit is set against bills or refunded, and a row written once would
+        keep reporting credit as available long after it was spent."""
+        row = self._for_upsert(models.VendorCreditDoc, vc.external_ref,
+                               ref_col="external_ref")
+        if row is None:
+            row = models.VendorCreditDoc(organization_id=self.org,
+                                         external_ref=vc.external_ref,
+                                         connector=self.connector,
+                                         connection_id=self.connection_id)
+            self.s.add(row)
+        row.number = vc.number
+        row.vendor_id = vendor_id
+        row.date = vc.date
+        row.status = vc.status
+        row.total = vc.total
+        row.balance = vc.balance
+        row.source_ref = vc.source_ref.model_dump()
+        return row
+
+    def upsert_vendor_credit_application(
+        self, vendor_credit_id: str, vendor_id: Optional[str],
+        app: VendorCreditApplicationIn,
+    ) -> models.VendorCreditApplication:
+        """One vendor credit set against one bill."""
+        row = self._for_upsert(models.VendorCreditApplication, app.external_ref,
+                               ref_col="external_ref")
+        if row is None:
+            row = models.VendorCreditApplication(
+                organization_id=self.org, external_ref=app.external_ref,
+                connector=self.connector, connection_id=self.connection_id)
+            self.s.add(row)
+        row.vendor_credit_id = vendor_credit_id
+        row.vendor_id = vendor_id
+        row.bill_external_ref = app.bill_external_ref
+        row.bill_number = app.bill_number
         row.amount_applied = app.amount_applied
         row.source_ref = app.source_ref.model_dump()
         return row

@@ -401,9 +401,92 @@ def register_health_checks(engine: Any, session_factory: Any) -> None:
             f"{counts.get('CLAIMED', 0)} in flight)"
         )
 
+    def check_threshold_registry() -> tuple[HealthStatus, Optional[str]]:
+        """Whether every stamp this process has written can be dereferenced.
+
+        Four observations, not estimates — each one was counted at the moment
+        it happened, in this process, since start-up:
+
+        ``post_epoch_gaps``  a stamp was asked for, was not recorded, and the
+                             registry was demonstrably running when it was
+                             minted. That is an invariant violation: a stamp
+                             reached a persisted row without its values being
+                             captured, and those rows are unexplainable forever.
+                             UNHEALTHY, because the damage is already written
+                             and every further row makes it larger.
+        ``collisions``       two different policies produced the same ten-hex
+                             stamp. Rows carrying it may mean either.
+        ``stamps without a pre-image``  a flush carried a version this process
+                             never minted *and* no recorded row explains, so
+                             there was nothing to record. Not yet a gap — the
+                             row is stamped and may be resolvable from
+                             elsewhere — but it is the shape that becomes one.
+        ``recording failures``  a recording write could not be made: the table
+                             is not there yet in a deploy-before-migrate
+                             window, a permission error, a dialect with no
+                             ON CONFLICT support. The business write it rode
+                             inside was unaffected, which is the design — but
+                             the rows it committed meanwhile are stamped with
+                             a policy nothing recorded.
+
+        Nothing here reads the database. A clean registry is a *quiet* one, and
+        a per-request scan of eight stamped tables to prove a negative would
+        cost more than the fault it is looking for. A zero count is a genuine
+        "nothing has gone wrong in this process", never an absence of evidence
+        dressed as a pass — the counters only move when something is observed.
+        """
+        from .. import threshold_registry as registry
+
+        if not registry.installed():
+            return HealthStatus.UNHEALTHY, (
+                "Threshold registry is not installed: threshold versions "
+                "stamped from now on will not be dereferenceable"
+            )
+        # Summed across tenants here on purpose, and *said* to be: this is one
+        # process's health, not one book's. The two per-organization counters
+        # are keyed by org since a review found `CoverageReport` reporting one
+        # tenant's gaps as another's; a health check legitimately wants the
+        # whole process, and the message below no longer claims otherwise.
+        gaps = sum(registry._POST_EPOCH_GAPS.values())
+        collisions = sum(registry._COLLISIONS.values())
+        orphans = sum(registry._MISSING_PRE_IMAGE.values())
+        failures = registry._RECORDING_FAILURES["count"]
+        if gaps:
+            return HealthStatus.UNHEALTHY, (
+                f"{gaps} threshold stamp(s) were minted after a tenant's "
+                f"registry epoch and never recorded; the rows carrying them "
+                f"cannot be explained. This is a defect in the recording path"
+            )
+        if collisions:
+            return HealthStatus.DEGRADED, (
+                f"{collisions} threshold version collision(s): two policies "
+                f"share one stamp, so rows carrying it are ambiguous"
+            )
+        # DEGRADED rather than UNHEALTHY, deliberately, and it is the one
+        # judgement call in this check. A failed bookkeeping write is a real
+        # defect and rows are committing unexplainable while it lasts — but its
+        # commonest cause is a deploy that is ahead of its migration, and
+        # answering that with a 503 would take the deployment out of rotation
+        # over the bookkeeping rather than over the business write, inverting
+        # the priority this whole module is built around. The schema gap itself
+        # is reported by ``check_database``, which is where a 503 belongs.
+        if failures:
+            return HealthStatus.DEGRADED, (
+                f"{failures} threshold recording write(s) failed, so rows "
+                f"committed since carry stamps nothing recorded. Check whether "
+                f"threshold_versions exists and is writable"
+            )
+        if orphans:
+            return HealthStatus.DEGRADED, (
+                f"{orphans} row(s) were flushed carrying a threshold version "
+                f"this process never minted, so nothing was recorded for them"
+            )
+        return HealthStatus.HEALTHY, "Threshold versions recorded as stamped"
+
     health.register("database", check_database)
     health.register("pie_parser", check_pie_parser)
     health.register("scheduler", check_scheduler)
     health.register("queue", check_queue)
+    health.register("threshold_registry", check_threshold_registry)
     health.register("backups", check_backups)
     health.register("tenant_isolation", check_tenant_isolation)

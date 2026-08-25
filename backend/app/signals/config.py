@@ -11,6 +11,9 @@ import hashlib
 import json
 import os
 from dataclasses import asdict, dataclass
+from functools import cached_property
+
+from .. import threshold_registry
 
 
 def _f(name: str, default: float) -> float:
@@ -66,11 +69,42 @@ class SignalThresholds:
             price_outlier_factor=_f("SIG_PRICE_OUTLIER_FACTOR", 5.0),
         )
 
-    @property
+    @cached_property
+    def serialized(self) -> str:
+        """The exact bytes ``version`` hashes over. Computed once per instance.
+
+        Extracted from ``version`` because the registry needs the *pre-image*,
+        not just the digest: a hash does not invert, so the only moment the
+        values behind a stamp are available is the moment the stamp is minted.
+        Recomputing them anywhere else would be a second answer to one question
+        — and the two would agree exactly until somebody changed one, at which
+        point every recorded row would fail its re-hash check and read as
+        corrupt.
+
+        ``cached_property`` works on a frozen dataclass: it writes
+        ``instance.__dict__`` directly and never goes through the frozen
+        ``__setattr__``. Caching is safe for the same reason the class is frozen
+        — the values cannot move — and it removes a per-row ``json.dumps`` plus
+        ``sha256`` from the metrics recompute, which stamps every row it writes.
+        """
+        return json.dumps(asdict(self), sort_keys=True)
+
+    @cached_property
     def version(self) -> str:
-        """Stable short hash of the threshold values (reproducibility)."""
-        blob = json.dumps(asdict(self), sort_keys=True).encode()
-        return "th_" + hashlib.sha256(blob).hexdigest()[:10]
+        """Stable short hash of the threshold values (reproducibility).
+
+        The ``remember`` call is not a stray side effect and must not be tidied
+        away. This property is the *only* place in the codebase where a stamp is
+        minted, and it is reached by paths that never touch ``policy.py`` —
+        ``load_commercial_thresholds().version`` is the environment-derived half
+        of the policy, which is precisely the half nothing used to record.
+        Recording here means every stamp that can reach a persisted row has had
+        its pre-image remembered first, which is what lets the flush handler
+        write a value it never computed itself.
+        """
+        version = "th_" + hashlib.sha256(self.serialized.encode()).hexdigest()[:10]
+        threshold_registry.remember("signal", version, self.serialized)
+        return version
 
 
 def load_thresholds() -> SignalThresholds:

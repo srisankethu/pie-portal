@@ -54,10 +54,16 @@ class Field:
 #: the pinning ``REQUIRED_SCOPES`` has for Zoho, for the same reason: a list
 #: nobody can be held to goes stale quietly, and the symptom is a grant an
 #: owner was never told to ask for.
+#:
+#: Each name is the ``list_`` method that reads it, which is what the pin below
+#: matches on — so "quotes" rather than the table it lands in: every ERP here
+#: has a quote document and they disagree about the noun (Zoho and NetSuite say
+#: estimate, Business Central, Acumatica, P21 and Sage say quote), so the stage
+#: is named for the connector-blind method every source implements.
 READ_STAGES: tuple[str, ...] = (
     "contacts", "vendors", "items", "invoices", "bills",
-    "customer_payments", "vendor_payments", "sales_orders", "purchase_orders",
-    "users",
+    "customer_payments", "vendor_payments", "sales_orders", "quotes",
+    "purchase_orders", "users",
 )
 
 #: The same vocabulary in the other direction: the records the platform can

@@ -65,6 +65,24 @@ to *invent* a reorder point must stand. But this is no longer a data-quality
 footnote — it is the finding that this business has no stocking policy recorded
 anywhere, for anything, and it belongs on the screen as a headline.
 
+**Now it is one, and the worse half of this was on the screen rather than in the
+data.** The count already existed — `counts["no_reorder_point"]` and a
+`COLLECTABLE` line in `unavailable`, both at the foot of the screen. Above them
+sat the empty group, under which the client rendered its standing line for a
+group with nothing in it:
+
+> Nothing here. That is the good answer.
+
+An impossible zero read back as a clean bill of health, which is `CLAUDE.md` §1's
+*absence of evidence is not a pass* with a reassuring sentence attached. Two
+changes, and the split between them is the point: the group now carries
+`empty_means` — **the server decides, because only the server holds the
+population behind the group** — and a `NO_REORDER_POINT` headline card sits with
+the other counts, drilling through to exactly the lines it counted. The card is
+suppressed at zero, so a book that has done the work carries no reminder that it
+did, and `test_an_empty_group_on_a_book_that_has_set_them_is_still_good_news`
+pins that this does not cry wolf.
+
 ---
 
 ## 2. Does the book's scale justify Croston? No, and not by a small margin
@@ -304,6 +322,9 @@ worth having here is a policy about *ten lines*, reviewed by a person.
 
 1. **Set reorder levels on the top ten lines.** Zero of 3,673 are set. Ten
    judgements by a person beat any method and unblock a permanently empty group.
+   Still the work, and still a person's: the platform's half is done — it now
+   says on the screen that nobody has chosen a policy, which is the opposite of
+   choosing one for them.
 2. **Fix the eleven dead-stock prices.** 76% of genuinely dead value cannot be
    quoted at all, so it cannot be cleared at any discount.
 3. **Fix the master before modelling on it.** 621 SLS stocked items and 361 of

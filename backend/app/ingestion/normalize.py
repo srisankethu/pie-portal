@@ -19,17 +19,19 @@ validation must not.
 """
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any, Optional
 
-from ..domain.enums import CustomerStatus
+from ..clock import utc_stamp
+from ..domain.enums import CustomerStatus, QuoteDocOutcome
 from ..domain.schemas import (BillIn, CostRecordIn, CreditNoteApplicationIn,
                              CreditNoteIn, CustomerIn, DocumentApplicationIn,
                              InvoiceIn, InvoiceSalesOrderRef, LocationIn,
                              PaymentReceiptIn, ProductIn, PurchaseOrderIn,
-                             SalesOrderIn, SalesTxnIn, SourceRef,
+                             QuoteDocIn, SalesOrderIn, SalesTxnIn, SourceRef,
                              StockLocationSnapshotIn, StockSnapshotIn, VendorIn,
+                             VendorCreditApplicationIn, VendorCreditIn,
                              VendorPaymentIn)
 
 #: The default ``system`` stamped into provenance, for callers written when
@@ -362,6 +364,322 @@ def normalize_sales_order(raw: dict[str, Any], *, system: str = ZOHO) -> SalesOr
     )
 
 
+def _parse_timestamp(value: Any, ctx: str, field: str) -> datetime:
+    """A source timestamp as an aware UTC ``datetime``.
+
+    Placement is delegated to ``clock.utc_stamp`` rather than parsed here, so
+    there is one answer to "can this stamp be put on the UTC line" — it already
+    refuses a naive stamp instead of assuming a zone, which is the assumption
+    that turns an offset into a five-and-a-half-hour error on this book.
+
+    Raises rather than returning ``None`` for a value that is present and
+    unplaceable, following ``_parse_date``'s rule for a present-but-malformed
+    date: absent is the caller's business, malformed is a defect and is
+    reported. It matters more here than usual because the one field that uses
+    this is read downstream as "the customer never opened it" when it is null,
+    so a silent ``None`` would not be a missing timestamp — it would be a
+    false statement about the customer.
+    """
+    placed = utc_stamp(value)
+    if placed is None:
+        raise NormalizationError(
+            "BAD_TIMESTAMP", f"{ctx}: {field} is not a placeable timestamp ({value!r})")
+    return datetime.strptime(placed, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+
+
+#: Per source system: the status words that mean "the customer accepted this"
+#: and the ones that mean "the customer said no". Two positive allowlists, and
+#: nothing outside them decides anything.
+#:
+#: A system with no entry here gets ``(frozenset(), frozenset())`` from the
+#: lookup below and therefore yields UNRECORDED for every row and LOST for
+#: none. That is the right default for a connector whose vocabulary nobody has
+#: read yet: it under-claims, and the counts say so.
+_QUOTE_VOCABULARY: dict[str, tuple[frozenset[str], frozenset[str]]] = {
+    # Zoho Books. ``invoiced`` is a won quote already billed; ``accepted`` is
+    # the customer saying yes with no invoice raised yet.
+    #
+    # ``approved`` is deliberately absent, and it is the easiest one in this
+    # vocabulary to get wrong. That is *our own* internal approval step, not
+    # the customer accepting anything — reading it as WON would invent a
+    # customer decision out of our own approval queue. Same class of error as
+    # ``expired`` -> LOST, and harder to see, because the word sounds like the
+    # customer's.
+    #
+    # ``expired``, ``sent``, ``viewed``, ``draft`` and ``pending_approval`` are
+    # in neither set, which is the whole point of this module reading estimates
+    # at all. That silence spans "nobody worked it", "the customer never
+    # answered" and "we lost it to a competitor"; only the third is a loss, and
+    # roughly 215 of this book's ~290 estimates sit in it. Calling them lost
+    # would manufacture two hundred labels out of nothing.
+    ZOHO: (frozenset({"invoiced", "accepted"}), frozenset({"declined"})),
+}
+
+# A word in both allowlists would make the answer depend on which membership
+# test ran first, and it would look right. Checked at import, so the build
+# fails where the mistake was made rather than in a win rate somebody reads six
+# months later.
+assert not any(won & lost for won, lost in _QUOTE_VOCABULARY.values())
+
+#: Per source system: the status words that are positive evidence the quote was
+#: put in front of the customer.
+#:
+#: An allowlist, and it has to be one. The tempting shape is a denylist — "not
+#: a draft, therefore sent" — and it is wrong in exactly the way ``approved`` is
+#: wrong above: Zoho's ``pending_approval`` and ``approved`` are *our own*
+#: internal sign-off states, raised and awaiting a decision nobody outside this
+#: business has been asked for. A denylist reads both as sent and writes a
+#: send that never happened onto the one table a human owns. So the question
+#: asked below is "is there evidence it was sent", never "is it explicitly a
+#: draft" — the guard wraps the claim rather than the objection.
+#:
+#: ``expired`` is here because an offer can only lapse after it was made; it
+#: says nothing about whether the customer answered, which is
+#: ``classify_outcome``'s question and deliberately not this one.
+#:
+#: A system with no entry gets an empty set, so every one of its quotes reads
+#: as not-known-to-be-sent. That under-claims for a connector whose vocabulary
+#: nobody has mapped, which is the same default the two allowlists above take.
+_QUOTE_SENT_STATUSES: dict[str, frozenset[str]] = {
+    ZOHO: frozenset({"sent", "viewed", "expired", "accepted", "declined",
+                     "invoiced"}),
+}
+
+# A quote the customer decided is a quote the customer saw. Stated as an
+# import-time check rather than a comment, because the two dictionaries are
+# edited by different features — a connector's WON word added without its sent
+# word would make "decided but never sent" representable, and nothing
+# downstream would know which of the two to believe.
+assert all(
+    (won | lost) <= _QUOTE_SENT_STATUSES.get(system, frozenset())
+    for system, (won, lost) in _QUOTE_VOCABULARY.items())
+
+
+def reached_the_customer(source_status: Any, *, system: str = ZOHO) -> bool:
+    """Did this ERP status say the quote was actually put in front of anybody?
+
+    The one place that answers it, so a reader outside ``ingestion`` never has
+    to hold an ERP's vocabulary of its own — the same reason ``classify_outcome``
+    exists rather than a status comparison in each caller. ``quote_service``
+    asks this when it opens a human outcome row against an ERP-raised quote:
+    SENT is a positive claim about a customer, and it may only be made where
+    the source system made it first.
+
+    Unknown word, unknown system, blank, ``None``: ``False``. Not "probably
+    sent" — a status this platform cannot read is not evidence of anything, and
+    the caller's honest opening state is the one that claims nothing.
+    """
+    return (str(source_status or "").strip().lower()
+            in _QUOTE_SENT_STATUSES.get(system, frozenset()))
+
+
+
+def classify_outcome(source_status: Any,
+                     accepted_on: Optional[date],
+                     declined_on: Optional[date],
+                     *,
+                     won: frozenset[str],
+                     lost: frozenset[str]) -> tuple[QuoteDocOutcome, Optional[date]]:
+    """A quote's source status and decision dates -> ``(outcome, decided_on)``.
+
+    The only function in the platform that can return LOST for an ERP-raised
+    quote, and it is written so the obvious mistake is unreachable rather than
+    merely avoided.
+
+    **Note the signature: there is no expiry date parameter.** An expired quote
+    is the single most tempting thing to read as a loss — the customer did not
+    order, the offer lapsed, it feels decided — and it is not one: it is a
+    quote nobody chased, a customer who never replied, or a genuine loss, and
+    those are three facts, not one. Keeping the expiry date *out of scope*
+    means no expression in here has one to hand. Refusing to write the rule is
+    weaker; this way there is nothing to refuse.
+
+    Two positive allowlists and no else-branch that asserts anything. An
+    unrecognised status — a signature variant, a new Zoho state, a connector
+    whose vocabulary nobody has mapped — falls through to UNRECORDED, which is
+    the true statement about it.
+
+    **A decision must carry its date, on both sides.** An ``invoiced`` estimate
+    with no ``accepted_date`` resolves to UNRECORDED, not WON. The codebase
+    already treats an undated decision as unusable — ``DecidedQuote.decided_on``
+    is a required date and the outcome reader skips a decided row without one —
+    so this moves that rule one layer earlier, into the one place that can make
+    the judgement. The cost is real and must not be silent: the caller counts
+    every row whose status is in a vocabulary but whose date is missing, and
+    ``source_status`` is stored verbatim beside the outcome so a GROUP BY shows
+    exactly which statuses fell through.
+
+    The ``is not None`` guards wrap the *claim* — a WON or a LOST — and never
+    the objection. Absence of a date cannot produce a decided outcome here; it
+    can only fail to produce one.
+    """
+    s = str(source_status or "").strip().lower()
+    if s in lost and declined_on is not None:
+        return QuoteDocOutcome.LOST, declined_on
+    if s in won and accepted_on is not None:
+        return QuoteDocOutcome.WON, accepted_on
+    return QuoteDocOutcome.UNRECORDED, None
+
+
+def _viewed_at(value: Any, ctx: str) -> Optional[datetime]:
+    """The customer's open, or ``None`` — never an exception.
+
+    The one field in this normaliser allowed to fail on its own. Everything else
+    ``normalize_quote_document`` reads is either required or absent; this is
+    present-but-unreadable, and the choice is between losing a timestamp and
+    losing the quote. See the call site for why the timestamp loses.
+    """
+    if not value:
+        return None
+    try:
+        return _parse_timestamp(value, ctx, "client_viewed_time")
+    except NormalizationError:
+        return None
+
+
+def unreadable_view_stamp(raw: dict[str, Any]) -> bool:
+    """True when the source sent a ``client_viewed_time`` nothing could place.
+
+    The price of the degradation above, made visible — the same bargain
+    ``dropped_an_undated_decision`` makes for the date gate, and here for the
+    same reason: the quote is kept, one fact about it is not, and a rule that
+    quietly discards evidence is the shape of defect §1 is about.
+
+    Reads the raw payload rather than the normalised object because the loss is
+    only visible before it happens: afterwards ``client_viewed_at`` is ``None``,
+    which is indistinguishable from a quote nobody opened. Expected to be zero;
+    a number that climbs means the source's stamps are not what this parser
+    thinks, and the fix is upstream.
+    """
+    value = raw.get("client_viewed_time")
+    return bool(value) and utc_stamp(value) is None
+
+
+def dropped_an_undated_decision(q: QuoteDocIn, *, system: str = ZOHO) -> bool:
+    """True when the ERP said this quote was decided and the date it needed to
+    be usable was not there, so ``classify_outcome`` called it unrecorded.
+
+    The price of the date gate, made visible. ``classify_outcome`` refuses to
+    return WON or LOST without a decision date, which is the right rule — the
+    outcome readers require the date and already skip a decided row without one,
+    so admitting a dateless decision here would only move the discard further
+    from the place that could explain it. But a rule that silently discards
+    evidence is exactly the shape of defect §1 of ``CLAUDE.md`` is about, so the
+    caller counts every row it costs and the run report carries the number.
+
+    Lives here rather than in the sync because the vocabulary lives here. A
+    second copy of "which statuses mean decided" in the caller would be the
+    third copy of the WON/LOST mapping the two status columns exist to prevent,
+    and it would drift the first time a connector's words are added.
+
+    Deliberately answers *only* about the drop. A quote whose status is in
+    neither allowlist is unrecorded because nobody decided it, not because
+    anything was lost, and counting those together would put ~215 rows into a
+    figure whose whole purpose is to be small enough to investigate.
+    """
+    if q.outcome is not QuoteDocOutcome.UNRECORDED:
+        return False
+    won, lost = _QUOTE_VOCABULARY.get(system, (frozenset(), frozenset()))
+    return q.source_status.strip().lower() in (won | lost)
+
+
+#: The quote fields this business's own Zoho configuration adds, plus the
+#: branch it was raised at. Carried verbatim under the source's own key names:
+#: the taxonomy is the business's, it already exists, and re-deriving a quote
+#: type from anything else would be inventing a second answer to a question
+#: somebody already answered on the document.
+_QUOTE_ATTRIBUTE_KEYS = ("cf_quote_type", "cf_pricing_type", "cf_procurement_type",
+                         "branch_id")
+
+
+def normalize_quote_document(raw: dict[str, Any], *, system: str = ZOHO) -> QuoteDocIn:
+    """One quote as its ERP raised it. Header grain, mirroring
+    ``normalize_sales_order`` — an offer rather than a commitment.
+
+    Keyed on ``estimate_id`` because that is the canonical wire shape (see the
+    module docstring): it descends from Zoho, whose noun for this document is
+    "estimate", and every other connector's adapter translates its own record
+    into this shape before it arrives. The platform's own noun stays "quote"
+    everywhere past this line, including in provenance — ``system`` already
+    says which ERP the row came from, so the record type does not need to
+    repeat a vendor's vocabulary.
+
+    Nothing here decides anything a person should. The status becomes an
+    outcome through ``classify_outcome`` and its two allowlists; the ERP's own
+    word is carried through untouched beside it; and no reason, note or winner
+    is read from the payload, because an estimate list row does not hold one.
+    """
+    qid = str(_require(raw, "estimate_id", "quote"))
+    ctx = f"quote {qid}"
+    expires = raw.get("expiry_date")
+    accepted = raw.get("accepted_date")
+    declined = raw.get("declined_date")
+    viewed = raw.get("client_viewed_time")
+    won, lost = _QUOTE_VOCABULARY.get(system, (frozenset(), frozenset()))
+    outcome, decided_on = classify_outcome(
+        raw.get("status"),
+        _parse_date(accepted, ctx) if accepted else None,
+        _parse_date(declined, ctx) if declined else None,
+        won=won, lost=lost)
+    return QuoteDocIn(
+        # ``estimate_id``, not ``estimate_number``, and that choice is
+        # load-bearing outside this function. Zoho's record id is system-wide,
+        # so three connected books issue disjoint id spaces: that is why
+        # ``quote_service.sole_erp_quote``'s refusal is unreachable on this
+        # book, and why the capture grid can key its rows on the bare reference
+        # and know they are unique. ``estimate_number`` is a per-company
+        # sequence and is carried below as ``number`` for a person to read.
+        # Re-keying this onto the human-readable number — which a capture
+        # screen is exactly the kind of screen to ask for — changes both of
+        # those properties, not the display. This is the one place the property
+        # is asserted; the other two point here.
+        external_ref=qid,
+        number=(str(raw["estimate_number"]) if raw.get("estimate_number") else None),
+        source_reference=(str(raw["reference_number"]) if raw.get("reference_number")
+                          else None),
+        customer_external_id=(str(raw["customer_id"]) if raw.get("customer_id") else None),
+        # Carried beside the id, not instead of it. The id is what links; this
+        # is what a person reads when the link does not resolve, and an empty
+        # string is the honest value when the payload named nobody.
+        customer_ref=str(raw.get("customer_name") or ""),
+        date=_parse_date(_require(raw, "date", ctx), ctx),
+        # No expiry is left as None rather than derived from the quote date
+        # plus an assumed validity. "This offer lapses on the 14th" and "nobody
+        # said when this lapses" are different facts, and only one of them can
+        # put a quote on a chase list as overdue.
+        expires_on=(_parse_date(expires, ctx) if expires else None),
+        source_status=str(raw.get("status") or ""),
+        outcome=outcome,
+        decided_on=decided_on,
+        total=raw.get("total"),
+        salesperson_external_id=(str(raw["salesperson_id"])
+                                 if raw.get("salesperson_id") else None),
+        # Degraded, never fatal. ``_parse_timestamp`` raises on a present but
+        # unplaceable stamp, and until a review caught it that refusal took the
+        # whole quote with it — no header, no total, no status — over an
+        # optional read receipt. That is the silent shrinking of the win-rate
+        # denominator this pull exists to build, and `_sync_quote_documents`
+        # refuses to do it for an unresolved customer two paragraphs away.
+        #
+        # ``_parse_timestamp``'s own docstring argues the other way: a silent
+        # None "would be a false statement about the customer", because null is
+        # read as "never opened it". That is not true of the reader. The only
+        # consumer is ``insight/unrecorded``, whose docstring says in as many
+        # words that **"the customer never opened it" is a claim this module
+        # refuses to make** — it counts ``opening_not_recorded`` as an absence
+        # named as an absence. So null is already "unknown" downstream, and the
+        # document is worth more than the field.
+        client_viewed_at=_viewed_at(viewed, ctx),
+        # Only the keys the source actually set. An absent custom field is not
+        # a category and must not become one: a quote with no cf_quote_type is
+        # a quote nobody classified, which is a different fact from every
+        # unclassified quote sharing a bucket called "other".
+        attributes={k: raw[k] for k in _QUOTE_ATTRIBUTE_KEYS
+                    if raw.get(k) not in (None, "")},
+        source_ref=SourceRef(system=system, record_type="quote", record_id=qid),
+    )
+
+
 def normalize_bill_terms(raw: dict[str, Any], *, system: str = ZOHO) -> BillIn:
     """The payable header of a bill, from the payload ``normalize_bill``
     already receives.
@@ -578,6 +896,66 @@ def normalize_credit_note(
             amount_applied=_parse_decimal(amount, ctx, "amount_applied"),
             source_ref=SourceRef(system=system, record_type="credit_note",
                                  record_id=note_id, line_id=invoice_ref),
+        ))
+    return header, applications
+
+
+def normalize_vendor_credit(
+    raw: dict[str, Any], *, system: str = ZOHO,
+) -> tuple[VendorCreditIn, list[VendorCreditApplicationIn]]:
+    """One vendor credit → its header, and each bill it was set against.
+
+    A tuple rather than a nested list, for the same reason
+    ``normalize_credit_note`` returns one: a credit raised and not yet applied
+    is a complete, valid record with an empty list, and nesting invites a reader
+    to treat the empty list as a parse failure. ``OP/C902273`` in the SLS book
+    is exactly that — ₹3.87 lakh open against Renishaw with no bill named.
+
+    **No application date is produced.** ``bills_credited`` carries one
+    unlabelled ``date`` per row and the evidence says it is the bill's, not the
+    application's; ``VendorCreditApplicationIn`` records the measurement. The
+    field is dropped rather than guessed, because a date stored under the wrong
+    name is worse than a date nobody has.
+    """
+    vc_id = str(_require(raw, "vendor_credit_id", "vendor credit"))
+    ctx = f"vendor credit {vc_id}"
+    vendor_ext = str(raw["vendor_id"]) if raw.get("vendor_id") else None
+    header = VendorCreditIn(
+        external_ref=vc_id,
+        number=(str(raw["vendor_credit_number"])
+                if raw.get("vendor_credit_number") else None),
+        vendor_external_id=vendor_ext,
+        date=_parse_date(_require(raw, "date", ctx), ctx),
+        status=str(raw.get("status") or ""),
+        total=raw.get("total"),
+        balance=raw.get("balance"),
+        source_ref=SourceRef(system=system, record_type="vendor_credit",
+                             record_id=vc_id),
+    )
+    applications: list[VendorCreditApplicationIn] = []
+    for i, a in enumerate(raw.get("bills_credited") or []):
+        bill_ref = str(a.get("bill_id") or "")
+        if not bill_ref:
+            # A credit naming no bill is unapplied credit, which the header's
+            # own ``balance`` already reports. Not an error, and not an
+            # application.
+            continue
+        amount = a.get("amount")
+        if amount in (None, ""):
+            # An application with no amount cannot reduce anything. Skipped
+            # rather than read as zero, which would assert the credit was
+            # applied for nothing.
+            continue
+        applications.append(VendorCreditApplicationIn(
+            external_ref=str(a.get("vendor_credit_bill_id")
+                             or f"{vc_id}:{bill_ref}:{i}"),
+            vendor_credit_external_ref=vc_id,
+            vendor_external_id=vendor_ext,
+            bill_external_ref=bill_ref,
+            bill_number=(str(a["bill_number"]) if a.get("bill_number") else None),
+            amount_applied=_parse_decimal(amount, ctx, "amount"),
+            source_ref=SourceRef(system=system, record_type="vendor_credit",
+                                 record_id=vc_id, line_id=bill_ref),
         ))
     return header, applications
 

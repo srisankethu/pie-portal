@@ -56,7 +56,8 @@ def api_client(engine):
     from fastapi.testclient import TestClient
 
     from app.db import get_session
-    from app.routers import insight, internal, platform_auth
+    from app.routers import (enquiries, insight, internal, platform_auth,
+                              quote_intelligence)
     from app.seed import ensure_org_and_users
 
     maker = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False, future=True)
@@ -72,6 +73,16 @@ def api_client(engine):
     # rather than only the builder behind it. That gap is not hypothetical — see
     # `test_daily.test_the_morning_read_is_reachable_over_http`.
     app.include_router(insight.router)
+    # `quote_intelligence` too, for the same reason: the ERP outcome path is
+    # only reachable through its POST, and a suite that exercised it against
+    # the service alone would not notice a router that maps a refusal to the
+    # wrong status.
+    app.include_router(quote_intelligence.router)
+    # `enquiries` too. The no-normalisation rule is tested at the function in
+    # `test_inbound_line_capture`, but the layer that breaks it is the request
+    # body — a `constr(strip_whitespace=True)` never reaches that suite — so
+    # the corpus door has to be exercised over HTTP or its one rule is unpinned.
+    app.include_router(enquiries.router)
 
     def _override():
         sess = maker()

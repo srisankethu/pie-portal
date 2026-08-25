@@ -11,7 +11,7 @@ from dataclasses import replace
 from datetime import date
 from decimal import Decimal
 
-from app.commercial import backtest
+from app.commercial import backtest, policy
 from app.commercial.config import CommercialThresholds
 from app.commercial.quote_intelligence import assess_line
 from app.domain import models
@@ -358,3 +358,107 @@ def test_modelling_a_floor_does_not_change_the_saved_policy(client):
     client.get(PATH, params={"min_margin": 0.25}, headers=hdr)
     after = client.get("/api/v1/admin/policy", headers=hdr)
     assert before.status_code == 200 and before.json() == after.json()
+
+
+# ── replaying against the policy that actually judged the row ────────────────
+def test_a_line_is_replayed_against_its_own_recorded_baseline(session):
+    """The reason the threshold registry was built, seen from the report.
+
+    Before it, every row was replayed under *today's* policy. A line priced
+    under an older, laxer floor therefore produced a baseline verdict that
+    disagreed with the ``requires_approval`` recorded on the row, and the report
+    could only count the disagreements and shrug. Now the stamp dereferences and
+    the baseline is exact.
+    """
+    from app import threshold_registry
+
+    session.add(models.Organization(organization_id=ORG, name=ORG))
+    session.flush()
+
+    # The policy in force when the line was quoted: a 10% approval floor.
+    old = _th(min_margin=0.10)
+    threshold_registry.record_current(
+        session, ORG, kind="commercial", version=old.version,
+        serialized=threshold_registry.serialized(old))
+    session.commit()
+
+    # Priced at a 12% margin — above the old floor, so no approval was needed,
+    # and that is what the row records.
+    _decision(session, quote_id="q1", line_id="l1", price="113.64", cost="100",
+              requires_approval=False, thresholds_version=old.version)
+    session.commit()
+
+    # Today's policy is stricter than the one the line was judged under.
+    today = policy.save_for_org(session, ORG, {"min_margin": 0.14})
+    session.commit()
+    assert today.min_margin == 0.14
+
+    report = backtest.run(session, ORG, min_margin=0.20)
+
+    assert report.lines_examined == 1
+    assert report.lines_on_recorded_baseline == 1
+    # The baseline reproduces what the row recorded, because it *is* what
+    # judged the row. Under today's 14% floor it would not have.
+    assert report.baseline_disagreements == 0
+    assert not report.unresolvable_stamps
+    assert len(report.newly_requires_approval) == 1
+
+
+def test_an_unresolvable_stamp_is_counted_by_reason_and_never_guessed(session):
+    """A pre-registry row still gets replayed, and the report says it was
+    approximate. Dropping it silently and quietly folding it into the exact
+    totals are both worse than saying which it was."""
+    session.add(models.Organization(organization_id=ORG, name=ORG))
+    session.flush()
+    policy.save_for_org(session, ORG, {"min_margin": 0.10})
+    session.commit()
+
+    _decision(session, quote_id="q1", line_id="l1", price="105", cost="100",
+              requires_approval=True, thresholds_version="ci_" + "f" * 10)
+    session.commit()
+
+    report = backtest.run(session, ORG, min_margin=0.20)
+
+    assert report.lines_examined == 1
+    assert report.lines_on_recorded_baseline == 0
+    assert sum(report.unresolvable_stamps.values()) == 1
+    assert set(report.unresolvable_stamps) <= {
+        "PRE_EPOCH", "POST_EPOCH_GAP", "UNRECORDED_ORG"}
+    assert "unresolvable_stamps" in report.to_dict()
+
+
+def test_every_line_that_fell_back_to_today_is_counted_not_just_the_first(session):
+    """The count is lines, like every other number in the report.
+
+    One test line could not tell these apart, and the shape it hid is the one
+    that matters: the per-stamp cache short-circuits before the counter, so a
+    year of lines sharing one unrecorded stamp reported ``1``. An owner reading
+    500 examined against 1 unresolvable concludes 499 were replayed exactly —
+    when every one of them was judged under today's floor instead. The report's
+    own justification for falling back at all is that the degradation is
+    *reported*; counted once per version, it was not.
+    """
+    session.add(models.Organization(organization_id=ORG, name=ORG))
+    session.flush()
+    policy.save_for_org(session, ORG, {"min_margin": 0.10})
+    session.commit()
+
+    stamp = "ci_" + "f" * 10
+    for i in range(5):
+        _decision(session, quote_id="q1", line_id=f"l{i}", price="105",
+                  cost="100", thresholds_version=stamp)
+    # A second, distinct unrecorded stamp: the split is by reason, not by
+    # version, so both versions' lines land in the same bucket.
+    _decision(session, quote_id="q2", line_id="l9", price="105", cost="100",
+              thresholds_version="ci_" + "e" * 10)
+    session.commit()
+
+    report = backtest.run(session, ORG, min_margin=0.20)
+
+    assert report.lines_examined == 6
+    assert report.lines_on_recorded_baseline == 0
+    assert sum(report.unresolvable_stamps.values()) == 6
+    # The three counters are on one scale, so the parts account for the whole.
+    assert (report.lines_on_recorded_baseline
+            + sum(report.unresolvable_stamps.values())
+            + report.unjudgeable) == report.lines_examined

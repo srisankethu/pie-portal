@@ -337,9 +337,9 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
     }
   }
 
-  const doIntake = (text: string) =>
+  const doIntake = (text: string, channel: string) =>
     guard(async () => {
-      const q = await api.intake(t, quote!.id, text);
+      const q = await api.intake(t, quote!.id, text, channel || undefined);
       setQuote(q);
       setIntakeOpen(false);
       const read = q.lines.filter((l) => l.proposed).length;

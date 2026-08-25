@@ -17,6 +17,16 @@ class CreateQuoteRequest(BaseModel):
 
 class IntakeRequest(BaseModel):
     text: str = Field(..., description="Pasted RFQ text, one requested item per line")
+    #: How the enquiry reached the desk, when the person pasting it says so.
+    #: Supplying it captures the text into ``inbound_lines`` — the corpus every
+    #: text technique waits on — and omitting it captures nothing at all.
+    #:
+    #: Not defaulted, and that is the whole design of this field.
+    #: ``InboundChannel`` has no UNKNOWN member because "an enquiry that arrived
+    #: some other way has no honest value to store", so a default here would be
+    #: the server picking a route on the sender's behalf and filling the one
+    #: index the corpus is grouped by with a guess.
+    channel: Optional[str] = None
 
 
 class SelectSupplyRequest(BaseModel):

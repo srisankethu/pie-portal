@@ -46,6 +46,7 @@ from ..commercial.insight import (absence, adoption, bonds, cadence, capital,
                                   passthrough as pass_through_view, payments,
                                   periods, radar, routing, schemes, selffunding,
                                   simulate, stock,
+                                  unrecorded as unrecorded_view,
                                   story, supply, terms as vendor_terms, wallet,
                                   weather, withholding)
 from ..db import get_session
@@ -1131,6 +1132,35 @@ _DECIDED = ("WON", "LOST")
 _AWAITING = ("DRAFT", "SENT")
 
 
+def _assigned_customer_ids(session: Session,
+                           principal: Principal) -> Optional[frozenset[str]]:
+    """The accounts this principal is narrowed to, or ``None`` for the book.
+
+    ``None`` and an empty set are different answers and the caller must be able
+    to tell them apart: ``None`` is "no narrowing applies", an empty set is "a
+    salesperson who holds no accounts", and collapsing the second into the first
+    would hand them the whole book. Both quote reads below take the same set for
+    the same reason ``_scoped_outcomes`` states — a count taken outside the
+    scope leaks the size of a book the reader cannot see.
+
+    The ids come from ``_customers_in_scope``, which resolves ownership through
+    ``commercial/ownership`` — not from a filter on ``Customer.assigned_user_id``,
+    which is what this used to do and what every screen that reads that column
+    directly gets wrong. ``assigned_user_id`` is Zoho's derived answer, rewritten
+    by ``_sync_assignments`` from the salesperson on the last invoice; a manager
+    handing an account over writes a ``CustomerAccountOwner`` row that beats it.
+    Reading the column alone therefore hides a reassigned account from the person
+    it was given to and leaves it visible to the person it was taken from —
+    verbatim the failure ``authz.can_view_customer`` says the ownership rule
+    exists to prevent, and two disagreeing answers to "whose book is this" in one
+    file.
+    """
+    if not principal.is_salesperson:
+        return None
+    customers, _owners = _customers_in_scope(session, principal)
+    return frozenset(c.customer_id for c in customers)
+
+
 def _scoped_outcomes(session: Session, org: str, principal: Principal,
                      statuses: tuple[str, ...]) -> list[models.QuoteOutcome]:
     """Every quote in these states this principal may see, and nothing else.
@@ -1150,11 +1180,8 @@ def _scoped_outcomes(session: Session, org: str, principal: Principal,
     stmt = select(models.QuoteOutcome).where(
         models.QuoteOutcome.organization_id == org,
         models.QuoteOutcome.status.in_(statuses))
-    if principal.is_salesperson:
-        mine = [c for (c,) in session.execute(
-            select(models.Customer.customer_id).where(
-                models.Customer.organization_id == org,
-                models.Customer.assigned_user_id == principal.user_id)).all()]
+    mine = _assigned_customer_ids(session, principal)
+    if mine is not None:
         stmt = stmt.where(
             models.QuoteOutcome.customer_id.in_(mine)
             | (models.QuoteOutcome.customer_id.is_(None)
@@ -1448,6 +1475,54 @@ def quote_pricing(principal: Principal = Depends(require_manager_or_owner),
                       "the same item at the same quantity band. The margin "
                       "figures above are computed over every fully-costed "
                       "quote and do not need that."))
+
+
+@router.get("/unrecorded-quotes")
+def unrecorded_quotes(limit: int = Query(50, ge=1, le=500),
+                      principal: Principal = Depends(current_principal),
+                      session: Session = Depends(get_session)) -> dict:
+    """The quotes the ERP holds no outcome for, in the order worth asking about.
+
+    Every role, and for the same reason ``/quote-outcomes`` is: nothing in the
+    response is derived from cost. ``value`` is each quote's own selling total —
+    the number that went to the customer — and the rest is dates, the ERP's own
+    status word and counts of them. A salesperson is narrowed to their own
+    accounts by the same rule the win rate applies.
+
+    Thin, by rule. The grouping, the ranking and every count come from
+    ``commercial/insight/unrecorded``; this maps the query parameter, applies
+    role scope and slices the page. The slice is here rather than there on
+    purpose: ``totals`` is taken over the whole list, so the headline says how
+    big the pile is and ``listed`` says how much of it is on the page.
+
+    ``/quote-outcomes`` answers "how often do we win"; this answers "which of
+    the ones nobody wrote down is worth a person's afternoon". They are separate
+    endpoints because the first is a rate over answered quotes and this is a
+    worklist over unanswered ones, and folding the second into the first would
+    put a two-hundred-row list inside a summary.
+    """
+    org, snapshot, th = _labels_only(session, principal)
+    as_of = clock.today(th.timezone)
+    rows = unrecorded_view.build(
+        session, org, as_of=as_of,
+        customer_names=snapshot.customer_names,
+        customer_ids=_assigned_customer_ids(session, principal))
+
+    result = dict(unrecorded_view.totals(rows))
+    result["quotes"] = [row.to_dict() for row in rows[:limit]]
+    result["listed"] = len(result["quotes"])
+    result["as_of"] = as_of.isoformat()
+    #: The order the list is in, published so a reader can recompute it rather
+    #: than infer it. See the module docstring for why it is a lexicographic
+    #: sort over two named quantities and not a score.
+    result["group_order"] = list(unrecorded_view.GROUP_ORDER)
+    return _envelope(
+        result, th=th,
+        empty_reason=(None if rows else
+                      "Every quote this book holds has an outcome the ERP "
+                      "recorded, or no quotes have been synced yet. This list "
+                      "is the ones with neither a win nor a loss against them — "
+                      "silence, which is never read as a loss."))
 
 
 @router.get("/cashflow")
@@ -2060,6 +2135,86 @@ def pricing_pass_through(
         catalogue=cat.coverage_report(lines_of))
 
 
+def _bills_by_vendor(session: Session,
+                     org: str) -> dict[Optional[str], supply.VendorBills]:
+    """Bills read per supplier, and how many of them drew a vendor credit.
+
+    Counted here rather than in ``supply.py`` for the reason the orders above
+    are: this file does the querying and ``commercial/`` does the judging. What
+    it must not do is decide anything — the floor below which a clean record
+    proves nothing is derived in ``supply.min_bills_for_a_credit_rate`` from the
+    book's own rate, and this function hands over counts only.
+
+    **Credited bills are counted distinctly.** One vendor credit is routinely
+    spread over several bills and one bill can draw several credits — the
+    Kennametal document ``11-procurement.md`` opens covers eight bills — so
+    counting applications instead of bills would report a supplier as having
+    more corrections than it sent invoices.
+
+    A bill with no ``vendor_id`` is kept under ``None`` rather than dropped: it
+    is still a bill this book received, so it belongs in the denominator the
+    book-wide rate is computed from. It matches no supplier row on the screen,
+    which is the honest outcome.
+    """
+    counts = dict(session.execute(
+        select(models.BillDoc.vendor_id, func.count())
+        .where(models.BillDoc.organization_id == org)
+        .group_by(models.BillDoc.vendor_id)).all())
+    credited = dict(session.execute(
+        select(models.BillDoc.vendor_id,
+               func.count(func.distinct(models.BillDoc.bill_id)))
+        .join(models.VendorCreditApplication,
+              (models.VendorCreditApplication.bill_external_ref
+               == models.BillDoc.external_ref)
+              & (models.VendorCreditApplication.organization_id
+                 == models.BillDoc.organization_id))
+        .where(models.BillDoc.organization_id == org)
+        .group_by(models.BillDoc.vendor_id)).all())
+    return {vid: supply.VendorBills(vendor_id=vid, bills=n,
+                                    credited_bills=credited.get(vid, 0))
+            for vid, n in counts.items()}
+
+
+def _item_cost_ranges(session: Session, org: str) -> list[supply.ItemCostRange]:
+    """How far each repeat-bought item's unit cost has ranged, per supplier.
+
+    One ``GROUP BY`` over ``cost_records``, and the aggregation is in SQL on
+    purpose. ``cost_records`` is bill-*line* grain — a book with a few thousand
+    items and a few years of bills holds tens of thousands of rows — and this
+    endpoint would otherwise pull all of them on every request to compute one
+    ratio per pair. ``HAVING count > 1`` also drops the majority of the
+    catalogue at the database: on this book most items are bought once, and a
+    single purchase has no movement to report.
+
+    ``min``/``max`` rather than the ordered series, and
+    ``ItemCostRange``'s docstring says what that costs: a spread cannot
+    distinguish one annual revision from a price that bounces every order.
+    Fetching the series for every pair to answer the second question is a cost
+    this screen has not been asked to pay.
+
+    Rows with no ``vendor_id`` group under ``None`` and match no supplier on the
+    screen. Kept rather than filtered in SQL, because a bill from a supplier the
+    vendor pull did not return is still a real cost — the same reasoning the
+    column's own docstring gives for leaving it null instead of guessing.
+    """
+    rows = session.execute(
+        select(models.CostRecord.vendor_id,
+               models.CostRecord.product_id,
+               func.count(),
+               func.min(models.CostRecord.unit_cost),
+               func.max(models.CostRecord.unit_cost))
+        .where(models.CostRecord.organization_id == org)
+        .group_by(models.CostRecord.vendor_id, models.CostRecord.product_id)
+        .having(func.count() >= supply.MIN_PURCHASES_FOR_A_MOVE)).all()
+    return [
+        supply.ItemCostRange(vendor_id=vendor_id, product_id=product_id,
+                             purchases=n, lowest=Decimal(str(low)),
+                             highest=Decimal(str(high)))
+        for vendor_id, product_id, n, low, high in rows
+        if low is not None and high is not None
+    ]
+
+
 @router.get("/supply")
 def supplier_position(principal: Principal = Depends(require_manager_or_owner),
                       session: Session = Depends(get_session)) -> dict:
@@ -2110,7 +2265,9 @@ def supplier_position(principal: Principal = Depends(require_manager_or_owner),
     result = supply.build(
         orders, as_of,
         terms_by_vendor={vid: days for vid, days in effective.items()
-                         if days is not None})
+                         if days is not None},
+        bills_by_vendor=_bills_by_vendor(session, org),
+        cost_ranges=_item_cost_ranges(session, org))
     # A supplier is per connected company too: the same vendor invoicing two of
     # the books is two rows, and concentration read across them without saying
     # so would look like one dependency where there are two relationships.

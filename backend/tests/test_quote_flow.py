@@ -752,3 +752,96 @@ def test_every_quote_carries_a_reference_a_person_could_search_for(client, mgmt_
     b = client.post("/api/v1/quotes", json={"customer": "Pitti"}, headers=mgmt_hdr).json()
     assert a["reference"] and a["reference"] != b["reference"], \
         "the reference is this quote's idempotency key; two quotes may never share one"
+
+
+# ── the enquiry corpus, filled from work that already happens ───────────────
+#
+# `inbound_lines` was designed in `a7inbound` and held zero rows, so every text
+# technique in `14-machine-learning.md` §5.17–§5.21 waited on an empty table.
+# This is the one place real customer text already arrives: a salesperson pastes
+# the enquiry to have it resolved, and it was read into lines and then dropped.
+#
+# What this door supplies is the *benchmark* corpus — real wording with the
+# reading it produced. It does not supply the coverage denominator and cannot:
+# a line captured here reached the Quote Builder, so somebody chose to work it,
+# and the enquiries nobody worked never come through. `source_ref` carries the
+# quote id so that subset stays identifiable when an adapter starts writing the
+# rest.
+
+#: Deliberately horrible, and the same shape the capture suites use. If any
+#: layer between the paste and the column tidies this, the corpus measures the
+#: tidier rather than the resolver.
+MESSY_RFQ = "  pls quote\t2001174, 20\r\n  ⌀12 mm end mill  x3  "
+
+
+def _lines(client):
+    from app.domain import models as m
+    s = client.Maker()
+    try:
+        return list(s.query(m.InboundLine).all())
+    finally:
+        s.close()
+
+
+def test_a_stated_channel_captures_the_enquiry_word_for_word(client, sales_hdr):
+    qid = client.post("/api/v1/quotes", json={"customer": "Acme"},
+                      headers=sales_hdr).json()["id"]
+    r = client.post(f"/api/v1/quotes/{qid}/intake",
+                    json={"text": MESSY_RFQ, "channel": "WHATSAPP"},
+                    headers=sales_hdr)
+
+    assert r.status_code == 200, r.text
+    assert r.json()["intake"]["captured"] is True
+    line = _lines(client)[0]
+    assert line.raw_text == MESSY_RFQ, (
+        "the intake path tidied the customer's words on the way to the corpus")
+    assert line.channel == "WHATSAPP"
+    # The handle that marks this row as part of the worked subset, and the join
+    # back to what was made of the text.
+    assert line.source_ref == f"quote:{qid}"
+
+
+def test_no_channel_captures_nothing_rather_than_guessing_one(client, sales_hdr):
+    """`InboundChannel` has no UNKNOWN member because "an enquiry that arrived
+    some other way has no honest value to store". A default here would file
+    every row under a route nobody chose, in the one index the corpus is
+    grouped by."""
+    qid = client.post("/api/v1/quotes", json={"customer": "Acme"},
+                      headers=sales_hdr).json()["id"]
+    r = client.post(f"/api/v1/quotes/{qid}/intake", json={"text": MESSY_RFQ},
+                    headers=sales_hdr)
+
+    assert r.status_code == 200, r.text
+    assert r.json()["intake"]["captured"] is False
+    assert _lines(client) == []
+
+
+def test_a_bad_channel_costs_the_corpus_a_row_and_the_quote_nothing(
+        client, sales_hdr):
+    """The quote is the work; the corpus is a by-product. An adapter sending a
+    channel this platform does not know must not cost somebody their RFQ."""
+    qid = client.post("/api/v1/quotes", json={"customer": "Acme"},
+                      headers=sales_hdr).json()["id"]
+    r = client.post(f"/api/v1/quotes/{qid}/intake",
+                    json={"text": MESSY_RFQ, "channel": "CARRIER_PIGEON"},
+                    headers=sales_hdr)
+
+    assert r.status_code == 200, r.text
+    assert r.json()["intake"]["captured"] is False
+    assert r.json()["summary"]["total"] > 0, "the lines still resolved"
+    assert _lines(client) == []
+
+
+def test_the_same_enquiry_pasted_twice_is_two_rows(client, sales_hdr):
+    """No deduplication, here or anywhere: two identical asks are two enquiries,
+    and merging them would under-report exactly the repeat demand the table
+    measures. A re-paste onto the same quote is the closest thing to a false
+    positive this door has, and it is still two asks."""
+    qid = client.post("/api/v1/quotes", json={"customer": "Acme"},
+                      headers=sales_hdr).json()["id"]
+    for _ in range(2):
+        client.post(f"/api/v1/quotes/{qid}/intake",
+                    json={"text": MESSY_RFQ, "channel": "EMAIL"},
+                    headers=sales_hdr)
+
+    assert len(_lines(client)) == 2

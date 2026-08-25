@@ -1498,7 +1498,16 @@ export function StockScreen({ session }: { session: PlatformSession }) {
           <h4>{String(g.label)} <span className="tier3-count">{String(g.count)}</span></h4>
           <p className="viz-muted">{String(g.meaning)}</p>
           {rows(g.items).length === 0 ? (
-            <p className="tier3-none">Nothing here. That is the good answer.</p>
+            /* "Nothing here" is only good news when something *could* have
+               been here. The server says when it could not — an empty
+               BELOW_REORDER on a book where no item has a reorder point at
+               all is a statement about the stocking policy on record, and
+               this line used to read it back as a clean bill of health. */
+            g.empty_means ? (
+              <p className="tier3-none">{String(g.empty_means)}</p>
+            ) : (
+              <p className="tier3-none">Nothing here. That is the good answer.</p>
+            )
           ) : (
             <ol className="cadence-rows">
               {rows(g.items).slice(0, 8).map((item, j) => (
@@ -1602,6 +1611,35 @@ export function SupplyScreen({ session }: { session: PlatformSession }) {
             .filter((s) => s.typical_lead_time_days != null)
             .map((s) => `${s.label} ${s.typical_lead_time_days}d`)
             .join(" · ") || "no supplier has enough logged receipts yet."}
+        </p>
+        {/* Same shape as the lead-time footnote above, and for the same reason:
+            the measurement is named only for the suppliers that earned it. A
+            column would need a value in every row, and the value for almost
+            every supplier here is "not enough bills" — which is a sample size,
+            not a clean record. The server decides which is which; this only
+            renders the ones it answered. */}
+        <p className="viz-muted viz-footnote">
+          Bills drawing a credit note — returns and price corrections — shown
+          only where a supplier has sent enough bills for a clean run to mean
+          something{data?.min_bills_for_credit_rate != null
+            && <> ({num(data.min_bills_for_credit_rate)} on this book)</>}:{" "}
+          {shownSuppliers
+            .filter((s) => s.credit_rate != null)
+            .map((s) => `${s.label} ${pct(num(s.credit_rate), 0)} of ${num(s.bills)}`)
+            .join(" · ") || "no supplier has sent enough bills yet."}
+        </p>
+        {/* The third dimension `11-procurement.md` §3 names, and the one whose
+            refusal is the common case: a spread needs a line bought from the
+            same supplier twice, and most of this catalogue is bought once. Read
+            a wide spread as "worth opening the line" — it cannot tell an annual
+            revision apart from a price that bounces every order. */}
+        <p className="viz-muted viz-footnote">
+          How far unit cost has ranged on the lines bought from a supplier more
+          than once, median across those lines:{" "}
+          {shownSuppliers
+            .filter((s) => s.typical_price_spread != null)
+            .map((s) => `${s.label} ${pct(num(s.typical_price_spread), 0)} across ${num(s.repeat_bought_items)} lines`)
+            .join(" · ") || "no supplier has enough repeat-bought lines yet."}
         </p>
       </div>
 

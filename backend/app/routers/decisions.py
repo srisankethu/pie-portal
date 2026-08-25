@@ -10,7 +10,8 @@ only sees decisions assigned to them and never the RESTRICTED decision types.
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from dataclasses import dataclass
+from typing import Any, Mapping, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
@@ -46,7 +47,39 @@ _SUBJECT_MASTERS = {
 }
 
 
-def _subject_rows(session: Session, d: models.Decision) -> list[Any]:
+@dataclass(frozen=True)
+class _Prefetched:
+    """What a caller already knows, so ``_detail`` stops asking per row.
+
+    The queue's ``include_detail`` path builds every one of these once for the
+    whole page; the single-card endpoint builds none and each field falls back
+    to the query it always made. That is the whole of the difference between
+    the two callers, and it is why this is a bag of optional maps rather than a
+    second copy of ``_detail``.
+
+    **``None`` is "not prefetched" and ``{}`` is "prefetched, and empty."** The
+    distinction is load-bearing: a missing snapshot means the decision was never
+    accepted, and an empty map from a caller that did not look must not read the
+    same way. Every lookup below tests ``is None`` first for exactly that reason.
+    """
+
+    companies: Optional[Companies] = None
+    #: ``{subject_entity_type: {entity_id: master row}}`` — what the queue
+    #: already loaded to badge each row with its company.
+    subjects: Optional[Mapping[str, Mapping[str, Any]]] = None
+    user_names: Optional[Mapping[str, str]] = None
+    signals: Optional[Mapping[str, models.Signal]] = None
+    snapshots: Optional[Mapping[str, models.OutcomeSnapshot]] = None
+    #: The tenant's zone. One organization per request, so looking it up per
+    #: decision was pure repetition.
+    timezone: Optional[str] = None
+
+
+_NOTHING_PREFETCHED = _Prefetched()
+
+
+def _subject_rows(session: Session, d: models.Decision,
+                  have: _Prefetched = _NOTHING_PREFETCHED) -> list[Any]:
     """The master row or rows this decision is about, in reading order.
 
     Most subjects are one row. A ``CUSTOMER_ITEM`` subject is a *pair* — its id
@@ -59,30 +92,39 @@ def _subject_rows(session: Session, d: models.Decision) -> list[Any]:
     the encoding was and had never had a caller; this is it, rather than a second
     place that knows the separator.
     """
+    def one(kind: str, entity_id: str, model: Any) -> Any:
+        """From the caller's index where it has one, else the get it always did."""
+        index = (have.subjects or {}).get(kind) if have.subjects is not None else None
+        if index is not None:
+            return index.get(entity_id)
+        return session.get(model, entity_id)
+
     pair = subject.decode(d.subject_entity_id) if (
         d.subject_entity_type == SubjectEntityType.CUSTOMER_ITEM.value) else None
     if pair is None:
         entry = _SUBJECT_MASTERS.get(d.subject_entity_type)
         if entry is None:
             return []
-        row = session.get(entry[0], d.subject_entity_id)
+        row = one(d.subject_entity_type, d.subject_entity_id, entry[0])
         return [row] if row is not None else []
 
     customer_id, product_id = pair
-    rows = [session.get(models.Customer, customer_id),
-            session.get(models.Product, product_id)]
+    rows = [one(SubjectEntityType.CUSTOMER.value, customer_id, models.Customer),
+            one(SubjectEntityType.PRODUCT.value, product_id, models.Product)]
     return [r for r in rows if r is not None]
 
 
-def _subject_label(session: Session, d: models.Decision) -> str:
-    rows = _subject_rows(session, d)
+def _subject_label(session: Session, d: models.Decision,
+                   have: _Prefetched = _NOTHING_PREFETCHED) -> str:
+    rows = _subject_rows(session, d, have)
     names = [n for n in (getattr(r, "name", None) for r in rows) if n]
     # The raw id if nothing resolved, never a blank: a card that cannot name its
     # subject must still say which one it is, and an id is at least traceable.
     return " · ".join(names) or d.subject_entity_id
 
 
-def _subject_origin(session: Session, d: models.Decision) -> dict:
+def _subject_origin(session: Session, d: models.Decision,
+                    have: _Prefetched = _NOTHING_PREFETCHED) -> dict:
     """Which connected company the card is *about*.
 
     Named `subject_origin`, not `origin`: a decision already has an origin, and
@@ -102,9 +144,12 @@ def _subject_origin(session: Session, d: models.Decision) -> dict:
     # the company whose book the relationship sits in. Through `_subject_rows` so
     # a pair subject gets a badge at all; it used to get none, for the same
     # reason it got no name.
-    rows = _subject_rows(session, d)
+    rows = _subject_rows(session, d, have)
     row = rows[0] if rows else None
-    companies = Companies(session, d.organization_id)
+    # One per request where the caller built one. ``Companies``' own docstring
+    # says it exists to be built once, and the queue was constructing a fresh
+    # one — a ``zoho_connections`` SELECT each — for every card on the page.
+    companies = have.companies or Companies(session, d.organization_id)
     return {
         "subject_origin": companies.of(row).to_dict() if row is not None else None,
         "sources_differ": companies.count > 1,
@@ -112,7 +157,8 @@ def _subject_origin(session: Session, d: models.Decision) -> dict:
 
 
 def _outcome(session: Session, d: models.Decision, *,
-             is_sales: bool) -> Optional[dict]:
+             is_sales: bool,
+             have: _Prefetched = _NOTHING_PREFETCHED) -> Optional[dict]:
     """What this decision actually changed, measured — or ``None``.
 
     ``None`` is an absence and nothing more: no snapshot means the decision was
@@ -133,13 +179,18 @@ def _outcome(session: Session, d: models.Decision, *,
     are that endpoint's, minus the four the card already carries, so one
     renderer can read both.
     """
-    snap = outcome_tracker.snapshot_for_decision(session, d.decision_id)
+    # ``is None`` rather than a falsy test: an empty prefetch map means the
+    # caller looked and found none, and must not send every card back to the
+    # database to discover the same thing.
+    snap = (have.snapshots.get(d.decision_id) if have.snapshots is not None
+            else outcome_tracker.snapshot_for_decision(session, d.decision_id))
     if snap is None:
         return None
     # The tenant's zone, not the deployment's: it decides which day acceptance
-    # fell on and therefore whether the horizon has closed.
-    tz = getattr(session.get(models.Organization, d.organization_id),
-                 "timezone", None)
+    # fell on and therefore whether the horizon has closed. One organization per
+    # request, so a caller with many decisions reads it once.
+    tz = have.timezone if have.timezone is not None else getattr(
+        session.get(models.Organization, d.organization_id), "timezone", None)
     evaluation = outcome_tracker.evaluate(
         session, snap, as_of=clock.today(tz), tz=tz).to_dict()
     baseline = dict(snap.baseline_metrics or {})
@@ -159,7 +210,35 @@ def _outcome(session: Session, d: models.Decision, *,
     }
 
 
-def _detail(session: Session, d: models.Decision, principal: Principal) -> dict:
+def _signals_for(session: Session,
+                 rows: list[models.Decision]) -> dict[str, models.Signal]:
+    """The first signal behind each decision, in one query rather than one each."""
+    ids = {d.signal_ids[0] for d in rows if d.signal_ids}
+    if not ids:
+        return {}
+    return {s.signal_id: s for s in session.scalars(
+        select(models.Signal).where(models.Signal.signal_id.in_(ids))).all()}
+
+
+def _snapshots_for(session: Session, rows: list[models.Decision],
+                   ) -> dict[str, models.OutcomeSnapshot]:
+    """Every frozen baseline on this page, keyed by decision.
+
+    Returns ``{}`` when none of these decisions was ever accepted, and that
+    empty map is an answer — ``_outcome`` distinguishes it from ``None`` so the
+    page does not go back to the database once per card to be told the same
+    thing.
+    """
+    ids = [d.decision_id for d in rows]
+    if not ids:
+        return {}
+    return {s.decision_id: s for s in session.scalars(
+        select(models.OutcomeSnapshot).where(
+            models.OutcomeSnapshot.decision_id.in_(ids))).all()}
+
+
+def _detail(session: Session, d: models.Decision, principal: Principal,
+            have: _Prefetched = _NOTHING_PREFETCHED) -> dict:
     """Full role-gated decision projection for the detail screen.
 
     Facts (deterministic, sourced) are kept strictly separate from the AI
@@ -168,7 +247,8 @@ def _detail(session: Session, d: models.Decision, principal: Principal) -> dict:
     is_sales = principal.role is Role.SALESPERSON
     signal = None
     if d.signal_ids:
-        signal = session.get(models.Signal, d.signal_ids[0])
+        signal = (have.signals.get(d.signal_ids[0]) if have.signals is not None
+                  else session.get(models.Signal, d.signal_ids[0]))
 
     facts: list[dict] = []
     if signal is not None:
@@ -188,15 +268,20 @@ def _detail(session: Session, d: models.Decision, principal: Principal) -> dict:
     ai = d.ai or {}
     confidence = dict(d.confidence or {})
 
-    subject_label = _subject_label(session, d)
+    subject_label = _subject_label(session, d, have)
 
-    subject_origin_data = _subject_origin(session, d)
+    subject_origin_data = _subject_origin(session, d, have)
 
-    assigned_to = (approvals.user_names(
-        session, d.organization_id, [d.assigned_user_id]).get(d.assigned_user_id)
-        if d.assigned_user_id else None)
+    assigned_to = None
+    if d.assigned_user_id:
+        assigned_to = (
+            have.user_names.get(d.assigned_user_id)
+            if have.user_names is not None
+            else approvals.user_names(
+                session, d.organization_id,
+                [d.assigned_user_id]).get(d.assigned_user_id))
 
-    outcome = _outcome(session, d, is_sales=is_sales)
+    outcome = _outcome(session, d, is_sales=is_sales, have=have)
 
     # AI economics never leak to a salesperson even in the interpretation text
     # (the interpreter already ran on a redacted bundle; this is defense in depth).
@@ -286,6 +371,14 @@ def _to_read(d: models.Decision) -> DecisionRead:
     )
 
 
+# Deliberately no ``response_model``, and the reason is worth a line because the
+# obvious fix breaks it silently. FastAPI's response_model does not merely
+# describe a shape, it *filters* to it — declaring ``list[DecisionRead]`` here
+# strips every key ``_detail`` folds in, so ``include_detail=true`` returns
+# summaries while claiming to be detail. Tried, and caught by
+# ``test_include_detail``. The two shapes are: ``DecisionRead`` on its own, or
+# ``DecisionRead`` plus ``_detail``'s role-gated projection, which is a
+# per-principal shape no single model can promise.
 @router.get("")
 def list_decisions(
     type: Optional[str] = None,
@@ -293,8 +386,21 @@ def list_decisions(
     include_detail: bool = False,
     principal: Principal = Depends(current_principal),
     session: Session = Depends(get_session),
-):
+) -> Any:
+    """The scoped queue, optionally with each card's full detail folded in.
 
+    Two shapes, and the comment above says why neither is a ``response_model``:
+    ``DecisionRead`` on its own, or ``DecisionRead`` with ``_detail``'s keys
+    folded in. The second is role-gated — a salesperson's card has no RESTRICTED
+    fact on it — so it is a per-principal projection rather than a fixed model.
+
+    **There was a second endpoint doing this.** ``POST /bulk-detail`` shipped in
+    the same change, was never called by anything, and is gone: two
+    implementations of "detail for many decisions" drift, and CLAUDE.md §7 is
+    explicit that a second caller — not a possible one — is what justifies the
+    first abstraction. It also looped an unbounded id list through an
+    authorization check and an outcome evaluation apiece.
+    """
     repo = DecisionRepository(session, principal.organization_id)
 
     # Scope and the QUOTE_CONTEXT exclusion together, from `authz`, because the
@@ -333,25 +439,58 @@ def list_decisions(
         out.append(read)
 
 
-    # If frontend requested full details, include them in one pass to avoid N+1
-    if include_detail:
-        result = []
-        for d in rows:
-            try:
-                summary = _to_read(d)
-                detail = _detail(session, d, principal)
-                # Merge summary and detail into one dict
-                summary_dict = summary.model_dump() if hasattr(summary, 'model_dump') else summary.__dict__
-                merged = {**summary_dict, **detail}
-                result.append(merged)
-            except Exception as e:
-                logger.error("[decisions:list] Failed to load detail for %s: %s", d.decision_id, e)
-                # Fallback to summary only
-                result.append(out[len(result)])
+    if not include_detail:
+        return out
 
-        return result
+    # Every card's detail in one pass — and *actually* in one pass. The first
+    # version of this said "to avoid N+1" and moved N HTTP round trips into one
+    # request that did strictly more database work than the N had: a fresh
+    # ``Companies`` per row (the exact thing that class exists to be built once),
+    # a subject ``get`` per row beside the index already loaded above, a
+    # ``user_names`` call per row, a snapshot query per row, and an
+    # ``Organization`` fetch per row for a timezone that is the same on all of
+    # them. Prefetched here, they are five queries for the page instead of five
+    # per card.
+    #
+    # What is left per row is ``outcome_tracker.evaluate``, and only for the
+    # decisions somebody actually accepted — it reads that decision's own sale
+    # and cost rows, so it is work the answer genuinely needs rather than
+    # repetition.
+    have = _Prefetched(
+        companies=companies,
+        subjects=indexes,
+        user_names=approvals.user_names(
+            session, principal.organization_id,
+            [d.assigned_user_id for d in rows if d.assigned_user_id]),
+        signals=_signals_for(session, rows),
+        snapshots=_snapshots_for(session, rows),
+        timezone=getattr(session.get(models.Organization,
+                                     principal.organization_id),
+                         "timezone", None))
 
-    return out
+    result: list[dict] = []
+    for summary, d in zip(out, rows):
+        # From ``out`` rather than a second ``_to_read`` of the same row. Not a
+        # correctness fix — ``_detail`` computes ``subject_origin`` and
+        # ``sources_differ`` itself, so the merge kept them — but it was
+        # computing them *per row* through its own ``Companies``, which is half
+        # of what made this path expensive. Reusing the summary the loop above
+        # already built keeps one derivation of the badge instead of two that
+        # have to agree.
+        merged = summary.model_dump()
+        try:
+            merged.update(_detail(session, d, principal, have))
+        except Exception:
+            logger.exception("[decisions:list] detail failed for %s",
+                             d.decision_id)
+            # Marked, not silently thin. A summary returned in a detail's shape
+            # renders as a card with empty panels, and the reader cannot tell
+            # "this decision has no interpretation" from "loading it failed" —
+            # §1's absence-read-as-a-value, on the screen where somebody
+            # decides. The client shows the difference.
+            merged["detail_unavailable"] = True
+        result.append(merged)
+    return result
 
 
 @router.get("/{decision_id}", response_model=DecisionRead)
@@ -374,33 +513,6 @@ def get_decision_detail(
 
     detail = _detail(session, d, principal)
     return detail
-
-
-@router.post("/bulk-detail")
-def get_decisions_bulk_detail(
-    decision_ids: list[str],
-    principal: Principal = Depends(current_principal),
-    session: Session = Depends(get_session),
-) -> dict[str, dict]:
-    """Fetch detail for multiple decisions in one request.
-
-    This eliminates the N+1 query pattern on the frontend where it calls
-    /decisions/{id}/detail for each decision in the list. The frontend should
-    call this endpoint once with all decision IDs instead of N separate requests.
-    """
-
-    result = {}
-
-    # Load all decisions in one pass (with authorization check per decision)
-    for did in decision_ids:
-        try:
-            d = _visible(session, principal, did)
-            result[did] = _detail(session, d, principal)
-        except HTTPException:
-            # Skip decisions the principal cannot see (404 due to authz)
-            pass
-
-    return result
 
 
 #: How much of a state key's working one response carries by default. A busy

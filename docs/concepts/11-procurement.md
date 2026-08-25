@@ -25,11 +25,17 @@ settled from inside this repository.
 
 Three facts, each checkable:
 
-**The platform does not ingest vendor credits at all.** `rg -ic "vendor.?credit"`
-across `backend/` returns nothing. `ingestion/zoho_client.py` exposes contacts,
+**The platform did not ingest vendor credits at all.** `rg -ic "vendor.?credit"`
+across `backend/` returned nothing. `ingestion/zoho_client.py` exposed contacts,
 items, invoices, bills, vendors, customer payments, purchase orders, sales
-orders, vendor payments and users. There is no `/vendorcredits` endpoint and no
-`/creditnotes` endpoint.
+orders, vendor payments and users. There was no `/vendorcredits` endpoint.
+
+That is fixed — `list_vendor_credits`, `VendorCreditDoc` and
+`VendorCreditApplication` ship, at header and bill grain, store-only. The
+paragraph stays in the past tense on purpose: the measurement is what made the
+case, and deleting it would leave the recommendation with nothing behind it.
+**The conclusion below is unchanged by the fix**, because ingesting is not
+adjusting — see §5.3.
 
 **Cost has one source and nothing can adjust it afterwards.** `normalize_bill`
 emits `CostRecordIn.unit_cost` as the bill line's effective post-*line*-discount
@@ -261,15 +267,34 @@ booked, never as an allocation inside `economics.py`.
 
 ## 3. The buy-side concepts that earn their place
 
-**Ingest vendor credits.** Wrong today regardless of the rebate answer — a ₹4.83
-lakh stock return across eight bills reduces nothing the platform computes. Two
-distinct effects: returns should reduce the *slab base*, and bill-specific price
-credits should reduce the *cost* of affected lines. The honest difficulty is
-attribution: the credits examined carry `bill_item_id: ""`, naming the item but
-not the bill line, and the "Rate Difference" credit names no item at all. Line
-attribution is therefore an inference and must be stated as one, or held at
-document grain. Ingest and store first; adjusting cost moves every margin in the
-platform and deserves its own change and its own review.
+~~**Ingest vendor credits.**~~ **SHIPPED, store-only.** A ₹4.83 lakh stock
+return across eight bills reduced nothing the platform computed, because nothing
+read it. Two distinct effects were named and **neither is taken**: returns should
+reduce the *slab base*, and bill-specific price credits should reduce the *cost*
+of affected lines. What ships is the evidence, at header and bill grain.
+
+The attribution difficulty decided the schema. The credits examined carry
+`bill_item_id: ""`, naming the item but not the bill line, and the "Rate
+Difference" credit names no item at all — so line attribution would be an
+inference, and the pull **drops line items entirely**, the same way
+`list_credit_notes` does on the sell side and for a reason that mirrors it
+exactly: a credit line is negative cost against a product, and cost already has
+one owner in `CostRecord`. The bill linkage *is* exact and is stored, because
+that is the grain a later cost adjustment will need.
+
+One field was refused rather than stored. `bills_credited` carries a single
+unlabelled `date` per row, and on the Kennametal document its eight values are
+spread over five months while that document's own system comments record every
+application made on two days in May 2026 — so it is the bill's date, not the
+application's. A column named `applied_on` holding a bill's date is worse than no
+column, and nothing this table is for needs one: a return is dated by the
+credit's header, a price correction is placed by the bill it names. The table is
+derived by contract, so a re-sync adds the column if somebody later settles the
+question with Zoho.
+
+`test_a_vendor_credit_does_not_change_what_a_line_cost` is the assertion that
+keeps this honest, and its docstring says what it costs to break: the change that
+makes it fail owes the platform the accountant conversation in §1 first.
 
 **A rebate-aware principal P&L, kept out of line margin.** Once the treatment is
 known: revenue riding on each principal's product (`dependency.py` already
@@ -284,6 +309,55 @@ answerable: *price stability* (variance of unit cost per item per vendor,
 straight out of `cost_records`), *credit-note rate* once credits are ingested,
 and *settlement behaviour*, which `insight/payments.py` already measures from one
 implementation covering both sides of the ledger.
+
+**The credit-note rate is built**, now that §5.3 has put the credits in the
+book — and the interesting part of it is the refusal, not the ratio. Almost
+every supplier here has issued no credit, so a screen dividing zero by four and
+printing 0% hands a clean record to a supplier nobody measured. That is the
+mistake `08-intermittent-demand.md` §1 found in the reorder group, in a column
+where it flatters the wrong party. So the floor is **derived from the book's own
+credit rate** rather than picked: `(1 − p)ⁿ ≤ 0.05` solved for *n* — how many
+bills a supplier would have had to send before a clean run became surprising.
+At a 4% book rate that is 74 bills; at 10% it is 29. Below it the rate is null
+with the bill and credit counts beside it, and a book that has read *no* credits
+at all gets no floor at all, because a missing vendor-credit grant and a
+faultless supply base look identical from here.
+
+Counts, never values: a value ratio would be a fraction of purchase spend — cost
+by another name, in the sense that already scopes this screen — and a scorecard
+asks how often a supplier gets an order wrong, not what the corrections came to.
+Credited bills are counted **distinctly**, because one credit spreads over
+several bills and one bill can draw several credits; counting applications would
+report a supplier as having more corrections than invoices.
+
+**Price stability is built too**, and it was never blocked by the ingestion — it
+comes straight out of `cost_records`, one `GROUP BY` over bill lines with
+`HAVING count >= 2`. Same discipline: the spread `(max − min) / min` per
+(supplier, item), the median across a supplier's repeat-bought lines, and a
+refusal below three such lines because a "typical" over two items is two items.
+Ratios only, no rupee levels — `/supply` is manager-and-above so cost would be
+permitted, but a spread is scale-free and the levels are not, and keeping it
+scale-free is what would let this be shown more widely later without reopening
+the question.
+
+**On this book the refusal is the common case**, and that is worth stating rather
+than discovering. `08-intermittent-demand.md` measured that most of the catalogue
+moves once; a line bought from the same supplier twice is the exception, so the
+spread appears for a minority of lines. Those are the lines an annual negotiation
+is about anyway, which is why this is still worth having.
+
+**What a spread cannot tell you.** A supplier that raised its price once at the
+annual revision and one whose price bounces on every order can produce the *same*
+spread, and only the second is unstable. Separating them needs the ordered series
+— how far the cost ended up from where it started, against how far it ranged in
+between — and that is deliberately not fetched: the aggregate is one `GROUP BY`,
+and pulling the series for every pair to answer a second question is a cost this
+screen has not been asked to pay. Read a wide spread as *worth opening the line*,
+not as *this supplier is erratic*. If the negotiation pack ever wants the
+distinction, that is where it belongs.
+
+With this, all three dimensions §3 names are built or already existed, and the
+two that were refused — lead time and OTIF — stay refused.
 
 **The annual negotiation pack.** Mostly assembly rather than computation:
 purchases by principal by period, downstream revenue riding on the line, the
@@ -332,8 +406,10 @@ costs auditability.
    until 1, 2 and 6 are answered, and 6 gates the entire multi-entity strand.
 2. **The marginal number.** Needs no accounting answer and no new data. *Landed
    in this change.*
-3. **Ingest vendor credits**, store only. Independent of everything above, and it
-   corrects a real understatement that exists today.
+3. ~~**Ingest vendor credits**, store only.~~ **DONE.** Independent of
+   everything above, and it puts the evidence on the table the six questions
+   have to be argued over. It corrects no number, because correcting one is
+   step 4's job and step 1's answer decides which correction is right.
 4. **Then** the principal P&L and the negotiation pack.
 
 ---

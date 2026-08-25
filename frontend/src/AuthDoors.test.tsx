@@ -31,9 +31,15 @@ const OFFER: SignupOffer = {
   trial_days: 30,
   note: "A free Quote Desk account.",
   plans: [
-    { plan: "free", label: "Quote Desk (free)", summary: "Quoting and approvals." },
-    { plan: "intelligence", label: "Commercial Intelligence", summary: "Adds the decision layer." },
-    { plan: "platform", label: "Platform", summary: "Adds several companies." },
+    // `purchasable: false` on the floor: it is where an organization lands when
+    // it stops paying, not a tier anyone chooses. Listed anyway so a screen can
+    // name what an organization currently has.
+    { plan: "free", label: "Quote Desk (no subscription)",
+      summary: "Quoting and approvals.", purchasable: false },
+    { plan: "intelligence", label: "Commercial Intelligence",
+      summary: "Adds the decision layer.", purchasable: true },
+    { plan: "platform", label: "Platform",
+      summary: "Adds several companies.", purchasable: true },
   ],
 };
 
@@ -114,13 +120,17 @@ describe("the sign-up card", () => {
     expect(screen.getByRole("radio", { name: /quote desk/i })).toBeChecked();
   });
 
-  it("says the account starts free when a paid plan is chosen", () => {
+  it("says the account starts on the trial when a paid plan is chosen", () => {
     render(<SignUpCard onSubmit={async () => {}} onSignIn={vi.fn()} offer={OFFER} />);
 
     fireEvent.click(screen.getByRole("radio", { name: /platform/i }));
-    // The load-bearing sentence: this form creates the same free account
-    // whichever rung is selected, and nothing is charged anywhere in it.
-    expect(screen.getByText(/starts on Quote Desk \(free\) today/i)).toBeInTheDocument();
+    // The load-bearing sentence, and it changed with the pricing model rather
+    // than with the wording: this used to say the account starts on the free
+    // Quote Desk, which is now wrong in the direction that matters. An
+    // organization starts with *everything* for `trial_days` and only falls to
+    // the unsubscribed floor afterwards, so telling somebody they are starting
+    // on the floor would undersell the thing they are about to try.
+    expect(screen.getByText(/starts with everything for 30 days/i)).toBeInTheDocument();
     expect(screen.getByText(/nothing is charged here/i)).toBeInTheDocument();
     // And the submit is still a sign-up, not a checkout.
     expect(screen.getByRole("button", { name: "Create account" })).toBeInTheDocument();

@@ -20,7 +20,7 @@ import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -29,12 +29,13 @@ from ..authz import (
     is_login_throttled,
     open_session, record_login_failure, reset_login_failures, revoke_all_sessions,
     revoke_session, set_session_cookie)
-from .. import clock, tenancy
+from .. import clock, memberships, tenancy
 from ..config import settings
 from ..db import get_session
 from ..domain import models
 from ..passwords import hash_password, needs_rehash, verify_password
 from ..trust import audit
+from .organizations import default_organization, my_organizations
 
 log = logging.getLogger("pie_portal.auth")
 
@@ -88,6 +89,16 @@ class LoginResponse(BaseModel):
     #: who does not know the numbers are invented is being misled by a product
     #: whose whole argument is that its numbers are real.
     is_demo: bool = False
+    #: The name of the workspace this session is acting for. Sent because on a
+    #: platform where one login can reach two customers, a screen that does not
+    #: say whose numbers it is showing is a screen somebody will misread.
+    organization_name: str = ""
+    #: Every workspace this identity may open, with the role held in each —
+    #: ``[{organization_id, name, role}]``. Usually one, and the client renders
+    #: no switcher for one. It is here rather than behind a second request
+    #: because the shell needs it on first paint, and a switcher that appears a
+    #: moment after the page does is a switcher people click through.
+    organizations: list[dict] = Field(default_factory=list)
 
 
 @router.post("/login", response_model=LoginResponse)
@@ -152,6 +163,11 @@ def login(body: LoginRequest, request: Request, response: Response,
             audit.append(
                 session, organization_id=user.organization_id,
                 action=audit.LOGIN_FAILED, actor_user_id=user.user_id,
+                # The mirror, deliberately: this entry is filed under the home
+                # organization (there is no session yet to name another), and
+                # the mirror is exactly the role held there. Reading a
+                # membership would mean a second query on the one path that has
+                # to stay cheap under a credential-stuffing run.
                 actor_label=email, actor_role=user.role or "",
                 subject_type="USER", subject_id=user.user_id,
                 detail={"email": email,
@@ -186,13 +202,49 @@ def login(body: LoginRequest, request: Request, response: Response,
     user.last_login_at = datetime.now(timezone.utc)
     session.flush()
 
-    org = session.get(models.Organization, user.organization_id)
+    # **Which workspace this sign-in lands in is a membership question.**
+    # It used to be ``user.organization_id`` and nothing else, which is right
+    # exactly while a person has one workspace. Somebody who was removed from
+    # the organization their identity row is filed under would otherwise
+    # authenticate successfully and then resolve no principal on their first
+    # request — a correct password that looks broken. And somebody with two
+    # gets the home one, deliberately: a sign-in should land where it landed
+    # last time, and switching is an act with a button on it.
+    landing = default_organization(session, user)
+    if landing is not None and landing != user.organization_id:
+        # Announce the workspace this session will act for *before* writing
+        # anything that carries it. `adopt_tenant_for_login` set the tenant to
+        # the user's home organization — the only one it could know from an
+        # address — and the session row and audit entry below both carry
+        # `landing`, whose `WITH CHECK` refuses a row belonging to a tenant
+        # other than the announced one. Without this, signing in as somebody
+        # whose home membership has ended fails on PostgreSQL at the insert and
+        # nowhere else, which is the class of bug that only appears in
+        # production.
+        tenancy.set_tenant(session, landing)
+    if landing is None:
+        # Authenticated, and a member of nothing. Refused with the same
+        # sentence as a wrong password: an account with no workspace is not a
+        # state a stranger should be able to detect, and it is not one the
+        # person can fix by trying again either — they need whoever removed
+        # them.
+        log.warning("sign-in with no active membership user=%s", user.user_id)
+        session.commit()
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, _REJECTED)
 
-    token, opened = open_session(session, user, request.headers.get("user-agent"))
+    org = session.get(models.Organization, landing)
+
+    token, opened = open_session(session, user, request.headers.get("user-agent"),
+                                 organization_id=landing)
     audit.append(
-        session, organization_id=user.organization_id,
+        session, organization_id=landing,
         action=audit.LOGIN_SUCCEEDED, actor_user_id=user.user_id,
-        actor_label=user.email or email, actor_role=user.role or "",
+        actor_label=user.email or email,
+        # The role in the workspace being entered, not the deprecated mirror on
+        # the user row — on a two-workspace account those differ, and an audit
+        # entry naming the wrong one is worse than one naming none.
+        actor_role=(getattr(memberships.active_membership_for(
+            session, user.user_id, landing), "role", "") or ""),
         subject_type="USER", subject_id=user.user_id,
         # The session id, not the token. The token is the credential; a log
         # holding one would be a log worth stealing, which is the same reason
@@ -211,14 +263,18 @@ def login(body: LoginRequest, request: Request, response: Response,
     # sending of it to defend against.
     set_session_cookie(response, token)
 
+    held = my_organizations(session, user.user_id)
+    role = next((o["role"] for o in held if o["organization_id"] == landing), "")
     return LoginResponse(
         token=token,
-        user_id=user.user_id, organization_id=user.organization_id,
-        role=user.role, name=user.name, email=user.email,
+        user_id=user.user_id, organization_id=landing,
+        role=role, name=user.name, email=user.email,
         currency=(getattr(org, "currency", None) or settings.DEFAULT_CURRENCY),
         timezone=(getattr(org, "timezone", None) or clock.DEFAULT_ZONE),
         must_change_password=user.must_change_password,
-        is_demo=is_demo_org(user.organization_id))
+        is_demo=is_demo_org(landing),
+        organization_name=(getattr(org, "name", "") or ""),
+        organizations=held)
 
 
 class SessionView(BaseModel):
@@ -251,10 +307,16 @@ def me(request: Request, session: Session = Depends(get_session),
         # the token into a readable body would undo the point of the cookie.
         token="",
         user_id=principal.user_id, organization_id=principal.organization_id,
+        # From the principal, which resolved it from the membership for *this*
+        # session's workspace — so a reload after switching reports the role
+        # held there rather than the one held at home.
         role=principal.role.value, name=principal.name, email=principal.email or "",
         currency=(getattr(org, "currency", None) or settings.DEFAULT_CURRENCY),
         timezone=(getattr(org, "timezone", None) or clock.DEFAULT_ZONE),
-        must_change_password=bool(user.must_change_password) if user else False)
+        must_change_password=bool(user.must_change_password) if user else False,
+        is_demo=principal.is_demo,
+        organization_name=(getattr(org, "name", "") or ""),
+        organizations=my_organizations(session, principal.user_id))
 
 
 @router.post("/logout")

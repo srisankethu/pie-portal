@@ -1186,13 +1186,16 @@ function NewUserForm({
  * draft you could abandon.
  */
 function UsersGrid({
-  users, canManage, selfUserId, onRole, onActive, onReset,
+  users, canManage, selfUserId, onRole, onActive, onMember, onReset,
 }: {
   users: PlatformUser[];
   canManage: boolean;
   selfUserId: string;
   onRole: (id: string, role: Role) => void;
   onActive: (id: string, active: boolean) => void;
+  /** End or restore this person's membership of *this* organization. The
+   *  second argument is the value to set, so `true` reinstates. */
+  onMember: (id: string, member: boolean) => void;
   onReset: (id: string, email: string | null) => void;
 }) {
   const columns = useMemo<ColDef<PlatformUser>[]>(() => [
@@ -1262,13 +1265,20 @@ function UsersGrid({
       valueGetter: (p) => {
         const u = p.data;
         if (!u) return "";
+        // Membership first, and deliberately: "removed" is the strongest
+        // statement the column can make about this workspace — the person may
+        // have a perfectly healthy login, and saying "active" because of it
+        // would answer a question nobody on this screen is asking. A missing
+        // value is ACTIVE, which is what it was before memberships existed.
+        if (u.membership_status === "REMOVED") return "removed";
+        if (u.membership_status === "INVITED") return "invited";
         return !u.active ? "deactivated"
           : !u.has_password ? "no password"
             : u.must_change_password ? "must change" : "active";
       },
       cellRenderer: (p: { data?: PlatformUser; value?: string }) => {
         const label = String(p.value ?? "");
-        const tone = label === "deactivated" ? "neutral"
+        const tone = label === "deactivated" || label === "removed" ? "neutral"
           : label === "active" ? "good" : "warn";
         return <StatusChip label={label} tone={tone} />;
       },
@@ -1289,22 +1299,40 @@ function UsersGrid({
             // a greyed "Deactivate" on your own account reads as a permission
             // problem rather than as a deliberate boundary.
             if (!u || u.user_id === selfUserId) return null;
+            const removed = u.membership_status === "REMOVED";
             return (
               <Stack direction="row" spacing={0.5} useFlexGap sx={{ flexWrap: "wrap" }}>
+                {/* Nothing to reset for somebody this workspace no longer
+                    admits: their password is their own business now, and
+                    offering it here would imply this organization still has a
+                    say over an account it does not. */}
+                {!removed && (
+                  <Button variant="text" size="small"
+                          onClick={() => onReset(u.user_id, u.email)}>
+                    Reset password
+                  </Button>
+                )}
+                {/* Removing is the John-leaves-Acme act, and it is separate
+                    from deactivating on purpose: this closes one door, that
+                    closes the account. A person who leaves one workspace and
+                    keeps their own needs the first and would be wrecked by the
+                    second. */}
                 <Button variant="text" size="small"
-                        onClick={() => onReset(u.user_id, u.email)}>
-                  Reset password
+                        onClick={() => onMember(u.user_id, removed)}>
+                  {removed ? "Reinstate" : "Remove from organization"}
                 </Button>
-                <Button variant="text" size="small"
-                        onClick={() => onActive(u.user_id, !u.active)}>
-                  {u.active ? "Deactivate" : "Reactivate"}
-                </Button>
+                {!removed && (
+                  <Button variant="text" size="small"
+                          onClick={() => onActive(u.user_id, !u.active)}>
+                    {u.active ? "Deactivate" : "Reactivate"}
+                  </Button>
+                )}
               </Stack>
             );
           },
         }] as ColDef<PlatformUser>[])
       : []),
-  ], [canManage, selfUserId, onRole, onActive, onReset]);
+  ], [canManage, selfUserId, onRole, onActive, onMember, onReset]);
 
   return (
     <Box sx={{ mt: 2 }}>
@@ -1320,7 +1348,8 @@ function UsersGrid({
         getRowId={(u) => u.user_id}
         // Dimmed, and the row also says "deactivated" in its Status chip — the
         // tint is never the only thing carrying it.
-        rowClass={(u) => (u.active ? undefined : "ag-row-dimmed")}
+        rowClass={(u) => (u.active && u.membership_status !== "REMOVED"
+          ? undefined : "ag-row-dimmed")}
         // No column filters: a team is tens of people, the columns are all
         // short, and sorting answers the questions this screen is asked.
         filters={false}
@@ -1907,7 +1936,8 @@ export function SettingsScreen(
     load();
   }, [load]);
 
-  async function patchUser(id: string, body: { role?: Role; active?: boolean }) {
+  async function patchUser(id: string,
+                           body: { role?: Role; active?: boolean; member?: boolean }) {
     try {
       await papi.updateUser(session.token, id, body);
       await load();
@@ -2068,6 +2098,7 @@ export function SettingsScreen(
             selfUserId={session.user_id}
             onRole={(id, role) => patchUser(id, { role })}
             onActive={(id, active) => patchUser(id, { active })}
+            onMember={(id, member) => patchUser(id, { member })}
             onReset={reset}
           />
         </Bp>

@@ -15,6 +15,7 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from . import memberships
 from .config import settings
 from .domain import models
 from .domain.enums import Role
@@ -105,6 +106,13 @@ def provision_demo_org(session: Session, organization_id: str,
             password_hash=None, active=True)
         session.add(user)
         session.flush()
+    # The membership is what `load_principal` resolves the role from, so
+    # without this the demo visitor signs in and is refused everything.
+    # `ensure_member`, because this function is re-run whenever the demo
+    # workspace is reseeded.
+    memberships.ensure_member(session, organization_id=organization_id,
+                              user_id=user.user_id, role=Role.OWNER)
+    session.flush()
     return user
 
 

@@ -752,19 +752,21 @@ def add_connection(session: Session, organization_id: str, *, credential_id: str
     row.api_base = cred.api_base
     session.flush()
 
-    # The free intelligence month starts when books connect for the first time
-    # anywhere — keyed to the books, so reconnecting the same company under a
-    # fresh organization finds the trial already spent (see IntelligenceTrial).
-    # Non-Zoho books key as "connector:company", because two systems may issue
-    # the same id string and a NetSuite book must not find a Zoho book's trial
-    # already spent. Zoho keys stay bare so existing trial rows keep matching.
+    # The organization's trial does not start here — it started when the
+    # organization did (``entitlements.start_trial``). What happens here is the
+    # *claim*: these books are recorded as this organization's, and books
+    # already claimed by a different one end this organization's trial, which
+    # is the whole of the duplicate-trial boundary. Non-Zoho books key as
+    # "connector:company", because two systems may issue the same id string and
+    # a NetSuite book must not find a Zoho book's claim already made. Zoho keys
+    # stay bare so existing rows keep matching.
     if existing is None:
         from .. import entitlements
         from ..attribution import capture_baseline
 
         books_key = (zoho_organization_id if connector == ZOHO_CONNECTOR
                      else f"{connector}:{zoho_organization_id}")
-        trial = entitlements.begin_trial(session, organization_id, books_key)
+        trial = entitlements.claim_books(session, organization_id, books_key)
         # "Better" needs a "before", and the only moment the before-window is
         # unambiguous is the moment the trial starts. Captured in the caller's
         # transaction — no commit here — so a connection is one atomic act.
@@ -778,7 +780,7 @@ def add_connection(session: Session, organization_id: str, *, credential_id: str
         # the two are separate tables.
         if trial is not None:
             try:
-                # A savepoint, for the same reason ``begin_trial`` is documented
+                # A savepoint, for the same reason ``claim_books`` is documented
                 # as never raising: connecting a company must not fail because a
                 # measurement over it could not be taken. Without one, a rolled
                 # back statement would poison the caller's transaction and take

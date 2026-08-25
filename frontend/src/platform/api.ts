@@ -279,6 +279,18 @@ export const papi = {
    *  all, so a tenant's free month simply ran out one day with no warning. */
   entitlements: (t: string) => req<Entitlements>("/api/v1/entitlements", {}, t),
 
+  /** Act for another workspace this identity belongs to.
+   *
+   *  Returns a fresh session envelope, exactly as a sign-in does, because that
+   *  is what it is: switching mints a new session against the target workspace
+   *  rather than repointing the one in hand — see `routers/organizations.py`.
+   *  The server looks the membership up inside the target tenant and answers
+   *  404 without one, so nothing here decides who may go where. */
+  switchOrganization: (t: string, organizationId: string) =>
+    req<{ token: string; organization_id: string; name: string; role: Role }>(
+      `/api/v1/organizations/${encodeURIComponent(organizationId)}/switch`,
+      { method: "POST" }, t),
+
   listDecisions: (t: string, q: { type?: string; status_filter?: string; include_detail?: boolean } = {}) => {
     const p = new URLSearchParams();
     if (q.type) p.set("type", q.type);
@@ -833,7 +845,12 @@ export const papi = {
     req<{ user: PlatformUser; temporary_password: string }>(
       "/api/v1/admin/users", { method: "POST", body: JSON.stringify(body) }, t),
 
-  updateUser: (t: string, id: string, body: { role?: Role; active?: boolean; name?: string }) =>
+  /** Change a member. `member: false` ends their membership of this
+   *  organization; `active` is the wider act of switching the login off
+   *  everywhere. Two fields because they are two decisions — see
+   *  `routers/admin.py`. */
+  updateUser: (t: string, id: string,
+               body: { role?: Role; active?: boolean; member?: boolean; name?: string }) =>
     req<PlatformUser>(`/api/v1/admin/users/${id}`,
       { method: "PATCH", body: JSON.stringify(body) }, t),
 

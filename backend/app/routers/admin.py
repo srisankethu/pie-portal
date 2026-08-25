@@ -1,6 +1,6 @@
-"""Organization administration — users, roles, and approval policy.
+"""Organization administration — members, roles, and approval policy.
 
-The owner is the super admin: only an owner creates users, changes a role,
+The owner is the super admin: only an owner adds a member, changes a role,
 resets a password, or edits the approval policy. A sales manager may *see* the
 team and the policy, because a manager who cannot tell who reports to them or
 what they are allowed to approve cannot do the job — but they cannot grant
@@ -8,9 +8,18 @@ themselves authority they were not given.
 
 Two rules the endpoints below enforce rather than merely document:
 
-**An organization cannot be left without an owner.** Demoting or deactivating
-the last active owner is refused. The alternative is a tenant nobody can
-administer, recoverable only from the database.
+**An organization cannot be left without an owner.** Demoting, removing or
+deactivating the last active owner is refused. The alternative is a tenant
+nobody can administer, recoverable only from the database. The rule lives in
+``memberships.py`` rather than here, so that it holds for every caller instead
+of for the endpoint that remembered it — this router is the HTTP mapping of a
+decision made there.
+
+**What these endpoints manage is the membership, not the person.** Removing
+somebody ends their grant to *this* organization and touches neither their
+login nor any workspace they hold elsewhere; the organization keeps every row
+it owns, because nothing in the tenant's data is keyed on a user. That is the
+John-leaves-Acme case, and it is a status change on one row.
 
 **Nobody edits their own role.** Not even the owner. An account takeover that
 also gets to promote itself is a different class of problem from one that does
@@ -19,7 +28,7 @@ not, and the check costs one line.
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, timezone
+from datetime import date
 from typing import Any, Optional
 
 from fastapi import (APIRouter, Depends, HTTPException, Query, Request,
@@ -28,14 +37,14 @@ from pydantic import BaseModel, Field, create_model, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import clock, approvals
+from .. import clock, approvals, memberships
 from ..authz import (Principal, current_principal, open_session,
                      require_manager_or_owner, require_owner,
                      revoke_all_sessions, set_session_cookie)
 from ..commercial import policy as commercial_policy
 from ..db import get_session
 from ..domain import models
-from ..domain.enums import Role
+from ..domain.enums import MembershipStatus, Role
 from ..passwords import (
     generate_password,
     hash_password,
@@ -48,44 +57,79 @@ log = logging.getLogger("pie_portal.admin")
 router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
 
 
-def _user_dict(u: models.User, names: dict[str, str]) -> dict:
+def _member_dict(u: models.User, m: models.OrganizationMembership,
+                 names: dict[str, str]) -> dict:
+    """One member, as the members screen reads them.
+
+    A join of the two halves the split created: the identity (name, address,
+    whether they can sign in at all) and the grant (role in *this* workspace,
+    its status, who made it and who last changed it). Both are needed to answer
+    "can this person open this organization today", and neither answers it
+    alone.
+
+    ``role`` and ``role_changed_*`` come from the membership, never from
+    ``users.role`` — that column is the deprecated mirror, and reading it here
+    would show somebody their role in a *different* workspace.
+    """
     return {
         "user_id": u.user_id,
         "email": u.email,
         "name": u.name,
-        "role": u.role,
+        "role": m.role,
+        # Whether the login works at all, anywhere. Kept under its old name
+        # because it is the same fact it always was and the grid column that
+        # reads it has not changed meaning.
         "active": u.active,
+        # Whether *this* organization admits them. A deactivated login with a
+        # live membership and a live login with an ended one both read as "no
+        # access here", and the screen needs to be able to say which.
+        "membership_status": m.status,
         "has_password": bool(u.password_hash),
         "must_change_password": u.must_change_password,
         "last_login_at": clock.iso(u.last_login_at),
         "created_at": clock.iso(u.created_at),
+        "joined_at": clock.iso(m.created_at),
         "created_by": names.get(u.created_by_user_id or "", None),
-        "role_changed_by": names.get(u.role_changed_by_user_id or "", None),
-        "role_changed_at": (clock.iso(u.role_changed_at)),
+        "invited_by": names.get(m.invited_by_user_id or "", None),
+        "role_changed_by": names.get(m.role_changed_by_user_id or "", None),
+        "role_changed_at": clock.iso(m.role_changed_at),
     }
 
 
-def _org_users(session: Session, org: str) -> list[models.User]:
-    return list(session.scalars(
-        select(models.User).where(models.User.organization_id == org)
-        .order_by(models.User.name)))
+def _members(session: Session, org: str) -> list[tuple[models.User,
+                                                       models.OrganizationMembership]]:
+    """Everyone with a membership of this organization, ended ones included.
+
+    Ended memberships are listed rather than filtered, because an owner asking
+    "who has had access to our numbers" is asking about them specifically. The
+    screen renders them greyed with a status chip; `memberships_of` is the
+    filtered form the authorization paths use.
+    """
+    rows = memberships.memberships_of(session, org, active_only=False)
+    out = []
+    for m in rows:
+        user = session.get(models.User, m.user_id)
+        if user is not None:
+            out.append((user, m))
+    out.sort(key=lambda pair: pair[0].name or "")
+    return out
 
 
-def _active_owners(session: Session, org: str) -> list[models.User]:
-    return [u for u in _org_users(session, org)
-            if u.role == Role.OWNER.value and u.active]
+def _member_names(session: Session, org: str) -> dict[str, str]:
+    return {u.user_id: u.name for u, _ in _members(session, org)}
 
 
-# ── users ───────────────────────────────────────────────────────────────────
+# ── members ─────────────────────────────────────────────────────────────────
 @router.get("/users")
 def list_users(
     principal: Principal = Depends(require_manager_or_owner),
     session: Session = Depends(get_session),
 ) -> dict:
-    rows = _org_users(session, principal.organization_id)
-    names = {u.user_id: u.name for u in rows}
+    """The organization's members. Path kept: the client contract has not moved."""
+    rows = _members(session, principal.organization_id)
+    names = {u.user_id: u.name for u, _ in rows}
     return {
-        "users": [_user_dict(u, names) for u in rows],
+        "users": [_member_dict(u, m, names) for u, m in rows],
         "roles": [r.value for r in Role],
         "can_manage": principal.role is Role.OWNER,
     }
@@ -118,7 +162,19 @@ def create_user(
     principal: Principal = Depends(require_owner),
     session: Session = Depends(get_session),
 ) -> dict:
-    """Create a user. Owner only.
+    """Add a member. Owner only.
+
+    Two things happen and they are separable on purpose: an identity is created
+    if this address has never signed in here before, and a membership of *this*
+    organization is granted. Only the second is what "adding somebody" means —
+    and the day this grows an invitation flow, only the second will happen for
+    an address that already has an account elsewhere on the platform.
+
+    Today an address that exists anywhere is still refused, and that refusal is
+    honest rather than lazy: emails are unique across the platform, so the
+    account it names might belong to another tenant entirely, and silently
+    attaching a stranger's login to this workspace because somebody typed their
+    address is the wrong half of the ambiguity to resolve automatically.
 
     The temporary password is returned in this response and never again — it is
     stored only as a hash. The account is flagged to change it at first sign-in.
@@ -140,10 +196,13 @@ def create_user(
         created_by_user_id=principal.user_id)
     session.add(user)
     session.flush()
-    log.info("user created org=%s role=%s by=%s", principal.organization_id,
+    membership = memberships.add_member(
+        session, organization_id=principal.organization_id, user_id=user.user_id,
+        role=body.role, invited_by_user_id=principal.user_id)
+    log.info("member added org=%s role=%s by=%s", principal.organization_id,
              body.role.value, principal.user_id)
     return {
-        "user": _user_dict(user, {principal.user_id: principal.name}),
+        "user": _member_dict(user, membership, {principal.user_id: principal.name}),
         # Shown once, in the response to the owner who created the account.
         "temporary_password": password,
     }
@@ -152,7 +211,30 @@ def create_user(
 class UpdateUser(BaseModel):
     name: Optional[str] = Field(default=None, max_length=255)
     role: Optional[Role] = None
+    #: Whether this identity can sign in at all. Unchanged in meaning.
     active: Optional[bool] = None
+    #: Whether this organization admits them — the membership. Separate from
+    #: ``active`` because they are separate acts: removing John from Acme when
+    #: he moves to another company is not the same as closing his login, and a
+    #: single flag could not express "left Acme, still owns his own workspace".
+    member: Optional[bool] = None
+
+
+def _require_member(session: Session, principal: Principal,
+                    user_id: str) -> tuple[models.User, models.OrganizationMembership]:
+    """The user and their membership *here*, or 404.
+
+    The membership lookup is the authorization, not a detail of the read: a
+    user id from another tenant resolves to no membership in this organization
+    and gets the same answer as one that does not exist, which is the property
+    that keeps an id from being an enumeration oracle.
+    """
+    user = session.get(models.User, user_id)
+    membership = memberships.membership_for(session, user_id,
+                                            principal.organization_id)
+    if user is None or membership is None:
+        raise HTTPException(http.HTTP_404_NOT_FOUND, "User not found")
+    return user, membership
 
 
 @router.patch("/users/{user_id}")
@@ -162,31 +244,46 @@ def update_user(
     principal: Principal = Depends(require_owner),
     session: Session = Depends(get_session),
 ) -> dict:
-    user = session.get(models.User, user_id)
-    if user is None or user.organization_id != principal.organization_id:
-        raise HTTPException(http.HTTP_404_NOT_FOUND, "User not found")
+    user, membership = _require_member(session, principal, user_id)
 
-    if body.role is not None and body.role.value != user.role:
+    if body.role is not None and body.role.value != membership.role:
         if user.user_id == principal.user_id:
             raise HTTPException(http.HTTP_400_BAD_REQUEST,
                                 "You cannot change your own role")
-        if (user.role == Role.OWNER.value
-                and len(_active_owners(session, principal.organization_id)) <= 1):
+        try:
+            memberships.set_role(session, membership, role=body.role,
+                                 changed_by_user_id=principal.user_id)
+        except memberships.MembershipRefused as e:
+            raise HTTPException(http.HTTP_409_CONFLICT, str(e)) from e
+
+    if body.member is not None:
+        if user.user_id == principal.user_id:
             raise HTTPException(
-                http.HTTP_409_CONFLICT,
-                "This is the only owner — promote someone else before changing it")
-        user.role = body.role.value
-        user.role_changed_by_user_id = principal.user_id
-        user.role_changed_at = datetime.now(timezone.utc)
-        log.info("role changed org=%s user=%s to=%s by=%s", principal.organization_id,
-                 user.user_id, body.role.value, principal.user_id)
+                http.HTTP_400_BAD_REQUEST,
+                "You cannot remove your own membership")
+        try:
+            if body.member:
+                memberships.reinstate(
+                    session, membership,
+                    role=Role(membership.role), reinstated_by_user_id=principal.user_id)
+            else:
+                memberships.remove_member(session, membership,
+                                          removed_by_user_id=principal.user_id)
+        except memberships.MembershipRefused as e:
+            raise HTTPException(http.HTTP_409_CONFLICT, str(e)) from e
 
     if body.active is not None and body.active != user.active:
         if user.user_id == principal.user_id and not body.active:
             raise HTTPException(http.HTTP_400_BAD_REQUEST,
                                 "You cannot deactivate your own account")
-        if (not body.active and user.role == Role.OWNER.value
-                and len(_active_owners(session, principal.organization_id)) <= 1):
+        # Counted through `memberships.active_owners`, which requires the login
+        # to work *and* the membership to be live — so this refuses exactly when
+        # switching the account off would leave nobody able to administer the
+        # tenant, and not merely when an owner-shaped row exists.
+        if (not body.active and membership.role == Role.OWNER.value
+                and membership.status == MembershipStatus.ACTIVE.value
+                and len(memberships.active_owners(
+                    session, principal.organization_id)) <= 1):
             raise HTTPException(http.HTTP_409_CONFLICT,
                                 "This is the only active owner")
         user.active = body.active
@@ -195,8 +292,8 @@ def update_user(
         user.name = body.name.strip()
 
     session.flush()
-    names = {u.user_id: u.name for u in _org_users(session, principal.organization_id)}
-    return _user_dict(user, names)
+    return _member_dict(user, membership,
+                        _member_names(session, principal.organization_id))
 
 
 @router.post("/users/{user_id}/reset-password")
@@ -206,9 +303,7 @@ def reset_password(
     session: Session = Depends(get_session),
 ) -> dict:
     """Issue a new temporary password. Owner only; returned once."""
-    user = session.get(models.User, user_id)
-    if user is None or user.organization_id != principal.organization_id:
-        raise HTTPException(http.HTTP_404_NOT_FOUND, "User not found")
+    user, _ = _require_member(session, principal, user_id)
     password = generate_password()
     user.password_hash = hash_password(password)
     user.must_change_password = True

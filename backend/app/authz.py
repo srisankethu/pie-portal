@@ -1,10 +1,24 @@
 """Authorization for the Commercial Decision Platform.
 
 Extends the existing HMAC-token approach (same ``AUTH_SECRET``, same stateless
-signing) to the spec's three roles and DB-backed users. Role is a property of
-``User`` (§2); a token carries only ``user_id`` + ``organization_id`` and the
-Principal is resolved from the read model, so role/assignment can't be forged in
-the token.
+signing) to the spec's three roles and DB-backed users. A token carries
+``user_id`` + ``organization_id`` + ``session_id``, and **both identity and
+role are resolved from rows on every request**, so neither can be forged in the
+token.
+
+The organization on a token is a *claim*. What honours it is an ACTIVE row in
+``organization_memberships`` for that (user, organization) pair — see
+``load_principal``. That indirection is the whole of the tenant boundary at the
+application layer, and it replaced a check that could not survive a person
+belonging to two workspaces: the old test was ``user.organization_id ==
+token_org``, comparing a claim against a column that could only ever hold one
+answer. Now the claim has to be *found*, and a token naming an organization the
+holder was never granted — or was granted and has since lost — resolves to no
+principal at all.
+
+Role comes from that same membership row, which is why the same person can be
+an owner in one workspace and a salesperson in another without either
+statement being true of them in general.
 
 Scope (§2, §14):
 - SALESPERSON → only their assigned customers' decisions; RESTRICTED decision
@@ -12,8 +26,10 @@ Scope (§2, §14):
 - SALES_MANAGER / OWNER → whole organization (team-hierarchy scoping is a later
   refinement; V1 read model embeds assignment on the customer only).
 
-This module owns role + assignment resolution and API scope enforcement. Field
--level cost/margin redaction (context assembly) is a later phase and not done here.
+This module owns role + assignment resolution and API scope enforcement.
+``memberships.py`` owns the grants themselves and ``entitlements.py`` owns what
+the organization may use. Field-level cost/margin redaction (context assembly)
+is a later phase and not done here.
 """
 from __future__ import annotations
 
@@ -31,7 +47,7 @@ from fastapi import Depends, Header, HTTPException, Request, Response, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from . import clock, tenancy
+from . import clock, memberships, tenancy
 from .commercial import ownership
 from .config import settings
 from .db import get_session
@@ -96,18 +112,29 @@ def issue_token(user_id: str, organization_id: str, session_id: str) -> str:
 
 
 def open_session(db: Session, user: models.User,
-                 user_agent: Optional[str] = None) -> tuple[str, models.UserSession]:
-    """Start a session for `user` and return `(token, row)`.
+                 user_agent: Optional[str] = None,
+                 organization_id: Optional[str] = None,
+                 ) -> tuple[str, models.UserSession]:
+    """Start a session for `user` in one organization, and return `(token, row)`.
 
     The one way to mint a token. Every caller that used to reach for
     `issue_token` directly goes through here, because a token whose `sid` names
     no row is rejected on its first request — issuing one is not a shortcut, it
     is a broken sign-in.
+
+    ``organization_id`` names the workspace the session acts for and defaults
+    to the user's home organization, which is what sign-in wants. Switching
+    workspaces passes another one — and passing it here is not a grant: the
+    caller has already found an ACTIVE membership for the pair, and
+    ``load_principal`` finds it again on every request the session goes on to
+    make. A session opened against an organization the holder is not a member
+    of would resolve to no principal at all, which is a dead token rather than
+    a hole.
     """
     row = models.UserSession(
         session_id="sess_" + secrets.token_urlsafe(24),
         user_id=user.user_id,
-        organization_id=user.organization_id,
+        organization_id=organization_id or user.organization_id,
         issued_at=clock.now(),
         last_seen_at=clock.now(),
         # Truncated to the column, not rejected: a long or absent User-Agent is
@@ -117,7 +144,7 @@ def open_session(db: Session, user: models.User,
     )
     db.add(row)
     db.flush()
-    return issue_token(user.user_id, user.organization_id, row.session_id), row
+    return issue_token(user.user_id, row.organization_id, row.session_id), row
 
 
 def verify_token(token: str) -> Optional[tuple[str, str, str, float]]:
@@ -214,7 +241,29 @@ def load_principal(session: Session, token: str) -> Optional[Principal]:
     tenancy.set_tenant(session, org_id)
 
     user = session.get(models.User, user_id)
-    if user is None or not user.active or user.organization_id != org_id:
+    if user is None or not user.active:
+        return None
+
+    # **The tenant check.** The token said which organization this request acts
+    # for; this is where that claim is honoured or refused, and it is a lookup
+    # rather than a comparison on purpose.
+    #
+    # It used to read ``user.organization_id != org_id``. That is a sound check
+    # for exactly as long as a person can belong to one organization, and it
+    # stops being a check at all the moment they can belong to two — the column
+    # holds one of their workspaces, so half of a legitimate multi-workspace
+    # user's requests would fail and, worse, the shape invites "fix" it by
+    # dropping the comparison. Requiring an ACTIVE membership for the *pair* is
+    # both the correct answer for two workspaces and a stricter one for one:
+    # a membership can be ended, and the moment it is, every session riding on
+    # it stops resolving. A column cannot be revoked.
+    #
+    # Under row-level security the policy enforces the same thing in SQL — a
+    # membership belonging to another tenant does not come back. Both are kept:
+    # this is the one that works on SQLite, where there is no policy at all,
+    # and a control that exists on one dialect only is not a control.
+    role = memberships.role_in(session, user.user_id, org_id)
+    if role is None:
         return None
 
     # The session row is the authority; the token is only a claim to it. A row
@@ -254,10 +303,6 @@ def load_principal(session: Session, token: str) -> Optional[Principal]:
     changed = clock.aware(user.password_changed_at)
     if changed is not None and issued_at < changed.timestamp():
         return None
-    try:
-        role = Role(user.role)
-    except ValueError:
-        return None
 
     # Advance the idle clock, but only once a minute — see
     # LAST_SEEN_RESOLUTION_SECONDS. `flush`, not `commit`: this runs inside the
@@ -266,11 +311,15 @@ def load_principal(session: Session, token: str) -> Optional[Principal]:
         row.last_seen_at = now
         session.flush()
 
-    return Principal(user_id=user.user_id, organization_id=user.organization_id,
+    # ``org_id``, not ``user.organization_id``: the request acts for the
+    # organization the session was opened against, which for somebody with two
+    # workspaces is the one they switched into and not the one their identity
+    # row happens to be filed under.
+    return Principal(user_id=user.user_id, organization_id=org_id,
                      role=role, name=user.name, email=user.email,
                      must_change_password=bool(user.must_change_password),
                      session_id=row.session_id,
-                     is_demo=is_demo_org(user.organization_id))
+                     is_demo=is_demo_org(org_id))
 
 
 def is_demo_org(organization_id: str) -> bool:

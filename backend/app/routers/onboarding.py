@@ -38,7 +38,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import clock, entitlements, onboarding, tenancy
+from .. import clock, entitlements, memberships, onboarding, tenancy
 from ..authz import Principal, current_principal, open_session, set_session_cookie
 from ..config import settings
 from ..db import get_session
@@ -98,9 +98,10 @@ def signup_offered() -> dict:
         "enabled": onboarding.enabled(),
         "plan": onboarding.SIGNUP_PLAN.value,
         "trial_days": settings.INTELLIGENCE_TRIAL_DAYS,
-        "note": ("A free Quote Desk account. Connecting your first Zoho Books "
-                 f"company starts a {settings.INTELLIGENCE_TRIAL_DAYS}-day trial "
-                 "of Commercial Intelligence."),
+        "note": (f"A {settings.INTELLIGENCE_TRIAL_DAYS}-day trial of Commercial "
+                 "Intelligence, in full, starting when you sign up. No card. "
+                 "When it ends the decision layer locks and everything you have "
+                 "put in stays exactly where it is."),
         # The ladder, so the form can ask which plan a business wants without
         # holding its own copy of what the plans are. `plan` above is still the
         # one every sign-up lands on, whichever of these they pick — the answer
@@ -179,6 +180,10 @@ def sign_up(body: SignUpRequest, request: Request, response: Response,
 
     org = session.get(models.Organization, org_id)
     log.info("signup complete org=%s user=%s", org_id, owner.user_id)
+    # From the membership, not from the deprecated ``users.role`` mirror. The
+    # two agree here — a brand-new organization's founder holds exactly one —
+    # but reading the mirror is how a deprecated column stays load-bearing.
+    role = memberships.role_in(session, owner.user_id, org_id)
     token, _row = open_session(session, owner, request.headers.get("user-agent"))
     # Committed before the token leaves, for the reason `auth.login` gives: a
     # token naming an uncommitted row is a credential that does not work.
@@ -187,7 +192,7 @@ def sign_up(body: SignUpRequest, request: Request, response: Response,
     return SignUpResponse(
         token=token,
         user_id=owner.user_id, organization_id=owner.organization_id,
-        role=owner.role, name=owner.name, email=owner.email,
+        role=(role.value if role else ""), name=owner.name, email=owner.email,
         currency=(getattr(org, "currency", None) or settings.DEFAULT_CURRENCY),
         timezone=(getattr(org, "timezone", None) or clock.DEFAULT_ZONE),
         must_change_password=owner.must_change_password)
@@ -306,7 +311,10 @@ def enter_demo(request: Request, response: Response,
 
     return SignUpResponse(
         token=token, user_id=user.user_id,
-        organization_id=user.organization_id, role=user.role, name=user.name,
+        organization_id=user.organization_id,
+        role=(getattr(memberships.role_in(session, user.user_id,
+                                          user.organization_id), "value", "")),
+        name=user.name,
         email=user.email or "",
         currency=(getattr(org, "currency", None) or settings.DEFAULT_CURRENCY),
         timezone=(getattr(org, "timezone", None) or clock.DEFAULT_ZONE),

@@ -360,18 +360,179 @@ class OAuthState(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
 
 
+class OrganizationMembership(Base):
+    """One person's relationship with one organization, and what it lets them do.
+
+    **This is the seam the whole tenant model turns on.** Before it, access was
+    two columns on ``users``: an ``organization_id`` and a ``role``. That says a
+    person *is* a tenant's employee, which is not what a B2B product means — it
+    means a login has been granted access to a customer's workspace, and the
+    grant is a thing with its own lifetime, its own author and its own end.
+    Everything that reads awkwardly under the old shape reads plainly under
+    this one:
+
+    - The first user is not the organization. John founds Acme, John leaves,
+      Sarah owns it; three rows change here and nothing about Acme moves. There
+      is deliberately no ``owner_user_id`` anywhere on ``organizations`` — the
+      owner is whoever currently holds an ACTIVE membership with that role, and
+      "currently" is the word an ``organizations`` column could not have said.
+    - The same identity can hold two workspaces. The unique key is the *pair*,
+      not the user, so a consultant with three clients is three rows rather
+      than three logins with three passwords to keep straight.
+    - A role becomes answerable per organization. Somebody who owns their own
+      company and reads a group company's numbers as a salesperson is two rows;
+      under one ``users.role`` they had to be the wider of the two, everywhere.
+
+    ``users.organization_id`` survives this and does **not** mean what it used
+    to: it is the *home* organization, the tenant whose row-level-security
+    policy the identity row itself lives under and the workspace a sign-in
+    lands in. ``memberships.py`` keeps it pointing at an organization the user
+    is actually a member of. Authorization never reads it — ``authz`` resolves
+    the request's role from the membership named by the session's organization,
+    which is what makes a token's ``oid`` a claim that gets checked rather than
+    a fact that gets believed.
+    """
+
+    __tablename__ = "organization_memberships"
+    __table_args__ = (
+        # One membership per pair. Not unique on ``user_id``, deliberately —
+        # that constraint *is* the one-organization-per-person assumption, and
+        # writing it here would rebuild the thing this table exists to remove.
+        UniqueConstraint("organization_id", "user_id",
+                         name="uq_membership_org_user"),
+        # "Who is in this workspace" is the query behind the members screen,
+        # every last-owner check and the RLS predicate on ``users``. It is
+        # asked on every role change, so it is worth an index rather than a
+        # scan of every membership on the platform.
+        Index("ix_memberships_org_status", "organization_id", "status"),
+        # And the other direction: "which workspaces can this person open",
+        # asked at sign-in and on every organization switch.
+        Index("ix_memberships_user_status", "user_id", "status"),
+    )
+
+    membership_id: Mapped[str] = mapped_column(String(64), primary_key=True,
+                                               default=_uuid)
+    organization_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("organizations.organization_id"), index=True)
+    user_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("users.user_id"), index=True)
+    #: ``domain.enums.Role``, and the *only* place a role is decided. A copy
+    #: still sits on ``users.role`` for the reason that column's comment gives;
+    #: it is written from here and read by nothing that authorizes.
+    role: Mapped[str] = mapped_column(String(32))
+    #: ``domain.enums.MembershipStatus``. Only ACTIVE grants anything.
+    status: Mapped[str] = mapped_column(String(16), default="ACTIVE", index=True)
+
+    #: Who offered this membership. Null for the founding one — nobody invited
+    #: the person who created the organization, and recording them as their own
+    #: inviter would be a tidier lie than a null.
+    invited_by_user_id: Mapped[Optional[str]] = mapped_column(String(64))
+    #: Who last changed the role, and when. The most security-relevant edit in
+    #: the product; an unattributed one is not worth recording.
+    role_changed_by_user_id: Mapped[Optional[str]] = mapped_column(String(64))
+    role_changed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True))
+    #: Who ended it, and when. Set together with ``status = REMOVED``.
+    removed_by_user_id: Mapped[Optional[str]] = mapped_column(String(64))
+    removed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),
+                                                 default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),
+                                                 default=_now, onupdate=_now)
+
+
+class OrganizationSubscription(Base):
+    """What this organization is commercially entitled to, and since when.
+
+    One row per organization, created with the organization. It holds the two
+    facts that used to live apart and could not be read together: the plan
+    (a column on ``organizations``) and the trial (a row in
+    ``intelligence_trials``, keyed on the *connected books* rather than on the
+    tenant, and started only when somebody connected Zoho).
+
+    **The trial belongs here because it belongs to the customer.** Keyed to the
+    books it was unreachable until a connection existed, so a new organization
+    had nothing during the days it was most deciding whether to buy; and it
+    could not answer "when does this customer's trial end" without knowing
+    which books they had connected. Keyed to the organization it starts when
+    the customer does, survives every user who comes and goes, and is
+    unaffected by a second person joining — a new member reads this row, they
+    do not get one of their own.
+
+    ``intelligence_trials`` is *not* deleted and is not a second copy of this.
+    It is now only the record that one set of books has claimed a trial, which
+    is what stops the same company signing up again under a new address for a
+    second free month, and the anchor the attribution baseline is captured
+    against. It grants nothing. See ``app/entitlements.py``.
+
+    **Expiry is derived, never written.** ``status`` holds the commercial state
+    a person put it in; whether a TRIALING row is still inside its trial is a
+    comparison against ``trial_ends_at`` made at read time. A nightly sweep that
+    flipped rows to EXPIRED would mean a missed run reads exactly like a
+    healthy one, which is the failure mode CLAUDE.md §1 names.
+    """
+
+    __tablename__ = "organization_subscriptions"
+
+    organization_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("organizations.organization_id"),
+        primary_key=True)
+    #: ``domain.enums.PlanTier``: what is being paid for. NULL means nothing is
+    #: — the organization is on trial, or past one. Never the trial's own tier:
+    #: a trial that wrote "intelligence" here would be indistinguishable from a
+    #: subscription the day it lapsed.
+    plan: Mapped[Optional[str]] = mapped_column(String(32))
+    #: ``domain.enums.SubscriptionStatus``.
+    status: Mapped[str] = mapped_column(String(16), default="TRIALING",
+                                        index=True)
+
+    trial_started_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True))
+    trial_ends_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True))
+    #: When the paid relationship began. Set when a plan is granted and left
+    #: alone by later plan moves — the answer to "how long have they been a
+    #: customer" must not reset because they changed tier.
+    subscription_started_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True))
+
+    #: Why a trial ended early, when one did — today only the duplicate-books
+    #: case (``entitlements.claim_books``). Empty for a trial that simply ran
+    #: its course, because "expired" is already in ``trial_ends_at`` and a
+    #: reason column that restated it would be a second answer to one question.
+    trial_ended_reason: Mapped[str] = mapped_column(Text, default="")
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),
+                                                 default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),
+                                                 default=_now, onupdate=_now)
+
+
 class IntelligenceTrial(Base):
-    """One set of books' free month of Commercial Intelligence — ever.
+    """The record that one set of books has claimed its trial — ever.
 
-    Keyed on ``zoho_organization_id``, not on the platform organization,
-    because the platform organization is free to create: a trial tied to it
-    resets with every fresh signup, and "reconnect the same company under a new
-    organization" becomes an indefinitely repeatable free month. The connected
-    books are the one thing a business cannot mint a new copy of, so they are
-    what the trial belongs to. The unique constraint is the enforcement.
+    **This row grants nothing.** The entitlement moved to
+    ``OrganizationSubscription``, where it belongs to the customer rather than
+    to whichever company they happened to connect; what stayed here is the
+    other half of the same idea, and it is worth keeping for two reasons.
 
-    Rows are never deleted — an expired trial is the *record* that these books
-    have had theirs, which is exactly what the next attempt must find.
+    It is the duplicate-trial check. A platform organization costs nothing to
+    create, so a trial tied only to one would reset with every fresh sign-up
+    and "reconnect the same company under a new address" would be an
+    indefinitely repeatable free month. The connected books are the one thing a
+    business cannot mint a new copy of. ``entitlements.claim_books`` writes the
+    claim at first connection and, finding one already held by a *different*
+    organization, ends the new organization's trial and says so — one simple
+    boundary, and deliberately not a fingerprinting scheme.
+
+    It is also the anchor for the attribution baseline: "better" needs a
+    "before", and the moment books connect is the only unambiguous one.
+
+    Keyed on ``zoho_organization_id`` with the unique constraint as the
+    enforcement, and rows are never deleted — a spent trial is the *record*
+    that these books have had theirs, which is exactly what the next attempt
+    must find.
     """
 
     __tablename__ = "intelligence_trials"
@@ -493,15 +654,62 @@ class CommercialPolicy(Base):
 
 
 class User(Base):
+    """A person who can sign in. Identity only — access is a membership.
+
+    What this row answers is "who is this?", and after
+    ``OrganizationMembership`` landed that is *all* it answers. What they may
+    open, and as what, is one or more rows in that table, resolved per request
+    against the organization the session is acting for.
+
+    Two columns below survived the split and no longer mean what their names
+    suggest. Both are documented at the column rather than here, because the
+    place somebody reads a column is next to it.
+    """
+
     __tablename__ = "users"
 
     user_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    #: The **home** organization: the tenant this identity row is filed under,
+    #: not the limit of what its holder can reach.
+    #:
+    #: It is still a real column with real work to do rather than a leftover.
+    #: The row-level-security policy on ``users`` is written against it, sign-in
+    #: reads it through ``app_login_lookup`` to know which tenant to announce
+    #: before any query runs, and a session opened without an organization named
+    #: lands here. ``memberships.py`` keeps it pointing at an organization the
+    #: user actually holds an ACTIVE membership in, and repoints it when that
+    #: membership ends.
+    #:
+    #: **Nothing authorizes on it.** ``authz.load_principal`` resolves the
+    #: request's organization from the session and its role from the membership
+    #: for that pair — so a user whose home is Acme and who also belongs to Beta
+    #: gets Beta's role in a Beta session, and a token naming an organization
+    #: they hold no membership in is refused rather than believed.
     organization_id: Mapped[str] = mapped_column(
         String(64), ForeignKey("organizations.organization_id"), index=True)
     # email is an auth affordance beyond the spec's minimal User; nullable/unique.
     email: Mapped[Optional[str]] = mapped_column(String(255), unique=True, index=True)
     name: Mapped[str] = mapped_column(String(255))
+    #: **Deprecated: the role in the *home* organization, mirrored.**
+    #:
+    #: The authority is ``organization_memberships.role``. This column is kept
+    #: for one release so that a rollback to the previous deployment finds the
+    #: rows it expects rather than an empty column, and because the audit log
+    #: stamps an actor's role on paths that predate memberships. It is written
+    #: in exactly one place — ``memberships._mirror_home_role`` — and read by
+    #: nothing that decides anything; ``test_the_legacy_user_role_mirrors_the_
+    #: home_membership`` pins that they agree, so the mirror cannot drift
+    #: silently while it is still here.
+    #:
+    #: Two columns holding one fact is the responsibility duplication CLAUDE.md
+    #: §2 is about, and this is that defect with a stated expiry rather than an
+    #: exception to the rule. Dropping it is a migration of its own, after the
+    #: new model has run.
     role: Mapped[str] = mapped_column(String(32))
+    #: Whether this identity can sign in **at all**, on any organization. Not
+    #: the same question as whether a membership is ACTIVE: deactivating John
+    #: closes his login everywhere, removing his Acme membership closes one
+    #: door. Both are needed and neither implies the other.
     active: Mapped[bool] = mapped_column(Boolean, default=True)
 
     # ── credentials ──────────────────────────────────────────────────────────

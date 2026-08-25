@@ -72,3 +72,68 @@ describe("AccountMenu", () => {
     expect(trigger).toHaveFocus();
   });
 });
+
+// ── the workspace switcher ───────────────────────────────────────────────────
+//
+// The second question this control now answers. On a platform where one login
+// can reach two customers, "who am I signed in as" is not complete without
+// "and whose workspace am I looking at" — a person reading Acme's margins
+// while believing they are Beta's is the failure worth spending a menu section
+// on.
+describe("AccountMenu workspaces", () => {
+  const ACME = { organization_id: "org_acme", name: "Acme", role: "OWNER" as const };
+  const BETA = { organization_id: "org_beta", name: "Beta", role: "SALESPERSON" as const };
+
+  function open(props: Partial<Parameters<typeof AccountMenu>[0]> = {}) {
+    const onSwitchOrganization = vi.fn();
+    render(
+      <AccountMenu userName="S. Menon" roleLabel="Owner" onSignOut={vi.fn()}
+                   onSwitchOrganization={onSwitchOrganization} {...props} />,
+    );
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: /account: s\. menon/i }));
+    });
+    return { onSwitchOrganization };
+  }
+
+  it("names the workspace beside the role", () => {
+    open({ organizationName: "Acme", organizations: [ACME], currentOrganizationId: "org_acme" });
+    expect(screen.getAllByText(/Acme · Owner/).length).toBeGreaterThan(0);
+  });
+
+  it("offers no switcher when there is nowhere to go", () => {
+    // A list of one is a control that teaches people the menu does not work.
+    open({ organizationName: "Acme", organizations: [ACME], currentOrganizationId: "org_acme" });
+    expect(screen.queryByText(/switch workspace/i)).not.toBeInTheDocument();
+  });
+
+  it("lists the other workspaces with the role held in each", () => {
+    open({ organizationName: "Acme", organizations: [ACME, BETA],
+           currentOrganizationId: "org_acme" });
+    expect(screen.getByText(/switch workspace/i)).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: /Beta/ })).toHaveTextContent("Salesperson");
+    // The current one is listed too, so the list is a complete answer to
+    // "where can I be" rather than a list of elsewhere.
+    expect(screen.getByRole("menuitem", { name: /Acme/ })).toBeInTheDocument();
+  });
+
+  it("switches to another workspace on one press", () => {
+    const { onSwitchOrganization } = open({
+      organizationName: "Acme", organizations: [ACME, BETA],
+      currentOrganizationId: "org_acme" });
+    act(() => {
+      fireEvent.click(screen.getByRole("menuitem", { name: /Beta/ }));
+    });
+    expect(onSwitchOrganization).toHaveBeenCalledWith("org_beta");
+  });
+
+  it("does not mint a session for the workspace already open", () => {
+    const { onSwitchOrganization } = open({
+      organizationName: "Acme", organizations: [ACME, BETA],
+      currentOrganizationId: "org_acme" });
+    act(() => {
+      fireEvent.click(screen.getByRole("menuitem", { name: /Acme/ }));
+    });
+    expect(onSwitchOrganization).not.toHaveBeenCalled();
+  });
+});

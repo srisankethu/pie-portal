@@ -17,7 +17,7 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from . import tenancy
+from . import entitlements, memberships, tenancy
 from .config import settings
 from .domain import models
 from .domain.enums import Role
@@ -65,6 +65,15 @@ def ensure_org_and_users(session: Session) -> str:
             # locked out entirely by the new login check.
             existing.password_hash = hash_password(SEED_PASSWORD)
             existing.must_change_password = settings.ISSUED_ACCOUNTS_MUST_CHANGE_PASSWORD
+    session.flush()
+    # The grant, without which none of the three could resolve a principal at
+    # all: `authz.load_principal` reads a membership, not `users.role`.
+    # `ensure_member` rather than `add_member` because this whole function is
+    # re-run on every boot, and it deliberately does not correct a role
+    # somebody has changed since.
+    for u in DEMO_USERS:
+        memberships.ensure_member(session, organization_id=settings.DEFAULT_ORG_ID,
+                                  user_id=u["user_id"], role=u["role"])
     session.flush()
     return settings.DEFAULT_ORG_ID
 
@@ -189,11 +198,28 @@ def provision_organization(session: Session, *, name: str, owner_email: str,
     session.add(models.Organization(
         organization_id=org_id, name=name,
         currency=currency.strip().upper() or "INR", plan=plan, config={}))
-    session.add(models.User(
+    owner = models.User(
         organization_id=org_id, email=owner_email, name=owner_name.strip(),
         role=Role.OWNER.value, active=True,
         password_hash=hash_password(issued),
-        must_change_password=must_change_password))
+        must_change_password=must_change_password)
+    session.add(owner)
+    session.flush()
+
+    # The founding membership. Nobody invited them, so `invited_by_user_id`
+    # stays null — recording them as their own inviter would be a tidier lie
+    # than a null. Nothing else about the organization refers to this user:
+    # they can be removed later and Acme carries on, which is the property the
+    # membership table exists for.
+    memberships.add_member(session, organization_id=org_id,
+                           user_id=owner.user_id, role=Role.OWNER)
+
+    # **The organization gets its trial because it exists, not because somebody
+    # connected books to it.** Here rather than at first connection so that the
+    # days a buyer spends deciding are days they can use the product, and here
+    # rather than anywhere near the user rows so that a second person joining
+    # reads this one instead of starting another.
+    entitlements.start_trial(session, org_id)
     session.flush()
     return org_id, issued
 

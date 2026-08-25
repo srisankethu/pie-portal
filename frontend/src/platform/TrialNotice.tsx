@@ -1,4 +1,4 @@
-/** Tell a tenant its free month is running out, before it runs out.
+/** Tell a tenant its trial is running out — and, once it has, that it has.
  *
  * `GET /api/v1/entitlements` has existed since plans landed, computes the trial
  * correctly, and had no caller. So the sequence was: sign up, connect Zoho, get
@@ -13,6 +13,16 @@
  * banner people stop seeing by day three, and then it is not there when it
  * matters. Silent until `NOTICE_FROM_DAYS`, then plainly, then more urgently
  * inside `URGENT_FROM_DAYS`.
+ *
+ * **And it does not go quiet at the end.** The original returned null the
+ * moment the trial did, which meant the sequence this file's first paragraph
+ * complains about survived it: the decision layer disappeared overnight and
+ * the one component that could have explained why had stopped rendering. An
+ * ended trial keeps a notice until the organization subscribes, saying what is
+ * locked, that the data is untouched, and how to get it back. That needed one
+ * server-side change — `trial` is now returned for a finished trial too, with
+ * `active: false` — because the client could not otherwise tell "ended" from
+ * "never had one".
  *
  * **There is an ask, and it is not a checkout.** This deployment still has no
  * billing, and `set_plan` is still an operator command with no API — an owner
@@ -105,27 +115,57 @@ export function TrialNotice({ session }: { session: PlatformSession }) {
   if (!data?.trial) return null;
   if (session.role === "SALESPERSON") return null;
 
-  const { days_remaining: days, ends_on: endsOn } = data.trial;
-  if (days > NOTICE_FROM_DAYS) return null;
+  const { days_remaining: days, ends_on: endsOn, active, ended_reason: endedReason } =
+    data.trial;
 
-  const urgent = days <= URGENT_FROM_DAYS;
-  const losing = data.loses_on_expiry
+  // **The expired state is the one this notice most exists for.** It used to
+  // return null the moment the trial did, so the decision layer vanished
+  // overnight with nothing on screen explaining it — which reads as a fault
+  // rather than as a subscription ending, and sends somebody to support
+  // instead of to the plan. A locked organization says so until it subscribes.
+  const ended = !active;
+  if (!ended && days > NOTICE_FROM_DAYS) return null;
+
+  const urgent = ended || days <= URGENT_FROM_DAYS;
+  // What is going, or what has gone. Two fields rather than one because the
+  // server derives them from the same plan map at different moments, and the
+  // client holding its own "what expiry costs" list is the second copy that
+  // goes stale the first time a feature moves between tiers.
+  const losing = (ended ? data.locked : data.loses_on_expiry)
     .map((k) => LOSS_LABEL[k] ?? k)
     .join(" and ");
 
   return (
     <Alert severity={urgent ? "warning" : "info"} sx={{ mb: 3 }}>
       <AlertTitle>
-        Your Commercial Intelligence trial ends {daysPhrase(days)}
-        {endsOn ? ` — ${endsOn}` : ""}
+        {ended
+          ? `Your Commercial Intelligence trial ended${endsOn ? ` on ${endsOn}` : ""}`
+          : `Your Commercial Intelligence trial ends ${daysPhrase(days)}${
+              endsOn ? ` — ${endsOn}` : ""}`}
       </AlertTitle>
       {/* What actually happens, in the order it will happen. No hedging: the
-          Quote Desk genuinely does keep working, and saying so is the
-          difference between a deadline and a threat. */}
-      After that you lose {losing || "the trial features"}. Quoting, margin
-      floors and approvals carry on as they are, on the free plan, and nothing
-      you have synced is deleted.
-      {session.role === "OWNER" ? null : " Your owner can arrange to keep it."}
+          quote desk genuinely does keep working, and saying so is the
+          difference between a deadline and a threat. The past tense matters
+          just as much — an owner reading this after the fact needs to know
+          their data is where they left it before they need to know the price. */}
+      {ended ? (
+        <>
+          {endedReason ? `${endedReason} ` : ""}
+          {losing || "The decision layer"} {losing ? "are" : "is"} locked until
+          you subscribe. Quoting, margin floors and approvals carry on as they
+          are, and everything you have synced is exactly where you left it —
+          nothing was deleted and nothing needs setting up again.
+        </>
+      ) : (
+        <>
+          After that you lose {losing || "the trial features"}. Quoting, margin
+          floors and approvals carry on as they are, and nothing you have synced
+          is deleted.
+        </>
+      )}
+      {session.role === "OWNER" ? null : ended
+        ? " Your owner can subscribe to bring it back."
+        : " Your owner can arrange to keep it."}
       {session.role === "OWNER" && (
         <Box sx={{ mt: 1.5 }}>
           {data.pending_request ? (
@@ -140,7 +180,9 @@ export function TrialNotice({ session }: { session: PlatformSession }) {
             <>
               <Button size="small" variant="outlined" disabled={asking}
                       onClick={ask}>
-                {asking ? "Sending…" : "Ask to keep Commercial Intelligence"}
+                {asking ? "Sending…"
+                  : ended ? "Ask for Commercial Intelligence"
+                  : "Ask to keep Commercial Intelligence"}
               </Button>
               {error && (
                 <Typography variant="body2" color="error" sx={{ mt: 1 }}>

@@ -375,9 +375,16 @@ a rubber stamp.
 
 **A holdout evaluates an intervention** on a moving world, and needs randomisation
 and outcomes the platform does not yet have: `Outcome` exists and nothing writes
-it, and while `QuoteOutcome` moves DRAFT → SENT → WON/LOST, the terminal states
-are set by a person, so coverage is an operational question to check before
-anyone quotes a win rate.
+it, and while `QuoteOutcome` moves DRAFT → SENT → WON/LOST, WON now arrives from
+Zoho's own estimate status while LOST is still set by a person, so coverage is an
+operational question to check before anyone quotes a win rate.
+
+**Since measured, and worse than "not yet".** `14-machine-learning.md` §5.25 puts
+the arithmetic on it: at this book's ~62 quotes a month a two-armed trial
+resolves a 9.6 pp win-rate lift over a full year, and the units where the
+treatment does not leak between arms number three. So the holdout is not a
+sequencing problem behind replay — it is unaffordable, and replay is not the
+cheap first step towards it but the whole of what this book can have.
 
 Two consequences. Run replay first — it is nearly free and needs no consent. And
 never report a replayed figure as "margin we would have earned"; it is *"margin

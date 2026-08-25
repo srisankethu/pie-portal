@@ -732,9 +732,10 @@ price.
 A "price optimiser" fitted on this data would learn the pricing policy and report
 it back as customer behaviour. It would validate beautifully.
 
-**5.25 Randomised evaluation of policy changes — yes, and it costs least of
-anything here.** The platform is already unusually well set up for this and
-nobody has used it:
+**5.25 Randomised evaluation of policy changes — the deterministic half yes, the
+randomised half no, and an earlier draft of this section had that backwards.** It
+read *"yes, and it costs least of anything here"*, on the strength of three pieces
+the platform genuinely does hold:
 
 - `CommercialThresholds.version` is a content hash of the policy, stamped on every
   computed row. **That is already an assignment variable.**
@@ -745,16 +746,71 @@ nobody has used it:
   accepted, and `outcome_tracker.evaluate` already recomputes the delta after a
   horizon with an explicit `PENDING` / `REALISED` / `UNKNOWN` status.
 
-The missing piece is assignment: randomising a threshold variant across
-organizations, users or customers, rather than switching it for everyone. That
-turns every future policy question — the erosion sensitivity, the approval floor,
-the CAF payment-terms variant — from an argument into a measurement, and it
-answers the questions a price model would have answered badly.
+All three are real, and none of them is the binding constraint. What the draft
+never did was apply §3's own arithmetic to the thing randomisation is *for* — the
+reaction to a policy. That reaction is measured as a win rate, a win rate is a
+proportion, and §3 already knows what proportions cost at ~62 quotes a month.
 
-**One live blocker, named in `09-policy-replay.md` and worth repeating because it
-gates this too: a `ci_…` hash cannot be dereferenced.** An experiment whose arms
-are identified by a hash nobody can resolve to a policy is not analysable. Fix
-that first; it is also §4.4's prerequisite, so one change unblocks both.
+**The arithmetic.** Two-sided α = 0.05, power 0.80, normal approximation, both
+arms fed by the measured arrival rate of §3:
+
+| Baseline win rate | Lift to detect | Quotes per arm | Months to power |
+|---|---|---|---|
+| 25% | 5 pp | 1,248 | 40.3 |
+| 25% | 10 pp | 326 | 10.5 |
+| 25% | 15 pp | 149 | 4.8 |
+| 30% | 5 pp | 1,374 | 44.3 |
+| 30% | 10 pp | 353 | 11.4 |
+
+Read the other way, which is the more useful direction: a **full year** of every
+quote the book raises, split two ways, resolves a 9.6 pp lift and nothing
+smaller. A quarter resolves 19.5 pp. An approval floor moved by two margin points
+does not move a win rate by nineteen, so the experiment that could be run in a
+quarter is an experiment about a policy change nobody would make.
+
+**The assignment unit fails independently, and that half does not improve with
+patience.** The table above quietly assumes the *quote* is the unit — each new
+quote drawing its own arm. It cannot be, and the earlier draft said so without
+noticing what it was conceding: it named *organizations, users or customers*.
+The reason is interference. What is being measured is how a person prices under a
+floor, and a person quoting alternately under two floors learns the mixture
+rather than either policy. So the unit must contain a whole working context — and
+those are exactly the units this book is short of:
+
+| Unit | Clusters available | |
+|---|---|---|
+| Legal entity | 3 — SLS Engineers, 4U Precision, UPS | not a comparison |
+| Books user | **3** in the SLS book on 2026-08-25, and not one of them is a per-desk sales identity: Administrator, Business Operations, and the owner | not a comparison |
+| Customer | 420 trading subjects (§3.3) | the only unit with enough clusters — and clustering by customer *inflates* the row above by 1 + (m − 1)ρ, never deflates it |
+
+The unit with enough observations is the one where the treatment leaks; the units
+where it does not leak are the ones there are three of. No amount of waiting
+changes that, which is why this is a refusal rather than a "not yet" with a date.
+
+**The trap that looks like a way out, recorded because it is the first thing
+anyone tries.** Win rate is binary and expensive; realised margin on a won line
+is continuous and cheap, so switching the outcome looks like it buys an order of
+magnitude. It does not. "Won" is downstream of the treatment, so conditioning the
+outcome on it is a collider, and the estimate is biased in a direction nobody can
+sign in advance. If a floor changes *which* quotes are won, the margin on the
+survivors is a statement about selection. This is the same shape as §2's
+"absence of evidence is not a pass" — a number computed over the rows that
+survived a filter the treatment moved is not the number it is labelled as.
+
+**What survives is the half that is already built.** Randomisation buys exactly
+one thing here: how people and customers *react*. Everything that does not depend
+on a reaction is deterministic given a frozen row, and `backtest.py` computes it
+today — which lines a different floor would have gated, how many, whose, and what
+margin was at stake on them — with no experiment, no waiting and no code. That
+answers *"what would this policy have done"* in an afternoon. It does not answer
+*"what would people have done differently"*, and the honest position is that this
+book cannot buy the second answer at a price it can pay.
+
+**The `ci_…` fix this section used to gate on was still worth making.** That
+blocker was real and is closed (`threshold_versions`, §7a.5), and it was never
+only this section's: §4.4 is where it earns its keep. A computed row that cannot
+say which policy judged it is unexplainable whether or not an experiment ever
+runs.
 
 **5.26 Contextual bandits for price or discount — no, on three independent
 grounds.** Exploration is real money and real customer relationships, not
@@ -764,9 +820,12 @@ load-bearing** — there is no threshold anywhere inside it, which is what makes
 order-splitting worth exactly zero. An adaptively-learned weight reintroduces a
 threshold, and the first thing a desk discovers is how to split an order across it.
 
-**5.27 Uplift modelling for outreach — no.** It needs a randomised treatment.
-Build 5.25 and this becomes possible; without it, "customers we called grew" is a
-statement about who gets called.
+**5.27 Uplift modelling for outreach — no, and now for a measured reason rather
+than a missing one.** It needs a randomised treatment, and §5.25 has just
+established that this book cannot afford one at a unit where the treatment does
+not leak. An earlier draft said "build 5.25 and this becomes possible", which
+made this a deferral; it is a refusal. Without randomisation, "the customers we
+called grew" is a statement about who gets called.
 
 ### H. Infrastructure
 
@@ -850,13 +909,24 @@ different owners and only the first is a backlog:
    here. The migration deliberately backfills nothing — a migration process's
    environment is not the app's, so a "current policy" written from it could be
    one that was never in force. Rows stamped before this shipped are therefore
-   `PRE_EPOCH` and stay that way; that is the true statement, and §4.4 and §5.25
-   are unblocked from here forward rather than retroactively.
+   `PRE_EPOCH` and stay that way; that is the true statement, and §4.4 is
+   unblocked from here forward rather than retroactively. It unblocked §5.25's
+   named blocker too — but §5.25 has since been refused on power, so §4.4 is
+   where this work earns its keep, and that is enough on its own.
 6. **Read vendor credits** (§2.1). Not machine learning at all, and it sits
    upstream of every margin number the platform computes — see
    `11-procurement.md` for what a rebate treatment does to per-line margin.
-7. **Randomise a policy variant.** The threshold hash is already an assignment
-   variable and `backtest.py` is already the analysis (§5.25).
+7. ~~**Randomise a policy variant.**~~ **WITHDRAWN — it does not clear §3's
+   bar, and this document had never applied that bar to it.** The two premises
+   were true and the conclusion did not follow: the threshold hash *is* an
+   assignment variable and `backtest.py` *is* the analysis, but at ~62 quotes a
+   month a two-armed trial resolves a **9.6 pp** win-rate lift over a full year
+   and 19.5 pp over a quarter, and the units where the treatment does not leak
+   across arms number **three** — three legal entities, three Books users, none
+   of them a per-desk sales identity. The deterministic half of the item needs no
+   experiment and already ships. See §5.25 for the arithmetic, the collider that
+   makes "measure margin on won lines instead" worse rather than cheaper, and
+   §8 for the volume at which this becomes a question again.
 8. **The embedding shortlist for RFQ resolution** (§5.17), scoped to recall,
    once item 4 has given it something to be evaluated against.
 9. **The Kaplan–Meier over inter-order intervals** (§5.6) — last, and only on
@@ -965,6 +1035,7 @@ condition, and all of them are checkable rather than arguable:
 | Queue LTR (§5.22) | Same trigger, **and** moving `queue_margin_drop_pp` did not fix it |
 | Enquiry text models (§5.18, §5.21) | `inbound_lines` holds a few thousand rows with live dispositions |
 | Embedding shortlist (§5.17) | The enquiry corpus exists (§7a.4), so recall can be measured rather than asserted |
+| Randomised policy evaluation (§5.25) | ~250 quotes a month, **or** several books poolable under one policy with the sales desk as the unit — enough of either that a 10 pp lift is decidable inside two quarters. This is a volume condition, not a code one; nothing in the tree is missing |
 | Anything at item grain (§5.7–5.10) | Never, absent a change in what this business sells |
 | Any model exposed to a salesperson | §4.3 is satisfied by construction, not by a projection |
 

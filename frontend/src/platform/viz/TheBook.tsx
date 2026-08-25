@@ -1965,6 +1965,22 @@ export function SupplyScreen({ session }: { session: PlatformSession }) {
             .map((s) => `${s.label} ${s.typical_lead_time_days}d`)
             .join(" · ") || "no supplier has enough logged receipts yet."}
         </p>
+        {/* Same shape as the lead-time footnote above, and for the same reason:
+            the measurement is named only for the suppliers that earned it. A
+            column would need a value in every row, and the value for almost
+            every supplier here is "not enough bills" — which is a sample size,
+            not a clean record. The server decides which is which; this only
+            renders the ones it answered. */}
+        <p className="viz-muted viz-footnote">
+          Bills drawing a credit note — returns and price corrections — shown
+          only where a supplier has sent enough bills for a clean run to mean
+          something{data?.min_bills_for_credit_rate != null
+            && <> ({num(data.min_bills_for_credit_rate)} on this book)</>}:{" "}
+          {shownSuppliers
+            .filter((s) => s.credit_rate != null)
+            .map((s) => `${s.label} ${pct(num(s.credit_rate), 0)} of ${num(s.bills)}`)
+            .join(" · ") || "no supplier has sent enough bills yet."}
+        </p>
       </div>
 
       <div className="tier3-list">

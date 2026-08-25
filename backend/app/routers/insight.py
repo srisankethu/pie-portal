@@ -2090,6 +2090,46 @@ def pricing_pass_through(
         catalogue=cat.coverage_report(lines_of))
 
 
+def _bills_by_vendor(session: Session,
+                     org: str) -> dict[Optional[str], supply.VendorBills]:
+    """Bills read per supplier, and how many of them drew a vendor credit.
+
+    Counted here rather than in ``supply.py`` for the reason the orders above
+    are: this file does the querying and ``commercial/`` does the judging. What
+    it must not do is decide anything — the floor below which a clean record
+    proves nothing is derived in ``supply.min_bills_for_a_credit_rate`` from the
+    book's own rate, and this function hands over counts only.
+
+    **Credited bills are counted distinctly.** One vendor credit is routinely
+    spread over several bills and one bill can draw several credits — the
+    Kennametal document ``11-procurement.md`` opens covers eight bills — so
+    counting applications instead of bills would report a supplier as having
+    more corrections than it sent invoices.
+
+    A bill with no ``vendor_id`` is kept under ``None`` rather than dropped: it
+    is still a bill this book received, so it belongs in the denominator the
+    book-wide rate is computed from. It matches no supplier row on the screen,
+    which is the honest outcome.
+    """
+    counts = dict(session.execute(
+        select(models.BillDoc.vendor_id, func.count())
+        .where(models.BillDoc.organization_id == org)
+        .group_by(models.BillDoc.vendor_id)).all())
+    credited = dict(session.execute(
+        select(models.BillDoc.vendor_id,
+               func.count(func.distinct(models.BillDoc.bill_id)))
+        .join(models.VendorCreditApplication,
+              (models.VendorCreditApplication.bill_external_ref
+               == models.BillDoc.external_ref)
+              & (models.VendorCreditApplication.organization_id
+                 == models.BillDoc.organization_id))
+        .where(models.BillDoc.organization_id == org)
+        .group_by(models.BillDoc.vendor_id)).all())
+    return {vid: supply.VendorBills(vendor_id=vid, bills=n,
+                                    credited_bills=credited.get(vid, 0))
+            for vid, n in counts.items()}
+
+
 @router.get("/supply")
 def supplier_position(principal: Principal = Depends(require_manager_or_owner),
                       session: Session = Depends(get_session)) -> dict:
@@ -2140,7 +2180,8 @@ def supplier_position(principal: Principal = Depends(require_manager_or_owner),
     result = supply.build(
         orders, as_of,
         terms_by_vendor={vid: days for vid, days in effective.items()
-                         if days is not None})
+                         if days is not None},
+        bills_by_vendor=_bills_by_vendor(session, org))
     # A supplier is per connected company too: the same vendor invoicing two of
     # the books is two rows, and concentration read across them without saying
     # so would look like one dependency where there are two relationships.

@@ -310,6 +310,29 @@ straight out of `cost_records`), *credit-note rate* once credits are ingested,
 and *settlement behaviour*, which `insight/payments.py` already measures from one
 implementation covering both sides of the ledger.
 
+**The credit-note rate is built**, now that §5.3 has put the credits in the
+book — and the interesting part of it is the refusal, not the ratio. Almost
+every supplier here has issued no credit, so a screen dividing zero by four and
+printing 0% hands a clean record to a supplier nobody measured. That is the
+mistake `08-intermittent-demand.md` §1 found in the reorder group, in a column
+where it flatters the wrong party. So the floor is **derived from the book's own
+credit rate** rather than picked: `(1 − p)ⁿ ≤ 0.05` solved for *n* — how many
+bills a supplier would have had to send before a clean run became surprising.
+At a 4% book rate that is 74 bills; at 10% it is 29. Below it the rate is null
+with the bill and credit counts beside it, and a book that has read *no* credits
+at all gets no floor at all, because a missing vendor-credit grant and a
+faultless supply base look identical from here.
+
+Counts, never values: a value ratio would be a fraction of purchase spend — cost
+by another name, in the sense that already scopes this screen — and a scorecard
+asks how often a supplier gets an order wrong, not what the corrections came to.
+Credited bills are counted **distinctly**, because one credit spreads over
+several bills and one bill can draw several credits; counting applications would
+report a supplier as having more corrections than invoices.
+
+*Price stability* is still open and was never blocked by the ingestion — it comes
+straight out of `cost_records` and is independent of everything here.
+
 **The annual negotiation pack.** Mostly assembly rather than computation:
 purchases by principal by period, downstream revenue riding on the line, the
 share of that line which is sole-sourced, price movement per SKU, rebate history.

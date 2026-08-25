@@ -168,9 +168,18 @@ explanation attached.
 Two narrow conditions hold that line: `store._identity_candidate` offers a
 confirmable code only for the engine's own single-candidate `NEEDS_REVIEW`
 proposal — an exact catalogue hit downgraded for namespace safety, never a scored
-suggestion — and `routers.quote._confirm_identity` refuses anything else.
-Picking a different product is a substitution on one quote and must stay one.
-`tests/test_identity_confirmation_gate.py` pins both.
+suggestion — and `identity.service.confirm_proposed_identity` refuses anything
+else. Picking a different product is a substitution on one quote and must stay
+one. `tests/test_identity_confirmation_gate.py` pins both.
+
+**Two callers now reach that gate and it is one function on purpose.** The
+Quote Builder (`routers.quote._confirm_identity`) and the public resolution API
+(`routers.resolve.confirm`) both go through `confirm_proposed_identity`; the
+refusal used to live inline in the first of those, and the second would have
+been a copy. The API half needs its own tests rather than the shared function's,
+because it has no `Line` to read `identityCandidate` off and derives the
+proposal from a fresh resolution — a second site for the same computation, and
+therefore the one that drifts.
 
 ---
 

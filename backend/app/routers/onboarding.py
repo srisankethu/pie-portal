@@ -29,8 +29,6 @@ would work, rather than leading to a form that always refuses.
 from __future__ import annotations
 
 import logging
-import time
-from collections import deque
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -38,7 +36,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import clock, entitlements, memberships, onboarding, tenancy
+from .. import clock, entitlements, memberships, onboarding, ratelimit, tenancy
 from ..authz import Principal, current_principal, open_session, set_session_cookie
 from ..config import settings
 from ..db import get_session
@@ -50,19 +48,15 @@ router = APIRouter(prefix="/api/v1", tags=["onboarding"])
 
 
 # ── the speed bump ───────────────────────────────────────────────────────────
-#: address -> the times it signed up, newest last. Trimmed on every read, so it
-#: cannot grow without bound while the process is up.
-_RECENT: dict[str, deque[float]] = {}
+#: One hour, and the reason the two doors below have separate buckets: the
+#: demonstration door and the sign-up door are different doors. A stranger who
+#: looked at the demo five times must still be able to sign up, which is the
+#: entire point of having let them look.
 _WINDOW_SECONDS = 3600.0
 
 
 def _too_many(request: Request, *, bucket: str, limit: int) -> bool:
     """Whether this address has already used its hour's allowance of ``bucket``.
-
-    Two callers, two allowances, one implementation. The buckets are separate
-    because the demonstration door and the sign-up door are different doors: a
-    stranger who looked at the demo five times must still be able to sign up,
-    which is the entire point of having let them look.
 
     ``request.client.host`` is the peer, which behind the reverse proxy in
     ``deploy/`` is the proxy itself — so in that topology this limits sign-ups
@@ -72,18 +66,13 @@ def _too_many(request: Request, *, bucket: str, limit: int) -> bool:
     office in the same hour must not be refused. Trusting a forwarded header
     instead would let the caller pick their own bucket, which is worse than the
     imprecision.
+
+    The window itself lives in ``app/ratelimit.py`` — one deque and one trim
+    loop for every door in this codebase that needs one.
     """
-    if limit <= 0:
-        return False
-    who = f"{bucket}:{request.client.host if request.client else 'unknown'}"
-    now = time.monotonic()
-    seen = _RECENT.setdefault(who, deque())
-    while seen and now - seen[0] > _WINDOW_SECONDS:
-        seen.popleft()
-    if len(seen) >= limit:
-        return True
-    seen.append(now)
-    return False
+    return ratelimit.too_many(
+        bucket, request.client.host if request.client else "unknown",
+        limit=limit, window_seconds=_WINDOW_SECONDS)
 
 
 # ── is this offered? ─────────────────────────────────────────────────────────

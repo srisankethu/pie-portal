@@ -343,11 +343,15 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
       setQuote(q);
       setIntakeOpen(false);
       const read = q.lines.filter((l) => l.proposed).length;
+      // Whether the wording itself was kept. The server captures it only when
+      // the channel was stated, so this is how the desk sees that leaving the
+      // dropdown unset costs the corpus a line — reported, never silent.
+      const kept = q.intake?.captured ? " — wording kept" : "";
       // Says which produced the lines. A reading presented as though somebody
       // had typed it is the one outcome worth avoiding here.
       flash(read
-        ? `${q.summary.total} line(s) read from your message — check each one`
-        : `${q.summary.total} line(s) in quote`);
+        ? `${q.summary.total} line(s) read from your message — check each one${kept}`
+        : `${q.summary.total} line(s) in quote${kept}`);
     });
 
   const doConfirmReading = (id: string) =>

@@ -25,7 +25,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from .. import approvals, enquiry
+from .. import approvals, enquiry, resolution
 from ..authz import Principal, current_principal
 from ..commercial import policy as policy_service, quote_service
 from ..domain.enums import QuoteOutcomeStatus
@@ -33,7 +33,6 @@ from ..ai import reading
 from ..ai.provider import select_provider
 from ..config import settings
 from ..identity import service as identity_service
-from ..identity.mapping_store import OrgMappingStore
 from ..db import get_session
 from ..trust import audit
 from ..ingestion import connections as conn
@@ -351,57 +350,23 @@ def _quote_customer_ref(session: Session, principal: Principal,
         return ""
 
 
+# The three org-scoped facts an engine call needs — the bands, the confirmed
+# mappings and the customer's identity scope. Implemented in ``app/resolution``
+# because the public resolution API needs exactly the same setup; these three
+# lines are the adapter from this router's ``Principal`` to it, kept so the call
+# sites below read as they always have.
 def _mapping_store(session: Session, principal: Principal) -> Optional[Any]:
-    """This organization's confirmed code mappings, for the engine to read.
-
-    None only when they could not be loaded: pie-parser then falls back to its
-    packaged store, which is empty, so resolution degrades to the codes alone
-    rather than failing the intake.
-    """
-    try:
-        return OrgMappingStore(session, principal.organization_id)
-    except Exception:  # noqa: BLE001 — resolution proceeds without them
-        log.exception("could not load confirmed mappings for %s",
-                      principal.organization_id)
-        return None
+    return resolution.mapping_store_for(session, principal.organization_id)
 
 
 def _bands(session: Session, principal: Principal) -> Optional[Bands]:
-    """This organization's equivalence bands, or None for the packaged defaults.
-
-    What counts as a technical equivalent is commercial policy, so it belongs to
-    the org and moves with its threshold version — the same reason the pricing
-    floors stopped being module constants.
-    """
-    try:
-        t = policy_service.load_for_org(session, principal.organization_id)
-        return Bands(tech=t.equivalence_tech_band, compat=t.equivalence_compat_band)
-    except Exception:  # noqa: BLE001 — policy is never a reason to fail intake
-        log.exception("could not load equivalence bands for %s",
-                      principal.organization_id)
-        return None
+    return resolution.bands_for(session, principal.organization_id)
 
 
 def _customer_scope(session: Session, principal: Principal,
                     reference: str) -> Optional[str]:
-    """The identity to resolve this quote's lines under, or None.
-
-    Two ways to get None, and both mean "resolve on the codes alone": no
-    customer matched, or a customer who has not been linked across connectors
-    yet. That last one is the normal early state — linking is manual by design —
-    so the fallback has to be the unscoped behaviour rather than a stand-in key.
-    Substituting the connector's own id would mean every mapping confirmed today
-    is filed under a name we intend to replace the moment somebody links the
-    record.
-    """
-    try:
-        customer = quote_service.resolve_customer(
-            session, principal.organization_id, reference)
-        return identity_service.identity_for_customer(
-            session, principal.organization_id, customer)
-    except Exception:  # noqa: BLE001 — scope is an optimisation, never a blocker
-        log.exception("could not resolve an identity scope for %r", reference)
-        return None
+    return resolution.customer_scope_for(session, principal.organization_id,
+                                         reference)
 
 
 @router.get("/{quote_id}/lines/{line_id}/options")
@@ -443,18 +408,20 @@ def _confirm_identity(session: Session, principal: Principal,
                       quote: Quote, ln: Line, code: str) -> bool:
     """Record a confirmation when the user answers the engine's own question.
 
-    Only when they select the record the engine *proposed* as this line's
-    identity. Picking a different product is a substitution on one quote, and
-    filing that as "their code means this" would teach the system something the
-    person did not say — and would then resolve it that way silently forever.
+    The decision itself is ``identity_service.confirm_proposed_identity`` and
+    is deliberately not restated here: the public API confirms mappings too,
+    and a correctness boundary with two implementations is one that eventually
+    disagrees with itself. What is left in this function is what is genuinely
+    the quote screen's — where the line's scope and proposal are held, what the
+    mapping is sourced to, and the rule that a quote must not fail over
+    bookkeeping.
     """
-    if not ln.customerScope or ln.identityCandidate != code:
-        return False
     try:
-        row = identity_service.confirm_code_mapping(
+        row = identity_service.confirm_proposed_identity(
             session, principal.organization_id,
             identity_id=ln.customerScope, code=ln.reqCode,
-            target_record_id=code,
+            proposed_record_id=ln.identityCandidate,
+            selected_record_id=code,
             source_ref=f"quote {quote.id} line {ln.id}",
             user_id=principal.user_id)
         if row is not None:

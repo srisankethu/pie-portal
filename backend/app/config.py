@@ -401,6 +401,19 @@ class Settings:
     SIGNUP_RATE_LIMIT_PER_HOUR: int = int(
         os.environ.get("SIGNUP_RATE_LIMIT_PER_HOUR", "5"))
 
+    # ── The public resolution API (app/routers/resolve.py) ───────────────────
+    # The default allowance a newly minted API key carries, per minute, per
+    # key. It is stored on the row, so this is the value at minting time and
+    # not a live ceiling — changing it does not retune keys already issued,
+    # which is deliberate: a partner's integration should not start failing
+    # because a deployment setting moved underneath it.
+    #
+    # 60/minute is roughly "one line a second, continuously", which is above
+    # any real quoting load and well below the rate a price-bisection sweep
+    # wants. It is a speed bump and `app/ratelimit.py` says so.
+    API_KEY_RATE_LIMIT_PER_MINUTE: int = int(
+        os.environ.get("API_KEY_RATE_LIMIT_PER_MINUTE", "60"))
+
     # ── The public demonstration workspace (app/routers/onboarding.py) ───────
     # A tenant a stranger may enter without an account, to see what the product
     # does before deciding whether it is worth signing up for. **Empty unless a

@@ -1083,7 +1083,7 @@ condition, and all of them are checkable rather than arguable:
 
 | Technique | Build it when |
 |---|---|
-| Quote win/loss ranker (§5.1) | Estimates are ingested (§7a.1, done), so the gate is now ≥100 losses with reasons **and** a loss-reason table that has stopped being surprising. Six losses are on record, and the capture screen does not exist yet — quarters away, not weeks |
+| Quote win/loss ranker (§5.1) | Estimates are ingested (§7a.1) and the capture screen ships (§7a.2), so the gate is now ≥100 losses with reasons **and** a loss-reason table that has stopped being surprising. Six losses are on record and the pile is workable — quarters away, not weeks, and now a matter of the queue being worked rather than of code |
 | Inter-order survival (§5.6) | `/api/v1/internal/detector-outcomes` bands dormancy HIGH over a worked quarter |
 | Queue LTR (§5.22) | Same trigger, **and** moving `queue_margin_drop_pp` did not fix it |
 | Enquiry text models (§5.18, §5.21) | `inbound_lines` holds a few thousand rows with live dispositions. The door is open (§7a.4) — this is now a matter of enquiries arriving, not of code |

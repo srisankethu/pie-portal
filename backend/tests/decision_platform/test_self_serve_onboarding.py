@@ -58,12 +58,18 @@ def client(monkeypatch):
     password change to prove a fresh token actually works — reading the flag
     would only prove the flag.
     """
+    from app import ratelimit
     from app.routers import admin, onboarding as onboarding_router, platform_auth
 
     # Each client gets its own limiter state; the counter is process-wide by
     # design (see the router), so a test that fills it would otherwise leak into
-    # whichever test ran next.
-    monkeypatch.setattr(onboarding_router, "_RECENT", {})
+    # whichever test ran next. Cleared through the limiter's own `reset` rather
+    # than by rebinding a private dict on the router: the counters moved to
+    # `app/ratelimit.py` when a second door needed them, and a test reaching
+    # into the storage is a test that breaks on that move rather than on a
+    # behaviour change.
+    ratelimit.reset("signup")
+    ratelimit.reset("demo")
 
     eng = dbsupport.fresh_engine()
     maker = sessionmaker(bind=eng, autoflush=False, expire_on_commit=False,

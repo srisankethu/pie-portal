@@ -107,6 +107,11 @@ _TENANT_LOOKUP_SOURCES = (
     # Reached on every sign-in, so a fixture database without it fails the same
     # way `app_login_lookup` did before this list existed.
     ("e1org_membership_and_subscription", ("_USER_MEMBERSHIPS",)),
+    # The public API's lookup: a caller presenting an API key holds a
+    # credential and no tenant, exactly as sign-in does. Reached on every
+    # `/api/v1/resolve` call, so a fixture database without it fails the same
+    # way `app_login_lookup` did before this list existed.
+    ("f1api_keys", ("_API_KEY_ORG",)),
 )
 
 

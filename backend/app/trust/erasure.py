@@ -344,6 +344,12 @@ EXCLUDED_REASONS: dict[str, str] = {
         "was asked for, and whether it succeeded. Our own plumbing: the row "
         "holds the id of a job and nothing about what it read. What those "
         "pulls actually brought in is the trading record exported above."),
+    "api_keys": (
+        "The machine credentials your integrations authenticate with, and when "
+        "each was last used. Only a hash of each secret is stored, so there is "
+        "no key here to hand back — and exporting the ids would name every "
+        "system holding one. Yours to list and revoke on the API keys screen, "
+        "the same reason the sign-ins above are withheld."),
     "oauth_states": (
         "An authorization that was in flight — the hashed one-time token from a "
         "'Sign in with Zoho' round trip, its data centre, and when it expired. "
@@ -383,6 +389,7 @@ MANIFESTED: tuple[tuple[str, Any], ...] = EXPORTED + (
     ("tenant_keys", models.TenantKey),
     ("users", models.User),
     ("user_sessions", models.UserSession),
+    ("api_keys", models.ApiKey),
 )
 
 # ── what the receipt attests ────────────────────────────────────────────────

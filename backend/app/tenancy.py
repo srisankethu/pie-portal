@@ -136,6 +136,42 @@ def adopt_tenant_for_login(session: Session, email: str) -> Optional[str]:
     return None
 
 
+_API_KEY_ORG = text("SELECT app_api_key_org(:key_id)")
+
+
+def adopt_tenant_for_api_key(session: Session, key_id: str) -> Optional[str]:
+    """Find which tenant an API key belongs to, and announce it.
+
+    The machine half of :func:`adopt_tenant_for_login`, and the same one hole
+    for the same reason: a caller presenting an API key holds a credential and
+    no tenant, and the tenant is a property of the row it is asking for. Under
+    a fail-closed policy the ordinary ``select(ApiKey).where(key_id == …)``
+    returns nothing and every API call fails.
+
+    ``app_api_key_org`` is narrower than ``app_login_lookup``: it returns the
+    organization and nothing else, because everything after this — the secret
+    verification, the revocation check, the role — reads the row through the
+    policy this call has just satisfied.
+
+    It answers for a revoked key too. A revoked key still belongs to the
+    organization that minted it, and the refusal belongs in
+    ``api_keys.principal_for`` where it can be logged, not in a lookup whose
+    silence is indistinguishable from an unknown key.
+
+    Returns the organization, or ``None`` when the key id matches nothing — in
+    which case no tenant is announced and the caller's own query comes back
+    empty, which is the same answer an unknown key already gives. On SQLite it
+    returns ``None`` and announces nothing.
+    """
+    if not _is_postgres(session):
+        return None
+    org = session.execute(_API_KEY_ORG, {"key_id": key_id}).scalar()
+    if org:
+        set_tenant(session, org)
+        return str(org)
+    return None
+
+
 _EMAIL_REGISTERED = text("SELECT app_email_registered(:email)")
 _ORG_ID_TAKEN = text("SELECT app_org_id_taken(:organization_id)")
 _OAUTH_STATE_ORG = text("SELECT app_oauth_state_org(:state_hash)")

@@ -661,6 +661,46 @@ def confirm_code_mapping(session: Session, organization_id: str, *,
     return row
 
 
+def confirm_proposed_identity(
+        session: Session, organization_id: str, *,
+        identity_id: Optional[str], code: str,
+        proposed_record_id: Optional[str], selected_record_id: Optional[str],
+        source_ref: str = "", user_id: Optional[str] = None
+) -> Optional[models.ConfirmedCodeMapping]:
+    """Record a mapping **only** when the caller answered the engine's question.
+
+    The gate, in one place, for every path that can create a confirmed mapping.
+    It was previously the first half of ``routers.quote._confirm_identity`` and
+    nothing else could reach it; the public API needs the same decision, and a
+    second copy of a correctness boundary is the one duplication
+    ``tests/test_identity_confirmation_gate.py`` exists to prevent.
+
+    **Why it is this narrow.** A confirmed mapping is *asserted* identity:
+    afterwards the engine resolves that customer's code AUTHORITATIVELY and its
+    MIXED path will derive an effective requirement from the record and rank
+    equivalents off it. Selecting the record the engine itself proposed —
+    pie-parser's single-candidate ``NEEDS_REVIEW``, an exact catalogue hit
+    downgraded for namespace safety — is a person answering that question, and
+    the hop carries no tolerance. Selecting *anything else* is a substitution on
+    one quote: the engine put it a band away and said so, and filing that as
+    identity would make the approximate exact by storage and license
+    ``tolerance ∘ tolerance`` on every later "same as their 7781 but 12 mm".
+
+    Three ways to get ``None``, and all three are refusals rather than errors:
+    no identity to scope the fact to, no proposal on this line, or a selection
+    that is not the proposal. ``proposed_record_id`` being ``None`` refuses even
+    a ``None`` selection — ``None == None`` must not read as a match.
+    """
+    if not identity_id or not proposed_record_id:
+        return None
+    if selected_record_id != proposed_record_id:
+        return None
+    return confirm_code_mapping(
+        session, organization_id, identity_id=identity_id, code=code,
+        target_record_id=selected_record_id, source_ref=source_ref,
+        user_id=user_id)
+
+
 def active_code_mappings(session: Session, organization_id: str
                          ) -> list[models.ConfirmedCodeMapping]:
     return list(session.scalars(

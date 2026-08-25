@@ -14,13 +14,22 @@ exact by storage, and every later "same as their 7781 but 12 mm" would then
 compose two tolerance bands — a wrong part with a defensible-looking explanation
 attached. `A ≈ B` within band and `B ≈ C` within band is not `A ≈ C`.
 
-The gate is two narrow conditions, in two files, neither previously tested:
+The gate is two narrow conditions, and **two callers now reach it**:
 
-* ``store._identity_candidate`` — a line carries a confirmable candidate only for
-  the engine's own single-candidate NEEDS_REVIEW proposal, which is an *exact*
-  catalogue hit downgraded for namespace safety, never a scored suggestion;
-* ``routers.quote._confirm_identity`` — refuses unless the selected code is
-  exactly that candidate.
+* ``store._identity_candidate`` — a resolution offers a confirmable candidate
+  only for the engine's own single-candidate NEEDS_REVIEW proposal, which is an
+  *exact* catalogue hit downgraded for namespace safety, never a scored
+  suggestion;
+* ``identity.service.confirm_proposed_identity`` — refuses unless the selected
+  code is exactly that candidate, and unless there is an identity to scope the
+  fact to. ``routers.quote._confirm_identity`` (the Quote Builder) and
+  ``routers.resolve.confirm`` (the public API) both go through it, which is why
+  it is one function rather than the two copies it started as.
+
+The API half is tested separately at the bottom of this file rather than taken
+on trust. It has no ``Line`` to read ``identityCandidate`` off, so it derives
+the proposal itself from a fresh resolution — a second site for the same
+computation, and therefore the one that would drift.
 
 These tests need no engine: they exercise the gate, not resolution.
 """
@@ -159,4 +168,188 @@ def test_an_unlinked_customer_confirms_nothing(session, principal):
     line = _line(customerScope=None)
 
     assert _confirm_identity(session, principal, quote, line, "2001174") is False
+    assert _mappings(session) == []
+
+
+# ── the same gate, reached over the public API ──────────────────────────────
+#
+# `POST /api/v1/resolve/confirm` writes the same table from the same decision,
+# and a boundary that holds on one caller and not the other is not a boundary.
+# The reason these tests exist rather than being taken on trust: the API path
+# has no `Line`, so it cannot read `identityCandidate` off one — it re-resolves
+# the text and derives the proposal itself. That is a *second place* the
+# proposal is computed, which is exactly the shape of thing that drifts, and it
+# is why `_identity_candidate` is imported by both rather than reimplemented.
+#
+# The engine is stubbed, deliberately and in the same spirit as the tests above:
+# what is under test is which resolutions may become a mapping, not whether
+# pie-parser produces them. The positive control below is what stops the
+# refusals passing because the path is dead.
+
+from fastapi import FastAPI                                        # noqa: E402
+from fastapi.testclient import TestClient                          # noqa: E402
+
+from app import api_keys, resolution                               # noqa: E402
+from app.db import get_session                                     # noqa: E402
+from app.routers import resolve as resolve_router                  # noqa: E402
+
+
+def _proposal(code: str = "2001174") -> Resolution:
+    """The engine's own single-candidate NEEDS_REVIEW — the one confirmable shape."""
+    return Resolution(
+        input_text="7781", reqCode="7781", reqDesc="", rel="AMBIGUOUS",
+        supplyCode=None,
+        candidates=[Candidate(code=code, desc="CNMG 120408", rel="POSSIBLE")],
+        outcome="NEEDS_REVIEW", semantics="IDENTITY")
+
+
+@pytest.fixture()
+def api(monkeypatch):
+    """The resolve router over HTTP, with a live key and a stubbed engine.
+
+    ``customer_scope_for`` is stubbed to a fixed identity rather than seeded
+    through a customer row: the scope is an input to the gate, not part of it,
+    and the test that the *absence* of a scope refuses sets it to None
+    explicitly rather than relying on a fixture happening not to link anybody.
+    """
+    engine = dbsupport.fresh_engine()
+    maker = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False,
+                         future=True)
+
+    monkeypatch.setattr(resolution, "customer_scope_for",
+                        lambda *a, **k: IDENTITY)
+    monkeypatch.setattr(resolution, "bands_for", lambda *a, **k: None)
+    monkeypatch.setattr(resolution, "mapping_store_for", lambda *a, **k: None)
+
+    app = FastAPI()
+    app.include_router(resolve_router.router)
+
+    session = maker()
+    issued = api_keys.issue(session, ORG, name="partner CPQ")
+    session.commit()
+
+    def _session():
+        s = maker()
+        try:
+            yield s
+            s.commit()
+        finally:
+            s.close()
+
+    app.dependency_overrides[get_session] = _session
+    client = TestClient(app)
+    client.headers["Authorization"] = f"Bearer {issued.secret}"
+    yield client, session
+    session.close()
+
+
+def _confirm(client, code: str, text: str = "7781"):
+    return client.post("/api/v1/resolve/confirm",
+                       json={"text": text, "customer_ref": "Pitti",
+                             "record_id": code})
+
+
+def test_the_api_records_an_answer_to_the_engines_own_question(api, monkeypatch):
+    """The positive control for the API path, for the reason the quote path's is
+    there: without it every refusal below could be passing because the endpoint
+    is broken rather than because the gate holds."""
+    client, session = api
+    monkeypatch.setattr(resolve_router.pie_service, "resolve",
+                        lambda *a, **k: _proposal())
+
+    body = _confirm(client, "2001174").json()
+
+    assert body["recorded"] is True
+    rows = _mappings(session)
+    assert len(rows) == 1
+    assert rows[0].code == "7781" and rows[0].target_record_id == "2001174"
+    assert rows[0].relationship == "SAME_PRODUCT"
+    # Sourced to the key rather than to a person. Somebody asking months later
+    # who taught the system this must be able to reach an answerable credential.
+    assert rows[0].source_ref.startswith("api key ")
+
+
+def test_the_api_refuses_a_record_the_engine_did_not_propose(api, monkeypatch):
+    """The boundary. The engine proposed 2001174; the caller sent 6739214.
+
+    Right for one quote, not a fact about what the customer's code means —
+    and filing it would make an approximate match exact by storage, which is
+    what licenses `tolerance ∘ tolerance` on the next resolution of 7781.
+    """
+    client, session = api
+    monkeypatch.setattr(resolve_router.pie_service, "resolve",
+                        lambda *a, **k: _proposal())
+
+    body = _confirm(client, "6739214").json()
+
+    assert body["recorded"] is False
+    assert _mappings(session) == []
+
+
+def test_the_api_refuses_a_scored_suggestion_however_good(api, monkeypatch):
+    """A ranked requirement is not an identity question, whatever it scored.
+
+    This is the case the API makes reachable that the quote screen does not: a
+    caller can POST any text and any record id, so "the client would not offer
+    it" is not a control.
+    """
+    client, session = api
+    ranked = Resolution(
+        input_text="CNMG 120408 insert", reqCode="CNMG 120408 insert",
+        reqDesc="", rel="TECH", supplyCode="2001174",
+        candidates=[Candidate(code="2001174", desc="A", rel="TECH", score=0.99)],
+        outcome="AUTO_MATCH", semantics="REQUIREMENT")
+    monkeypatch.setattr(resolve_router.pie_service, "resolve",
+                        lambda *a, **k: ranked)
+
+    body = _confirm(client, "2001174", text="CNMG 120408 insert").json()
+
+    assert body["recorded"] is False
+    assert _mappings(session) == []
+
+
+def test_the_api_refuses_an_ambiguous_resolution(api, monkeypatch):
+    """Two candidates is an ambiguity, not a proposal: there is no single answer
+    to confirm, so naming one of them is a choice rather than a confirmation."""
+    client, session = api
+    ambiguous = Resolution(
+        input_text="7781", reqCode="7781", reqDesc="", rel="AMBIGUOUS",
+        supplyCode=None,
+        candidates=[Candidate(code="2001174", desc="A", rel="POSSIBLE"),
+                    Candidate(code="6739214", desc="B", rel="POSSIBLE")],
+        outcome="NEEDS_REVIEW", semantics="IDENTITY")
+    monkeypatch.setattr(resolve_router.pie_service, "resolve",
+                        lambda *a, **k: ambiguous)
+
+    assert _confirm(client, "2001174").json()["recorded"] is False
+    assert _mappings(session) == []
+
+
+def test_the_api_refuses_an_unlinked_customer(api, monkeypatch):
+    """With no identity to scope to there is no namespace the fact belongs in.
+
+    Filing it against the name in the request body would let two Zoho companies'
+    "ABC Industries" share one mapping — and over an API the name is whatever
+    the caller typed, which makes it worse rather than better.
+    """
+    client, session = api
+    monkeypatch.setattr(resolve_router.pie_service, "resolve",
+                        lambda *a, **k: _proposal())
+    monkeypatch.setattr(resolution, "customer_scope_for", lambda *a, **k: None)
+
+    assert _confirm(client, "2001174").json()["recorded"] is False
+    assert _mappings(session) == []
+
+
+def test_an_unauthenticated_caller_confirms_nothing(api, monkeypatch):
+    """The gate is not the only thing standing here, and this says so: without a
+    key the request never reaches it."""
+    client, session = api
+    monkeypatch.setattr(resolve_router.pie_service, "resolve",
+                        lambda *a, **k: _proposal())
+    client.headers.pop("Authorization")
+
+    response = _confirm(client, "2001174")
+
+    assert response.status_code == 401
     assert _mappings(session) == []

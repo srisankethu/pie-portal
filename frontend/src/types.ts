@@ -155,6 +155,13 @@ export interface QuoteEstimate {
 export interface QuoteIntake {
   read_by: "ai" | "pattern";
   detail: string;
+  /** Whether the customer's own words were put into the enquiry corpus. False
+   *  is the ordinary case today — capture needs the desk to say how the
+   *  enquiry arrived — and it is reported rather than left silent so a screen
+   *  can tell "captured" from "channel not stated". Declared here for the
+   *  reason above the interface: the server sends it, and an undeclared field
+   *  and a renamed one look identical from the browser. */
+  captured: boolean;
 }
 
 export interface MarginFloor {

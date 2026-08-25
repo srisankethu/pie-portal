@@ -393,6 +393,12 @@ EXPECTED_POLICIED = {
     # is what makes a members list correct for somebody who holds two
     # workspaces. See `test_a_foreign_member_is_visible_but_not_writable`.
     "organization_memberships", "organization_subscriptions",
+    # f1api — the machine credential for the public resolution API, behind one
+    # narrow SECURITY DEFINER lookup like every other unauthenticated path.
+    # A cross-tenant read here hands over the name, the role and the usage of
+    # every integration a competitor's book runs; the secret is a PBKDF2 hash,
+    # which is the half that would matter most and the half that is safe.
+    "api_keys",
 }
 
 #: Tenant-scoped and deliberately uncovered — and after `d3rls` there is only

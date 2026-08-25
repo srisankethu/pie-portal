@@ -38,6 +38,7 @@ nothing, macOS/Linux and Windows, in about 15 minutes.
 | [Hosting](docs/hosting.md) | Running it on your own machine: Docker Compose, TLS, backups |
 | [Operations](docs/operations.md) | Configuration reference, production deploy, runbook |
 | [Zoho setup](docs/zoho-setup.md) | Connecting a live Zoho Books account (read-only) |
+| [Resolution API](docs/resolution-api.md) | `POST /api/v1/resolve` — the key-authenticated endpoint an ERP or CPQ calls to resolve a line of enquiry text, and the four ways it says no |
 | [Role reviews](docs/reviews/) | What each role actually experienced, end to end, and the disposition of every finding |
 | [Application engineering](docs/concepts/01-application-engineering.md) | How much of the item master reaches the PIE catalogue, measured — and what that does and does not justify building |
 | [Confidence and input completeness](docs/concepts/13-confidence-and-input-completeness.md) | Whether `row_confidence 0.00` over the item master is the engine failing or the engine abstaining, settled by suppressing one column |

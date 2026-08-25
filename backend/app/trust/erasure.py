@@ -132,6 +132,13 @@ EXPORTED: tuple[tuple[str, Any], ...] = (
     # the only record of where those figures came from.
     ("tender_results", models.TenderResult),
     ("commercial_policies", models.CommercialPolicy),
+    # What each of this tenant's threshold stamps stood for. EXPORTED rather
+    # than EXCLUDED, and it is not a close call: these are the tenant's own
+    # margin floors and targets, and it is the only thing that makes the
+    # versions stamped on every metric row, signal and approval above mean
+    # anything. A departing customer handed the stamped rows without this would
+    # get an audit trail of hashes — the exact state this table was built to end.
+    ("threshold_versions", models.ThresholdVersion),
     ("org_policies", models.OrgPolicy),
     ("identity_policies", models.IdentityPolicy),
     ("confirmed_code_mappings", models.ConfirmedCodeMapping),

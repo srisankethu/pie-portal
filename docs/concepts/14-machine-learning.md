@@ -839,8 +839,19 @@ different owners and only the first is a backlog:
    hold this — that is the package's stated reason for existing — so it is
    genuine capture rather than an unread field. The rule that protects it is one
    line long and the change that breaks it looks like hygiene (§5.21).
-5. **Make `ci_…` dereferenceable.** One fix unblocks model versioning (§4.4) and
-   randomised policy evaluation (§5.25).
+5. ~~**Make `ci_…` dereferenceable.**~~ **SHIPPED.** `threshold_versions` stores
+   the exact pre-image bytes that were hashed, keyed `(organization_id,
+   version)`, recorded **inside the same flush as the first row stamped with
+   it** — so a stamp and its policy commit together or roll back together, and a
+   call site added later cannot silently skip the recording. There is no
+   `resolve_or_default` and no Optional return: an unresolvable stamp stays
+   unresolvable, because answering with today's policy would make an
+   unexplainable number *look* explained, which is the worst outcome available
+   here. The migration deliberately backfills nothing — a migration process's
+   environment is not the app's, so a "current policy" written from it could be
+   one that was never in force. Rows stamped before this shipped are therefore
+   `PRE_EPOCH` and stay that way; that is the true statement, and §4.4 and §5.25
+   are unblocked from here forward rather than retroactively.
 6. **Read vendor credits** (§2.1). Not machine learning at all, and it sits
    upstream of every margin number the platform computes — see
    `11-procurement.md` for what a rebate treatment does to per-line margin.

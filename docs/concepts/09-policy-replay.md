@@ -19,8 +19,10 @@ cheapest way to stop several other things going wrong.
 The *engine* for this is nearly free: three counterfactual entry points already
 exist as pure functions. The *evidence* is not free — two of the three replay
 paths read the present rather than the past, in ways that produce plausible
-wrong numbers rather than errors. And one thing is not free at all and is the
-real blocker: **a `ci_…` threshold hash cannot be dereferenced.**
+wrong numbers rather than errors. And one thing was not free at all and was the
+real blocker: **a `ci_…` threshold hash could not be dereferenced.** That one is
+now built — see §2.1 — and the rest of this document is written from before it
+was, so read §1's "cannot say which" as history.
 
 ---
 
@@ -139,26 +141,53 @@ from being possible today.
 
 Four items, smallest first.
 
-### 2.1 A threshold-version registry — ~40 lines, one table, one migration
+### 2.1 A threshold-version registry — **built**
 
-`threshold_versions(version PK, kind, values JSON, first_seen_at)`, written
-idempotently wherever a version is stamped — cheapest at *load* time
-(`policy.load_for_org`, `signals.engine._thresholds_for_org`), because everything
-downstream stamps what it loaded.
+`app/threshold_registry.py` and the `threshold_versions` table (revision
+`d1thrv`). The sections below still describe what it is for; this one records
+what shipped and where it differs from the sketch, because the differences are
+the parts that were wrong.
 
-This retroactively turns every `ci_…`/`th_…` already sitting on every past
-signal, approval and quote snapshot into a dereferenceable pointer. **Nothing
-else on this list works without it.**
+The key is `(organization_id, version)`, not `version` alone. `first_seen_at`
+only means something per tenant, and it is what classifies an unresolvable stamp
+as expected history (`PRE_EPOCH`) rather than as a defect in the recording path
+(`POST_EPOCH_GAP`); a shared key would let a tenant onboarded last week inherit
+another's six-month-old epoch and report its own genuine gaps as history. The
+stamp is already per-org anyway — `policy._in_org_locale` folds currency and
+timezone into the hash.
 
-It must capture the environment-derived fields too: a `CI_RECENT_DAYS` change
-moves the hash today and leaves no trace of what moved.
+`values_json` is `Text`, not `JSON`: the row has to be self-verifying, and
+re-hashing must see the byte sequence the stamp was taken over rather than
+whatever SQLAlchemy's encoder produces on the way back. A `content_digest`
+column carries the untruncated sha256 beside the ten-hex `version`, which is
+what makes a within-tenant collision detectable instead of silently served.
 
-One real risk to review rather than wave through: `load_for_org` sits on read
-paths, so this adds a write to requests that currently only read — on SQLite that
-changes lock behaviour. Mitigate with an in-process cache keyed by hash (one
-INSERT per process per distinct policy) and a best-effort `try/except`, following
-the `AiTelemetryRepository` precedent that observability must never fail a
-decision.
+**Recording does not happen at load time**, and the read-path risk this section
+flagged does not exist as a result. The pre-image is remembered *in process*
+when the stamp is minted — `CommercialThresholds.version` and its signal twin
+call `remember()` — and written by a `before_flush` listener on the `Session`
+class, on the flush's own connection, inside the same transaction as the
+stamped row. Registry row and stamped row commit together or roll back
+together; no read path issues any SQL, and there is no "recorded unless the
+recorder failed" state. Two more recorders cover what a flush cannot see:
+`policy.save_for_org`, and a boot backfill in `bootstrap`/`main` — which is what
+catches the environment-only change this section correctly insisted on, since a
+`CI_RECENT_DAYS` move changes every stamp while nothing may be *stamped* for
+days.
+
+`resolve()` raises and has no `resolve_or_default`. The omission is the feature:
+a fallback would replay an eighteen-month-old approval under today's floor and
+return it stamped, formatted and confidently wrong. `rebuild()` is separate and
+stricter — it refuses unless the recorded key set matches today's dataclass
+exactly and the reconstruction re-serialises to the recorded bytes, because
+`CommercialThresholds(**old_values)` after the dataclass grows a field fills
+that field with today's default and hands back an impostor of the historical
+policy.
+
+Library and CLI only. There is no HTTP endpoint, and that is deliberate:
+`values_json` necessarily holds `min_margin`, `margin_floor`,
+`target_margin_by_family` and `retained_pat`, so exposing a resolver is a §1
+decision of its own rather than a consequence of this one.
 
 ### 2.2 An `up_to` date bound on the two loaders — ~10 lines
 

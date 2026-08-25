@@ -122,6 +122,44 @@ async def lifespan(_app: FastAPI):
     except Exception:  # noqa: BLE001
         log.exception("schema check failed; continuing")
 
+    # Make every threshold stamp dereferenceable, starting with today's.
+    #
+    # Two things happen here. The assertion is the cheap one and the one worth
+    # failing loudly on: the flush recorder is registered on the ``Session``
+    # class at import of ``threshold_registry``, and if that import ever stops
+    # happening — a moved import, a circular-import workaround — every row
+    # stamped from then on becomes permanently unexplainable, silently. A
+    # start-up log line is what makes that visible on the day it happens rather
+    # than eighteen months later in an audit.
+    #
+    # The backfill is what makes *today's* version resolvable from the moment
+    # this ships, and it is the only recorder that catches an environment-only
+    # change: move ``CI_RECENT_DAYS`` and every stamp in the platform changes
+    # while nothing may be stamped for days. It is skipped when the schema is
+    # behind — §4, a schema that is behind must degrade, not lie — because the
+    # table may not exist yet and a bookkeeping failure is not a reason to hold
+    # up a boot that ``/api/health`` is about to report honestly anyway.
+    try:
+        from . import threshold_registry
+        from .db import SessionLocal as _SessionLocal
+
+        if not threshold_registry.installed():
+            log.error("threshold registry is NOT installed: stamps written from "
+                      "now on will not be dereferenceable. Something has stopped "
+                      "app.threshold_registry from being imported.")
+        migration = SCHEMA_GAP.get("migration") or {}
+        if SCHEMA_GAP.get("message") or not migration.get("healthy", True):
+            log.warning("threshold registry: skipping the current-policy "
+                        "backfill because the schema is behind; it runs on the "
+                        "next boot after the migration.")
+        else:
+            covered = threshold_registry.backfill_all_organizations(_SessionLocal)
+            log.info("threshold registry: current policy recorded for %d "
+                     "organization(s).", covered)
+    except Exception:  # noqa: BLE001
+        log.exception("threshold registry start-up step failed; stamps already "
+                      "recorded stay resolvable and the platform starts.")
+
     if os.environ.get("PIE_WARM", "1") != "0":
         try:
             pie_service.warm()

@@ -5,8 +5,34 @@ settings screen is one nobody can reproduce a past number against. That
 objection is answered by the version hash rather than by refusing to edit:
 ``CommercialThresholds.version`` is a content hash of every field, so an edited
 policy produces a different version, and every metric row, signal and quote
-snapshot already records the version that produced it. Change the floor and old
-rows still say which floor they were judged against.
+snapshot already records the version that produced it.
+
+That much is *distinguishability*: an old row proves it was judged under a
+different floor. It is not, on its own, explicability — a hash does not invert,
+and this sentence used to claim that old rows "still say which floor they were
+judged against", which was not true of anything the platform stored. What makes
+it true now is ``app/threshold_registry.py`` and the ``threshold_versions``
+table behind it: the exact bytes each version hashes from are written in the
+same transaction as the first row ever stamped with them, so past this
+organization's epoch "which floor" has an answer, and one verified by
+re-hashing rather than trusted. ``save_for_org`` below records a new version's
+pre-image before anything can be stamped with it.
+
+Before that epoch a stamp still proves the policy was different and still
+cannot say how. ``threshold_registry.resolve`` reports that by name —
+``PRE_EPOCH``, with the epoch quoted — and deliberately offers no fallback to
+the current policy: replaying an eighteen-month-old approval under today's
+floor would return a number that is stamped, formatted and confidently wrong,
+which is worse than the opaque hash it replaced.
+
+Why a registry and not an audit table on ``commercial_policies``. A history of
+this table would be a half-record that reads like a whole one. Only the
+owner-editable fields ever pass through ``save_for_org``; the rest of the hash
+comes from ``os.environ`` at process start — window lengths, evidence floors,
+``CI_RECENT_DAYS`` — and from the organization's own currency and timezone,
+none of which this table has ever seen. Move ``CI_RECENT_DAYS`` and every stamp
+in the platform changes while ``commercial_policies`` records nothing at all.
+The registry keys on the hash itself, so it captures whatever moved it.
 
 What is editable is deliberately narrower than the dataclass. Business policy —
 what margin we want, where the floors sit, how quantity bands are cut — belongs
@@ -586,6 +612,18 @@ def save_for_org(session: Session, organization_id: str, updates: dict,
             (family for family, _ in candidate.target_margin_by_family),
             vocabulary,
             source="the family vocabulary the loaded PIE pack declares")
+
+    # The pre-image of the version this edit creates, recorded in the same
+    # transaction as the override row it comes from. This is the one site where
+    # a new version's values are known *before* anything is stamped with them —
+    # everywhere else the registry is catching up with a stamp that already
+    # exists — and recording here means the very first row judged by this policy
+    # is written into a database that can already explain it.
+    from .. import threshold_registry
+
+    threshold_registry.record_current(
+        session, organization_id, kind="commercial", version=candidate.version,
+        serialized=threshold_registry.serialized(candidate))
 
     if row is None:
         row = models.CommercialPolicy(organization_id=organization_id)

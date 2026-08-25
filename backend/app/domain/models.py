@@ -481,6 +481,10 @@ class CommercialPolicy(Base):
     Reproducibility survives editing because ``CommercialThresholds.version`` is
     a content hash: an edited policy has a different version, and every metric
     row, signal and quote snapshot already records the version that produced it.
+    Where such a version *dereferences* — the values behind the hash, not merely
+    the fact that they differ — is ``threshold_versions`` below, because this
+    row holds only today's overrides and only the half of the policy an owner
+    can edit.
     """
 
     __tablename__ = "commercial_policies"
@@ -490,6 +494,106 @@ class CommercialPolicy(Base):
     updated_by_user_id: Mapped[Optional[str]] = mapped_column(String(64))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
                                                  onupdate=_now)
+
+
+class ThresholdVersion(Base):
+    """What a ``ci_…`` or ``th_…`` stamp actually stood for.
+
+    Every computed row in this schema carries a threshold version, and until
+    this table existed none of them could be *dereferenced*: the stamp is a
+    truncated sha256 of the whole threshold dataclass, so an approval carrying
+    ``ci_9f3a…`` proved it had been judged under a policy different from
+    today's and could not say which. ``commercial_policies`` cannot answer it
+    either — that row is mutable, holds only the owner-editable half, and the
+    environment-derived half (window lengths, evidence floors, ``CI_RECENT_DAYS``)
+    never passed through it at all. This table holds the exact bytes that were
+    hashed, written in the same transaction as the first row ever stamped with
+    them, so the answer is verifiable by re-hashing rather than trusted.
+
+    **The primary key is ``(organization_id, version)``, not ``version``.**
+    A shared, version-only key would store each blob once and is the shape most
+    readers reach for first; it was rejected because ``first_seen_at`` only
+    means anything per organization. The epoch — this tenant's earliest sighting
+    of a stamp of a given kind — is what separates "stamped before the registry
+    existed, expected and finite" from "a stamp reached a row without being
+    recorded, which is a bug in the recording path". Under a shared key an
+    organization onboarded last week would inherit another tenant's six-month-old
+    epoch and report its own genuine recording gaps as expected history, which
+    is exactly the benign default §1 forbids. The stamp is already a per-org
+    artefact in any case: ``policy._in_org_locale`` folds the organization's
+    currency and timezone into the hash before it is taken.
+
+    The cost is real and is recorded here rather than discovered later: two
+    tenants on identical policy store the same blob twice, every resolution
+    needs an organization to resolve *within*, and "which tenants run this
+    policy" becomes a scan instead of a lookup. Narrow-first is the reversible
+    direction — a per-org table can be widened to a shared one later, while a
+    shared one cannot be split back into per-org epochs that were never recorded.
+
+    Nothing is ever updated here. A row is written once, by whichever recorder
+    saw the version first, and re-recording is a no-op.
+    """
+
+    __tablename__ = "threshold_versions"
+
+    #: No ``ForeignKey`` to ``organizations``, deliberately. ``CommercialPolicy``
+    #: directly above — the closest sibling and the same tenant-scoped shape —
+    #: has none either. This is bookkeeping that rides inside somebody else's
+    #: business transaction, and an FK here could make a quote save fail on a
+    #: constraint about a registry row, which inverts the priority: the stamped
+    #: row is the thing that must commit.
+    organization_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+
+    #: The stamp as it appears on a computed row: ``ci_`` or ``th_`` plus ten
+    #: hex characters. 64 rather than the 13 a value needs, matching the widest
+    #: existing stamp column (``BusinessState.thresholds_version``) so a join
+    #: never compares two different widths.
+    version: Mapped[str] = mapped_column(String(64), primary_key=True)
+
+    #: "commercial" | "signal". Derivable from the ``ci_``/``th_`` prefix, and
+    #: stored anyway because both real queries — the per-kind epoch and the
+    #: per-kind history listing — filter on it, and a ``LIKE 'ci_%'`` is both
+    #: unindexable in the general case and a place where ``_`` is a wildcard.
+    #: Do not delete it as redundant; it is denormalised on purpose.
+    kind: Mapped[str] = mapped_column(String(16))
+
+    #: The exact bytes that were hashed: ``json.dumps(asdict(th), sort_keys=True)``.
+    #: ``Text`` rather than ``JSON`` because the row must be self-verifying —
+    #: re-hashing has to see the same byte sequence the stamp was taken over,
+    #: and a round-trip through SQLAlchemy's JSON encoder is free to reorder
+    #: keys or respell a float and would break the one check that makes this
+    #: table trustworthy.
+    values_json: Mapped[str] = mapped_column(Text)
+
+    #: The untruncated sha256 of ``values_json``. Not derivable from ``version``,
+    #: which keeps only the first ten hex characters — 40 bits, which is a
+    #: birthday collision somewhere around a million distinct policies per
+    #: tenant. Storing the full digest is what makes such a collision *detectable*
+    #: at resolve time rather than silently served as the wrong policy.
+    content_digest: Mapped[str] = mapped_column(String(64), default="")
+
+    #: When this organization was first *seen* using this version. A sighting,
+    #: not an effective date: the recorders fire when a stamp is loaded, saved
+    #: or flushed, so a policy in force for months before the registry shipped
+    #: is first seen on the day it ships. Renaming this ``effective_from`` would
+    #: manufacture a timeline out of a sighting log and invite readers to date
+    #: a decision from it.
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),
+                                                    default=_now)
+
+    #: Which recorder got here first: "stamp" (a flush carrying the version),
+    #: "boot" (the startup backfill of the current policy), "edit"
+    #: (``policy.save_for_org``). Diagnostic only — it says how a version came
+    #: to be known, never how authoritative it is.
+    first_seen_via: Mapped[str] = mapped_column(String(16), default="stamp")
+
+    __table_args__ = (
+        # The primary key already serves resolution. This one serves the other
+        # two reads: the per-kind epoch (``MIN(first_seen_at)``) and the history
+        # listing for one tenant.
+        Index("ix_threshold_version_org_kind_seen",
+              "organization_id", "kind", "first_seen_at"),
+    )
 
 
 class User(Base):
@@ -1311,7 +1415,11 @@ class Signal(Base):
     subject_entity_id: Mapped[str] = mapped_column(String(160), index=True)
     detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     detector_version: Mapped[str] = mapped_column(String(32))
-    threshold_config_version: Mapped[str] = mapped_column(String(32))
+    threshold_config_version: Mapped[str] = mapped_column(
+        # ``"either"``: a Signal Engine detector stamps ``th_…`` while a
+        # Customer × Item detector stamps ``ci_…``, and both land in this
+        # one column. The registry reads the kind off the prefix.
+        String(32), info={"policy_stamp": "either"})
     window: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     metrics: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     severity_base: Mapped[int] = mapped_column(Integer, default=0)
@@ -1740,7 +1848,8 @@ class CustomerItemMetric(Base):
     cost_missing_txns: Mapped[int] = mapped_column(Integer, default=0)
 
     # ── provenance ───────────────────────────────────────────────────────────
-    thresholds_version: Mapped[str] = mapped_column(String(32), default="")
+    thresholds_version: Mapped[str] = mapped_column(
+        String(32), default="", info={"policy_stamp": "commercial"})
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
@@ -1801,7 +1910,8 @@ class ApprovalRequest(Base):
     # Append-only conversation: [{at, user_id, name, action, note}]
     thread: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
 
-    thresholds_version: Mapped[str] = mapped_column(String(32), default="")
+    thresholds_version: Mapped[str] = mapped_column(
+        String(32), default="", info={"policy_stamp": "commercial"})
 
 
 class OrgPolicy(Base):
@@ -1910,7 +2020,8 @@ class QuoteDecision(Base):
     overridden_exception_codes: Mapped[list[str]] = mapped_column(JSON, default=list)
 
     # ── provenance ───────────────────────────────────────────────────────────
-    thresholds_version: Mapped[str] = mapped_column(String(32), default="")
+    thresholds_version: Mapped[str] = mapped_column(
+        String(32), default="", info={"policy_stamp": "commercial"})
     engine_version: Mapped[str] = mapped_column(String(32), default="")
     # Which pie-parser catalogue resolved the product on this line. Distinct
     # from `engine_version` above, which names the quote-intelligence engine:
@@ -2104,7 +2215,13 @@ class OutcomeSnapshot(Base):
     #: The signal's ``window`` — which periods the baseline was measured over,
     #: so a realised figure can say whether its window is comparable.
     baseline_window: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
-    thresholds_version: Mapped[str] = mapped_column(String(32), default="")
+    thresholds_version: Mapped[str] = mapped_column(
+        # ``"either"`` and not ``"commercial"``: this column is copied verbatim
+        # from the signal, so it holds ``th_…`` as often as ``ci_…``. The
+        # registry derives the kind from the prefix for exactly this reason —
+        # a marker asserting the wrong kind would make every engine-signal
+        # acceptance look like an unrecorded commercial policy.
+        String(32), default="", info={"policy_stamp": "either"})
     horizon_days: Mapped[int] = mapped_column(Integer)
     accepted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     accepted_by_user_id: Mapped[Optional[str]] = mapped_column(String(64))
@@ -2200,7 +2317,8 @@ class ValueEvent(Base):
     # A rollup for last month must include an event detected today about a quote
     # won three weeks ago, so every window query reads this column.
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
-    thresholds_version: Mapped[str] = mapped_column(String(32), default="")
+    thresholds_version: Mapped[str] = mapped_column(
+        String(32), default="", info={"policy_stamp": "commercial"})
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     #: Set when a later detection run measured this same fact differently — a
     #: line repriced again, so the earlier amount is now an understatement. The
@@ -2251,7 +2369,8 @@ class EvaluationBaseline(Base):
 
     metrics: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     evidence_gaps: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
-    thresholds_version: Mapped[str] = mapped_column(String(32), default="")
+    thresholds_version: Mapped[str] = mapped_column(
+        String(32), default="", info={"policy_stamp": "commercial"})
 
 
 # ── Identity layer ───────────────────────────────────────────────────────────
@@ -3635,7 +3754,8 @@ class BusinessState(Base):
     #: computed from three events and one computed from three hundred deserve
     #: different confidence, and a row with zero is a bug rather than a zero.
     event_count: Mapped[int] = mapped_column(Integer, default=0)
-    thresholds_version: Mapped[str] = mapped_column(String(64), default="")
+    thresholds_version: Mapped[str] = mapped_column(
+        String(64), default="", info={"policy_stamp": "commercial"})
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 

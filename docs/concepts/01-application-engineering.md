@@ -266,3 +266,115 @@ pull the item master in full, and join on `sku` → `record_id` through
 `identity.store.AuthoritativeIndex` — not a hand-rolled matcher, so the exactness
 rules stay in one place. Geometry figures come from running `ParserPipeline` over
 item *names* and are only admissible where the ISO slots actually filled.
+
+---
+
+## 8. Making it repeatable — the Master Health Report
+
+Everything above was run by hand, once, against one entity's master, and the
+numbers in §1 and §2 are the output of that run. That is fine for deciding
+whether to fund something and useless for doing it again — for a second entity,
+for a prospect, or for the same master six months later. `backend/app/master_health/`
+is that measurement as a tool: an item-master export in, the census out.
+
+    cd backend
+    python -m app.master_health ITEMS.csv --profile zoho --json report.json
+    python -m app.master_health --list-profiles
+
+### Why it reads a file rather than a connection
+
+Three things were deliberately *not* built, and each was the obvious choice
+until it was looked at:
+
+- **No CSV upload endpoint.** There is no `UploadFile` and no multipart handler
+  anywhere in `backend/app`, and `python-multipart` is not a dependency. Adding
+  one is a dependency decision and a new unauthenticated-ish surface, and it
+  buys nothing over a path argument for a diagnostic somebody runs deliberately.
+- **No `ingestion/erp/` connector.** That registry's own module docstring
+  records that Zoho — the connector that would matter most here — deliberately
+  does not register in it. A diagnostic gated on a working OAuth grant is a
+  diagnostic nobody runs on a prospect's data, which is the case N3 exists to
+  test.
+- **No database.** The report is a pure function of (export bytes, column
+  profile, remediation policy, catalogue), so there is no computed row to
+  persist and therefore no `thresholds_version` to stamp on one. The two
+  policy hashes the report *does* carry — `cp_…` for the column profile and
+  `mh_…` for the remediation estimates — are the same discipline applied to a
+  document rather than to a row: a ranked worklist is a judgement, and a
+  reader has to be able to ask which judgement produced this one.
+
+And the offline shape is better on the merits, not merely cheaper. §2's
+value-weighted number cannot be computed from what the platform ingests — the
+sync does not carry a quantity and a selling rate together per item — but an
+item-master export carries both, in the same row, for every item.
+
+### The column profile is the product
+
+The tool holds no knowledge of what a Zoho export looks like. Which header
+fills which of the seven roles (sku, name, manufacturer, rate, stock, hsn, uom)
+lives in `master_health/profiles/<source>.yaml`, one small file per source, and
+three ship: `zoho`, `netsuite`, `prophet21`. `--col-sku`, `--col-name` and the
+rest re-point one role for a one-off. Adding an ERP is adding a YAML file and
+zero code, which `test_an_unknown_erp_needs_a_yaml_file_and_no_code` executes
+rather than asserts in prose. This is pie-parser's own pattern — its
+`engine.pipeline.ColumnMapping` is described in its docstring as a run-profile
+mapping, and its packs declare a `columns:` block for exactly this reason.
+
+**`rate` is the selling price and there is no cost role at all.** A purchase
+rate cannot appear in the output because there is nowhere to read one into;
+`test_there_is_no_role_a_cost_column_could_be_mapped_to` pins that.
+
+### Two geometry numbers, because §1 and §3 do not use the same definition
+
+This is the one place the tool declines to reproduce this document exactly, and
+it is worth stating plainly rather than quietly picking one.
+
+§1's table calls a row geometry-decodable on **shape + edge length** (2,577
+rows, 17.1%). §3's gate — the one this document argues for, and the one that
+takes definite misroutes down to 1 row in 2,057 — is a **full ISO slot fill**:
+shape *and* edge *and* corner radius (2,057 rows, 13.7% of 15,028). The second
+is a strictly smaller set than the first.
+
+The report's own figure is the gated one, because a report that vouches for a
+number has to vouch for the stricter one. The published two-slot figure is
+carried alongside it, labelled, so the two censuses can be lined up instead of
+a reader guessing why they differ. Neither is presented without the other.
+
+### What has not been measured
+
+**The acceptance runs against the real masters have not been done, and no
+number is offered in their place.**
+
+| Acceptance | State |
+|---|---|
+| SLS: reproduce 9.4% / 17.1% / 21.6% / 23.5% against the live master (~15,082 items today against the 15,028 measured on 2026-08-09) | **UNKNOWN — no export available in this environment.** |
+| 4U: ~0% with the reason stated | **UNKNOWN — no export available in this environment.** |
+
+No item-master export for any of the three entities exists in this checkout,
+and no Zoho credential is configured. Pulling 15,000 items through the API
+instead would be re-adding the connector path this section just explained was
+deliberately not built, and it would not be the same input in any case.
+
+What is proven is everything that does not need the file: the profile
+mechanism, the gate, the census arithmetic, both UNKNOWN-not-zero refusals and
+the seam with the real engine — `backend/tests/test_master_health.py`, 36 tests,
+four of them running the pinned pie-parser for real.
+
+To close the two rows above, export the item list from each entity and run:
+
+    cd backend
+    python -m app.master_health ~/sls-items.csv --profile zoho --json sls.json
+    python -m app.master_health ~/4u-items.csv  --profile zoho --json 4u.json
+
+Then record both numbers for SLS — the published 2026-08-09 census and today's
+— and attribute the gap to drift on a growing master. Do not overwrite the
+published figure with the new one: they are two measurements of two
+populations, and §1's table is dated for that reason.
+
+For 4U, the expected result is near-zero identity coverage, and the report is
+built so that number arrives with its reason attached: the manufacturer census
+prints the makers the master names, the identity and gated-geometry counts
+achieved for each, and the brands the loaded pack itself claims. "No pack
+covers YG1" is then readable off the page. A bare zero is what the report is
+constructed not to produce — where no catalogue loaded at all, every coverage
+figure is UNKNOWN rather than 0%, because nobody asked the pack.

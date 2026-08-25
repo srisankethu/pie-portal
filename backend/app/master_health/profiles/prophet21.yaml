@@ -1,0 +1,21 @@
+# Epicor Prophet 21 — inv_mast / inv_loc item extract (CSV).
+#
+# P21 keeps the item and its per-location stock in separate tables, so this
+# profile assumes the common joined extract (inv_mast joined to inv_loc) that a
+# P21 VAR produces for exactly this kind of review.
+label: "Epicor Prophet 21 — item master extract"
+columns:
+  sku: "item_id"
+  name: "item_desc"
+  manufacturer: "supplier_name"
+  rate: "list_price"
+  stock: "qty_on_hand"
+  hsn: "commodity_code"
+  uom: "selling_unit"
+notes: >-
+  P21 records a supplier rather than a manufacturer, and for a distributor the
+  two are often but not always the same party. The manufacturer census under
+  this profile is therefore a SUPPLIER census; read it as "who this master
+  attributes the item to", which is the same question the census actually
+  answers under every profile. P21's cost columns (`standard_cost`,
+  `moving_average_cost`) have no role and are never read.

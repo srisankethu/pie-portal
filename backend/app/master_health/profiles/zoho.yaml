@@ -1,0 +1,25 @@
+# Zoho Books / Zoho Inventory — Items list export (CSV or XLSX).
+#
+# The export this platform's three legal entities produce (SLS Engineers,
+# 4U Precision, UPS). Headers are Zoho's own, taken from an Items list export
+# with the default column set.
+#
+# `Rate` is the SELLING price. Zoho's export also carries `Purchase Rate`, and
+# it is deliberately NOT mapped here: this report has no cost role to map it
+# to, so a cost cannot reach the output even by mistake. See CLAUDE.md §1.
+label: "Zoho Books / Zoho Inventory — Items export"
+columns:
+  sku: "SKU"
+  name: "Item Name"
+  manufacturer: "Manufacturer"
+  rate: "Rate"
+  stock: "Stock On Hand"
+  hsn: "HSN/SAC"
+  uom: "Usage unit"
+notes: >-
+  Zoho puts the manufacturer's material number in SKU and the product code in
+  Item Name, which is why identity linking is attempted against SKU and the
+  geometry decode is run over Item Name. Older exports name the selling price
+  column "Selling Price" and the tax code column "HSN"; re-point either with
+  --col-rate / --col-hsn rather than editing this file, or copy it to a second
+  profile if the older layout is what you export routinely.

@@ -1,0 +1,93 @@
+# Remediation policy for the Master Health Report — assumptions, not facts.
+#
+# Every number in this file is an estimate of how long a person takes to fix a
+# class of defect. The report ranks its worklist by rows recovered per hour, and
+# that ranking is only as good as these figures — so they live here, quoted as
+# strings (an unquoted YAML number arrives as a float, and Decimal cannot
+# recover precision a float has already lost), content-hashed into a
+# `mh_` version stamped on every report, and editable without touching code.
+#
+# Change a figure and the stamp moves, which is what lets two reports that rank
+# differently explain why.
+#
+# `rows_per_hour` is throughput once the work is under way. `setup_hours` is
+# what the task costs before the first row is fixed — sourcing a price list,
+# agreeing a naming convention, getting the HSN schedule from the accountant.
+# Setup is why the ranking is not simply a constant: a big batch amortises it
+# and a small one does not, which is the real reason a 4,000-row fix outranks a
+# 40-row one even at the same throughput.
+
+actions:
+  - id: RECORD_MANUFACTURER
+    label: "Record a manufacturer on items that have none"
+    trigger: manufacturer_blank
+    setup_hours: "2"
+    rows_per_hour: "150"
+    recovers: >-
+      Nothing is decodable until it is known who made it. This is also the
+      column that says which items a pack could ever cover, so it gates the
+      answer to "would a second pack be worth buying".
+
+  - id: ADD_HSN
+    label: "Add an HSN/SAC code to items that have none"
+    trigger: hsn_missing
+    setup_hours: "3"
+    rows_per_hour: "120"
+    recovers: >-
+      GST filing and e-invoicing reject a line with no HSN, and the product
+      category a mix view renders falls back to the HSN heading.
+
+  - id: SET_SELLING_RATE
+    label: "Set a selling rate on items that have none"
+    trigger: rate_missing
+    setup_hours: "4"
+    rows_per_hour: "60"
+    recovers: >-
+      An item with no selling rate mis-quotes and mis-invoices, and it is
+      invisible to every value-weighted number in this report.
+
+  - id: FIX_UNREADABLE_NUMBER
+    label: "Correct rate or stock cells that are not numbers"
+    trigger: number_unreadable
+    setup_hours: "0.5"
+    rows_per_hour: "90"
+    recovers: >-
+      A cell holding text where a number belongs is a data-entry error that
+      silently drops the row out of every valuation.
+
+  - id: RESOLVE_DUPLICATE_CANDIDATES
+    label: "Review duplicate candidate groups (review only — never auto-merge)"
+    trigger: duplicate_candidate_rows
+    setup_hours: "1"
+    rows_per_hour: "40"
+    recovers: >-
+      Two SKUs for one physical item split its stock and its history. Merging
+      is a judgement with no undo, so this is a review queue and the report
+      never proposes which side survives.
+
+  - id: RECORD_UOM
+    label: "Record a unit of measure on items that have none"
+    trigger: uom_missing
+    setup_hours: "1"
+    rows_per_hour: "200"
+    recovers: >-
+      A quantity with no unit cannot be checked against a piece count, which
+      is what catches a fractional quantity on a piece-counted item.
+
+  - id: NAME_FOR_DECODE
+    label: "Give a decodable product code to items whose name is blank"
+    trigger: name_blank
+    setup_hours: "2"
+    rows_per_hour: "80"
+    recovers: >-
+      An item with no description cannot be decoded, cannot be searched and
+      cannot be quoted from. It is the floor under every coverage number here.
+
+  - id: RECORD_SKU
+    label: "Record an item identifier on rows that have none"
+    trigger: sku_blank
+    setup_hours: "2"
+    rows_per_hour: "80"
+    recovers: >-
+      Identity linking is attempted against the SKU alone. A blank one cannot
+      link, however well the catalogue covers the product.

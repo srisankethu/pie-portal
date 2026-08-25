@@ -171,6 +171,9 @@ backend/app/
   ingestion/     Zoho source → normalize → idempotent sync
   domain/        ORM models · enums · schemas
   routers/       HTTP surface
+  master_health/ offline item-master diagnostic: a CSV/XLSX export plus a
+                 column profile in, a Master Health Report out. No upload, no
+                 connector, no database — see docs/concepts/01 §8
   pie_service.py in-process pie-parser bridge + relationship mapping
   pricing.py     management-only recommended price + margin floor
 frontend/src/

@@ -8,6 +8,7 @@ import { money } from "../money";
 import { formatDateTime, since as when, todayISO } from "../when";
 import { papi } from "./api";
 import { ErrorState, LoadingState } from "./kit";
+import { CatalogPanel } from "./CatalogPanel";
 import { ConnectionsPanel } from "./ConnectionsPanel";
 import { RunLogPanel } from "./RunLogPanel";
 import { SkippedRowsPanel } from "./SkippedRowsPanel";
@@ -497,6 +498,12 @@ export function DataScreen({ session, onSynced }: { session: PlatformSession; on
           )}
         </>
       )}
+
+      {/* The nomenclature side of the data, after the books: which decoded
+          catalogue resolutions run against, and the one place to (re)build
+          it. Outside the status conditional — the catalogue exists or not
+          regardless of whether Zoho answered. */}
+      <CatalogPanel session={session} />
     </div>
   );
 }

@@ -22,6 +22,7 @@ venv/
 # Generated PIE catalog (built from pie-parser corpus via scripts/build_catalog.py)
 backend/data/products.jsonl
 backend/data/*.jsonl
+backend/data/*.run_report.json
 
 # Node / frontend
 node_modules/

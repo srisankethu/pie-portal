@@ -189,6 +189,17 @@ def bootstrap(*, with_demo: Optional[bool] = None,
             summary["demo"] = "disabled"
     finally:
         session.close()
+
+    # Make today's policy dereferenceable before anything is stamped with it.
+    # After the schema step above, so it only ever runs against a database that
+    # has the table; one committed transaction per organization, inside
+    # ``backfill_all_organizations``, per §4's commit-at-a-natural-boundary.
+    # Idempotent — a no-op on every boot after the first, because the version
+    # only moves when the policy does.
+    from . import threshold_registry
+
+    summary["threshold_versions"] = threshold_registry.backfill_all_organizations(
+        SessionLocal)
     return summary
 
 

@@ -292,8 +292,42 @@ export type QuoteLossReason =
   | "CUSTOMER_CANCELLED"
   | "NO_DECISION";
 
+/** Which quote an outcome is about. Two id spaces, never one bare `string`.
+ *
+ *  `quoteId` names a quote this platform priced and holds lines for.
+ *  `documentRef` names one the ERP raised itself, and carries that system's own
+ *  id — the value in `quote_documents.external_ref`, never the surrogate a
+ *  re-sync re-mints. The second is most of the book: roughly three quarters of
+ *  the estimates on it were never seen by the platform at all, and until the
+ *  server made both keys optional there was no request body that could name one.
+ *
+ *  A union rather than two optional fields, because `set_outcome` refuses an
+ *  outcome that is about no document at all and this is that refusal moved to
+ *  compile time. Both keys together stays legal, deliberately: it is the
+ *  *normal* shape for a platform quote pushed to the ERP, and a stricter type
+ *  would make the ordinary case the one needing a cast.
+ *
+ *  Two named fields rather than a positional `string` for the reason the server
+ *  keeps the columns apart. Both are strings and neither means anything in the
+ *  other's space, so a single parameter lets a Zoho estimate id be passed where
+ *  a platform quote id belongs with no error at any layer — writing an outcome
+ *  row keyed on a quote this platform never priced, which is a row no later
+ *  lookup finds. */
+export type QuoteOutcomeSubject =
+  | { quoteId: string; documentRef?: string }
+  | { quoteId?: string; documentRef: string };
+
 export interface QuoteOutcome {
-  quote_id: string;
+  /** Null on an outcome recorded against a quote the ERP raised: the platform
+   *  never priced it and holds no id of its own for it. This was a plain
+   *  `string`, which is the same defect a plain `number` over a nullable figure
+   *  is — the type asserting a guarantee the server does not make, so the one
+   *  shape that needs handling is the one that type-checks silently. */
+  quote_id: string | null;
+  /** The source ERP's own id for the quote this outcome is about. Null on a
+   *  quote the platform priced and never pushed. Both non-null is normal and
+   *  means one estimate, priced here and raised there. */
+  quote_document_ref: string | null;
   status: QuoteOutcomeStatus;
   note: string | null;
   /** Null is the NOT_RECORDED bucket: a loss decided before the vocabulary

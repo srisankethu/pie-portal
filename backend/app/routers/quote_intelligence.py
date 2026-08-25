@@ -13,7 +13,11 @@ salesperson went ahead anyway.
 DRAFT → SENT → WON/LOST, so a price can later be joined to whether it won. A
 loss carries a reason from ``QuoteLossReason`` and is refused without one —
 ``/api/v1/insight/quote-outcomes`` reads that column directly, and a loss
-recorded without it is a row that can be counted and never learned from.
+recorded without it is a row that can be counted and never learned from. Both
+ways of naming a quote are scoped like any other account read: an ERP-raised
+quote by its own reference (``_may_record_erp_quote``), and a quote this
+platform priced by its ``quote_id`` (``_holds_platform_quote``). Both keys
+are checked, because either one on its own identifies the row that moves.
 
 No endpoint here calls a model. Every number is computed by ``app.commercial``.
 Role scoping is enforced server-side: a salesperson's response contains no cost,
@@ -49,9 +53,11 @@ from ..authz import Principal, can_view_customer, current_principal
 from ..store import store
 from ..commercial.policy import load_for_org
 from ..commercial.quote_service import (
+    AmbiguousQuoteDocument,
     InvalidTransition,
     MissingLossReason,
     QuoteLineInput,
+    QuoteOutcomeRepointed,
     assess_and_record,
     assess_quote,
     get_outcome,
@@ -61,9 +67,11 @@ from ..commercial.quote_service import (
     snapshot_to_dict,
     snapshots_for_quote,
     set_outcome,
+    sole_erp_quote,
     summarize,
 )
 from ..db import get_session
+from ..domain import models
 from ..domain.enums import QuoteLossReason, QuoteOutcomeStatus
 
 router = APIRouter(prefix="/api/v1/quote-intelligence", tags=["quote-intelligence"])
@@ -144,6 +152,252 @@ def _visible_customer_ref(session: Session, principal: Principal, ref: str) -> s
     return ref
 
 
+#: The one answer a salesperson gets for every ERP reference that is not one of
+#: theirs: a quote raised on another desk, a quote nobody attributed, a
+#: reference that names nothing, and a reference that names two. Identical on
+#: purpose — a refusal that told them apart would answer "does this reference
+#: exist" for the whole book, which is the enumeration ``_visible_customer_ref``
+#: degrades rather than confirms one field further up.
+_NO_SUCH_ERP_QUOTE = (
+    "No quote on your list answers to that reference. A quote raised for an "
+    "account you do not hold is recorded by whoever holds it.")
+
+
+def _may_record_erp_quote(session: Session, principal: Principal,
+                          quote_document_ref: str) -> bool:
+    """Whether this principal may write an outcome onto the ERP quote named.
+
+    ``_visible_customer_ref`` scopes the customer *name the caller typed* and
+    nothing else, which was the whole rule while ``quote_id`` was the only key.
+    The reasoning offered for leaving that key unscoped — a quote this platform
+    priced is reached through a store the caller already holds — turned out to
+    be wrong twice over, and ``_holds_platform_quote`` below is the
+    correction; read it beside this one, because the two keys are checked
+    independently. ``quote_document_ref`` is still different in kind — it is the ERP's own id
+    for a quote nobody here priced, it identifies the row by itself, and the
+    worklist that hands those references out is scoped while the write was not.
+    So a salesperson could name any estimate in the organization and put a
+    terminal WON or LOST on it. Won and lost are terminal by design, so the
+    account's rightful owner is then refused forever; and because the typed
+    name is blanked rather than refused, the row carries no ``customer_id`` and
+    slips past ``insight._scoped_outcomes``' narrowing into every manager's loss
+    analysis. Reading the row back was the other half of it: ``outcome_to_dict``
+    echoes ``customer_id``, the customer's real name and whatever free text a
+    colleague wrote about the account, which is ``_visible_customer_ref``'s own
+    enumeration running backwards — reference to identity — on the one field
+    the caller supplied being correctly withheld.
+
+    The rule is the one ``/insight/unrecorded-quotes`` narrows its worklist
+    with, so that what a person may record is exactly what they were shown:
+    ``commercial.insight.unrecorded._load`` keeps a quote for a narrowed reader
+    only where its ``customer_id`` is one of theirs, and drops an unattributed
+    one rather than showing a stranger's quote on somebody's list. Expressed
+    through ``authz.can_view_customer`` rather than re-derived from
+    ``assigned_user_id``, for the reason that function's docstring gives.
+
+    **Four different failures answer False and the caller cannot tell them
+    apart** — hence one message for all four, and hence the ambiguous reference
+    being answered here rather than left to the 409 below: that message names
+    both connected books a reference is torn between, and those are quotes this
+    reader may not see. The manager who can see both books is the one who can
+    do anything about it, and they still get the 409.
+
+    Applied whenever a reference is supplied, including beside a ``quote_id``.
+    Both keys together is the normal shape for a platform quote pushed to the
+    ERP, and letting the reference through unchecked because a ``quote_id`` sat
+    next to it would be this same defect in a second costume: ``set_outcome``
+    writes the reference onto that row, and the rightful owner's next call —
+    keyed on the reference — finds it and is refused by it. The cost is narrow
+    and stated: a salesperson naming both before the sync has read the new
+    estimate is refused and records against the ``quote_id`` alone, which
+    identifies the row anyway, and the ERP link was already written by
+    ``routers.quote`` at the moment it pushed.
+
+    A manager or owner is not narrowed to any subset of the book, so nothing is
+    resolved for them at all: they keep today's behaviour exactly, including
+    recording against a reference the sync holds no document for, which
+    ``_opening_status`` deliberately treats as a dangling pointer rather than
+    as evidence of a send.
+    """
+    if not principal.is_salesperson:
+        return True
+    try:
+        document = sole_erp_quote(session, principal.organization_id,
+                                  quote_document_ref)
+    except AmbiguousQuoteDocument:
+        return False
+    customer = (session.get(models.Customer, document.customer_id)
+                if document is not None and document.customer_id else None)
+    return can_view_customer(principal, customer, session)
+
+
+#: The one answer a salesperson gets for every ``quote_id`` that is not one of
+#: theirs: a quote priced on another desk, a quote nobody attributed, and an id
+#: that names nothing at all. Identical for the same reason
+#: ``_NO_SUCH_ERP_QUOTE`` is — and here the ids are *generated*, not typed:
+#: ``store`` mints them ``q{run}-{counter}``, so a refusal that told a live
+#: quote from an empty id would enumerate the run with two nested loops.
+_NO_SUCH_PLATFORM_QUOTE = (
+    "No quote on your list answers to that id. A quote priced for an account "
+    "you do not hold is recorded by whoever holds it.")
+
+
+def _holds_platform_quote(session: Session, principal: Principal,
+                          quote_id: str, *, when_unattributed: bool) -> bool:
+    """Whether this principal holds the platform quote named by ``quote_id``.
+
+    ``_may_record_erp_quote`` scoped the other key on the reasoning that
+    ``quote_id`` needed none — "a quote this platform priced is reached through
+    a store the caller already holds". That is the sentence this function
+    exists to correct. Nothing on this path ever consulted the store:
+    ``set_outcome`` keys straight off ``quote_id``, and ``store.py``'s own
+    comment on ``Quote.organizationId`` says why typing one is enough — the
+    store is one process-wide dict and the ids are enumerable,
+    ``q{run}-{counter}``. So a salesperson could name any quote in their own
+    organization and move it, including to a terminal WON or LOST, which is
+    terminal by design and therefore refuses the rightful owner from then on.
+    The response handed back the row as well: ``customer_id``, the account's
+    real name and a colleague's note — ``_visible_customer_ref``'s enumeration
+    running backwards, exactly as on the ERP path.
+
+    **It answers one question for every path on this router, reads included**,
+    which is why it is named for holding the quote rather than for recording
+    one. The first version guarded ``POST /outcome`` alone, and the review that
+    followed walked straight around it: ``GET /quotes/{quote_id}`` handed a
+    salesperson the whole outcome row and the entire snapshot trail for any id
+    in the organization, and ``POST /assess`` echoed ``outcome_to_dict`` for
+    whatever ``quote_id`` the body carried. Both answered exactly what the 404
+    declines to — live or dead, and then the account id, the account's real
+    name, the colleague's note and the quoted prices — so the refusal was an
+    oracle undone by the endpoint next door. A read rule and a write rule that
+    are the same rule must be the same function, or the next endpoint added
+    here inherits only the one somebody remembered.
+
+    Cross-*tenant* was never the hole here and is not fixed here: ``set_outcome``
+    filters on the ``organization_id`` taken from the principal and never from
+    the body, and ``store.line_cost`` refuses a foreign ``quote_id`` on the one
+    seam that reads a cost. This is the *desk* axis inside one book.
+
+    **What scopes a platform quote, and in what order.** There is no single
+    column to read, so three facts are consulted and the first that attributes
+    the quote decides. The two that are about *this outcome row* come before
+    the one that is about the quote generally:
+
+    1. ``QuoteOutcome.customer_id`` on the row being moved. It is the row this
+       call would rewrite, it is what ``insight._scoped_outcomes`` narrows the
+       *read* of this same table by, and a quote recorded through ``/snapshot``
+       carries it from the moment it becomes a draft.
+    2. ``QuoteOutcome.updated_by_user_id`` — the person who recorded it —
+       where that row carries no customer. That is the ordinary walk-in (a name
+       typed slightly differently, or a customer quoting for the first time),
+       and it is also **every quote this platform pushed to the ERP**:
+       ``routers.quote`` calls ``set_outcome`` with ``customer_ref`` and the
+       pusher's user id and no ``customer_id``, so the row it opens has that
+       column NULL however ordinary the customer was.
+    3. ``QuoteDecision.customer_id`` on the append-only snapshot trail, where
+       no outcome row exists at all. Written by ``assess_and_record``, which
+       both ``/snapshot`` and the estimate push run — so the trail exists
+       before anybody records an outcome, and it survives as evidence when the
+       mutable row does not.
+
+    Clauses 2 and 3 were the other way round for one round, and it refused a
+    salesperson the quote they had priced and sent themselves. The builder
+    always starts from the customer picker, so the trail written at line 399 of
+    ``routers.quote`` carries a resolved ``customer_id`` while the outcome row
+    written at line 479 carries none — clause 1 therefore always missed and the
+    trail always decided, which made attribution rest on who holds the account
+    *now* rather than on who sent the quote. ``ingestion.sync._sync_assignments``
+    rewrites ``Customer.assigned_user_id`` from the salesperson on the account's
+    latest invoice on every pull, so an account routinely moves between the send
+    and the record, and the sender met a 404 on the quote their own screen was
+    still offering to close.
+
+    In this order the write scope is ``_scoped_outcomes`` exactly — ``customer_id``
+    in mine, or ``customer_id`` NULL and the recorder is me — which is the
+    property ``_may_record_erp_quote``'s docstring states the ERP half was built
+    to preserve: what a person may record is exactly what they were shown. The
+    cost is stated rather than hidden: where a colleague pushed a quote for an
+    account somebody else holds, the account's holder is refused it — and that
+    same row is absent from their worklist for the same reason, so nothing they
+    can see is refused to them.
+
+    Two candidates were considered and are not used. ``QuoteDraft.salesperson_id``
+    is the obvious one and it is **dead**: nothing in ``app/`` writes that table
+    — ``trust/erasure`` is its only reference — so it attributes no quote in
+    practice and reading it would be a scope rule that is empty every time.
+    ``store.Quote.customerId`` is live but cannot be evidence: the store is
+    per-process and its ids carry a run marker, so after a restart every earlier
+    ``quote_id`` is simply absent from it, and absence there is not evidence of
+    anything (§1). It is also ``Optional`` — a quote raised against a typed name
+    holds none.
+
+    **When none of them attributes the quote, the caller says what that means**
+    — and every caller but one says False. The benign default is to let the
+    write through and have ``set_outcome`` open a fresh row, which is how a
+    terminal status gets parked on an id nobody has minted yet: the counter is
+    visible in any id the caller has legitimately seen, and a WON sitting on
+    ``q{run}-550`` meets the colleague whose builder mints it as an
+    ``InvalidTransition`` they can do nothing about.
+
+    ``/snapshot`` is the one caller that passes True, because there creating the
+    quote *is* the operation: a quote being priced for the first time has no
+    outcome row and no trail by definition, and failing closed would refuse the
+    Quote Builder its own first save. The residual that buys is real and is the
+    reason it is a parameter rather than a default: on that endpoint 201 and 404
+    do tell "free id" from "already another desk's", which the three paths
+    that pass False deliberately do not. It costs a probe a written, attributed,
+    auditable row of their own each time and discloses no name, and the
+    alternative — letting a snapshot be appended to a stranger's trail — hands
+    ``insight._latest_lines`` a price the customer never saw as the price they
+    answered.
+
+    ``POST /outcome`` passed the ERP half's answer here for one round: a
+    reference the caller was found to hold let an *unattributed* ``quote_id``
+    through beside it. That is removed. It made the 404 mean "this id names a
+    live quote and it is not yours" while a fresh id answered 200, so any
+    salesperson holding a single worklist reference could sweep the id space one
+    request at a time — the enumeration ``_NO_SUCH_PLATFORM_QUOTE``'s own
+    comment rules out — and each probe left a stray outcome row pointing at that
+    reference. Nothing legitimate is lost: ``intelligence.ts`` sends the two keys
+    from disjoint entry points and never both, the estimate push calls
+    ``set_outcome`` directly with no guard in front of it, and the row that push
+    opens is attributed by clause 2 from the moment it exists.
+
+    A manager or owner is not narrowed to any subset of the book, so nothing is
+    resolved for them at all and they keep today's behaviour exactly —
+    including opening a row for a quote id nothing has recorded yet.
+    """
+    if not principal.is_salesperson:
+        return True
+    org = principal.organization_id
+    row = get_outcome(session, org, quote_id)
+    if row is not None:
+        if row.customer_id:
+            return _holds_account(session, principal, row.customer_id)
+        if row.updated_by_user_id:
+            return row.updated_by_user_id == principal.user_id
+    for snapshot in snapshots_for_quote(session, org, quote_id):
+        if snapshot.customer_id:
+            return _holds_account(session, principal, snapshot.customer_id)
+    return when_unattributed
+
+
+def _holds_account(session: Session, principal: Principal,
+                   customer_id: str) -> bool:
+    """Whether this principal holds the account named, by id.
+
+    ``can_view_customer`` takes ``Optional`` precisely so a failed ``session.get``
+    goes straight in — a customer that does not exist and one this principal
+    cannot see must give the same answer, or the difference between them is the
+    oracle. The shared rule rather than a comparison against
+    ``assigned_user_id``: that column is Zoho's, rewritten by the sync from the
+    salesperson on the last invoice, and reading it here would hide a reassigned
+    account from the person it was given to.
+    """
+    return can_view_customer(
+        principal, session.get(models.Customer, customer_id), session)
+
+
 def _reject_price_sweep(lines: list[LineIn]) -> None:
     """Refuse a request that prices one product many ways at once.
 
@@ -179,18 +433,45 @@ def _validate(body: AssessRequest | SnapshotRequest, *, what: str) -> None:
     _reject_price_sweep(list(body.lines))
 
 
-def _inputs(body: AssessRequest, org: str) -> list[QuoteLineInput]:
+def _inputs(body: AssessRequest, org: str, *, holds_quote: bool) -> list[QuoteLineInput]:
+    """The assessment's line inputs, including the server-held cost per line.
+
+    ``holds_quote`` decides whether the named quote's costs are read at all, and
+    it is a required keyword because getting it wrong is silent. ``line_cost``
+    is scoped to the *organization* and says so — it refuses another tenant's
+    ``quote_id`` — but the store is one process-wide dict with enumerable ids
+    (``store.py`` ``Quote.organizationId``), so inside one book a salesperson
+    could name any desk's quote and borrow the cost sitting on its line.
+
+    That is not the accepted residual §1 licenses. The accepted one is that a
+    salesperson who is entitled to a line's negotiation floor can do algebra on
+    it. This was different in kind: ``quote_intelligence`` takes
+    ``item_master_cost`` as the *fallback* used when the books hold no cost for
+    the product, so borrowing another desk's line **manufactured a boundary
+    where none existed**. Measured before the fix, on a product with no
+    ``cost_records`` row and a borrowed cost of 500: sweeping ``proposed_price``
+    moved the verdict at 568.18 and again at 588.24 — ``cost/(1 - min_margin)``
+    and ``cost/(1 - margin_floor)`` exactly — while the same sweep with no
+    ``quote_id`` answered ``NO_COST_BASIS`` at every price. Two boundaries for a
+    number the platform otherwise refuses to hold, on a line the caller cannot
+    act on. §1's budget is one boundary per action the recipient can take, and
+    they can take none here.
+
+    Refused by *degrading*, not by raising: no id and an id the caller does not
+    hold produce the identical ``NO_COST_BASIS`` answer, which is the same
+    choice ``_visible_customer_ref`` makes one line down and for the same
+    reason — a refusal that stood out would confirm the quote exists.
+    """
     return [
         QuoteLineInput(line_id=ln.line_id, product_ref=ln.product,
                        qty=ln.qty, proposed_price=ln.proposed_price,
                        family=ln.family,
-                       # Only when the caller named the quote. Without an id
-                       # there is no server-held line to read a cost from, and
-                       # the assessment falls back to bills alone as before.
-                       # `org` is passed so a quote_id belonging to another
-                       # tenant reads as no cost, not as that tenant's cost.
+                       # Only when the caller named a quote they hold. Without
+                       # one there is no server-held line to read a cost from
+                       # and the assessment falls back to bills alone, which is
+                       # exactly what a caller who does not hold it now gets.
                        item_master_cost=(store.line_cost(body.quote_id, ln.line_id, org)
-                                         if body.quote_id else None))
+                                         if holds_quote else None))
         for ln in body.lines
     ]
 
@@ -206,14 +487,27 @@ def assess(
     _validate(body, what="request")
 
     org = principal.organization_id
+    # Resolved once, and BEFORE the costs are read. It used to be checked after,
+    # guarding only the outcome echoed at the bottom of this handler — so the
+    # cost on another desk's line had already been read into the assessment by
+    # the time anybody asked whether the caller held the quote. See ``_inputs``.
+    holds_quote = bool(body.quote_id) and _holds_platform_quote(
+        session, principal, body.quote_id, when_unattributed=False)
     result = assess_quote(
         session, org,
         customer_ref=_visible_customer_ref(session, principal,
                                            body.customer.strip()),
-        lines=_inputs(body, org), as_of=body.as_of)
+        lines=_inputs(body, org, holds_quote=holds_quote), as_of=body.as_of)
     refs = {ln.line_id: ln.product for ln in body.lines}
 
-    outcome = get_outcome(session, org, body.quote_id) if body.quote_id else None
+    # Withheld unless this reader holds the quote. ``_visible_customer_ref``
+    # correctly blanks the customer name the caller typed, and then this line
+    # handed back that account's real name, its platform id and a colleague's
+    # note anyway — keyed on a ``quote_id`` the caller chose, which is the same
+    # reference-to-identity enumeration running backwards. Resolved to None
+    # rather than refused, so a quote on another desk and an id that names
+    # nothing are one answer here too.
+    outcome = get_outcome(session, org, body.quote_id) if holds_quote else None
     return {
         "customer": {
             "customer_id": result.customer_id,
@@ -263,6 +557,25 @@ def snapshot(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "No lines to record")
     _validate(body, what="request")
 
+    # The same key the outcome path scopes, checked here because this endpoint
+    # writes the very row that path reads. It had no scope check at all, and
+    # that made ``_holds_platform_quote`` decorative: a salesperson refused on
+    # another desk's ``quote_id`` could snapshot it with their own customer
+    # name, and ``set_outcome`` below would rewrite ``customer_id``,
+    # ``customer_ref`` and ``updated_by_user_id`` on the colleague's row —
+    # DRAFT over DRAFT, so the lifecycle never objected — and then walk in the
+    # front door and file the loss into their own numbers. The trail is the
+    # other half: ``insight._latest_lines`` reads the newest snapshot per quote
+    # as the price the customer answered, so an appended line is a price nobody
+    # quoted counted as one that was.
+    #
+    # ``when_unattributed=True`` because this is where a quote *becomes*
+    # attributed — a first save has no outcome row and no trail, and failing
+    # closed here would refuse the Quote Builder every new quote.
+    if not _holds_platform_quote(session, principal, body.quote_id.strip(),
+                                 when_unattributed=True):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, _NO_SUCH_PLATFORM_QUOTE)
+
     org = principal.organization_id
     customer_ref = _visible_customer_ref(session, principal, body.customer.strip())
     result, rows = assess_and_record(
@@ -307,7 +620,19 @@ def quote_audit(
 
     Append-only, so a re-priced line appears more than once — that sequence is
     the negotiation, and collapsing it to the latest row would erase it.
+
+    Scoped by the same rule that scopes the write, and refusing in the same
+    sentence. Org-scoped alone, this route answered for any id in the book —
+    the outcome row with the account's id, its real name and whatever a
+    colleague wrote in the note, plus every snapshot with its quantities and
+    quoted prices — while a missing id answered ``{"outcome": null,
+    "decisions": []}``. Those two are trivially distinguishable, so it supplied
+    both halves of what ``POST /outcome``'s 404 exists to withhold: the live
+    id list to aim at, and the identity behind each one.
     """
+    if not _holds_platform_quote(session, principal, quote_id,
+                                 when_unattributed=False):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, _NO_SUCH_PLATFORM_QUOTE)
     org = principal.organization_id
     rows = snapshots_for_quote(session, org, quote_id)
     return {
@@ -318,14 +643,25 @@ def quote_audit(
 
 
 class OutcomeRequest(BaseModel):
-    quote_id: str
+    #: A quote this platform priced. Optional since ``quote_document_ref``
+    #: exists: it was a required ``str``, which made the ERP-raised quote —
+    #: most of the book — impossible to name over HTTP at all.
+    quote_id: Optional[str] = None
+    #: The id the source ERP gave a quote it raised itself, as carried in
+    #: ``quote_documents.external_ref``.
+    quote_document_ref: Optional[str] = None
     status: QuoteOutcomeStatus
     customer: str = ""
     note: Optional[str] = None
     #: Required when ``status`` is LOST. Not enforced here as a Pydantic
     #: constraint on purpose — ``quote_service.set_outcome`` owns the rule, so
     #: the CLI, a future importer and this endpoint cannot drift about what
-    #: counts as a recordable loss.
+    #: counts as a recordable loss. "At least one document to be about" is
+    #: likewise that function's rule and not a Pydantic one, for the same
+    #: reason and with the same consequence if it were restated here: both
+    #: keys together is the *normal* shape for a platform quote pushed to the
+    #: ERP, and a stricter model here would refuse what the service documents
+    #: as ordinary.
     loss_reason: Optional[QuoteLossReason] = None
     lost_to: Optional[str] = None
 
@@ -342,9 +678,35 @@ def quote_outcome(
     # any customer's name to their platform id.
     customer_ref = _visible_customer_ref(session, principal, body.customer.strip())
     customer = resolve_customer(session, org, customer_ref) if customer_ref else None
+
+    document_ref = (body.quote_document_ref or "").strip() or None
+    if document_ref is not None and not _may_record_erp_quote(
+            session, principal, document_ref):
+        # 404 rather than 403, and the same 404 the reference naming nothing
+        # gets: see ``_NO_SUCH_ERP_QUOTE``. Before the call and not inside it,
+        # so a refused request writes nothing at all.
+        raise HTTPException(status.HTTP_404_NOT_FOUND, _NO_SUCH_ERP_QUOTE)
+
+    # And the other key, on its own evidence, and on nothing the first one
+    # answered. Both are checked because either one on its own identifies the
+    # row ``set_outcome`` will move: a reference this person holds does not
+    # make a stranger's ``quote_id`` theirs, and a quote id they hold does not
+    # make a stranger's reference theirs — that second direction is what
+    # ``_may_record_erp_quote``'s last paragraph is about. The first direction
+    # is why the ERP answer is no longer passed down: an unattributed id
+    # riding in on a held reference made this 404 tell a live quote from an
+    # empty one, one request per id. ``_holds_platform_quote``'s last
+    # paragraphs have the walk.
+    quote_key = (body.quote_id or "").strip() or None
+    if quote_key is not None and not _holds_platform_quote(
+            session, principal, quote_key, when_unattributed=False):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, _NO_SUCH_PLATFORM_QUOTE)
     try:
         row = set_outcome(
-            session, org, quote_id=body.quote_id.strip(), status=body.status,
+            session, org,
+            quote_id=quote_key,
+            quote_document_ref=document_ref,
+            status=body.status,
             customer_ref=customer_ref,
             customer_id=customer.customer_id if customer else None,
             note=body.note, loss_reason=body.loss_reason,
@@ -354,8 +716,33 @@ def quote_outcome(
         # legal, one required field is absent, and the message names the
         # choices. A 409 would send the caller looking at the lifecycle.
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e)) from e
+    except AmbiguousQuoteDocument as e:
+        # 409 rather than the 422 above, and the test that separates them is
+        # "is there a body this caller could send that fixes it?" — here, no,
+        # by design and permanently: ``OutcomeRequest`` carries no qualifier
+        # naming which connected book the reference came from, and deliberately
+        # does not. The 422 clause's own three-part test also fails at its
+        # second part: ``sole_erp_quote`` refuses before the ``QuoteOutcome``
+        # lookup and before ``_opening_status``, so there is no current status
+        # the transition could have been legal against, and answering 422 would
+        # assert a premise nothing established.
+        #
+        # ``detail`` is a plain string on purpose. It already names the count
+        # and both books, which is the only thing that explains this to the
+        # person who hit it, and the client reads ``parsed.detail`` straight
+        # into a message — a list there renders as "[object Object]".
+        raise HTTPException(status.HTTP_409_CONFLICT, str(e)) from e
+    except QuoteOutcomeRepointed as e:
+        # A conflict with a row that already exists, not a malformed request.
+        raise HTTPException(status.HTTP_409_CONFLICT, str(e)) from e
     except InvalidTransition as e:
         raise HTTPException(status.HTTP_409_CONFLICT, str(e)) from e
+    except ValueError as e:
+        # Last, and only for the "names neither document" guard: all four
+        # clauses above are ``ValueError`` subclasses, so any of them ordered
+        # after this one would be unreachable. That message already reads as a
+        # missing-field message and names both fields that would satisfy it.
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e)) from e
     return outcome_to_dict(row) or {}
 
 

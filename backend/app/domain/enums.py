@@ -550,6 +550,37 @@ LOSS_REASON_NOT_RECORDED = "NOT_RECORDED"
 #: offered by construction.
 SELECTABLE_LOSS_REASONS: tuple[QuoteLossReason, ...] = tuple(QuoteLossReason)
 
+
+class QuoteDocOutcome(str, Enum):
+    """How a quote raised in an ERP ended, according to that ERP's own record.
+
+    Three values, and the third is the one this exists for. ``UNRECORDED`` is a
+    real member rather than a sentinel kept outside the enum — deliberately the
+    opposite choice from ``LOSS_REASON_NOT_RECORDED`` above. Nothing may ever
+    *write* "not recorded" as a loss reason, because that would be a person's
+    answer invented on their behalf; ``UNRECORDED`` is the correct and honest
+    thing to write for the roughly 215 of this book's ~290 estimates whose
+    status says only that nobody ever closed them.
+
+    That silence spans three different facts — nobody worked it, the customer
+    never answered, and we lost it to a competitor — and only the third is a
+    loss. Reading an ``expired`` estimate as LOST would manufacture two hundred
+    labels out of it, every one of them defensible-looking and most of them
+    wrong, and anything learned from those labels would be confidently wrong
+    about why this business loses work. So the unknown is named, stored and
+    counted, and never folded into either decided value.
+
+    Not the same thing as ``QuoteOutcomeStatus``, and not interchangeable with
+    it: that one is the platform's own lifecycle (DRAFT → SENT → WON/LOST),
+    driven by a person through transitions that refuse to reopen a decided
+    quote. This one is a *reading* of somebody else's record, rewritten from
+    the payload on every sync, with no lifecycle and no transitions at all.
+    """
+
+    WON = "WON"
+    LOST = "LOST"
+    UNRECORDED = "UNRECORDED"
+
 class MsmeClassification(str, Enum):
     """A supplier's registered size under the MSMED Act, as somebody saw it.
 

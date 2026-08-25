@@ -78,6 +78,12 @@ EXPORTED: tuple[tuple[str, Any], ...] = (
     ("invoices", models.InvoiceDoc),
     ("purchase_orders", models.PurchaseOrderDoc),
     ("sales_orders", models.SalesOrderDoc),
+    # What was offered, alongside what was ordered. Exported rather than
+    # excluded for the reason the sales order is: it is this customer's own
+    # trading record with us, and an export holding every order while
+    # withholding the quotes behind them would hand back the half that closed
+    # and hide the half that did not.
+    ("erp_quotes", models.QuoteDoc),
     # Which orders each invoice billed against. Exported rather than excluded:
     # it is this customer's own trading record, and an export holding the orders
     # and the invoices but not the joins between them would hand back two lists
@@ -95,6 +101,13 @@ EXPORTED: tuple[tuple[str, Any], ...] = (
     # were charged.
     ("credit_notes", models.CreditNoteDoc),
     ("credit_note_applications", models.CreditNoteApplication),
+    # The buy-side mirror: credit a supplier gave back, and which bill each was
+    # set against. Exported on the same reasoning as the bills they reduce —
+    # a book handed back its purchases while its returns and price corrections
+    # were withheld would overstate what it paid, by exactly the amount that
+    # came back.
+    ("vendor_credits", models.VendorCreditDoc),
+    ("vendor_credit_applications", models.VendorCreditApplication),
     # ── what a person typed, which no re-sync can rebuild ───────────────────
     #
     # The most important group here and the least obvious. Everything above is
@@ -121,6 +134,13 @@ EXPORTED: tuple[tuple[str, Any], ...] = (
     # the only record of where those figures came from.
     ("tender_results", models.TenderResult),
     ("commercial_policies", models.CommercialPolicy),
+    # What each of this tenant's threshold stamps stood for. EXPORTED rather
+    # than EXCLUDED, and it is not a close call: these are the tenant's own
+    # margin floors and targets, and it is the only thing that makes the
+    # versions stamped on every metric row, signal and approval above mean
+    # anything. A departing customer handed the stamped rows without this would
+    # get an audit trail of hashes — the exact state this table was built to end.
+    ("threshold_versions", models.ThresholdVersion),
     ("org_policies", models.OrgPolicy),
     ("identity_policies", models.IdentityPolicy),
     ("confirmed_code_mappings", models.ConfirmedCodeMapping),

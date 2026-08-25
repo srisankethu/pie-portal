@@ -64,6 +64,12 @@ export type Screen =
   /** Which quotes were won, which were lost, and why — the outcome half of the
    *  quoting loop, which the platform recorded and never read. */
   | "quoteOutcomes"
+  /** The other three quarters of that loop: the quotes the ERP holds no
+   *  outcome for at all, and the one screen on which a person can say why one
+   *  was lost. Its own address rather than a panel on `quoteOutcomes`, because
+   *  a win rate is a summary over answered quotes and this is a worklist over
+   *  unanswered ones. */
+  | "unrecordedQuotes"
   /** What the platform itself changed: the value ledger, its evidence gaps and
    *  — for the owner — the 30-day report against the pre-trial baseline. */
   | "attribution"
@@ -124,6 +130,7 @@ export const PATH: Record<Screen, string> = {
   catalogue: "/item-lines",
   negotiate: "/negotiate",
   quoteOutcomes: "/quote-outcomes",
+  unrecordedQuotes: "/unanswered-quotes",
   attribution: "/what-pie-changed",
   retrospective: "/what-your-books-hold",
 };
@@ -220,6 +227,7 @@ export function vizPath(route: string): string {
     supply: "supply",
     negotiate: "negotiate",
     "quote-outcomes": "quoteOutcomes",
+    "unanswered-quotes": "unrecordedQuotes",
     // The two names the *needs-you* tiles carry. They were missing, and the
     // fallback below sends an unknown name to home — so "Approvals waiting"
     // and "Decisions in the queue" navigated to the screen the reader was

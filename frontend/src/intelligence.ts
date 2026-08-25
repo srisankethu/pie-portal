@@ -13,7 +13,8 @@
  * in like every other client in this codebase does.
  */
 import type {
-  LineIntelligence, QuoteIntelligence, QuoteLossReason, QuoteOutcome, QuoteOutcomeStatus,
+  LineIntelligence, QuoteIntelligence, QuoteLossReason, QuoteOutcome,
+  QuoteOutcomeStatus, QuoteOutcomeSubject,
 } from "./types";
 import { authInit } from "./authFetch";
 
@@ -31,15 +32,63 @@ async function post<T>(path: string, body: unknown, token: string): Promise<T> {
     body: JSON.stringify(body),
   }, token));
   if (!res.ok) {
+    // The server's own sentence is the whole value of a failure here, so it is
+    // read once and kept whatever form it arrives in. Two of this file's
+    // refusals are useless without it: a LOST outcome with no reason comes back
+    // 422 naming every reason a person may choose, and an ERP reference that
+    // answers to two connected books comes back 409 naming both books. Replacing
+    // either with "Unprocessable Entity" leaves the reader with a form that says
+    // no and will not say what would make it say yes.
+    //
+    // Reading the body as text first, then trying JSON, is `api.ts`'s `req`
+    // treatment and it is here for the reason given there: a crash that escapes
+    // FastAPI's handlers is plain text, and parsing as JSON and giving up threw
+    // that description away.
     let detail = res.statusText;
-    try {
-      detail = (await res.json()).detail || detail;
-    } catch {
-      /* keep the status text */
+    const raw = await res.text().catch(() => "");
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        detail = parsed.detail || parsed.message || raw;
+      } catch {
+        detail = raw.slice(0, 500);
+      }
     }
-    throw new Error(detail);
+    // Carried so a caller can tell the two refusals apart without matching on
+    // the message — 422 is "one field is missing and here are its choices",
+    // 409 is "nothing you could put in the body fixes this". `isAuthError` in
+    // `platform/api.ts` reads the same field, so a retired session throwing out
+    // of this client is now recognisable as one rather than as a screen error.
+    const err = new Error(detail) as Error & { status?: number };
+    err.status = res.status;
+    throw err;
   }
   return (await res.json()) as T;
+}
+
+/** Move a quote along DRAFT → SENT → WON/LOST, whoever raised it.
+ *
+ *  One writer for both kinds of quote, because every rule on the way is shared:
+ *  a loss must say which kind of loss it was, a decided quote is terminal, and
+ *  the body carries the same six fields either way. `set_outcome` was extended
+ *  rather than sibling-ed server-side for exactly this reason — "a second writer
+ *  would be a second place for *a loss must say why* to be forgotten" — and a
+ *  second body-builder in the browser would be that second place at one remove.
+ *
+ *  The two exported entry points below differ only in which id space they take,
+ *  and they are separate names rather than one `string` parameter so a Zoho
+ *  estimate id cannot be handed to the platform-quote path by a call site that
+ *  type-checks. See `QuoteOutcomeSubject`. */
+function postOutcome(
+  token: string, subject: QuoteOutcomeSubject, status: QuoteOutcomeStatus,
+  customer: string, note?: string, lossReason?: QuoteLossReason, lostTo?: string,
+) {
+  return post<QuoteOutcome>(
+    "/api/v1/quote-intelligence/outcome",
+    { quote_id: subject.quoteId, quote_document_ref: subject.documentRef,
+      status, customer, note, loss_reason: lossReason, lost_to: lostTo },
+    token,
+  );
 }
 
 export const intelligence = {
@@ -71,13 +120,38 @@ export const intelligence = {
   outcome: (
     token: string, quoteId: string, status: QuoteOutcomeStatus, customer: string,
     note?: string, lossReason?: QuoteLossReason, lostTo?: string,
-  ) =>
-    post<QuoteOutcome>(
-      "/api/v1/quote-intelligence/outcome",
-      { quote_id: quoteId, status, customer, note,
-        loss_reason: lossReason, lost_to: lostTo },
-      token,
-    ),
+  ) => postOutcome(token, { quoteId }, status, customer, note, lossReason, lostTo),
+
+  /** The same move, on a quote the ERP raised and this platform never priced.
+   *
+   *  Which is most of the book — roughly three quarters of the estimates on it —
+   *  and until now nothing could ask about one: `OutcomeRequest.quote_id` was a
+   *  required `str`, so no body could name an ERP quote at all. `documentRef` is
+   *  the source system's own id, the `quote_document_ref` every row of
+   *  `/insight/unrecorded-quotes` carries, never the surrogate a re-sync
+   *  re-mints.
+   *
+   *  `customer` is passed through rather than derived here. The server resolves
+   *  it under the caller's own scope and degrades to "we do not know this
+   *  customer" instead of refusing, so a label off an unattributed quote is safe
+   *  to send and a name outside this reader's book cannot be used to confirm
+   *  that the account exists.
+   *
+   *  Three refusals reach the caller as an `Error` carrying the server's own
+   *  sentence and a `status`, and the sentence is the useful half of each:
+   *  **422** — LOST with no reason, naming every reason a person may choose, or
+   *  a body that named neither key; **409** — a reference answering to two of
+   *  this organization's connected books, naming both, which nothing in this
+   *  body can resolve and which is refused rather than silently written onto
+   *  whichever row came back first; **409** again — an outcome already recorded
+   *  about a different ERP quote, which is not moved. Show the message. A
+   *  generic "could not record that" throws away the only part that tells
+   *  somebody what to do next. */
+  documentOutcome: (
+    token: string, documentRef: string, status: QuoteOutcomeStatus,
+    customer = "", note?: string, lossReason?: QuoteLossReason, lostTo?: string,
+  ) => postOutcome(token, { documentRef }, status, customer, note, lossReason,
+                   lostTo),
 
   /** Ask a manager or owner to sign off this line at the price on it now.
    *  Recording a reason is not the same as being allowed — this is the ask. */

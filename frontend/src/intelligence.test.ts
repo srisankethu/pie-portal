@@ -7,9 +7,17 @@
 // mismatch does not throw or render an error. It renders *nothing*, on a panel
 // whose whole job is to say what the platform knows about this line, and an
 // empty panel is indistinguishable from "we have no history for this product".
-import { describe, expect, it } from "vitest";
+//
+// The wrapper stopped being entirely thin when the outcome path learned to name
+// an ERP-raised quote. What a failed outcome *says* is now the useful half of
+// it — 422 names every loss reason a person may choose, 409 names the two books
+// an ambiguous reference is torn between — and no server test can pin that,
+// because the server demonstrably sends both and the question is whether this
+// client still has them by the time a screen catches. That is the last block
+// below.
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { SEVERITY_LABEL, byLine } from "./intelligence";
+import { SEVERITY_LABEL, byLine, intelligence } from "./intelligence";
 import type { LineIntelligence, QuoteIntelligence } from "./types";
 
 function result(...lineIds: string[]): QuoteIntelligence {
@@ -56,5 +64,69 @@ describe("SEVERITY_LABEL", () => {
     // chip, which reads as a bug in the analysis rather than a gap in a table.
     expect(Object.keys(SEVERITY_LABEL).sort())
       .toEqual(["CRITICAL", "INFO", "WARNING"]);
+  });
+});
+
+// ── what a refused outcome tells the person who hit it ──────────────────────
+
+/** One canned response, and the request that reached it. */
+function answering(status: number, body: string, contentType = "application/json") {
+  const seen: { body?: Record<string, unknown> } = {};
+  vi.stubGlobal("fetch", vi.fn(async (_url: string, init: RequestInit) => {
+    seen.body = JSON.parse(String(init.body));
+    return new Response(body, { status, headers: { "Content-Type": contentType } });
+  }));
+  return seen;
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+describe("recording an outcome on an ERP-raised quote", () => {
+  it("names the quote by the source system's reference, not by quote_id", async () => {
+    const seen = answering(200, JSON.stringify({ quote_id: null }));
+    await intelligence.documentOutcome("tok", "EST-4471", "WON", "Pitti");
+
+    // `quote_id` travelling as undefined is the point: the server treats the
+    // two keys as alternatives, and a "" here would name a platform quote that
+    // does not exist rather than leaving the ERP reference to identify it.
+    expect(seen.body).toMatchObject({ quote_document_ref: "EST-4471",
+                                      status: "WON", customer: "Pitti" });
+    expect(seen.body).not.toHaveProperty("quote_id");
+  });
+
+  it("keeps the 422 that lists every loss reason a person may choose", async () => {
+    // Trimmed, but the shape the server really sends: `detail` is a plain
+    // string carrying the choices, deliberately not a list.
+    const detail = "Recording a quote as lost needs a reason: PRICE, DELIVERY, "
+      + "COMPETITOR, CUSTOMER_CANCELLED, NO_DECISION.";
+    answering(422, JSON.stringify({ detail }));
+
+    await expect(intelligence.documentOutcome("tok", "EST-4471", "LOST"))
+      .rejects.toMatchObject({ message: detail, status: 422 });
+  });
+
+  it("keeps the 409 that names both books an ambiguous reference means", async () => {
+    const detail = "'Q-19' names 2 quotes in this organization (zoho/conn-a, "
+      + "zoho/conn-b). An ERP reference is unique only inside one connected "
+      + "company's book…";
+    answering(409, JSON.stringify({ detail }));
+
+    // Distinguishable from the 422 by `status` alone, which is what lets a
+    // screen say "pick a reason" for one and "this cannot be recorded" for the
+    // other without matching on prose.
+    await expect(intelligence.documentOutcome("tok", "Q-19", "LOST"))
+      .rejects.toMatchObject({ message: detail, status: 409 });
+  });
+
+  it("does not swallow a body that is not JSON", async () => {
+    // A crash that escapes FastAPI's handlers arrives as plain text. Parsing as
+    // JSON and giving up reported a bare status line and threw away the only
+    // description of what went wrong.
+    answering(500, "Traceback: something specific", "text/plain");
+
+    await expect(intelligence.documentOutcome("tok", "EST-4471", "WON"))
+      .rejects.toThrow("Traceback: something specific");
   });
 });

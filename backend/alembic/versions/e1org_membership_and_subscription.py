@@ -52,14 +52,14 @@ DEFINER function, and is narrower than it: one user id in, that user's own
 active memberships out. The caller has already been authenticated as that user.
 
 Revision ID: e1org
-Revises: d4rls
+Revises: d5rls
 Create Date: 2026-08-25
 """
 from alembic import op
 import sqlalchemy as sa
 
 revision = "e1org"
-down_revision = "d4rls"
+down_revision = "d5rls"
 branch_labels = None
 depends_on = None
 

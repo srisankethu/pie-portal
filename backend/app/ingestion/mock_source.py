@@ -1,8 +1,9 @@
 """Deterministic, offline Zoho source for dev and tests.
 
 Returns raw payloads shaped like the Zoho Books API (contacts / items /
-invoices / bills / vendors / payments / purchase orders) so the normalizer and sync are exercised against realistic
-structures without network or credentials. Data is fixed and small; it is a
+invoices / bills / vendors / payments / purchase orders / quotes) so the
+normalizer and sync are exercised against realistic structures without network
+or credentials. Data is fixed and small; it is a
 stand-in for a real pull, not seed business data.
 """
 from __future__ import annotations
@@ -76,6 +77,44 @@ _PURCHASE_ORDERS = [
      "receives": [{"date": "2026-06-15", "receive_id": "rcv-1"}]},
 ]
 
+_QUOTES = [
+    # Zoho's own noun for the document is "estimate" and these payloads are
+    # shaped as its API returns them; the platform's noun is "quote" from the
+    # normalizer onward.
+    #
+    # Three rows and three outcomes on purpose, because the third is the one
+    # this pull exists for. Accepted and declined are the two the ERP can
+    # prove; `expired` is a quote that lapsed, which is not a loss — it spans
+    # "nobody chased it", "the customer never answered" and "we lost it", and
+    # a fixture that omitted the case would let a reader believe every quote
+    # resolves to a win or a loss.
+    {"estimate_id": "est-8001", "estimate_number": "SLS/QTN-201",
+     "reference_number": "RFQ/PITTI/88", "customer_id": "cst-1001",
+     "customer_name": "Pitti Engineering Ltd", "date": "2026-05-02",
+     "expiry_date": "2026-05-31", "status": "invoiced",
+     "accepted_date": "2026-05-09", "declined_date": "",
+     "total": 15660, "salesperson_id": "zu-1",
+     "client_viewed_time": "2026-05-03T10:15:00+0530",
+     "cf_quote_type": "REPEAT"},
+    {"estimate_id": "est-8002", "estimate_number": "SLS/QTN-202",
+     "reference_number": "", "customer_id": "cst-1002",
+     "customer_name": "Bharat Forge", "date": "2026-05-14",
+     "expiry_date": "2026-06-13", "status": "declined",
+     "accepted_date": "", "declined_date": "2026-05-28",
+     "total": 42000, "salesperson_id": "zu-1",
+     "client_viewed_time": "2026-05-15T09:00:00+0530",
+     "cf_quote_type": "NEW"},
+    # Lapsed, and never opened by the customer — the shape most of a real book
+    # sits in, and the one nothing may read as a loss.
+    {"estimate_id": "est-8003", "estimate_number": "SLS/QTN-203",
+     "reference_number": "", "customer_id": "cst-1003",
+     "customer_name": "Kirloskar", "date": "2026-04-06",
+     "expiry_date": "2026-05-06", "status": "expired",
+     "accepted_date": "", "declined_date": "",
+     "total": 8750, "salesperson_id": "zu-1",
+     "client_viewed_time": ""},
+]
+
 _USERS = [
     {"user_id": "zu-1", "email": "r.nair@pie.example", "name": "R. Nair", "status": "active"},
 ]
@@ -131,3 +170,6 @@ class FixtureZohoSource:
 
     def list_purchase_orders(self) -> Iterable[dict[str, Any]]:
         return list(_PURCHASE_ORDERS)
+
+    def list_quotes(self) -> Iterable[dict[str, Any]]:
+        return list(_QUOTES)

@@ -49,6 +49,9 @@ _EXCLUDED_BILL_STATUS = {"draft", "void"}
 #: back. Neither ever reduced a receivable, so neither belongs in a
 #: reconstruction of what was owed.
 _EXCLUDED_CREDIT_NOTE_STATUS = {"draft", "void"}
+#: Same two as every other document: a drafted or voided credit is not money
+#: given back, so as far as this platform is concerned it never happened.
+_EXCLUDED_VENDOR_CREDIT_STATUS = {"draft", "void"}
 
 
 @dataclass(frozen=True)
@@ -187,12 +190,19 @@ SCOPE_FOR_PATH: dict[str, str] = {
     "customerpayments": "ZohoBooks.customerpayments.READ",
     "purchaseorders": "ZohoBooks.purchaseorders.READ",
     "salesorders": "ZohoBooks.salesorders.READ",
-    "vendorpayments": "ZohoBooks.vendorpayments.READ",
-    "users": "ZohoBooks.users.READ",
-    # Read back to settle a write, and to refuse a duplicate before sending —
-    # so this one is needed by the *write* path even though it is a GET, and it
+    # Quotes. Zoho's noun for the document is "estimate" and the endpoint is
+    # named for it; everything past this module calls it a quote, because the
+    # other connectors do.
+    #
+    # Read back to settle a write, and to refuse a duplicate before sending — so
+    # this one is needed by the *write* path too, even though it is a GET, and it
     # probes like any other read.
     "estimates": "ZohoBooks.estimates.READ",
+    "vendorpayments": "ZohoBooks.vendorpayments.READ",
+    # Credit taken back from a supplier. Its own scope, not `bills` — a
+    # connection that reads bills perfectly still 401s here.
+    "vendorcredits": "ZohoBooks.vendorcredits.READ",
+    "users": "ZohoBooks.users.READ",
 }
 
 #: The same map for the writes, keyed the same way. Separate because a path is
@@ -1209,6 +1219,65 @@ class ZohoApiSource(ZohoTransport):
                 ],
             }
 
+    def list_vendor_credits(self,
+                            skip: Optional[SkipPredicate] = None,
+                            ) -> Iterable[dict[str, Any]]:
+        """Vendor credits, with the bills each was set against.
+
+        Read through ``_documents`` for the same reason ``list_credit_notes``
+        is: ``bills_credited`` lives on the detail payload, the list response
+        carries only ``applied_bills`` as a comma-joined string of bill
+        *numbers* with no amounts, and the detail call is one this helper is
+        already making.
+
+        **Line items are deliberately not passed through**, exactly as on the
+        sell side and for the mirrored reason. A vendor credit's lines would be
+        negative cost against a product, and cost already has one owner in
+        ``CostRecord`` built from bill lines; a second signed source for the
+        same quantity is how two screens start disagreeing about what stock
+        cost. There is a second reason here that the sell side does not have:
+        the lines in these books carry ``bill_item_id: ""``, so they name the
+        item without naming the bill line they correct, and any per-line
+        attribution built on them would be an inference presented as a fact.
+        See ``11-procurement.md`` §3.
+
+        What this pull is for is the *money*, at header and bill grain.
+        """
+        for vc in self._documents("vendorcredits", "vendor_credits",
+                                  "vendor_credit", "vendor_credit_id",
+                                  _EXCLUDED_VENDOR_CREDIT_STATUS, skip=skip):
+            yield {
+                "vendor_credit_id": str(vc.get("vendor_credit_id")),
+                "vendor_credit_number": vc.get("vendor_credit_number"),
+                "vendor_id": (str(vc["vendor_id"]) if vc.get("vendor_id") else None),
+                "date": vc.get("date"),
+                "last_modified_time": vc.get("last_modified_time"),
+                "status": vc.get("status"),
+                "total": vc.get("total"),
+                # What is still unapplied. Zoho's own figure — never derived
+                # from total minus the applications below, because a refund
+                # against the credit would make that subtraction overstate what
+                # the supplier still owes back.
+                "balance": vc.get("balance"),
+                "bills_credited": [
+                    {
+                        "vendor_credit_bill_id": bc.get("vendor_credit_bill_id"),
+                        "bill_id": str(bc.get("bill_id")),
+                        "bill_number": bc.get("bill_number"),
+                        "amount": bc.get("amount"),
+                        # Zoho's own ``date`` on this row is deliberately not
+                        # carried. It is unlabelled and its values track the
+                        # bills rather than the days the document's system
+                        # comments record the credit being applied — see
+                        # ``VendorCreditApplicationIn``. Passing it through
+                        # would invite the next reader to store it as an
+                        # application date.
+                    }
+                    for bc in (vc.get("bills_credited") or [])
+                    if bc.get("bill_id")
+                ],
+            }
+
     def list_vendors(self) -> Iterable[dict[str, Any]]:
         """Suppliers. The same ``contacts`` endpoint, the other contact_type."""
         for v in self._paginate("contacts", "contacts", contact_type="vendor",
@@ -1360,6 +1429,89 @@ class ZohoApiSource(ZohoTransport):
                 "shipped_status": so.get("shipped_status"),
                 "total": so.get("total"),
                 "salesperson_id": so.get("salesperson_id"),
+            }
+
+    def list_quotes(self) -> Iterable[dict[str, Any]]:
+        """Quotes — what was offered, including everything nobody ordered.
+
+        Zoho calls these estimates and the endpoint is named for it; the
+        platform calls them quotes, because NetSuite, Business Central,
+        Acumatica, P21 and Sage do. This is the only place in the pull where
+        that translation happens.
+
+        The demand picture so far starts at the sales order, which is the
+        subset a customer said yes to. That makes a win rate a number with no
+        denominator: an invoiced book cannot show what was quoted and lost, and
+        a loss leaves no trace anywhere. ~290 estimates on this book against
+        the orders that came out of them is the first time the platform can see
+        both halves.
+
+        Header grain, no detail call, for the same reason as sales orders:
+        "what was offered, to whom, for how much, and how did it end" is
+        entirely on the list row. The line breakdown would cost one call per
+        quote to answer questions this does not ask — and when it is worth
+        buying, ``list_vendor_payments`` shows the shape, ``skip`` predicate
+        and all.
+
+        **No status exclusion**, which is the one deliberate divergence from
+        ``list_sales_orders``. A draft sales order is skipped there because it
+        promises nobody anything; a draft *estimate* is quoting activity that
+        really happened, and the classification downstream already keeps every
+        undecided quote — draft, sent, viewed, expired alike — out of every won
+        and lost count by calling it unrecorded. Excluding drafts here would
+        instead destroy the status-and-viewed split that makes the unrecorded
+        pile actionable, invisibly, in a place no reader can audit the
+        judgement.
+
+        Statuses are yielded verbatim. Nothing in this module decides what
+        ``expired`` means.
+        """
+        cutoff = self._cutoff()
+        until = self._until
+        for est in self._paginate("estimates", "estimates",
+                                  sort_column="date", sort_order="D", **self._window()):
+            try:
+                quoted = date.fromisoformat(str(est.get("date") or ""))
+            except ValueError:
+                continue
+            if quoted < cutoff or (until is not None and quoted > until):
+                continue
+            yield {
+                "estimate_id": str(est.get("estimate_id")),
+                "estimate_number": est.get("estimate_number"),
+                # Usually the customer's own enquiry or RFQ number, typed in by
+                # whoever raised the quote. The only string on the row that
+                # points back at inbound demand.
+                "reference_number": est.get("reference_number"),
+                "customer_id": (str(est["customer_id"]) if est.get("customer_id") else None),
+                "customer_name": est.get("customer_name"),
+                "date": est.get("date"),
+                # When the offer lapses. Blank on quotes raised without a
+                # validity, and passed through as-is: an assumed validity would
+                # put a quote on a chase list as overdue on a date nobody set.
+                "expiry_date": est.get("expiry_date"),
+                "status": est.get("status") or "",
+                # The two dates that make a decision usable. Zoho populates
+                # accepted_date on an accepted or invoiced estimate and
+                # declined_date on a declined one; both are blank on everything
+                # else, which is most of the book.
+                "accepted_date": est.get("accepted_date"),
+                "declined_date": est.get("declined_date"),
+                "total": est.get("total"),
+                "currency_code": est.get("currency_code"),
+                "salesperson_id": est.get("salesperson_id"),
+                # When the customer opened it. Distinct from when we sent it,
+                # which this row does not carry at all — reading one as the
+                # other is the benign default this pull keeps refusing.
+                "client_viewed_time": est.get("client_viewed_time"),
+                "branch_id": est.get("branch_id") or est.get("location_id"),
+                # This business's own taxonomy on the quote, verbatim. It was
+                # built by the people quoting; re-deriving any of it from the
+                # lines would be a second answer to a question already
+                # answered on the document.
+                "cf_quote_type": est.get("cf_quote_type"),
+                "cf_pricing_type": est.get("cf_pricing_type"),
+                "cf_procurement_type": est.get("cf_procurement_type"),
             }
 
     def list_vendor_payments(

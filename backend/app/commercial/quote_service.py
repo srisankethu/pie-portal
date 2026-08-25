@@ -32,6 +32,11 @@ from ..domain.enums import (
     QuoteOutcomeStatus,
     Role,
 )
+# The one owner of "which of this ERP's status words mean what", imported
+# rather than copied: a second reading of Zoho's vocabulary here is how
+# ``approved`` — our own internal sign-off — starts meaning the customer said
+# yes in one file and nothing in the other.
+from ..ingestion.normalize import ZOHO, reached_the_customer
 from ..signals.base import UNRECORDED_SOURCE, CostRow, SaleRow
 from .benchmark import ItemBenchmark, compute_benchmark
 from .config import CommercialThresholds
@@ -704,6 +709,142 @@ class MissingLossReason(ValueError):
     """
 
 
+class AmbiguousQuoteDocument(ValueError):
+    """An ERP quote reference that names more than one document.
+
+    Its own type for the reason ``MissingLossReason`` has one: a router has to
+    say something usable about it, and it is not a lifecycle problem or a
+    missing field. It is the caller naming a quote by a reference that does not
+    identify one.
+    """
+
+
+class QuoteOutcomeRepointed(ValueError):
+    """An outcome moved off the ERP quote it was recorded about.
+
+    Its own type for the reason ``MissingLossReason`` has one, and the router
+    is the caller that needs the distinction: this is a conflict with a row
+    that already exists — nothing the caller puts in the body fixes it — while
+    the "names neither document" refusal one guard up is a missing field. A
+    bare ``ValueError`` collapses a 409 and a 422 into one clause.
+    """
+
+
+def sole_erp_quote(session: Session, org: str,
+                    quote_document_ref: str) -> Optional[models.QuoteDoc]:
+    """The one ERP quote this reference names, or ``None`` where it names none.
+
+    **An external reference is unique only inside the system that issued it,
+    and only inside one company of that system** — which is why
+    ``uq_quote_document_source`` is (org, connector, connection_id,
+    external_ref) and not (org, external_ref). Zoho estimate ids happen to be
+    globally unique, so this book is safe today; the connectors in
+    ``ingestion/erp`` read systems whose quote numbers are per-company
+    sequences, and two connected books of one of those will issue the same id
+    twice.
+
+    ``quote_outcomes`` carries the bare reference and no qualifier beside it, so
+    when two documents answer to one reference there is nothing on the human row
+    that could say which. Picking either — which is what a ``session.scalar``
+    over (org, external_ref) does, silently, by row order — writes one person's
+    loss reason, winner and note onto the other person's quote and then hands
+    the next recorder a row that overwrites it in place. So this refuses, and
+    names the books it is torn between.
+
+    That refusal is a real loss of function in a two-book organization with
+    colliding ids: neither quote's outcome can be recorded, not just the second.
+    It is deliberately the trade taken, because the alternative destroys a fact
+    only a person held, silently, and afterwards nothing distinguishes it from a
+    fact that was entered. The durable fix is a qualified pointer — the
+    connection stored beside the reference, the way every document table stores
+    it.
+
+    It is deliberately not built yet, and the capture screen was not enough to
+    build it: two preconditions of the collision both fail, in different
+    packages. ``normalize.normalize_quote_document`` keys ``external_ref`` on
+    ``estimate_id``, Zoho's system-wide record id, not the per-book
+    ``estimate_number`` it carries beside it — so three connected Zoho books
+    issue disjoint id spaces. And no connector in ``ingestion/erp`` implements
+    ``list_quotes`` at all, so the six ERPs whose quote numbers *are*
+    per-company sequences cannot write a ``quote_documents`` row to collide
+    with. The capture screen can echo a qualifier it was handed; it cannot know
+    one, and a column every caller writes NULL into is an ``is not None`` guard
+    around the objection.
+
+    What builds this is the first ``list_quotes`` in ``ingestion/erp`` whose
+    ``external_ref`` is a per-company sequence rather than a system-wide
+    surrogate: that commit knows which field disambiguates and has a caller
+    that can supply it.
+
+    Public rather than private because a second caller now needs the document
+    itself rather than the outcome written from it: ``routers.quote_intelligence``
+    asks whether the principal may record against the quote a reference names,
+    and *which accounts a role may see* is a question ``commercial/`` does not
+    answer. Two resolutions of one reference in a request is the cost, and it is
+    an indexed lookup on the column the human table already points at.
+    """
+    rows = list(session.scalars(
+        select(models.QuoteDoc).where(
+            models.QuoteDoc.organization_id == org,
+            models.QuoteDoc.external_ref == quote_document_ref)).all())
+    if len(rows) > 1:
+        books = ", ".join(sorted(
+            f"{r.connector or 'source not recorded'}/"
+            f"{r.connection_id or 'company not recorded'}" for r in rows))
+        raise AmbiguousQuoteDocument(
+            f"{quote_document_ref!r} names {len(rows)} quotes in this "
+            f"organization ({books}). An ERP reference is unique only inside "
+            "one connected company's book, and a quote outcome records what a "
+            "person knows about one quote — so this one cannot be recorded "
+            "until the reference says which book it came from.")
+    return rows[0] if rows else None
+
+
+def _opening_status(document: Optional[models.QuoteDoc]) -> QuoteOutcomeStatus:
+    """The status a brand-new outcome row starts in, before its transition.
+
+    DRAFT unless the ERP says otherwise, and the ERP says otherwise only
+    through ``normalize.reached_the_customer`` — an allowlist of the status
+    words that are evidence of a send. SENT is a positive claim that this quote
+    was put in front of a customer, and a claim needs evidence: Zoho's
+    ``pending_approval`` and ``approved`` are our own internal sign-off queue,
+    where the estimate demonstrably has *not* been sent, and the shape that gets
+    this wrong is the denylist — "not the word draft, therefore sent" — which
+    reads both as sent and stamps a ``sent_at`` on a quote nobody has seen.
+    That is the §1 tell exactly: the guard belongs around the claim, not around
+    the objection.
+
+    ``document`` is ``None`` for a platform quote — that is what the Quote
+    Builder creates and nothing about it has been sent yet, including a platform
+    quote that also names an ERP document, since the only caller naming both is
+    the one recording the estimate it has this second created — and ``None``
+    again for a reference matching no quote document. The latter is a dangling
+    pointer, an estimate deleted in the ERP or one outside the sync window, and
+    the honest answer to "what did the ERP say about this" is then nothing
+    rather than an assumption.
+
+    Without a SENT opening at all, ``QUOTE_OUTCOME_TRANSITIONS[DRAFT]`` — which
+    allows only SENT and LOST — would force a two-call dance to record a WIN on
+    a quote the ERP can prove was sent, and the first caller to meet that would
+    either relax the transition table or record a fake SENT.
+
+    ``sent_at`` is deliberately left for the transition to fill or not fill.
+    The estimate list row carries no send timestamp at all, and
+    ``client_viewed_at`` is when the *customer opened* it — reading one as the
+    other is precisely the benign default this pull keeps refusing.
+    """
+    if document is None:
+        return QuoteOutcomeStatus.DRAFT
+    # A row with no connector recorded predates the column, and every row that
+    # predates it came from Zoho — the same reading ``normalize``'s own default
+    # takes, and stated here so the default is a decision rather than a fallback
+    # somebody inherits.
+    if reached_the_customer(document.source_status,
+                            system=document.connector or ZOHO):
+        return QuoteOutcomeStatus.SENT
+    return QuoteOutcomeStatus.DRAFT
+
+
 def record_document(session: Session, org: str, *, quote_id: str,
                     external_system: str, number: str, line_count: int,
                     fingerprint: str, reference: str = "",
@@ -751,13 +892,35 @@ def latest_document(session: Session, org: str, *,
         .limit(1)).first()
 
 
-def set_outcome(session: Session, org: str, *, quote_id: str,
+def set_outcome(session: Session, org: str, *, quote_id: Optional[str] = None,
+                quote_document_ref: Optional[str] = None,
                 status: QuoteOutcomeStatus, customer_ref: str = "",
                 customer_id: Optional[str] = None, note: Optional[str] = None,
                 loss_reason: Optional[QuoteLossReason] = None,
                 lost_to: Optional[str] = None,
                 user_id: Optional[str] = None) -> models.QuoteOutcome:
     """Move a quote along DRAFT → SENT → WON/LOST.
+
+    **Two kinds of quote can be named.** ``quote_id`` is a quote this platform
+    priced and holds lines for; ``quote_document_ref`` is the id an ERP gave a
+    quote it raised itself, which is most of the book — the platform never saw
+    those, and until this argument existed there was no way to record why one
+    of them was lost. Extended rather than sibling-ed on purpose: every refusal
+    below is the refusal an ERP-raised quote needs too, and a second writer
+    would be a second place for "a loss must say why" to be forgotten.
+
+    Both may be given, and that is the normal shape for a platform quote that
+    was pushed to the ERP: ``quote_id`` is then the lookup key and
+    ``quote_document_ref`` records which ERP document it became. What is
+    refused is *neither* — an outcome about no document at all — and moving an
+    outcome already recorded against one ERP quote onto a different one.
+
+    ``quote_document_ref`` holds the *source system's* own id — the value in
+    ``quote_documents.external_ref``, never ``quote_document_id``, which is a
+    surrogate minted at insert. That is what makes the harshest rebuild safe:
+    ``quote_documents`` is derived and a full re-sync re-mints every surrogate,
+    while a pointer written as a value still resolves afterwards. What a person
+    typed lives on this table alone, and the sync never opens it.
 
     Won and lost are terminal. Reopening a decided quote would rewrite history a
     margin analysis has already counted, so it is refused rather than silently
@@ -777,6 +940,19 @@ def set_outcome(session: Session, org: str, *, quote_id: str,
     created in — enforced by construction rather than by a guard that has to be
     remembered.
     """
+    if quote_id is None and quote_document_ref is None:
+        # An outcome about nothing. Refused here rather than by a CHECK
+        # constraint: this repo has no CHECK precedent and ``compare_metadata``
+        # does not compare them, so the drift test could never police one —
+        # whereas this function is provably the only thing that writes the
+        # table, which makes a guard on this line as strong as a constraint and
+        # visible to the person who has to satisfy it.
+        raise ValueError(
+            "Recording a quote outcome needs a document to be about: quote_id "
+            "(a quote this platform priced) or quote_document_ref (the id its "
+            "own ERP gave one), or both when a platform quote was pushed to "
+            "the ERP and became one.")
+
     if status is QuoteOutcomeStatus.LOST:
         if loss_reason is None:
             raise MissingLossReason(
@@ -787,18 +963,48 @@ def set_outcome(session: Session, org: str, *, quote_id: str,
                   "customer, and a lost quote with neither recorded cannot be "
                   "counted as either.")
 
+    # Resolved before the lookup and before any write, because on the ERP-only
+    # path the reference *is* the identity: a reference answering to two of this
+    # organization's books identifies no quote at all, and the row it would
+    # otherwise be written onto belongs to somebody else. Not asked on the
+    # platform-quote path — ``quote_id`` is the identity there, the caller has
+    # just created the estimate it names, and refusing a link the ERP write
+    # already made would leave the two tables describing one estimate twice.
+    document = (sole_erp_quote(session, org, quote_document_ref)
+                if quote_id is None and quote_document_ref is not None else None)
+
+    # Looked up by the platform quote when there is one, because that is the
+    # identity the caller holds and the row it may already have written. The
+    # ERP ref is the key only for a quote this platform never priced.
+    key = (models.QuoteOutcome.quote_id == quote_id if quote_id is not None
+           else models.QuoteOutcome.quote_document_ref == quote_document_ref)
     row = session.scalar(
         select(models.QuoteOutcome).where(
-            models.QuoteOutcome.organization_id == org,
-            models.QuoteOutcome.quote_id == quote_id))
+            models.QuoteOutcome.organization_id == org, key))
 
     if row is None:
         row = models.QuoteOutcome(
             organization_id=org, quote_id=quote_id,
+            quote_document_ref=quote_document_ref,
             customer_ref=customer_ref[:255], customer_id=customer_id,
-            status=QuoteOutcomeStatus.DRAFT.value)
+            status=_opening_status(document).value)
         session.add(row)
         session.flush()
+
+    # Refused before a single field is written, so a rejected call leaves the
+    # row exactly as it was rather than half-moved in the session.
+    #
+    # The loss reason, the winner and the decision on this row were recorded
+    # about one quote; silently repointing them at another would produce a loss
+    # nobody entered against a customer nobody spoke to, and afterwards it is
+    # indistinguishable from a real one.
+    if (quote_document_ref is not None
+            and row.quote_document_ref not in (None, quote_document_ref)):
+        raise QuoteOutcomeRepointed(
+            f"This outcome already describes ERP quote "
+            f"{row.quote_document_ref}; it cannot be moved onto "
+            f"{quote_document_ref}. Record the second quote's outcome "
+            "against its own reference.")
 
     current = QuoteOutcomeStatus(row.status)
     if status is not current and status not in QUOTE_OUTCOME_TRANSITIONS[current]:
@@ -816,6 +1022,31 @@ def set_outcome(session: Session, org: str, *, quote_id: str,
         # quote carry a stale reason from an earlier attempt at the form.
         row.loss_reason = loss_reason.value if loss_reason else None
         row.lost_to = (lost_to or "").strip()[:255] or None
+    if quote_document_ref is not None and row.quote_document_ref is None:
+        # Both keys on one row is the *normal* shape for a platform quote that
+        # was pushed to the ERP, and it is the only thing that stops the same
+        # quote being counted twice — once from the row a person wrote and once
+        # from the document the pull read.
+        #
+        # But the reference is unique per organization, and the guard above only
+        # checks *this* row's claim to it. Another row may already hold it —
+        # somebody recorded the ERP quote from the Unanswered worklist before
+        # the platform quote was pushed — and writing it here raised an
+        # IntegrityError at the outer commit, after the Zoho estimate had been
+        # created, rolling the whole request back with a 500. Checked here, it
+        # is the domain refusal the caller already handles.
+        held = session.scalars(
+            select(models.QuoteOutcome).where(
+                models.QuoteOutcome.organization_id == org,
+                models.QuoteOutcome.quote_document_ref == quote_document_ref,
+                models.QuoteOutcome.quote_outcome_id
+                != row.quote_outcome_id)).first()
+        if held is not None:
+            raise QuoteOutcomeRepointed(
+                f"ERP quote {quote_document_ref} already has a recorded "
+                f"outcome of its own. Record this quote's outcome against its "
+                f"own reference, or correct the existing row.")
+        row.quote_document_ref = quote_document_ref
     if note is not None:
         row.note = note[:1024]
     if customer_ref:
@@ -833,6 +1064,9 @@ def outcome_to_dict(row: Optional[models.QuoteOutcome]) -> Optional[dict]:
         return None
     return {
         "quote_id": row.quote_id,
+        # The ERP's own id for the quote this outcome is about, where the
+        # outcome is about one. Null on a quote this platform priced itself.
+        "quote_document_ref": row.quote_document_ref,
         "status": row.status,
         "note": row.note,
         # Null means the loss predates the field being asked for — not that

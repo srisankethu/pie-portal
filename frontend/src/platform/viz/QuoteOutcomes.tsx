@@ -20,16 +20,9 @@
 
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
-import Dialog from "@mui/material/Dialog";
-import DialogActions from "@mui/material/DialogActions";
-import DialogContent from "@mui/material/DialogContent";
-import DialogContentText from "@mui/material/DialogContentText";
-import DialogTitle from "@mui/material/DialogTitle";
 import LinearProgress from "@mui/material/LinearProgress";
-import MenuItem from "@mui/material/MenuItem";
 import Paper from "@mui/material/Paper";
 import Stack from "@mui/material/Stack";
-import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 import { useSnackbar } from "notistack";
 import { useMemo, useState } from "react";
@@ -41,6 +34,7 @@ import type { QuoteLossReason, QuoteOutcomeStatus } from "../../types";
 import { abilityFor } from "../ability";
 import { papi } from "../api";
 import { DataGrid, numeric, text } from "../DataGrid";
+import { RecordOutcomeDialog, type LossChoice } from "../RecordOutcomeDialog";
 import type { ColDef } from "../DataGrid";
 import { EntityName } from "../EntityName";
 import {
@@ -131,9 +125,22 @@ function OutcomePanel({
 }) {
   const [slice, setSlice] = useState("customers");
   const [recording, setRecording] = useState<AwaitingRow | null>(null);
+  const { enqueueSnackbar } = useSnackbar();
 
   const reasons = rows(data?.reasons);
   const catalogue = (data?.reason_catalogue as Record<string, Record<string, string>>) ?? {};
+  // The server's catalogue in the shape the shared dialog reads. Mapped at the
+  // call site rather than taught to the dialog, because the other caller has no
+  // catalogue at all and one payload shape is not the general case.
+  const lossChoices = useMemo<LossChoice[]>(
+    () => Object.entries(catalogue)
+      .filter(([code]) => code !== "NOT_RECORDED")
+      .map(([code, entry]) => ({
+        code: code as QuoteLossReason,
+        label: entry.label ?? code,
+        meaning: entry.meaning,
+      })),
+    [catalogue]);
   const owners = (data?.owners as Record<string, string>) ?? {};
   const decided = num(data?.decided);
   const winRate = maybe(data?.win_rate);
@@ -357,114 +364,40 @@ function OutcomePanel({
         </Box>
       </Paper>
 
+      {/* One dialog, shared with the unanswered-quotes worklist — see
+          `platform/RecordOutcomeDialog.tsx`. The choices come from this
+          endpoint's own catalogue rather than the client's default list,
+          because a vocabulary the server sends cannot drift from the rule the
+          server enforces; `NOT_RECORDED` is filtered out because it is a
+          reading state for losses decided before the vocabulary existed, never
+          something to write. */}
       <RecordOutcomeDialog
-        quote={recording}
-        catalogue={catalogue}
-        session={session}
+        open={recording !== null}
+        title={`What happened to ${recording?.quote_id ?? "this quote"}?`}
+        summary={recording ? (
+          <>
+            {recording.customer_label} · {money(recording.value)} quoted across{" "}
+            {recording.lines} line{recording.lines === 1 ? "" : "s"}. A decided
+            quote cannot be reopened, because a margin analysis has already
+            counted it.
+          </>
+        ) : undefined}
+        allow={recording?.allowed_next ?? []}
+        choices={lossChoices}
         onClose={() => setRecording(null)}
-        onRecorded={() => { setRecording(null); reload(); }}
+        onRecord={async (status, lossReason, note) => {
+          if (!recording) return;
+          await intelligence.outcome(
+            session.token, recording.quote_id, status, recording.customer_label,
+            note, lossReason);
+          enqueueSnackbar(
+            `${recording.quote_id} recorded as ${status.toLowerCase()}`,
+            { variant: "success" });
+          setRecording(null);
+          reload();
+        }}
       />
     </Stack>
-  );
-}
-
-// ── recording an outcome ────────────────────────────────────────────────────
-//
-// Won is one click. Lost asks why, from the server's own list, and the free
-// text sits underneath rather than instead of it: the code is what makes a loss
-// countable, the note is what stops the code being a lie when the real answer
-// was "their buyer left".
-
-function RecordOutcomeDialog({
-  quote, catalogue, session, onClose, onRecorded,
-}: {
-  quote: AwaitingRow | null;
-  catalogue: Record<string, Record<string, string>>;
-  session: PlatformSession;
-  onClose: () => void;
-  onRecorded: () => void;
-}) {
-  const [status, setStatus] = useState<QuoteOutcomeStatus>("WON");
-  const [reason, setReason] = useState<QuoteLossReason | "">("");
-  const [note, setNote] = useState("");
-  const [busy, setBusy] = useState(false);
-  const { enqueueSnackbar } = useSnackbar();
-
-  // The catalogue carries a bucket for losses recorded before the vocabulary
-  // existed. It is a reading state, never something to write, so it is not
-  // offered here.
-  const choices = Object.entries(catalogue).filter(([code]) => code !== "NOT_RECORDED");
-
-  async function save() {
-    if (!quote) return;
-    setBusy(true);
-    try {
-      await intelligence.outcome(
-        session.token, quote.quote_id, status, quote.customer_label,
-        note.trim() || undefined,
-        status === "LOST" ? (reason as QuoteLossReason) : undefined);
-      enqueueSnackbar(`${quote.quote_id} recorded as ${status.toLowerCase()}`,
-                      { variant: "success" });
-      setStatus("WON"); setReason(""); setNote("");
-      onRecorded();
-    } catch (e) {
-      enqueueSnackbar(e instanceof Error ? e.message : "Could not record that outcome",
-                      { variant: "error" });
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <Dialog open={quote !== null} onClose={busy ? undefined : onClose} fullWidth
-            maxWidth="sm">
-      <DialogTitle>What happened to {quote?.quote_id}?</DialogTitle>
-      <DialogContent>
-        <DialogContentText sx={{ mb: 2 }}>
-          {quote?.customer_label} · {money(quote?.value ?? 0)} quoted across{" "}
-          {quote?.lines ?? 0} line{quote?.lines === 1 ? "" : "s"}. A decided quote
-          cannot be reopened, because a margin analysis has already counted it.
-        </DialogContentText>
-        <Stack spacing={2}>
-          <TextField
-            select fullWidth label="Outcome" value={status}
-            onChange={(e) => setStatus(e.target.value as QuoteOutcomeStatus)}
-          >
-            {(quote?.allowed_next ?? ["WON", "LOST"])
-              .filter((s) => s === "WON" || s === "LOST")
-              .map((s) => (
-                <MenuItem key={s} value={s}>{s === "WON" ? "Won" : "Lost"}</MenuItem>
-              ))}
-          </TextField>
-          {status === "LOST" && (
-            <TextField
-              select fullWidth required label="Why we lost it" value={reason}
-              onChange={(e) => setReason(e.target.value as QuoteLossReason)}
-              helperText={reason ? catalogue[reason]?.meaning
-                : "A loss without a reason can be counted and never learned from."}
-            >
-              {choices.map(([code, entry]) => (
-                <MenuItem key={code} value={code}>{entry.label}</MenuItem>
-              ))}
-            </TextField>
-          )}
-          <TextField
-            fullWidth multiline minRows={2} label="Note (optional)"
-            value={note} onChange={(e) => setNote(e.target.value)}
-            helperText="What the list cannot say — the PO number, who took it, what they asked for."
-          />
-        </Stack>
-      </DialogContent>
-      <DialogActions>
-        <Button onClick={onClose} disabled={busy}>Cancel</Button>
-        <Button
-          variant="contained" onClick={save}
-          disabled={busy || (status === "LOST" && !reason)}
-        >
-          {busy ? "Recording…" : "Record"}
-        </Button>
-      </DialogActions>
-    </Dialog>
   );
 }
 

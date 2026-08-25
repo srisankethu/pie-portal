@@ -376,6 +376,15 @@ EXPECTED_POLICIED = {
     # this and does not need an exemption.
     "inbound_lines", "inbound_line_dispositions", "quote_documents",
     "queued_messages",
+    # d5rls — the mirror of the four above, from the other side of the same
+    # merge: tables a branch added while these policies were being written.
+    # `erp_quotes` is the demand side of the business in one table; the two
+    # vendor-credit tables say who supplies this book and where the
+    # relationship went wrong; and `threshold_versions` holds the *pre-image*
+    # of every policy stamp, which is this organization's margin floors in
+    # readable form.
+    "erp_quotes", "threshold_versions",
+    "vendor_credits", "vendor_credit_applications",
     # e1org — the grants and the commercial relationship. A neighbouring tenant
     # reading either would learn who works for this business and what they are
     # paying, so both take the ordinary shape. The *widened* half of that

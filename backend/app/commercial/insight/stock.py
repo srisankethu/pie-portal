@@ -15,11 +15,19 @@ This is the one finding on this screen that is *already* a decision.
 the date of the last sale attached so a person can make the judgement.
 
 **No reorder point.** Zoho's ``reorder_level`` is blank on most of this book's
-items. That is a real finding about the master data, and it is reported as one.
-It is *not* substituted with a computed reorder point: a reorder level is a
+items — and this line used to stop there, which under-stated it.
+``08-intermittent-demand.md`` measured it: **0 of 3,200 SLS items and 0 of 473
+active 4U items**, so not most but *all*. That makes ``BELOW_REORDER`` a group
+that cannot contain a row and ``below_reorder`` a predicate that is structurally
+``False`` — and an empty group reads as good news unless something says
+otherwise. So the group now carries ``empty_means``, and the count is a headline
+card rather than a note at the foot of the screen.
+
+It is still *not* substituted with a computed reorder point: a reorder level is a
 policy somebody chooses with lead time and service level in mind, and inventing
 one here would be the platform making a commercial decision in a module whose
-whole purpose is not to.
+whole purpose is not to. Reporting that nobody has chosen one is the opposite of
+choosing on their behalf.
 
 **Cover, as a measurement rather than a projection.** ``days_of_cover`` is on
 every row: what is on the shelf divided by the rate this item has actually moved
@@ -531,6 +539,16 @@ def build(lines: Iterable[StockLine], as_of: date, c: Carrying, *,
     idle.sort(key=lambda r: (r.idle_days(as_of) is None, r.idle_days(as_of) or 0),
               reverse=True)
 
+    # Whether ``BELOW_REORDER`` is *able* to hold a row. Not the same question
+    # as whether it does: `08-intermittent-demand.md` measured 0 of 3,673 items
+    # across both entities with a reorder level set, so the group is empty
+    # because the predicate behind it is structurally ``False`` — and the screen
+    # rendered that as "Nothing here. That is the good answer." A count of zero
+    # over a population of zero is not a finding about stock, and reading it as
+    # one is the `absence of evidence is not a pass` mistake with a green chip
+    # on it.
+    no_reorder_policy_at_all = bool(rows) and len(no_policy) == len(rows)
+
     groups = [
         {
             "key": "OVERSOLD",
@@ -541,6 +559,10 @@ def build(lines: Iterable[StockLine], as_of: date, c: Carrying, *,
                         "re-promised."),
             "items": [r.to_dict(as_of, c, with_cost=with_cost) for r in oversold[:40]],
             "count": len(oversold),
+            # Empty here means Zoho's own netting found nothing over-committed,
+            # which is the good answer. Only ``BELOW_REORDER`` can be empty for
+            # a reason that is not.
+            "empty_means": None,
         },
         {
             "key": "BELOW_REORDER",
@@ -550,6 +572,16 @@ def build(lines: Iterable[StockLine], as_of: date, c: Carrying, *,
                         "assumed to reorder at zero."),
             "items": [r.to_dict(as_of, c, with_cost=with_cost) for r in below[:40]],
             "count": len(below),
+            # The sentence that stops an empty group reading as good news. It
+            # is supplied by the server rather than decided by the client
+            # because the client cannot know *why* the list is empty — it holds
+            # the group, not the population behind it.
+            "empty_means": (
+                (f"Empty because no item has a reorder point at all — "
+                 f"0 of {len(rows)} carry one in Zoho. Nothing can be below a "
+                 "point that does not exist, so this is a statement about the "
+                 "stocking policy on record, not about the shelf.")
+                if no_reorder_policy_at_all else None),
         },
         {
             "key": "IDLE",
@@ -559,6 +591,7 @@ def build(lines: Iterable[StockLine], as_of: date, c: Carrying, *,
                         "person who knows the line."),
             "items": [r.to_dict(as_of, c, with_cost=with_cost) for r in idle[:40]],
             "count": len(idle),
+            "empty_means": None,
         },
         {
             "key": "UNKNOWN",
@@ -572,6 +605,7 @@ def build(lines: Iterable[StockLine], as_of: date, c: Carrying, *,
                         "largest thing in it."),
             "items": [r.to_dict(as_of, c, with_cost=with_cost) for r in unknown[:40]],
             "count": len(unknown),
+            "empty_means": None,
         },
     ]
 
@@ -598,13 +632,19 @@ def build(lines: Iterable[StockLine], as_of: date, c: Carrying, *,
     on_shelf.sort(key=lambda r: (r.monthly_holding_cost(c) is None,
                                  -(r.monthly_holding_cost(c) or 0.0)))
     items = [r.to_dict(as_of, c, with_cost=with_cost) for r in on_shelf]
+    # Counted over the shelf, not the book, for the reason the drill-through
+    # contract demands: pressing the card narrows *this grid*, and the grid is
+    # the shelf. ``counts["no_reorder_point"]`` stays book-wide because the
+    # note it feeds is about the book. Two populations, two labels that say so.
+    shelf_no_policy = sum(1 for r in on_shelf if r.reorder_level is None)
 
     return {
         "as_of": as_of.isoformat(),
         "groups": groups,
         "counts": counts,
         "items": items,
-        "kpis": _kpis(on_shelf, as_of, c, with_cost=with_cost),
+        "kpis": _kpis(on_shelf, as_of, c, with_cost=with_cost,
+                      no_policy=shelf_no_policy),
         "filters": FILTERS,
         "idle_after_days": c.slow_days,
         "dead_after_days": c.dead_days,
@@ -636,6 +676,10 @@ FILTERS: list[dict] = [
      "op": "gte_or_null", "value": 365},
     {"key": "NEVER_SOLD", "label": "Never sold", "field": "last_sold",
      "op": "is_null", "value": None},
+    # What the headline card narrows to. ``reorder_level`` is on every row of
+    # the grid already, so this needs no round trip and no new field.
+    {"key": "NO_REORDER_POINT", "label": "No reorder point",
+     "field": "reorder_level", "op": "is_null", "value": None},
     {"key": "UNKNOWN", "label": "Too new to judge", "field": "health",
      "op": "eq", "value": UNKNOWN},
     {"key": "OVERSOLD", "label": "Committed beyond stock", "field": "oversold",
@@ -651,7 +695,7 @@ FILTERS: list[dict] = [
 
 
 def _kpis(rows: list[StockLine], as_of: date, c: Carrying, *,
-          with_cost: bool) -> list[dict]:
+          with_cost: bool, no_policy: int = 0) -> list[dict]:
     """The summary cards, each one clickable through to the rows behind it.
 
     Every card carries the filter that produced it, so pressing one narrows the
@@ -693,6 +737,28 @@ def _kpis(rows: list[StockLine], as_of: date, c: Carrying, *,
             {"key": "DEAD_DRAIN", "label": f"From stock idle {c.dead_days}+ days",
              "value": round(dead_monthly, 2), "unit": "money", "filter": "DEAD",
              "note": "The part of that drain nothing is currently selling."})
+    # Ahead of the other counts on purpose. `08-intermittent-demand.md` measured
+    # 0 of 3,673 items with a reorder level set and said this "is no longer a
+    # data-quality footnote — it is the finding that this business has no
+    # stocking policy recorded anywhere, for anything, and it belongs on the
+    # screen as a headline." It was a footnote: a line in ``unavailable`` at the
+    # bottom, under a group whose emptiness read as good news.
+    #
+    # Suppressed at zero rather than shown as a triumphant 0, because a card
+    # that disappears when the work is done is the honest shape for a
+    # COLLECTABLE — and a book that has set them all should not carry a
+    # permanent reminder that it did.
+    if no_policy:
+        every = no_policy == len(rows)
+        cards.append(
+            {"key": "NO_REORDER_POINT", "label": "No reorder point set",
+             "value": no_policy, "unit": "count", "filter": "NO_REORDER_POINT",
+             "note": (("Every line on the shelf. Nothing can appear below a "
+                       "reorder point, so that group is empty by construction.")
+                      if every else
+                      (f"Of {len(rows)} lines on the shelf. They are excluded "
+                       "from the reorder group, never assumed to reorder at "
+                       "zero."))})
     cards.append(
         {"key": "DEAD_COUNT", "label": "Lines gone quiet",
          "value": len(dead), "unit": "count", "filter": "DEAD",

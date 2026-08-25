@@ -267,9 +267,15 @@ def quote_support(
                            metrics=_flat_metrics(assembled),
                            subject_label=bundle.subject_ref.get("label", ""))
         rehydrate.result(result, bundle.display_names)
-        disclosure.log_result(session, organization_id=org,
-                              decision_type="QUOTE_CONTEXT", result=result)
-        tel_repo.record(result.telemetry)
+        # Telemetry first and flushed, so the payload carries the id of the
+        # call it belongs to — see `disclosure.log_result`.
+        call_log = tel_repo.record(result.telemetry)
+        if call_log is not None:
+            session.flush()
+        disclosure.log_result(
+            session, organization_id=org, decision_type="QUOTE_CONTEXT",
+            result=result,
+            ai_call_log_id=call_log.ai_call_log_id if call_log else None)
         interp = {"status": result.status.value, "title": result.concise_title,
                   "recommendation": result.recommended_action or None,
                   "explanation": result.explanation, "caveat": result.caveat,

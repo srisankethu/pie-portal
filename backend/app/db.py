@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 
 from sqlalchemy import create_engine, event
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from .config import settings
@@ -69,6 +70,59 @@ engine = create_engine(settings.DATABASE_URL, echo=settings.SQL_ECHO, future=Tru
                        **_engine_kwargs(settings.DATABASE_URL))
 
 
+def _same_database(privileged: str, serving: str) -> bool:
+    """Whether two URLs name the same database, ignoring who connects as whom.
+
+    The *point* of a second URL is a different role; a different host, port or
+    database name is a mistake, and one that would surface as rows that are
+    intermittently absent depending on which code path asked. Compared here
+    rather than trusted, because the failure is quiet and the check is four
+    fields.
+    """
+    left, right = make_url(privileged), make_url(serving)
+    return (left.host, left.port, left.database) == (right.host, right.port,
+                                                     right.database)
+
+
+# The connection that serves HTTP requests, which is not always the one above.
+#
+# This is a second *engine*, not a second declarative base — the distinction is
+# the whole of CLAUDE.md §4's "one engine, one Base" rule, whose stated reason
+# is that a second base gives Alembic a metadata object it never sees and half
+# the models silently never get migrations. There is still exactly one `Base`,
+# one `metadata`, and one URL that Alembic is ever pointed at. What is split is
+# *who connects*, and it is split because PostgreSQL row-level security is
+# decided by the role: a privileged role ignores every policy, and a
+# tenant-scoped one cannot run the migrations or the cross-tenant background
+# jobs. See `settings.APP_DATABASE_URL`.
+#
+# Unset — the default, and what dev, the whole test suite and every existing
+# deployment do — this is the same engine and the same sessionmaker, by
+# identity rather than by an equivalent copy. A second pool against the same
+# database for no reason is 15 more connections per worker against a stock
+# `max_connections` of 100.
+if settings.APP_DATABASE_URL is None:
+    app_engine = engine
+else:
+    if not settings.APP_DATABASE_URL.startswith("postgresql"):
+        raise RuntimeError(
+            "APP_DATABASE_URL must be a PostgreSQL URL. Its only purpose is to "
+            "serve requests as a role that row-level security applies to, and "
+            "no other dialect this codebase supports has policies at all — so "
+            "any other value silently buys nothing while splitting the pool.")
+    if not _same_database(settings.DATABASE_URL, settings.APP_DATABASE_URL):
+        raise RuntimeError(
+            "APP_DATABASE_URL and DATABASE_URL name different databases "
+            f"({make_url(settings.APP_DATABASE_URL).database!r} vs "
+            f"{make_url(settings.DATABASE_URL).database!r}). They are two roles "
+            "on one database, never two databases; requests and background "
+            "jobs reading different data is not a configuration this "
+            "application has.")
+    app_engine = create_engine(settings.APP_DATABASE_URL, echo=settings.SQL_ECHO,
+                               future=True,
+                               **_engine_kwargs(settings.APP_DATABASE_URL))
+
+
 @event.listens_for(engine, "connect")
 def _sqlite_pragmas(dbapi_connection, _record) -> None:
     """Make SQLite survive one process doing a long write while others read.
@@ -108,10 +162,35 @@ def _sqlite_pragmas(dbapi_connection, _record) -> None:
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False,
                             future=True, class_=Session)
 
+#: Sessions for the request path, when the serving role has been split out —
+#: see ``app_engine`` above. ``None`` when it has not, which is the default and
+#: what every existing deployment, dev and the test suite run on. Background
+#: jobs, CLIs and Alembic keep using ``SessionLocal`` either way, deliberately:
+#: they work across tenants and a tenant-scoped role could not.
+AppSessionLocal = (None if app_engine is engine else
+                   sessionmaker(bind=app_engine, autoflush=False,
+                                expire_on_commit=False, future=True,
+                                class_=Session))
+
 
 def get_session() -> Iterator[Session]:
     """FastAPI dependency: a scoped session, committed on success, rolled back on error."""
-    session = SessionLocal()
+    # ``SessionLocal`` is read through the module at call time rather than
+    # captured, and ``AppSessionLocal`` is None rather than an alias for it.
+    #
+    # Aliasing looked tidier and was wrong: several tests build a database at a
+    # temp path and rebind ``db.SessionLocal`` to a sessionmaker over it. An
+    # alias captured at *import* still pointed at the original engine, so the
+    # requests those tests made were served from a database the migrations had
+    # not touched. It surfaced as `no such table: audit_chain_heads` on login —
+    # a schema error from a test whose whole subject is that bootstrap leaves a
+    # working schema behind, which is about as misleading as a failure gets.
+    #
+    # So when nothing is split this resolves to exactly the name it always did,
+    # and a rebind is seen. When something is split, a test that wants the
+    # serving pool redirected has to say so — which is correct, because at that
+    # point there really are two.
+    session = (AppSessionLocal or SessionLocal)()
     try:
         yield session
         session.commit()

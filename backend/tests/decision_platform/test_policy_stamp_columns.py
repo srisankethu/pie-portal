@@ -116,16 +116,25 @@ def test_the_stamp_markers_name_a_kind_the_registry_understands():
 
 
 def test_the_expected_stamped_tables_are_all_still_marked():
-    """The eight tables that carry a threshold stamp, pinned by name.
+    """The ten tables that carry a threshold stamp, pinned by name.
 
     Pinned so that *removing* a marker fails too. The check above only notices a
     column nobody classified; silently deleting an ``info=`` would leave a
     perfectly classified column that the recorder no longer sees.
+
+    Two arrived in a merge and are the reason this list is worth pinning rather
+    than deriving. ``quote_documents`` records a quote written into a source
+    system and keeps the commercial policy in force when it went out;
+    ``audit_entries`` is the signed, append-only log and carries **either**
+    stamp, reading the kind off the value's own prefix. Both were stamped and
+    unmarked, so the values behind those stamps were not being recorded — an
+    audit trail of hashes, which is the state the registry exists to end.
     """
     assert STAMPED_TABLES == {
         "customer_item_metrics", "signals", "approval_requests",
         "quote_decisions", "outcome_snapshots", "value_events",
         "evaluation_baselines", "business_states",
+        "quote_documents", "audit_entries",
     }
 
 

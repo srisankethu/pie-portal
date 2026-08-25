@@ -103,7 +103,7 @@ scratchpad.
 cost or margin field.**
 
 **POST surfaces exercised** (not in the GET sweep, and where the leak actually
-is): `/api/quotes`, `/api/quotes/{id}/intake`, `/api/quotes/{id}/lines/{id}/price`,
+is): `/api/v1/quotes`, `/api/v1/quotes/{id}/intake`, `/api/v1/quotes/{id}/lines/{id}/price`,
 `/api/v1/insight/negotiate`, `/api/v1/quote-intelligence/assess`,
 `/api/v1/quote-intelligence/snapshot`, `/api/v1/approvals/quote-line`,
 `/api/v1/decisions/{id}/action`.
@@ -182,8 +182,8 @@ computes `"MFLOOR": sum(1 for ln in self.lines if ln.economics().below_floor)`
 `marginFloor` two lines earlier. It flips as the price crosses the floor:
 
 ```
-POST /api/quotes/q17/lines/l18/price {"price":555} → filterCounts.MFLOOR = 0
-POST /api/quotes/q17/lines/l18/price {"price":400} → filterCounts.MFLOOR = 1
+POST /api/v1/quotes/q17/lines/l18/price {"price":555} → filterCounts.MFLOOR = 0
+POST /api/v1/quotes/q17/lines/l18/price {"price":400} → filterCounts.MFLOOR = 1
 ```
 
 Twenty bisection probes recover the exact floor price of a line the product
@@ -230,8 +230,8 @@ or vary the multiplier per item rather than per family (channel 1); move
 Evidence and reproduction in §3. Three channels; ₹349, ₹372 and ₹420 all
 recovered exactly from salesperson-only responses and confirmed against
 `cost_records`. Endpoints: `POST /api/v1/insight/negotiate` (`floor_price`),
-`POST /api/quotes/{id}/lines/{id}/price` (`filterCounts.MFLOOR`),
-`POST /api/quotes/{id}/intake` (`lines[].recommended`).
+`POST /api/v1/quotes/{id}/lines/{id}/price` (`filterCounts.MFLOOR`),
+`POST /api/v1/quotes/{id}/intake` (`lines[].recommended`).
 Expected: no served number from which cost or margin can be derived.
 
 **F2 · A line priced below cost passes as "within policy" and can be sent —

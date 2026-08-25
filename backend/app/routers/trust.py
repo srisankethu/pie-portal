@@ -8,6 +8,9 @@ take on faith.
   ``GET  /trust/disclosure``   what reaches a model, and what never does
   ``GET  /trust/payloads``     the actual text sent, decrypted for its owner
   ``GET  /trust/access``       every time our staff opened this tenant, and why
+  ``GET  /trust/audit``        the hash-chained record of who acted, and how
+  ``GET  /trust/audit/verify`` whether that chain has been altered
+  ``GET  /trust/audit/export`` the chain as JSON or CSV, re-verifiable elsewhere
   ``GET  /trust/export``       everything, as JSON, to take elsewhere
   ``GET  /trust/erasure``      whether this tenant was erased, with the receipt
   ``POST /trust/erasure``      destroy the data key and issue that receipt
@@ -26,13 +29,14 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from .. import clock
 from ..authz import Principal, require_owner
 from ..db import get_session
-from ..trust import access, disclosure, erasure, keys
+from ..trust import access, audit, disclosure, erasure, keys
 
 log = logging.getLogger("pie_portal.trust")
 
@@ -110,6 +114,83 @@ def get_access(limit: int = Query(200, ge=1, le=500),
                  "automatically. Every entry above is recorded at the moment it "
                  "happens and cannot be edited or removed."),
     }
+
+
+# ── who acted, in order, provably ───────────────────────────────────────────
+#
+# OWNER-only, like everything else on this router, and here the gate is load
+# bearing rather than conventional. §1: cost and margin never reach a
+# salesperson, and this chain carries a policy transition — the margin floor
+# before and after somebody edited it. That is the tightest classification of
+# anything it records, so it sets the gate for all of it.
+#
+# The alternative — filtering the list per role so a manager sees the entries
+# they are cleared for — was rejected. A per-role projection of an audit log is
+# a second place the redaction rules have to be right, and the one place nobody
+# tests, because the tests that matter are about the entries being *present*.
+# Worse, a filtered chain does not verify: the links between the entries a role
+# may not see are exactly the links a verifier walks. An audit surface that
+# hands out a chain it says is unbroken while withholding the middle of it
+# would be a worse lie than not offering it at all.
+
+@router.get("/audit")
+def get_audit(limit: int = Query(200, ge=1, le=1000),
+              action: str = Query("", description="One action, e.g. POLICY_CHANGED"),
+              principal: Principal = Depends(require_owner),
+              session: Session = Depends(get_session)) -> dict:
+    """The chain for this organization, newest first, with its verdict.
+
+    The verdict is computed over the *whole* chain, not over the page returned:
+    "has anything been altered" is a question about the history, and answering
+    it from the two hundred rows somebody happened to ask for would report a
+    clean bill for a tampered log the moment the tamper scrolled off the page.
+    """
+    rows = audit.entries_for(session, principal.organization_id,
+                             limit=limit, action=(action or None))
+    return {
+        "verification": audit.verify(session, principal.organization_id),
+        "counts": audit.actions_seen(rows),
+        "entries": [dict(audit.covered_body(row),
+                         entry_id=row.entry_id, entry_hash=row.entry_hash)
+                    for row in rows],
+        "note": ("Each entry names the hash of the one before it. Altering a row "
+                 "invalidates it and every row after it, and the hashes are keyed "
+                 "by a secret that is not in the database — so this is a record "
+                 "we cannot quietly edit either. Take a copy from "
+                 "/trust/audit/export and check it yourself."),
+    }
+
+
+@router.get("/audit/verify")
+def get_audit_verify(principal: Principal = Depends(require_owner),
+                     session: Session = Depends(get_session)) -> dict:
+    """Walk the chain and report the first break, or that there is none.
+
+    Its own endpoint as well as a field on the list above, because this is the
+    one somebody polls. A break is an incident, and an incident check should not
+    have to download two hundred entries to reach its answer.
+    """
+    return audit.verify(session, principal.organization_id)
+
+
+@router.get("/audit/export")
+def get_audit_export(fmt: str = Query("json", pattern="^(json|csv)$"),
+                     principal: Principal = Depends(require_owner),
+                     session: Session = Depends(get_session)):
+    """The whole chain, in a form a third party can re-check without us.
+
+    Both formats carry every field the signature covers plus the signature
+    itself, and the JSON one carries the method statement as well — the point of
+    an audit log is that somebody who does not trust us can accept it, and they
+    can only do that if they can recompute what we claim.
+    """
+    if fmt == "csv":
+        return PlainTextResponse(
+            audit.export_csv(session, principal.organization_id),
+            media_type="text/csv",
+            headers={"Content-Disposition":
+                     f'attachment; filename="audit-{principal.organization_id}.csv"'})
+    return audit.export_json(session, principal.organization_id)
 
 
 # ── take it with you ────────────────────────────────────────────────────────

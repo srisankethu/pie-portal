@@ -36,19 +36,14 @@ of would be unreadable exactly when it is needed.
 """
 from __future__ import annotations
 
-import hashlib
-import hmac
-import json
 from datetime import datetime, timezone
 from typing import Any, Optional
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .. import clock
-from ..config import settings
 from ..domain import models
-from . import keys, vault
+from . import keys, signing, vault
 
 #: Tables that belong to a tenant, in the export. Explicit rather than derived
 #: from the metadata: a new table must be a deliberate decision to include or
@@ -88,7 +83,7 @@ EXPORTED: tuple[tuple[str, Any], ...] = (
     # trading record with us, and an export holding every order while
     # withholding the quotes behind them would hand back the half that closed
     # and hide the half that did not.
-    ("quote_documents", models.QuoteDoc),
+    ("erp_quotes", models.QuoteDoc),
     # Which orders each invoice billed against. Exported rather than excluded:
     # it is this customer's own trading record, and an export holding the orders
     # and the invoices but not the joins between them would hand back two lists
@@ -165,6 +160,12 @@ EXPORTED: tuple[tuple[str, Any], ...] = (
     ("quote_drafts", models.QuoteDraft),
     ("quote_decisions", models.QuoteDecision),
     ("quote_outcomes", models.QuoteOutcome),
+    # Which quotes went out, into whose ledger, under which document number.
+    # Exported rather than excluded as "derived": a re-sync rebuilds what the
+    # source system holds, not the fact that *this* platform wrote it there on
+    # a given day under a given policy. For a customer reconciling their own
+    # records against ours, that is the row that matches the two up.
+    ("quote_documents", models.QuoteDocument),
     ("outcomes", models.Outcome),
     # The baseline frozen when a recommendation was accepted. Exported rather
     # than excluded as "derived": the whole point of the capture is that a
@@ -195,6 +196,39 @@ EXPORTED: tuple[tuple[str, Any], ...] = (
     # that is visible while you are a customer and gone the moment you leave is
     # a trust surface with an expiry date on it.
     ("ai_call_logs", models.AiCallLog),
+    # The chain: who acted on this organization, when, and under which policy
+    # stamp. Exported, and the decision is worth its reasoning because both
+    # answers are arguable.
+    #
+    # *Exported*, because it is the same class of record as the three entries
+    # around it and ``trust/access.py`` already states the principle: "a log the
+    # customer cannot see is an internal control. A log the customer *can* see
+    # is a constraint on us, which is the party they are actually worried
+    # about." A trust surface that is visible while you are a customer and gone
+    # the moment you leave is a trust surface with an expiry date on it — and
+    # this is the one table that says who changed the margin policy their prices
+    # were judged against. Withholding it would be withholding the evidence for
+    # a dispute that is usually the reason somebody is leaving.
+    #
+    # The argument the other way, and why it loses: the rows name this tenant's
+    # own users, and ``users`` itself is excluded. But what is excluded there is
+    # credentials — password hashes — not the fact that a named person acted;
+    # ``access_events.staff_user_id`` and ``approval_requests.decided_by_user_id``
+    # already travel for exactly that reason. An export that returned the
+    # approvals without the record of who signed them would hand back half a
+    # trail.
+    #
+    # The rows are also carried whole — ``prev_hash`` and ``entry_hash``
+    # included — so the export is *re-verifiable* rather than merely readable.
+    # ``/trust/audit/export`` is the same content with the method statement
+    # attached; this is the copy that travels with everything else.
+    ("audit_entries", models.AuditEntry),
+    # The chain's anchor travels with the chain. Exported separately from the
+    # entries because it is the only thing that shows the exported chain is
+    # *whole*: a recipient holding entries 1..N and a head that says N can tell
+    # nothing was chopped off the end before it was handed over, which is a
+    # question the entries alone cannot answer about themselves.
+    ("audit_chain_heads", models.AuditChainHead),
     ("access_grants", models.AccessGrant),
     ("access_events", models.AccessEvent),
     ("erasure_receipts", models.ErasureReceipt),
@@ -409,6 +443,18 @@ SURVIVES_PLAINTEXT: tuple[dict[str, str], ...] = (
             "encrypted — the corpus an RFQ parser is measured against has to "
             "be the bytes the customer sent. So destroying the key does not "
             "unread them; only row deletion removes this text"},
+    {"table": "audit_chain_heads", "column": "every column",
+     "why": "where the audit chain is meant to end, kept for the same reason "
+            "as the chain itself and useless apart from it — without the "
+            "anchor a shortened chain verifies clean"},
+    {"table": "audit_entries", "column": "every column",
+     "why": "the audit chain, in plaintext and deliberately so — a log that "
+            "became unreadable when a tenant asked to be erased could not "
+            "afterwards show that the erasure itself was properly authorised, "
+            "and a record destroyed by the party it constrains is not a "
+            "record. The rows name actions and policy version stamps, never a "
+            "cost or a price; the display names they reference are covered by "
+            "the entries above"},
     {"table": "every transactional table", "column":
      "quantities, prices, dates, document and reference numbers",
      "why": "the analytical layer computes on plaintext rows by design; only "
@@ -477,9 +523,15 @@ def _manifest(session: Session, organization_id: str) -> dict[str, int]:
 
 
 def _sign(body: dict[str, Any]) -> str:
-    blob = json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
-    return hmac.new(settings.CREDENTIAL_ENCRYPTION_KEY.encode(),
-                    blob, hashlib.sha256).hexdigest()
+    """Delegates to the one canonicalisation this package signs with.
+
+    Kept as a named function rather than inlined at its three call sites because
+    the name is what says "this is the receipt's signature" where it is used.
+    The bytes are unchanged from when this held the implementation — same sorted
+    keys, same separators, same key — so receipts signed before the extraction
+    still verify.
+    """
+    return signing.sign(body)
 
 
 def erase(session: Session, organization_id: str, *, reason: str,
@@ -534,7 +586,10 @@ def receipt_body(row: models.ErasureReceipt) -> dict[str, Any]:
     attestation = row.attestation or {}
     return {
         "organization_id": row.organization_id,
-        "erased_at": clock.iso(row.erased_at),
+        # signing.utc_iso, not clock.iso — see that function. clock.iso
+        # preserves the offset it is handed, so on a non-UTC Postgres this
+        # receipt would read back shifted and report itself altered.
+        "erased_at": signing.utc_iso(row.erased_at),
         "reason": row.reason,
         "actor_user_id": row.actor_user_id,
         "manifest": row.manifest,
@@ -546,7 +601,7 @@ def receipt_body(row: models.ErasureReceipt) -> dict[str, Any]:
 
 def verify_receipt(row: models.ErasureReceipt) -> bool:
     """True when the receipt has not been altered since it was issued."""
-    return hmac.compare_digest(_sign(receipt_body(row)), row.signature or "")
+    return signing.matches(receipt_body(row), row.signature)
 
 
 def status(session: Session, organization_id: str) -> dict[str, Any]:

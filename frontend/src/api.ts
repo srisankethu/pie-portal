@@ -9,7 +9,7 @@
  * on one request is how a screen ends up displaying one person's name while
  * deciding what to show from another's role.
  */
-import type { Quote } from "./types";
+import type { EstimateResult, Quote } from "./types";
 import { authInit } from "./authFetch";
 
 const DRAFT_KEY = "pie_portal_draft";
@@ -47,56 +47,56 @@ async function req<T>(path: string, opts: RequestInit = {}, token?: string): Pro
 
 export const api = {
   createQuote: (t: string, customer: string, customerId?: string) =>
-    req<Quote>("/api/quotes", {
+    req<Quote>("/api/v1/quotes", {
       method: "POST",
       // The id travels with the name. Downstream resolution tries it first,
       // which is what keeps two books' identically-named customers apart.
       body: JSON.stringify({ customer, customer_id: customerId ?? null }),
     }, t),
 
-  getQuote: (t: string, id: string) => req<Quote>(`/api/quotes/${id}`, {}, t),
+  getQuote: (t: string, id: string) => req<Quote>(`/api/v1/quotes/${id}`, {}, t),
 
   /** `channel` is what turns the pasted words into a corpus row. Sent only when
    *  the person said how the enquiry arrived — omitted, the server captures
    *  nothing, because `InboundChannel` has no "unknown" member to file it
    *  under. */
   intake: (t: string, id: string, text: string, channel?: string) =>
-    req<Quote>(`/api/quotes/${id}/intake`, {
+    req<Quote>(`/api/v1/quotes/${id}/intake`, {
       method: "POST",
       body: JSON.stringify(channel ? { text, channel } : { text }),
     }, t),
 
   /** One line at a time, deliberately — see store.confirm_reading. */
   confirmReading: (t: string, id: string, lineId: string) =>
-    req<Quote>(`/api/quotes/${id}/lines/${lineId}/confirm-reading`,
+    req<Quote>(`/api/v1/quotes/${id}/lines/${lineId}/confirm-reading`,
                { method: "POST" }, t),
 
   selectSupply: (t: string, id: string, lineId: string, code: string, manual = false) =>
     req<Quote>(
-      `/api/quotes/${id}/lines/${lineId}/supply`,
+      `/api/v1/quotes/${id}/lines/${lineId}/supply`,
       { method: "POST", body: JSON.stringify({ code, manual }) },
       t,
     ),
 
   setPrice: (t: string, id: string, lineId: string, price: number | null) =>
     req<Quote>(
-      `/api/quotes/${id}/lines/${lineId}/price`,
+      `/api/v1/quotes/${id}/lines/${lineId}/price`,
       { method: "POST", body: JSON.stringify({ price }) },
       t,
     ),
 
   deleteLine: (t: string, id: string, lineId: string) =>
-    req<Quote>(`/api/quotes/${id}/lines/${lineId}`, { method: "DELETE" }, t),
+    req<Quote>(`/api/v1/quotes/${id}/lines/${lineId}`, { method: "DELETE" }, t),
 
   discount: (t: string, id: string, lineIds: string[], percent: number) =>
     req<Quote & { applied: number }>(
-      `/api/quotes/${id}/discount`,
+      `/api/v1/quotes/${id}/discount`,
       { method: "POST", body: JSON.stringify({ lineIds, percent }) },
       t,
     ),
 
   createItem: (t: string, id: string, lineId: string) =>
-    req<Quote>(`/api/quotes/${id}/lines/${lineId}/create-item`, { method: "POST" }, t),
+    req<Quote>(`/api/v1/quotes/${id}/lines/${lineId}/create-item`, { method: "POST" }, t),
 
   /** Create the Zoho estimate.
    *
@@ -105,8 +105,8 @@ export const api = {
    *  which meant a client that simply omitted it was a client with no approvals
    *  to satisfy. */
   createEstimate: (t: string, id: string) =>
-    req<{ ok: boolean; estimateNumber: string | null; lineCount: number | null; blockers: string[]; message: string }>(
-      `/api/quotes/${id}/estimate`,
+    req<EstimateResult>(
+      `/api/v1/quotes/${id}/estimate`,
       { method: "POST" },
       t,
     ),

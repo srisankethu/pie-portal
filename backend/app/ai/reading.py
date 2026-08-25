@@ -106,6 +106,14 @@ class ReadResult:
     #: an enquiry that genuinely had one clean line per row.
     status: str = "fallback"
     detail: str = ""
+    #: Whether the enquiry was actually sent to a provider, regardless of what
+    #: came back. Distinct from ``used_ai``, and the distinction is the point:
+    #: three of the fallbacks below happen *after* the round trip — a provider
+    #: exception, unusable JSON, a clean parse yielding nothing — so a caller
+    #: keying an audit entry on success records nothing for the calls where the
+    #: customer's text was sent and the answer was thrown away. Those are the
+    #: ones somebody asks about later.
+    provider_called: bool = False
 
     @property
     def used_ai(self) -> bool:
@@ -139,7 +147,8 @@ def read(text: str, provider: Optional[AIProvider]) -> ReadResult:
         raw = provider.complete(system=_SYSTEM, user=body[:MAX_CHARS])
     except Exception as e:  # noqa: BLE001 — a reading failure must not lose the enquiry
         log.warning("rfq reading failed: %s", e)
-        return ReadResult(status="fallback", detail=f"provider error: {e}"[:200])
+        return ReadResult(status="fallback", provider_called=True,
+                          detail=f"provider error: {e}"[:200])
 
     try:
         parsed = json.loads(_strip_fence(raw))
@@ -148,7 +157,8 @@ def read(text: str, provider: Optional[AIProvider]) -> ReadResult:
             raise TypeError("lines is not a list")
     except (json.JSONDecodeError, KeyError, TypeError) as e:
         log.warning("rfq reading returned unusable output: %s", e)
-        return ReadResult(status="fallback", detail=f"unusable output: {e}"[:200])
+        return ReadResult(status="fallback", provider_called=True,
+                          detail=f"unusable output: {e}"[:200])
 
     out: list[ProposedLine] = []
     for row in rows[:MAX_LINES]:
@@ -169,8 +179,9 @@ def read(text: str, provider: Optional[AIProvider]) -> ReadResult:
         # The model read it and found nothing quotable. The regex may still
         # split a list of bare codes, so it gets its turn rather than the
         # enquiry ending here.
-        return ReadResult(status="fallback", detail="no lines read")
-    return ReadResult(lines=out, status="ok")
+        return ReadResult(status="fallback", provider_called=True,
+                          detail="no lines read")
+    return ReadResult(lines=out, status="ok", provider_called=True)
 
 
 def _strip_fence(raw: str) -> str:

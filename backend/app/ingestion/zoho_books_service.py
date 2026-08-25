@@ -44,6 +44,7 @@ from ..zoho import (
     ZohoWriteUnknown,
 )
 from .normalize import NormalizationError, _parse_decimal
+from .write_settle import settle_by_read
 from .zoho_client import (
     ZohoCredentials,
     ZohoError,
@@ -234,18 +235,63 @@ class ZohoBooksService(ZohoTransport):
         except ZohoWriteUncertain as e:
             # The POST may or may not have landed. A read settles it, and a read
             # is safe — unlike the retry the transport correctly refused.
-            existing = self._recover_item(code)
-            if existing is not None:
-                return existing
-            raise ZohoWriteUnknown(str(e)) from e
+            return self._settle_item(code, str(e))
         except ZohoError as e:
             existing = self._recover_item(code)
             if existing is not None:
                 return existing
             raise ZohoWriteRefused(
                 f"Zoho would not create item {code}: {e}", codes=[code]) from e
+        except Exception as e:                       # noqa: BLE001
+            # A transport-level fault (timeout, dropped connection) never
+            # reached the retry logic, so the request's fate is unknown for the
+            # same reason a 5xx is. Same treatment: settle it by reading, never
+            # by sending again. Without this the fault left this method
+            # unwrapped and the caller got a 500 — no outcome it could act on,
+            # for an item that may well be sitting in the books.
+            return self._settle_item(code, str(e))
         raw = body.get("item") or {}
         return self._item_from(raw, code)
+
+    def _settle_item(self, code: str, detail: str) -> ZohoItem:
+        """Decide what actually happened to an item write whose response was lost.
+
+        One search answers it: the item carries the SKU that was sent, so either
+        it is there (the write landed — report it, do not send again) or it is
+        not (nothing landed — refuse, and the caller may retry safely). Only
+        when the lookup itself fails is the outcome genuinely unknown, and that
+        is the one case that says so.
+
+        These are the same three verdicts on the same evidence that
+        ``_settle_estimate`` reaches, deliberately. A read that succeeded and
+        found nothing is evidence that nothing landed; reporting it as UNKNOWN
+        would discard it and send a salesperson hunting Zoho by hand for a
+        record the read just proved is not there.
+        """
+        log.warning("zoho quote: item write outcome unclear for %s (%s)", code, detail)
+        return settle_by_read(
+            lambda: self._find_item(code),
+            lambda raw: self._quotable_item(code, raw),
+            unknown_message=lambda e: (
+                f"Item {code} could not be completed ({detail}), and Zoho could not be "
+                f"re-read to find out ({e}) — whether it reached Zoho cannot be "
+                f"established. Look for {code} in Zoho before adding it again."),
+            refused_message=(
+                f"Item {code} was not created ({detail}). Zoho holds nothing under that "
+                f"code, so adding it again is safe."),
+            codes=[code],
+            unknown_error=ZohoWriteUnknown, refused_error=ZohoWriteRefused)
+
+    def _quotable_item(self, code: str, raw: dict[str, Any]) -> ZohoItem:
+        """The item Zoho holds, refusing the one state that cannot be quoted."""
+        item = self._item_from(raw, code)
+        # An item that exists but is archived cannot be quoted, and "created"
+        # would be the wrong word for finding it.
+        if not item.in_books:
+            raise ZohoWriteRefused(
+                f"Item {code} already exists in Zoho but is inactive — reactivate "
+                f"it there before quoting it.", codes=[code])
+        return item
 
     def _recover_item(self, code: str) -> Optional[ZohoItem]:
         """The item as Zoho holds it now, or None if the lookup itself failed.
@@ -257,18 +303,11 @@ class ZohoBooksService(ZohoTransport):
         """
         try:
             raw = self._find_item(code)
-        except ZohoError:
+        except Exception:                            # noqa: BLE001 — see _settle_item
             return None
         if raw is None:
             return None
-        item = self._item_from(raw, code)
-        # An item that exists but is archived cannot be quoted, and "created"
-        # would be the wrong word for finding it.
-        if not item.in_books:
-            raise ZohoWriteRefused(
-                f"Item {code} already exists in Zoho but is inactive — reactivate "
-                f"it there before quoting it.", codes=[code])
-        return item
+        return self._quotable_item(code, raw)
 
     def _estimate_by_reference(self, reference: str) -> Optional[dict[str, Any]]:
         body = self._get("estimates", reference_number=reference)
@@ -282,7 +321,7 @@ class ZohoBooksService(ZohoTransport):
                        line_count: int, already_existed: bool) -> ZohoEstimate:
         raw_lines = raw.get("line_items") or []
         return ZohoEstimate(
-            estimate_id=str(raw.get("estimate_id") or ""),
+            document_id=str(raw.get("estimate_id") or ""),
             number=str(raw.get("estimate_number") or ""),
             customer=str(raw.get("customer_name") or customer),
             line_count=len(raw_lines) if raw_lines else line_count,
@@ -334,7 +373,7 @@ class ZohoBooksService(ZohoTransport):
             raise ZohoWriteRefused("The estimate was not created — it has no lines.")
         return out
 
-    def create_estimate(self, customer: str, lines: List[dict], *,
+    def create_sales_quotes(self, customer: str, lines: List[dict], *,
                         customer_ref: Optional[str] = None,
                         reference: Optional[str] = None) -> ZohoEstimate:
         if not customer_ref:
@@ -387,16 +426,17 @@ class ZohoBooksService(ZohoTransport):
         """
         log.warning("zoho quote: estimate write outcome unclear for %s (%s)",
                     reference, detail)
-        try:
-            landed = self._estimate_by_reference(reference)
-        except ZohoError as e:
-            raise ZohoWriteUnknown(
-                f"The estimate was sent to Zoho and the reply was lost ({detail}), and "
-                f"Zoho could not be re-read to find out ({e}). Look for reference "
-                f"{reference} in Zoho before sending this quote again.",
-                reference=reference) from e
-        if landed is not None:
-            return self._estimate_from(landed, customer, line_count, already_existed=True)
-        raise ZohoWriteRefused(
-            f"The estimate was not created ({detail}). Zoho holds nothing under "
-            f"reference {reference}, so sending again is safe.")
+        return settle_by_read(
+            lambda: self._estimate_by_reference(reference),
+            lambda landed: self._estimate_from(landed, customer, line_count,
+                                               already_existed=True),
+            unknown_message=lambda e: (
+                f"The estimate could not be completed ({detail}), and Zoho could not be "
+                f"re-read to find out ({e}) — whether it reached Zoho cannot be "
+                f"established. Look for reference {reference} in Zoho before sending "
+                f"this quote again."),
+            refused_message=(
+                f"The estimate was not created ({detail}). Zoho holds nothing under "
+                f"reference {reference}, so sending again is safe."),
+            reference=reference,
+            unknown_error=ZohoWriteUnknown, refused_error=ZohoWriteRefused)

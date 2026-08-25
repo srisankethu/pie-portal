@@ -361,13 +361,21 @@ accepted recommendations.
 
 ## Scheduling the sync
 
-**Nothing in the application schedules a pull.** `POST /api/v1/data/sync` is
-started by a person pressing the button on Data & connection, or by something
-outside this repo calling it. Until a timer exists, every screen shows whatever
-the last manual sync left behind — and the morning read says so, in as many
-words, at the top of the landing page.
+**The application does schedule pulls, and there is also a script.** This
+section used to open with "Nothing in the application schedules a pull", which
+was the fourth place in this repo asserting a deployment shape that had stopped
+being true; the other three were comments in `ingestion/jobs.py`,
+`ingestion/scheduler.py` and `scripts/scheduled_sync.py`.
 
-`scripts/scheduled_sync.py` is that something. It signs in, calls the same
+`app/ingestion/scheduler.py` runs a timer inside the app, on each
+organization's `config["auto_sync_hours"]` (`0` meaning off, `SYNC_AUTO_HOURS`
+the default). It starts only when `ZOHO_SOURCE=api`, which is why a fixture
+deployment genuinely has no scheduler and why the sentence above survived so
+long. Both it and the button call `POST /api/v1/data/sync`, so there is one
+code path.
+
+`scripts/scheduled_sync.py` is the alternative for deployments that would
+rather own the timer themselves. It signs in, calls the same
 endpoint the screen calls, waits for the run it started, and exits non-zero if
 it failed — which is the whole interface, because a non-zero exit is what makes
 cron mail you.
@@ -677,7 +685,49 @@ The database holds two very different kinds of data:
 | **Platform state** (signals, decisions, human actions, telemetry) | **Exists nowhere else.** The decision audit trail cannot be reconstructed. Back it up. |
 
 Standard `pg_dump` on the Postgres database covers both. Restore, then re-run
-the sync to bring the read model current.
+the sync to bring the read model current. The exact commands, with the two
+flags that decide whether a failed dump or a half-finished restore reports
+success, are in [hosting.md](hosting.md#backups).
+
+**The procedure is exercised on every `make verify`.** `scripts/restore_drill.py`
+runs those same two shell pipelines against a disposable Postgres: it seeds a
+database, dumps it, restores the dump into an empty one, and compares the two.
+Row counts per table, every row column-for-column, every `Decimal` money
+column's exact Σ, every audit chain re-verified with `trust/audit.verify`
+including its head hash, and every erasure receipt re-verified with
+`trust/erasure.verify_receipt`.
+
+The chain assertion is the point. Audit entries are HMAC-linked and anchored, so
+a restore that brings them back failing `verify` would tell an operator their
+audit log had been altered — and nobody had ever checked that a `pg_dump` round
+trip preserves it.
+
+Read what that buys narrowly, because the gap is where a false sense of safety
+would live:
+
+- It proves **the procedure round-trips this schema with its data intact**. If a
+  column type, a JSON payload or a `timestamptz` stopped surviving a dump, the
+  gate goes red on the change that did it.
+- It proves **nothing about any particular backup**. The drill dumps a database
+  it created seconds earlier. A production archive that is corrupt, truncated,
+  or of the wrong database is entirely outside what it can see.
+- It proves **nothing about the backup existing somewhere durable**. Half of
+  that gap is now closed by something other than the drill: `scripts/backup.sh`
+  takes the dump on a schedule and the `backups` health component reports
+  whether a recent, plausible one is where it was promised, loudly rather than
+  quietly ([hosting.md](hosting.md#putting-it-on-a-schedule)). The other half is
+  still a human arrangement — copying it off the host needs a destination and a
+  credential that this repository does not have, and a backup that lives only on
+  the machine it backs up is not one.
+- It proves **nothing about RTO**. The seed is a few hundred rows, chosen so the
+  drill costs the gate seconds rather than minutes; it measures the procedure,
+  not the clock.
+- It does not exercise the third step, **re-running the sync**. That is covered
+  by the sync's own tests, not by this.
+
+Verifying a real backup — restoring last night's archive somewhere and looking
+at it — is still a thing a person has to do periodically. What the drill removes
+is the possibility that the documented procedure was broken all along.
 
 ### "value too long for type character varying" in a sync
 

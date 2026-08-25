@@ -29,11 +29,12 @@ from ..authz import (
     is_login_throttled,
     open_session, record_login_failure, reset_login_failures, revoke_all_sessions,
     revoke_session, set_session_cookie)
-from .. import clock
+from .. import clock, tenancy
 from ..config import settings
 from ..db import get_session
 from ..domain import models
 from ..passwords import hash_password, needs_rehash, verify_password
+from ..trust import audit
 
 log = logging.getLogger("pie_portal.auth")
 
@@ -93,6 +94,16 @@ class LoginResponse(BaseModel):
 def login(body: LoginRequest, request: Request, response: Response,
           session: Session = Depends(get_session)) -> LoginResponse:
     email = (body.email or "").strip().lower()
+
+    # Sign-in is the one request that cannot know its tenant before it queries:
+    # there is no token yet, and the organization is a property of the row being
+    # looked for. Under row-level security the lookup below would return nothing
+    # and every sign-in would fail, so this asks the one narrow question that is
+    # allowed to cross the boundary and announces the answer. A no-op where
+    # there are no policies; `None` for an unknown address, which leaves the
+    # query below to come back empty exactly as it does today.
+    tenancy.adopt_tenant_for_login(session, email)
+
     user = session.scalar(select(models.User).where(models.User.email == email))
 
     # Check throttling early to deny early without exposing account existence.
@@ -101,6 +112,19 @@ def login(body: LoginRequest, request: Request, response: Response,
         if throttle_delay is not None:
             log.warning("throttled sign-in attempt for %r (%d failures, retry in %ds)",
                         email, user.login_failures_count, throttle_delay)
+            # Deliberately NOT audited, and this replaced an entry that was.
+            #
+            # The burst is already in the record: every failure that moved the
+            # counter appended a LOGIN_FAILED, and those are what show a
+            # credential-stuffing run. An entry *here* adds nothing to that
+            # picture and costs the one thing an audit log cannot afford — a
+            # write on an unauthenticated path with no bound on it.
+            # `is_login_throttled` reads the counter without incrementing it, so
+            # this branch fires for every request for the whole backoff window,
+            # and there is no rate limiter in front of /auth/login. Anyone who
+            # can reach the endpoint could therefore grow `audit_entries`
+            # without limit, degrading the read and verify surface of the log
+            # that exists to catch them.
             raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS,
                                _THROTTLED.format(delay=throttle_delay))
 
@@ -125,11 +149,30 @@ def login(body: LoginRequest, request: Request, response: Response,
         # accounts are not tracked (would require creating them, which would leak).
         if user is not None and user.active:
             record_login_failure(user)
+            audit.append(
+                session, organization_id=user.organization_id,
+                action=audit.LOGIN_FAILED, actor_user_id=user.user_id,
+                actor_label=email, actor_role=user.role or "",
+                subject_type="USER", subject_id=user.user_id,
+                detail={"email": email,
+                        "consecutive_failures": int(user.login_failures_count or 0),
+                        "user_agent": (request.headers.get("user-agent") or "")[:255]})
             # `commit`, not `flush`: this handler raises HTTPException below, and
             # `get_session` rolls back on any exception — a flush would be undone
             # with it, so the counter never persisted and throttling never
             # engaged (5 failures stayed 0). Commit the increment before raising.
+            #
+            # The audit entry above is in the same transaction and needs the
+            # same commit for the same reason, which is why it is written before
+            # this line and not after the raise. A failed sign-in that leaves no
+            # row is the case an audit log is most often opened to look at.
             session.commit()
+        # A failed attempt against an address with no account is deliberately
+        # *not* recorded. There is no organization to file it under — the chain
+        # is scoped per tenant — and writing one keyed on a guessed address
+        # would build a register of which addresses somebody probed, in a table
+        # the tenant can export. The application log line above keeps it
+        # visible to an operator without persisting it as tenant data.
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, _REJECTED)
 
     # Password verified; reset the failure counter.
@@ -145,7 +188,17 @@ def login(body: LoginRequest, request: Request, response: Response,
 
     org = session.get(models.Organization, user.organization_id)
 
-    token, _row = open_session(session, user, request.headers.get("user-agent"))
+    token, opened = open_session(session, user, request.headers.get("user-agent"))
+    audit.append(
+        session, organization_id=user.organization_id,
+        action=audit.LOGIN_SUCCEEDED, actor_user_id=user.user_id,
+        actor_label=user.email or email, actor_role=user.role or "",
+        subject_type="USER", subject_id=user.user_id,
+        # The session id, not the token. The token is the credential; a log
+        # holding one would be a log worth stealing, which is the same reason
+        # `user_sessions` is excluded from the tenant export.
+        detail={"session_id": opened.session_id,
+                "user_agent": (request.headers.get("user-agent") or "")[:255]})
     # Committed here, not left to the request teardown. The token about to go out
     # names that row, and a token naming a row nobody else can read yet is a dead
     # credential — the same "a flush is invisible outside its own transaction"
@@ -215,6 +268,10 @@ def logout(response: Response, session: Session = Depends(get_session),
     """
     if principal.session_id:
         revoke_session(session, principal.session_id)
+        audit.append(
+            session, organization_id=principal.organization_id,
+            action=audit.SESSION_ENDED, actor=principal,
+            subject_type="USER_SESSION", subject_id=principal.session_id, detail={"scope": "THIS_SESSION"})
     session.commit()
     clear_session_cookie(response)
     return {"ok": True}
@@ -230,6 +287,11 @@ def logout_all(response: Response, session: Session = Depends(get_session),
     surviving session they forgot about is the thing they were trying to remove.
     """
     ended = revoke_all_sessions(session, principal.user_id)
+    audit.append(
+        session, organization_id=principal.organization_id,
+        action=audit.SESSIONS_ENDED_ALL, actor=principal,
+        subject_type="USER", subject_id=principal.user_id,
+        detail={"scope": "EVERY_SESSION", "ended": int(ended)})
     session.commit()
     clear_session_cookie(response)
     return {"ok": True, "ended": ended}
@@ -268,5 +330,11 @@ def revoke_one(session_id: str, session: Session = Depends(get_session),
     if row is None or row.user_id != principal.user_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "No such session")
     revoke_session(session, session_id)
+    audit.append(
+        session, organization_id=principal.organization_id,
+        action=audit.SESSION_ENDED, actor=principal,
+        subject_type="USER_SESSION", subject_id=session_id,
+        detail={"scope": "NAMED_SESSION",
+                "was_current": session_id == principal.session_id})
     session.commit()
     return {"ok": True}

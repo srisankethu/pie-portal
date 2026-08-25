@@ -555,8 +555,19 @@ in parallel · `tsc -b` and the production build · `alembic upgrade head` **on 
 empty database**, then the drift test and the single-head check — first on
 SQLite, then again on a disposable **PostgreSQL** (the dialect production runs;
 provisioned by `scripts/pg_sandbox.sh`, skipped with a visible note where no
-server binaries exist). To run the whole backend suite on Postgres instead of
-SQLite, set `PIE_TEST_DATABASE_URL` — `docs/postgres.md` has the loop.
+server binaries exist) · on that same server, the **row-level security** suite
+against a role that is neither superuser nor owner (the only place the policies
+are not inert) and the two **queue** suites (the only place a concurrent claim
+is a real race rather than one shared connection) · and, still on that server,
+the **restore drill**
+(`scripts/restore_drill.py`): the backup procedure in `docs/hosting.md`
+performed rather than described — seed, `pg_dump`, restore into an empty
+database, then compare every row, every `Decimal` money Σ, every audit chain
+under `trust/audit.verify` and every erasure receipt. It proves the procedure
+round-trips this schema; it is not evidence about any particular production
+backup, and the script's docstring says so at length. To run the whole backend
+suite on Postgres instead of SQLite, set `PIE_TEST_DATABASE_URL` —
+`docs/postgres.md` has the loop.
 
 It runs every step and reports all failures at the end rather than stopping at
 the first, so one red build tells you everything that is wrong.

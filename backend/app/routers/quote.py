@@ -35,6 +35,7 @@ from ..config import settings
 from ..identity import service as identity_service
 from ..identity.mapping_store import OrgMappingStore
 from ..db import get_session
+from ..trust import audit
 from ..ingestion import connections as conn
 from ..schemas import (
     CreateQuoteRequest,
@@ -46,15 +47,15 @@ from ..schemas import (
 )
 from ..pie_service import Bands
 from ..store import Line, Quote, store
+from ..ingestion.errors import SourceWriteRefused, SourceWriteUnknown
 from ..zoho import (
+    QuoteWriter,
     ZohoService,
-    ZohoWriteRefused,
-    ZohoWriteUnknown,
     select_zoho_service,
 )
 
 log = logging.getLogger("pie_portal.quote")
-router = APIRouter(prefix="/api/quotes", tags=["quotes"])
+router = APIRouter(prefix="/api/v1/quotes", tags=["quotes"])
 
 
 def _get_quote(quote_id: str, org: str) -> Quote:
@@ -84,8 +85,28 @@ class QuoteBooks:
     ``contact_id`` is empty exactly when ``zoho`` is the refusing adapter.
     """
 
+    #: The catalogue half — live list price, stock, item creation. Named
+    #: ``zoho`` because every caller of it is a Zoho-era read and renaming them
+    #: is churn on a working path; what it *is* is a ``SourceCatalogue``.
     zoho: ZohoService
     contact_id: str = ""
+    #: The connector this quote's book belongs to. Recorded on the document the
+    #: send produces, so a row says which system holds it rather than assuming
+    #: the one connector that could write when the column was added.
+    system: str = conn.ZOHO_CONNECTOR
+    #: The write half. The same object as ``zoho`` for Zoho, whose adapter is
+    #: both; a different one for a connector that can be written to without
+    #: being read live. Separate because #8 split the port for exactly this —
+    #: a source that can create a quote but has no live item master would
+    #: otherwise have to stub reads nobody calls on it.
+    writer: Optional[QuoteWriter] = None
+
+    @property
+    def quote_writer(self) -> QuoteWriter:
+        """Whatever this book writes through. Falls back to the catalogue
+        adapter, which for Zoho is the same object and for a refusing adapter
+        is the thing that carries the reason."""
+        return self.writer if self.writer is not None else self.zoho
 
 
 def books_for_quote(quote_id: str,
@@ -115,10 +136,43 @@ def books_for_quote(quote_id: str,
             f"organization, so no set of books can be identified.")))
     try:
         book = conn.book_for_customer(session, org, customer)
-        creds = conn.credentials_for(session, book.connection)
+        # Inside the guard: resolving the adapters is where the credential is
+        # actually read, so a rotated-away secret has to arrive as this refusal
+        # rather than as a 500 from a dependency.
+        return _books_for(session, book)
     except (conn.ConnectionNotFound, conn.CredentialNotUsable) as e:
         return QuoteBooks(zoho=select_zoho_service(reason=str(e)))
-    return QuoteBooks(zoho=select_zoho_service(creds), contact_id=book.contact_id)
+
+
+def _books_for(session: Session, book: conn.CustomerBook) -> QuoteBooks:
+    """The adapters this book reads and writes through.
+
+    One branch, on the one connector that is not in the registry: Zoho's
+    connect flow predates it, so its credentials have their own shape and its
+    adapter is both halves at once. Everything else is resolved through the
+    spec — a connector gaining a writer needs no edit here.
+
+    A registry connector gets a *refusing* catalogue rather than a stub. Its
+    item master is synced on a schedule, not read live, so there is no live
+    price to answer with — and the honest answer to "what does this cost right
+    now" is that we do not know, which is what BOOKS OFFLINE already means.
+    """
+    connector = conn.connector_of(book.connection)
+    if connector == conn.ZOHO_CONNECTOR:
+        creds = conn.credentials_for(session, book.connection)
+        return QuoteBooks(zoho=select_zoho_service(creds),
+                          contact_id=book.contact_id, system=connector)
+
+    from ..ingestion import erp
+
+    material = conn.credential_material(session, book.connection)
+    writer = erp.get_spec(connector).build_source(material)
+    return QuoteBooks(
+        zoho=select_zoho_service(reason=(
+            f"This customer's books are {connector}, which this platform syncs "
+            f"on a schedule rather than reading live — so there is no live price "
+            f"or stock to show here. The quote can still be sent.")),
+        contact_id=book.contact_id, system=connector, writer=writer)
 
 
 def zoho_for_quote(books: QuoteBooks = Depends(books_for_quote)) -> ZohoService:
@@ -134,15 +188,19 @@ def _get_line(quote: Quote, line_id: str) -> Line:
 
 
 @router.post("")
-def create_quote(body: CreateQuoteRequest, principal: Principal = Depends(current_principal)):
+def create_quote(body: CreateQuoteRequest,
+                 principal: Principal = Depends(current_principal),
+                 session: Session = Depends(get_session)):
     q = store.create(body.customer, body.customer_id, principal.organization_id)
-    return q.to_dict(principal.is_manager_or_owner)
+    return _view(session, principal, q)
 
 
 @router.get("/{quote_id}")
-def get_quote(quote_id: str, principal: Principal = Depends(current_principal)):
-    return _get_quote(quote_id, principal.organization_id).to_dict(
-        principal.is_manager_or_owner)
+def get_quote(quote_id: str,
+              principal: Principal = Depends(current_principal),
+              session: Session = Depends(get_session)):
+    return _view(session, principal,
+                 _get_quote(quote_id, principal.organization_id))
 
 
 @router.post("/{quote_id}/intake")
@@ -159,17 +217,59 @@ def intake(quote_id: str, body: IntakeRequest,
     # same catalogue and the same score bands as typed input. A reading that
     # fails for any reason falls through to the regex, so the worst case is the
     # product exactly as it was before.
-    read = reading.read(body.text, select_provider(session, principal.organization_id))
+    provider = select_provider(session, principal.organization_id)
+    read = reading.read(body.text, provider)
     lines = store.add_rfq(q, body.text, zoho,
                           _customer_scope(session, principal, q.customer_ref),
                           _bands(session, principal),
                           _mapping_store(session, principal),
                           rows=[ln.to_row() for ln in read.lines] or None)
-    if read.used_ai:
-        log.info("rfq read by %s into %d line(s) for quote %s",
-                 settings.AI_PROVIDER, len(lines), quote_id)
+    if read.provider_called:
+        # ``provider_called``, not ``used_ai``. The gate used to be success, so
+        # the three paths where the enquiry was sent and the answer was
+        # unusable — a provider exception, unparseable JSON, a clean parse
+        # yielding nothing — recorded that the customer's text reached a model
+        # nowhere at all. Those are precisely the calls someone asks about.
+        log.info("rfq read by %s into %d line(s) for quote %s (status %s)",
+                 settings.AI_PROVIDER, len(lines), quote_id, read.status)
+        # The enquiry text a customer sent, handed to a model. Audited here
+        # rather than inside ``ai/reading`` because that layer is pure and
+        # session-free by design — the arrangement ``CallTelemetry`` exists to
+        # serve — so the router is the first place that knows the organization.
+        #
+        # Weaker than an ``AI_CALL`` from the interpretation path, and the entry
+        # says which fields it does not have rather than leaving them absent:
+        # ``reading.read`` returns a ``ReadResult`` that carries no prompt hash
+        # and no token counts, so this records that a model read the enquiry and
+        # what it produced, not what it cost. Widening ``ReadResult`` to carry
+        # telemetry is the fix; this is the entry that stops the call being
+        # invisible in the meantime.
+        audit.append(
+            session, organization_id=principal.organization_id,
+            action=audit.AI_CALL, actor=principal,
+            subject_type="QUOTE", subject_id=quote_id,
+            detail={
+                "decision_type": "RFQ_READING",
+                "ai_status": read.status.upper(),
+                # Why it was not "ok", when it was not. Without this a failed
+                # reading and a successful one differ only by a word.
+                "detail": read.detail or "",
+                "provider": getattr(provider, "name", ""),
+                "model": getattr(provider, "model", ""),
+                "provider_called": True,
+                "lines_proposed": len(read.lines),
+                "lines_created": len(lines),
+                "enquiry_chars": len(body.text),
+                # Not available on this path — stated, not omitted, so the entry
+                # cannot be misread as a call whose prompt hash was zero.
+                "prompt_sha256": None,
+                "telemetry_unavailable": "reading.ReadResult carries no CallTelemetry",
+            })
+    # The customer's own words into the corpus, when the desk said how the
+    # enquiry arrived. After the audit entry above and before the response,
+    # because a capture that refuses must not change what the quote returns.
     captured = _capture_enquiry(session, principal, body, quote_id)
-    return {**q.to_dict(principal.is_manager_or_owner),
+    return {**_view(session, principal, q),
             # How the lines were produced, so the screen can say "read from
             # your message — check each line" rather than presenting a model's
             # reading as though somebody had typed it.
@@ -329,7 +429,7 @@ def select_supply(quote_id: str, line_id: str, body: SelectSupplyRequest,
     ln = _get_line(q, line_id)
     confirmed = _confirm_identity(session, principal, q, ln, body.code)
     store.select_supply(ln, body.code, zoho, manual=body.manual)
-    out = q.to_dict(principal.is_manager_or_owner)
+    out = _view(session, principal, q)
     if confirmed:
         # Worth saying out loud: the person has just taught the system something
         # permanent, and a change with no feedback reads as a change that did
@@ -368,7 +468,8 @@ def _confirm_identity(session: Session, principal: Principal,
 
 @router.post("/{quote_id}/lines/{line_id}/confirm-reading")
 def confirm_reading(quote_id: str, line_id: str,
-                    principal: Principal = Depends(current_principal)):
+                    principal: Principal = Depends(current_principal),
+                    session: Session = Depends(get_session)):
     """A person has checked this line against the customer's own words.
 
     Every role, because the salesperson who received the enquiry is the one who
@@ -377,33 +478,36 @@ def confirm_reading(quote_id: str, line_id: str,
     """
     q = _get_quote(quote_id, principal.organization_id)
     store.confirm_reading(_get_line(q, line_id))
-    return q.to_dict(principal.is_manager_or_owner)
+    return _view(session, principal, q)
 
 
 @router.post("/{quote_id}/lines/{line_id}/price")
 def set_price(quote_id: str, line_id: str, body: SetPriceRequest,
-              principal: Principal = Depends(current_principal)):
+              principal: Principal = Depends(current_principal),
+              session: Session = Depends(get_session)):
     q = _get_quote(quote_id, principal.organization_id)
     ln = _get_line(q, line_id)
     store.set_price(ln, body.price)
-    return q.to_dict(principal.is_manager_or_owner)
+    return _view(session, principal, q)
 
 
 @router.delete("/{quote_id}/lines/{line_id}")
 def delete_line(quote_id: str, line_id: str,
-                principal: Principal = Depends(current_principal)):
+                principal: Principal = Depends(current_principal),
+                session: Session = Depends(get_session)):
     q = _get_quote(quote_id, principal.organization_id)
     store.delete_line(q, line_id)
-    return q.to_dict(principal.is_manager_or_owner)
+    return _view(session, principal, q)
 
 
 @router.post("/{quote_id}/discount")
 def apply_discount(quote_id: str, body: DiscountRequest,
-                   principal: Principal = Depends(current_principal)):
+                   principal: Principal = Depends(current_principal),
+                   session: Session = Depends(get_session)):
     q = _get_quote(quote_id, principal.organization_id)
     selected = [ln for ln in q.lines if ln.id in set(body.lineIds)]
     n = store.apply_discount(selected, body.percent)
-    result = q.to_dict(principal.is_manager_or_owner)
+    result = _view(session, principal, q)
     result["applied"] = n
     return result
 
@@ -411,7 +515,8 @@ def apply_discount(quote_id: str, body: DiscountRequest,
 @router.post("/{quote_id}/lines/{line_id}/create-item")
 def create_item(quote_id: str, line_id: str,
                 principal: Principal = Depends(current_principal),
-                zoho: ZohoService = Depends(zoho_for_quote)):
+                zoho: ZohoService = Depends(zoho_for_quote),
+                session: Session = Depends(get_session)):
     q = _get_quote(quote_id, principal.organization_id)
     ln = _get_line(q, line_id)
     if not ln.supplyCode:
@@ -421,7 +526,7 @@ def create_item(quote_id: str, line_id: str,
     # still worth looking at. The reason travels with it so the screen does not
     # have to say "something went wrong".
     failure = store.create_item(ln, zoho)
-    result = q.to_dict(principal.is_manager_or_owner)
+    result = _view(session, principal, q)
     if failure:
         result["createItemError"] = failure
     return result
@@ -444,7 +549,9 @@ def create_estimate(quote_id: str,
             message=(f"{len(blockers)} line(s) must be resolved before this quote "
                      f"can be sent: {_name_lines(blockers)}."),
         )
-    # A resolved line with no rate would go to Zoho as a line with no rate.
+    # A resolved line with no rate would reach the source as a line with no
+    # rate, and every system this writes to prices that from its own item
+    # card — quoting a number nobody here chose.
     unpriced = [ln for ln in q.lines if ln.supplyCode and ln.quoted is None]
     if unpriced:
         return EstimateResponse(
@@ -508,11 +615,24 @@ def create_estimate(quote_id: str,
     # Zoho can recognise a repeat whose reply we never heard. Both are needed:
     # this one saves the round trip, that one survives a lost answer.
     fingerprint = store.priced_fingerprint(q)
-    if q.estimateNumber and q.estimateFingerprint == fingerprint:
+    # Answered from the persisted row rather than from the in-memory quote. The
+    # in-memory copy is erased by a restart, and the send it was remembering is
+    # not — so after one the check said "never sent", pressed the source again,
+    # and relied on the reference round trip to undo what it had just asked for.
+    sent = quote_service.latest_document(session, org, quote_id=quote_id)
+    if sent is not None and sent.fingerprint == fingerprint:
+        # Named from the row rather than from ``books``: this answers about the
+        # document that was actually written, which may predate a customer
+        # being re-pointed at a different system.
+        held = sent.external_system or books.system
         return EstimateResponse(
-            ok=True, estimateNumber=q.estimateNumber, lineCount=q.estimateLineCount,
-            message=(f"Zoho estimate {q.estimateNumber} already covers this quote — "
-                     "nothing has changed since it was created."))
+            ok=True, documentNumber=sent.external_document_number,
+            lineCount=sent.line_count, alreadyExisted=True,
+            **_system_words(held),
+            message=(f"{conn.system_label_for(held)} "
+                     f"{conn.quote_term_for(held)} "
+                     f"{sent.external_document_number} already covers this quote "
+                     "— nothing has changed since it was created."))
 
     lines = [{"code": ln.supplyCode, "itemId": ln.itemId,
               "qty": ln.reqQty, "rate": ln.quoted}
@@ -524,16 +644,16 @@ def create_estimate(quote_id: str,
     # this must not do is report a created estimate that may not exist, which is
     # exactly what the mock could never get wrong and a real ledger can.
     try:
-        est = books.zoho.create_estimate(q.customer, lines,
-                                         customer_ref=books.contact_id,
-                                         reference=q.reference)
-    except ZohoWriteRefused as e:
+        est = books.quote_writer.create_sales_quotes(q.customer, lines,
+                                                 customer_ref=books.contact_id,
+                                                 reference=q.reference)
+    except SourceWriteRefused as e:
         refused = {c for c in e.codes if c}
         return EstimateResponse(
             ok=False,
             blockers=[ln.id for ln in q.lines if ln.supplyCode in refused],
             message=str(e))
-    except ZohoWriteUnknown as e:
+    except SourceWriteUnknown as e:
         return EstimateResponse(ok=False, message=str(e))
 
     # Past here the estimate exists — including when Zoho recognised the
@@ -541,8 +661,22 @@ def create_estimate(quote_id: str,
     # check above can answer the next press without a round trip, and so the
     # quote leaves DRAFT: the DRAFT → SENT → WON/LOST path is modelled, served
     # and typed on the client, and nothing ever moved a quote off DRAFT.
-    store.record_estimate(q, number=est.number, line_count=est.line_count,
-                          fingerprint=fingerprint)
+    # The durable half, and the reason this whole endpoint can be pressed twice
+    # safely. Written before the outcome transition because it is the record of
+    # something that has already happened in somebody's ledger: if the status
+    # bookkeeping below fails, the document must still be on file.
+    try:
+        quote_service.record_document(
+            session, org, quote_id=quote_id,
+            external_system=books.system, number=est.number,
+            document_id=est.document_id, line_count=est.line_count,
+            fingerprint=fingerprint, reference=q.reference or "",
+            already_existed=est.already_existed,
+            thresholds_version=policy_service.load_for_org(session, org).version)
+        session.commit()
+    except Exception:  # noqa: BLE001 — the estimate exists; bookkeeping must not undo it
+        log.exception("could not record the document for quote %s", quote_id)
+        session.rollback()
     try:
         # ``quote_document_ref`` is the platform recording, at the one moment
         # it learns it, which ERP document its own quote became — and it is the
@@ -558,14 +692,57 @@ def create_estimate(quote_id: str,
     except Exception:  # noqa: BLE001 — the estimate exists; bookkeeping must not undo it
         log.exception("could not mark quote %s as sent", quote_id)
 
+    words = _system_words(books.system)
+    named = f"{words['systemLabel']} {words['documentTerm']}"
     if est.already_existed:
         return EstimateResponse(
-            ok=True, estimateNumber=est.number, lineCount=est.line_count,
-            message=(f"This quote was already sent — Zoho estimate {est.number} "
-                     f"exists under reference {q.reference}. Nothing was created twice."))
-    return EstimateResponse(ok=True, estimateNumber=est.number,
-                            lineCount=est.line_count,
-                            message=f"Zoho estimate {est.number} created — {est.line_count} lines.")
+            ok=True, documentNumber=est.number, lineCount=est.line_count,
+            alreadyExisted=True, **words,
+            message=(f"This quote was already sent — {named} {est.number} exists "
+                     f"under reference {q.reference}. Nothing was created twice."))
+    return EstimateResponse(ok=True, documentNumber=est.number,
+                            lineCount=est.line_count, **words,
+                            message=f"{named} {est.number} created — "
+                                    f"{est.line_count} lines.")
+
+
+def _view(session: Session, principal: Principal, q: Quote) -> dict[str, Any]:
+    """One quote as the screen reads it, including what it has already sent.
+
+    The ``estimate`` block is assembled here rather than on ``Quote`` because
+    it comes from a persisted row and ``Quote`` is an in-memory object with no
+    session. It used to be three attributes on that object, which a restart
+    erased — so a quote that had been sent looked unsent, and the primary
+    button offered to send it again.
+
+    ``current`` is what makes the block worth having: false once the priced
+    content has moved, so the chip can say "amended since" rather than implying
+    the customer holds what is on screen.
+    """
+    out = q.to_dict(principal.is_manager_or_owner)
+    sent = quote_service.latest_document(session, principal.organization_id,
+                                         quote_id=q.id)
+    out["estimate"] = None if sent is None else {
+        "number": sent.external_document_number,
+        "lineCount": sent.line_count,
+        "current": sent.fingerprint == store.priced_fingerprint(q),
+        # Named, because "Sent · SQ-1001" does not say where it was sent and
+        # two connected systems can both answer to that.
+        **_system_words(sent.external_system),
+    }
+    return out
+
+
+def _system_words(connector: str) -> dict[str, str]:
+    """The three naming fields, from one place.
+
+    Built once rather than at each return: five responses carry them, and five
+    hand-assembled copies is how one of them ends up saying "estimate" about a
+    Business Central document long after the others stopped.
+    """
+    return {"system": connector,
+            "systemLabel": conn.system_label_for(connector),
+            "documentTerm": conn.quote_term_for(connector)}
 
 
 def _name_lines(lines: list[Line], limit: int = 4) -> str:

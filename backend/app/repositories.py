@@ -1379,10 +1379,47 @@ class AiTelemetryRepository:
         self.org = organization_id
 
     def record(self, tel, *, cache_hit: bool = False) -> Optional[models.AiCallLog]:
-        """Persist one telemetry record. Returns None when disabled."""
+        """Persist one telemetry record. Returns None when disabled.
+
+        The audit entry is written first and is **not** behind
+        ``AI_TELEMETRY_ENABLED``. The two answer different questions and only
+        one of them is optional: telemetry is operational instrumentation a
+        deployment may reasonably turn off, while "what did you send to a model
+        about this customer, and what did it cost" is the tenant's record of
+        what was done with their data. A deployment that switched telemetry off
+        and thereby stopped auditing model use would have turned a performance
+        setting into a compliance one without anybody deciding to.
+        """
         from .config import settings
 
-        if not settings.AI_TELEMETRY_ENABLED or tel is None:
+        if tel is None:
+            return None
+
+        # No audit-chain entry here, deliberately, and the reason is worth
+        # keeping because the first attempt did append one.
+        #
+        # This method runs on the proactive decision sweep — four times a day by
+        # default, once per signal, unbounded by customer count — and on cache
+        # hits and up-front suppressions as well as real provider calls. Putting
+        # a chain entry here made chain *length* a function of background volume
+        # rather than of auditable events, and every ``verify`` then HMACs all of
+        # it. Worse, ``DecisionService.generate`` holds one transaction across
+        # every provider round trip in the sweep, so the append sat on the
+        # tenant's chain head for the whole run and blocked every other appender
+        # for that tenant behind it. And with no principal in scope it recorded
+        # SYSTEM, which is true of the sweep and false of the two interactive
+        # callers.
+        #
+        # ``AiCallLog`` below already records provider, model, cost and tokens
+        # per call, which is what "what did it cost" needs. The chain is for
+        # acts of authority that cannot be reconstructed — a policy change, a
+        # sign-in, an approval — and a cached interpretation is neither. The two
+        # user-initiated model calls that previously recorded *nothing*
+        # (``routers/ai_settings`` connection test, ``routers/quote`` RFQ
+        # reading) do append: they are bounded by a human action and carry the
+        # principal who caused them.
+
+        if not settings.AI_TELEMETRY_ENABLED:
             return None
         row = models.AiCallLog(
             organization_id=self.org,

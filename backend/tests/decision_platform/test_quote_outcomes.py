@@ -45,10 +45,13 @@ def _quote(quote_id: str, *, won: bool, days_ago: int = 10,
            gross_profit: str | None = None,
            principals: tuple[str, ...] = ("v1",),
            product_lines: tuple[str, ...] = ("CUTTING_TOOLS",),
-           lines: int = 1) -> outcomes.DecidedQuote:
+           lines: int = 1, ever_sent: bool = True) -> outcomes.DecidedQuote:
+    # ``ever_sent`` defaults True: these tests are about win rates over books
+    # that could have been won, which is the ordinary case. The slice that
+    # could not be won is its own test, and says so.
     return outcomes.DecidedQuote(
         quote_id=quote_id, customer_id=customer, customer_label=customer.upper(),
-        won=won, loss_reason="" if won else reason,
+        won=won, ever_sent=ever_sent, loss_reason="" if won else reason,
         decided_on=AS_OF - timedelta(days=days_ago),
         lines=lines, value=Decimal(value),
         gross_profit=Decimal(gross_profit) if gross_profit is not None else None,
@@ -74,6 +77,51 @@ def test_a_win_rate_over_four_quotes_is_absent_rather_than_confident():
     assert result["win_rate"] is None
     assert result["estimable"] is False
     assert result["min_decided_quotes"] == outcomes.MIN_DECIDED_QUOTES
+
+
+def test_a_slice_that_clears_the_sample_floor_but_could_never_be_won_is_unknown():
+    """Two floors, two different questions, and only one was being asked.
+
+    ``MIN_DECIDED_QUOTES`` answers "is there enough evidence here". It cannot
+    answer "could this evidence have come out the other way" — and a slice of
+    ten quotes none of which ever reached SENT clears it comfortably and reports
+    0%. The transition table reaches WON only through SENT, so that 0% is a
+    measurement of a question the rows could not answer, and on screen it was
+    indistinguishable from a customer we genuinely keep losing.
+    """
+    unsendable = [_quote(f"q{i}", won=False, ever_sent=False) for i in range(10)]
+    (only,) = outcomes.by_facet(unsendable, lambda q: (q.customer_id,), {})
+
+    assert only.decided == 10, "the losses are still counted"
+    assert only.ever_sent == 0
+    assert only.win_rate is None, (
+        "a slice whose wins were unrecordable reported a hard 0.0 win rate")
+    assert only.estimable is False
+
+
+def test_a_slice_that_could_have_been_won_and_was_not_keeps_its_measured_zero():
+    """The other half, which must not collapse into UNKNOWN with it.
+
+    These quotes went out and came back lost. 0% is then a fact about this
+    slice, and hiding it would be the same defect wearing the opposite costume.
+    """
+    sent_and_lost = [_quote(f"q{i}", won=False, ever_sent=True) for i in range(10)]
+    (only,) = outcomes.by_facet(sent_and_lost, lambda q: (q.customer_id,), {})
+
+    assert only.win_rate == 0.0
+    assert only.estimable is True
+
+
+def test_a_recorded_win_makes_a_slice_estimable_whatever_the_sent_stamps_say():
+    """A win on record proves a win was recordable. Rows written before
+    ``sent_at`` carried meaning have none, and reading the stamps alone would
+    turn a slice that demonstrably won something into an UNKNOWN."""
+    rows = ([_quote("w1", won=True, ever_sent=False)]
+            + [_quote(f"l{i}", won=False, ever_sent=False) for i in range(9)])
+    (only,) = outcomes.by_facet(rows, lambda q: (q.customer_id,), {})
+
+    assert only.estimable is True
+    assert only.win_rate == 0.1
 
 
 def test_the_floor_is_applied_per_slice_not_only_to_the_book():

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field as dc_field
 from datetime import date, datetime
+from decimal import Decimal
 from typing import Any, Callable, Iterable, Optional
 
 from ..errors import IngestionError
@@ -65,6 +66,41 @@ READ_STAGES: tuple[str, ...] = (
     "purchase_orders", "users",
 )
 
+#: The same vocabulary in the other direction: the records the platform can
+#: *create* in a source system. A separate list rather than a flag on the one
+#: above, because reading a kind of record and writing it are different grants,
+#: different code and different days — every ERP here can be read and none of
+#: them could be written when this was added.
+#:
+#: A connector claims a stage here through a ``Permission``, and
+#: ``test_connector_writes`` holds the claim against a ``create_<stage>``
+#: method on the source, both ways: a claim nobody implements sends an owner
+#: to grant a permission for something that cannot happen, and a writer nobody
+#: declared creates records in a system nobody was asked to permit it in.
+WRITE_STAGES: tuple[str, ...] = ("sales_quotes",)
+
+
+@dataclass
+class WrittenDocument:
+    """A record this platform created in a source system.
+
+    One shape for every connector, because the facts a caller needs back are the
+    same wherever it wrote: an id to look the thing up by, the number a person
+    sees, how many lines it carries, and whether it was created now or
+    recognised as one the source already held under the same reference.
+
+    ``already_existed`` is not a detail. Sending the same quote twice must not
+    put two documents in front of a customer, so a write that finds its own
+    reference already there reports *that* document — and the screen has to be
+    able to say "already sent" rather than "sent", which are different claims.
+    """
+
+    document_id: str
+    number: str
+    customer: str
+    line_count: int
+    already_existed: bool = False
+
 
 @dataclass(frozen=True)
 class Permission:
@@ -84,24 +120,33 @@ class Permission:
     one kind of record, and more than one where a system gates several stages
     behind a single grant (Zoho reads customers *and* suppliers from
     ``ZohoBooks.contacts.READ``).
+
+    ``writes`` names what the grant lets the platform *create* there, from the
+    separate ``WRITE_STAGES`` vocabulary. One grant may well do both — an ERP
+    that hands out read and create on sales quotes together is one permission,
+    named once, declaring both.
     """
 
     name: str
     why: str
     required: bool = True
     reads: tuple[str, ...] = ()
+    writes: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        unknown = [r for r in self.reads if r not in READ_STAGES]
-        if unknown:
-            raise ValueError(
-                f"{self.name}: {', '.join(unknown)} "
-                f"{'is' if len(unknown) == 1 else 'are'} not a sync stage "
-                f"(one of {', '.join(READ_STAGES)})")
+        for kind, declared, stages in (("sync stage", self.reads, READ_STAGES),
+                                       ("write stage", self.writes, WRITE_STAGES)):
+            unknown = [s for s in declared if s not in stages]
+            if unknown:
+                raise ValueError(
+                    f"{self.name}: {', '.join(unknown)} "
+                    f"{'is' if len(unknown) == 1 else 'are'} not a {kind} "
+                    f"(one of {', '.join(stages)})")
 
     def to_dict(self) -> dict[str, Any]:
         return {"name": self.name, "why": self.why,
-                "required": self.required, "reads": list(self.reads)}
+                "required": self.required, "reads": list(self.reads),
+                "writes": list(self.writes)}
 
 
 @dataclass(frozen=True)
@@ -136,6 +181,12 @@ class ConnectorSpec:
     #: answer *is* per connector: a screen that shows one system's list while
     #: another system is selected is telling an owner to grant something that
     #: does not exist where they are looking.
+    #: What this system calls the document a quote becomes there — "sales
+    #: quote", "quotation". Sibling of ``company_term`` above and for the same
+    #: reason: telling a Business Central user their "estimate" was created
+    #: names a record type their own system does not have, so they go looking
+    #: for it. Defaulted because it is right for most, overridden where not.
+    quote_term: str = "sales quote"
     permissions: tuple[Permission, ...] = ()
     #: One sentence on where those grants are made, in that console's own
     #: navigation. Rendered above the list.
@@ -149,6 +200,20 @@ class ConnectorSpec:
     #: asking somebody to find a GUID. None for systems whose sign-in is
     #: already scoped to one company.
     discover: Optional[Callable[..., list[dict[str, Any]]]] = None
+
+    @property
+    def writes(self) -> tuple[str, ...]:
+        """What this connector can create in its system, in ``WRITE_STAGES``
+        order.
+
+        Derived from ``permissions`` rather than declared a second time: a
+        capability written down twice is one that can disagree with itself, and
+        the copy a screen reads would be the one nobody updated. It also keeps
+        the two inseparable — a connector cannot advertise a write without
+        naming the grant an owner has to click for it.
+        """
+        claimed = {stage for p in self.permissions for stage in p.writes}
+        return tuple(s for s in WRITE_STAGES if s in claimed)
 
 
 @dataclass(frozen=True)
@@ -291,6 +356,73 @@ def split_credential_inputs(spec: ConnectorSpec,
 # arrive in that system's dress, and the canonical shape wants ISO dates —
 # without ever inventing a value: an unreadable date comes back as None, and
 # ``normalize`` then refuses the row by name instead of this layer guessing.
+
+# ── writing: the three things every connector's write needs ─────────────────
+# Shared because they are, and because the first two are each a way a write can
+# quietly become a duplicate: a reference that escapes its filter matches the
+# wrong rows, and a reference compared too strictly matches none and so reports
+# "safe to send again" about a record that exists.
+
+
+#: The longest reference a write may carry. Business Central's
+#: ``externalDocumentNumber`` is a documented ``Code[35]`` and is the smallest
+#: field any of these systems stores a reference in, so it bounds all of them.
+#: A reference silently truncated on the way in is one the settle read cannot
+#: find, and "cannot find" is the branch that authorises sending again — so
+#: refusing a reference no known field is proven to hold is the safe direction.
+EXTERNAL_REF_MAX = 35
+
+
+def quote_literal(value: str) -> str:
+    """One string literal inside a query, whichever grammar is asking.
+
+    A single quote in the value ends the literal early and the rest of it
+    becomes syntax — so a reference carrying one builds a filter that means
+    something other than what was asked. OData and SQL escape it the same way,
+    by doubling, which is why the connectors reading through OData filters and
+    the one reading through SuiteQL share this rather than each keeping a copy
+    of a one-line rule that is easy to write subtly wrong.
+    """
+    return value.replace("'", "''")
+
+
+def same_reference(held: str, sent: str) -> bool:
+    """Whether a row the server matched really carries the reference we sent.
+
+    Case- and space-insensitive on purpose. ``externalDocumentNumber`` is an AL
+    ``Code[35]``, which upper-cases and trims what is stored in it, while the
+    references generated here carry lowercase hex. An exact comparison can only
+    turn *found* into *not found* — and *not found* is the branch that tells an
+    operator retrying is safe. So a strict re-check here does not tighten the
+    protocol, it authorises the duplicate it exists to prevent.
+    """
+    return held.strip().casefold() == sent.strip().casefold()
+
+
+def money(value: Any) -> Any:
+    """A quantity or a price, as JSON should carry it.
+
+    Money goes out as a string, whatever it arrived as. ``Decimal`` is not
+    JSON-serialisable, and a ``float`` serialises to whatever repr it has —
+    which is the live path here, since ``store.Line.quoted`` is a float. Both
+    are routed through ``Decimal(str(...))``, the same normalisation the Zoho
+    adapter applies, so the number on the document is the number that was
+    priced rather than a binary approximation of it.
+
+    No arithmetic, deliberately: what this writes was computed in
+    ``commercial`` and must not be recomputed at the boundary (§1).
+    """
+    if value is None:
+        return None
+    if isinstance(value, (Decimal, float, int, str)):
+        try:
+            return str(Decimal(str(value)))
+        except (ArithmeticError, ValueError):
+            # Unparseable is not something to guess at: send it on and let
+            # Business Central refuse it by name.
+            return value
+    return value
+
 
 def iso_date(value: Any) -> Optional[str]:
     """A date in whatever dress the source wears → ``YYYY-MM-DD``, or None.

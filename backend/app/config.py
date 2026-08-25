@@ -8,9 +8,24 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Optional
 
 # backend/app/config.py -> repo root is three parents up.
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _optional_positive_int(raw: Optional[str]) -> Optional[int]:
+    """A positive int from the environment, or ``None`` when it does not say.
+
+    ``None`` and a number are different facts, so an unset, blank or unparseable
+    value returns ``None`` rather than a default — the caller publishes it as
+    "not declared". A zero or negative count is not a worker count either.
+    """
+    try:
+        value = int((raw or "").strip())
+    except ValueError:
+        return None
+    return value if value > 0 else None
 
 
 def _load_dotenv(path: Path) -> None:
@@ -92,7 +107,19 @@ class Settings:
         "PIE_CORPUS",
         PIE_PARSER_ROOT / "corpora" / "kmt_zcnc_2026-07_nomenclature.csv",
     )
-    PIE_PACK: Path = _path_env("PIE_PACK", PIE_PARSER_ROOT / "packs" / "kennametal_widia")
+    # The ORGANISATION layer, not the manufacturer one. pie-parser packs are
+    # layered as of its 202c0b4: an org layer (routing — how *this* material
+    # master phrases a description) extends a shared nomenclature layer (how the
+    # manufacturer encodes a part number). A pack is loaded by its org
+    # directory; the nomenclature layer is reached through the manifest and is
+    # never named here.
+    #
+    # This is a per-organisation choice by construction, so a deployment serving
+    # a second distributor overrides PIE_PACK for it rather than sharing this
+    # one. The default names the only org layer that exists in the pinned
+    # engine.
+    PIE_PACK: Path = _path_env("PIE_PACK",
+                               PIE_PARSER_ROOT / "packs" / "org" / "zcnc")
 
     # Max ranked alternatives returned per line.
     TOP_N: int = int(os.environ.get("PIE_TOP_N", "6"))
@@ -151,6 +178,45 @@ class Settings:
     # Warnings and errors are *never* dropped by it — see `observability/logs`.
     SYNC_LOG_MAX_LINES: int = int(os.environ.get("SYNC_LOG_MAX_LINES", "5000"))
 
+    # ── backups ──────────────────────────────────────────────────────────────
+    # Where `scripts/backup.sh` writes, and what the `backups` health component
+    # reads. Unset in development on purpose: that database is derived — a
+    # complete re-sync rebuilds it from Zoho, and `python -m app.bootstrap`
+    # builds it from nothing — so there is nothing there worth a retention
+    # policy. On a *production* deployment an unset value is not a preference,
+    # it is a deployment with no backups, and the health check says so rather
+    # than passing quietly (§1). `compose.yaml` sets APP_ENV=production, so the
+    # discriminator is the one this codebase already trusts everywhere else.
+    BACKUP_DIR: Optional[Path] = (
+        _path_env("BACKUP_DIR", Path("/nonexistent"))
+        if os.environ.get("BACKUP_DIR") else None)
+
+    # How old the newest dump may be before the check goes amber. Twenty-six
+    # hours, not twenty-four: a nightly cron that runs at 02:00 has a newest
+    # backup just under a day old for most of the day and just over it right
+    # before the next run, so a 24-hour threshold flaps once a night for
+    # reasons that are not a fault. Two hours of slack is one missed run
+    # detected within a day, without the false alarm.
+    BACKUP_MAX_AGE_HOURS: int = int(os.environ.get("BACKUP_MAX_AGE_HOURS", "26"))
+
+    # How long `scripts/backup.sh` keeps dumps. It never prunes the newest one
+    # whatever its age — a retention policy that can delete the only backup you
+    # have is worse than none.
+    BACKUP_RETAIN_DAYS: int = int(os.environ.get("BACKUP_RETAIN_DAYS", "14"))
+
+    # Below this, a file is not a database. Freshness alone would let a
+    # zero-byte file report as a good backup, which is the shape of every
+    # defect §1 lists: a check whose evidence is missing answering yes.
+    #
+    # The floor is *compressed* bytes, and 1 KiB is measured rather than
+    # guessed: this schema's `CREATE TABLE` statements alone — 74 tables, no
+    # rows at all — are 43 KB of SQL that gzips to about 5.5 KB. So even a dump
+    # of a completely empty database clears the floor five times over, and
+    # anything under it is a truncated write or an empty stream. Re-measure it
+    # if that ever stops being true; do not raise it to catch a *small* backup,
+    # because "smaller than I expected" is a judgement and this is a fact.
+    BACKUP_MIN_BYTES: int = int(os.environ.get("BACKUP_MIN_BYTES", "1024"))
+
     @property
     def is_production(self) -> bool:
         return self.APP_ENV.strip().lower() == "production"
@@ -184,6 +250,32 @@ class Settings:
     ))
     SQL_ECHO: bool = os.environ.get("SQL_ECHO", "0") == "1"
 
+    # ── the request connection, when it is not the privileged one ────────────
+    # PostgreSQL row-level security decides what a query may see from the role
+    # that issued it, and a superuser or a table's owner is exempt — `rolbypassrls`
+    # cannot be forced off per table and `FORCE ROW LEVEL SECURITY` does not
+    # touch it. So a policy is only worth anything if the connection serving
+    # requests is *neither*.
+    #
+    # But this application's one connection is shared. Migrations create the
+    # schema, and every background job and CLI works across tenants on purpose
+    # — the auto-sync scheduler enumerates connections for every organization
+    # with no principal at all. A tenant-scoped role cannot do those things, and
+    # a privileged one cannot be governed by a policy. One URL cannot be both.
+    #
+    # So: `DATABASE_URL` stays the privileged one — Alembic, jobs, CLIs, and the
+    # engine `db.py` builds first — and `APP_DATABASE_URL`, when set, is the
+    # role that *serves requests*. Unset, the two are the same connection and
+    # nothing changes, which is what keeps SQLite dev and the whole test suite
+    # working unaltered.
+    #
+    # Both must name the same database. `db.py` refuses at import if they do
+    # not, because half an application reading a different dataset is a failure
+    # that would first show up as data that intermittently is not there.
+    APP_DATABASE_URL: Optional[str] = (
+        _normalize_database_url(os.environ["APP_DATABASE_URL"])
+        if os.environ.get("APP_DATABASE_URL") else None)
+
     # Postgres connection pool (ignored on SQLite). The defaults are sized for
     # this deployment's actual shape — compose runs UVICORN_WORKERS=2, so the
     # worst case is workers × (size + overflow) = 2 × 15 = 30 connections,
@@ -210,6 +302,49 @@ class Settings:
     # and credentials, and trust/ exists so those never reach a log file.
     DB_SLOW_QUERY_MS: int = int(os.environ.get("DB_SLOW_QUERY_MS", "1000"))
 
+    # How many API workers the supervisor was told to start — read by the
+    # metrics export, which is per-process and says so.
+    #
+    # **Declared, not observed.** A worker cannot see its siblings: this is the
+    # number the deploy asked for (`deploy/backend.Dockerfile` and both compose
+    # stacks set it), not a count of what is running. When nothing declares it
+    # the value is `None`, which the export publishes as `null` — "unknown",
+    # never "one". Defaulting it to 1 would be a lie in exactly the case a
+    # reader most needs the truth: a scraper that believes there is one worker
+    # stops after one scrape and reports a fraction of the traffic as the whole.
+    UVICORN_WORKERS: Optional[int] = _optional_positive_int(
+        os.environ.get("UVICORN_WORKERS"))
+
+    # The bearer token a Prometheus scraper presents to
+    # `/api/v1/internal/observability/prometheus`, and to nothing else.
+    #
+    # A static secret rather than a user, a role or a service account, because a
+    # scraper is not a person: it has no organization, reads no tenant data, and
+    # the exposition it fetches is process-level counters with no cost, price or
+    # margin anywhere in it. Minting a principal for it would put a credential
+    # that can be replayed against every other route into a config file on a
+    # monitoring host. Prometheus supports `bearer_token` natively, so this is
+    # the mechanism it already has.
+    #
+    # **Empty means the endpoint serves nobody**, not that it serves everyone.
+    # An unset secret that opens a door is the failure mode this codebase treats
+    # as a defect, and a deployment that has simply not configured monitoring is
+    # by far the most common way for this to be empty. The endpoint answers 401
+    # either way — the same 401 a wrong token gets — so an unauthenticated
+    # caller cannot learn from the response whether a token is configured.
+    METRICS_SCRAPE_TOKEN: str = os.environ.get("METRICS_SCRAPE_TOKEN", "")
+
+    # ── Redis (provisioned infrastructure; no feature requires it yet) ──────
+    # Both compose stacks run a Redis next to the API for the state that must
+    # one day live outside a process: cross-replica rate limiting (the signup
+    # limiter in routers/onboarding.py is in-process and says so), cache, and
+    # background-job coordination if the thread-based sync ever needs to span
+    # replicas. Empty means "none configured", and nothing may *require* Redis
+    # to serve a request — a candidate consumer degrades to its in-process
+    # behaviour, the way the signup limiter behaves today. Kept honest on
+    # purpose: config that pretends a dependency is load-bearing before any
+    # code reads it teaches operators to ignore this file.
+    REDIS_URL: str = os.environ.get("REDIS_URL", "")
 
     # Create the database + schema + demo users on startup, so a fresh clone
     # runs without a separate migrate/seed step. Always disabled in production,
@@ -562,4 +697,5 @@ settings = Settings()
 settings.PIE_CORPUS = _path_env(
     "PIE_CORPUS", settings.PIE_PARSER_ROOT / "corpora" / "kmt_zcnc_2026-07_nomenclature.csv"
 )
-settings.PIE_PACK = _path_env("PIE_PACK", settings.PIE_PARSER_ROOT / "packs" / "kennametal_widia")
+settings.PIE_PACK = _path_env(
+    "PIE_PACK", settings.PIE_PARSER_ROOT / "packs" / "org" / "zcnc")

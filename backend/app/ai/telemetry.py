@@ -29,6 +29,16 @@ class CallTelemetry:
     model: str = ""
     prompt_version: str = ""
     context_hash: str = ""
+    #: SHA-256 of the exact text sent to the provider, or None where nothing was
+    #: sent (a cache hit, an up-front suppression).
+    #:
+    #: The hash, never the text. ``context_hash`` is the *input bundle*'s
+    #: identity and two different prompt templates over one bundle share it, so
+    #: it cannot answer "was this the prompt you say it was". This can. The
+    #: plaintext has one home — ``model_payloads``, encrypted under the tenant
+    #: key — and a second copy on an audit chain that survives erasure by design
+    #: would quietly undo that.
+    prompt_sha256: Optional[str] = None
     subject_entity_id: Optional[str] = None
     recipient_role: Optional[str] = None
     # path taken
@@ -54,6 +64,7 @@ class CallTelemetry:
             "decision_type": self.decision_type, "ai_status": self.ai_status,
             "provider": self.provider, "model": self.model,
             "prompt_version": self.prompt_version, "context_hash": self.context_hash,
+            "prompt_sha256": self.prompt_sha256,
             "subject_entity_id": self.subject_entity_id,
             "recipient_role": self.recipient_role,
             "provider_called": self.provider_called, "cache_hit": self.cache_hit,

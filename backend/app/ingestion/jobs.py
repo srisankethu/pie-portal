@@ -43,6 +43,30 @@ distributed, so it guards this process and says so rather than implying a
 guarantee it cannot make. The thing that made the guard's absence matter — two
 scheduler threads both deciding a pull was due — is now held by a database
 lease (``app/leases.py``), and the reaping and status model did not change.
+
+**The other half of that guard is in the database, and the lock is a fast path
+in front of it.** A lease settles which process *schedules*; it says nothing
+about two clicks arriving on two workers at once. Two partial unique indexes on
+``sync_runs`` (``models.SyncRun.__table_args__``) allow at most one active run
+per connection *among the rows that name one*, and at most one active
+all-companies run per organization. ``start_sync`` catches the losing insert and
+hands back the run that won, which is the same answer the lock gives in-process
+— a caller cannot tell which layer decided it. The lock stays because winning
+in-process is cheaper than a refused INSERT, and because it keeps the common
+case a plain read-then-write.
+
+**What the indexes do not cover, stated because the paragraph above is about a
+sentence that once overclaimed.** An all-companies run carries a NULL
+``connection_id`` and therefore lives in the *other* index, so nothing at the
+database level stops it being active at the same time as a per-connection run
+for a company it is pulling. That cross-exclusion is ``_active_for_start``
+alone, and ``_active_for_start`` is still a read followed by an insert — the
+exact shape the indexes were added to remove, surviving in the one case they
+cannot express. Two workers can still start an umbrella pull and a
+single-company pull for a company inside it. The writes are idempotent, so the
+cost is duplicated Zoho calls against that company's rate limit rather than
+wrong data. Closing it needs a single active-slot key both kinds of run compete
+for, which is a schema change and its own commit.
 """
 from __future__ import annotations
 
@@ -55,7 +79,8 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Callable, Iterator, Optional
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..clock import aware as _aware, now as _now, today as _clock_today
@@ -191,6 +216,92 @@ def last_successful_run(session: Session, organization_id: str) -> Optional[mode
                models.SyncRun.status == "OK")
         .order_by(models.SyncRun.started_at.desc())
         .limit(1)).first()
+
+
+#: The entity counters a run keeps of rows it actually wrote. Named once
+#: because two readers add them up, and a list that drifted between them would
+#: make the same run report two different totals. All are non-nullable integer
+#: columns, so this sums real values — no ``or 0`` hiding a missing one.
+#:
+#: Three columns are deliberately outside it. ``documents_fetched`` and
+#: ``documents_resumed`` count what was *read* from the source, which is the
+#: other side of the ledger and is reported separately; ``assignments`` counts
+#: links drawn between rows already written, so adding it would count the same
+#: pull twice.
+RECORD_COUNTERS = ("customers", "products", "sales_txns", "cost_records",
+                   "vendors", "stock_snapshots", "payments", "purchase_orders",
+                   "sales_orders", "vendor_payments")
+
+
+def records_written(run: models.SyncRun) -> int:
+    """How many rows of read model this run wrote."""
+    return sum(getattr(run, name) for name in RECORD_COUNTERS)
+
+
+def unfinished_runs(session: Session, *,
+                    organization_id: Optional[str] = None) -> list[models.SyncRun]:
+    """Every run the table still calls active — **read-only, and unreaped**.
+
+    ``active_run`` and ``active_runs`` answer the same question for the paths
+    that need the *slot*: they mark a run that stopped reporting as FAILED,
+    because a dead row must not lock the next sync out. This one does not, and
+    the difference is deliberate rather than an oversight.
+
+    A reporting endpoint is a GET that any manager may poll every thirty
+    seconds. Reaping from there would mean an observability screen deciding
+    somebody else's job had died and writing that verdict — a side effect the
+    caller never asked for, on a read path, racing whichever worker actually
+    owns the run. So this reads, and the caller splits live from stalled with
+    ``is_stale``. Both are reported: a stalled run counted as active would
+    overstate what is happening, and one dropped silently would understate it.
+
+    ``organization_id`` omitted means every organization, which is what a
+    deployment-wide capacity figure needs. Anything tenant-facing passes it.
+    """
+    stmt = select(models.SyncRun).where(models.SyncRun.status.in_(ACTIVE))
+    if organization_id is not None:
+        stmt = stmt.where(models.SyncRun.organization_id == organization_id)
+    return list(session.scalars(stmt.order_by(models.SyncRun.started_at.desc())).all())
+
+
+def runs_touching(session: Session, organization_id: str,
+                  since: datetime) -> list[models.SyncRun]:
+    """Runs of one organization that began *or ended* inside a window.
+
+    Not keyed on ``started_at`` alone. ``finished_at`` alone would be worse —
+    it is nullable, so a window built on it silently drops every run still
+    going and every row a dead process left without an end time — but
+    ``started_at`` alone loses the mirror case, and that one is the case an
+    operator cares about most: a first-time backfill that begins Monday 09:00
+    and fails Tuesday 14:00 is 30 hours old at Tuesday 15:00, so a
+    started-in-the-last-24h window reports zero failures for the day it failed.
+
+    The disjunction catches both. A long run still in flight, begun before the
+    window, is deliberately absent from here and reported in the active block
+    instead: it is current state, not something that happened in the window.
+    """
+    return list(session.scalars(
+        select(models.SyncRun)
+        .where(models.SyncRun.organization_id == organization_id,
+               or_(models.SyncRun.started_at >= since,
+                   models.SyncRun.finished_at >= since))
+        .order_by(models.SyncRun.started_at.desc())).all())
+
+
+def last_run(session: Session, organization_id: str, *,
+             status: Optional[str] = None) -> Optional[models.SyncRun]:
+    """The most recent run, optionally of one status. ``None`` if there is none.
+
+    The anchor that lets a caller tell "nothing was due" from "nothing has
+    happened for a week". A window count of zero is the same integer either
+    way; the date of the last success is not.
+    """
+    stmt = (select(models.SyncRun)
+            .where(models.SyncRun.organization_id == organization_id))
+    if status is not None:
+        stmt = stmt.where(models.SyncRun.status == status)
+    return session.scalars(
+        stmt.order_by(models.SyncRun.started_at.desc()).limit(1)).first()
 
 
 # ── slicing a long pull into calendar windows ───────────────────────────────
@@ -1262,6 +1373,52 @@ def _sync_targets(session: Session, organization_id: str,
     return [_Target(None, "")]
 
 
+def _active_for_start(session: Session, organization_id: str,
+                      connection_id: Optional[str]) -> Optional[models.SyncRun]:
+    """The run that would overlap this one, if there is one.
+
+    One place, called twice: once before the insert and once after the database
+    refuses it. Two spellings of "is anything blocking this start?" would drift,
+    and the second one — the one only a lost race reaches — is the copy nobody
+    would notice going wrong.
+
+    This connection's job, not the organization's. Two connected Zoho companies
+    are two independent pulls against two different APIs, and there is no reason
+    one should wait for the other — they were serialised only because this check
+    did not look at which connection was running.
+
+    Still one per connection: clicking Sync twice on the same company should
+    show the job already in flight, not start a second pull that fights it for
+    the same rows.
+    """
+    existing = active_run(session, organization_id,
+                          connection_id=connection_id, any_connection=False)
+    if existing is not None:
+        return existing
+    # An all-companies run covers this connection too, now that it really reads
+    # every one of them rather than only the first. Two jobs writing the same
+    # rows from the same API is idempotent, but it is twice the Zoho calls and a
+    # progress display that cannot say which job the counter belongs to — so the
+    # overlap is refused from *both* sides. It used to be refused from one: the
+    # umbrella's own guard is keyed on a NULL connection and a single-company
+    # pull never carries one, so an all-companies run started straight past a
+    # company already pulling.
+    #
+    # This is also the half the unique indexes cannot express. A partial unique
+    # index says "at most one row in this group"; it has no way to say "and none
+    # in *that* group either". The database holds the per-connection and
+    # umbrella guarantees; this cross-exclusion stays here.
+    if connection_id is None:
+        # Every pull in flight rather than the newest one. `active_run` reads a
+        # single row, so a dead newest row is reaped to None while the live pull
+        # behind it goes unseen — and this is the question where any live pull
+        # at all is an overlap.
+        live = active_runs(session, organization_id)
+        return live[0] if live else None
+    return active_run(session, organization_id,
+                      connection_id=None, any_connection=False)
+
+
 def start_sync(session: Session, organization_id: str, *,
                since: Optional[date] = None,
                full: bool = False, connection_id: Optional[str] = None,
@@ -1279,50 +1436,56 @@ def start_sync(session: Session, organization_id: str, *,
     scripted caller (a cron, a CLI) block on the work it just asked for.
     """
     with _start_lock:
-        # This connection's job, not the organization's. Two connected Zoho
-        # companies are two independent pulls against two different APIs, and
-        # there is no reason one should wait for the other — they were
-        # serialised only because this check did not look at which connection
-        # was running.
-        #
-        # Still one per connection: clicking Sync twice on the same company
-        # should show the job already in flight, not start a second pull that
-        # fights it for the same rows.
-        existing = active_run(session, organization_id,
-                              connection_id=connection_id, any_connection=False)
-        # An all-companies run covers this connection too, now that it really
-        # reads every one of them rather than only the first. Two jobs writing
-        # the same rows from the same API is idempotent, but it is twice the
-        # Zoho calls and a progress display that cannot say which job the
-        # counter belongs to — so the overlap is refused from *both* sides.
-        # It used to be refused from one: the umbrella's own guard is keyed on
-        # a NULL connection and a single-company pull never carries one, so an
-        # all-companies run started straight past a company already pulling.
-        if existing is None:
-            if connection_id is None:
-                # Every pull in flight rather than the newest one. `active_run`
-                # reads a single row, so a dead newest row is reaped to None
-                # while the live pull behind it goes unseen — and this is the
-                # question where any live pull at all is an overlap.
-                live = active_runs(session, organization_id)
-                existing = live[0] if live else None
-            else:
-                existing = active_run(session, organization_id,
-                                      connection_id=None, any_connection=False)
+        existing = _active_for_start(session, organization_id, connection_id)
         if existing is not None:
             return existing, False
 
         since = resolve_since(since)
-        run = models.SyncRun(
-            organization_id=organization_id, source=settings.ZOHO_SOURCE,
-            status="QUEUED", started_at=_now(), heartbeat_at=_now(),
-            phase="Queued", triggered_by=triggered_by, since=since,
-            connection_id=connection_id)
-        session.add(run)
-        # Committed before dispatch so the worker's own session can see the row,
-        # and so a crash between here and the thread start still leaves a
-        # queued job the reaper can resolve.
-        session.commit()
+        # The read above and the insert below are two statements, and the lock
+        # holding them together is process-local. On the other worker the same
+        # two statements interleave, both reads say "nothing running", and both
+        # inserts land — which is why the real guard is the partial unique
+        # index on ``sync_runs`` (see ``models.SyncRun.__table_args__``). Losing
+        # to it is an ordinary outcome, not an error: it is the same race the
+        # lock wins in-process, decided one layer down, and the caller must not
+        # be able to tell which layer decided it.
+        for attempt in range(3):
+            run = models.SyncRun(
+                organization_id=organization_id, source=settings.ZOHO_SOURCE,
+                status="QUEUED", started_at=_now(), heartbeat_at=_now(),
+                phase="Queued", triggered_by=triggered_by, since=since,
+                connection_id=connection_id)
+            session.add(run)
+            # Committed before dispatch so the worker's own session can see the
+            # row, and so a crash between here and the thread start still
+            # leaves a queued job the reaper can resolve.
+            try:
+                session.commit()
+                break
+            except IntegrityError:
+                # The other worker's row committed first. The failed commit has
+                # already rolled the transaction back at the database; this is
+                # the session catching up with that, and it discards nothing the
+                # commit above had not already lost. (``start_sync`` commits the
+                # caller's session either way, so it is not a place to hold
+                # unrelated pending work.)
+                session.rollback()
+                existing = _active_for_start(session, organization_id,
+                                             connection_id)
+                if existing is not None:
+                    return existing, False
+                # Refused, yet nothing is running: the winner reached a terminal
+                # status between the refusal and this read, so the index will
+                # accept a row now. Insert again rather than reporting either an
+                # error or a run that does not exist — the caller asked for a
+                # sync and no sync is happening.
+                if attempt == 2:
+                    # Three refusals with no visible winner is not a
+                    # concurrency outcome — a pull takes minutes, so nothing can
+                    # legitimately start and finish three times inside this
+                    # loop. Something is wrong with the index or the rows, and
+                    # saying so beats inventing a run to hand back.
+                    raise
 
     (dispatch or default_dispatch())(run.sync_run_id, since, full, connection_id)
     # An inline dispatcher has just finished the work through a different
@@ -1447,7 +1610,30 @@ def start_all(session: Session, organization_id: str, *,
         host.heartbeat_at = _now()
         session.commit()
 
+    # Re-activating a finished run, so the organization-wide analysis has a row
+    # to narrate through, is now subject to ``uq_sync_run_active_connection``: a
+    # fresh pull for this same connection can start in the gap between the last
+    # pull committing and this line, and then the database is right to refuse —
+    # that connection really does have a newer active run.
+    #
+    # Flushed here, alone, rather than left for the first ``phase()`` commit
+    # inside ``execute_analysis`` to discover. There the IntegrityError lands
+    # inside the ``except``/``finally`` below, whose own commit then fails on the
+    # rolled-back session and raises PendingRollbackError out of ``start_all`` —
+    # so pulls that all succeeded would be reported as a crash.
     host.status = "RUNNING"
+    try:
+        session.flush()
+    except IntegrityError:
+        # A newer pull owns this connection's active slot. Analyse anyway — the
+        # read model is written and analysing it is what this call is for — but
+        # leave the run terminal instead of fighting for the slot. ``phase``
+        # still moves, so the log keeps its narration, and the screen shows the
+        # newer pull as the active one, which is what is actually true.
+        session.rollback()
+        host = session.get(models.SyncRun, host.sync_run_id)
+        log.info("analysis run %s left terminal: a newer pull holds the active "
+                 "slot for connection %s", host.sync_run_id, host.connection_id)
     try:
         notes = execute_analysis(
             session, host, organization_id,

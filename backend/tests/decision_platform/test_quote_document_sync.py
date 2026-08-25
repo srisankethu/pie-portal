@@ -13,7 +13,7 @@ rather than a row: it feeds every status Zoho can produce plus several it
 cannot, and requires that exactly one of them — the one the ERP explicitly
 records as declined — comes out LOST.
 
-The second hazard is the mirror of the first. ``quote_documents`` is derived
+The second hazard is the mirror of the first. ``erp_quotes`` is derived
 state: every column is rewritten from the payload on every sync, so a loss
 reason stored there would survive exactly until the next pull. Human facts live
 on ``quote_outcomes``, which no sync opens — asserted here by running two full
@@ -286,7 +286,7 @@ def test_a_full_resync_cannot_change_a_recorded_loss_reason(session):
     A human loss reason recorded against an ERP-raised quote survives two more
     full syncs, byte for byte. It is not that the sync avoids writing to
     ``quote_outcomes``: it never opens the table, and there is nowhere on
-    ``quote_documents`` for a reason to be put in the first place.
+    ``erp_quotes`` for a reason to be put in the first place.
 
     The ERP row underneath is deliberately allowed to move — ``est-lost`` is
     re-pulled with its status changed — so the test proves the human record
@@ -318,8 +318,8 @@ def test_a_full_resync_cannot_change_a_recorded_loss_reason(session):
     assert _docs(session)["est-lost"].outcome == "UNRECORDED"
 
 
-def test_rebuilding_quote_documents_from_nothing_keeps_every_link(session):
-    """``DELETE FROM quote_documents`` plus a full re-sync leaves every human
+def test_rebuilding_erp_quotes_from_nothing_keeps_every_link(session):
+    """``DELETE FROM erp_quotes`` plus a full re-sync leaves every human
     pointer resolving — and every surrogate different.
 
     ``quote_outcomes.quote_document_ref`` holds the id the *source system*
@@ -338,7 +338,14 @@ def test_rebuilding_quote_documents_from_nothing_keeps_every_link(session):
     surrogates_before = {ref: row.quote_document_id
                          for ref, row in _docs(session).items()}
 
-    session.execute(text("DELETE FROM quote_documents"))
+    # ``erp_quotes``, not ``quote_documents``. The merge with main renamed
+    # this table — main holds a *different* one under the old name, recording
+    # a quote written *into* a source system — and this line kept working
+    # against that one: the DELETE succeeded, removed nothing of ours, and the
+    # "rebuild" then found every row still present and reused its surrogates.
+    # The guard below is what said so, which is why it is phrased as an
+    # instruction to check the fixture.
+    session.execute(text("DELETE FROM erp_quotes"))
     session.commit()
     _sync(session, [_quote("est-a", "declined", declined_date="2026-05-20"),
                     _quote("est-b", "expired")])
@@ -656,7 +663,7 @@ def test_a_platform_quote_that_became_an_erp_quote_is_one_row_not_two(session):
     """The link that stops the same quote being counted twice.
 
     A quote this platform priced and pushed to Zoho exists as both a
-    ``quote_outcomes`` row and, after the next pull, a ``quote_documents`` row.
+    ``quote_outcomes`` row and, after the next pull, an ``erp_quotes`` row.
     ``routers.quote`` records the estimate id on the human row at the moment it
     learns it, which is the only durable half of that link — the in-process
     quote store's ids never reach the database at all.
@@ -751,7 +758,7 @@ def test_an_unreadable_view_stamp_costs_the_field_and_not_the_quote():
 
     ``client_viewed_time`` is an optional read receipt. A stamp nothing could
     place raised from ``_parse_timestamp``, the sync recorded a skip, and that
-    quote never reached ``quote_documents`` at all — no header, no total, no
+    quote never reached ``erp_quotes`` at all — no header, no total, no
     status. It then appeared in no win-rate denominator and on no worklist,
     which is the silent shrinking this pull exists to prevent.
 

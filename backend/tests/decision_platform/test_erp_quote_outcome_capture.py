@@ -100,7 +100,7 @@ def test_an_erp_raised_quote_can_be_recorded_as_lost_over_http(api_client, book)
     row = book.query(models.QuoteOutcome).filter_by(
         organization_id=ORG, quote_document_ref="est-1").one()
     # The human fact lives on its own table and points at the document by
-    # value; nothing was written back onto the derived quote_documents row.
+    # value; nothing was written back onto the derived erp_quotes row.
     assert row.quote_id is None
     assert row.customer_id == "c1"
     assert book.query(models.QuoteDoc).filter_by(

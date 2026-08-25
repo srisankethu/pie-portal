@@ -44,8 +44,29 @@ class DiscountRequest(BaseModel):
 
 
 class EstimateResponse(BaseModel):
+    """What became of a send, in the vocabulary of the system it went to.
+
+    Deliberately carries no economics. This is the one payload a salesperson
+    sees after pressing send, and §1's rule is that a field whose only purpose
+    is to answer a margin question does not belong in it — not a count, not a
+    flag, not a rule code. Nothing here is derived from cost.
+    """
+
     ok: bool
-    estimateNumber: Optional[str] = None
+    #: The document's number in the system that holds it. Renamed from
+    #: ``estimateNumber``: "estimate" is Zoho's word, and the same field now
+    #: carries a Business Central sales quote number.
+    documentNumber: Optional[str] = None
     lineCount: Optional[int] = None
     blockers: List[str] = []
     message: str = ""
+    #: The connector key that holds it, and that system's own name for itself
+    #: and for the document. A screen saying "estimate" to a Business Central
+    #: user names a record type they cannot find.
+    system: str = ""
+    systemLabel: str = ""
+    documentTerm: str = ""
+    #: True where the document was already there under this quote's reference
+    #: and was reported rather than created. "Sent" and "was already sent" are
+    #: different facts, and prose was the only thing distinguishing them.
+    alreadyExisted: bool = False

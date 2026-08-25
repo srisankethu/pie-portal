@@ -111,10 +111,39 @@ export interface QuoteSummary {
  *
  *  `current` is false once the quote's products, quantities or rates have moved
  *  since — the estimate exists but no longer describes what is on screen. */
+/** What became of a send, named in the vocabulary of the system it went to.
+ *
+ *  `systemLabel` and `documentTerm` come from the server rather than being
+ *  chosen here: telling a Business Central user their "estimate" was created
+ *  names a record type their own system does not have, and the screen has no
+ *  way of knowing which system a given quote's books are. */
+export interface EstimateResult {
+  ok: boolean;
+  documentNumber: string | null;
+  lineCount: number | null;
+  blockers: string[];
+  message: string;
+  /** The connector key, and that system's own names for itself and for the
+   *  document a quote becomes there. Empty on a refusal that never reached a
+   *  system — there is nothing to name. */
+  system: string;
+  systemLabel: string;
+  documentTerm: string;
+  /** True where the document was already there under this quote's reference.
+   *  "Sent" and "was already sent" are different facts. */
+  alreadyExisted: boolean;
+}
+
 export interface QuoteEstimate {
   number: string;
   lineCount: number | null;
   current: boolean;
+  /** The system holding it, and its own names for itself and the document.
+   *  "Sent · SQ-1001" does not say where, and two connected systems can both
+   *  answer to that number. */
+  system: string;
+  systemLabel: string;
+  documentTerm: string;
 }
 
 /** How the lines in this response were produced. Sent only by `/intake`, so it

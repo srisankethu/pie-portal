@@ -80,6 +80,12 @@ _ZERO = Decimal("0")
 #: Fewer decided quotes than this and a win rate is arithmetic rather than
 #: evidence — see the module docstring. Applied to every slice independently,
 #: so the book can have a rate while a single customer does not.
+#:
+#: A sample-size floor answers "is there enough evidence", never "could this
+#: evidence have gone the other way". Both have to be Yes: a slice of eight
+#: quotes none of which was ever sent clears this floor and reports 0%, which
+#: is a fabrication about a book whose wins were unrecordable. ``Slice`` checks
+#: the second question separately.
 MIN_DECIDED_QUOTES = 8
 
 #: Won *and* lost observations needed on one product-and-quantity-band before
@@ -171,6 +177,12 @@ class DecidedQuote:
     customer_id: str
     customer_label: str
     won: bool
+    #: Whether this quote ever reached SENT. A quote that did not could never
+    #: have come back WON — the transition table only reaches WON through SENT
+    #: — so it sits in a win-rate denominator as a row the numerator could not
+    #: have reached. Carried per quote rather than inferred from ``won``,
+    #: because the whole point is to count the ones that are not wins.
+    ever_sent: bool
     #: A ``QuoteLossReason`` value, or ``LOSS_REASON_NOT_RECORDED``. Empty on a
     #: won quote — there is nothing to explain.
     loss_reason: str
@@ -230,6 +242,9 @@ class Slice:
     won: int
     won_value: Decimal
     lost_value: Decimal
+    #: How many of ``decided`` ever reached SENT — the ones a win could have
+    #: come from. Zero means this slice's wins were unrecordable, not absent.
+    ever_sent: int = 0
 
     @property
     def lost(self) -> int:
@@ -237,7 +252,19 @@ class Slice:
 
     @property
     def estimable(self) -> bool:
-        return self.decided >= MIN_DECIDED_QUOTES
+        """Enough decided quotes, *and* a numerator any of them could reach.
+
+        The second half is not a refinement of the first. A slice where nothing
+        was ever sent has no path to a win at all, so its 0% is not a low win
+        rate — it is a measurement of a question the evidence cannot answer, and
+        it looked identical to a genuinely bad quarter on the screen.
+
+        A recorded win settles it whatever the sent stamps say: rows written
+        before that column meant anything carry none, and reading them alone
+        would turn a slice that demonstrably won something into an UNKNOWN.
+        """
+        return (self.decided >= MIN_DECIDED_QUOTES
+                and bool(self.won or self.ever_sent))
 
     @property
     def win_rate(self) -> Optional[float]:
@@ -249,6 +276,7 @@ class Slice:
         return {
             "key": self.key, "label": self.label,
             "decided": self.decided, "won": self.won, "lost": self.lost,
+            "ever_sent": self.ever_sent,
             "win_rate": self.win_rate, "estimable": self.estimable,
             "won_value": float(self.won_value),
             "lost_value": float(self.lost_value),
@@ -261,6 +289,7 @@ def _slice(key: str, label: str, quotes: list[DecidedQuote]) -> Slice:
         key=key, label=label,
         decided=len(quotes),
         won=sum(1 for q in quotes if q.won),
+        ever_sent=sum(1 for q in quotes if q.ever_sent),
         won_value=sum((q.value for q in quotes if q.won), _ZERO),
         lost_value=sum((q.value for q in quotes if not q.won), _ZERO),
     )

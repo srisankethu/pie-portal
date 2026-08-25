@@ -12,7 +12,7 @@ import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Request, Response, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import entitlements as plan
@@ -278,8 +278,8 @@ app.include_router(platform_auth.router)
 app.include_router(onboarding.router)
 
 # The Quote Builder. One surface of the same product, and — since the demo login
-# beside it was removed — one identity: `/api/quotes` authenticates the same
-# platform user every `/api/v1` endpoint does.
+# beside it was removed — one identity: it authenticates the same platform user
+# every other endpoint does.
 app.include_router(quote.router)
 app.include_router(internal.router)
 # The intelligence surfaces — the decision layer and the insight screens — are
@@ -337,6 +337,54 @@ app.include_router(retrospective.router,
 app.include_router(attribution.router)
 app.include_router(ai_settings.router)
 app.include_router(entitlements.router)
+
+
+# ── the two prefixes that were never versioned ───────────────────────────────
+#
+# Every router but two already served `/api/v1/...`; `quotes` and `attribution`
+# were mounted a level up and nothing made them agree. An unversioned surface is
+# fine until the first client integrates against it, after which every breaking
+# change is a negotiation — so they are moved now, while the only client is the
+# bundle in this repo.
+#
+# The old paths keep answering, as a 307. Not for external integrators, who have
+# none yet, but for the deploy itself: a browser tab loaded five minutes before a
+# release is holding a JS bundle full of `/api/v1/quotes/...`, and the release swaps
+# the backend under it. Without these, that tab 404s on the next click and the
+# user sees the product break for no reason they caused.
+#
+# 307 rather than 301 or 302 deliberately: it is the only redirect that obliges
+# the client to repeat the method and the body, so a POST stays a POST. A 302
+# would turn every quote submission into a GET and lose the payload.
+#
+# `include_in_schema=False` keeps them out of the OpenAPI document — they are a
+# migration aid, not part of the interface — and the whole block is a deletion
+# whenever a release goes out that no live tab can predate.
+_LEGACY_PREFIXES = {"/api/quotes": "/api/v1/quotes",
+                    "/api/attribution": "/api/v1/attribution"}
+_LEGACY_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
+
+
+def _redirect_legacy(request: Request, old: str, new: str) -> RedirectResponse:
+    """Same request, versioned path. Query string carried, method preserved."""
+    tail = request.url.path[len(old):]
+    target = f"{new}{tail}"
+    if request.url.query:
+        target = f"{target}?{request.url.query}"
+    return RedirectResponse(target, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
+
+
+for _old, _new in _LEGACY_PREFIXES.items():
+    def _make(old: str = _old, new: str = _new):
+        async def _legacy(request: Request) -> RedirectResponse:
+            return _redirect_legacy(request, old, new)
+        return _legacy
+
+    _handler = _make()
+    app.add_api_route(_old, _handler, methods=_LEGACY_METHODS,
+                      include_in_schema=False)
+    app.add_api_route(f"{_old}/{{_rest:path}}", _handler,
+                      methods=_LEGACY_METHODS, include_in_schema=False)
 
 
 @app.get("/api/health")

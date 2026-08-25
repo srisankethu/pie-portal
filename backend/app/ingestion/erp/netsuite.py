@@ -38,10 +38,15 @@ from datetime import date
 from typing import Any, Iterable, Iterator, Optional
 from urllib.parse import quote, urlsplit
 
-from ..errors import SourceAuthError
+from ..errors import (IngestionError, SourceAuthError, SourceScopeError,
+                      SourceWriteRefused, SourceWriteUncertain,
+                      SourceWriteUnknown)
 from ..source import SkipPredicate
-from .base import (ConnectorSpec, CredentialMaterial, DocumentTally, Field,
-                   Permission, first, group_lines, iso_date, register)
+from ..write_settle import settle_by_read
+from .base import (EXTERNAL_REF_MAX, ConnectorSpec, CredentialMaterial,
+                   DocumentTally, Field, Permission, WrittenDocument,
+                   first, group_lines, iso_date, money, quote_literal,
+                   register)
 from .transport import RestTransport
 
 SYSTEM = "netsuite"
@@ -131,6 +136,22 @@ class NetSuiteClient(RestTransport):
             if not body.get("hasMore"):
                 return
             offset += _PAGE
+
+    def record(self, method: str, path: str, *, json: Any = None,
+               headers: Optional[dict[str, str]] = None,
+               replayable: Optional[bool] = None,
+               expect_json: bool = True) -> Any:
+        """One call against the REST *record* API, signed the same way.
+
+        A different surface from ``suiteql`` — that one queries, this one holds
+        records — but the same account, the same token and the same TBA
+        signature, so nothing about the credential changes to reach it.
+        """
+        url = f"{self._base}/services/rest/record/v1/{path.lstrip('/')}"
+        sent = {"Authorization": self._tba_header(method, url, {}),
+                **(headers or {})}
+        return self.request(method, url, json=json, headers=sent,
+                            replayable=replayable, expect_json=expect_json)
 
     def ping(self) -> dict[str, Any]:
         """Verify the four secrets sign and the account answers, cheaply."""
@@ -344,6 +365,181 @@ class NetSuiteSource:
         self._tally.complete(kind)
 
     # ── the source protocol ──────────────────────────────────────────────────
+    # ── writing ─────────────────────────────────────────────────────────────
+    def create_sales_quotes(self, customer: str, lines: list[dict], *,
+                            customer_ref: Optional[str] = None,
+                            reference: Optional[str] = None) -> WrittenDocument:
+        """Create one estimate, through an upsert that cannot duplicate it.
+
+        NetSuite is the one system here whose write is idempotent by
+        construction. ``PUT …/estimate/eid:{externalId}`` upserts: a record of
+        this type carrying that external id is updated, and one is created if
+        none exists. So sending twice cannot make two estimates — which is the
+        failure the Business Central and Acumatica writers each need a
+        pre-flight read to prevent, and which no amount of care fully closes
+        there.
+
+        That difference is why this marks the call replayable. The transport
+        refuses by default to re-send a non-GET past a 5xx, because it cannot
+        tell "never arrived" from "arrived, answer lost" — a distinction that
+        stops mattering when arriving twice and arriving once have the same
+        result. The ``NetSuite-Idempotency-Key`` header is NetSuite's own belt
+        to that braces, and it is sent for the same reason.
+
+        The settle read is still here, because "cannot duplicate" is not "must
+        have worked": after the retries are spent the outcome is still unknown,
+        and a person still needs to be told which of the three it was.
+        """
+        if not reference:
+            raise SourceWriteRefused(
+                "This quote has no reference, so it could not be given an "
+                "external id — the thing that makes the write idempotent and "
+                "findable afterwards. Nothing was sent.")
+        if not customer_ref:
+            raise SourceWriteRefused(
+                "This quote is not attached to a NetSuite customer, so there is "
+                "no entity to create it against. Nothing was sent.")
+        if len(reference) > EXTERNAL_REF_MAX:
+            raise SourceWriteRefused(
+                f"The reference {reference!r} is longer than the "
+                f"{EXTERNAL_REF_MAX} characters this platform will send as an "
+                f"external id, so it could not be read back reliably. Nothing "
+                f"was sent.")
+        if not lines:
+            raise SourceWriteRefused(
+                "This quote has no priced lines, so there is nothing to create "
+                "in NetSuite. An empty estimate in a customer's ledger is worse "
+                "than none. Nothing was sent.")
+        missing = [str(ln.get("code") or "?") for ln in lines if not ln.get("itemId")]
+        if missing:
+            raise SourceWriteRefused(
+                "These lines carry no NetSuite internal id, and an estimate line "
+                "must name an item that already exists there: " + ", ".join(missing),
+                codes=[c for c in missing if c != "?"])
+        unpriced = [str(ln.get("code") or "?") for ln in lines
+                    if ln.get("rate") is None or ln.get("qty") is None]
+        if unpriced:
+            raise SourceWriteRefused(
+                "These lines have no price or no quantity, and NetSuite would "
+                "price an omitted rate from the item record — quoting a number "
+                "nobody here chose: " + ", ".join(unpriced),
+                codes=[c for c in unpriced if c != "?"])
+
+        # The pre-flight is not here for safety — the upsert cannot duplicate,
+        # which is the whole point of keying it. It is here for *honesty*: an
+        # upsert answers 204 and cannot say whether it created an estimate or
+        # updated one already there, and those are different things to tell
+        # somebody. Asking first is the only way to know which claim to make.
+        existed = self._estimate_by_reference(reference) is not None
+
+        body = {
+            "externalId": reference,
+            "entity": {"id": str(customer_ref)},
+            "item": {"items": [{"item": {"id": str(ln["itemId"])},
+                                "quantity": money(ln.get("qty")),
+                                "rate": money(ln.get("rate"))} for ln in lines]},
+        }
+        try:
+            self._client.record(
+                "PUT", f"estimate/eid:{reference}", json=body,
+                headers={"NetSuite-Idempotency-Key": reference},
+                # Safe to re-send precisely because the upsert is keyed. See the
+                # docstring: this is the one connector where that is true.
+                replayable=True,
+                # A successful upsert answers 204 with no body, so there is
+                # nothing to parse — and nothing to learn from it either, which
+                # is the other half of why the read below is not optional.
+                expect_json=False)
+        except (SourceScopeError, SourceAuthError):
+            raise
+        except SourceWriteUncertain as e:
+            detail = str(e)
+            return settle_by_read(
+                lambda: self._estimate_by_reference(reference),
+                lambda row: self._found(row, customer, len(lines), reference,
+                                        already_existed=True),
+                unknown_message=lambda err: (
+                    f"The estimate could not be completed ({detail}), and "
+                    f"NetSuite could not be re-read to find out ({err}) — "
+                    f"whether it was created cannot be established. Look for "
+                    f"external id {reference} before sending again."),
+                refused_message=(
+                    f"The estimate was not created ({detail}). NetSuite holds "
+                    f"nothing under external id {reference}, and because the "
+                    f"write is keyed on that id, sending again is safe."),
+                reference=reference)
+        except IngestionError as e:
+            raise SourceWriteRefused(
+                f"NetSuite refused the estimate: {e}") from e
+
+        # Read back. Not belt-and-braces: the upsert answers 204 with no body
+        # at all, so there is no echo to trust — and even a body would not say
+        # whether it created the estimate or updated one already there, which
+        # are different things to tell somebody.
+        landed = self._estimate_by_reference(reference)
+        if landed is None:
+            raise SourceWriteUnknown(
+                f"NetSuite accepted the estimate under external id {reference} "
+                f"and then did not return it, so whether it is there cannot be "
+                f"established. Look it up before sending again.",
+                reference=reference)
+        return self._found(landed, customer, len(lines), reference,
+                           already_existed=existed)
+
+    def _estimate_by_reference(self, reference: str) -> Optional[dict[str, Any]]:
+        """The estimate carrying this external id, with its line count.
+
+        Read through SuiteQL rather than the record API: the connector already
+        speaks it, and one query answers both halves — the document and how many
+        lines it holds — where the record API would need a second call.
+        """
+        rows = list(self._client.suiteql(
+            "SELECT t.id, t.tranid, "
+            "(SELECT COUNT(*) FROM transactionline tl "
+            " WHERE tl.transaction = t.id AND tl.item IS NOT NULL) AS lines "
+            "FROM transaction t "
+            f"WHERE t.type = 'Estim' AND t.externalid = '{quote_literal(reference)}'"))
+        return rows[0] if rows else None
+
+    def _found(self, row: dict[str, Any], customer: str, sent_lines: int,
+               reference: str, *, already_existed: bool) -> WrittenDocument:
+        """The estimate NetSuite holds, reported as what it *is*.
+
+        ``already_existed`` is passed in because nothing here can derive it: the
+        upsert answers 204, and a record read back afterwards looks identical
+        whether this call created it or found it. Only the caller, which looked
+        before writing, knows. It used to be hardcoded ``False``, so sending the
+        same quote twice reported "created" both times — about an estimate the
+        second call had merely updated.
+
+        The line count is still read back and still checked: a count that does
+        not match is a different document under our external id, which is
+        neither a send to report nor safe to overwrite silently.
+        """
+        held = row.get("lines")
+        if held is None:
+            raise SourceWriteUnknown(
+                f"NetSuite holds an estimate under external id {reference} but "
+                f"did not say how many lines it has, so whether it is complete "
+                f"cannot be established. Check it before sending again.",
+                reference=reference)
+        if int(held) != sent_lines:
+            raise SourceWriteUnknown(
+                f"NetSuite holds estimate {row.get('tranid')} under external id "
+                f"{reference}, but with {int(held)} lines where this quote has "
+                f"{sent_lines}. It is not the same document, so it is neither "
+                f"safe to report as sent nor safe to send again — check it.",
+                reference=reference)
+        number = str(row.get("tranid") or "")
+        if not number:
+            raise SourceWriteUnknown(
+                "NetSuite returned an estimate with no document number, so it "
+                "cannot be named to whoever has to find it.", reference=reference)
+        return WrittenDocument(document_id=str(row.get("id") or ""),
+                               number=number, customer=customer,
+                               line_count=int(held),
+                               already_existed=already_existed)
+
     def list_contacts(self) -> Iterable[dict[str, Any]]:
         return (translate_entity(r) for r in self._client.suiteql(
             "SELECT id, entityid, companyname, isinactive FROM customer "
@@ -430,15 +626,17 @@ SPEC = register(ConnectorSpec(
     ),
     external_id_field="company_id",
     setup_note=(
-        "Reads NetSuite through SuiteQL (read-only queries) with token-based "
+        "Reads NetSuite through SuiteQL (read-only queries) and writes one "
+        "record type through the REST record API, both with token-based "
         "authentication. An administrator creates one integration record and "
         "one access token; the four values it mints are entered here once. "
         "Item stock levels and payment-to-invoice applications are not read "
         "in this version and their screens will say so rather than estimate."),
     permission_note=(
         "Granted on the role the access token is issued for, at Setup → "
-        "Users/Roles → Manage Roles. NetSuite needs View level on each — the "
-        "platform never writes to NetSuite."),
+        "Users/Roles → Manage Roles. View level is enough everywhere except "
+        "Estimate, which needs Create for the Send action — leave it at View "
+        "and everything reads, and every send refuses."),
     permissions=(
         Permission("Setup → Log in using Access Tokens",
                    "The token-based sign-in itself. Without it the four values "
@@ -469,6 +667,12 @@ SPEC = register(ConnectorSpec(
                    "Suppliers. Optional: bills still land without it, with the "
                    "supplier known only by its internal id.",
                    required=False, reads=("vendors",)),
+        Permission("Transactions → Estimate (Create)",
+                   "Estimates — the record a quote built here becomes. The one "
+                   "thing this platform writes to NetSuite, and the only "
+                   "permission on this list above View level. Without it "
+                   "everything else works and every send refuses.",
+                   required=False, writes=("sales_quotes",)),
         Permission("Transactions → Sales Order (View)",
                    "Sales orders — demand promised but not yet invoiced. "
                    "Optional: without it the platform sees only what has "

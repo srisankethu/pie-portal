@@ -58,8 +58,9 @@ import {
   TOUCH, type Tone,
 } from "./kit";
 import type {
-  AttributionEvaluation, AttributionEvents, AttributionSummary, EvidenceGap,
-  PlatformSession, ValueClassBreakdown, ValueEventRow,
+  AttributionEvaluation, AttributionEvents, AttributionPeriod,
+  AttributionRollup, AttributionSummary, EvidenceGap, PlatformSession,
+  ValueClassBreakdown, ValueEventRow,
 } from "./types";
 import { pct, pp, useInsight } from "./viz/useInsight";
 
@@ -825,9 +826,12 @@ function ValueLedger({ session }: { session: PlatformSession }) {
         )}
       </Paper>
 
-      {/* ── the 30-day report ── */}
+      {/* ── the 30-day report, then the span it cannot cover ── */}
       {mayReadReport ? (
-        <EvaluationPanel session={session} />
+        <>
+          <EvaluationPanel session={session} />
+          <RollupPanel session={session} />
+        </>
       ) : (
         <Paper variant="outlined" sx={{ p: 3 }}>
           <SectionHeader
@@ -1111,6 +1115,243 @@ function EvaluationPanel({ session }: { session: PlatformSession }) {
     </Paper>
   );
 }
+
+/** The spans an owner can ask for. Bounded by the server's own `le=36`, and
+ *  offered as choices rather than as a free number because every one of them
+ *  has to mean a whole number of billed months for the ratio below to be
+ *  comparable to anything. */
+const ROLLUP_SPANS = [3, 6, 12, 24] as const;
+
+/** How one month reads in the series, and the two `null`s it must keep apart.
+ *
+ *  A month with nothing on record is UNKNOWN and says so in words; a month that
+ *  was measured and attributed nothing is a real ₹0 and is printed as one.
+ *  Collapsing them into a dash is the whole failure this ledger is written
+ *  against, and it is a one-line temptation in a table renderer.
+ */
+function PeriodAmount({ row }: { row: AttributionPeriod }) {
+  if (!row.measured) {
+    return <UnknownValue>Not measured</UnknownValue>;
+  }
+  return <>{<Amount value={row.attributed_value} />}</>;
+}
+
+/** Value month by month, and the return over the span. Owner only.
+ *
+ *  `EvaluationPanel` above answers this for the trial and cannot answer it
+ *  afterwards, so the one return figure this platform states used to disappear
+ *  on the day a trial ended — leaving the owner deciding whether to keep paying
+ *  in month fourteen with strictly less evidence than the one deciding in month
+ *  one. This panel is that figure over a span they choose.
+ *
+ *  Two things here are deliberately unhelpful, and both are the server's rules
+ *  rendered rather than softened. The month **in progress** is drawn under the
+ *  table with its own caption and never inside the total, because a month of
+ *  cost is not comparable to seventeen days of value. And a span containing a
+ *  month with nothing on record shows **no return at all** — not a smaller one.
+ *  A numerator covering eight months over a denominator covering twelve errs
+ *  low, which is exactly why a screen would wave it through.
+ */
+function RollupPanel({ session }: { session: PlatformSession }) {
+  const [months, setMonths] = useState<number>(12);
+  const [cost, setCost] = useState("");
+  const [applied, setApplied] = useState<string | null>(null);
+
+  const { data, loading, error, reload } = useInsight<AttributionRollup>(
+    "attribution-rollup",
+    () => papi.attributionRollup(session.token,
+                                 { months, monthlyCost: applied }),
+    [session.token, months, applied]);
+
+  // The same guard `EvaluationPanel` applies, and for the same reason: a
+  // mistyped cost would come back a 422 and put "the roll-up could not be read"
+  // where a typo belongs.
+  const typed = cost.trim();
+  const costInvalid = typed !== ""
+    && !(Number.isFinite(Number(typed)) && Number(typed) >= 0);
+
+  const submit = useCallback((e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmed = cost.trim();
+    if (trimmed !== ""
+        && !(Number.isFinite(Number(trimmed)) && Number(trimmed) >= 0)) return;
+    setApplied(trimmed === "" ? null : trimmed);
+  }, [cost]);
+
+  const columns = useMemo<ColDef<AttributionPeriod>[]>(() => [
+    { field: "label", headerName: "Month", width: 140, flex: 0 },
+    {
+      field: "attributed_value", headerName: "Attributed", width: 170, flex: 0,
+      type: "rightAligned",
+      cellRenderer: (p: { data?: AttributionPeriod }) =>
+        p.data ? <PeriodAmount row={p.data} /> : null,
+    },
+    { field: "attributed_events", headerName: "Events", width: 110, flex: 0,
+      type: "rightAligned" },
+    {
+      field: "measured", headerName: "Evidence", width: 190, flex: 1,
+      cellRenderer: (p: { data?: AttributionPeriod }) => {
+        if (!p.data) return null;
+        if (!p.data.measured) {
+          return <StatusChip label="No detection on record" tone="warn" />;
+        }
+        if (p.data.amounts_missing > 0) {
+          return (
+            <StatusChip
+              label={`${counted(p.data.amounts_missing)} without an amount`}
+              tone="warn" />
+          );
+        }
+        return <StatusChip label="Measured" tone="good" />;
+      },
+    },
+  ], []);
+
+  return (
+    <Paper variant="outlined" sx={{ p: 3 }}>
+      <SectionHeader
+        level="section"
+        title="Month by month"
+        sub="What the platform has been worth over a longer span, and the return on it — the figure the 30-day report stops giving once a trial ends." />
+
+      <Box component="form" onSubmit={submit} sx={{ mb: 3 }}>
+        <Stack direction="row" spacing={1.5} useFlexGap
+               sx={{ flexWrap: "wrap", alignItems: "flex-start" }}>
+          <TextField
+            select
+            size="small"
+            label="Span"
+            value={String(months)}
+            onChange={(e) => setMonths(Number(e.target.value))}
+            sx={{ minWidth: 160 }}
+            slotProps={{ select: { native: true } }}
+            helperText="Complete calendar months only.">
+            {ROLLUP_SPANS.map((n) => (
+              <option key={n} value={n}>{n} months</option>
+            ))}
+          </TextField>
+          <TextField
+            size="small"
+            label="What PIE costs you per month"
+            value={cost}
+            onChange={(e) => setCost(e.target.value)}
+            inputMode="decimal"
+            error={costInvalid}
+            sx={{ minWidth: 300 }}
+            slotProps={{
+              input: {
+                startAdornment: (
+                  <InputAdornment position="start">{moneySymbol()}</InputAdornment>
+                ),
+              },
+            }}
+            helperText={costInvalid
+              ? "A number, and not a negative one."
+              : "A monthly rate, not a total — the span is many months. Nothing is stored."} />
+          <Button type="submit" variant="outlined" disabled={costInvalid}
+                  sx={{ mt: 0.25 }}>
+            {applied === null ? "Show the return" : "Update"}
+          </Button>
+        </Stack>
+      </Box>
+
+      {error ? (
+        <ErrorState title="The roll-up could not be read" error={error}
+                    onRetry={reload} />
+      ) : loading || !data ? (
+        <LoadingState rows={2} height={110} label="Rolling up the months…" />
+      ) : (
+        <>
+          <Stack direction="row" spacing={2} useFlexGap
+                 sx={{ flexWrap: "wrap", mb: 3 }}>
+            <Box sx={{ flex: "1 1 220px", minWidth: 220 }}>
+              <MetricCard
+                label="Attributed value"
+                value={<Amount value={data.attributed_value} />}
+                sub={data.span.label
+                  ? `${data.span.label} · complete months only`
+                  : "no complete month in this span"} />
+            </Box>
+            <Box sx={{ flex: "1 1 220px", minWidth: 220 }}>
+              <MetricCard
+                label="What PIE cost you"
+                value={data.platform_cost === null
+                  ? <UnknownValue>Not supplied</UnknownValue>
+                  : <Amount value={data.platform_cost} />}
+                sub={data.monthly_cost === null
+                  ? "your monthly figure, for this span"
+                  : `your rate × ${counted(data.span.complete_months)} complete month(s)`} />
+            </Box>
+            <Box sx={{ flex: "1 1 220px", minWidth: 220 }}>
+              <MetricCard
+                label="Value per rupee of cost"
+                value={data.roi_is_unknown || data.roi === null
+                  ? <UnknownValue>Unknown</UnknownValue>
+                  : `${Number(data.roi).toFixed(2)}×`}
+                sub={data.roi_is_unknown
+                  ? "no monthly cost supplied, or a month in this span was never measured"
+                  : "attributed value ÷ the cost above"}
+                tip="Refused outright where any complete month in the span has nothing on record. The value would cover fewer months than the cost does, and the ratio would read low — which is still a number nobody measured." />
+            </Box>
+            <Box sx={{ flex: "1 1 220px", minWidth: 220 }}>
+              <MetricCard
+                label="Months measured"
+                value={`${counted(data.span.measured_months)} of ${counted(data.span.complete_months)}`}
+                sub="complete months with any event on record"
+                tip="A month with no event is not a month worth nothing. It is a month this platform cannot speak for, and the return is withheld while one is in the span." />
+            </Box>
+          </Stack>
+
+          <EvidenceGaps gaps={data.evidence_gaps} title="What is not measured" />
+
+          {data.span.frozen_at ? (
+            <Alert severity="info" sx={{ mb: 2 }}>
+              <AlertTitle>This span stops where your entitlement does</AlertTitle>
+              The roll-up reaches to{" "}
+              {formatDateTime(data.span.frozen_at)} and no further, because this
+              organization is on the free Quote Desk. Detection has kept running;
+              reading past that point is what the plan restores.
+            </Alert>
+          ) : null}
+
+          {data.empty_reason ? (
+            <Alert severity="warning" sx={{ mb: 2 }}>
+              <AlertTitle>There is no span to roll up yet</AlertTitle>
+              {data.empty_reason}
+            </Alert>
+          ) : (
+            <Box sx={{ mt: 2 }}>
+              <DataGrid<AttributionPeriod>
+                ariaLabel="Attributed value by calendar month, oldest first"
+                rows={data.periods}
+                columns={columns}
+                getRowId={(r) => r.period}
+                pageSize={12} />
+            </Box>
+          )}
+
+          {data.in_progress ? (
+            <Box sx={{ mt: 2 }}>
+              <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
+                {data.in_progress.label} — still running
+              </Typography>
+              <Typography variant="body2" color="text.secondary"
+                          sx={{ maxWidth: "80ch" }}>
+                <PeriodAmount row={data.in_progress} /> attributed so far, from{" "}
+                {counted(data.in_progress.attributed_events)} event(s). This
+                month is <strong>not</strong> in the total or the return above.
+                A month of subscription buys a whole month; part of one is not
+                comparable to it, and including it would move the ratio every
+                time this page was opened.
+              </Typography>
+            </Box>
+          ) : null}
+        </>
+      )}
+    </Paper>
+  );
+}
+
 
 /** UNKNOWN, in the value slot of a tile, at a size that does not pretend to be
  *  a figure. A word rather than a dash, for the reason `Amount` gives. */

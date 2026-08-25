@@ -29,7 +29,7 @@ from __future__ import annotations
 import ast
 import pathlib
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Iterator
 
@@ -46,12 +46,14 @@ from app.attribution import detectors as det
 from app.attribution import evaluator as ev
 from app.attribution import ledger as led
 from app.attribution.calculator import roi
+from app.commercial import quote_service
 from app.commercial.quote_exceptions import BELOW_MARGIN_FLOOR
 from app.commercial.references import MARGIN_FLOOR_PRICE
 from app.config import settings
 from app.db import get_session
 from app.domain import models
-from app.domain.enums import PlanTier, ValueClass, ValueEventType
+from app.domain.enums import (PlanTier, QuoteLossReason, QuoteOutcomeStatus,
+                              ValueClass, ValueEventType)
 from app.passwords import hash_password
 from app.routers import attribution as attribution_router
 from app.routers import platform_auth
@@ -463,7 +465,7 @@ def test_the_headline_never_includes_potential_or_estimated(session, trial):
 
 
 def test_the_headline_stays_attributed_only_over_http(client):
-    body = client.get("/api/attribution/summary",
+    body = client.get("/api/v1/attribution/summary",
                       headers=_hdr(client, MANAGER)).json()
     # Money crosses the wire as a JSON string, never a float — a rupee figure
     # that round-trips through binary floating point is not the figure stored.
@@ -509,7 +511,7 @@ def test_the_two_empty_states_read_differently_over_http(client):
     s.query(models.ValueEvent).delete()
     s.commit()
     s.close()
-    empty = client.get("/api/attribution/summary", headers=manager).json()
+    empty = client.get("/api/v1/attribution/summary", headers=manager).json()
     assert empty["attributed_value"] is None
     assert "not a measured zero" in (empty["empty_reason"] or "")
 
@@ -517,7 +519,7 @@ def test_the_two_empty_states_read_differently_over_http(client):
     led.record(s, ORG, _draft(ValueClass.POTENTIAL, POTENTIAL_AMOUNT))
     s.commit()
     s.close()
-    measured = client.get("/api/attribution/summary", headers=manager).json()
+    measured = client.get("/api/v1/attribution/summary", headers=manager).json()
     assert measured["attributed_value"] is not None
     assert Decimal(measured["attributed_value"]) == 0
     assert measured["empty_reason"] is None
@@ -587,11 +589,11 @@ def test_the_report_says_unknown_rather_than_dividing_by_nothing(session, trial)
 
 def test_the_evaluation_endpoint_is_owner_only_and_answers_unknown(client):
     owner = _hdr(client, OWNER)
-    assert client.get("/api/attribution/evaluation",
+    assert client.get("/api/v1/attribution/evaluation",
                       headers=_hdr(client, MANAGER)).status_code == 403
 
     for params in ({}, {"pie_cost": "0"}):
-        body = client.get("/api/attribution/evaluation",
+        body = client.get("/api/v1/attribution/evaluation",
                           headers=owner, params=params).json()
         assert body["roi"] is None, f"{params} produced a ratio from nothing"
         assert body["roi_is_unknown"] is True
@@ -654,7 +656,7 @@ def test_every_unmeasurable_event_type_is_a_named_gap_not_a_measured_zero(
 
 
 def test_the_named_gaps_survive_to_the_screen(client):
-    body = client.get("/api/attribution/summary",
+    body = client.get("/api/v1/attribution/summary",
                       headers=_hdr(client, MANAGER)).json()
     named = {gap["subject"] for gap in body["evidence_gaps"]}
     for event_type in (ValueEventType.LOST_SALE_RECOVERED,
@@ -871,10 +873,10 @@ def test_an_expired_trial_can_still_read_what_pie_was_worth(monkeypatch):
     hdr = _hdr(tc, LAPSED_OWNER)
 
     # The whole surface answers, rather than 403-ing the way it used to.
-    assert tc.get("/api/attribution/summary", headers=hdr).status_code == 200
-    assert tc.get("/api/attribution/evaluation", headers=hdr).status_code == 200
+    assert tc.get("/api/v1/attribution/summary", headers=hdr).status_code == 200
+    assert tc.get("/api/v1/attribution/evaluation", headers=hdr).status_code == 200
 
-    body = tc.get("/api/attribution/events", headers=hdr).json()
+    body = tc.get("/api/v1/attribution/events", headers=hdr).json()
     quotes = {ref["quote_id"] for row in body["events"]
               for ref in row["evidence_refs"]}
     assert "q_in" in quotes, "the trial window's own evidence must stay readable"
@@ -888,7 +890,7 @@ def test_the_ledger_stops_at_the_end_of_the_window_it_was_entitled_to(monkeypatc
     """
     monkeypatch.setattr(settings, "DEFAULT_PLAN", "free")
     tc = _lapsed_client(with_trial=True)
-    body = tc.get("/api/attribution/events",
+    body = tc.get("/api/v1/attribution/events",
                   headers=_hdr(tc, LAPSED_OWNER)).json()
 
     quotes = {ref["quote_id"] for row in body["events"]
@@ -910,7 +912,7 @@ def test_a_paid_plan_reads_the_ledger_unbounded(monkeypatch):
     session.commit()
     session.close()
 
-    body = tc.get("/api/attribution/events",
+    body = tc.get("/api/v1/attribution/events",
                   headers=_hdr(tc, LAPSED_OWNER)).json()
     quotes = {ref["quote_id"] for row in body["events"]
               for ref in row["evidence_refs"]}
@@ -928,7 +930,7 @@ def test_no_trial_and_no_plan_is_refused_rather_than_answered_empty(monkeypatch)
     monkeypatch.setattr(settings, "DEFAULT_PLAN", "free")
     tc = _lapsed_client(with_trial=False)
 
-    r = tc.get("/api/attribution/events", headers=_hdr(tc, LAPSED_OWNER))
+    r = tc.get("/api/v1/attribution/events", headers=_hdr(tc, LAPSED_OWNER))
     assert r.status_code == 403
     assert "Commercial Intelligence" in r.json()["detail"]
 
@@ -951,15 +953,15 @@ def test_the_window_rule_never_lets_a_salesperson_past_their_role(monkeypatch):
     session.close()
 
     hdr = _hdr(tc, "sales@lapsed.example")
-    for path in ("/api/attribution/summary", "/api/attribution/events",
-                 "/api/attribution/evaluation"):
+    for path in ("/api/v1/attribution/summary", "/api/v1/attribution/events",
+                 "/api/v1/attribution/evaluation"):
         assert tc.get(path, headers=hdr).status_code == 403, path
 
 
 def test_a_ledger_page_says_it_is_not_a_total(client):
     """The rows overlap by design — POTENTIAL and ATTRIBUTED describe one line —
     so the drill-down has to warn the one caller who would otherwise add it up."""
-    body = client.get("/api/attribution/events",
+    body = client.get("/api/v1/attribution/events",
                       headers=_hdr(client, MANAGER)).json()
     assert body["total"] == 4
     assert "double count" in body["page_is_not_a_total"]
@@ -1396,3 +1398,393 @@ def test_a_flag_after_the_win_is_not_dated_before_its_own_evidence(session, tria
     flagged_at = clock.now() - timedelta(days=1)
     assert clock.aware(row.occurred_at) >= flagged_at - timedelta(minutes=1), (
         "the event is dated before the evidence that produced it existed")
+
+
+# ── 12. a 0% win rate for a book whose wins cannot be recorded ───────────────
+#
+# `QUOTE_OUTCOME_TRANSITIONS` makes LOST reachable straight from DRAFT and WON
+# reachable only through SENT, and SENT is written only after a quote has
+# successfully been pushed into the customer's ERP. An organization on a
+# read-only connector therefore records every loss and no win it ever has — so
+# its win rate came back a HARD 0.0 over a question its evidence could not have
+# answered either way. That is the §1 "absence of evidence is not a pass" shape
+# pointed the other way: a benign default reading as bad news rather than good.
+
+
+def _lost(s, quote_id: str, *, sent: bool = False,
+          days_ago: int = 1) -> models.QuoteOutcome:
+    """A lost quote, moved through the real transitions rather than inserted.
+
+    ``set_outcome`` on purpose: what the test below asserts is a property of the
+    transition table, and a hand-built row would keep passing after the table
+    changed under it. ``sent`` is the difference between a quote that had a path
+    to WON and one that never did.
+    """
+    if sent:
+        quote_service.set_outcome(s, ORG, quote_id=quote_id,
+                                  status=QuoteOutcomeStatus.SENT)
+    row = quote_service.set_outcome(s, ORG, quote_id=quote_id,
+                                    status=QuoteOutcomeStatus.LOST,
+                                    loss_reason=QuoteLossReason.PRICE)
+    row.decided_at = clock.now() - timedelta(days=days_ago)
+    s.flush()
+    return row
+
+
+def test_a_book_with_no_writable_connector_can_still_record_a_win(session, trial):
+    """The path a read-only connector needs, pinned because it is true by
+    accident of two independent things rather than by anyone's decision.
+
+    The automatic writer of SENT sits after a successful external write, so an
+    org on NetSuite or Prophet 21 — which this platform reads and cannot write
+    — never reaches it that way. It was believed that this left WON structurally
+    unrecordable for them, which would have made the whole attribution chain
+    dead for most US clients.
+
+    It does not: ``POST /outcome`` is a second, human-driven writer that accepts
+    SENT, and the transition table allows DRAFT to SENT. A quote emailed by hand
+    is recorded by hand. Nothing guaranteed that combination would survive
+    somebody tightening either half, though, which is what this test is for.
+    """
+    quote_service.set_outcome(session, ORG, quote_id="q_manual", status=QuoteOutcomeStatus.DRAFT)
+    quote_service.set_outcome(session, ORG, quote_id="q_manual", status=QuoteOutcomeStatus.SENT)
+    row = quote_service.set_outcome(session, ORG, quote_id="q_manual",
+                                    status=QuoteOutcomeStatus.WON)
+
+    assert row.status == QuoteOutcomeStatus.WON.value
+    assert row.sent_at is not None, (
+        "a win with no sent stamp reads as unrecordable to every win rate")
+
+
+def test_a_hand_recorded_send_is_distinguishable_from_a_delivered_one(session, trial):
+    """Two ways a quote reaches SENT, and they are not the same claim.
+
+    One says this platform wrote the document into a ledger and can name it; the
+    other says a person says they sent it. Both are legitimate and only the
+    first is evidence. They are told apart by whether a ``QuoteDocument`` exists
+    — no extra column, no flag to keep in step, and nothing to set wrongly.
+    """
+    from app.domain import models
+
+    quote_service.set_outcome(session, ORG, quote_id="q_byhand", status=QuoteOutcomeStatus.DRAFT)
+    quote_service.set_outcome(session, ORG, quote_id="q_byhand", status=QuoteOutcomeStatus.SENT)
+    assert quote_service.latest_document(session, ORG, quote_id="q_byhand") is None
+
+    quote_service.set_outcome(session, ORG, quote_id="q_sent", status=QuoteOutcomeStatus.DRAFT)
+    quote_service.set_outcome(session, ORG, quote_id="q_sent", status=QuoteOutcomeStatus.SENT)
+    quote_service.record_document(
+        session, ORG, quote_id="q_sent", external_system="zoho",
+        number="EST-000123", line_count=3, fingerprint="fp-1",
+        reference="QB-1-abcd", thresholds_version="ci_test")
+
+    doc = quote_service.latest_document(session, ORG, quote_id="q_sent")
+    assert doc is not None and doc.external_document_number == "EST-000123"
+    assert isinstance(doc, models.QuoteDocument)
+
+
+def test_a_win_can_only_be_recorded_by_way_of_sent(session, trial):
+    """The premise the two tests below rest on, asserted rather than assumed.
+
+    If an edge into WON is ever added from DRAFT this fails first, and the
+    UNKNOWN those tests demand becomes wrong rather than quietly wrong.
+    """
+    with pytest.raises(quote_service.InvalidTransition):
+        quote_service.set_outcome(session, ORG, quote_id="q_premise",
+                                  status=QuoteOutcomeStatus.WON)
+    # And the losing edge out of DRAFT is open, which is what makes the book
+    # below lopsided rather than simply empty.
+    _lost(session, "q_premise")
+
+
+def test_a_book_whose_wins_cannot_be_recorded_reports_unknown_not_zero(session, trial):
+    """Three losses, no path to a win: UNKNOWN, and the gap says why.
+
+    0/3 is arithmetically true and commercially a fabrication — nothing in this
+    window could have landed in the numerator.
+    """
+    for i in range(3):
+        _lost(session, f"q_readonly{i}")
+
+    report = ev.thirty_day_report(session, ORG)
+    during = report["during"]
+
+    assert during["quotes_lost"] == 3, "the losses themselves must still be counted"
+    assert during["quotes_won"] == 0
+    assert during["quote_win_rate"] is None, (
+        "a book whose wins are structurally unrecordable reported a HARD 0.0 "
+        "win rate — 0/3 over a question the evidence could not answer")
+    assert ev.WINS_NOT_RECORDABLE_IN_WINDOW in {
+        g["reason"] for g in report["evidence_gaps"]}, (
+        "the win rate went missing without anything naming why")
+
+
+def test_a_quote_that_could_have_been_won_and_was_not_stays_a_measured_zero(
+        session, trial):
+    """The other half, and the one that must not collapse into UNKNOWN.
+
+    A quote that reached SENT could have come back WON. It did not, so 0% is a
+    measured fact about this book and reporting it as UNKNOWN would be the same
+    defect wearing the opposite costume.
+    """
+    _lost(session, "q_sent_and_lost", sent=True)
+
+    report = ev.thirty_day_report(session, ORG)
+    during = report["during"]
+
+    assert during["quote_win_rate"] == 0.0, (
+        "a quote that was sent and lost is a real zero, not an unknown")
+    assert ev.WINS_NOT_RECORDABLE_IN_WINDOW not in {
+        g["reason"] for g in report["evidence_gaps"]}
+
+    # And the two readings are different documents, which is the only part a
+    # caller can act on.
+    _lost(session, "q_never_sent")
+    assert ev.thirty_day_report(session, ORG)["during"]["quote_win_rate"] == 0.0, (
+        "one unsendable quote beside a sent one must not erase the measured zero")
+
+
+def test_a_mixed_book_says_how_much_of_its_denominator_could_never_have_won(
+        session, trial):
+    """The half the first fix missed: some sendable, most not.
+
+    The all-or-nothing case reports no rate at all, so it cannot mislead. This
+    one does report a rate, and the quotes that could never have won sit in its
+    denominator dragging it down. One win from two sendable quotes is a 50%
+    book; the same two rows beside eight that never reached SENT read as 10%,
+    and a reader with nothing else on screen takes that for a bad quarter.
+    Reporting it bare is the benign default §1 forbids — answering confidently
+    where the evidence does not reach.
+    """
+    quote_service.set_outcome(session, ORG, quote_id="q_mixed_won",
+                              status=QuoteOutcomeStatus.SENT)
+    quote_service.set_outcome(session, ORG, quote_id="q_mixed_won",
+                              status=QuoteOutcomeStatus.WON)
+    _lost(session, "q_mixed_lost", sent=True)
+    for i in range(8):
+        _lost(session, f"q_mixed_unsendable{i}")
+
+    report = ev.thirty_day_report(session, ORG)
+    during = report["during"]
+
+    assert during["quotes_decided"] == 10
+    assert during["decided_quotes_ever_sent"] == 2
+    assert during["quote_win_rate"] == 0.1, (
+        "the rate is still over the whole decided book — this test pins the "
+        "gap that makes it readable, not a change to what it measures")
+    gap = next((g for g in report["evidence_gaps"]
+                if g["reason"] == ev.WINS_NOT_RECORDABLE_IN_WINDOW), None)
+    assert gap is not None, (
+        "a 10% book that is 50% among the quotes that could have been won "
+        "reported the 10% with nothing saying so")
+    assert "8 of 10" in gap["detail"], (
+        "the gap must carry the counts; a bare UNKNOWN flag cannot be acted on")
+
+
+def test_a_recorded_win_is_never_read_as_unrecordable(session, trial):
+    """A win on record proves a win was recordable, whatever the sent stamp says.
+
+    ``sent_at`` is the evidence of a path to WON, but it is not the only
+    evidence: a row written before that column carried meaning has none, and
+    reading it alone would turn a book that demonstrably won something into an
+    UNKNOWN.
+    """
+    _won(session, "q_stampless_win")
+    _lost(session, "q_stampless_loss")
+
+    report = ev.thirty_day_report(session, ORG)
+    assert report["during"]["quote_win_rate"] == 0.5
+    assert ev.WINS_NOT_RECORDABLE_IN_WINDOW not in {
+        g["reason"] for g in report["evidence_gaps"]}
+
+
+# ── 13. the roll-up: a span of months, and the return over it ───────────────
+#
+# ``thirty_day_report`` answers "what was it worth" for the trial and only for
+# the trial, so the one ROI figure this platform states disappeared on the day a
+# trial ended and never came back. ``value_rollup`` is that figure over a span
+# the caller chooses, and the two things that can go wrong with it are both
+# arithmetic over time rather than over rows: a month of value divided by a
+# month of cost when only three days of the month have happened, and a numerator
+# that quietly covers eight months while the denominator covers twelve.
+FIXED_NOW = datetime(2026, 6, 17, 12, 0, tzinfo=timezone.utc)
+
+
+@pytest.fixture()
+def frozen(monkeypatch):
+    """A fixed present, so a month boundary cannot decide whether a test passes.
+
+    Every assertion below names a calendar month by its label, which is only
+    stable if "now" is. Patched on ``clock`` itself because every module here
+    reaches it as ``clock.now()`` at call time rather than binding it at import.
+    """
+    monkeypatch.setattr(clock, "now", lambda: FIXED_NOW)
+    return FIXED_NOW
+
+
+def _at(year: int, month: int, day: int = 15) -> datetime:
+    """Midday on a given date, UTC. The 15th exists in every month."""
+    return datetime(year, month, day, 12, 0, tzinfo=timezone.utc)
+
+
+def _month_event(s, tag: str, amount: Decimal | None, when: datetime,
+                 value_class: ValueClass = ValueClass.ATTRIBUTED) -> None:
+    """One event in one month. ``tag`` keeps the event keys distinct — the live
+    ledger refuses a second row under one key, which is the whole point of it,
+    and a fixture that reused one would seed a single superseding row."""
+    led.record(s, ORG, _draft(value_class, amount, identity=(tag, "L1"),
+                              evidence_refs=[{"record_type": "quote_decision",
+                                              "record_id": f"qd_{tag}",
+                                              "quote_id": tag}],
+                              occurred_at=when))
+
+
+def test_a_month_still_running_is_reported_beside_the_total_never_inside_it(
+        session, trial, frozen):
+    """A subscription bills a whole month; seventeen days of it have produced
+    seventeen days of value. Dividing one by the other understates the return by
+    however far through the month the reader happens to open the page — and by a
+    different amount every time they open it."""
+    _month_event(session, "mar", Decimal("100.0000"), _at(2026, 3))
+    _month_event(session, "apr", Decimal("200.0000"), _at(2026, 4))
+    _month_event(session, "may", Decimal("300.0000"), _at(2026, 5))
+    _month_event(session, "jun", Decimal("999.0000"), _at(2026, 6, 5))
+
+    out = ev.value_rollup(session, ORG, months=4, monthly_cost=Decimal("50"))
+
+    assert [row["label"] for row in out["periods"]] == [
+        "Mar 2026", "Apr 2026", "May 2026"]
+    assert out["in_progress"]["label"] == "Jun 2026"
+    assert out["in_progress"]["complete"] is False
+
+    # The month in progress carries its own real figure and is not in the total.
+    assert out["in_progress"]["attributed_value"] == Decimal("999.0000")
+    assert out["attributed_value"] == Decimal("600.0000")
+
+    # And the cost it is divided by covers exactly the months in that total.
+    assert out["platform_cost"] == Decimal("150.0000")
+    assert out["roi"] == Decimal("4.0000")
+    assert out["roi_is_unknown"] is False
+
+
+def test_a_span_containing_an_unmeasured_month_states_no_return_at_all(
+        session, trial, frozen):
+    """The §1 rule at the level a time series makes easy to miss.
+
+    ``func.sum`` skips a month that recorded nothing, so the numerator covers
+    two months while ``monthly_cost x 3`` covers three. The result understates
+    rather than flatters, which is exactly why it would survive review — a
+    conservative fabricated number is still a fabricated number.
+    """
+    _month_event(session, "mar", Decimal("100.0000"), _at(2026, 3))
+    # April recorded nothing at all.
+    _month_event(session, "may", Decimal("300.0000"), _at(2026, 5))
+
+    out = ev.value_rollup(session, ORG, months=4, monthly_cost=Decimal("50"))
+
+    assert out["roi"] is None
+    assert out["roi_is_unknown"] is True
+
+    named = [gap for gap in out["evidence_gaps"]
+             if gap["reason"] == ev.PERIOD_NOT_MEASURED]
+    assert len(named) == 1, "the unmeasured month must be named, not counted"
+    assert "Apr 2026" in named[0]["detail"]
+
+    # The total itself is still stated — it is honest about the months it does
+    # cover. What is refused is dividing it by a cost that covers more.
+    assert out["attributed_value"] == Decimal("400.0000")
+
+
+def test_a_month_with_no_events_and_a_month_with_no_value_stay_different(
+        session, trial, frozen):
+    """The two empty months mean opposite things and a chart must draw them
+    differently: one is a break in the line, the other is a point at zero."""
+    _month_event(session, "mar", POTENTIAL_AMOUNT, _at(2026, 3),
+                 value_class=ValueClass.POTENTIAL)
+    _month_event(session, "may", Decimal("300.0000"), _at(2026, 5))
+
+    out = ev.value_rollup(session, ORG, months=4)
+    rows = {row["label"]: row for row in out["periods"]}
+
+    # March: detection ran and attributed nothing. A measured zero.
+    assert rows["Mar 2026"]["measured"] is True
+    assert rows["Mar 2026"]["attributed_value"] == Decimal("0")
+
+    # April: nothing on record. UNKNOWN, and never a zero that would sum.
+    assert rows["Apr 2026"]["measured"] is False
+    assert rows["Apr 2026"]["attributed_value"] is None
+
+
+def test_the_rollup_never_divides_by_a_cost_nobody_supplied(session, trial,
+                                                            frozen):
+    """This platform holds no price for its own plans. A default here would put
+    a return figure nobody entered on the screen a renewal is signed against."""
+    for tag, month in (("mar", 3), ("apr", 4), ("may", 5)):
+        _month_event(session, tag, Decimal("100.0000"), _at(2026, month))
+
+    out = ev.value_rollup(session, ORG, months=4)
+
+    assert out["attributed_value"] == Decimal("300.0000")
+    assert out["platform_cost"] is None
+    assert out["roi"] is None and out["roi_is_unknown"] is True
+    assert any(gap["reason"] == ev.NO_PLATFORM_COST_SUPPLIED
+               for gap in out["evidence_gaps"])
+
+
+def test_an_organization_younger_than_a_month_is_told_so_not_shown_a_zero(
+        session, trial, frozen):
+    """Asking for one month when only the month in progress exists. There is
+    nothing to roll up yet, which is not the same as having rolled up and found
+    nothing — and ``months=1`` is the request a dashboard makes by default."""
+    _month_event(session, "jun", Decimal("999.0000"), _at(2026, 6, 5))
+
+    out = ev.value_rollup(session, ORG, months=1, monthly_cost=Decimal("50"))
+
+    assert out["periods"] == []
+    assert out["attributed_value"] is None
+    assert out["roi"] is None
+    assert out["in_progress"]["attributed_value"] == Decimal("999.0000")
+    assert any(gap["reason"] == ev.NO_COMPLETE_PERIOD
+               for gap in out["evidence_gaps"])
+
+
+def test_the_span_never_reaches_past_the_window_a_lapsed_plan_kept(monkeypatch):
+    """The roll-up is the route whose span the *caller* chooses, so it is the
+    one where an uncapped read would hand a lapsed organization thirty-six
+    months of exactly the rolling figure the plan is meant to sell."""
+    monkeypatch.setattr(settings, "DEFAULT_PLAN", "free")
+    tc = _lapsed_client(with_trial=True)
+    hdr = _hdr(tc, LAPSED_OWNER)
+
+    r = tc.get("/api/v1/attribution/rollup?months=12", headers=hdr)
+    assert r.status_code == 200, r.text
+    body = r.json()
+
+    assert body["span"]["frozen_at"] is not None
+    reported = [row["attributed_value"] for row in body["periods"]]
+    if body["in_progress"]:
+        reported.append(body["in_progress"]["attributed_value"])
+    amounts = [float(value) for value in reported if value is not None]
+
+    # 1000 fell inside the trial window and stays readable; 2000 was attributed
+    # after it ended and is what the plan buys.
+    assert 1000.0 in amounts
+    assert 2000.0 not in amounts
+    assert all(row["measured_to"] <= body["span"]["frozen_at"]
+               for row in body["periods"] if row["measured"])
+
+
+def test_the_rollup_is_owner_only_like_the_report_it_extends(client):
+    """One rule per route rather than a boundary that depends on whether a query
+    parameter was supplied: a route that takes the platform's own cost and
+    divides value by it *is* the renewal conversation, whatever span it covers.
+
+    A manager reads ``/summary`` and is refused here, which is the distinction
+    being pinned — not that the surface is gated at all.
+    """
+    assert {"/api/v1/attribution/rollup"} <= {r.path for r in _routes()}
+    assert client.get("/api/v1/attribution/summary",
+                      headers=_hdr(client, MANAGER)).status_code == 200
+    assert client.get("/api/v1/attribution/rollup",
+                      headers=_hdr(client, MANAGER)).status_code == 403
+    assert client.get("/api/v1/attribution/rollup",
+                      headers=_hdr(client, OWNER)).status_code == 200

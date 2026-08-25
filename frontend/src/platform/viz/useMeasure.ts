@@ -103,14 +103,24 @@ export function useMeasure<T extends HTMLElement = HTMLDivElement>(): [
  *
  *  Every chart that puts a label per data point needs this, and every one that
  *  does it ad hoc gets the ends wrong — dropping the final month is how a time
- *  axis stops saying where it ends. */
+ *  axis stops saying where it ends.
+ *
+ *  **The last label is forced, so the one before it has to earn its place.**
+ *  Keeping every `step`-th index *and* the final one puts two labels next to
+ *  each other whenever the length is not a multiple of the step — which is most
+ *  lengths. On a thirteen-week axis at three-week spacing that drew "16 Nov"
+ *  over "23 Nov", which is worse than either alone: two overlapping dates read
+ *  as one unreadable date. A modulo label inside a step of the end is therefore
+ *  dropped in favour of the end, which is the label that says where the axis
+ *  stops. */
 export function thinLabels<T>(items: T[], room: Room, perLabel = 58): (T | null)[] {
   if (items.length === 0) return [];
   const fits = Math.max(2, Math.floor(room.width / perLabel));
   if (items.length <= fits) return items;
   const step = Math.ceil(items.length / fits);
+  const last = items.length - 1;
   return items.map((item, i) =>
-    i === 0 || i === items.length - 1 || i % step === 0 ? item : null,
+    i === 0 || i === last || (i % step === 0 && last - i >= step) ? item : null,
   );
 }
 

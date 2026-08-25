@@ -11,11 +11,17 @@ machine and passes on a fast one, which is worse than no test.
 """
 from __future__ import annotations
 
+import os
+import sqlite3
+import subprocess
+import sys
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
 import dbsupport
@@ -718,6 +724,198 @@ def test_the_all_companies_button_is_shut_while_one_company_pulls(client):
 
     assert state["busy_connections"] == ["conn_sls"], "the company itself is busy"
     assert state["can_start"] is False
+
+
+# ── the guard the in-process lock cannot be ─────────────────────────────────
+#
+# `start_sync` read the active runs and then inserted, holding a
+# `threading.Lock`. That lock is process-local and the deployment runs two
+# uvicorn workers by default (UVICORN_WORKERS=2), so both workers' reads
+# returned "nothing running" before either insert committed, both inserted, and
+# `run_job` never re-checks — both pulls ran. The guard is now two partial
+# unique indexes on `sync_runs`; the lock stays as the cheap in-process case.
+
+def _run_row(**kw) -> models.SyncRun:
+    now = datetime.now(timezone.utc)
+    return models.SyncRun(**{
+        "organization_id": ORG, "source": "fixture", "status": "QUEUED",
+        "started_at": now, "heartbeat_at": now, **kw})
+
+
+def test_the_database_refuses_a_second_active_run_for_one_connection(client):
+    """Not the application refusing it — the database. This is the assertion
+    that would still hold with `start_sync` deleted."""
+    s = client.Maker()
+    s.add(_run_row(connection_id="conn_sls"))
+    s.commit()
+
+    s.add(_run_row(connection_id="conn_sls", status="RUNNING"))
+    with pytest.raises(IntegrityError):
+        s.commit()
+    s.rollback()
+    s.close()
+
+
+def test_the_database_refuses_a_second_active_umbrella_run(client):
+    """`connection_id` is NULL on an all-companies run, and NULL is not equal to
+    NULL — so one index over the pair would have let two of these through. This
+    is the half that catches them."""
+    s = client.Maker()
+    s.add(_run_row(connection_id=None))
+    s.commit()
+
+    s.add(_run_row(connection_id=None, status="RUNNING"))
+    with pytest.raises(IntegrityError):
+        s.commit()
+    s.rollback()
+    s.close()
+
+
+def test_a_finished_run_never_blocks_the_next_one_at_the_database(client):
+    """The index is partial for this reason. A unique index over every row would
+    make the second pull of a connection impossible for ever, which is the
+    dead-job-blocks-everything failure the heartbeat exists to avoid."""
+    s = client.Maker()
+    for status in ("OK", "PARTIAL", "FAILED"):
+        s.add(_run_row(connection_id="conn_sls", status=status))
+        s.commit()
+
+    s.add(_run_row(connection_id="conn_sls", status="RUNNING"))
+    s.commit()                       # the point: no IntegrityError
+    assert s.query(models.SyncRun).count() == 4
+    s.close()
+
+
+def test_two_connections_still_pull_at_once_under_the_index(client):
+    """Two connected Zoho companies are two independent APIs. An index that
+    serialised them would undo the per-connection scoping deliberately, and
+    silently — three companies pulled one after another looks like it works."""
+    s = client.Maker()
+    s.add(_run_row(connection_id="conn_sls", status="RUNNING"))
+    s.add(_run_row(connection_id="conn_4u", status="RUNNING"))
+    s.add(_run_row(organization_id="org_other", connection_id="conn_sls"))
+    s.commit()                       # three active rows, no collision
+    assert s.query(models.SyncRun).count() == 3
+    s.close()
+
+
+def test_a_pull_that_loses_the_insert_race_is_handed_the_winner(client):
+    """Losing to the index must look exactly like losing to the lock.
+
+    The other worker's row lands *between* this caller's check and its insert —
+    the window the lock does not cover — so the INSERT is refused. The caller
+    must get `started: False` and the winning run, not a 500 and not a run that
+    does not exist. Simulated rather than threaded: a test that starts a thread
+    and sleeps fails on a slow machine and passes on a fast one.
+    """
+    real = jobs._active_for_start
+    raced = []
+
+    def racing(session, organization_id, connection_id):
+        found = real(session, organization_id, connection_id)
+        if not raced:
+            raced.append(True)
+            other = client.Maker()          # the other worker's session
+            other.add(_run_row(sync_run_id="run_other_worker",
+                               organization_id=organization_id,
+                               connection_id=connection_id))
+            other.commit()
+            other.close()
+            return None                     # what the losing worker actually saw
+        return found
+
+    client.monkeypatch.setattr(jobs, "_active_for_start", racing)
+
+    r = client.post("/api/v1/data/sync", headers=_hdr(client),
+                    json={"connection_id": "conn_sls"})
+
+    assert r.status_code == 202, r.text
+    body = r.json()
+    assert body["started"] is False, "the loser must not claim to have started one"
+    assert body["run"]["sync_run_id"] == "run_other_worker"
+
+    s = client.Maker()
+    assert s.query(models.SyncRun).count() == 1, "no second pull was queued"
+    s.close()
+
+
+def test_the_migration_closes_duplicate_active_runs_before_taking_the_index(tmp_path):
+    """A live database may already hold the duplicates the index forbids, and
+    CREATE UNIQUE INDEX would fail on it — so the upgrade closes them first.
+
+    Verified through the real chain: a database stopped one revision short,
+    seeded with duplicates of both kinds, then migrated. Newest survives per
+    group; the rest are closed the way the reaper closes a run that stopped
+    reporting.
+    """
+    backend = Path(__file__).resolve().parents[2]
+    db = tmp_path / "guard.db"
+
+    def alembic(*args):
+        env = {**os.environ, "DATABASE_URL": f"sqlite:///{db}"}
+        return subprocess.run([sys.executable, "-m", "alembic", *args],
+                              cwd=backend, env=env, capture_output=True, text=True)
+
+    r = alembic("upgrade", "z6subject")      # the revision a7syncguard revises
+    assert r.returncode == 0, r.stderr[-2000:]
+
+    seeded = [
+        # (id, org, connection, status, started_at)
+        ("dup_old", "o1", "c1", "RUNNING", "2026-08-01 09:00:00"),
+        ("dup_mid", "o1", "c1", "QUEUED", "2026-08-01 10:00:00"),
+        ("dup_new", "o1", "c1", "RUNNING", "2026-08-01 11:00:00"),   # survives
+        ("umb_old", "o1", None, "RUNNING", "2026-08-01 08:00:00"),
+        ("umb_new", "o1", None, "QUEUED", "2026-08-01 12:00:00"),    # survives
+        ("other_conn", "o1", "c2", "RUNNING", "2026-08-01 09:30:00"),  # untouched
+        ("other_org", "o2", "c1", "RUNNING", "2026-08-01 09:30:00"),   # untouched
+        ("done", "o1", "c1", "OK", "2026-07-01 09:00:00"),             # untouched
+    ]
+    # The counters are NOT NULL with Python-side defaults, so raw SQL has to
+    # supply them — this is a database from before the code, which is the point.
+    zeroed = ("customers", "products", "sales_txns", "cost_records",
+              "skipped_count", "signals_emitted", "decisions_created")
+    conn = sqlite3.connect(db)
+    for run_id, org, connection, status, started in seeded:
+        conn.execute(
+            "INSERT INTO sync_runs (sync_run_id, organization_id, connection_id,"
+            " source, status, phase, started_at, heartbeat_at, notes,"
+            f" skipped_sample, {', '.join(zeroed)}) VALUES"
+            f" (?, ?, ?, 'api', ?, 'Reading invoices', ?, ?, '{{}}', '[]',"
+            f" {', '.join(['0'] * len(zeroed))})",
+            (run_id, org, connection, status, started, started))
+    conn.commit()
+
+    r = alembic("upgrade", "a7syncguard")
+    assert r.returncode == 0, r.stderr[-2000:]
+
+    rows = {row[0]: row[1:] for row in conn.execute(
+        "SELECT sync_run_id, status, phase, error, finished_at FROM sync_runs")}
+
+    assert [rows[k][0] for k in ("dup_new", "umb_new")] == ["RUNNING", "QUEUED"], (
+        "the newest active run in each group is the one that survives")
+    assert [rows[k][0] for k in ("other_conn", "other_org")] == ["RUNNING"] * 2, (
+        "another connection and another organization are different groups")
+    assert rows["done"] == ("OK", "Reading invoices", None, None), (
+        "a run that already finished is not this migration's business")
+
+    seeded_start = {run_id: started for run_id, _, _, _, started in seeded}
+    for closed in ("dup_old", "dup_mid", "umb_old"):
+        status, phase, error, finished_at = rows[closed]
+        assert status == "FAILED", closed
+        assert phase is None, "a closed run is not still doing something"
+        assert "already written was kept" in error, (
+            "the row has to say the work it did survived, like the reaper does")
+        assert finished_at == seeded_start[closed], (
+            "closed at the last moment it was known to be alive, not at the "
+            "moment somebody happened to run the migration")
+
+    # And the index is real afterwards, which is the whole point of the fix.
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO sync_runs (sync_run_id, organization_id, connection_id,"
+            " source, status, started_at) VALUES"
+            " ('extra', 'o1', 'c1', 'api', 'QUEUED', '2026-08-02 09:00:00')")
+    conn.close()
 
 
 # ── reading a run's log ─────────────────────────────────────────────────────

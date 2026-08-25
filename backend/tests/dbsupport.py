@@ -27,6 +27,7 @@ private SQLite engine and says why (see ``test_connection_check_and_schema``).
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
@@ -87,6 +88,44 @@ def wipe_schema(database_url: str) -> None:
         eng.dispose()
 
 
+#: The SECURITY DEFINER lookups the RLS migrations install, by the migration
+#: module that owns each. `create_all` builds tables and nothing else, so a
+#: fixture database has the schema and none of these — and `tenancy` calls them
+#: on the paths that have no tenant yet, so sign-in on a Postgres fixture failed
+#: with "function app_login_lookup(unknown) does not exist".
+#:
+#: Imported from the migrations rather than restated here. A second copy of a
+#: SECURITY DEFINER body is the one kind of duplicate that is actively
+#: dangerous: it would keep the suite green while the real function drifted, on
+#: exactly the four functions that read a table past its own policy.
+_TENANT_LOOKUP_SOURCES = (
+    ("d1rls_tenant_policies", ("_LOOKUP",)),
+    ("d3rls_tenant_policies_unauthenticated",
+     ("_EMAIL_REGISTERED", "_ORG_ID_TAKEN", "_OAUTH_STATE_ORG")),
+)
+
+
+def _create_tenant_lookups(engine) -> None:
+    """Install the migrations' own function bodies into a `create_all` schema.
+
+    Not a substitute for running the migrations — `verify.sh` does that against
+    an empty database in its own step, and the drift test is what compares the
+    two. This closes one specific gap: the functions are DDL that
+    `Base.metadata` cannot describe, so nothing else would put them here.
+    """
+    import importlib.util
+
+    versions = Path(__file__).resolve().parents[1] / "alembic" / "versions"
+    for module_name, names in _TENANT_LOOKUP_SOURCES:
+        spec = importlib.util.spec_from_file_location(
+            f"_fixture_{module_name}", versions / f"{module_name}.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with engine.begin() as conn:
+            for name in names:
+                conn.exec_driver_sql(getattr(module, name))
+
+
 def fresh_engine():
     """An engine over a complete, empty schema — ready to use.
 
@@ -117,6 +156,7 @@ def _fresh_postgres():
         wipe_schema(url)
         _pg_engine = create_engine(url, future=True)
         Base.metadata.create_all(_pg_engine)
+        _create_tenant_lookups(_pg_engine)
         names = ", ".join(f'"{t.name}"' for t in Base.metadata.sorted_tables)
         _truncate_sql = f"TRUNCATE TABLE {names} RESTART IDENTITY CASCADE"
         return _pg_engine

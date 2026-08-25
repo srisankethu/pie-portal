@@ -5,7 +5,7 @@ The platform has read what customers *committed* to since the first sync —
 *offered*. So a win rate had no denominator: the accepted quotes are visible
 through the orders they became, and the declined ones leave no trace anywhere.
 
-``quote_documents`` is that document, at header grain like every other document
+``erp_quotes`` is that document, at header grain like every other document
 table here. Two status columns on purpose: ``source_status`` is the ERP's own
 word carried verbatim and never mapped on the way in, ``outcome`` is this
 platform's WON / LOST / UNRECORDED classification of it. Keeping only the first
@@ -22,10 +22,10 @@ survive exactly until the next pull.
 
 Which is what the second half of this revision is for. ``quote_outcomes`` is the
 table a human writes and no sync touches, and it gains ``quote_document_ref`` —
-holding ``quote_documents.external_ref``, the id the *source system* issued, and
+holding ``erp_quotes.external_ref``, the id the *source system* issued, and
 deliberately not ``quote_document_id``, which is a surrogate minted at insert.
 A value pointer is what makes the harshest rebuild safe: ``DELETE FROM
-quote_documents`` followed by a full re-sync re-mints every surrogate and every
+erp_quotes`` followed by a full re-sync re-mints every surrogate and every
 human pointer still resolves. ``payment_applications.invoice_external_ref``
 carries an ERP reference for the same reason.
 
@@ -68,7 +68,12 @@ from alembic import op
 import sqlalchemy as sa
 
 revision = "c9qdoc"
-down_revision = "b8lease"
+# Rechained onto main's head rather than branching beside it. These three
+# revisions (c9qdoc -> d1thrv -> 04b3c45610eb) have only ever existed on this
+# branch, so re-pointing the first is not editing released history — it is
+# the convention "keep the migration history linear: chain after main's
+# head, not beside it", and it is what keeps `alembic heads` at one.
+down_revision = "d4rls"
 branch_labels = None
 depends_on = None
 
@@ -76,23 +81,23 @@ depends_on = None
 #: names them — so a fresh migrate and the models agree and the drift check has
 #: nothing to report.
 _QUOTE_DOCUMENT_INDEXES = (
-    ("ix_quote_documents_organization_id", ["organization_id"]),
-    ("ix_quote_documents_connector", ["connector"]),
-    ("ix_quote_documents_connection_id", ["connection_id"]),
-    ("ix_quote_documents_external_ref", ["external_ref"]),
-    ("ix_quote_documents_source_reference", ["source_reference"]),
-    ("ix_quote_documents_customer_id", ["customer_id"]),
-    ("ix_quote_documents_date", ["date"]),
+    ("ix_erp_quotes_organization_id", ["organization_id"]),
+    ("ix_erp_quotes_connector", ["connector"]),
+    ("ix_erp_quotes_connection_id", ["connection_id"]),
+    ("ix_erp_quotes_external_ref", ["external_ref"]),
+    ("ix_erp_quotes_source_reference", ["source_reference"]),
+    ("ix_erp_quotes_customer_id", ["customer_id"]),
+    ("ix_erp_quotes_date", ["date"]),
     # Composite, and the two the readers actually filter on: "every decided
     # quote for this org" and "this org's quotes over a window".
-    ("ix_quote_documents_org_outcome", ["organization_id", "outcome"]),
-    ("ix_quote_documents_org_date", ["organization_id", "date"]),
+    ("ix_erp_quotes_org_outcome", ["organization_id", "outcome"]),
+    ("ix_erp_quotes_org_date", ["organization_id", "date"]),
 )
 
 
 def upgrade() -> None:
     op.create_table(
-        "quote_documents",
+        "erp_quotes",
         sa.Column("quote_document_id", sa.String(length=64), nullable=False),
         sa.Column("organization_id", sa.String(length=64), nullable=False),
         sa.Column("connector", sa.String(length=32), nullable=True),
@@ -118,10 +123,10 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["customer_id"], ["customers.customer_id"]),
         sa.PrimaryKeyConstraint("quote_document_id"),
         sa.UniqueConstraint("organization_id", "connector", "connection_id",
-                            "external_ref", name="uq_quote_document_source"),
+                            "external_ref", name="uq_erp_quote_source"),
     )
     for name, columns in _QUOTE_DOCUMENT_INDEXES:
-        op.create_index(name, "quote_documents", columns)
+        op.create_index(name, "erp_quotes", columns)
 
     with op.batch_alter_table("quote_outcomes", schema=None) as batch_op:
         batch_op.add_column(sa.Column("quote_document_ref", sa.String(length=128),
@@ -149,5 +154,5 @@ def downgrade() -> None:
         batch_op.drop_column("quote_document_ref")
 
     for name, _columns in reversed(_QUOTE_DOCUMENT_INDEXES):
-        op.drop_index(name, table_name="quote_documents")
-    op.drop_table("quote_documents")
+        op.drop_index(name, table_name="erp_quotes")
+    op.drop_table("erp_quotes")

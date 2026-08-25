@@ -31,7 +31,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -141,6 +141,26 @@ REQUIRED_SCOPES: tuple[Permission, ...] = (
                "Optional: without it accounts stay unassigned and every "
                "decision routes to management.",
                required=False, reads=("users",)),
+    # The write grants. ``required`` means "no sync runs without it", which is
+    # not true of these — a connection missing them reads everything and only
+    # the send refuses. They are still in the full string the screen leads
+    # with, which is the string an owner who wants the send should paste.
+    Permission("ZohoBooks.estimates.CREATE",
+               "Creating the quote in Zoho — the Send to Zoho action. Without "
+               "it everything else works and every send refuses.",
+               required=False, writes=("sales_quotes",)),
+    Permission("ZohoBooks.estimates.READ",
+               "Reading estimates back: the duplicate check that stops one "
+               "quote becoming two, and finding out what happened when a "
+               "write's reply is lost. Needed by the send even though it only "
+               "reads — an estimate that cannot be looked up cannot be created "
+               "safely, so without this the send refuses too.",
+               required=False),
+    Permission("ZohoBooks.settings.CREATE",
+               "Creating an item in the books — the Create in books action on "
+               "a NOT IN BOOKS line. Leave it out if items should only ever be "
+               "created by a person in Zoho; everything else still works.",
+               required=False),
 )
 
 def scope_string(*, minimum: bool = False) -> str:
@@ -312,6 +332,105 @@ class CustomerBook:
         return self.connection.label or self.connection.zoho_organization_id
 
 
+def connector_of(connection: Any) -> str:
+    """A connection's connector, defaulting to Zoho for rows written before the
+    column existed — the same inline idiom used at a dozen sites, named once
+    here because the write path now asks it on every branch."""
+    return getattr(connection, "connector", None) or ZOHO_CONNECTOR
+
+
+def writes_for(connector: str) -> tuple[str, ...]:
+    """What this connector can *create* in its system, in ``WRITE_STAGES`` terms.
+
+    The one place that knows capability is answered from two registries, and
+    the reason it has to exist: every other connector declares itself through a
+    ``ConnectorSpec`` in ``ingestion/erp``, while Zoho's grants live in
+    ``REQUIRED_SCOPES`` above, because its connect flow predates that registry
+    and is richer than a field list. Zoho is therefore invisible to
+    ``erp.get_spec`` — which raises for it — and it is the one connector that
+    can actually write.
+
+    Callers ask this instead of comparing a connector key, so the quote path
+    holds no connector name at all: ``erp/__init__``'s rule is that generic code
+    reads the registry and never branches on a key, and this function is how
+    that rule survives a connector the registry cannot hold. Both sides are
+    pinned to their implementations in both directions — ``test_connector_writes``
+    for the registry, ``test_zohos_declared_writes_match_what_the_adapter_can_
+    actually_create`` for Zoho — so a wrong answer here fails a test rather than
+    silently refusing a send.
+
+    An unknown connector writes nothing. That is the safe direction: a refusal
+    naming a system is recoverable, a write into one nobody declared is not.
+    """
+    if connector == ZOHO_CONNECTOR:
+        return tuple(sorted({stage for p in REQUIRED_SCOPES for stage in p.writes}))
+    from . import erp
+    try:
+        return erp.get_spec(connector).writes
+    except erp.UnknownConnectorError:
+        return ()
+
+
+def can_write_quotes(connector: str) -> bool:
+    """Whether the grant for this connector covers creating a quote there.
+
+    A statement about the *permission*, not about whether this platform can act
+    on it — see ``quote_writer_ready``. ``book_for_customer`` asks this first
+    because a connector that cannot be written to at all needs a different
+    sentence from one that can but has no writer here yet.
+    """
+    return "sales_quotes" in writes_for(connector)
+
+
+def quote_term_for(connector: str) -> str:
+    """What this system calls the document a quote becomes there.
+
+    So a message can say "Zoho estimate SQ-1001" or "Business Central sales
+    quote SQ-1001" rather than one word for both. Naming a Business Central
+    document an "estimate" sends its user looking for a record type their own
+    system does not have.
+    """
+    if connector == ZOHO_CONNECTOR:
+        return "estimate"
+    from . import erp
+    try:
+        return erp.get_spec(connector).quote_term
+    except erp.UnknownConnectorError:
+        return "quote"
+
+
+def system_label_for(connector: str) -> str:
+    """That system's own name, as its users call it."""
+    from ..domain.origin import CONNECTORS
+    return (CONNECTORS.get(connector) or {}).get("label") or connector
+
+
+def quote_writer_ready(connector: str) -> bool:
+    """Whether a quote built here can actually be sent to this connector today.
+
+    Both halves: the grant covers it *and* something here knows how. This is
+    the question a screen asks — an owner reading "Can create quotes here"
+    beside a send button that refuses has been told something false, and the
+    two questions come apart exactly while a connector's writer is being built.
+    """
+    return can_write_quotes(connector) and connector in _QUOTE_ADAPTERS
+
+
+#: Connectors this platform has a quote-write adapter wired for, as opposed to
+#: merely permitted to write. The two are different questions and both have to
+#: be Yes: ``writes_for`` says the *grant* covers creating a quote there, this
+#: says there is code that knows how. Today they coincide at one entry and this
+#: set is what the Business Central work replaces with real dispatch.
+#:
+#: It exists because capability alone is not enough to route on. A customer
+#: from a connector that declares the write but has no adapter must still be
+#: refused — falling through to whichever book happens to be connected would
+#: write the quote into a different system's ledger and invent the provenance
+#: the customer's own row never recorded.
+_QUOTE_ADAPTERS: frozenset[str] = frozenset(
+    {ZOHO_CONNECTOR, "dynamics365", "acumatica", "netsuite"})
+
+
 def book_for_customer(session: Session, organization_id: str,
                       customer: models.Customer) -> CustomerBook:
     """The one set of books this customer belongs to. Refuses to guess.
@@ -323,43 +442,125 @@ def book_for_customer(session: Session, organization_id: str,
     "ABC Industries" can exist in all three books and be three different
     customers, which is the reason that triple exists.
 
-    Two things are refused rather than resolved. A connection that is disabled
-    or gone cannot be written to. And a row whose ``connection_id`` is NULL —
-    imported before provenance was recorded — is only placeable when the
-    organization has a single connected company; with more than one, choosing
-    would be inventing the provenance the column deliberately leaves blank.
+    Three things are refused rather than resolved. A connection that is
+    disabled or gone cannot be written to. A company in another system holds no
+    Zoho estimate, so it never stands in for one — counted as a Zoho company it
+    both overstated the number in the refusal below and, where it was the only
+    connected company, was returned as the book: ``credentials_for`` then
+    refused it with a bare ``ValueError``, which the caller does not catch, so
+    the answer arrived as a 500 instead of as this refusal. And a row whose
+    ``connection_id`` is NULL — imported before provenance was recorded — is
+    only placeable when the organization has a single connected company; with
+    more than one, choosing would be inventing the provenance the column
+    deliberately leaves blank.
     """
     enabled = {c.connection_id: c
                for c in list_connections(session, organization_id, enabled_only=True)}
+    # Only a company this platform can write to can hold this quote. The rest
+    # stay in ``enabled`` because they are still companies an unattributed
+    # customer may have come from, which is the question the ambiguity check
+    # below asks. Read through ``quote_writer_ready`` rather than compared
+    # against a connector name, so a connector gaining a writer changes this
+    # by declaration rather than by somebody remembering to edit it here.
+    writable = {cid: c for cid, c in enabled.items()
+                if quote_writer_ready(connector_of(c))}
+    read_only = sorted({connector_of(c) for c in enabled.values()
+                        if not quote_writer_ready(connector_of(c))})
 
-    if customer.connector and customer.connector != ZOHO_CONNECTOR:
+    if customer.connector and not can_write_quotes(customer.connector):
         raise ConnectionNotFound(
-            f"{customer.name} was imported from "
-            f"{customer.connector}, not Zoho Books, so this quote cannot be "
-            f"written as a Zoho estimate.")
+            f"{customer.name} was imported from {customer.connector}, which "
+            f"this platform reads but cannot create a quote in, so there is "
+            f"nowhere to write this quote.")
+    if customer.connector and customer.connector not in _QUOTE_ADAPTERS:
+        # Permitted to write there, but nothing here knows how yet. Refused
+        # rather than resolved: the books below are another system's, and
+        # writing this quote into one of them would put it on a ledger this
+        # customer was never imported from.
+        raise ConnectionNotFound(
+            f"{customer.name} was imported from {customer.connector}. Quotes "
+            f"can be created there, but this platform has no writer for it "
+            f"yet, and its quote cannot be written into another system.")
 
     if customer.connection_id:
-        conn = enabled.get(customer.connection_id)
+        conn = writable.get(customer.connection_id)
         if conn is None:
+            elsewhere = enabled.get(customer.connection_id)
+            if elsewhere is not None:
+                raise ConnectionNotFound(
+                    f"The company {customer.name} came from is a "
+                    f"{connector_of(elsewhere)} connection, which this platform "
+                    f"reads but cannot create a quote in, so this quote cannot "
+                    f"be written into it.")
             raise ConnectionNotFound(
-                f"The Zoho company {customer.name} came from is no longer "
+                f"The company {customer.name} came from is no longer "
                 f"connected or has been disabled, so there is no ledger to "
                 f"write this quote into.")
         return CustomerBook(conn, str(customer.external_id))
 
     # Provenance not recorded. One connected company leaves nothing to choose
     # between; more than one is the case that must not be guessed.
-    if len(enabled) == 1 and customer.external_id:
-        return CustomerBook(next(iter(enabled.values())), str(customer.external_id))
-    if not enabled:
+    if not writable:
         raise ConnectionNotFound(
-            f"This organization has no connected Zoho company, so there is no "
-            f"ledger to write {customer.name}'s quote into.")
+            f"This organization has no connected company this platform can "
+            f"create a quote in, so there is nowhere to write {customer.name}'s "
+            f"quote."
+            + (f" Its connected books read {', '.join(read_only)}, which this "
+               f"platform reads but cannot write to." if read_only else ""))
+    # A missing contact id blocks every book equally, so it is answered before
+    # the which-book question rather than after it. It used to fall through to
+    # whichever ambiguity sentence came next, and with two Zoho companies that
+    # sentence said the choice between them could not be decided — sending the
+    # reader to compare two books when the blocker was that this customer has
+    # no contact in either. The remedy happens to be the same re-sync, which is
+    # exactly why the wrong reason survived: it "worked".
+    if not customer.external_id:
+        where = (next(iter(writable.values())).label or "the connected company"
+                 if len(writable) == 1 else "any connected company")
+        raise ConnectionNotFound(
+            f"{customer.name} carries no contact id in {where}, so there is no "
+            f"contact to write this quote against — re-sync the company this "
+            f"customer belongs to.")
+    if len(enabled) == 1:
+        return CustomerBook(next(iter(writable.values())), str(customer.external_id))
+
+    # Two different questions are being refused here, and they read as one only
+    # if the count is the whole sentence. With several Zoho companies the
+    # question really is *which one*. With a single Zoho company beside a book
+    # in another system, there is nothing to choose between Zoho companies —
+    # the question is whether this customer is a Zoho customer at all — and
+    # naming a choice between one thing tells the reader to go looking for a
+    # second set of Zoho books that does not exist.
+    unrecorded = (f"{customer.name} was imported before the source company was "
+                  f"recorded, and ")
+    if len(writable) > 1:
+        raise ConnectionNotFound(
+            unrecorded
+            + f"this organization has {len(writable)} connected companies a "
+              f"quote can be created in. Which one this quote belongs to cannot "
+              f"be decided from the quote alone — re-sync the company this "
+              f"customer belongs to."
+            + (f" It may equally have come from a book this organization reads "
+               f"through {', '.join(read_only)}, which cannot hold a quote at "
+               f"all." if read_only else ""))
+    if read_only:
+        raise ConnectionNotFound(
+            unrecorded
+            + f"this organization also reads {', '.join(read_only)}. This "
+              f"customer may have come from there rather than from its one "
+              f"connected company a quote can be created in, and a system this "
+              f"platform cannot write to cannot be quoted into — so writing the "
+              f"quote into that one would invent the provenance that was never "
+              f"recorded. Re-sync the company this customer belongs to.")
+    # One writable company, nothing else connected, a contact id present — and the
+    # resolve above did not take it, which means ``enabled`` holds a disabled
+    # or otherwise unusable row this function has not accounted for. Refused
+    # rather than resolved: reaching here at all is a gap in the reasoning
+    # above, and guessing a book to close it is how provenance gets invented.
     raise ConnectionNotFound(
-        f"{customer.name} was imported before the source company was recorded, "
-        f"and this organization has {len(enabled)} connected Zoho companies. "
-        f"Which one this quote belongs to cannot be decided from the quote "
-        f"alone — re-sync the company this customer belongs to.")
+        f"{customer.name} cannot be placed against a connected company "
+        f"from what is recorded on it — re-sync the company this customer "
+        f"belongs to.")
 
 
 # ── credentials ─────────────────────────────────────────────────────────────

@@ -58,9 +58,18 @@ interface SystemHealth {
 
 interface LoadData {
   timestamp: string;
-  api: { requests_total: number; active_requests: number };
-  database: { queries_total: number; active_jobs: number };
-  background: { active_jobs: number; active_syncs: number; total_active: number };
+  // `active_requests` is null, not 0: nothing tracks in-flight requests, and the
+  // server says so rather than sending a placeholder zero the screen would draw
+  // as an idle system. `basis` carries that sentence.
+  api: { requests_total: number; active_requests: number | null; basis: string };
+  database: { queries_total: number; basis: string };
+  background: {
+    active_jobs: number;
+    active_syncs: number;
+    stalled: number;
+    total_active: number;
+    basis: string;
+  };
 }
 
 interface CapacityData {
@@ -71,8 +80,12 @@ interface CapacityData {
     status: string;
     percentage: number;
     safe_capacity_multiplier: number;
+    basis: string;
   }>;
   bottleneck: { component: string; current: number; status: string };
+  // Every component says whose load it measures — the API and database figures
+  // are one worker's, the worker figure is the whole deployment's. Shown, not
+  // dropped: side by side without it, a reader adds them up.
   safe_capacity_headroom: { multiplier: number; message: string };
   recommended_action: string;
 }
@@ -221,6 +234,11 @@ export function ObservabilityDashboard({ session }: { session: PlatformSession }
                         <Typography variant="caption" sx={{ mt: 0.5, display: "block" }}>
                           Safe headroom: {comp.safe_capacity_multiplier.toFixed(1)}x
                         </Typography>
+                        {comp.basis && (
+                          <Typography variant="caption" sx={{ display: "block", color: "text.secondary" }}>
+                            {comp.basis}
+                          </Typography>
+                        )}
                       </Box>
                     </Grid>
                   ))}
@@ -247,6 +265,9 @@ export function ObservabilityDashboard({ session }: { session: PlatformSession }
               <CardContent>
                 <Typography variant="h6">{data.load.api.requests_total}</Typography>
                 <Typography variant="caption">Total Requests</Typography>
+                <Typography variant="caption" sx={{ display: "block", color: "text.secondary" }}>
+                  {data.load.api.basis}
+                </Typography>
               </CardContent>
             </Card>
           </Grid>
@@ -265,6 +286,14 @@ export function ObservabilityDashboard({ session }: { session: PlatformSession }
               <CardContent>
                 <Typography variant="h6">{data.load.background.total_active}</Typography>
                 <Typography variant="caption">Active Operations</Typography>
+                {data.load.background.stalled > 0 && (
+                  <Chip
+                    size="small"
+                    color="warning"
+                    label={`${data.load.background.stalled} stalled`}
+                    sx={{ mt: 1 }}
+                  />
+                )}
               </CardContent>
             </Card>
           </Grid>
@@ -304,20 +333,35 @@ export function ObservabilityDashboard({ session }: { session: PlatformSession }
         <Grid container spacing={3}>
           <Grid size={12}>
             <Card>
-              <CardHeader title="Active Jobs" />
+              <CardHeader
+                title="Active Jobs"
+                subheader={`Source: ${data.jobs.source} — ${data.jobs.recent_24h.basis}`}
+              />
               <CardContent>
                 <Typography variant="body2">
                   Active: {data.jobs.active.count} | Completed (24h): {data.jobs.recent_24h.completed} |
+                  Partial (24h): {data.jobs.recent_24h.partial} |
                   Failed (24h): {data.jobs.recent_24h.failed}
                 </Typography>
+                {data.jobs.stalled.count > 0 && (
+                  <Alert severity="warning" sx={{ mt: 2 }}>
+                    <AlertTitle>{data.jobs.stalled.count} stalled</AlertTitle>
+                    {data.jobs.stalled.detail}
+                  </Alert>
+                )}
                 <Box sx={{ mt: 2 }}>
-                  <Typography variant="caption">By Type:</Typography>
+                  <Typography variant="caption">By phase:</Typography>
                   <Box sx={{ display: "flex", gap: 1, flexWrap: "wrap", mt: 1 }}>
-                    {Object.entries(data.jobs.active.by_type).map(([type, count]: [string, any]) => (
-                      <Chip key={type} label={`${type}: ${count}`} size="small" />
+                    {Object.entries(data.jobs.active.by_phase).map(([phase, count]: [string, any]) => (
+                      <Chip key={phase} label={`${phase}: ${count}`} size="small" />
                     ))}
                   </Box>
                 </Box>
+                <Typography variant="caption" sx={{ mt: 2, display: "block", color: "text.secondary" }}>
+                  Job kinds recorded: {data.jobs.job_kinds.join(", ")}. Nothing else runs as a
+                  background job here, so an empty list is an idle platform rather than an
+                  unmeasured one.
+                </Typography>
               </CardContent>
             </Card>
           </Grid>
@@ -325,25 +369,37 @@ export function ObservabilityDashboard({ session }: { session: PlatformSession }
           {data.jobs.failures.length > 0 && (
             <Grid size={12}>
               <Card>
-                <CardHeader title="Recent Failures" />
+                <CardHeader title="Recent failures and partial runs" />
                 <CardContent>
                   <TableContainer>
                     <Table size="small">
                       <TableHead>
                         <TableRow>
-                          <TableCell>Job Type</TableCell>
+                          <TableCell>Job Kind</TableCell>
+                          <TableCell>Outcome</TableCell>
                           <TableCell>Error</TableCell>
-                          <TableCell>Time</TableCell>
+                          <TableCell>Started</TableCell>
                         </TableRow>
                       </TableHead>
                       <TableBody>
-                        {data.jobs.failures.map((failure: any, idx: number) => (
-                          <TableRow key={idx}>
-                            <TableCell>{failure.job_type}</TableCell>
-                            <TableCell sx={{ maxWidth: 300, wordBreak: "break-word" }}>
-                              {failure.error}
+                        {data.jobs.failures.map((failure: any) => (
+                          <TableRow key={failure.sync_run_id}>
+                            <TableCell>{failure.job_kind}</TableCell>
+                            <TableCell>
+                              <Chip
+                                size="small"
+                                label={failure.status}
+                                color={failure.status === "FAILED" ? "error" : "warning"}
+                              />
                             </TableCell>
-                            <TableCell>{new Date(failure.timestamp).toLocaleTimeString()}</TableCell>
+                            <TableCell sx={{ maxWidth: 300, wordBreak: "break-word" }}>
+                              {failure.error ?? "No error recorded"}
+                            </TableCell>
+                            <TableCell>
+                              {failure.timestamp
+                                ? new Date(failure.timestamp).toLocaleTimeString()
+                                : "—"}
+                            </TableCell>
                           </TableRow>
                         ))}
                       </TableBody>
@@ -361,7 +417,10 @@ export function ObservabilityDashboard({ session }: { session: PlatformSession }
         <Grid container spacing={3}>
           <Grid size={12}>
             <Card>
-              <CardHeader title="Zoho Sync Status" />
+              <CardHeader
+                title="Zoho Sync Status"
+                subheader={`Source: ${data.syncs.source} — ${data.syncs.recent_24h.basis}`}
+              />
               <CardContent>
                 <Grid container spacing={2}>
                   <Grid size={{ xs: 12, md: 3 }}>
@@ -373,16 +432,38 @@ export function ObservabilityDashboard({ session }: { session: PlatformSession }
                     <Typography variant="h6">{data.syncs.recent_24h.completed}</Typography>
                   </Grid>
                   <Grid size={{ xs: 12, md: 3 }}>
-                    <Typography variant="caption">Failed (24h)</Typography>
-                    <Typography variant="h6">{data.syncs.recent_24h.failed}</Typography>
+                    <Typography variant="caption">Partial / Failed (24h)</Typography>
+                    <Typography variant="h6">
+                      {data.syncs.recent_24h.partial} / {data.syncs.recent_24h.failed}
+                    </Typography>
                   </Grid>
                   <Grid size={{ xs: 12, md: 3 }}>
                     <Typography variant="caption">Throughput</Typography>
+                    {/* null is "not knowable", and it must not render as 0 rec/s —
+                        that is what a sync moving no data looks like. */}
                     <Typography variant="h6">
-                      {data.syncs.recent_24h.throughput_records_per_sec?.toFixed(1) || 0} rec/s
+                      {data.syncs.recent_24h.throughput_records_per_sec === null
+                        ? "Unknown"
+                        : `${data.syncs.recent_24h.throughput_records_per_sec.toFixed(1)} rec/s`}
+                    </Typography>
+                    <Typography variant="caption" sx={{ color: "text.secondary" }}>
+                      {data.syncs.recent_24h.throughput_basis}
                     </Typography>
                   </Grid>
                 </Grid>
+                {data.syncs.stalled.count > 0 && (
+                  <Alert severity="warning" sx={{ mt: 2 }}>
+                    <AlertTitle>{data.syncs.stalled.count} stalled</AlertTitle>
+                    {data.syncs.stalled.detail}
+                  </Alert>
+                )}
+                <Box sx={{ mt: 2, display: "flex", gap: 1, flexWrap: "wrap" }}>
+                  {Object.entries(data.syncs.active.by_connection).map(
+                    ([connection, count]: [string, any]) => (
+                      <Chip key={connection} size="small" label={`${connection}: ${count}`} />
+                    ),
+                  )}
+                </Box>
               </CardContent>
             </Card>
           </Grid>
@@ -396,17 +477,31 @@ export function ObservabilityDashboard({ session }: { session: PlatformSession }
                     <Table size="small">
                       <TableHead>
                         <TableRow>
-                          <TableCell>Type</TableCell>
-                          <TableCell>Tenant</TableCell>
+                          <TableCell>Company</TableCell>
+                          <TableCell>Outcome</TableCell>
                           <TableCell>Error</TableCell>
+                          <TableCell>Started</TableCell>
                         </TableRow>
                       </TableHead>
                       <TableBody>
-                        {data.syncs.issues.map((issue: any, idx: number) => (
-                          <TableRow key={idx}>
-                            <TableCell>{issue.sync_type}</TableCell>
-                            <TableCell>{issue.tenant}</TableCell>
-                            <TableCell>{issue.error}</TableCell>
+                        {data.syncs.issues.map((issue: any) => (
+                          <TableRow key={issue.sync_run_id}>
+                            <TableCell>{issue.connection_id ?? "All companies"}</TableCell>
+                            <TableCell>
+                              <Chip
+                                size="small"
+                                label={issue.status}
+                                color={issue.status === "FAILED" ? "error" : "warning"}
+                              />
+                            </TableCell>
+                            <TableCell sx={{ maxWidth: 300, wordBreak: "break-word" }}>
+                              {issue.error ?? "No error recorded"}
+                            </TableCell>
+                            <TableCell>
+                              {issue.timestamp
+                                ? new Date(issue.timestamp).toLocaleTimeString()
+                                : "—"}
+                            </TableCell>
                           </TableRow>
                         ))}
                       </TableBody>

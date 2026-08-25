@@ -1,0 +1,22 @@
+# NetSuite — Item saved-search export (CSV).
+#
+# NetSuite's item record is configurable, so these are the stock field labels
+# from a saved search built on the standard Item record with no renamed fields.
+# A tenant who has renamed them re-points the role with --col-<role> or copies
+# this file; neither is a code change, which is the point.
+label: "NetSuite — Item saved-search export"
+columns:
+  sku: "Name"
+  name: "Display Name"
+  manufacturer: "Manufacturer"
+  rate: "Base Price"
+  stock: "Quantity On Hand"
+  hsn: "Tax Schedule"
+  uom: "Units Type"
+notes: >-
+  "Base Price" is the item's list (selling) price. NetSuite's cost fields
+  ("Average Cost", "Last Purchase Price") have no role in this profile and are
+  read as unmapped payload — the report cannot show a number it never read.
+  "Tax Schedule" fills the hsn role because it is the nearest equivalent
+  classification field; a US tenant with no HSN concept should clear the role
+  with --col-hsn '' so the census reports it as absent rather than blank.

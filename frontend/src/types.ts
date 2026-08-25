@@ -155,6 +155,10 @@ export interface QuoteEstimate {
 export interface QuoteIntake {
   read_by: "ai" | "pattern";
   detail: string;
+  /** Whether the enquiry text was captured into the inbound corpus. False is the
+   *  ordinary case today — nobody stated how the enquiry arrived — and the screen
+   *  needs to tell that apart from a capture that was attempted and refused. */
+  captured: boolean;
 }
 
 export interface MarginFloor {

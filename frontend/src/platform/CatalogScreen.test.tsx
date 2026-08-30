@@ -14,7 +14,7 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { CatalogPanel } from "./CatalogPanel";
+import { CatalogScreen } from "./CatalogScreen";
 import { papi } from "./api";
 import type { CatalogStatus, PlatformSession } from "./types";
 
@@ -78,10 +78,10 @@ beforeEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("the catalogue panel", () => {
+describe("the decoded catalogue screen", () => {
   it("says NOT BUILT, and never renders a count or a rate for it", async () => {
     vi.spyOn(papi, "catalogStatus").mockResolvedValue(status());
-    render(<CatalogPanel session={SESSION} />);
+    render(<CatalogScreen session={SESSION} />);
 
     expect(await screen.findByText("NOT BUILT")).toBeTruthy();
     // The words a reader needs: not built, and what that means for resolution.
@@ -103,7 +103,7 @@ describe("the catalogue panel", () => {
 
   it("reports the provenance a resolution is stamped with, once built", async () => {
     vi.spyOn(papi, "catalogStatus").mockResolvedValue(status(BUILT));
-    render(<CatalogPanel session={SESSION} />);
+    render(<CatalogScreen session={SESSION} />);
 
     expect(await screen.findByText("READY")).toBeTruthy();
     expect(screen.getByText(/6717 decoded records/)).toBeTruthy();
@@ -124,7 +124,7 @@ describe("the catalogue panel", () => {
         pack: "/pie-parser/packs/org/zcnc",
       },
     }));
-    render(<CatalogPanel session={SESSION} />);
+    render(<CatalogScreen session={SESSION} />);
 
     expect(await screen.findByText("SOURCE MISSING")).toBeTruthy();
     expect(screen.getByText(/check PIE_CORPUS/)).toBeTruthy();
@@ -135,7 +135,7 @@ describe("the catalogue panel", () => {
   it("withholds the build control from anyone the server did not clear", async () => {
     vi.spyOn(papi, "catalogStatus").mockResolvedValue(
       status({ ...BUILT, can_rebuild: false }));
-    render(<CatalogPanel session={SESSION} />);
+    render(<CatalogScreen session={SESSION} />);
 
     await waitFor(() => expect(screen.getByText("READY")).toBeTruthy());
     // The state is readable — the control is not. The server refuses the POST

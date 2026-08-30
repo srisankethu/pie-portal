@@ -1,11 +1,18 @@
 // The decoded product catalogue: does one exist, what built it, and rebuild.
 //
-// Until this panel existed the catalogue was a terminal step — `python
+// Until this screen existed the catalogue was a terminal step — `python
 // scripts/build_catalog.py` — with no way to see from the product whether one
 // existed, how old it was, or which pack and ruleset produced it. Those last
 // two are the point, not decoration: `run_id` derives from the input bytes
 // plus the ruleset checksum, so the stamp shown here is what says WHICH
 // catalogue answered a given resolution.
+//
+// It began as a panel at the bottom of Data & connection, which is where it
+// belongs by subject — but that screen is already tall, and a build control
+// nobody scrolls to is the same as no build control. It is its own address
+// under Setup now. Not named "catalogue": that nav item already exists and
+// assigns an item to a line of the business, which is a different question
+// from how the manufacturer encodes a part number.
 //
 // Every number rendered comes from the parser's own run report, stored beside
 // the catalogue at build time and served verbatim. Nothing is recomputed here
@@ -36,7 +43,7 @@ function chipFor(c: CatalogStatus): { label: string; tone: "good" | "warn" | "ba
   return { label: "NOT BUILT", tone: "warn" };
 }
 
-export function CatalogPanel({ session }: { session: PlatformSession }) {
+export function CatalogScreen({ session }: { session: PlatformSession }) {
   const [status, setStatus] = useState<CatalogStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [building, setBuilding] = useState(false);
@@ -69,16 +76,35 @@ export function CatalogPanel({ session }: { session: PlatformSession }) {
     }
   }
 
+  // The heading is part of every branch, not only the loaded one: as its own
+  // address this screen can be opened cold, and a page that renders a bare
+  // error box with no title does not say which screen failed.
+  const head = (
+    <div className="dp-head">
+      <h1>Decoded catalogue</h1>
+      <p>
+        What resolution reads a part number against — and which build of it
+        answered.
+      </p>
+    </div>
+  );
+
   if (error) {
     return (
-      <Box sx={{ mt: 2 }}>
+      <div>
+        {head}
         <ErrorState title="Could not read the catalogue state" error={error}
                     onRetry={load} />
-      </Box>
+      </div>
     );
   }
   if (!status) {
-    return <LoadingState rows={1} height={90} label="Reading the catalogue state…" />;
+    return (
+      <div>
+        {head}
+        <LoadingState rows={1} height={90} label="Reading the catalogue state…" />
+      </div>
+    );
   }
 
   const chip = chipFor(status);
@@ -99,12 +125,8 @@ export function CatalogPanel({ session }: { session: PlatformSession }) {
     && loadedChecksum !== status.stamp.ruleset_checksum);
 
   return (
-    <>
-      <div className="section-h">
-        <Labelled tip="The decoded product catalogue pie-parser resolves RFQ lines and item identities against. Nomenclature only — it never carries price, cost or stock.">
-          Decoded product catalogue
-        </Labelled>
-      </div>
+    <div>
+      {head}
       <Bp style={{ padding: "8px 14px 14px" }}>
         <div style={{ display: "flex", gap: 8, alignItems: "center",
                       flexWrap: "wrap", margin: "8px 0" }}>
@@ -300,6 +322,6 @@ export function CatalogPanel({ session }: { session: PlatformSession }) {
           this server. It carries nomenclature only — never price, cost or stock.
         </p>
       </Bp>
-    </>
+    </div>
   );
 }

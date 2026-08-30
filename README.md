@@ -56,7 +56,7 @@ cd pie-portal
 
 ./scripts/setup_pie_parser.sh                        # PIE engine (private submodule)
 python -m pip install -r backend/requirements.txt
-python scripts/build_catalog.py                      # or build it later from Data & connection
+python scripts/build_catalog.py                      # or later from Setup → Decoded catalogue
 (cd frontend && npm install)
 
 # terminal 1

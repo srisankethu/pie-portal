@@ -509,7 +509,7 @@ passes.
 ---
 
 ## 021 — The override decode is a third defect, and it is now visible
-**Status:** OPEN — not fixed by 017 · **Report §:** 17
+**Status:** **DONE** — landed, both gates green · **Report §:** 17
 
 **What it is.** On the MIXED path, `"same as 2001174 but 0.4 corner radius"`
 does not reliably turn into `corner_radius_mm = 0.4`. The change text is parsed
@@ -532,8 +532,149 @@ dimension of the request could be compared against these candidates". A wrong
 decode that announces itself is a different class of problem from one that
 prices a part.
 
-**What fixing it needs.** Corpus cases for the override shapes people actually
-write (`but 0.4`, `in 0.4 corner`, `-> 0.4`, `0.4 instead of 0.8`), a decode
-that treats the change text as a *specification fragment* rather than as
-nomenclature, and a refusal when it cannot read one — the derived requirement
-must be able to say which fields the caller actually changed.
+**What fixing it needed** — and it turned out to be three things, each in the
+layer that owned the problem:
+
+1. **The words that name a specification are data.** `resolver/lookups/spec_terms.csv`
+   is a fourth lookup beside application / category / material, consumed by the
+   same phrase pass — the one whose comment already said it exists *"so 'STEEL'
+   is not mis-read as an ISO 'S' shape"*. Dimension nouns simply had no table,
+   so "corner", "flute" and "mm" reached the insert-code decoder and became ISO
+   designations taken from their own letters: `CORN` → shape C, clearance O,
+   tolerance R, fixing N. Each of those is a **hard gate** in the equivalence
+   engine, so the fiction did not add noise — it decided which records could be
+   compared at all. The table also carries *which slot* a number beside the word
+   fills, which is why it is a table rather than a stopword list: a stopword is
+   discarded, while "corner radius" tells us what the 0.4 next to it means.
+2. **The vocabulary of variation is connectives.** "but", "like", "instead"
+   went into `_STOPWORDS` beside "with" and "for" — without them, `iso_shape: B`
+   came out of "**b**ut" and `L` out of "**l**ike".
+3. **A change fragment is read with the fuzzy resolver only.** `decode_request`
+   runs the nomenclature pipeline first and trusts it, which is right for a
+   whole RFQ and wrong for a fragment: over "with 0.4 corner radius" the
+   pipeline routed to the terminal catch-all family and invented
+   `product_family: turning_insert`. Correct here by luck, and a hard gate
+   either way.
+
+Plus the residue path: "2001174 but 0.4 corner radius" says what "same as
+2001174 but 0.4 corner radius" says, and only the second has a word
+`detect_mixed` keys on. The input minus **the identifier that actually
+matched** is the change. Stripping every identifier-*shaped* token looked
+equivalent and was not — a grade is identifier-shaped, so "2001174 but TN4000
+grade" removed its own change and came back as the unvaried product.
+
+### Verified
+
+Nine phrasings of one intent, against the real catalogue. 2001174 is a CNMG
+120408 at 0.8 mm; a correct answer for a 0.4 request is a CNMG **120404**:
+
+| Request | Top candidates |
+|---|---|
+| `same as 2001174 but 0.4 corner radius` | 2559548, 2560926 — both r=0.4 |
+| `2001174 but 0.4 corner radius` | same |
+| `2001174 with 0.4 corner radius` | same |
+| `like 2001174 in 0.4 corner radius` | same |
+| `need 2001174 in 0.4 corner radius` | same |
+| `2001174 -> 0.4 corner radius` | same |
+| `instead of 2001174 give 0.4 corner radius` | same |
+| `2001174 but 0.4 nose radius` | same |
+| `2001174 but TN4000 grade` | 2045826, 2559490 — both TN4000 |
+
+**9/9.** Before this, all nine returned the reference's own 0.8 mm neighbours
+or unrelated square and screw-on inserts. No regression: a bare code and a
+code-plus-quantity still resolve `EXACT`, `CNMG 0.8 insert for cast iron` still
+decodes, and a bearing still offers nothing.
+
+Gates: pie-parser **468 passed** (was 439), all six steps, corpus 6,717 rows at
+full parse rate, byte-identical reruns. pie-portal all seven steps green.
+
+### The evaluation moved, and not all of it upward
+
+Reported in full because the precision drop is real:
+
+| `eval_rfq` engine arm | before | after |
+|---|---|---|
+| precision | 66.7% | **60.0%** |
+| coverage | 64.3% | **71.4%** |
+| abstention | 35.7% | 28.6% |
+| **wrong-confident** | **21.4%** | **21.4%** |
+
+One case changed: `underspec-wa-no-grade` — *"need cnmg120408, 20 pcs urgent"* —
+previously abstained and now answers. Precision fell because the denominator
+grew while `correct` did not; the metric that matters did not move.
+
+**Why that case abstained before is the interesting part, and it was not
+judgement.** The junk this fix removed — "need", "pcs" and "urgent" decoding
+into ISO slots — was depressing the score below the harness's answer bar. With
+the junk gone the engine's real state is visible: **all five candidates tie at
+0.960**, which is the engine declining to choose. The harness takes the first
+of a tie and calls it an answer. See decision 022.
+
+**Not fixed here, deliberately.** Correcting the harness in the same change as
+the thing it measures is how a measurement gets tuned into agreement. It is its
+own decision, reviewed on its own evidence.
+
+---
+
+## 022 — The RFQ harness counts a tie as an answer
+**Status:** OPEN — instrument defect, evidence below · **Report §:** 29
+
+**What it does.** `tools/eval_rfq.py`'s engine arm decides "answered" from the
+top candidate's score against `answer_at`. It does not ask whether the ranking
+*separated* that candidate from the next one. So a tie is resolved by sort
+order and reported as an answer the engine did not make.
+
+**Evidence.** Case `underspec-wa-no-grade` — *"need cnmg120408, 20 pcs urgent"*,
+whose own note says two records share the geometry in different grades and
+nothing chooses between them. Run against the fixture catalogue today:
+
+```
+5000001  combined=0.96  KCK15   CNMG 120408 - KCK15
+5000002  combined=0.96  TN2000  CNMG 120408 - TN2000
+5000003  combined=0.96  TN2000  CNMG 120412 - TN2000
+5000004  combined=0.96  KCK15   SNMG 120408 - KCK15
+5000005  combined=0.96  KCP10   CNMG 120404 - KCP10
+```
+
+A five-way tie. The engine is abstaining in substance and the harness records
+an answer.
+
+**Why it matters beyond one case.** The production consumer already applies the
+missing rule: `pie_service._is_discriminating` refuses to auto-select when the
+scores do not separate, because *"treating the first of those as the technical
+equivalent manufactures certainty the engine never expressed."* The harness
+measures a system that does not exist — one more willing to answer than the one
+that ships — so **coverage is over-reported and abstention under-reported**, and
+by an unknown amount until it is fixed.
+
+**Decision.** Align the arm with the consumer: a tied top is an abstention, not
+an answer. `scorecard.py` stays the one definition of what an evaluation counts
+(CLAUDE.md §3); this is the *arm's* judgement of answered/abstained, which is
+where it belongs.
+
+**Why it is not in the 021 commit.** 021 made this case change, so fixing the
+harness in the same change would be adjusting the instrument to agree with the
+result it had just produced. Numbers will move when this lands — coverage down,
+abstention up, precision probably up — and they should move on their own
+evidence, in a change that does nothing else.
+
+---
+
+## 023 — 100k SKUs is the design target; the working set is what exists
+**Status:** ACCEPTED — product owner's call, 2026-08-30 · **Report §:** 40 Q1
+
+**Decision.** Engineer for 100,000 SKUs. Scope and measure Phase 1 against the
+catalogue that actually exists, and let the real number emerge as attribute
+coverage is built.
+
+**What was measured, so nobody re-derives it.** SLS is 15,032–15,996 items
+(live check, 2026-08-30, against the census of 15,028 on 2026-08-09); the second
+entity is 513; the UPS connector returns the SLS organisation, so there are two
+reachable masters and not three. Under 17k today against a 100k target.
+
+**What follows regardless of the real number.** Retrieval moves into PostgreSQL
+(decision 003) on the memory evidence alone — the in-process pool costs ~19.7 KB
+resident per record across the two copies the singleton holds, so the deployment
+model breaks well before 100k whatever the catalogue turns out to be. Nothing in
+the phase order depends on settling this; only Phase 1's *sizing* does, by about
+a factor of six.

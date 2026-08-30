@@ -92,7 +92,7 @@ class ProfileIn(BaseModel):
     sku_count: int = Field(default=25_000, ge=0)
     erp_rows_millions: float = Field(default=1.0, ge=0.0)
     #: When set, order value is solved so the funnel reconciles to this GMV.
-    annual_gmv: Optional[Decimal] = None
+    annual_revenue: Optional[Decimal] = None
 
     def to_profile(self) -> CustomerProfile:
         profile = CustomerProfile(
@@ -108,8 +108,8 @@ class ProfileIn(BaseModel):
             quotation_minutes=self.quotation_minutes,
             sku_count=self.sku_count,
             erp_rows_millions=self.erp_rows_millions)
-        if self.annual_gmv is not None and self.annual_gmv > 0:
-            profile = profile.with_annual_gmv(self.annual_gmv)
+        if self.annual_revenue is not None and self.annual_revenue > 0:
+            profile = profile.with_annual_revenue(self.annual_revenue)
         return profile
 
 

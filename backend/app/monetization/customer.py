@@ -59,7 +59,7 @@ class CustomerProfile:
     deliberate: GMV and the funnel are two statements of the same fact, and
     holding both as inputs is the responsibility duplication CLAUDE.md §2 warns
     about — the day they disagree, nothing can say which is right. A caller who
-    knows GMV and not the average order value uses :meth:`with_annual_gmv`,
+    knows GMV and not the average order value uses :meth:`with_annual_revenue`,
     which back-solves one input instead of storing a second truth.
     """
 
@@ -93,12 +93,12 @@ class CustomerProfile:
         return self.quotes * Decimal(str(_rate(self.order_conversion)))
 
     @property
-    def annual_gmv(self) -> Decimal:
+    def annual_revenue(self) -> Decimal:
         return money(self.orders * self.average_order_value)
 
     @property
     def annual_gross_profit(self) -> Decimal:
-        return money(self.annual_gmv * Decimal(str(_rate(self.gross_margin))))
+        return money(self.annual_revenue * Decimal(str(_rate(self.gross_margin))))
 
     @property
     def gross_profit_per_order(self) -> Optional[Decimal]:
@@ -110,7 +110,7 @@ class CustomerProfile:
     def annual_labour_cost(self) -> Decimal:
         return money(Decimal(self.sales_engineers) * self.cost_per_employee_year)
 
-    def with_annual_gmv(self, gmv: Decimal) -> "CustomerProfile":
+    def with_annual_revenue(self, gmv: Decimal) -> "CustomerProfile":
         """The same funnel scaled so it produces ``gmv``, by moving order value.
 
         Returns ``self`` unchanged when the funnel produces no orders — there is
@@ -138,7 +138,7 @@ class CustomerProfile:
             "erp_rows_millions": self.erp_rows_millions,
             "quotes": str(money(self.quotes)),
             "orders": str(money(self.orders)),
-            "annual_gmv": str(self.annual_gmv),
+            "annual_revenue": str(self.annual_revenue),
             "annual_gross_profit": str(self.annual_gross_profit),
             "gross_profit_per_order": (None if self.gross_profit_per_order is None
                                        else str(self.gross_profit_per_order)),
@@ -253,7 +253,7 @@ class Waterfall:
 
     # ── the bases a pricing metric can be applied to ────────────────────────
     @property
-    def pie_touched_gmv(self) -> Decimal:
+    def pie_touched_revenue(self) -> Decimal:
         """Revenue on orders that followed a PIE quote.
 
         **Modelled, and not measurable for a real customer.** A quote is not
@@ -279,7 +279,7 @@ class Waterfall:
         factor of ``1 / pie_rfq_share``. The model reports both and the
         ambiguity is one of the findings, not a detail.
 
-        Modelled rather than measurable, for the reason ``pie_touched_gmv``
+        Modelled rather than measurable, for the reason ``pie_touched_revenue``
         gives, and on a base that also needs cost.
         """
         return self.covered_with_pie.gross_profit
@@ -321,9 +321,9 @@ class Waterfall:
             "hours_saved": str(money(self.hours_saved)),
             "total_economic_value": str(self.total_economic_value),
             "bases": {
-                "pie_touched_gmv": str(self.pie_touched_gmv),
+                "pie_touched_revenue": str(self.pie_touched_revenue),
                 "pie_touched_gross_margin": str(self.pie_touched_gross_margin),
-                "total_gmv": str(self.with_pie.revenue),
+                "connected_book_revenue": str(self.with_pie.revenue),
                 "total_gross_margin": str(self.total_gross_margin),
                 "incremental_gross_margin": str(self.incremental_gross_profit),
             },

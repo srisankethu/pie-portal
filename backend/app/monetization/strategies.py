@@ -80,8 +80,8 @@ class FeeBase(str, Enum):
     roughly an order of magnitude, so "0.1% of margin" is not one price.
     """
 
-    PIE_TOUCHED_GMV = "PIE_TOUCHED_GMV"
-    TOTAL_GMV = "TOTAL_GMV"
+    PIE_TOUCHED_REVENUE = "PIE_TOUCHED_REVENUE"
+    CONNECTED_BOOK_REVENUE = "CONNECTED_BOOK_REVENUE"
     PIE_TOUCHED_GROSS_MARGIN = "PIE_TOUCHED_GROSS_MARGIN"
     TOTAL_GROSS_MARGIN = "TOTAL_GROSS_MARGIN"
     INCREMENTAL_GROSS_MARGIN = "INCREMENTAL_GROSS_MARGIN"
@@ -94,7 +94,7 @@ class FeeBase(str, Enum):
 #: an invoice is computed from, and ``report.recommend`` refuses to build a
 #: structure on one.
 BASE_MEASURABILITY: dict[FeeBase, tuple[Measurability, str]] = {
-    FeeBase.TOTAL_GMV: (
+    FeeBase.CONNECTED_BOOK_REVENUE: (
         Measurability.SYNCED,
         "Sum of invoiced sales lines on the connected book. Two independent "
         "records of one number — the ERP's and the customer's own tax filing."),
@@ -103,7 +103,7 @@ BASE_MEASURABILITY: dict[FeeBase, tuple[Measurability, str]] = {
         "Computed inside the platform from synced sale and cost rows. "
         "Measurable, which is a different question from whether the customer "
         "will let a vendor key a fee to it."),
-    FeeBase.PIE_TOUCHED_GMV: (
+    FeeBase.PIE_TOUCHED_REVENUE: (
         Measurability.INFERRED,
         "Requires knowing which invoiced revenue followed a PIE quote. No quote "
         "-> sales-order link exists: the estimate is sent, the order is entered "
@@ -126,6 +126,47 @@ BASE_MEASURABILITY: dict[FeeBase, tuple[Measurability, str]] = {
 }
 
 
+#: What "the connected book's invoiced revenue" means, precisely enough to put
+#: in a contract. Written down because the shorthand was wrong: this base was
+#: called GMV for a while, which is a marketplace word for third-party volume an
+#: intermediary never owns. A distributor buys and sells on its own balance
+#: sheet, so what is actually being billed is **its turnover**, and the two
+#: framings support very different intuitions about what 0.15% is.
+#:
+#: Each entry is (what, in or out, why). ``UNSETTLED`` marks the ones the schema
+#: cannot answer today and the contract therefore has to.
+BILLABLE_REVENUE: tuple[tuple[str, str, str], ...] = (
+    ("Invoice line items", "IN",
+     "``SalesTxn.line_revenue`` — one row per invoice line, taken from the "
+     "source line total or qty x net price."),
+    ("Line discounts", "DEDUCTED",
+     "``line_revenue`` is post-discount. It is what the customer paid, not "
+     "what was listed."),
+    ("GST", "OUT",
+     "Line revenue is pre-tax. Billing on a tax-inclusive figure would make "
+     "PIE's fee move with a rate change nobody at either company controls."),
+    ("Non-goods charges (freight, packing)", "OUT",
+     "They never become a ``SalesTxn``: normalisation requires an item id, so "
+     "an invoice-level charge has no line to write. Out by construction rather "
+     "than by choice, and worth stating so nobody adds them later."),
+    ("Credit notes and returns", "UNSETTLED",
+     "Not netted. ``CreditNoteDoc`` is stored at header grain and its total is "
+     "tax-INCLUSIVE, while line revenue is pre-tax — so the two cannot simply "
+     "be subtracted, and doing it anyway over-deducts by the GST. Until credit "
+     "notes are read at line grain the contract must state the basis; a "
+     "returns-heavy book billed gross is billed on goods it took back."),
+    ("Sales between the customer's own entities", "UNSETTLED",
+     "Nothing in the schema marks a related party. An organization with three "
+     "connected companies that sell to each other has that revenue counted "
+     "once per book, so the same goods are billed twice. The contract must "
+     "name the entities and exclude inter-company invoices."),
+    ("Which connected companies count", "UNSETTLED",
+     "Every connection under the organization contributes today. Whether a "
+     "newly connected company is inside the fee or a new agreement is a "
+     "commercial question the sum cannot answer."),
+)
+
+
 def measurability(base: FeeBase) -> tuple[Measurability, str]:
     return BASE_MEASURABILITY[base]
 
@@ -138,9 +179,9 @@ def base_amount(wf: Waterfall, base: FeeBase) -> Decimal:
     conversion. A savings-share deal that quietly included won revenue would be
     an incremental-margin deal wearing a friendlier word.
     """
-    if base is FeeBase.PIE_TOUCHED_GMV:
-        return wf.pie_touched_gmv
-    if base is FeeBase.TOTAL_GMV:
+    if base is FeeBase.PIE_TOUCHED_REVENUE:
+        return wf.pie_touched_revenue
+    if base is FeeBase.CONNECTED_BOOK_REVENUE:
         return wf.with_pie.revenue
     if base is FeeBase.PIE_TOUCHED_GROSS_MARGIN:
         return wf.pie_touched_gross_margin
@@ -400,10 +441,10 @@ class TransactionPricing(PricingStrategy):
     """A share of transaction value. The classic marketplace take rate."""
 
     rate: float
-    base: FeeBase = FeeBase.PIE_TOUCHED_GMV
+    base: FeeBase = FeeBase.PIE_TOUCHED_REVENUE
     key: str = "transaction"
-    label: str = "% of transaction value (GMV)"
-    metric: str = "GMV"
+    label: str = "% of invoiced revenue"
+    metric: str = "invoiced revenue"
 
     def _components(self, wf, params):
         amount = base_amount(wf, self.base)

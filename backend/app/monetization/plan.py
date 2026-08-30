@@ -172,12 +172,12 @@ def project(scenario: GrowthScenario, acv: dict[str, Decimal],
     per_customer_rfqs = {
         key: Decimal(p.annual_rfqs) * Decimal(str(p.pie_rfq_share))
         for key, p in ARCHETYPES.items()}
-    per_customer_gmv = {key: p.annual_gmv for key, p in ARCHETYPES.items()}
+    per_customer_revenue = {key: p.annual_revenue for key, p in ARCHETYPES.items()}
     per_customer_orders = {key: p.orders for key, p in ARCHETYPES.items()}
 
     blended_cogs = _blended(mix, per_customer_cogs)
     blended_rfqs = _blended(mix, per_customer_rfqs)
-    blended_gmv = _blended(mix, per_customer_gmv)
+    blended_revenue = _blended(mix, per_customer_revenue)
     blended_orders = _blended(mix, per_customer_orders)
     blended_acv = _blended(mix, acv)
 
@@ -209,7 +209,7 @@ def project(scenario: GrowthScenario, acv: dict[str, Decimal],
             churned_customers=churned, closing_customers=closing,
             billed_customers=billed,
             rfqs=money(Decimal(str(billed)) * blended_rfqs),
-            gmv=money(Decimal(str(billed)) * blended_gmv),
+            gmv=money(Decimal(str(billed)) * blended_revenue),
             transactions=money(Decimal(str(billed)) * blended_orders),
             revenue=revenue, cogs=cogs, gross_profit=gp,
             gross_margin=(float(gp / revenue) if revenue > 0 else None),

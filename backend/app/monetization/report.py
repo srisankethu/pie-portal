@@ -135,7 +135,7 @@ def transaction_ladder(wf: Waterfall,
             base.value: _rows(
                 wf, [TransactionPricing(rate=r, base=base)
                      for r in params.gmv_rate_ladder], params)
-            for base in (FeeBase.PIE_TOUCHED_GMV, FeeBase.TOTAL_GMV)},
+            for base in (FeeBase.PIE_TOUCHED_REVENUE, FeeBase.CONNECTED_BOOK_REVENUE)},
     }
 
 
@@ -179,7 +179,7 @@ def hybrid_structures(wf: Waterfall,
     remainder = money(target - platform)
     cap = money(platform * VARIABLE_CAP_MULTIPLE)
 
-    gmv_base = wf.pie_touched_gmv
+    gmv_base = wf.pie_touched_revenue
     margin_base = wf.pie_touched_gross_margin
     incremental = wf.incremental_gross_profit
     covered_rfqs = wf.covered_with_pie.rfqs
@@ -192,10 +192,10 @@ def hybrid_structures(wf: Waterfall,
     rfq_rate = (money(remainder / covered_rfqs) if covered_rfqs > 0 else _ZERO)
 
     built: list[tuple[str, PricingStrategy]] = [
-        ("A. Platform fee + transaction fee",
+        ("A. Platform fee + revenue fee",
          HybridPricing(platform_fee=platform, maximum_fee=money(platform + cap),
                        component=TransactionPricing(
-                           rate=gmv_rate, base=FeeBase.PIE_TOUCHED_GMV))),
+                           rate=gmv_rate, base=FeeBase.PIE_TOUCHED_REVENUE))),
         ("B. Platform fee + % gross margin",
          HybridPricing(platform_fee=platform, maximum_fee=money(platform + cap),
                        component=MarginSharePricing(
@@ -264,8 +264,8 @@ def all_strategies(wf: Waterfall,
         QuotePricing(rate=unit_on(covered.quotes)),
         MatchPricing(rate=unit_on(covered.quotes)),
         OrderPricing(rate=unit_on(covered.orders)),
-        TransactionPricing(rate=rate_on(wf.pie_touched_gmv),
-                           base=FeeBase.PIE_TOUCHED_GMV),
+        TransactionPricing(rate=rate_on(wf.pie_touched_revenue),
+                           base=FeeBase.PIE_TOUCHED_REVENUE),
         MarginSharePricing(rate=rate_on(wf.pie_touched_gross_margin),
                            base=FeeBase.PIE_TOUCHED_GROSS_MARGIN),
         IncrementalMarginPricing(rate=rate_on(wf.incremental_gross_profit)),
@@ -320,7 +320,7 @@ def recommend(wf: Waterfall,
     # touched GMV becomes roughly 0.15% of the book for the same money), and the
     # base becomes two independent records of one number — the ERP's and the
     # customer's own tax filing.
-    base = FeeBase.TOTAL_GMV
+    base = FeeBase.CONNECTED_BOOK_REVENUE
     grade, why = measurability(base)
     gmv_base = base_amount(wf, base)
     gmv_rate = float(remainder / gmv_base) if gmv_base > 0 else 0.0
@@ -358,7 +358,7 @@ def recommend(wf: Waterfall,
         "recommended_annual_fee": str(rounded),
         "structure": {
             "platform_fee": str(platform),
-            "variable_metric": "% of connected-book GMV",
+            "variable_metric": "% of connected-book invoiced revenue",
             "variable_base": base.value,
             "variable_base_measurability": grade.value,
             "variable_base_why": why,
@@ -366,8 +366,8 @@ def recommend(wf: Waterfall,
             "variable_rate_pct": f"{gmv_rate * 100:.3f}%",
             "variable_cap": str(money(platform * VARIABLE_CAP_MULTIPLE)),
             "equivalent_rate_on_touched_gmv_pct": (
-                f"{float(remainder / wf.pie_touched_gmv) * 100:.3f}%"
-                if wf.pie_touched_gmv > 0 else None),
+                f"{float(remainder / wf.pie_touched_revenue) * 100:.3f}%"
+                if wf.pie_touched_revenue > 0 else None),
             "why": ("The platform fee covers the cost to serve and makes the "
                     "revenue forecastable; the GMV rate grows the account "
                     "without asking the customer to disclose cost, which is the "
@@ -429,33 +429,33 @@ def strategic_test(acv: dict[str, Decimal],
     recommended fee of about ₹1 crore. The subscription is the *larger* number.
     That inversion is the finding, and it reframes the question: PIE is not
     choosing whether to participate in the transaction — a value-derived fee is
-    already about half a percent of the GMV it touches — it is choosing whether
+    already about half a percent of the revenue it touches — it is choosing whether
     to *call* it a take rate and let it float with the customer's book.
     """
     params = params or load_parameters()
     mix = plan.SCENARIOS[1].mix()
     milestones = plan.arr_at(acv, mix)
-    blended_gmv = sum(
-        (Decimal(str(share)) * ARCHETYPES[key].annual_gmv
+    blended_revenue = sum(
+        (Decimal(str(share)) * ARCHETYPES[key].annual_revenue
          for key, share in mix.items()), _ZERO)
     blended_acv = sum((Decimal(str(share)) * acv.get(key, _ZERO)
                        for key, share in mix.items()), _ZERO)
-    implied = float(blended_acv / blended_gmv) if blended_gmv > 0 else 0.0
+    implied = float(blended_acv / blended_revenue) if blended_revenue > 0 else 0.0
 
     #: The rates the flow would have to be billed at to match the subscription.
     ladder = (0.001, 0.0025, 0.005, 0.01)
     flow = [{
         "customers": str(n),
-        "gmv_under_management": str(money(blended_gmv * Decimal(n))),
+        "gmv_under_management": str(money(blended_revenue * Decimal(n))),
         "subscription_arr": str(money(blended_acv * Decimal(n))),
-        **{f"take_rate_{r * 100:g}pct": str(money(blended_gmv * Decimal(n)
+        **{f"take_rate_{r * 100:g}pct": str(money(blended_revenue * Decimal(n)
                                                   * Decimal(str(r))))
            for r in ladder},
     } for n in plan.ARR_MILESTONES]
 
     return {
         "arr_from_subscription": milestones,
-        "blended_gmv_per_customer": str(blended_gmv),
+        "blended_revenue_per_customer": str(blended_revenue),
         "blended_acv": str(blended_acv),
         "implied_take_rate": round(implied, 6),
         "implied_take_rate_pct": f"{implied * 100:.3f}%",

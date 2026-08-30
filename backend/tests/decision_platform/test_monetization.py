@@ -206,7 +206,7 @@ def test_a_very_large_customer_stays_arithmetically_sane():
         IMPACTS["aggressive"], PARAMS)
     assert wf.with_pie.revenue > wf.baseline.revenue
     fee = TransactionPricing(rate=0.003).quote(wf, PARAMS)
-    assert fee.annual_fee == money(wf.pie_touched_gmv * Decimal("0.003"))
+    assert fee.annual_fee == money(wf.pie_touched_revenue * Decimal("0.003"))
 
 
 def test_a_tiny_customer_falls_below_the_cost_to_serve():
@@ -363,15 +363,15 @@ def test_incremental_revenue_is_never_the_value_base():
         wf.incremental_gross_profit + wf.procurement_savings)
 
 
-def test_with_annual_gmv_reconciles_the_funnel_and_refuses_when_it_cannot():
+def test_with_annual_revenue_reconciles_the_funnel_and_refuses_when_it_cannot():
     profile = _profile()
-    scaled = profile.with_annual_gmv(Decimal("500000000"))
+    scaled = profile.with_annual_revenue(Decimal("500000000"))
     # Within a rounding of the order value across the order count: the average
     # order value is quantised to the paisa, so 1,500 orders can miss the
     # target by a few rupees. Exactness here would mean not rounding money.
-    assert abs(scaled.annual_gmv - Decimal("500000000")) < Decimal("100")
+    assert abs(scaled.annual_revenue - Decimal("500000000")) < Decimal("100")
     dead = _profile(order_conversion=0.0)
-    assert dead.with_annual_gmv(Decimal("500000000")) is dead
+    assert dead.with_annual_revenue(Decimal("500000000")) is dead
 
 
 # ── the 0.1% hypothesis ─────────────────────────────────────────────────────
@@ -650,17 +650,17 @@ def test_the_recommended_structure_bills_a_base_that_exists():
     for key, profile in ARCHETYPES.items():
         wf = build_waterfall(profile, IMPACTS["base"], PARAMS)
         structure = monetization_report.recommend(wf, PARAMS)["structure"]
-        assert structure["variable_base"] == FeeBase.TOTAL_GMV.value, key
+        assert structure["variable_base"] == FeeBase.CONNECTED_BOOK_REVENUE.value, key
         assert structure["variable_base_measurability"] == \
             Measurability.SYNCED.value, key
-        assert measurability(FeeBase.TOTAL_GMV)[0] is Measurability.SYNCED
+        assert measurability(FeeBase.CONNECTED_BOOK_REVENUE)[0] is Measurability.SYNCED
 
 
 def test_the_touched_bases_are_marked_unmeasurable():
     """Modelled, and marked as such, so nothing builds an invoice on them."""
     from app.monetization.strategies import Measurability, measurability
 
-    for base in (FeeBase.PIE_TOUCHED_GMV, FeeBase.PIE_TOUCHED_GROSS_MARGIN,
+    for base in (FeeBase.PIE_TOUCHED_REVENUE, FeeBase.PIE_TOUCHED_GROSS_MARGIN,
                  FeeBase.INCREMENTAL_GROSS_MARGIN,
                  FeeBase.TOTAL_ECONOMIC_VALUE):
         grade, why = measurability(base)
@@ -684,9 +684,9 @@ def test_a_percentage_fee_carries_its_measurability_in_the_basis():
     where that difference has to be visible.
     """
     wf = build_waterfall(ARCHETYPES["mid"], IMPACTS["base"], PARAMS)
-    book = TransactionPricing(rate=0.0015, base=FeeBase.TOTAL_GMV).quote(wf, PARAMS)
+    book = TransactionPricing(rate=0.0015, base=FeeBase.CONNECTED_BOOK_REVENUE).quote(wf, PARAMS)
     touched = TransactionPricing(rate=0.0015,
-                                 base=FeeBase.PIE_TOUCHED_GMV).quote(wf, PARAMS)
+                                 base=FeeBase.PIE_TOUCHED_REVENUE).quote(wf, PARAMS)
     assert book.basis["base_measurability"] == "SYNCED"
     assert touched.basis["base_measurability"] == "INFERRED"
     assert "quote" in touched.basis["base_measurability_why"].lower()
@@ -700,6 +700,6 @@ def test_billing_the_whole_book_collects_the_same_money_at_a_lower_rate():
     variable = (Decimal(rec["evaluation"]["fee"]["annual_fee"])
                 - Decimal(rec["structure"]["platform_fee"]))
     on_book = float(variable / wf.with_pie.revenue)
-    on_touched = float(variable / wf.pie_touched_gmv)
+    on_touched = float(variable / wf.pie_touched_revenue)
     assert on_book < on_touched
     assert abs(rec["structure"]["variable_rate"] - on_book) < 1e-6

@@ -204,11 +204,11 @@ def test_an_organization_with_no_rows_reports_unknown_not_zero(client_and_maker)
     s = Maker()
     observed = evidence.observe(s, ORG)
     s.close()
-    assert observed.annual_gmv is None
+    assert observed.annual_revenue is None
     assert observed.annual_rfqs is None
     assert observed.gross_margin is None
     fields = {gap["field"] for gap in observed.gaps}
-    assert {"annual_gmv", "gross_margin", "annual_rfqs"} <= fields
+    assert {"annual_revenue", "gross_margin", "annual_rfqs"} <= fields
 
 
 def test_grounding_with_nothing_measured_is_entirely_archetype(client_and_maker):
@@ -217,7 +217,7 @@ def test_grounding_with_nothing_measured_is_entirely_archetype(client_and_maker)
     profile, source = evidence.ground(evidence.observe(s, ORG))
     s.close()
     assert set(source.values()) == {"archetype"}
-    assert profile.annual_gmv > 0
+    assert profile.annual_revenue > 0
 
 
 def test_a_measured_book_replaces_the_guess_and_says_which_fields_moved(
@@ -250,7 +250,7 @@ def test_a_measured_book_replaces_the_guess_and_says_which_fields_moved(
     profile, source = evidence.ground(observed)
     s.close()
 
-    assert observed.annual_gmv == Decimal("10000000.00")
+    assert observed.annual_revenue == Decimal("10000000.00")
     assert observed.gross_margin == 0.25
     assert observed.annual_rfqs == 20
     assert profile.gross_margin == 0.25
@@ -260,7 +260,7 @@ def test_a_measured_book_replaces_the_guess_and_says_which_fields_moved(
     assert source["average_order_value"] == "solved from measured GMV"
     # And the funnel now reconciles to the invoiced book rather than to the
     # archetype's order value, which is the only reason to solve it at all.
-    assert abs(profile.annual_gmv - Decimal("10000000")) < Decimal("100")
+    assert abs(profile.annual_revenue - Decimal("10000000")) < Decimal("100")
 
 
 def test_a_thin_costed_share_is_named_as_a_gap(client_and_maker):
@@ -286,3 +286,72 @@ def test_a_thin_costed_share_is_named_as_a_gap(client_and_maker):
     assert observed.costed_revenue_share == 0.1
     assert any(g["field"] == "gross_margin" and "10%" in g["why"]
                for g in observed.gaps)
+
+
+def test_credit_notes_are_reported_and_never_netted(client_and_maker):
+    """A tax-inclusive credit total cannot be subtracted from pre-tax revenue.
+
+    Doing it anyway over-deducts by exactly the GST — a wrong number in the
+    direction that flatters the customer, which is still the wrong number to
+    invoice on. So it is reported beside the revenue with the reason, and the
+    contract settles the basis.
+    """
+    from datetime import date
+    from decimal import Decimal
+
+    _, Maker = client_and_maker
+    s = Maker()
+    today = date.today()
+    s.add(models.SalesTxn(
+        organization_id=ORG, external_ref="i1:1", customer_id="cx",
+        product_id="pr", date=today, qty=Decimal("1"),
+        unit_price=Decimal("1000000"), line_revenue=Decimal("1000000")))
+    s.add(models.CreditNoteDoc(
+        organization_id=ORG, external_ref="cn1", date=today,
+        total=Decimal("118000")))
+    s.commit()
+    observed = evidence.observe(s, ORG)
+    s.close()
+
+    assert observed.annual_revenue == Decimal("1000000.00")
+    assert observed.credit_notes_total == Decimal("118000.00")
+    assert any(g["field"] == "credit_notes" and "not subtractable" in g["why"]
+               for g in observed.gaps)
+
+
+def test_several_connected_companies_raise_the_double_counting_gap(
+        client_and_maker):
+    """Inter-entity sales are counted once in each book, and nothing in the
+    schema marks a related party — so the only honest move is to say so."""
+    from datetime import date
+    from decimal import Decimal
+
+    _, Maker = client_and_maker
+    s = Maker()
+    today = date.today()
+    for i, conn in enumerate(("conn_sls", "conn_4u", "conn_ups")):
+        s.add(models.SalesTxn(
+            organization_id=ORG, connector="zoho", connection_id=conn,
+            external_ref=f"i{i}:1", customer_id="cx", product_id="pr",
+            date=today, qty=Decimal("1"), unit_price=Decimal("500000"),
+            line_revenue=Decimal("500000")))
+    s.commit()
+    observed = evidence.observe(s, ORG)
+    s.close()
+
+    assert observed.contributing_connections == 3
+    assert any(g["field"] == "annual_revenue" and "billed twice" in g["why"]
+               for g in observed.gaps)
+
+
+def test_the_billable_revenue_definition_names_what_it_cannot_settle():
+    """Three items the schema cannot answer, marked rather than assumed away."""
+    from app.monetization.strategies import BILLABLE_REVENUE
+
+    unsettled = [row for row in BILLABLE_REVENUE if row[1] == "UNSETTLED"]
+    assert len(unsettled) == 3
+    subjects = " ".join(row[0].lower() for row in unsettled)
+    assert "credit notes" in subjects
+    assert "entities" in subjects
+    for _, _, why in BILLABLE_REVENUE:
+        assert why

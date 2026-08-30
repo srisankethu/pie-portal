@@ -22,7 +22,7 @@ answer matters. The gap is named in the output and points at the owner.
 
 **Every unavailable input is UNKNOWN and says why.** Nothing here falls back to
 a plausible number: an organization with no synced invoices produces
-``annual_gmv=None`` and a gap, not a zero, because a zero would flow into a
+``annual_revenue=None`` and a gap, not a zero, because a zero would flow into a
 value base and out the other side as a confident recommendation to charge
 nothing.
 
@@ -62,13 +62,18 @@ class ObservedInputs:
     annual_rfqs: Optional[int]
     quotes_produced: Optional[int]
     invoiced_orders: Optional[int]
-    annual_gmv: Optional[Decimal]
+    annual_revenue: Optional[Decimal]
     gross_margin: Optional[float]
     #: Share of 12-month revenue that carries a cost, and therefore the share
     #: the margin above actually speaks for. A margin over 8% of the book is a
     #: fact about 8% of the book.
     costed_revenue_share: Optional[float]
     sku_count: Optional[int]
+    #: Issued in the window, tax-inclusive, and deliberately not netted off
+    #: ``annual_revenue``. See the gap this raises.
+    credit_notes_total: Optional[Decimal]
+    #: How many connected companies contribute to ``annual_revenue``.
+    contributing_connections: int
     #: The measured value the attribution ledger has attributed to PIE over the
     #: same window. This is the one number in the whole package that is neither
     #: assumed nor modelled, and it is the floor a value-based fee can be
@@ -83,10 +88,13 @@ class ObservedInputs:
             "annual_rfqs": self.annual_rfqs,
             "quotes_produced": self.quotes_produced,
             "invoiced_orders": self.invoiced_orders,
-            "annual_gmv": None if self.annual_gmv is None else str(self.annual_gmv),
+            "annual_revenue": None if self.annual_revenue is None else str(self.annual_revenue),
             "gross_margin": self.gross_margin,
             "costed_revenue_share": self.costed_revenue_share,
             "sku_count": self.sku_count,
+            "credit_notes_total": (None if self.credit_notes_total is None
+                                   else str(self.credit_notes_total)),
+            "contributing_connections": self.contributing_connections,
             "attributed_value": (None if self.attributed_value is None
                                  else str(self.attributed_value)),
             "gaps": [dict(g) for g in self.gaps],
@@ -130,10 +138,10 @@ def observe(session: Session, organization_id: str) -> ObservedInputs:
         select(func.sum(models.SalesTxn.line_revenue))
         .where(models.SalesTxn.organization_id == organization_id,
                models.SalesTxn.date >= since_date))
-    annual_gmv = None if revenue is None else money(Decimal(str(revenue)))
-    if not annual_gmv or annual_gmv <= 0:
-        annual_gmv = None
-        gaps.append(_gap("annual_gmv",
+    annual_revenue = None if revenue is None else money(Decimal(str(revenue)))
+    if not annual_revenue or annual_revenue <= 0:
+        annual_revenue = None
+        gaps.append(_gap("annual_revenue",
                          "no invoiced sales lines are synced for the window. "
                          "Connect the books before pricing from this profile — "
                          "an unconnected organization has no measurable GMV, "
@@ -178,6 +186,40 @@ def observe(session: Session, organization_id: str) -> ObservedInputs:
                          "12-month revenue — the rest carries no cost. Treat it "
                          "as a reading of that share, not of the book"))
 
+    # Credit notes, reported and deliberately NOT netted. The document total is
+    # tax-inclusive and line revenue is pre-tax, so subtracting one from the
+    # other over-deducts by exactly the GST — a wrong number in the direction
+    # that flatters the customer, which is still a wrong number to invoice on.
+    credits = session.scalar(
+        select(func.sum(models.CreditNoteDoc.total))
+        .where(models.CreditNoteDoc.organization_id == organization_id,
+               models.CreditNoteDoc.date >= since_date))
+    credit_notes = None if credits is None else money(Decimal(str(credits)))
+    if credit_notes and annual_revenue:
+        gaps.append(_gap("credit_notes",
+                         f"{credit_notes} of credit notes was issued in the "
+                         "window and is NOT deducted from the revenue above: "
+                         "the credit-note total is tax-inclusive and line "
+                         "revenue is pre-tax, so the two are not subtractable. "
+                         "The contract must state the basis before this figure "
+                         "is billed on"))
+
+    # How many connected companies contribute. More than one means inter-entity
+    # sales are counted once per book — the same goods billed twice — and
+    # nothing in the schema marks a related party, so this can only be named.
+    connections = int(session.scalar(
+        select(func.count(func.distinct(models.SalesTxn.connection_id)))
+        .where(models.SalesTxn.organization_id == organization_id,
+               models.SalesTxn.date >= since_date,
+               models.SalesTxn.connection_id.is_not(None))) or 0)
+    if connections > 1:
+        gaps.append(_gap("annual_revenue",
+                         f"{connections} connected companies contribute to "
+                         "this figure. Sales between them are counted once in "
+                         "each book, so anything they invoice each other is "
+                         "billed twice. No related-party marker exists to net "
+                         "it — the contract must name the entities"))
+
     skus = int(session.scalar(
         select(func.count()).select_from(models.Product)
         .where(models.Product.organization_id == organization_id)) or 0)
@@ -212,7 +254,7 @@ def observe(session: Session, organization_id: str) -> ObservedInputs:
                      "recorded one, which for most of a book nobody has. Read "
                      "it from recorded outcomes and treat the rest as UNKNOWN; "
                      "it is never a measured zero"))
-    gaps.append(_gap("pie_touched_gmv",
+    gaps.append(_gap("pie_touched_revenue",
                      "not computable for the same reason, which is why the "
                      "recommended structure bills the whole connected book "
                      "rather than a PIE-touched subset of it"))
@@ -220,9 +262,10 @@ def observe(session: Session, organization_id: str) -> ObservedInputs:
     return ObservedInputs(
         organization_id=organization_id, window_days=WINDOW_DAYS,
         annual_rfqs=annual_rfqs, quotes_produced=quotes_produced,
-        invoiced_orders=invoiced_orders, annual_gmv=annual_gmv,
+        invoiced_orders=invoiced_orders, annual_revenue=annual_revenue,
         gross_margin=gross_margin, costed_revenue_share=costed_share,
         sku_count=skus or None, attributed_value=attributed,
+        credit_notes_total=credit_notes, contributing_connections=connections,
         gaps=tuple(gaps))
 
 
@@ -241,7 +284,7 @@ def ground(observed: ObservedInputs,
     fixed one — pricing a ₹900 Cr distributor against the small profile's
     conversion rates would be worse than not grounding at all.
     """
-    base = archetype or _closest_archetype(observed.annual_gmv)
+    base = archetype or _closest_archetype(observed.annual_revenue)
     source = {name: "archetype" for name in
               ("annual_rfqs", "pie_rfq_share", "quote_conversion",
                "order_conversion", "average_order_value", "gross_margin",
@@ -265,8 +308,8 @@ def ground(observed: ObservedInputs,
     # Order value last, and only from GMV: it is the input that reconciles the
     # funnel to the invoiced book, so it has to be solved *after* every other
     # measured field has been applied or it would reconcile to the wrong funnel.
-    if observed.annual_gmv is not None and observed.annual_gmv > 0:
-        profile = profile.with_annual_gmv(observed.annual_gmv)
+    if observed.annual_revenue is not None and observed.annual_revenue > 0:
+        profile = profile.with_annual_revenue(observed.annual_revenue)
         source["average_order_value"] = "solved from measured GMV"
 
     return profile, source
@@ -282,4 +325,4 @@ def _closest_archetype(gmv: Optional[Decimal]) -> CustomerProfile:
     if gmv is None or gmv <= 0:
         return ARCHETYPES["mid"]
     ordered = [ARCHETYPES[k] for k in ("small", "mid", "large")]
-    return min(ordered, key=lambda p: abs(p.annual_gmv - gmv))
+    return min(ordered, key=lambda p: abs(p.annual_revenue - gmv))

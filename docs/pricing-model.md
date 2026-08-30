@@ -62,7 +62,7 @@ are the reasons a number like this survives a meeting:
 
 | Segment | Economic value created | Cost floor | **Recommended** | Structure | Customer ROI |
 |---|---:|---:|---:|---|---:|
-| Small (₹5 Cr GP) | ₹0.74 Cr | ₹11.0 L | **₹11 L/yr** | ₹7.5 L + 0.156% of book GMV | 5.7× |
+| Small (₹5 Cr GP) | ₹0.74 Cr | ₹11.0 L | **₹11 L/yr** | ₹7.5 L + 0.156% of turnover | 5.7× |
 | Mid (₹35 Cr GP) | ₹5.38 Cr | ₹19.0 L | **₹80.5 L/yr** | ₹53 L + 0.161% | 5.7× |
 | Large (₹250 Cr GP) | ₹36.93 Cr | ₹58.5 L | **₹5.54 Cr/yr** | ₹3.66 Cr + 0.142% | 5.7× |
 | ₹100 Cr revenue | ₹3.53 Cr | ₹15.5 L | **₹53 L/yr** | ₹35 L + 0.160% | 5.7× |
@@ -92,7 +92,52 @@ and it is not a pricing decision — it is a cost decision.
 
 ---
 
-## 2a. The constraint that picks the base: there is no quote conversion
+## 2a. What the base actually is — and it is not GMV
+
+The word was wrong, and the word matters. **GMV is a marketplace term for
+third-party volume an intermediary never owns.** A distributor buys and sells on
+its own balance sheet; nothing "flows through" PIE. What the recommendation
+bills on is the customer's **turnover** — and 0.15% of a marketplace's GMV and
+0.15% of a company's turnover invite very different intuitions. Importing the
+marketplace frame is the same error §01 convicts the 0.1% hypothesis of.
+
+Said in the buyer's own terms, the total fee is:
+
+| Segment | Turnover | Fee | % of turnover | % of gross profit |
+|---|---:|---:|---:|---:|
+| Small | ₹22 Cr | ₹11.0 L | 0.491% | **1.93%** |
+| Mid | ₹171 Cr | ₹80.5 L | 0.470% | **2.01%** |
+| Large | ₹1,330 Cr | ₹5.54 Cr | 0.416% | **1.95%** |
+| ₹100 Cr revenue | ₹113 Cr | ₹53.0 L | 0.471% | **2.01%** |
+| ₹1,000 Cr revenue | ₹1,120 Cr | ₹4.66 Cr | 0.416% | **1.95%** |
+
+**About 2% of gross profit, near-flat across a 50× range of customer size.**
+That is the number a CFO will compute, so it is the number to lead with.
+
+### The definition, precisely enough for a contract
+
+`strategies.BILLABLE_REVENUE` holds this, so the model and the agreement cannot
+drift apart:
+
+| What | In or out | Why |
+|---|---|---|
+| Invoice line items | **IN** | `SalesTxn.line_revenue`, one row per line |
+| Line discounts | **Deducted** | Line revenue is post-discount — what was paid, not what was listed |
+| GST | **OUT** | Line revenue is pre-tax. A tax-inclusive base moves PIE's fee with a rate change neither company controls |
+| Freight, packing, invoice-level charges | **OUT** | They never become a `SalesTxn`: normalisation requires an item id, so an invoice-level charge has no line to write. Out by construction — stated so nobody adds them later |
+| Credit notes and returns | **UNSETTLED** | Not netted, and *not nettable*: `CreditNoteDoc` is header-grain and its total is **tax-inclusive** while line revenue is pre-tax. Subtracting one from the other over-deducts by exactly the GST |
+| Sales between the customer's own entities | **UNSETTLED** | Nothing marks a related party. Three connected companies that invoice each other have the same goods counted once per book — billed twice |
+| Which connected companies count | **UNSETTLED** | Every connection contributes today. Whether a newly connected company is inside the fee is a commercial question the sum cannot answer |
+
+The three unsettled rows are exactly why this is a contract definition and not a
+query. `evidence.observe` now reports the credit-note total beside the revenue
+with the tax-basis mismatch named, and raises a gap whenever more than one
+connected company contributes — **reported, never silently netted**, because a
+number corrected in the wrong direction is still the wrong number to invoice on.
+
+---
+
+## 2b. The constraint that picks the base: there is no quote conversion
 
 **A quote is never converted into a sales order.** The estimate is sent from the
 ERP; the order arrives later as a customer PO and is entered independently.
@@ -108,18 +153,18 @@ recommended billing on.
 
 | What a fee could be billed on | Obtained how | Billable? |
 |---|---|---|
-| Whole connected-book GMV | Synced invoice lines | **Yes** — two independent records of one number |
+| Whole connected-book invoiced revenue | Synced invoice lines | **Yes** — two independent records of one number |
 | Whole-book gross margin | Synced sale + cost rows | Yes, if the customer will expose cost |
 | Margin held, equivalents accepted | Recorded when the quote is priced | Yes, for quotes that went through PIE |
 | Quote outcomes (won / lost) | Only where a person entered one | Partially — most of a book has none |
-| PIE-touched GMV or margin | Needs a quote→order link | **No — the link does not exist** |
+| PIE-touched revenue or margin | Needs a quote→order link | **No — the link does not exist** |
 | Incremental gross margin | Needs that link *and* a counterfactual | No |
 
 So the recommendation bills the **whole connected book**, and this is forced
 rather than chosen. It costs nothing: the same money is collected at a lower
 headline rate, because the rate falls by the covered share.
 
-| Segment | Rate on PIE-touched GMV | Same money, on the whole book |
+| Segment | Rate on PIE-touched revenue | Same money, on the whole book |
 |---|---:|---:|
 | Small | 0.243% | **0.156%** |
 | Mid | 0.249% | **0.161%** |
@@ -153,9 +198,9 @@ The weights are exposed so disagreement can be structural rather than rhetorical
 | # | Metric | Score |
 |---:|---|---:|
 | 1 | Value-derived subscription (banded) | 8.05 |
-| 2 | **Platform fee + % GMV** | 7.98 |
+| 2 | **Platform fee + % of invoiced revenue** | 7.98 |
 | 3 | Platform fee + % gross margin | 7.48 |
-| 4 | % of transaction value (GMV) | 7.27 |
+| 4 | % of invoiced revenue (turnover) | 7.27 |
 | 5 | Minimum commitment + usage | 7.21 |
 | 6 | Enterprise licence, unlimited | 6.82 |
 | 7 | Low platform fee + performance fee | 6.71 |
@@ -344,11 +389,11 @@ sized at 15% of measured economic value, floored at cost to serve and capped so
 the customer keeps a 5× return. In money: **₹11 L / ₹80 L / ₹5.5 Cr** a year for
 small / mid / large.
 
-**2. What should the metric be?** **Hybrid: annual platform fee + % of GMV.**
+**2. What should the metric be?** **Hybrid: annual platform fee + % of the connected book's invoiced revenue** — turnover, not "GMV": PIE is not a marketplace and nothing flows through it.
 Not margin (opacity), not incremental margin (unbillable), not RFQ (taxes
-adoption), not seats (anti-correlated with the product). Whole-book GMV is the only base
+adoption), not seats (anti-correlated with the product). Whole-book invoiced revenue is the only base
 that is auditable on both sides, requires no cost disclosure, needs no
-quote-to-order link (there isn't one — §2a), and grows with the customer. A banded value-derived subscription scores marginally higher (8.05 vs
+quote-to-order link (there isn't one — §2b), and grows with the customer. A banded value-derived subscription scores marginally higher (8.05 vs
 7.98) and is the right *first* contract; the hybrid is the right steady state,
 because the subscription's two weaknesses — decoupling from value between
 renewals, and no expansion without a renegotiation — are exactly what the
@@ -371,7 +416,7 @@ value-derived price, and which the model *refuses* under conservative
 assumptions. Sell to this segment through a partner or self-serve, or not yet.
 
 **6. A ₹100 Cr-scale (revenue) distributor?** **₹53 L/year** = ₹35 L platform +
-0.160% of connected-book GMV. Range ₹22 L – ₹1.09 Cr across impact sets.
+0.160% of connected-book invoiced revenue (≈2.0% of gross profit). Range ₹22 L – ₹1.09 Cr across impact sets.
 
 **7. A ₹1,000 Cr-scale distributor?** **₹4.66 Cr/year** = ₹3.08 Cr platform +
 0.142%. Range ₹1.94 Cr – ₹9.54 Cr.
@@ -458,7 +503,7 @@ infrastructure, storage, third-party API.
 
 | Parameter | Why it matters |
 |---|---|
-| The impact set (uplift to conversion, order value, margin) | Drives a **4–5× spread** in every value-based price. The single largest uncertainty here — and the conversion half of it is *unobservable* from synced rows, per §2a. |
+| The impact set (uplift to conversion, order value, margin) | Drives a **4–5× spread** in every value-based price. The single largest uncertainty here — and the conversion half of it is *unobservable* from synced rows, per §2b. |
 | `support_cost_per_customer_year` | Largest COGS line, no telemetry behind it. |
 | `customer_success_cost_per_customer_year` | Same. |
 | `cac_per_customer` | No closed-won cohort. Everything downstream of LTV/CAC inherits it. |

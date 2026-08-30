@@ -180,7 +180,7 @@ SCORES: tuple[MetricScore, ...] = (
              "down from 6/6 on measurement and auditability once that was "
              "established rather than assumed."),
     MetricScore(
-        key="gmv_pct", label="% of transaction value (GMV)",
+        key="gmv_pct", label="% of invoiced revenue (turnover)",
         correlation_with_value=6, ease_of_understanding=9, ease_of_measurement=9,
         auditability=9, predictability=7, scalability=9, expansion_potential=9,
         gaming_resistance=6, low_sales_friction=5, customer_acceptance=5,
@@ -239,7 +239,7 @@ SCORES: tuple[MetricScore, ...] = (
              "decouples from value between renewals, and PIE is paid the same "
              "whether the platform worked or not."),
     MetricScore(
-        key="hybrid_platform_gmv", label="Platform fee + % GMV",
+        key="hybrid_platform_gmv", label="Platform fee + % of invoiced revenue",
         correlation_with_value=8, ease_of_understanding=8, ease_of_measurement=9,
         auditability=9, predictability=8, scalability=9, expansion_potential=9,
         gaming_resistance=7, low_sales_friction=6, customer_acceptance=7,

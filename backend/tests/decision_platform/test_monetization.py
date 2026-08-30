@@ -16,6 +16,7 @@ Three properties do most of the work:
 """
 from __future__ import annotations
 
+from dataclasses import replace
 from decimal import Decimal
 
 import pytest
@@ -822,3 +823,57 @@ def test_expansion_levers_report_what_banding_actually_yields():
     waits = [w["years_between_re_ratings"] for w in widths]
     assert waits == sorted(waits), waits
     assert waits[0] < waits[-1] / 2
+
+
+# ── what a turnover band cannot see ─────────────────────────────────────────
+def test_adoption_moves_value_far_more_than_it_moves_billed_revenue():
+    """The finding behind §02a's honest caveat, pinned to a number.
+
+    `CustomerProfile.annual_revenue` (baseline) does not depend on
+    `pie_rfq_share` at all — it is a property of the whole-book funnel, and
+    adoption only decides how much of that funnel PIE's impact touches. So two
+    customers of identical turnover can create wildly different value, and a
+    band priced from turnover alone cannot tell them apart.
+    """
+    profile = ARCHETYPES["mid"]
+    baseline = profile.annual_revenue
+    sensitivity = monetization_report.adoption_sensitivity(
+        profile, IMPACTS["base"], PARAMS)
+
+    assert sensitivity["baseline_revenue"] == str(baseline)
+    # Baseline turnover is exactly invariant to adoption, by construction.
+    for share in (0.15, 0.30, 0.60, 0.90):
+        assert replace(profile, pie_rfq_share=share).annual_revenue == baseline
+
+    # Value moves far more than the actually-billed connected-book revenue.
+    assert sensitivity["value_spread_across_sweep"] > 4.0
+    assert sensitivity["connected_book_revenue_spread_across_sweep"] < 1.3
+    assert sensitivity["value_sensitivity_relative_to_revenue"] > 3.0
+
+
+def test_the_sweep_is_monotonic_in_adoption():
+    """More coverage should never create less value — a sanity check on the
+    sweep itself, not just on its endpoints."""
+    sensitivity = monetization_report.adoption_sensitivity(
+        ARCHETYPES["large"], IMPACTS["base"], PARAMS)
+    values = [Decimal(r["total_economic_value"]) for r in sensitivity["rows"]]
+    shares = [r["pie_rfq_share"] for r in sensitivity["rows"]]
+    assert shares == sorted(shares)
+    assert values == sorted(values)
+
+
+def test_the_reference_row_matches_the_archetypes_own_adoption():
+    for key, profile in ARCHETYPES.items():
+        sensitivity = monetization_report.adoption_sensitivity(
+            profile, IMPACTS["base"], PARAMS)
+        reference_rows = [r for r in sensitivity["rows"] if r["is_reference"]]
+        assert len(reference_rows) == 1, key
+        assert reference_rows[0]["pie_rfq_share"] == profile.pie_rfq_share
+
+
+def test_band_table_discloses_the_reference_adoption_it_assumes():
+    """The published price list must say what it cannot see, not just show a
+    number as though it were exact."""
+    bt = monetization_report.band_table(PARAMS)
+    assert 0.0 < bt["assumes_reference_adoption"] <= 1.0
+    assert "does not carry adoption" in bt["adoption_caveat"]

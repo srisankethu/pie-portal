@@ -355,3 +355,42 @@ def test_the_billable_revenue_definition_names_what_it_cannot_settle():
     assert "entities" in subjects
     for _, _, why in BILLABLE_REVENUE:
         assert why
+
+
+def test_a_customer_with_no_synced_enquiries_cannot_have_adoption_measured(
+        client_and_maker):
+    """evidence.observe must not silently assume a coverage figure it cannot
+    compute — the same discipline as every other gap in this module."""
+    _, Maker = client_and_maker
+    s = Maker()
+    observed = evidence.observe(s, ORG)
+    s.close()
+    assert any(g["field"] == "pie_rfq_share"
+               and "InboundLine" in g["why"] for g in observed.gaps)
+
+
+def test_calculate_response_includes_adoption_sensitivity(client_and_maker,
+                                                           monkeypatch):
+    """The calculator surfaces the same caveat the recommendation rests on —
+    not a separate finding a reader has to already know to ask for."""
+    monkeypatch.setattr(settings, "PIE_OPERATOR_EMAILS", OWNER, raising=False)
+    client, _ = client_and_maker
+    body = {
+        "profile": {
+            "name": "Test", "annual_rfqs": 20000, "pie_rfq_share": 0.6,
+            "quote_conversion": 0.5, "order_conversion": 0.3,
+            "average_order_value": "150000", "gross_margin": 0.23,
+            "sales_engineers": 10, "cost_per_employee_year": "1000000",
+            "rfq_processing_minutes": 12, "quotation_minutes": 18},
+        "impact": {"quote_conversion_uplift_pp": 0.05,
+                   "order_conversion_uplift_pp": 0.02, "aov_uplift": 0.03,
+                   "gross_margin_uplift_pp": 0.006,
+                   "procurement_saving_rate": 0.004,
+                   "minutes_saved_per_rfq": 6, "minutes_saved_per_quote": 12},
+    }
+    r = client.post("/api/v1/monetization/calculate", json=body,
+                    headers=_login(client, OWNER))
+    assert r.status_code == 200, r.text
+    sensitivity = r.json()["adoption_sensitivity"]
+    assert sensitivity["value_spread_across_sweep"] > 1.0
+    assert len(sensitivity["rows"]) >= 4

@@ -212,6 +212,13 @@ def calculate(body: CalculateIn,
         "cost_floor": str(floor_price(profile, params)),
         "pie_unit_economics": unit_economics(
             profile, fee, params, orders=wf.covered_with_pie.orders).as_dict(),
+        # What the band this customer's turnover falls in cannot see: the same
+        # turnover at a different adoption creates very different value, and
+        # PIE cannot measure adoption from synced rows to correct for it. See
+        # the function's own docstring for why that is a sales-qualification
+        # question rather than a pricing one.
+        "adoption_sensitivity": monetization_report.adoption_sensitivity(
+            profile, body.impact.to_impact(), params),
     }
 
 

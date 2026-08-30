@@ -671,6 +671,66 @@ export function MonetizationScreen({ session }: { session: PlatformSession }) {
 
           <Paper variant="outlined" sx={{ p: 2 }}>
             <SectionHeader
+              title="What this customer's turnover cannot tell us"
+              sub={"Two customers of identical turnover can create very "
+                   + "different value depending on how much of their enquiry "
+                   + "flow they route through PIE. PIE cannot measure that "
+                   + "share from synced rows, so the recommendation above "
+                   + "prices at the reference adoption below — this is what "
+                   + "changes if the real number is different."}
+            />
+            <Box sx={{ overflowX: "auto" }}>
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>PIE adoption (share of enquiries routed)</TableCell>
+                    <TableCell align="right">Value created</TableCell>
+                    <TableCell align="right">Connected-book revenue</TableCell>
+                    <TableCell>Band this falls in</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {result.adoption_sensitivity.rows.map((row) => (
+                    <TableRow key={row.pie_rfq_share}
+                              selected={row.is_reference}>
+                      <TableCell>
+                        {pct(row.pie_rfq_share, 0)}
+                        {row.is_reference && (
+                          <Box component="span" sx={{ ml: 1 }}>
+                            <StatusChip tone="info" label="Assumed" />
+                          </Box>
+                        )}
+                      </TableCell>
+                      <TableCell align="right">
+                        {cr(row.total_economic_value)}
+                      </TableCell>
+                      <TableCell align="right">
+                        {cr(row.connected_book_revenue)}
+                      </TableCell>
+                      <TableCell>
+                        {/* Same band on every row on purpose: connected-book
+                            revenue barely moves with adoption, which is
+                            exactly the blind spot this panel exists to show. */}
+                        unchanged
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </Box>
+            <Alert severity="info" sx={{ mt: 2 }}>
+              Value moves {result.adoption_sensitivity.value_spread_across_sweep?.toFixed(1)}×
+              across this sweep while the billed revenue moves only{" "}
+              {result.adoption_sensitivity.connected_book_revenue_spread_across_sweep?.toFixed(2)}×
+              — value is about{" "}
+              {result.adoption_sensitivity.value_sensitivity_relative_to_revenue?.toFixed(0)}×
+              more sensitive to adoption than the number this customer's fee is
+              set from. {result.adoption_sensitivity.reading}
+            </Alert>
+          </Paper>
+
+          <Paper variant="outlined" sx={{ p: 2 }}>
+            <SectionHeader
               title="PIE's own economics at that price"
               sub={`Evidence grade: ${econ.evidence_grade}. The weakest input, `
                         + "not the average — support, customer success and CAC are "

@@ -138,6 +138,59 @@ the first is automatic:
 
 That is the price of a fee nobody argues with at renewal.
 
+### What a turnover band cannot see
+
+Turnover measures the *scale* of a customer's enquiry activity — a bigger
+distributor plausibly generates more RFQs. It says nothing about *depth of
+adoption*: what share of that flow is actually routed through PIE rather than
+handled some other way. Those are different axes, and only the first is
+captured by turnover.
+
+Computed rather than asserted, holding one archetype's turnover fixed and
+sweeping adoption from 15% to 90%:
+
+| PIE adoption | Value created | Connected-book revenue (what's billed on) |
+|---:|---:|---:|
+| 15% | ₹1.34 Cr | ₹156.9 Cr |
+| 30% | ₹2.69 Cr | ₹161.7 Cr |
+| 60% (reference) | ₹5.38 Cr | ₹171.2 Cr |
+| 90% | ₹8.07 Cr | ₹180.7 Cr |
+
+Value moves **6.0×** across the sweep; the revenue a band is actually assigned
+from moves **1.15×**. Value is on the order of **5× more sensitive to
+adoption** than the number the fee is priced from. A band cannot distinguish a
+company that routes 15% of its enquiries through PIE from one that routes 90%
+of the same-sized book — it charges both the same.
+
+**Why not fix this with a coverage meter, given the model already prices per-
+customer off `pie_rfq_share`?** Because adoption is not measurable after the
+fact. `InboundLine` — the enquiry table a coverage ratio would need as its
+denominator — is written only for enquiries someone fed into PIE's own capture
+flow; there is no synced count of the customer's *total* enquiry volume to
+divide it into, for the same structural reason PIE-touched revenue is
+unmeasurable in §2b. A metric billed on an unverifiable self-report is exactly
+the incentive problem that ruled out incremental margin and per-RFQ pricing
+elsewhere in this document, reproduced at the point of signing rather than at
+renewal.
+
+**What is measurable, and different in kind:** how many enquiries a business
+receives in a year at all. That is a fact about the prospect's own operation,
+askable during discovery and checkable against turnover the way any sizing
+question is — not a promise about what they will route through PIE, so
+misstating it doesn't carry the same incentive to game. `CustomerProfile.annual_rfqs`
+is already a field the calculator takes directly; `evidence.py`'s only limit is
+that it cannot verify the answer from synced rows once a contract is signed.
+
+**So the mitigation is a sales-qualification question, not a pricing formula.**
+A prospect whose stated enquiry volume looks typical for their turnover band is
+priced fairly by the table above. One whose expected volume is well below it —
+a distributor that handles most of its business through long-term contracts and
+only occasionally spot-buys, say — is a real candidate for a different
+conversation: a lower band, a narrower scope, or simply not this product yet.
+`report.adoption_sensitivity` computes the gap for any customer so that
+conversation has a number behind it rather than a guess, and the calculator
+surfaces it beside every recommendation.
+
 ### The alternative, priced rather than hidden
 
 A buyer who wants a smaller committed cheque can have a platform fee plus a rate
@@ -458,17 +511,15 @@ price list in §2 — sized at 15% of measured economic value, floored at cost t
 serve and capped so the customer keeps a 5× return. About **2% of their gross
 profit** at every size. No variable component.
 
-**2. What should the metric be?** **Customer size, read once a year** — turnover
-band at renewal. Not a rate on anything. The metric sets the *level* of a flat
-fee; it is not a meter.
-Not margin (opacity), not incremental margin (unbillable), not RFQ (taxes
-adoption), not seats (anti-correlated with the product). Whole-book invoiced revenue is the only base
-that is auditable on both sides, requires no cost disclosure, needs no
-quote-to-order link (there isn't one — §2b), and grows with the customer. A banded value-derived subscription scores marginally higher (8.05 vs
-7.98) and is the right *first* contract; the hybrid is the right steady state,
-because the subscription's two weaknesses — decoupling from value between
-renewals, and no expansion without a renegotiation — are exactly what the
-variable half fixes.
+**2. What should the metric be?** **Customer size, read once a year** —
+turnover band at renewal. Not a rate on anything: not margin (opacity), not
+incremental margin (unbillable), not RFQ (taxes adoption), not seats
+(anti-correlated with the product), not a rate on revenue either (claims credit
+for growth PIE cannot prove it caused). The metric sets the *level* of a flat
+fee; it is not a meter. Its one honest weakness — it prices scale, not
+adoption, and cannot tell two similarly-sized customers with very different
+PIE usage apart — is a screening question for sales (§2, "What a turnover band
+cannot see"), not a reason to meter something unmeasurable.
 
 **3. Is 0.1% of margin viable?** **No.** Off by 20–50× against value and 3–27×
 against cost to serve. Below cost on every reading of "margin", for every
@@ -563,8 +614,8 @@ reading belongs to `attribution/evaluator`, which guards the case where no
 decided quote could ever have been won.
 
 **Assumed (PIE's choice, cannot be wrong — only unwise).** 15% value capture,
-5× minimum customer ROI, 6-month payback limit, the 66/34 platform-to-variable
-split, the 2× cap on the variable component, and every score in §3.
+5× minimum customer ROI, 6-month payback limit, the ~1.6× turnover-band width,
+and every score in §3.
 
 **Estimated (derived from something measured).** Inference cost per RFQ (from
 `AI_COST_PER_MTOK_*` and observed call shapes), embedding cost per SKU,
@@ -575,6 +626,7 @@ infrastructure, storage, third-party API.
 | Parameter | Why it matters |
 |---|---|
 | The impact set (uplift to conversion, order value, margin) | Drives a **4–5× spread** in every value-based price. The single largest uncertainty here — and the conversion half of it is *unobservable* from synced rows, per §2b. |
+| A customer's actual adoption (`pie_rfq_share`) | Drives a further **~6× spread in value at fixed turnover** (§2, "What a turnover band cannot see") and is not measurable from synced rows at all — `InboundLine` only sees what was fed into PIE. The mitigation is a discovery-stage question, not a formula. |
 | `support_cost_per_customer_year` | Largest COGS line, no telemetry behind it. |
 | `customer_success_cost_per_customer_year` | Same. |
 | `cac_per_customer` | No closed-won cohort. Everything downstream of LTV/CAC inherits it. |

@@ -258,6 +258,15 @@ def observe(session: Session, organization_id: str) -> ObservedInputs:
                      "not computable for the same reason, which is why the "
                      "recommended structure bills the whole connected book "
                      "rather than a PIE-touched subset of it"))
+    gaps.append(_gap("pie_rfq_share",
+                     "not computable at all, for a reason distinct from the "
+                     "grain mismatch above: InboundLine is written only for "
+                     "enquiries fed into PIE's own capture flow, so a count of "
+                     "it is a PIE-touched total, not the customer's whole "
+                     "enquiry volume. There is no synced denominator to divide "
+                     "it into, so adoption stays at the archetype's reference "
+                     "value here. See monetization.report.adoption_sensitivity "
+                     "for what that costs in pricing accuracy"))
 
     return ObservedInputs(
         organization_id=organization_id, window_days=WINDOW_DAYS,

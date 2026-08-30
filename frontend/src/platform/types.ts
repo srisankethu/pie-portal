@@ -2112,6 +2112,24 @@ export interface MonetizationHybridRow extends MonetizationEvaluation {
   weighted_score: number | null;
 }
 
+/** What a turnover band cannot see: the same turnover at a different
+ *  adoption creates very different value, and PIE cannot measure adoption
+ *  from synced rows to correct for it. */
+export interface MonetizationAdoptionSensitivity {
+  baseline_revenue: string;
+  reference_pie_rfq_share: number;
+  rows: {
+    pie_rfq_share: number;
+    is_reference: boolean;
+    total_economic_value: string;
+    connected_book_revenue: string;
+  }[];
+  value_spread_across_sweep: number | null;
+  connected_book_revenue_spread_across_sweep: number | null;
+  value_sensitivity_relative_to_revenue: number | null;
+  reading: string;
+}
+
 export interface MonetizationCalculation {
   parameters_version: string;
   waterfall: MonetizationWaterfall;
@@ -2133,6 +2151,7 @@ export interface MonetizationCalculation {
   recommendation: MonetizationRecommendation;
   cost_floor: string;
   pie_unit_economics: MonetizationUnitEconomics;
+  adoption_sensitivity: MonetizationAdoptionSensitivity;
 }
 
 export interface MonetizationScorecardRow {

@@ -288,9 +288,17 @@ SCORES: tuple[MetricScore, ...] = (
         auditability=10, predictability=10, scalability=7, expansion_potential=6, renewal_defensibility=9, low_sales_friction=8, customer_acceptance=9,
         incentive_alignment=5,
         note="Priced from value at signing, then fixed. Everything about "
-             "running it is easy and its two weaknesses are structural: it "
-             "decouples from value between renewals, and PIE is paid the same "
-             "whether the platform worked or not."),
+             "running it is easy and it has two structural weaknesses, not "
+             "one. It decouples from value between renewals, and PIE is paid "
+             "the same whether the platform worked or not. The sharper one is "
+             "at signing, not at renewal: two customers of identical turnover "
+             "can create roughly 5x different value depending on how much of "
+             "their enquiry flow they route through PIE, adoption is not "
+             "measurable from synced rows, and a band priced from turnover "
+             "alone cannot tell them apart (see report.adoption_sensitivity). "
+             "The mitigation is a discovery-stage question — expected enquiry "
+             "volume, checkable against turnover at signing — not a pricing "
+             "formula, because adoption itself cannot be verified afterward."),
     MetricScore(
         key="hybrid_platform_gmv", label="Platform fee + % of invoiced revenue",
         correlation_with_value=8, ease_of_understanding=8, ease_of_measurement=9,

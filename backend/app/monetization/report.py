@@ -22,6 +22,7 @@ rate on a base the customer never has to disclose anything to compute.
 """
 from __future__ import annotations
 
+from dataclasses import replace
 from decimal import Decimal
 from typing import Any, Optional
 
@@ -489,6 +490,10 @@ def band_table(params: Optional[MonetizationParameters] = None,
             "refusal": ev.refusal,
         })
 
+    reference_profile = profile_for_turnover(
+        money((TURNOVER_BANDS[len(TURNOVER_BANDS) // 2][1]
+              + (TURNOVER_BANDS[len(TURNOVER_BANDS) // 2][2]
+                 or TURNOVER_BANDS[len(TURNOVER_BANDS) // 2][1] * 2)) / 2))
     return {
         "impact_set": impact_key,
         "rows": rows,
@@ -498,6 +503,15 @@ def band_table(params: Optional[MonetizationParameters] = None,
                 "fee that moves with it is a claim on their trade rather than a "
                 "price for the platform. A band claims only that a business of "
                 "this size gets this much use out of it."),
+        "assumes_reference_adoption": reference_profile.pie_rfq_share,
+        "adoption_caveat": (
+            "Every row above prices at the reference adoption share "
+            f"({reference_profile.pie_rfq_share:.0%}), because turnover does "
+            "not carry adoption — see adoption_sensitivity. A prospect whose "
+            "stated enquiry volume looks typical for their turnover band is "
+            "priced fairly by this table; one whose expected volume is well "
+            "below it is not, and that is a screening question for the sales "
+            "conversation, not something this table can see."),
     }
 
 
@@ -580,6 +594,101 @@ def expansion_levers(params: Optional[MonetizationParameters] = None,
     }
 
 
+# ── what turnover cannot see ─────────────────────────────────────────────────
+#: Coverage points to sweep at a fixed turnover, holding everything else about
+#: the customer's own business constant. The reference point matches the
+#: archetypes' default `pie_rfq_share` (~0.55-0.6), which is what `band_table`
+#: silently assumes for every customer in a band.
+ADOPTION_SWEEP: tuple[float, ...] = (0.15, 0.30, 0.60, 0.90)
+
+
+def adoption_sensitivity(profile: CustomerProfile, impact: PieImpact,
+                         params: Optional[MonetizationParameters] = None,
+                         ) -> dict[str, Any]:
+    """What a band cannot distinguish: same turnover, different PIE adoption.
+
+    ``CustomerProfile.annual_revenue`` does not depend on ``pie_rfq_share`` at
+    all — it is computed from the whole book's RFQs, conversions and order
+    value, none of which the adoption share touches. Two customers can be
+    identical on every field this function varies away from and differ only in
+    how much of their enquiry flow goes through PIE, and a fee set purely from
+    turnover cannot tell them apart.
+
+    This is not a rounding error, and it is not a claim that turnover is
+    perfectly blind to adoption either — the two are not the same size of
+    effect. Swept from 15% to 90% adoption at one archetype's turnover, value
+    created moves roughly 6x while the *actually observed* connected-book
+    revenue (baseline plus whatever uplift PIE already produced) moves by
+    around 15%, because more coverage means more of the book gets PIE's own
+    order-value and margin lift. Value is on the order of 5x more sensitive to
+    adoption than the number a band is priced from — a gap the sweep computes
+    rather than asserts, and it varies by archetype. `band_table` prices at the
+    reference point (matching the archetypes' ~55-60% default) and states
+    elsewhere why it cannot do better: PIE cannot measure a customer's adoption
+    share from synced rows. `InboundLine` is written only for enquiries someone
+    fed into PIE's own capture flow, so a total of it is a PIE-touched count,
+    not the customer's whole enquiry volume — there is no synced denominator to
+    divide it into.
+
+    What *is* askable, and different in kind from that unmeasurable ratio: how
+    many enquiries the business receives a year at all. A prospect can state
+    that at signing the same way they state their turnover, and misstating it
+    is a fact about their own business rather than a promise about future
+    behaviour — which is why `CustomerProfile.annual_rfqs` is a plain input on
+    the calculator and belongs in a discovery conversation, not in this
+    function's sweep.
+    """
+    params = params or load_parameters()
+    reference = profile.pie_rfq_share
+    rows = []
+    for share in sorted(set(ADOPTION_SWEEP) | {reference}):
+        wf = build_waterfall(replace(profile, pie_rfq_share=share), impact, params)
+        rows.append({
+            "pie_rfq_share": share,
+            "is_reference": abs(share - reference) < 1e-9,
+            "total_economic_value": str(wf.total_economic_value),
+            # The number a band would actually be assigned from — the real,
+            # observed connected-book revenue, uplift included. Distinct from
+            # `profile.annual_revenue`, the pre-PIE baseline, which is exactly
+            # invariant to adoption by construction and therefore proves
+            # nothing about how blind a real invoice basis is.
+            "connected_book_revenue": str(wf.with_pie.revenue),
+        })
+    rows.sort(key=lambda r: r["pie_rfq_share"])
+    values = [Decimal(r["total_economic_value"]) for r in rows
+             if r["total_economic_value"] != "0.00"]
+    revenues = [Decimal(r["connected_book_revenue"]) for r in rows]
+    value_spread = (float(max(values) / min(values))
+                    if values and min(values) > 0 else None)
+    revenue_spread = (float(max(revenues) / min(revenues))
+                      if revenues and min(revenues) > 0 else None)
+    relative_blindness = (round(value_spread / revenue_spread, 1)
+                          if value_spread and revenue_spread
+                          and revenue_spread > 1 else None)
+    return {
+        "baseline_revenue": str(profile.annual_revenue),
+        "reference_pie_rfq_share": reference,
+        "rows": rows,
+        "value_spread_across_sweep": (None if value_spread is None
+                                      else round(value_spread, 2)),
+        "connected_book_revenue_spread_across_sweep": (
+            None if revenue_spread is None else round(revenue_spread, 3)),
+        "value_sensitivity_relative_to_revenue": relative_blindness,
+        "reading": (
+            "The connected-book revenue a band is actually assigned from moves "
+            "only modestly with adoption — more coverage means more of the book "
+            "gets PIE's own order-value and margin lift — while the value "
+            "created moves far more. A band priced at the reference point "
+            "overcharges a below-reference adopter relative to value and "
+            "undercharges an above-reference one, and the gap between the two "
+            "spreads is the size of the blind spot. This is a screening "
+            "question for sales rather than a case for a meter: PIE cannot "
+            "verify adoption after the fact, but a prospect's own stated "
+            "enquiry volume is checkable at signing against what a business "
+            "their turnover typically generates."),
+    }
+
+
 # ── whole-segment and whole-model reports ───────────────────────────────────
 def segment_report(profile: CustomerProfile, impact: PieImpact,
                    params: Optional[MonetizationParameters] = None
@@ -588,6 +697,7 @@ def segment_report(profile: CustomerProfile, impact: PieImpact,
     wf = build_waterfall(profile, impact, params)
     return {
         "waterfall": wf.as_dict(),
+        "adoption_sensitivity": adoption_sensitivity(profile, impact, params),
         "margin_hypothesis": margin_hypothesis(wf, params),
         "transaction_ladder": transaction_ladder(wf, params),
         "subscription_ladder": subscription_ladder(wf, params),

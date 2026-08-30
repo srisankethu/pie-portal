@@ -447,7 +447,7 @@ tracked separately — see decision 021.
 ---
 
 ## 018 — Read the item taxonomy that already exists in the ERP
-**Status:** PROPOSED · **Phase:** 1 · **Report §:** 6
+**Status:** DONE — 2026-08-30 · **Phase:** 1 · **Report §:** 6
 
 **Decision.** `ingestion/zoho_client._item_payload` reads `cf_item_type`,
 `cf_item_category`, `cf_bin_location` and `cf_catalog_status` and carries them
@@ -463,6 +463,64 @@ that costs a few lines and no decoding.
 **Constraint.** It arrives as raw source text and is stored raw, interpreted at
 read time under a versioned map, exactly as `category` and `manufacturer`
 already are. It is evidence about an item, not a normalised truth.
+
+### What landed
+
+`products.source_item_type` and `products.source_item_category`, filled from
+`cf_item_type` and `cf_item_category`, through the five seams the payload
+already travels: `zoho_client._item_payload` → `normalize_product` → `ProductIn`
+→ `upsert_product` → the column. Migration `g1tax`, in the same commit as the
+model change.
+
+**Re-measured before writing any of it, because the report's evidence was eight
+items.** Against the live SLS book on 2026-08-30:
+
+* All four `cf_` fields the report named **exist** — confirmed from the org's
+  item custom-field *definitions*, which is stronger than a sample.
+* `cf_item_type` and `cf_item_category` are populated on **23 of 23** items
+  sampled across two distant slices of the name-sorted master, against 0 of 800
+  for `category_name`. Both are on the *list* payload the master pull already
+  reads, so this costs no extra API call.
+* `cf_bin_location` and `cf_catalog_status` are populated on **0 of 23** and are
+  deliberately not read — two always-null columns buy nothing. Zoho omits an
+  unset custom field entirely, so absent means unset rather than unconfigured,
+  and the day they are filled they are two more lines exactly like these.
+
+**Two fields the report did not know about, and they matter in opposite ways.**
+
+* `cf_end_customer` is a lookup onto a customer. Reading it would put a
+  customer's identity on a catalogue row every reader of the catalogue can see.
+  Not read; that is `trust/`'s concern and is not solved by copying it here
+  first.
+* `cf_estimate_delivery_date` is a date, and it is **the first evidence found
+  for decision 016** (lead time, still OPEN). Reading it belongs in that
+  decision with the persist-or-fetch question settled, not smuggled in here.
+
+**A vocabulary wider than the report's, and a taxonomy with errors in it.** The
+sample turned up `Toolbit` / `Turning`, which the report's lists do not contain
+— so the vocabulary is not closed and nothing may enumerate it. And "HSS Taper
+Shank Reamer Dia 10mm" is filed **Tap / Threading**; a reamer is neither. That
+is carried verbatim rather than corrected: it is a person's answer, and silently
+repairing it would hide the one signal that says the taxonomy needs maintaining.
+Rank with it, explain with it, prefer with it — **but a compatibility decision
+that gates on it is trusting a typo**, and the decoded designation is the fact
+to gate on.
+
+**Cost, found by a test rather than by review.** The first cut named the payload
+key `item_type`, which `_item_payload` already uses for Zoho's
+inventory-versus-service kind. The later assignment won and *both* fields read
+as the wrong thing. Hence `source_item_*`, and a test that pins the two apart.
+
+**Nothing reads these columns yet, and that is the state this leaves.** Phase 1
+is the consumer: a versioned map from these words onto a category, alongside the
+HSN map that currently places an item. Two things were deliberately *not* done
+here — feeding `source_item_type` into `equivalence/catalog.py`'s
+`product_family` (the seam §6 found empty), and mapping either field at ingest.
+Both are the interpretation this decision says happens at read time under a
+versioned map, and the reamer filed as a Tap is the argument: a family is the
+strongest gate in the engine, and gating on a person's typo is worse than
+gating on nothing. What this change buys today is that the data is *captured* —
+until it was, every re-sync overwrote a classification nobody had a copy of.
 
 ---
 
@@ -486,6 +544,50 @@ tables. The platform's own `observability/health.py` already reports
 production. That is the control the RLS layer exists to back up, and it was
 added precisely because a survey found places where the filter lives in a
 comprehension rather than in SQL.
+
+**Status:** DONE — 2026-08-30.
+
+### What landed
+
+`deploy/provision_app_role.py` creates the role — LOGIN, NOSUPERUSER,
+NOCREATEDB, NOCREATEROLE, NOBYPASSRLS, owner of nothing — and grants it exactly
+what an application needs, including `ALTER DEFAULT PRIVILEGES` so every table a
+later migration adds is reachable with nothing to re-run. `deploy/release.sh`
+runs it after `alembic upgrade head`, so the `ON ALL TABLES` grants cover what
+that deploy just created. `compose.yaml` then builds `APP_DATABASE_URL` from
+`APP_DB_PASSWORD`, and `.env.example`, `deploy/production.env.example`,
+`docs/hosting.md`, `docs/hosting-free-tier.md` and `docs/operations.md` all
+carry it — including the go-live gate list, which now names this as gate 3.
+
+**It is opt-in by `:+` rather than required by `:?`.** With `APP_DB_PASSWORD`
+unset the variable expands to empty, `config.py` reads empty as unset, and an
+existing `.env.production` keeps working unchanged. Making it mandatory would
+have broken every deployment on the next `compose up`, which is not how a
+security control should arrive. The health component is what stops that being a
+silent no-op: `tenant_isolation` is UNHEALTHY until the serving connection is
+one policies apply to, and it is deliberately not softened by the presence of
+Python-side filtering.
+
+**Proven rather than asserted.** The existing 27-test row-level-security suite
+was run against a role this script provisioned, rather than against the
+sandbox's own — all 27 pass, so what the gate proves is what a deployment
+following this recipe gets. Six more tests cover the script itself: the role's
+flags (a role that came back `rolsuper` or `rolbypassrls` would leave every
+policy inert while the deploy log said success), idempotency, the refusal of a
+role name that is not an identifier, the two report-and-exit-0 branches, and
+that the password reaches the server as a bind parameter into a
+transaction-local setting rather than spliced into statement text — where
+`DB_SLOW_QUERY_MS` or a server-side statement log would eventually write it to
+disk.
+
+**Not done, and it is a real limit.** Railway's `preDeployCommand` cannot carry
+a second command — `docs/hosting-free-tier.md` records that Railway may not run
+the value through a shell, so a `&&` prefix can die looking for a binary named
+`cd` — so on the free tier this runs in the manual release step instead. That is
+defensible only because `ALTER DEFAULT PRIVILEGES` makes it a genuine
+first-deploy act rather than a per-deploy one; the reasoning is written down
+beside it, next to the paragraph explaining why migrations were moved *out* of
+the manual step for the opposite reason.
 
 ---
 

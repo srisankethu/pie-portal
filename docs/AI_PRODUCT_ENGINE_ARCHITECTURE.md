@@ -292,18 +292,26 @@ Exact counts, measured from `Base.metadata`: **85 tables, 83 carrying
 (`sync_runs`, `zoho_connections`). `docs/postgres.md` still says "70 of the 72
 tenant-scoped tables" and is stale by eleven.
 
-**But RLS is not in force in either shipped deployment recipe, and that is a
-finding rather than a detail.** The policies bind *the role that issues the
+**RLS was not in force in either shipped deployment recipe, and that was the
+sharpest finding in this section.** The policies bind *the role that issues the
 query*, so they do nothing for a connection made as the database owner.
-`APP_DATABASE_URL` — the non-bypassing role — appears in `docs/postgres.md`
+`APP_DATABASE_URL` — the non-bypassing role — appeared in `docs/postgres.md`
 and **nowhere else**: not in `compose.yaml`, `compose.dev.yaml`, `railway.json`,
 `deploy/production.env.example`, `.env.example`, `docs/hosting.md`,
-`docs/hosting-free-tier.md` or `docs/operations.md`. `compose.yaml` serves
-requests as `POSTGRES_USER`, the owner. So the second layer of defence is
-built, tested against a correctly-restricted role in the gate, and **not
-switched on by any documented deployment** — which the platform's own
-`observability/health.py` would report as `tenant_isolation UNHEALTHY` if
-anyone read it. Python-side filtering is doing the work alone in production.
+`docs/hosting-free-tier.md` or `docs/operations.md`. `compose.yaml` served
+requests as `POSTGRES_USER`, the owner. So the second layer of defence was
+built, tested against a correctly-restricted role in the gate, and **switched on
+by no documented deployment** — which the platform's own
+`observability/health.py` would have reported as `tenant_isolation UNHEALTHY`
+if anyone had read it. Python-side filtering was doing the work alone.
+
+**Closed — decision 019.** `deploy/release.sh` now provisions the role and every
+recipe carries the variable; the 27-test RLS suite was re-run against a role
+that script created, so the gate's evidence is about what a deployment actually
+gets. It is opt-in on `APP_DB_PASSWORD` rather than mandatory, so an existing
+`.env.production` keeps working — and the health component is what stops that
+being a silent no-op. The paragraph above is kept in the past tense on purpose:
+it is the reason the control exists in the recipes, not an open defect.
 
 The other half of authorization is **withholding**, and it is unusually
 rigorous. `RESTRICTED_FACT_FIELDS` in `domain/enums.py` is the single list of
@@ -1310,15 +1318,15 @@ be a metric the thing already passes.
   changes when a price is varied, is the same defect wearing new clothes.
   **Every new surface goes through `quote_service.project` and gets a
   price-sweep test, not a field-level assertion.**
-- **RLS is not switched on in any shipped deployment.** 81 tables have
-  policies and the gate tests them against a correctly-restricted role — but
-  `APP_DATABASE_URL` appears only in `docs/postgres.md`, and every deployment
-  recipe connects as the database owner, who bypasses RLS entirely. **The
-  second layer of tenant defence is built, tested and not enabled.** Fixing it
-  is a deployment change, not a code change, and it should land before this
-  programme adds tables rather than after. A new table outside the policy list
-  is isolated only by Python; every new table joins the RLS migration and
-  `test_row_level_security.py`.
+- ~~**RLS is not switched on in any shipped deployment.**~~ **Closed —
+  decision 019**, and it landed before this programme added its first column
+  rather than after, which was the point. What stands from the finding is the
+  standing rule it implies: a new table outside the policy list is isolated only
+  by Python, so **every new table joins the RLS migration and
+  `test_row_level_security.py` in the commit that creates it** — the same shape
+  of rule as decision 020 for the layer-boundary invariant, and for the same
+  reason: a check that does not cover a thing reads exactly like one that
+  passes.
 - **Customer RFQ text is the most sensitive corpus in the system** — it names
   what a customer is buying. It must sit under the existing trust machinery:
   tenant keys, the name vault, audit, disclosure and erasure. An erasure
@@ -1508,19 +1516,30 @@ The order follows the dependency graph, but the *first* item is chosen because
 it is nearly free and unblocks measurement:
 
 0. **Four things that are cheap, independent of every decision below, and
-   should not wait for approval of the rest:**
+   should not wait for approval of the rest.** Three are now done; what is left
+   of this group is the grade chart (which needs the product owner) and the CI
+   submodule fetch:
    - ~~**Fix the two defects in §17.**~~ **Done** — decision 017, both gates
-     green. The third defect the same query exposed (the override decode,
-     decision 021) is still open and is the natural next one.
-   - **Read `cf_item_type` and `cf_item_category` at ingest.** A maintained
-     per-item classification already exists in the ERP and is discarded
-     (§6). It is a few lines in `_item_payload` and it is the cheapest
-     category coverage available.
+     green. So are the two that followed from the same query: the override
+     decode (021) and the harness that scored it (022), which turned out to
+     carry 017's own defect and was reporting the engine as worse than it is.
+   - ~~**Read `cf_item_type` and `cf_item_category` at ingest.**~~ **Done** —
+     decision 018, as `products.source_item_type` / `source_item_category`.
+     Re-measured first: 23 of 23 sampled items carry both, against 0 of 800 for
+     the column the platform already read. The sample also found a customer
+     lookup that is deliberately *not* read, and a delivery-date field that is
+     the first evidence for the open decision 016.
    - **Populate `grade_crossref.csv` with sourced rows.** It ships header-only,
-     so no grade can be cross-referenced at all today. A morning, no code.
-   - **Set `APP_DATABASE_URL` in the deployment recipes** so the row-level
-     security that is already written and already tested is actually in force
-     (§33), and fetch the pie-parser submodule in CI.
+     so no grade can be cross-referenced at all today. A morning, no code —
+     **and it needs the product owner**, because the rows have to be sourced
+     from published charts rather than invented. This is now the only item in
+     this group still open.
+   - ~~**Set `APP_DATABASE_URL` in the deployment recipes**~~ **Done** —
+     decision 019. `deploy/release.sh` provisions the non-bypassing role and
+     every recipe carries the variable; the existing 27-test RLS suite was run
+     against a role that script created, so what the gate proves is what a
+     deployment following the recipe gets. **Still open in this group: fetch
+     the pie-parser submodule in CI.**
 1. **Phase 1 — attribute decoration.** Persist what `master_health` already
    decodes, with provenance. Add importers so attributes can also arrive from a
    manufacturer file rather than only from a decoded name. **Exit criterion:

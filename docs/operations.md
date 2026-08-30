@@ -35,6 +35,9 @@ always wins over it**. All values have defaults that work for local development.
 | Variable | Default | Purpose |
 |---|---|---|
 | `DATABASE_URL` | `sqlite:///backend/data/platform.db` | SQLAlchemy URL. Production: `postgresql+psycopg://user:pw@host/db` — see [postgres.md](postgres.md), including the data-move tool for an existing SQLite file. |
+| `APP_DATABASE_URL` | unset | The connection that serves HTTP requests, as a role row-level security binds. Must be PostgreSQL and the *same database* as `DATABASE_URL`; both are refused at import otherwise. Unset, the two are the same connection by identity and every `tenant_isolation` policy is inert. On the compose stack set `APP_DB_PASSWORD` instead and this is built for you. [postgres.md](postgres.md) |
+| `APP_DB_PASSWORD` | unset | Compose only. The password for the tenant-scoped role `deploy/release.sh` provisions; setting it is what turns row-level security on. |
+| `APP_DB_ROLE` | `pie_app` | Compose only. The name of that role. |
 | `SQL_ECHO` | `0` | Log every SQL statement. Debugging only. |
 | `DB_POOL_SIZE` | `5` | Postgres pool per process (ignored on SQLite). The sizing arithmetic is on the setting in `config.py`; redo it before raising. |
 | `DB_MAX_OVERFLOW` | `10` | Extra Postgres connections under burst, released when idle. |
@@ -351,7 +354,19 @@ ready for real customer data** until they are closed:
    **Skipped rows** on **Data & connection** for `UNMAPPED_SALESPERSON` and
    `ASSIGNMENT_UNAVAILABLE` (the latter means the `ZohoBooks.users.READ` scope
    is missing) — and check that invoices in Zoho actually carry a salesperson.
-3. **Set the real AI cost rates** (above), or every cost figure is wrong.
+3. **Turn on tenant isolation.** Every tenant-scoped table carries a
+   fail-closed row-level security policy, and a policy binds the role that
+   issued the query — so all of it is inert while requests are served as the
+   role that owns the schema, which is what every deployment did until
+   `APP_DB_PASSWORD` existed. Set it, run `make deploy-release`, and requests
+   are served as `pie_app` (NOSUPERUSER, NOBYPASSRLS, owner of nothing).
+   `/api/v1/internal/observability/health` reports `tenant_isolation`
+   UNHEALTHY until that holds, and it does not soften that on the grounds that
+   Python-side `organization_id` filtering is also present: the SQL layer is
+   there to back that filtering up, and it was added because a survey found
+   places where the filter lived in a comprehension rather than in SQL.
+   [hosting.md](hosting.md#tenant-isolation-and-why-it-needs-a-second-role)
+4. **Set the real AI cost rates** (above), or every cost figure is wrong.
 
 Also worth knowing: the **Outcome Tracker is not built**. You can measure
 adoption and decision quality today, but not the realised monetary impact of

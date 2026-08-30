@@ -148,6 +148,15 @@ nothing), and one naming a different *database* (two roles on one database is
 the design; two databases means requests and background jobs read different
 data, which surfaces as rows that are sometimes there).
 
+**`deploy/release.sh` does this for you** when `APP_DB_PASSWORD` is set —
+`deploy/provision_app_role.py` runs the statements below, idempotently, after
+the migrations. Prefer that to typing them: a runbook and a script that issue
+the same SQL are two definitions of one thing, and the gate only exercises the
+script (`test_row_level_security.py` runs the whole isolation suite against a
+role it created). The SQL is kept here because a managed database where you
+cannot run the script — or where the owner role is not yours to use — still
+needs it, and because a control nobody can read is a control nobody can audit.
+
 On a server where you can create roles:
 
 ```sql
@@ -163,7 +172,8 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA public
 ```
 
 Then set `APP_DATABASE_URL` to the same database as `DATABASE_URL` with that
-user, and check it took:
+user — on the compose stack, set `APP_DB_PASSWORD` in `.env.production` and
+`compose.yaml` builds the URL — and check it took:
 
 ```bash
 curl -s localhost:8000/api/v1/internal/observability/health | python3 -m json.tool

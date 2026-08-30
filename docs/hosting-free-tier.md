@@ -87,6 +87,21 @@ into two containers instead.
    AUTO_BUILD_CATALOG=0
    ```
 
+   Add one more once you have run step 4, and it is the difference between
+   row-level security being on and being decorative:
+
+   ```
+   APP_DATABASE_URL=<the same Neon database, as the pie_app role>
+   ```
+
+   Every tenant-scoped table carries a fail-closed `tenant_isolation` policy, a
+   policy binds the role that issued the query, and nothing binds the owner
+   Neon gave you. Step 4 creates the role; this variable is what makes requests
+   use it. Leave it out and the deployment works exactly as before, with
+   Python-side `organization_id` filtering as the only control and
+   `/api/v1/internal/observability/health` reporting `tenant_isolation` as
+   UNHEALTHY.
+
    `UVICORN_WORKERS=1` rather than the Compose default of 2: free-tier Railway
    gives you far less RAM than the 4 GB `hosting.md` recommends, and each
    worker warms its own ~13 MB catalogue copy.
@@ -110,8 +125,23 @@ into two containers instead.
    cd ..
    DATABASE_URL="<the Neon URL from step 1>" \
      SEED_PASSWORD="<the same value you set on Railway>" \
+     APP_DB_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')" \
      bash deploy/release.sh
    ```
+
+   `APP_DB_PASSWORD` is what creates the `pie_app` role — NOSUPERUSER,
+   NOBYPASSRLS, owner of nothing — that step 2's `APP_DATABASE_URL` then points
+   at. Keep the value: you need it in that URL. Neon lets its owner role create
+   roles, so this works on the free tier; a managed database that does not
+   allow it is the case `docs/postgres.md` covers.
+
+   **This one really is a first-deploy act, unlike migrating.** The role
+   provisioning issues `ALTER DEFAULT PRIVILEGES`, so every table a *later*
+   migration creates is reachable by `pie_app` the moment it exists, with
+   nothing to re-run. That is why it can live in this manual step without
+   becoming the invisible-skipped-step trap described below — and why it is not
+   bolted onto `preDeployCommand`, which for the reason given next cannot carry
+   a second command at all.
 
    **Later schema changes migrate themselves.** `railway.json` sets a
    `preDeployCommand` of `alembic upgrade head`, which Railway runs in the new
@@ -212,6 +242,7 @@ repo change needed.
 | Backend URL config | `SITE_ADDRESS` in `.env.production` | `BACKEND_URL` env var on the Vercel project |
 | Background work | `worker` container drains the queue | API process drains its own (`QUEUE_WORKER=1`) |
 | Release step | `docker compose --profile release run --rm release` | `DATABASE_URL=... bash deploy/release.sh` from a workstation |
+| Tenant isolation | `APP_DB_PASSWORD` in `.env.production`; compose builds `APP_DATABASE_URL` | `APP_DB_PASSWORD` on the release run, then set `APP_DATABASE_URL` on Railway by hand |
 | Images | built and run by Compose | `deploy/backend.Dockerfile` built by Railway; frontend built natively by Vercel, not via `deploy/web.Dockerfile` |
 
 Everything else — env var meaning, the AI-spend go-live gate, the

@@ -45,6 +45,21 @@ python -m alembic upgrade head
 
 state "after"
 
+# The tenant-scoped role, after the migrations and before anything serves.
+#
+# Every table here carries ENABLE + FORCE ROW LEVEL SECURITY and a fail-closed
+# tenant_isolation policy, and none of it binds the role that owns the schema's
+# superuser. Provisioning it here rather than in a runbook step is the whole of
+# decision 019: a control that depends on somebody having read a document is a
+# control that is off on the deployment nobody read it for.
+#
+# After `alembic upgrade head` on purpose — the ON ALL TABLES grants cover what
+# exists when they run, so a table this deploy just created is reachable without
+# a second pass. Prints and exits 0 when APP_DB_PASSWORD is unset, which is a
+# deployment that has chosen not to enable this; /api/health's tenant_isolation
+# component says so for as long as that holds.
+python ../deploy/provision_app_role.py
+
 # app/seed.py carries a published default password so a fresh clone can sign in.
 # In production that default is a public credential for an *owner* account —
 # full cost, margin and AI-spend visibility — so refuse to seed rather than

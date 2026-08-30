@@ -368,9 +368,44 @@ ready for real customer data** until they are closed:
    [hosting.md](hosting.md#tenant-isolation-and-why-it-needs-a-second-role)
 4. **Set the real AI cost rates** (above), or every cost figure is wrong.
 
-Also worth knowing: the **Outcome Tracker is not built**. You can measure
-adoption and decision quality today, but not the realised monetary impact of
-accepted recommendations.
+Also worth knowing, and stated precisely because this paragraph asserted the
+opposite for longer than it should have: the **Outcome Tracker is built, but no
+realised outcome is stored**. `commercial/outcome_tracker.py` freezes an
+accepted decision's baseline into `outcome_snapshots` — on both acceptance
+paths, actioned directly and settled through an approval — and
+`GET /api/v1/outcomes` serves the realised delta against it. Evaluation is
+recomputed on read every time, which is deliberate: a re-sync that brings in
+late-arriving invoices then corrects a realised figure instead of contradicting
+a stored one.
+
+The residual is what you should not promise anyone before go-live:
+
+- **Realised impact only for four detector families** — customer decline,
+  dormancy, margin deterioration and cost pass-through. A Customer × Item or
+  quote-context decision freezes a baseline and then evaluates to `UNKNOWN`
+  naming the evaluator it does not have; a state-derived decision carries no
+  signal, so nothing is captured for it at all. Neither reports a zero it
+  cannot support.
+- **Nothing before the horizon closes, or ahead of the sync.** An outcome is
+  `PENDING` until the category's horizon elapses, and `UNKNOWN` until the
+  book's sales are observed through the end of that window — an empty window in
+  a book synced only to last month is "not looked", not "no sales". A
+  deployment whose sync lags reports nothing realised, correctly.
+- **No series to trend, and that is true of all three.** Each realised delta is
+  computed per snapshot on read, so there is no stored history to query or
+  chart. Neither are the other two: `report()` and `adoption_report()` in
+  `decisions/outcomes.py` both take a reference instant and recompute rolling
+  7-day and 30-day windows at request time. So detector false-alarm rate at
+  `GET /api/v1/internal/detector-outcomes` and queue adoption at
+  `GET /api/v1/internal/queue-adoption` — both owner-only, both
+  `INSUFFICIENT_DATA` below the minimum sample — give you two windows to
+  compare, not a line to plot. Nothing here persists a point per period, so a
+  question of the form "was this better in June than in May" cannot be answered
+  from any of them.
+
+`architecture.md`'s "Deliberately not built" carries the full statement, and
+`Outcome` — the older model with no writer — is what a stored evaluation would
+become.
 
 ---
 

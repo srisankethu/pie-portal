@@ -426,6 +426,21 @@ Settings password form has no username field for accessibility.
   runs on later Zoho data and will appear here when available" — matching
   `architecture.md`'s "Outcome Tracker — deliberately not built" rather than
   faking a result.
+
+  [Added after the fact, and deliberately not folded into the bullet: the
+  observation stands, the citation does not. The Outcome Tracker *is* built —
+  `commercial/outcome_tracker.py` freezes an accepted decision's baseline into
+  `outcome_snapshots` and `GET /api/v1/outcomes` serves the realised delta
+  against it — and `architecture.md` no longer says otherwise. What is
+  deliberately not built is a *stored* delta, and any realised figure outside
+  the four detector families. The panel is still honest, for the reason it
+  gives rather than the one credited here: an outcome reads `PENDING` until the
+  category's horizon closes and `UNKNOWN` until the book's sales cover that
+  window, so on a decision accepted minutes ago there is genuinely nothing yet
+  to show. It stands as a note because a review edited to match today's code
+  stops being evidence — the banner's rule, applied to a claim about another
+  document rather than about the build.]
+
 - **The negotiation desk refuses to guess.** With no purchase record it returns
   `negotiable: false` and says why: *"pricing it without a floor is a guess, and
   the desk will not pretend otherwise."* That is `CLAUDE.md` §1's "do not weaken

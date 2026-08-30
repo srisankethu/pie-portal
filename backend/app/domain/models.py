@@ -1024,6 +1024,32 @@ class Product(Base):
     #: and neither may be filled in from the item's name.
     source_item_type: Mapped[Optional[str]] = mapped_column(String(128))
     source_item_category: Mapped[Optional[str]] = mapped_column(String(128))
+
+    #: The product family the parser ROUTED this item's name to — a
+    #: classification, not a measurement, and stored here rather than in
+    #: ``product_attribute_values`` for two reasons that point the same way.
+    #:
+    #: It is not a fact about the product. The engine emits it on every routed
+    #: row, including rows it understood nothing else about: "OFFICE CHAIR"
+    #: routes to a terminal catch-all. Counted as an attribute it would take
+    #: Phase 1's coverage to ~100% on day one with a bracket reported as a
+    #: decorated product, which is why ``attributes.ROUTE_FIELDS`` refuses it
+    #: and must keep refusing it.
+    #:
+    #: But a candidate record without it is worse than useless — it is
+    #: dangerous. ``product_family`` is the strongest hard gate the equivalence
+    #: engine has, so a pool record missing it matches ACROSS families: a real
+    #: 11.1 mm drill was returned rank 0, scored 1.0 and marked verified, for
+    #: the request "endmill 11.1mm 4 flute". A wrong part, top of the list,
+    #: labelled as checked. That is the failure the whole programme is built
+    #: against, and it arrived through a gate that could not fire rather than
+    #: through a rule that was wrong.
+    #:
+    #: So the route lives with the item, beside the ERP's own
+    #: ``source_item_type``, which is the same shape of thing: one
+    #: classification per product. NULL means the router placed it nowhere, and
+    #: a record with NULL here must be gated out rather than compared freely.
+    decoded_family: Mapped[Optional[str]] = mapped_column(String(64))
     active: Mapped[bool] = mapped_column(Boolean, default=True)
 
     #: The decoded manufacturer catalogue record this item **is** — pie-parser's

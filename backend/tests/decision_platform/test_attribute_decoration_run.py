@@ -32,6 +32,16 @@ from __future__ import annotations
 from typing import List
 
 import pytest
+
+# Twelve tests across this file and its sibling `test_product_attributes.py`
+# read the REAL decode rather than a stub, so they need the engine and carry
+# `requires_pie`. They shipped unmarked: on a checkout without the submodule
+# they did not skip, they FAILED — twelve assertion errors that read as code
+# defects and are a missing directory. `conftest.py` has the mechanism that
+# prevents exactly this and it simply had not been applied to these files.
+# Mark a test here when it asserts on a decoded field; leave it unmarked when
+# it asserts on what happens with NO engine, which is the other half of both
+# files and must keep running without one.
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
@@ -120,6 +130,7 @@ def _no_pie_parser(monkeypatch, tmp_path) -> None:
 
 
 # ── the whole-organization run ──────────────────────────────────────────────
+@pytest.mark.requires_pie
 def test_decorating_an_organization_in_batches_writes_what_one_pass_writes(
         session, monkeypatch):
     """The batch boundary is a transaction boundary, not a decision boundary.
@@ -216,6 +227,7 @@ def test_batch_counts_fold_into_one_answer_and_the_unknown_is_said_once(session)
 
 
 # ── the absent engine, through both doors ───────────────────────────────────
+@pytest.mark.requires_pie
 def test_a_batched_run_with_no_engine_writes_nothing_and_retracts_nothing(
         session, monkeypatch, tmp_path):
     """The failure that would read as a Phase 1 regression rather than a fault.
@@ -242,6 +254,7 @@ def test_a_batched_run_with_no_engine_writes_nothing_and_retracts_nothing(
     assert _snapshot(session) == before
 
 
+@pytest.mark.requires_pie
 def test_the_cli_reports_an_engine_it_could_not_ask_rather_than_a_low_number(
         session, monkeypatch, tmp_path, capsys):
     """Exit 1, and the reason printed as a sentence.
@@ -314,6 +327,7 @@ def _reported(out: str, label: str) -> int:
     raise AssertionError(f"the report has no {label!r} line:\n{out}")
 
 
+@pytest.mark.requires_pie
 def test_the_cli_decorates_an_organization_and_says_what_it_did(
         session, monkeypatch, capsys):
     """The whole point: after this, the table is not empty.
@@ -364,6 +378,7 @@ def test_the_cli_refuses_an_organization_this_database_does_not_have(
     assert "--list-organizations" in capsys.readouterr().err
 
 
+@pytest.mark.requires_pie
 def test_a_rerun_of_the_cli_writes_nothing_and_reports_that(
         session, monkeypatch, capsys):
     """Idempotence, seen through the door an operator actually uses.
@@ -440,6 +455,7 @@ def quiet_analysis(monkeypatch):
                         lambda *a, **k: type("_D", (), {"generate": lambda self: {}})())
 
 
+@pytest.mark.requires_pie
 def test_the_sync_decorates_the_master_it_just_pulled(
         session, monkeypatch, quiet_analysis):
     """A re-sync leaves the store current rather than stale — the whole reason
@@ -479,6 +495,7 @@ def test_the_sync_decorates_the_master_it_just_pulled(
     json.dumps(notes)
 
 
+@pytest.mark.requires_pie
 def test_the_sync_phase_says_it_could_not_ask_rather_than_reporting_a_zero(
         session, monkeypatch, tmp_path, quiet_analysis):
     """And it leaves the store alone. The two halves are one test because

@@ -1147,3 +1147,78 @@ decision that can surprise a phase already underway. Containment: §31's rule
 stands — cross-package contracts are frozen before any workstream implements
 against them — and each phase's first act is to bring its own decisions to
 ACCEPTED before code, not after.
+
+---
+
+## 030 — What the sellable pool costs, measured, and what is still open
+**Status:** ACCEPTED — 2026-08-30 · **Phase:** 2 · **Report §:** 22, 34
+
+**Decision.** Decision 003's first slice ships with its costs written down beside
+its gain, in numbers `scripts/measure_sellable_pool.py` reproduces, and with the
+three things it does *not* fix named rather than left to be discovered.
+
+**The gain.** Pool membership goes from **611/6,717 (9.1%)** — a catalogue link —
+to **6,570/6,717 (97.8%)** — a link *or* decoded attributes. That 97.8% is a
+**ceiling**: every item name in the harness's seeded master is a catalogue-format
+designation and decodes at 97.6%, where `DECODED_NAME` reaches about **21%** of
+the live master. Read the gain as an upper bound; the harness prints that caveat
+beside its own coverage line.
+
+**The costs, measured over three runs.**
+
+| | catalogue only | with the pool |
+|---|---|---|
+| `resolve`, median | 27–32 ms | 48–55 ms |
+| `resolve`, p95 | 142–286 ms | 422–459 ms |
+
+`build_pool` is 154–164 ms median and `pool_version` 11–12 ms, which is the whole
+argument for the cache: a hit skips ~93% of the build. **The tail is where this
+hurts** — an RFQ is many lines, not one — and it is the number that grows as
+Phase 1 coverage grows, so it is the one to re-measure when it does.
+
+**Three things this slice does not fix, stated because each was found by
+measuring rather than by reasoning.**
+
+1. **One product is shown twice, on 15 of 62 lines.** `query._dedup` keys on
+   `description_norm`, which a book record does not carry, so a catalogue entry
+   and the book entry for the same physical product both appear, at the same
+   score, spending two of six slots on one answer. Neither entry is wrong, so
+   this is a cost and not a safety failure. Fixing it needs an exact key both
+   pools can compute, which is the identity problem and not a display one.
+   Deferred, and counted on every run as finding (d).
+
+2. **The abstention guards, not the pool, are what keep this safe.** On the
+   harness's probe set the requirement path resolved to a supply on **zero**
+   lines in *both* arms. So "no resolution lost, no supply changed" is a
+   property of an engine that was already abstaining — evidence that the slice
+   changed nothing, not evidence it is safe to auto-select from. 70 of the 93
+   newly surfaced candidates (75%) are `unverified` and capped at POSSIBLE.
+   Weaken `_is_discriminating` or the vacuity refusal and this measurement stops
+   applying.
+
+3. **Whether a new candidate is one this business would have offered is not
+   measured and no score answers it.** `owner_would_have_offered` is null on
+   every row of the harness's JSON. A person filling that column in is the
+   measurement that decides whether the slice is good, and it has not happened.
+
+**What was fixed rather than deferred, because it was a safety defect.** A drill
+was returned rank 0, score 1.0, `unverified=False` — presented as verified — for
+`"endmill 11.1mm 4 flute"`. `product_family` is `distance.HARD_GATE_FIELDS`'s
+strongest gate and pool records carried none, because `attributes.ROUTE_FIELDS`
+refuses to store a route as a fact. The fix is `Product.decoded_family`
+(migration `i1fam`), stamped by `decorate_products` from the same decode:
+a column on the product, not an attribute, so the refusal stands and the gate
+still fires. Finding (a) now counts it — **6,570/6,570** — and reads 0 on a pool
+built before that migration, which is the check that the column was populated at
+all.
+
+**Two false comforts were removed from this work in the same pass, and they are
+recorded because the pattern is the point.** The harness reported shadow
+duplicates as a confident `0/62` while its own printed output showed the
+identical-description pairs three times over — the shape-matching route needed
+three decoded fields and these records had fewer. And finding (a) was a fixed
+paragraph asserting `product_family` was always absent, still printing two lines
+under the count that refuted it. Both are `absence of evidence is not a pass`
+arriving inside the instrument rather than the product. A finding that cannot be
+wrong is not a finding: (a) is now derived from its own number, and the shadow
+count reports both routes and says which one is the weaker, louder claim.

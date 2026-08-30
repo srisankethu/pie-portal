@@ -33,6 +33,16 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 import pytest
+
+# Twelve tests across this file and its sibling `test_product_attributes.py`
+# read the REAL decode rather than a stub, so they need the engine and carry
+# `requires_pie`. They shipped unmarked: on a checkout without the submodule
+# they did not skip, they FAILED — twelve assertion errors that read as code
+# defects and are a missing directory. `conftest.py` has the mechanism that
+# prevents exactly this and it simply had not been applied to these files.
+# Mark a test here when it asserts on a decoded field; leave it unmarked when
+# it asserts on what happens with NO engine, which is the other half of both
+# files and must keep running without one.
 from sqlalchemy import select
 
 from app.attributes import (CATALOGUE_LINK, DECODED_NAME, attribute_coverage,
@@ -214,6 +224,7 @@ def test_a_catalogue_record_yields_its_facts_and_none_of_its_metadata():
 
 
 # ── the two sources ─────────────────────────────────────────────────────────
+@pytest.mark.requires_pie
 def test_a_decoded_name_and_a_catalogue_link_are_stored_as_two_claims(session, monkeypatch):
     """The same field, from both sources, on one product — and both survive.
 
@@ -261,6 +272,7 @@ def test_a_name_that_decodes_to_nothing_records_nothing(session, monkeypatch):
     assert report.written.wrote_nothing
 
 
+@pytest.mark.requires_pie
 def test_the_route_is_not_stored_as_an_attribute(session, monkeypatch):
     """The route lands on every routed row, so storing it would fill the table.
 
@@ -285,6 +297,7 @@ def test_the_route_is_not_stored_as_an_attribute(session, monkeypatch):
     assert keys.isdisjoint({"product_family", "product_subfamily"})
 
 
+@pytest.mark.requires_pie
 def test_a_product_with_no_catalogue_link_gets_no_catalogue_rows(session, monkeypatch):
     _product(session, ORG, INSERT_NAME)          # no pie_record_id
     _install(monkeypatch, _Catalogue({INSERT_RECORD_ID: _record()}))
@@ -395,6 +408,7 @@ def test_a_source_that_could_not_be_asked_retracts_nothing(session, monkeypatch)
     assert live_values(session, ORG, product.product_id, CATALOGUE_LINK)
 
 
+@pytest.mark.requires_pie
 def test_a_link_the_catalogue_no_longer_holds_is_retracted(session, monkeypatch):
     """The catalogue *is* loaded and does not have this record — which is
     evidence, unlike the case above."""
@@ -458,6 +472,7 @@ def test_a_write_never_reads_another_organizations_live_row(session):
 
 
 # ── the exit criterion ──────────────────────────────────────────────────────
+@pytest.mark.requires_pie
 def test_coverage_counts_what_is_and_refuses_a_denominator_it_does_not_have(
         session, monkeypatch):
     decorated = _product(session, ORG, INSERT_NAME, pie_record_id=INSERT_RECORD_ID)

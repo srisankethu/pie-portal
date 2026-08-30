@@ -200,6 +200,25 @@ def decorate_products(session: Session, organization_id: str, *,
             if outcome is None:
                 report.rows_without_outcome += 1
             else:
+                # The routed family is stored on the PRODUCT, never as an
+                # attribute. `ROUTE_FIELDS` refuses it in the store because the
+                # engine emits it on every routed row — "OFFICE CHAIR" routes to
+                # a catch-all — so counting it would put Phase 1's coverage at
+                # ~100% with a bracket reported as a decorated product.
+                #
+                # It still has to be *kept*, because it is the strongest hard
+                # gate the equivalence engine has and a candidate record without
+                # one matches across families: an 11.1 mm drill came back rank 0
+                # and marked verified for "endmill 11.1mm 4 flute" while this
+                # was unstored. Do not count it; do store it.
+                #
+                # Written only when the router placed the name somewhere. A
+                # route that failed leaves the column alone rather than writing
+                # NULL over a family an earlier run established, for the reason
+                # the whole package is built on: nobody asked is not the same
+                # fact as nobody found.
+                if outcome.routed_family:
+                    product.decoded_family = str(outcome.routed_family)
                 extraction = claims_from_decode(outcome)
                 _tally(report, extraction.refused)
                 if extraction.claims:

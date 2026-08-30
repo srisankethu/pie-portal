@@ -753,6 +753,27 @@ class LineDisposition(str, Enum):
 # Data classes for permission redaction (§14). RESTRICTED fields are visible to
 # SALES_MANAGER and OWNER only. Enforced downstream (context assembly / API);
 # defined here so every layer references one source of truth.
+
+#: The two data classes themselves — the tag carried on every price reference,
+#: quote exception and context fact.
+#:
+#: They lived as three independent pairs of string literals:
+#: ``commercial/references``, ``signals/quote_context`` and
+#: ``context/quote_bundle``. That is the shape the redaction rule is least able
+#: to survive, because the first two packages *write* the tag and the third
+#: *reads* it to decide what a salesperson never sees. A rename or a typo in any
+#: single copy fails nothing — the comparison in ``quote_bundle`` simply stops
+#: matching, and a RESTRICTED cost fact is emitted to a salesperson with no test
+#: red anywhere. One declaration is what makes the write and the read the same
+#: string by construction.
+#:
+#: ``commercial/incentive.ELIGIBILITY_RESTRICTED`` is a different concept under a
+#: colliding name and stays where it is; see the note on it there.
+OPERATIONAL = "OPERATIONAL"
+RESTRICTED = "RESTRICTED"
+
+#: Field names that are RESTRICTED wherever they appear, for the surfaces that
+#: redact by name rather than by tag.
 RESTRICTED_FACT_FIELDS = frozenset(
     {"unit_cost", "cost", "margin", "margin_pct", "cost_delta", "cost_delta_pct",
      "baseline_margin_pct", "current_margin_pct", "prior_unit_cost", "latest_unit_cost",

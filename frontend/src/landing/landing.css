@@ -303,7 +303,10 @@
    already made, not a claim of its own, and setting it as loudly as a section
    would make the page argue with itself. */
 .pie-landing .lp-notwhat {
-  padding-top: 18px;      /* sides come from the .lp-wrap inside it, once */
+  /* 34px, not 18: it follows the dark invariant band now rather than the
+     schedule row, and an aside set tight under a full-bleed block reads as a
+     caption on it. Sides come from the .lp-wrap inside it, once. */
+  padding-top: 34px;
   font-size: 13.5px;
   line-height: 1.6;
   color: var(--color-neutral-600);

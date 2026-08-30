@@ -81,6 +81,22 @@ import "./landing.css";
  *     as written: they are commitments rather than product claims, and no
  *     module was ever going to implement them.
  *
+ * Repositioned in Aug 2026, for a different buyer: a US or European
+ * mid-market industrial distributor on Prophet 21, NetSuite or Acumatica,
+ * buying an annual contract rather than a monthly subscription. What that
+ * changed here, and what it deliberately did not:
+ *
+ *   - The hero leads with the financial outcome and a commitment to prove it
+ *     ("see how much you kept"), where it used to lead with the look-back.
+ *     The look-back is still an offer and still evidence — it is Section C's
+ *     second step, which is where the narrative reaches it.
+ *   - "Why it can be trusted" moved out from between Sections C and D to
+ *     directly under the hero. It was reading as a co-equal pillar — one more
+ *     thing the product does — when its job is to answer the question the
+ *     outcome claim provokes. Nothing in it was weakened: the determinism, the
+ *     policy stamp, the append-only record and the ledger that says UNKNOWN are
+ *     the reason the outcome claim is sayable at all.
+ *
  * Three smaller corrections, made while repositioning the page (below):
  *
  *   - The zone letters are gone. See the comment on the sheet.
@@ -201,19 +217,20 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
           <div className="lp-wrap lp-hero-grid">
             <div className="lp-hero-copy">
               <p className="lp-eyebrow">The commercial intelligence layer for distributors</p>
-              <h1>Stop quoting away your <em>margin.</em></h1>
-              {/* Led with three capabilities, which is a description. It now
-                  leads with the offer, because the offer is evidence: the
-                  look-back runs on the history the sync just pulled and needs
-                  nothing the reader has to take on trust. The capabilities are
-                  still here — they are the second sentence, where a description
-                  belongs. */}
+              <h1>Stop quoting away your <em>margin</em> — and see how much you kept.</h1>
+              {/* The second sentence is a commitment, not a capability list.
+                  "How much you kept" is only worth leading with if the reader
+                  can check it, so the sentence that follows the promise says
+                  where the figure comes from and that it opens — which is what
+                  `attribution/` actually does, and what Section D spells out.
+                  Everything else the product does is a description, and a
+                  description belongs below the fold. */}
               <p className="lp-sub">
-                Connect the books you already keep and PIE reads your own history
-                back to you — <b>which accounts went quiet</b>,{" "}
-                <b>where margin drifted</b>, and how much of it the platform
-                could not judge. Then it checks every new quote line against your
-                own floor before it goes out.
+                PIE checks every quote line against <b>your own floor</b> before
+                it goes out and holds what breaches it for a manager. Then it
+                reports <b>the margin that held</b> — every figure openable, and
+                re-derivable from the rows your desk already wrote. Connected to
+                the ERP you already run.
               </p>
               <div className="lp-ctas">
                 <a className="lp-btn solid" href="#signin" onClick={start}>Get started free</a>
@@ -303,6 +320,42 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
             <span className="lp-sched-note">
               — your ERP records what happened; PIE helps you decide what to do next
             </span>
+          </div>
+        </div>
+
+        <div className="lp-invariant">
+          <div className="lp-wrap">
+            <div className="lp-cols">
+              <div>
+                <p className="lp-eyebrow">Why it can be trusted</p>
+                <h2>The AI never computes <em>a single number.</em></h2>
+                <p>
+                  Your business data and rules determine the number. AI explains
+                  it.
+                </p>
+                <p>
+                  Same inputs, same answer, every time — with a paper trail.
+                </p>
+              </div>
+              <ul>
+                <li>
+                  <b>Deterministic calculations</b> — every figure is arithmetic
+                  on your records; turn AI off and every number still works
+                </li>
+                <li>
+                  <b>Auditable decisions</b> — each number names the policy that
+                  produced it, so past decisions stay explainable
+                </li>
+                <li>
+                  <b>Your data</b> — read from your own books, used for you
+                  alone; AI runs on your own account
+                </li>
+                <li>
+                  <b>Your rules</b> — you set the floors and thresholds, and PIE
+                  holds every quote to them
+                </li>
+              </ul>
+            </div>
           </div>
         </div>
 
@@ -482,42 +535,6 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
             </div>
           </div>
         </section>
-
-        <div className="lp-invariant">
-          <div className="lp-wrap">
-            <div className="lp-cols">
-              <div>
-                <p className="lp-eyebrow">Why it can be trusted</p>
-                <h2>The AI never computes <em>a single number.</em></h2>
-                <p>
-                  Your business data and rules determine the number. AI explains
-                  it.
-                </p>
-                <p>
-                  Same inputs, same answer, every time — with a paper trail.
-                </p>
-              </div>
-              <ul>
-                <li>
-                  <b>Deterministic calculations</b> — every figure is arithmetic
-                  on your records; turn AI off and every number still works
-                </li>
-                <li>
-                  <b>Auditable decisions</b> — each number names the policy that
-                  produced it, so past decisions stay explainable
-                </li>
-                <li>
-                  <b>Your data</b> — read from your own books, used for you
-                  alone; AI runs on your own account
-                </li>
-                <li>
-                  <b>Your rules</b> — you set the floors and thresholds, and PIE
-                  holds every quote to them
-                </li>
-              </ul>
-            </div>
-          </div>
-        </div>
 
         <div className="lp-dim"><b>Section D — What it was worth</b></div>
         <section id="worth">

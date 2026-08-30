@@ -25,6 +25,30 @@ x-backend-env: &backend-env
   APP_ENV: production
   DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-pie_portal}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.production}@db:5432/${POSTGRES_DB:-pie_portal}
 
+  # The connection that SERVES REQUESTS, as a role row-level security binds.
+  #
+  # `DATABASE_URL` above owns the schema. A policy binds the role that issued
+  # the query and nothing binds a superuser, so every `tenant_isolation` policy
+  # in this database is inert while requests are served as the owner — which is
+  # what every deployment did until this line existed. `deploy/release.sh`
+  # creates the role (NOSUPERUSER, NOBYPASSRLS, owner of nothing) and this
+  # points the request path at it.
+  #
+  # `:+` rather than `:?`: with APP_DB_PASSWORD unset this expands to empty,
+  # config.py reads empty as unset, and the deployment runs exactly as it did
+  # before — an existing .env.production keeps working. Setting the password is
+  # the deliberate act, and `/api/v1/internal/observability/health` reports
+  # `tenant_isolation` UNHEALTHY until it is taken. Do not soften that: a
+  # connection that cannot be governed is the finding.
+  #
+  # Ordering matters once. `make deploy-release` creates the role;
+  # `make deploy-up` starts serving as it. The documented runbook already runs
+  # them in that order, and running `up` first gives an API that cannot connect
+  # rather than one quietly serving without policies — the safer of the two.
+  APP_DATABASE_URL: ${APP_DB_PASSWORD:+postgresql+psycopg://${APP_DB_ROLE:-pie_app}:${APP_DB_PASSWORD}@db:5432/${POSTGRES_DB:-pie_portal}}
+  APP_DB_ROLE: ${APP_DB_ROLE:-pie_app}
+  APP_DB_PASSWORD: ${APP_DB_PASSWORD:-}
+
   # Both refuse to boot the app while they hold their development defaults,
   # because both defaults are published in the source. `:?` makes that a compose
   # error with a readable message instead of a container that crash-loops.
@@ -195,7 +219,12 @@ services:
   release:
     build: *api-build
     image: pie-portal-api:latest
-    environment: *backend-env
+    environment:
+      <<: *backend-env
+      # It creates that role; it must not be asked to connect as it first.
+      # `db.py` builds the app engine at import when this is set, and on the
+      # first deploy the role does not exist yet.
+      APP_DATABASE_URL: ""
     command: ["/app/deploy/release.sh"]
     depends_on:
       db:

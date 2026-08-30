@@ -218,6 +218,8 @@ class ReadModelRepository:
         row.hsn = p.hsn
         row.category = p.category
         row.manufacturer = p.manufacturer
+        row.source_item_type = p.source_item_type
+        row.source_item_category = p.source_item_category
         row.active = p.active
         row.source_ref = p.source_ref.model_dump()
         return row

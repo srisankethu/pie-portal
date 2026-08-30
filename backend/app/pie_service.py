@@ -132,12 +132,35 @@ class Candidate:
     score: Optional[float] = None   # combined equivalence score (None for exact)
     reason: str = ""                # human explanation from the engine
     attributes: Dict[str, Any] = field(default_factory=dict)
+    #: The comparison did not cover everything the request specified, so the
+    #: score beside it is a ceiling nothing pushed down rather than a measure of
+    #: fit. Two ways that happens, and they are one fact for a reader:
+    #:
+    #: * **nothing** was comparable — the engine's own ``dimensionally_vacuous``.
+    #:   A bearing scored 1.0 against a carbide insert.
+    #: * **something** was: the request named a dimension this record does not
+    #:   carry, and `distance.py` skips it rather than penalising it
+    #:   (``candidate_absent``). A record silent on the one dimension the
+    #:   customer changed, agreeing on two incidental ones, scored 1.0.
+    #:
+    #: Either way the engine could not verify the fit, and an unverified fit is
+    #: not a technical equivalence. Carried so the band mapping and the
+    #: auto-selection can both refuse it.
+    unverified: bool = False
+    #: The engine's own ranking key for this candidate, minus the record-id tail
+    #: that breaks ties by sort order rather than by evidence. Two candidates
+    #: with equal tiers are two the ranking did not choose between. Carried so
+    #: `_is_discriminating` asks the ranking's question instead of comparing one
+    #: published component of it — see that method. ``None`` where the engine
+    #: did not supply it.
+    rank_tier: Optional[List[Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "code": self.code, "desc": self.desc, "rel": self.rel,
             "grade": self.grade, "brand": self.brand, "score": self.score,
             "reason": self.reason, "attributes": self.attributes,
+            "unverified": self.unverified,
         }
 
 
@@ -550,8 +573,26 @@ class PieService:
         notes += list(result.get("narrowing_questions", []) or [])
 
         # (1) Authoritative identity -> EXACT. The matched record IS the product.
+        #
+        #     ``outcome`` alone does not establish that. On the engine's two
+        #     *reference* paths — "same as X but 0.4 corner radius", and an
+        #     exact hit in a namespace this business does not sell — the
+        #     identity is a legitimate AUTO_MATCH over a legitimate
+        #     AUTHORITATIVE match and is still not the answer: the caller named
+        #     the product in order to move away from it. Reading those as EXACT
+        #     put the *unvaried* product on the line, auto-selected and priced,
+        #     for a request that asked to change it.
+        #
+        #     ``identity_role`` is the engine's own statement of which it is.
+        #     The two fallbacks below cover an engine that predates the field —
+        #     absence must not read as "answer", which is the benign default
+        #     this codebase refuses everywhere else.
         auth = [m for m in matches if m.get("certainty") == "AUTHORITATIVE"]
-        if auth and outcome in ("AUTO_MATCH", "CONFIRMED"):
+        role = result.get("identity_role")
+        is_reference = (role == "REFERENCE"
+                        or (role is None and (semantics == "MIXED"
+                                              or "effective_requirement" in result)))
+        if auth and not is_reference and outcome in ("AUTO_MATCH", "CONFIRMED"):
             m = auth[0]
             code = str(m.get("record_id"))
             desc = m.get("description") or code
@@ -569,6 +610,24 @@ class PieService:
             return Resolution(text, code, desc, "EXACT", code, cands,
                               outcome, semantics, notes)
 
+        # (1r) The identity resolved exactly and is a *reference*. Keep it
+        #      visible — a person may well decide to offer it and ask — but
+        #      never as the auto-selected supply, and never labelled EXACT,
+        #      which would assert it meets a requirement the caller defined by
+        #      changing it. It is appended after the derived candidates in (3)
+        #      rather than given its own return, so the ranking, the
+        #      discrimination guard and the abstention all stay in one place.
+        ref_cand: Optional[Candidate] = None
+        if auth and is_reference:
+            m = auth[0]
+            code = str(m.get("record_id"))
+            ref_cand = Candidate(
+                code=code, desc=m.get("description") or code, rel="POSSIBLE",
+                grade=m.get("grade"), brand=m.get("brand"),
+                reason=("The reference you named, not a match for the change you "
+                        "asked for. Offer it only as a deliberate substitution."),
+                attributes=_attributes_of(self.lookup_record(code)))
+
         # (1b) A candidate identity the engine will not assert: the quote names a
         #      customer, the catalogue holds this exact code, but nobody has
         #      confirmed that *this customer's* code means that product. The
@@ -578,8 +637,20 @@ class PieService:
         #      Without this branch the match is simply dropped — `matches` is
         #      read nowhere else — and the line would show "no PIE match" while
         #      the engine had in fact found the record and said "confirm this".
+        #
+        #      Only for an input that *is* a code. A confirmation files "this
+        #      customer's code means this product" forever, so the thing being
+        #      confirmed has to be a code — and for a scoped customer the
+        #      reference in "same as X but 0.4 corner radius" is demoted to
+        #      CANDIDATE/NEEDS_REVIEW and arrived here, offering to record that
+        #      the whole variation sentence means the unvaried product X. It
+        #      could never have fired at resolution time (the mapping is keyed
+        #      on the sentence, and lookups are keyed on identifier tokens), so
+        #      it was a permanent, audited, wrong assertion rather than a wrong
+        #      answer. ``IDENTITY`` is the engine already deciding "this text is
+        #      an identifier", which is exactly the precondition.
         cands_m = [m for m in matches if m.get("certainty") == "CANDIDATE"]
-        if cands_m and outcome == "NEEDS_REVIEW":
+        if cands_m and outcome == "NEEDS_REVIEW" and semantics == "IDENTITY":
             notes += [str(e) for e in (res.get("explanation") or [])]
             return Resolution(
                 text, text, "Confirm this is the right product", "AMBIGUOUS", None,
@@ -608,14 +679,45 @@ class PieService:
         #     "top" suggestion is an artefact of ordering, not a technical
         #     equivalent — auto-selecting and pricing it would put a fabricated
         #     match on a customer quote. Abstain and show the options instead.
-        cands = self._candidates_from_suggestions(suggestions, bands)
-        if cands and self._is_discriminating(cands) and outcome != "UNRESOLVED":
+        cands = self._candidates_from_suggestions(
+            suggestions, bands,
+            # The reference must not appear twice, and the copy that has to go
+            # is the *ranked* one. It is normally top of the list: the effective
+            # requirement is derived from the reference's own facts, so the
+            # reference matches it better than anything else does — which is how
+            # "same as X but 3 flute" came back TECH on X, through the very
+            # branch added to stop it. Excluding it here, rather than skipping
+            # the append when it is already present, is the difference between
+            # demoting the reference and re-promoting it.
+            exclude=ref_cand.code if ref_cand is not None else None)
+        # Re-added last and carrying no score, so it cannot become ``top`` and
+        # cannot affect whether the ranking discriminates. Offerable, never
+        # auto-selected.
+        if ref_cand is not None:
+            cands = cands + [ref_cand]
+        if (cands and self._is_discriminating(cands) and outcome != "UNRESOLVED"
+                and not cands[0].unverified
+                # Appending the reference last is not enough on its own: when
+                # the derived requirement matches nothing, the reference is the
+                # *only* candidate, and `_is_discriminating` returns True for a
+                # single one. Position was doing the work; this states the rule.
+                and cands[0] is not ref_cand):
             top = cands[0]
             desc = self._requirement_desc(text, top)
             return Resolution(text, text, desc, top.rel, top.code, cands,
                               outcome, semantics, notes)
         if cands:
+            # Two different reasons to abstain, and they must not be reported as
+            # one: a tie means the ranking could not choose, while a vacuous
+            # leader means the ranking chose on a comparison with no dimension
+            # in it. ``_is_discriminating`` cannot see the second — those scores
+            # genuinely do separate — so it gets its own sentence, and the
+            # reader is told which of the two happened.
             notes.append(
+                "No dimension of the request could be compared against these "
+                "candidates, so their scores say nothing about fit — pick the "
+                "intended product before quoting."
+                if cands[0].unverified else
                 "The engine could not distinguish between these candidates for "
                 "this input — pick the intended product before quoting.")
             return Resolution(
@@ -623,7 +725,9 @@ class PieService:
                 "AMBIGUOUS", None,
                 [Candidate(code=c.code, desc=c.desc, rel="POSSIBLE", grade=c.grade,
                            brand=c.brand, score=c.score, reason=c.reason,
-                           attributes=c.attributes) for c in cands],
+                           attributes=c.attributes, unverified=c.unverified,
+                           rank_tier=c.rank_tier)
+                 for c in cands],
                 outcome, semantics, notes)
 
         # (4) Nothing resolved -> UNRESOLVED (no PIE match).
@@ -641,7 +745,23 @@ class PieService:
                 continue
             scores = s.get("scores", {}) or {}
             combined = scores.get("combined")
+            # The engine stamps this on a comparison where no dimension of the
+            # request was comparable — the marker exists so a consumer does not
+            # have to re-derive it from tied scores, and reading it is the whole
+            # of the fix. A vacuous comparison may not be called technically
+            # equivalent however high it scored: nothing was compared, so the
+            # honest ceiling is POSSIBLE. `_rel_from_score` is left alone — it
+            # maps a score to a band and that mapping is still correct; what
+            # was wrong was feeding it a score that measured nothing.
+            unverified = self._unverified(s)
             rel = force_rel or self._rel_from_score(combined, bands)
+            if unverified and rel in ("TECH", "COMPAT"):
+                rel = "POSSIBLE"
+            reason = s.get("explanation") or ""
+            if unverified:
+                reason = (("No dimension of the request could be compared "
+                           "against this record, so its score is not a measure "
+                           "of fit. ") + reason).strip()
             out.append(Candidate(
                 code=code,
                 desc=s.get("description") or code,
@@ -649,24 +769,78 @@ class PieService:
                 grade=s.get("grade"),
                 brand=s.get("brand"),
                 score=combined,
-                reason=s.get("explanation") or "",
+                reason=reason,
                 attributes=s.get("attributes", {}) or {},
+                unverified=unverified,
+                rank_tier=s.get("rank_tier"),
             ))
         return out
+
+    @staticmethod
+    def _unverified(suggestion: Dict[str, Any]) -> bool:
+        """Did the comparison cover everything the request specified?
+
+        Reads the engine's own markers rather than re-deriving the conditions —
+        ``dimensionally_vacuous`` for "nothing was comparable", and a
+        ``candidate_absent`` dimension in ``field_breakdown`` for "the request
+        named a dimension this record does not carry". ``distance.py`` skips
+        that second case rather than penalising it, deliberately (missing data
+        must not look like a mismatch) — which is right for the *score* and
+        wrong for a claim of equivalence built on it.
+
+        Absence of the marker must not read as "a real comparison happened",
+        for the same reason absence of ``identity_role`` must not read as
+        ANSWER. The engine is loaded from ``PIE_PARSER_ROOT`` rather than
+        vendored, so a payload predating a marker is a live possibility, and
+        both conditions are derivable from the same payload. Only a payload
+        carrying none of the three keys is taken at face value.
+        """
+        flagged = suggestion.get("dimensionally_vacuous")
+        if flagged:
+            return True
+        breakdown = suggestion.get("field_breakdown")
+        if breakdown is not None and any(
+                m.get("tier") == "dimension" and m.get("status") == "candidate_absent"
+                for m in breakdown):
+            return True
+        return flagged is None and suggestion.get("dimensions_compared") == 0
 
     @staticmethod
     def _is_discriminating(cands: List[Candidate]) -> bool:
         """Does the ranking actually separate the top candidate from the rest?
 
-        A set of candidates that all share one score (commonly every score at
-        1.0, which is what a vacuous match looks like) tells us nothing about
-        which product was meant. Treating the first of those as "the technical
-        equivalent" manufactures certainty the engine never expressed.
+        A set of candidates the ranking did not choose between tells us nothing
+        about which product was meant. Treating the first of those as "the
+        technical equivalent" manufactures certainty the engine never
+        expressed.
+
+        The question is asked of ``rank_tier`` — the engine's own ordering key,
+        minus the record-id tail that is sort order rather than evidence —
+        because the combined score is only the *last* of that key's components.
+        Comparing it alone gets a different answer in both directions: an exact
+        designation hit beside a neighbour at the same score reads as a tie,
+        and, less obviously, a genuine separation on geometry reads as a tie
+        wherever the leader's combined score is *lower* than its neighbour's.
+        That second case is not hypothetical — a variation request ranks the
+        varied record first at a combined score its own reference exceeds — and
+        it made this method abstain on a ranking that had chosen.
+
+        The score is the fallback, not the rule. The engine is loaded from
+        ``PIE_PARSER_ROOT`` rather than vendored, so a payload predating
+        ``rank_tier`` is a live possibility; where a tier is missing this falls
+        back to the older comparison, which errs towards abstention. That is
+        the safe direction here, and deliberately not the one the RFQ harness
+        takes — a measuring instrument that silently gets more cautious is
+        reporting a different system, so ``tools/eval_rfq.py`` raises instead.
         """
-        scores = [c.score for c in cands if c.score is not None]
-        if len(scores) < 2:
+        if len(cands) < 2:
             return True                      # nothing to compare against
-        return scores[0] > scores[1]
+        top, runner_up = cands[0], cands[1]
+        if top.rank_tier is not None and runner_up.rank_tier is not None:
+            return top.rank_tier != runner_up.rank_tier
+        if top.score is None or runner_up.score is None:
+            return True
+        return top.score > runner_up.score
 
     @staticmethod
     def _rel_from_score(combined: Optional[float], bands: Optional[Bands] = None) -> str:

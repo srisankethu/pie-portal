@@ -32,7 +32,10 @@ them it expected to be missing.
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 from sqlalchemy import create_engine, text
@@ -983,3 +986,94 @@ def test_an_ended_membership_stops_answering_for_the_switcher(migrated):
             assert tenancy.user_memberships(session, "rls_gone") == []
     finally:
         engine.dispose()
+
+
+# ── the role itself, and the script that creates it ─────────────────────────
+#
+# Everything above proves that policies bind a role which does not bypass them.
+# This proves the deployment actually gets such a role. The two halves were
+# separate for a while, and the gap between them is the whole of decision 019:
+# 81 tables of tested, fail-closed policy, and `APP_DATABASE_URL` in no
+# deployment recipe — so every documented deployment served requests as the
+# schema's owner and none of it bound anything.
+
+def _provision(env: dict) -> subprocess.CompletedProcess:
+    script = (Path(__file__).resolve().parents[3] / "deploy"
+              / "provision_app_role.py")
+    return subprocess.run([sys.executable, str(script)], env={**os.environ, **env},
+                          capture_output=True, text=True)
+
+
+def test_the_provisioning_script_creates_a_role_policies_can_bind():
+    """The flags are the control. A role that came back rolsuper or
+    rolbypassrls would leave every policy in this file inert while the deploy
+    log said success."""
+    role = "rls_made_by_script"
+    done = _provision({"DATABASE_URL": OWNER_URL, "APP_DB_ROLE": role,
+                       "APP_DB_PASSWORD": "p" + "a" * 20})
+    assert done.returncode == 0, done.stderr
+
+    with create_engine(OWNER_URL).connect() as conn:
+        row = conn.execute(text(
+            "SELECT rolsuper, rolbypassrls, rolcanlogin, rolcreatedb, "
+            "rolcreaterole FROM pg_roles WHERE rolname = :r"), {"r": role}).one()
+    assert (row.rolsuper, row.rolbypassrls) == (False, False)
+    assert row.rolcanlogin is True
+    assert (row.rolcreatedb, row.rolcreaterole) == (False, False)
+
+
+def test_provisioning_twice_is_the_same_as_once():
+    """It runs on every release, and a release is not a first deploy. Re-running
+    is how a table added by this deploy's migrations becomes reachable."""
+    role = "rls_made_twice"
+    env = {"DATABASE_URL": OWNER_URL, "APP_DB_ROLE": role,
+           "APP_DB_PASSWORD": "p" + "a" * 20}
+    assert _provision(env).returncode == 0
+    second = _provision({**env, "APP_DB_PASSWORD": "q" + "b" * 20})
+    assert second.returncode == 0, second.stderr
+
+    with create_engine(OWNER_URL).connect() as conn:
+        n = conn.execute(text("SELECT count(*) FROM pg_roles WHERE rolname = :r"),
+                         {"r": role}).scalar()
+    assert n == 1
+
+
+def test_a_password_never_reaches_the_statement_text():
+    """`DB_SLOW_QUERY_MS` logs statements, and so does any server-side statement
+    log. The password travels as a bind parameter into a transaction-local
+    setting that the DO block reads back, so what either one could write is
+    `set_config($1, $2, true)`."""
+    source = (Path(__file__).resolve().parents[3] / "deploy"
+              / "provision_app_role.py").read_text()
+    assert "set_config('pie.provision_pw', :v, true)" in source
+    assert "PASSWORD %L" in source, (
+        "the password must be quoted server-side by format(), not spliced in")
+    assert "PASSWORD {" not in source and 'PASSWORD " +' not in source
+
+
+def test_it_says_so_rather_than_quietly_doing_nothing():
+    """A security control that silently did not install reads exactly like one
+    that did. Exit 0 — this is a deployment's choice, not an error — but never
+    in silence."""
+    done = _provision({"DATABASE_URL": OWNER_URL, "APP_DB_PASSWORD": ""})
+    assert done.returncode == 0
+    assert "APP_DB_PASSWORD is unset" in done.stdout
+    assert "UNHEALTHY" in done.stdout
+
+
+def test_a_role_name_that_is_not_an_identifier_is_refused(tmp_path):
+    done = _provision({"DATABASE_URL": OWNER_URL, "APP_DB_PASSWORD": "x" * 12,
+                       "APP_DB_ROLE": 'evil"; DROP TABLE products; --'})
+    assert done.returncode == 1
+    assert "refusing APP_DB_ROLE" in done.stderr
+
+    with create_engine(OWNER_URL).connect() as conn:
+        assert conn.execute(text(
+            "SELECT to_regclass('public.products') IS NOT NULL")).scalar()
+
+
+def test_on_a_dialect_with_no_policies_it_does_nothing_and_says_why(tmp_path):
+    done = _provision({"DATABASE_URL": f"sqlite:///{tmp_path}/x.db",
+                       "APP_DB_PASSWORD": "x" * 12})
+    assert done.returncode == 0
+    assert "not PostgreSQL" in done.stdout

@@ -172,6 +172,13 @@ def _product(cand: Candidate, *, with_provenance: bool) -> dict:
         "grade": cand.grade,
         "relationship": cand.rel,
         "equivalence_score": cand.score,
+        # Without this the pair above is self-contradictory on the wire. A
+        # candidate the engine could not fully compare is capped at POSSIBLE
+        # however high it scored, so a caller told to "read relationship and
+        # equivalence_score together" sees POSSIBLE beside 1.0 and has no way to
+        # tell that from a genuine near-miss. The cap is the safe half; this is
+        # the half that explains it.
+        "comparison_complete": not cand.unverified,
         "explanation": cand.reason or None,
     }
     if record is not None:

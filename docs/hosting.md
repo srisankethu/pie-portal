@@ -141,6 +141,53 @@ Seeded organization org_pie with 3 demo users.
 It is idempotent. Re-running it on a current database prints `before:`/`after:`
 at the same revision and leaves every existing password alone.
 
+### Tenant isolation, and why it needs a second role
+
+`release` also provisions the Postgres role that **serves requests**, and this
+is the one step whose absence is invisible.
+
+Every tenant-scoped table in this schema carries `ENABLE` + `FORCE ROW LEVEL
+SECURITY` and a fail-closed `tenant_isolation` policy. A policy binds the role
+that issued the query. `FORCE` binds the owner too — but nothing binds
+`BYPASSRLS`, a superuser is exempt outright, and until this existed every
+documented deployment connected as `POSTGRES_USER`, the role that owns the
+schema. The policies were all there, all tested against a non-bypassing role in
+the gate, and all inert in production.
+
+Set `APP_DB_PASSWORD` in `.env.production` and `make deploy-release` creates
+`pie_app` — LOGIN, NOSUPERUSER, NOCREATEDB, NOCREATEROLE, NOBYPASSRLS, owner of
+nothing — and grants it what an application needs and no more. The API and the
+worker then connect as it from the next `make deploy-up`.
+
+**Run release before up.** The role has to exist before anything connects as it.
+Getting that order wrong gives an API that cannot connect, which is loud; the
+alternative shape of mistake — serving with the policies inert — is silent, and
+that is why the ordering is this way round rather than the other.
+
+```
+[release] after: Database is at head (g1tax).
+[app-role] pie_app ready on pie_portal: NOSUPERUSER, NOBYPASSRLS, owner of nothing.
+```
+
+Leave `APP_DB_PASSWORD` empty and the deployment runs exactly as it did before —
+one role for everything, Python-side `organization_id` filtering doing the work
+alone. That is a choice a deployment is allowed to make, and it is reported
+rather than assumed:
+
+```bash
+curl -s https://<SITE_ADDRESS>/api/v1/internal/observability/health \
+  | python3 -m json.tool | grep -A4 tenant_isolation
+```
+
+The component answers exactly one question — is the connection serving requests
+one that policies apply to — and it is **UNHEALTHY until it is**, naming the
+role and its `rolsuper` / `rolbypassrls` flags. It is deliberately not softened
+by whether any policy exists: a connection that cannot be governed is the
+finding.
+
+`docs/postgres.md` has the role, the grants and the reasoning in full, including
+what to do on a managed database where you cannot create roles.
+
 ---
 
 ## Upgrading
@@ -393,7 +440,7 @@ base image rather than disabling verification.
 
 ## What is still open before real customer data
 
-Two of the three gates [operations.md](operations.md#before-going-live--known-gates)
+Three of the four gates [operations.md](operations.md#before-going-live--known-gates)
 lists are open, and one has since closed. Stating them accurately matters more
 than stating them reassuringly:
 
@@ -414,7 +461,16 @@ than stating them reassuringly:
    rows** on **Data & connection** for `UNMAPPED_SALESPERSON` and
    `ASSIGNMENT_UNAVAILABLE`.
 
-3. **The AI cost rates.** Still open until you edit them.
+3. **Tenant isolation is off until you set `APP_DB_PASSWORD`.** The policies
+   exist on every tenant-scoped table and bind nothing while requests are served
+   as the schema's owner — see [Tenant isolation](#tenant-isolation-and-why-it-needs-a-second-role)
+   above. Python-side `organization_id` filtering is then the only control, and
+   the RLS layer was added precisely because a survey found places where that
+   filter lived in a comprehension rather than in SQL. One password and one
+   `make deploy-release` closes it; `/api/v1/internal/observability/health`
+   says which side of it you are on.
+
+4. **The AI cost rates.** Still open until you edit them.
    `AI_COST_PER_MTOK_INPUT` and `AI_COST_PER_MTOK_OUTPUT` default to indicative
    values, and every figure on the owner's AI-spend screen derives from them.
    Leaving them produces a confident wrong number, which is worse than a missing

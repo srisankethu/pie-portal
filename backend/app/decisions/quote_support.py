@@ -30,7 +30,14 @@ from ..authz import Principal
 from ..commercial import ownership
 from ..context.quote_bundle import _label, build_quote_bundle
 from ..domain import models
-from ..domain.enums import DecisionStatus, PriorityBand, Role, SubjectEntityType
+from ..domain.enums import (
+    OPERATIONAL,
+    RESTRICTED,
+    DecisionStatus,
+    PriorityBand,
+    Role,
+    SubjectEntityType,
+)
 from ..config import settings
 from ..repositories import AiTelemetryRepository, DecisionRepository
 from ..signals.aggregates import load_snapshot
@@ -316,8 +323,8 @@ def _project_facts(raw_facts: list[dict], is_sales: bool) -> list[dict]:
     for f in raw_facts:
         if f.get("value") is None:
             continue
-        dc = f.get("data_class", "OPERATIONAL")
-        if is_sales and dc == "RESTRICTED":
+        dc = f.get("data_class", OPERATIONAL)
+        if is_sales and dc == RESTRICTED:
             continue
         src = ", ".join(sorted({str(r.get("record_type") or "") for r in (f.get("source_refs") or [])
                                 if r.get("record_type")}))

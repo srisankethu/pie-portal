@@ -239,3 +239,33 @@ def test_decimal_parsing_is_exact():
     txns = normalize_invoice({"invoice_id": "i", "customer_id": "c", "date": "2026-01-01",
                               "line_items": [{"item_id": "x", "quantity": 3, "rate": "0.1"}]})
     assert txns[0].line_revenue == Decimal("0.3")
+
+
+def test_normalize_product_carries_the_sources_own_taxonomy():
+    """The two fields exist because the column the platform already read is
+    empty on the live master and these two are full. Raw in, raw out —
+    ``normalize`` maps nothing here, for the reason ``category`` is unmapped."""
+    p = normalize_product({"item_id": "itm-1", "name": "0.5x06x38x 2FL",
+                           "status": "active", "source_item_type": "Endmill",
+                           "source_item_category": "Milling"})
+    assert p.source_item_type == "Endmill"
+    assert p.source_item_category == "Milling"
+
+
+def test_a_source_with_no_taxonomy_normalizes_to_nothing_said():
+    """The connectors in ``ingestion/erp/`` map their own catalogue column onto
+    ``category_name`` and keep no equivalent of these two. None is the correct
+    value for them and must not become a guess from the item's name."""
+    p = normalize_product({"item_id": "itm-1", "name": "CNMG 120408 INSERT",
+                           "status": "active", "category_name": "Cutting Tools"})
+    assert p.source_item_type is None
+    assert p.source_item_category is None
+    assert p.category == "Cutting Tools"
+
+
+def test_a_blank_taxonomy_value_is_nothing_said_and_not_an_empty_string():
+    """An empty custom field and an absent one mean the same thing — nobody
+    said — and a consumer must not have to test for two."""
+    p = normalize_product({"item_id": "itm-1", "name": "x", "status": "active",
+                           "source_item_type": "", "source_item_category": ""})
+    assert p.source_item_type is None and p.source_item_category is None

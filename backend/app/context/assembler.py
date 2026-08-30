@@ -13,7 +13,8 @@ from sqlalchemy.orm import Session
 
 from ..domain import models
 from ..domain.enums import (
-    EvidenceSufficiency, RESTRICTED_FACT_FIELDS, Role, SubjectEntityType)
+    OPERATIONAL, RESTRICTED, RESTRICTED_FACT_FIELDS, EvidenceSufficiency, Role,
+    SubjectEntityType)
 from ..signals.config import SignalThresholds, load_thresholds
 from ..trust import pseudonym, vault
 from .bundle import ContextBundle, FactView, SignalView
@@ -194,8 +195,8 @@ def assemble_from_signal(session: Session, signal: models.Signal, recipient_role
                      "entity_id": signal.subject_entity_id, "label": subject_label},
         display_names=display_names,
         recipient_role=recipient_role.value,
-        permitted_data_classes=(["OPERATIONAL"] if is_sales
-                                else ["OPERATIONAL", "RESTRICTED"]),
+        permitted_data_classes=([OPERATIONAL] if is_sales
+                                else [OPERATIONAL, RESTRICTED]),
         redactions_applied=redactions,
         signals=[SignalView(signal_id=signal.signal_id, signal_type=signal.signal_type,
                             subject_entity_type=signal.subject_entity_type,

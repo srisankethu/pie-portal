@@ -62,6 +62,67 @@ def test_sync_writes_read_model(session):
     assert txn.line_revenue == Decimal("5000")
 
 
+def test_the_sources_own_taxonomy_reaches_the_product_row(session):
+    """End to end: client payload -> normalize -> upsert -> column.
+
+    Worth a full pass rather than a unit test at each seam, because the value
+    of these two fields is that they are *stored*: the catalogue category the
+    platform already read is empty on the live master, and a taxonomy that
+    stops at the normalizer is exactly as useful as one nobody read at all.
+    """
+    src = _Source(items=[{"item_id": "i1", "name": "0.5x06x38x 2FL",
+                          "status": "active", "source_item_type": "Endmill",
+                          "source_item_category": "Milling"}])
+    SyncService(session, src, "org_a").run()
+    session.commit()
+
+    row = session.query(models.Product).one()
+    assert row.source_item_type == "Endmill"
+    assert row.source_item_category == "Milling"
+    assert row.category is None, (
+        "the ERP's own catalogue category is a different column and stays "
+        "empty here — that is the gap these two fill, not one they close over")
+
+
+def test_a_re_sync_rewrites_the_taxonomy_rather_than_keeping_a_stale_one(session):
+    """Products are derived by contract: a complete re-sync rebuilds them from
+    the source. A reclassification in Zoho must land, and the previous value
+    must not survive it."""
+    SyncService(session, _Source(items=[
+        {"item_id": "i1", "name": "x", "status": "active",
+         "source_item_type": "Tap", "source_item_category": "Threading"}]),
+        "org_a").run()
+    session.commit()
+
+    SyncService(session, _Source(items=[
+        {"item_id": "i1", "name": "x", "status": "active",
+         "source_item_type": "Reamer", "source_item_category": "Holemaking"}]),
+        "org_a").run()
+    session.commit()
+
+    row = session.query(models.Product).one()
+    assert (row.source_item_type, row.source_item_category) \
+        == ("Reamer", "Holemaking")
+
+
+def test_clearing_the_taxonomy_upstream_clears_it_here(session):
+    """The failure this would otherwise have: somebody empties a wrong
+    classification in Zoho, and the platform keeps showing it because the
+    upsert only ever wrote non-null values. Cleared upstream is nobody said."""
+    SyncService(session, _Source(items=[
+        {"item_id": "i1", "name": "x", "status": "active",
+         "source_item_type": "Tap", "source_item_category": "Threading"}]),
+        "org_a").run()
+    session.commit()
+
+    SyncService(session, _Source(items=[
+        {"item_id": "i1", "name": "x", "status": "active"}]), "org_a").run()
+    session.commit()
+
+    row = session.query(models.Product).one()
+    assert row.source_item_type is None and row.source_item_category is None
+
+
 def test_sync_is_idempotent(session):
     SyncService(session, _good_source(), "org_a").run()
     session.commit()

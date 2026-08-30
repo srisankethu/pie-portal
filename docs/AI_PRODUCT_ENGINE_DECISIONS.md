@@ -13,7 +13,7 @@ Section references below are to that document.
 ---
 
 ## 001 — pie-parser stays the decoder; pie-portal becomes the decider
-**Status:** PROPOSED · **Phase:** 0 · **Report §:** 18, 23
+**Status:** ACCEPTED — product owner, 2026-08-30 · **Phase:** 0 · **Report §:** 18, 23
 
 **Decision.** The parser keeps its invariants — offline, deterministic, zero
 manufacturer or organisation literals, pack-driven — and gains only *generic*
@@ -27,6 +27,16 @@ organisations may legitimately disagree.
 
 **Evidence.** `pie-parser/CLAUDE.md` §1 and §3; `pie_service._rel_from_score`
 reading `equivalence_tech_band` per request.
+
+**Ratified on its own, ahead of 002–015.** The owner accepted this one now and
+asked that the rest be reviewed as each phase actually starts. That is the right
+order rather than a compromise: 001 is a constraint the code already satisfies,
+so ratifying it costs nothing and locks the property that lets a second
+manufacturer or organisation be added without touching `engine/`. 002–015 carry
+schema and ontology commitments whose inputs — which categories, where
+attributes come from — were still open at that moment and are answered in 024
+and 025 below. Approving them together would have meant approving decisions
+before their premises.
 
 ---
 
@@ -281,7 +291,7 @@ metric the thing already passes.
 ---
 
 ## 016 — Lead time and selling price need a decision before Phase 8
-**Status:** OPEN — decision required · **Phase:** 8 · **Report §:** 12, 40
+**Status:** ACCEPTED — product owner, 2026-08-30 (see "What was decided" below) · **Phase:** 8 · **Report §:** 12, 40
 
 **The situation.** Of the brief's commercial ranking signals, stock, supplier
 and cost are persisted; **selling price is not stored on `products` at all**
@@ -299,6 +309,32 @@ cannot be scoped until one is chosen.
 on a stale or absent lead time is the benign default this codebase already
 refuses three times over: the answer would be UNKNOWN, and a candidate whose
 availability is UNKNOWN must say so rather than sort as though it were quick.
+
+### What was decided
+
+**Persist lead time on sync; keep selling price live.** Split by what each is
+actually used for, which is the part the question's framing obscured by treating
+them as one decision:
+
+* **Lead time is a ranking input**, compared across every candidate on a line.
+  Ten candidates cannot each cost a live call — and PR #180 landed to spend one
+  Zoho access token per run rather than twenty, so a per-candidate fetch cuts
+  directly against work already done. It is persisted, with the freshness
+  question handled where this codebase always handles it: the stored value says
+  which sync wrote it, and an absent one stays UNKNOWN rather than sorting as
+  quick.
+* **Selling price is a single-line output**, read once for the product actually
+  chosen. It already works live, it is always current, and a stored price that
+  goes stale between syncs is a commercial error rather than a display one.
+
+**What this unblocks and what it costs.** Phase 8 is scopeable, and decision
+009's ranking half with it. `cf_estimate_delivery_date` — the field decision 018
+found and deliberately left unread — is now in scope as a lead-time source, and
+is the first real evidence available, since `expected_date` is blank on
+effectively every purchase order. It is a *promised* date rather than a realised
+one, so it must be labelled as such: a promise a supplier has not kept is not a
+lead time, and the derivation from `received_on − ordered_on` stays the ground
+truth wherever three receipts exist.
 
 ---
 
@@ -525,7 +561,7 @@ until it was, every re-sync overwrote a classification nobody had a copy of.
 ---
 
 ## 019 — Enable the row-level security that is already written
-**Status:** PROPOSED — deployment change, not code · **Report §:** 5, 33
+**Status:** DONE — 2026-08-30 · deployment change, not code · **Report §:** 5, 33
 
 **The situation.** 81 tables carry RLS policies, `ENABLE` and `FORCE`, reading
 a transaction-scoped GUC, failing closed on an unset tenant, and the gate tests
@@ -544,8 +580,6 @@ tables. The platform's own `observability/health.py` already reports
 production. That is the control the RLS layer exists to back up, and it was
 added precisely because a survey found places where the filter lives in a
 comprehension rather than in SQL.
-
-**Status:** DONE — 2026-08-30.
 
 ### What landed
 
@@ -851,3 +885,184 @@ resident per record across the two copies the singleton holds, so the deployment
 model breaks well before 100k whatever the catalogue turns out to be. Nothing in
 the phase order depends on settling this; only Phase 1's *sizing* does, by about
 a factor of six.
+
+---
+
+## 024 — Cutting tools only, and the depth is the point
+**Status:** ACCEPTED — product owner, 2026-08-30 · **Phase:** 1 · **Report §:** 40 Q2
+
+**Decision.** One category. Everything in Phase 1 through Phase 8 is scoped to
+cutting tools. Bearings, contactors and sensors — named in the original brief —
+are **not** in scope and no work is done in anticipation of them.
+
+**Why this is not a reduction in ambition.** The binding constraint measured in
+Phase 0 is attribute coverage, not algorithms: 9.4% of the master is
+identity-linked, 17.1% is geometry-decodable, 21.6% is the union. A second
+category multiplies an unsolved problem by two — a pack, a rule set and a
+data-authoring project each — while leaving the first one at a fifth coverage.
+The report's own line, and the owner's call: one category done properly beats
+four started.
+
+**What this permits us not to build.** The engine slot types §23 lists as
+missing (electrical ratings, load ratings, sensor output types) stay unbuilt.
+They are a real gap for a bearing or a contactor and no gap at all for a turning
+insert, and building a generic mechanism with one speculative implementer is the
+over-engineering pie-parser's CLAUDE.md §4 names directly.
+
+**What stays true regardless.** The engine/pack split is what makes a second
+category cheap *later*, and it is not relaxed here. A category-specific `elif`
+in `engine/` is still the violation it always was.
+
+---
+
+## 025 — Attributes come from a distributor PIM or price-list export
+**Status:** ACCEPTED — product owner, 2026-08-30 · **Phase:** 1 · **Report §:** 40 Q3
+
+**Decision.** Phase 1's attribute source is a distributor PIM / price-list
+export, available in **both spreadsheet (Excel/CSV) and PDF** form. Decoding a
+product name stays as the second source, not the only one.
+
+**Why it matters that this is answered.** Decoding reaches ~17–21% of the
+master and that is a ceiling, not a starting point — no amount of engine work
+raises it, because the information is not in the name. An external file is the
+only thing that moves the number, and Phase 1's exit criterion is *published
+coverage per category*, which cannot be stated at all without knowing what the
+input is.
+
+**The two formats are two projects, and only one of them is small.** The
+spreadsheet path reuses machinery that exists: `master_health/profiles/` is
+already a data-driven source-column mapping (`zoho.yaml`, `netsuite.yaml`,
+`prophet21.yaml`), so a new export is a profile plus a loader. The PDF path
+needs table extraction first, and an attribute read out of a printed table
+carries a materially weaker provenance claim than one read from a typed column.
+**Do the spreadsheet path first and measure what it buys before writing a single
+line of PDF extraction** — if the spreadsheet reaches 70% the PDF work may not be
+worth doing at all, and that is a measurement rather than a guess.
+
+**Constraint carried forward.** Whatever arrives is stored with provenance
+naming the file and the row it came from, interpreted at read time, never
+normalised on the way in — the rule decisions 002 and 018 already established.
+A licence question attaches to any redistributed catalogue data and is the
+reason decision 026 exists.
+
+---
+
+## 026 — Product attribute values are org-scoped
+**Status:** ACCEPTED — product owner, 2026-08-30 · **Phase:** 1 · **Report §:** 40 Q13
+
+**Decision.** `product_attribute_values` is scoped per organization.
+
+**Decided by 025, not independently of it.** A distributor PIM export is
+licensed to the organization that obtained it. Sharing those rows across tenants
+would redistribute another party's licensed data to businesses that never
+obtained it — a licensing question, not a storage one, and the report's §33
+already names manufacturer data licensing as a live constraint.
+
+**What it costs, stated rather than glossed.** Two organizations selling the
+same Kennametal insert each store their own decoded attribute rows, so identical
+data is stored twice and decoded twice. That is accepted. It also buys something
+real: two orgs may legitimately hold different attribute values for one product
+when their sources disagree, which is the same property `_rel_from_score` already
+grants for equivalence bands.
+
+**The seam that stays open.** Attributes decoded from the part number itself
+(ISO 1832 geometry) are facts about the product rather than anybody's data, and
+could defensibly be shared. Splitting the table by provenance was considered and
+deferred: it is two tables or a scope column plus a precedence rule for when the
+two disagree, and that complexity is not worth paying before a second tenant
+exists. **Revisit when one does** — not before.
+
+---
+
+## 027 — Compatibility rules assert only what a manufacturer published
+**Status:** ACCEPTED — product owner, 2026-08-30 · **Phase:** 4 · **Report §:** 40 Q4
+
+**Decision.** No in-house compatibility rules are authored. The system asserts a
+technical relationship only where a manufacturer's published claim supports it,
+and returns `INSUFFICIENT_INFORMATION` everywhere else.
+
+**This answers the named-person question by removing it, for now.** §40 Q4 asked
+who authors compatibility rules and who signs them off, because they are
+engineering claims a distributor is liable for. Asserting nothing that a
+manufacturer has not already asserted means the liability stays where the claim
+was made. It is the conservative reading of the brief's own principle —
+`FAIL CONSERVATIVELY`, and `UNKNOWN IS NOT COMPATIBLE`.
+
+**What it costs, and this is the honest part.** Coverage. A published chart is
+sparse; most pairs a customer asks about will have no published claim and will
+come back as "not established" rather than as a recommendation. **That is the
+correct answer under this decision and must not be softened later by quietly
+lowering a threshold to make the screen less empty** — CLAUDE.md's "do not weaken
+a rule to make output appear" applies to exactly this pressure.
+
+**When it must be revisited.** The moment anyone wants the system to assert a
+relationship no manufacturer published, Q4 returns in full and needs a named
+author and a named approver. Recording that here so the re-opening is deliberate
+rather than incremental.
+
+---
+
+## 028 — Cross-brand equivalence is out of scope until its data exists
+**Status:** ACCEPTED — product owner, 2026-08-30 · **Phase:** 1 · **Report §:** 35, 40 Q11
+
+**Decision.** Scope the product to substitution **within** the Kennametal/WIDIA
+catalogue. Build nothing new for cross-brand, and remove nothing either.
+
+**Measured before deciding, because the earlier framing was wrong.** The claim
+"no grade evidence exists" is not true, and checking it changed the answer:
+
+| grade evidence | strength | state today |
+|---|---|---|
+| same grade | 1.0 | works |
+| shared ISO 513 application group | 0.4 | **works** — `grade_application.csv` carries 25 cited Kennametal/WIDIA grades |
+| direct published cross-reference | 0.5–0.9 | **zero rows** in `grade_crossref.csv` |
+| anything cross-brand | — | unavailable: one pack exists |
+
+So within-brand substitution has real, cited grade evidence today. What is
+missing is specifically the *cross-brand* half, and it is missing for two
+independent reasons — no published cross-reference rows, and no second
+manufacturer pack. The owner declined to source either (decision 013 stays open;
+pack #2 stays unblocked-by-nothing-we-control).
+
+**The consequence, stated plainly because it narrows the brief.** "Which
+catalogue products satisfy this requirement, across manufacturers" was the
+headline capability of the original brief. Under this decision the answer is
+scoped to one manufacturer's catalogue. Nothing should describe the system as
+cross-manufacturer until the data exists — a capability claimed and not
+evidenced is the failure mode this whole programme is built against.
+
+**Why nothing is deleted.** `equivalence/crossref.py`, `grade_crossref.csv` and
+the two-pack seams stay exactly as they are. They are correct, they are tested,
+and they cost nothing idle — so the day a chart or a second pack arrives, it is a
+data change and not a rewrite. That is the engine/pack split doing its job, and
+it is the reason this decision is cheap to reverse.
+
+**What would reopen it.** Ten rows in `grade_crossref.csv`, each citing a real
+published chart, or one second-manufacturer source extract. Either one alone
+moves the needle; the two together are what "cross-manufacturer" would actually
+require.
+
+---
+
+## 029 — 002–015 are reviewed per phase, not ratified in a batch
+**Status:** ACCEPTED — product owner, 2026-08-30 · **Report §:** 39, 40
+
+**Decision.** Decision 001 is ratified now (see above). Decisions 002 through 015
+stay **PROPOSED** and are each reviewed at the start of the phase that needs
+them.
+
+**Why this is the right order rather than a hedge.** 001 is a constraint the code
+already satisfies, so ratifying it costs nothing and locks the one property that
+lets a second manufacturer or organisation arrive without touching `engine/`.
+002–015 are different in kind: they carry schema and ontology commitments whose
+premises were open questions until this same session answered them. Ratifying
+010 (bind the ontology to ETIM and ISO 13399) before knowing the attribute source
+would have been approving a decision ahead of its input — and 025 has since made
+that input a distributor export rather than a standards feed, which is exactly
+the kind of thing that changes 010's answer.
+
+**The risk this accepts, and how it is contained.** A decision reviewed late is a
+decision that can surprise a phase already underway. Containment: §31's rule
+stands — cross-package contracts are frozen before any workstream implements
+against them — and each phase's first act is to bring its own decisions to
+ACCEPTED before code, not after.

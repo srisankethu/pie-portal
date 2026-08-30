@@ -1569,6 +1569,13 @@ it is nearly free and unblocks measurement:
 
 ## 40. Open questions requiring decisions
 
+**Five of these were answered by the product owner on 2026-08-30, and the
+answers are recorded as decisions 016 and 024–029 rather than only here.** The
+questions are kept in place with their answers attached, because a question
+deleted once answered leaves a later reader unable to tell a considered choice
+from a default nobody noticed — which is the whole reason this section exists.
+Answered items are marked **ANSWERED**; the rest are still open.
+
 **Blocking — Phase 1 cannot be scoped without these:**
 
 1. **What is the actual catalogue, and is there a third entity?** The brief
@@ -1582,12 +1589,27 @@ it is nearly free and unblocks measurement:
 2. **Which categories, in what order?** Everything here is cutting tools. The
    brief names bearings, contactors and sensors. Each is a pack, a rule set and
    a data-authoring project. One category done properly beats four started.
+   → **ANSWERED — cutting tools only (decision 024).** Bearings, contactors and
+   sensors are out of scope, and the engine slot types §23 lists as missing stay
+   unbuilt: a generic mechanism with one speculative implementer is
+   over-engineering, not foresight.
 3. **Where do attributes come from?** Decoding a name reaches ~17–21%.
    Manufacturer data files, ETIM/ISO 13399 feeds, or distributor PIM exports
    reach much further. Is such a feed available, and under what licence?
+   → **ANSWERED — a distributor PIM / price-list export, in both spreadsheet and
+   PDF form (decision 025).** The spreadsheet path reuses
+   `master_health/profiles/`, which is already a data-driven column mapping; the
+   PDF path needs table extraction and yields weaker provenance. **Measure what
+   the spreadsheet buys before writing any PDF extraction.**
 4. **Who authors the compatibility rules, and who signs them off?** These are
    engineering claims a distributor is liable for. This is a named-person
    question, not a technical one.
+   → **ANSWERED — nobody, for now (decision 027).** No in-house rules are
+   authored; the system asserts only what a manufacturer published and returns
+   `INSUFFICIENT_INFORMATION` otherwise, so the liability stays where the claim
+   was made. The cost is coverage, and it must not be bought back by lowering a
+   threshold. The named-person question returns in full the moment anyone wants
+   an assertion no manufacturer made.
 
 **Important — needed before the phase they govern:**
 
@@ -1596,6 +1618,10 @@ it is nearly free and unblocks measurement:
    (a latency question — ten candidates per line, per quote). Phase 8 cannot be
    scoped until this is answered, and it is the difference between ranking on
    availability and ranking on a promise.
+   → **ANSWERED — split by use (decision 016).** Lead time is a ranking input
+   compared across every candidate, so it is persisted; selling price is a
+   single-line output read once for the product chosen, so it stays live. The
+   question's own framing treated them as one decision, and they are not.
 6. **Is `pgvector` installable on the deployed PostgreSQL?** Depends on who
    controls the instance. It decides whether Phase 2b is possible in-database.
 7. **Does an RFQ surface attach as a new top-level screen or as a step inside
@@ -1624,6 +1650,12 @@ it is nearly free and unblocks measurement:
     decoration) or shared (a manufacturer fact). *Recommendation: org-scoped
     rows pointing at a shared decoded catalogue record, mirroring the existing
     link-never-merge rule.*
+    → **ANSWERED — org-scoped (decision 026).** Decided by the answer to Q3
+    rather than on its own: a distributor PIM export is licensed to the
+    organization that obtained it, so sharing those rows would redistribute
+    another party's licensed data. Splitting the table by provenance — shared for
+    designation-decoded facts, org-scoped for imported ones — was considered and
+    deferred until a second tenant exists.
 14. Whether the nine-value relationship vocabulary is extended in place
     (recommended, §26) or replaced behind a version flag.
 

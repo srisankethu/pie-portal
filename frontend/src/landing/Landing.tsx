@@ -14,12 +14,11 @@ import "./landing.css";
  * screens behind it.
  *
  * The design direction is a works drawing — the sheets this product's
- * customers live in: the page sits inside a drawing frame with zone letters,
- * sections are named on dimension-line dividers (which is why they carry no
- * eyebrow of their own), and the decision card signs itself with a title
- * block instead of a caption. The frame, zones and corner marks are
- * decorative and aria-hidden; the dividers are real text because they are the
- * section labels.
+ * customers live in: the page sits inside a drawing frame, sections are named
+ * on dimension-line dividers (which is why they carry no eyebrow of their
+ * own), and the decision card signs itself with a title block instead of a
+ * caption. The frame and corner marks are decorative and aria-hidden; the
+ * dividers are real text because they are the section labels.
  *
  * The honesty rule this page keeps on purpose: every claim on it is a real,
  * checkable property of the product — the determinism and audit-trail claims,
@@ -81,6 +80,22 @@ import "./landing.css";
  *     section now says what that is. The rate lock and the yearly discount stay
  *     as written: they are commitments rather than product claims, and no
  *     module was ever going to implement them.
+ *
+ * Three smaller corrections, made while repositioning the page (below):
+ *
+ *   - The zone letters are gone. See the comment on the sheet.
+ *   - The decision card named "ABC Industries", which reads as a placeholder
+ *     somebody forgot rather than as an anonymised customer. It is "a machine
+ *     shop in Ohio" now — a description, not a name, because the invention rule
+ *     on this page forbids a customer name that was never supplied.
+ *   - "About 18 months of history" was a hedge on a page that is otherwise
+ *     exact, and the number was never approximate: `_default_since` in
+ *     `routers/connections.py` computes the first day of the month
+ *     `DEFAULT_HISTORY_MONTHS` back, and the connect form lets an owner move
+ *     it. The record list stays deliberately coarse — Prophet 21 declares no
+ *     `customer_payments` permission and Acumatica no `quotes`, so "customers,
+ *     items, invoices and bills, plus payments and orders where the system
+ *     exposes them" is the sentence that is true of every connector.
  *
  * The eyebrow is unchanged on purpose. `prerender.test.tsx` pins that string, so
  * moving it is a deliberate act rather than a copy edit, and the positioning
@@ -148,10 +163,13 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
   return (
     <div className="pie-landing">
       <div className="lp-sheet">
-        <div className="lp-zones" aria-hidden="true">
-          <span>A</span><span>B</span><span>C</span><span>D</span><span>E</span>
-        </div>
-
+        {/* The drawing frame used to carry zone letters along its top margin —
+            A B C D E, set above the sheet in the page's own top gutter. On a
+            works drawing they are a coordinate system; here there was nothing
+            to reference them from, so the row read as five stray capitals
+            floating over the nav. The frame keeps the motif; the letters are
+            gone. The section names on the dimension lines below are the real
+            navigation aid, and they read as words. */}
         <nav className="lp-nav">
           <div className="lp-wrap lp-nav-inner">
             <a className="lp-logo" href="#top" onClick={closeMenu}>PIE<span>.</span></a>
@@ -224,9 +242,10 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
               </div>
               <h3>This line is priced under your own floor</h3>
               <p className="lp-card-body">
-                <b>ABC Industries</b> asked for 200 units at ₹412 — below the
-                floor your margin policy sets for this item. It routes for a
-                manager's sign-off: the platform holds it, not the salesperson.
+                <b>A machine shop in Ohio</b> asked for 200 units at ₹412 —
+                below the floor your margin policy sets for this item. It routes
+                for a manager's sign-off: the platform holds it, not the
+                salesperson.
               </p>
               <div className="lp-facts">
                 <div className="lp-fact">
@@ -427,8 +446,11 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
                 <h3>Connect your books</h3>
                 <p>
                   Link Zoho Books — or NetSuite, Business Central, Acumatica,
-                  Prophet 21 or Sage — and PIE pulls <b>about 18 months of
-                  history</b>: customers, items, invoices, bills, payments.
+                  Prophet 21 or Sage — and the first pull reads{" "}
+                  <b>18 months</b>, from the first day of that month:
+                  customers, items, invoices and bills, plus payments and orders
+                  where the system exposes them. Set an earlier date before it
+                  runs and it reads from there instead.
                 </p>
               </div>
               <div className="lp-step">

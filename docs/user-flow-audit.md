@@ -13,10 +13,11 @@ expectation from `user-flows.md`; a deviation is a finding. The pie-parser CLI
 flows were run directly.
 
 **Result.** Over 100 behavioural checks across both repositories. **One genuine
-defect** (RFQ quantity misreading, contained by the send gate), plus three
-UI-feedback defects found by inspection. Every invariant the business depends
-on — cost containment, approval authority, the identity gate, the send gate —
-**holds under direct attack.**
+defect** (RFQ quantity misreading, contained by the send gate) — **since
+fixed, with regression tests** — plus three UI-feedback defects found by
+inspection and still open. Every invariant the business depends on — cost
+containment, approval authority, the identity gate, the send gate — **holds
+under direct attack.**
 
 ---
 
@@ -113,7 +114,12 @@ pie-portal's own suite: **3,479 passed, 0 failed.**
 
 ## 2. Findings
 
-### F1 · MODERATE · An RFQ line's part number can be misread as its quantity
+### F1 · MODERATE · An RFQ line's part number can be misread as its quantity — **FIXED**
+
+> Fixed in the commit that follows this audit; the reproductions below are kept
+> in the past tense because they are the reason the guards exist, and
+> `tests/test_rfq_splitting.py` now pins all of them. The fix is described at
+> the end of this finding.
 
 `backend/app/store.py` `_split_rfq`. Two related over-reads, both reproducible:
 
@@ -141,21 +147,39 @@ input that is ordinary Indian-market phrasing (`nos` is the common unit word),
 and it contradicts the module's own promise that a quantity is "flagged, never
 defaulted" — here one is *invented* from the product code.
 
-Fix, validated against both patterns:
+**The fix.** Two changes in `_QTY_PATTERNS`, each aimed at one of the causes:
 
-```python
-# leading "100 nos <code>" — a word boundary stops "nos" matching "no" + "s"
-rf"^(?P<qty>\d+)\s*{_UNIT_WORDS}\b[\s.:]*(?:of\s+)?(?P<code>.+)$"
+1. A `(?![A-Za-z])` guard after `_UNIT_WORDS` in the leading rule, so a unit
+   word can no longer match a *prefix* of the next token. `nos` must be `nos`,
+   not `no` with the `s` left behind as a product code.
+2. The trailing "`<code> 100 nos`" rule split in two: an explicit separator
+   (`,` `:` `-` `–` `—`) or a `qty` keyword keeps the bound lifted, while a
+   whitespace-only separator keeps `_BARE_QTY_DIGITS`. The unit word no longer
+   lifts the bound on its own, because it sits *after* the number and says
+   nothing about which digits were meant.
 
-# trailing "<code> 100 nos" — keep the 4-digit cap unless an explicit
-# , : - – — or qty marker introduces the number
-rf"^(?P<code>.*?)(?:[,:–—-]\s*(?P<qty>\d+)|\s+(?P<qty2>\d{1,4}))"
-rf"\s*{_UNIT_WORDS}\b\s*[.]?$"
-```
+After the fix these lines carry no quantity and travel `proposed` — status
+`CONFIRM READING`, a technical blocker a person clears one line at a time —
+which is the documented handling for a unit word that was stated and could not
+be attributed. Verified end to end through the live app:
 
-Checked: kills all three misreads above; still reads `100 nos 2001174`,
-`100 nos of CNMG 120408`, `50 pieces DNMG`, `CNMG 120408 - 100 nos`,
-`CNMG 120408 100 nos` and `2001174, 5000 nos` correctly.
+| Pasted | Before | After |
+|---|---|---|
+| `2001174 nos` | code `s`, qty 2,001,174 | code `2001174`, **CONFIRM READING** |
+| `CNMG 120408 nos` | code `CNMG`, qty 120,408 | code intact, **CONFIRM READING** |
+| `2001174 - 250000 nos` | qty 250,000 | qty 250,000 — unchanged |
+| `100 nos 2001174` | qty 100 | qty 100 — unchanged |
+
+`tests/test_rfq_splitting.py` gained three cases (11 assertions). All seven
+new parametrisations fail against the old patterns and pass against the new
+ones, so they are regression tests rather than descriptions.
+
+Deliberately **not** changed: the fallback still leaves the unit word in the
+code (`CNMG 120408 nos` keeps its `nos`). Stripping it there would make the
+line resolvable as well as flagged, but `_UNIT_WORDS` includes `ea` and
+`each`, so a description legitimately ending in one of those would be
+truncated — a wider change than this defect justifies, and the line is blocked
+either way.
 
 ### F2 · MINOR · A failed workspace switch tells the user nothing
 

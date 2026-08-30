@@ -33,18 +33,37 @@ from .config import Evidence
 #: weighted by how directly it moves one of those eight terms — which is why
 #: expansion potential and predictability carry more than auditability does.
 DEFAULT_WEIGHTS: dict[str, float] = {
-    "correlation_with_value": 1.5,
+    "correlation_with_value": 1.25,
     "ease_of_understanding": 1.0,
     "ease_of_measurement": 1.25,
     "auditability": 1.0,
     "predictability": 1.5,
-    "scalability": 1.25,
+    "scalability": 1.0,
     "expansion_potential": 1.5,
-    "gaming_resistance": 1.25,
+    # The heaviest weight in the table, and the criterion that was missing.
+    # "Why would anyone pay *because* they used PIE?" is a question asked at
+    # renewal, not at signature, and nothing here scored it. A metric that
+    # cannot answer it in year two is a metric that churns however well it sold.
+    "renewal_defensibility": 1.75,
     "low_sales_friction": 1.25,
     "customer_acceptance": 1.5,
-    "incentive_alignment": 1.0,
+    # Demoted from 1.0. Alignment that cannot be billed or defended is worth
+    # less than alignment that can: the two best-aligned metrics in this table
+    # are also the two least usable.
+    "incentive_alignment": 0.75,
+    # Both derived from the incentive register below rather than judged
+    # separately — see `MetricScore`. Expected exposure and tail exposure are
+    # scored apart because a metric with one SEVERE failure and four clean ones
+    # is not an average metric; the severe one is what happens.
+    "gaming_resistance": 1.25,
+    "worst_case_exposure": 1.0,
 }
+
+#: An exposure, as a score out of ten. The mapping is deliberately convex at the
+#: bad end: SEVERE is not "a bit worse than HIGH", it is a failure mode that
+#: ends the contract, and a linear scale would let four clean rows average it
+#: away.
+EXPOSURE_SCORE: dict["Exposure", int] = {}   # filled after Exposure is defined
 
 CRITERIA = tuple(DEFAULT_WEIGHTS)
 
@@ -59,9 +78,27 @@ class Exposure(str, Enum):
     SEVERE = "SEVERE"
 
 
+EXPOSURE_SCORE.update({
+    Exposure.NONE: 10, Exposure.LOW: 8, Exposure.MEDIUM: 6,
+    Exposure.HIGH: 3, Exposure.SEVERE: 1,
+})
+
+#: The five failure modes, as attribute names on ``GameTheory``.
+EXPOSURE_FIELDS = ("attribution", "bypass", "margin_opacity",
+                   "under_reporting", "classification")
+
+
 @dataclass(frozen=True)
 class MetricScore:
-    """One pricing metric, scored 1-10 on every criterion. 10 is always better."""
+    """One pricing metric, scored 1-10 on every criterion. 10 is always better.
+
+    Eleven criteria are judged here. Two more — ``gaming_resistance`` and
+    ``worst_case_exposure`` — are **computed from the incentive register**
+    rather than judged, which is the change that makes the game theory part of
+    the ranking instead of a commentary beside it. Before it, a metric could
+    carry a SEVERE attribution exposure in one structure and a hand-set 5/10 for
+    gaming in the other, and nothing reconciled them.
+    """
 
     key: str
     label: str
@@ -72,11 +109,35 @@ class MetricScore:
     predictability: int
     scalability: int
     expansion_potential: int
-    gaming_resistance: int
+    #: Can PIE justify this bill in year two, to a customer who grew for its own
+    #: reasons? The question this whole exercise turned on, and the one
+    #: criterion the first version of this table did not have. ``gaming_resistance``
+    #: used to sit here as a twelfth judged field; it is computed from the
+    #: incentive register now, which is why it is gone from the constructor.
+    renewal_defensibility: int
     low_sales_friction: int
     customer_acceptance: int
     incentive_alignment: int
     note: str = ""
+
+    @property
+    def _exposures(self) -> tuple[int, ...]:
+        gt = _GT_BY_KEY.get(self.key)
+        if gt is None:  # pragma: no cover - every metric has a register
+            return (5,)
+        return tuple(EXPOSURE_SCORE[getattr(gt, f)[0]] for f in EXPOSURE_FIELDS)
+
+    @property
+    def gaming_resistance(self) -> int:
+        """Expected exposure across the five named failure modes."""
+        scores = self._exposures
+        return round(sum(scores) / len(scores))
+
+    @property
+    def worst_case_exposure(self) -> int:
+        """The one that actually happens. Scored apart from the mean because a
+        single SEVERE exposure is not something four clean rows average away."""
+        return min(self._exposures)
 
     def weighted(self, weights: Optional[dict[str, float]] = None) -> float:
         w = weights or DEFAULT_WEIGHTS
@@ -87,6 +148,8 @@ class MetricScore:
 
     def as_dict(self, weights: Optional[dict[str, float]] = None) -> dict[str, Any]:
         d = asdict(self)
+        d["gaming_resistance"] = self.gaming_resistance
+        d["worst_case_exposure"] = self.worst_case_exposure
         d["weighted_score"] = round(self.weighted(weights), 3)
         return d
 
@@ -129,8 +192,7 @@ SCORES: tuple[MetricScore, ...] = (
     MetricScore(
         key="per_user", label="Per user (seat)",
         correlation_with_value=3, ease_of_understanding=10, ease_of_measurement=10,
-        auditability=9, predictability=9, scalability=4, expansion_potential=3,
-        gaming_resistance=4, low_sales_friction=8, customer_acceptance=8,
+        auditability=9, predictability=9, scalability=4, expansion_potential=3, renewal_defensibility=7, low_sales_friction=8, customer_acceptance=8,
         incentive_alignment=2,
         note="The only metric here that is negatively correlated with the "
              "product's purpose: PIE exists so a desk of six can quote what "
@@ -140,8 +202,7 @@ SCORES: tuple[MetricScore, ...] = (
     MetricScore(
         key="per_rfq", label="Per RFQ processed",
         correlation_with_value=5, ease_of_understanding=9, ease_of_measurement=9,
-        auditability=8, predictability=5, scalability=7, expansion_potential=7,
-        gaming_resistance=3, low_sales_friction=6, customer_acceptance=6,
+        auditability=8, predictability=5, scalability=7, expansion_potential=7, renewal_defensibility=6, low_sales_friction=6, customer_acceptance=6,
         incentive_alignment=3,
         note="Taxes the one behaviour the platform needs most. A customer "
              "minimising the bill routes only the enquiries it already expects "
@@ -150,8 +211,7 @@ SCORES: tuple[MetricScore, ...] = (
     MetricScore(
         key="per_quote", label="Per quote produced",
         correlation_with_value=6, ease_of_understanding=9, ease_of_measurement=9,
-        auditability=8, predictability=5, scalability=7, expansion_potential=7,
-        gaming_resistance=4, low_sales_friction=6, customer_acceptance=6,
+        auditability=8, predictability=5, scalability=7, expansion_potential=7, renewal_defensibility=6, low_sales_friction=6, customer_acceptance=6,
         incentive_alignment=4,
         note="One step further down the funnel than per-RFQ and better for it, "
              "but it still bills work rather than outcome: a quote that loses "
@@ -159,8 +219,7 @@ SCORES: tuple[MetricScore, ...] = (
     MetricScore(
         key="per_match", label="Per successful match",
         correlation_with_value=6, ease_of_understanding=6, ease_of_measurement=7,
-        auditability=5, predictability=5, scalability=7, expansion_potential=7,
-        gaming_resistance=4, low_sales_friction=5, customer_acceptance=5,
+        auditability=5, predictability=5, scalability=7, expansion_potential=7, renewal_defensibility=4, low_sales_friction=5, customer_acceptance=5,
         incentive_alignment=6,
         note="'Successful' is the whole problem. Every definitional edge — a "
              "match the customer did not use, an equivalent it rejected, a "
@@ -168,8 +227,7 @@ SCORES: tuple[MetricScore, ...] = (
     MetricScore(
         key="per_order", label="Per order",
         correlation_with_value=7, ease_of_understanding=8, ease_of_measurement=3,
-        auditability=3, predictability=6, scalability=8, expansion_potential=8,
-        gaming_resistance=3, low_sales_friction=6, customer_acceptance=7,
+        auditability=3, predictability=6, scalability=8, expansion_potential=8, renewal_defensibility=3, low_sales_friction=6, customer_acceptance=7,
         incentive_alignment=8,
         note="Charges only on success, which sells well, and then cannot be "
              "computed. **There is no quote-to-order conversion.** The estimate "
@@ -182,8 +240,7 @@ SCORES: tuple[MetricScore, ...] = (
     MetricScore(
         key="gmv_pct", label="% of invoiced revenue (turnover)",
         correlation_with_value=6, ease_of_understanding=9, ease_of_measurement=9,
-        auditability=9, predictability=7, scalability=9, expansion_potential=9,
-        gaming_resistance=6, low_sales_friction=5, customer_acceptance=5,
+        auditability=9, predictability=7, scalability=9, expansion_potential=9, renewal_defensibility=3, low_sales_friction=5, customer_acceptance=5,
         incentive_alignment=7,
         note="The best-measured metric in the table, on one reading of it. "
              "Billed on the *whole connected book* the base is a synced ERP "
@@ -196,8 +253,7 @@ SCORES: tuple[MetricScore, ...] = (
     MetricScore(
         key="gross_margin_pct", label="% of gross margin",
         correlation_with_value=8, ease_of_understanding=7, ease_of_measurement=7,
-        auditability=6, predictability=6, scalability=9, expansion_potential=9,
-        gaming_resistance=4, low_sales_friction=3, customer_acceptance=4,
+        auditability=6, predictability=6, scalability=9, expansion_potential=9, renewal_defensibility=3, low_sales_friction=3, customer_acceptance=4,
         incentive_alignment=9,
         note="Aligned and defensible in theory. In practice it asks a "
              "distributor to expose landed cost to a vendor and then argue "
@@ -208,8 +264,7 @@ SCORES: tuple[MetricScore, ...] = (
     MetricScore(
         key="incremental_margin_pct", label="% of incremental gross margin",
         correlation_with_value=10, ease_of_understanding=5, ease_of_measurement=3,
-        auditability=3, predictability=3, scalability=7, expansion_potential=8,
-        gaming_resistance=2, low_sales_friction=3, customer_acceptance=4,
+        auditability=3, predictability=3, scalability=7, expansion_potential=8, renewal_defensibility=1, low_sales_friction=3, customer_acceptance=4,
         incentive_alignment=10,
         note="Perfect correlation, unusable measurement. It requires a "
              "counterfactual — what the business would have earned without PIE "
@@ -221,8 +276,7 @@ SCORES: tuple[MetricScore, ...] = (
     MetricScore(
         key="savings_share", label="Savings share",
         correlation_with_value=8, ease_of_understanding=7, ease_of_measurement=5,
-        auditability=6, predictability=3, scalability=5, expansion_potential=5,
-        gaming_resistance=3, low_sales_friction=5, customer_acceptance=7,
+        auditability=6, predictability=3, scalability=5, expansion_potential=5, renewal_defensibility=3, low_sales_friction=5, customer_acceptance=7,
         incentive_alignment=9,
         note="Easy to sign and hard to collect — the standard gainshare trade. "
              "The base is genuinely small here: procurement savings plus margin "
@@ -231,8 +285,7 @@ SCORES: tuple[MetricScore, ...] = (
     MetricScore(
         key="flat_subscription", label="Value-derived subscription (banded)",
         correlation_with_value=6, ease_of_understanding=10, ease_of_measurement=10,
-        auditability=10, predictability=10, scalability=7, expansion_potential=6,
-        gaming_resistance=8, low_sales_friction=8, customer_acceptance=9,
+        auditability=10, predictability=10, scalability=7, expansion_potential=6, renewal_defensibility=9, low_sales_friction=8, customer_acceptance=9,
         incentive_alignment=5,
         note="Priced from value at signing, then fixed. Everything about "
              "running it is easy and its two weaknesses are structural: it "
@@ -241,8 +294,7 @@ SCORES: tuple[MetricScore, ...] = (
     MetricScore(
         key="hybrid_platform_gmv", label="Platform fee + % of invoiced revenue",
         correlation_with_value=8, ease_of_understanding=8, ease_of_measurement=9,
-        auditability=9, predictability=8, scalability=9, expansion_potential=9,
-        gaming_resistance=7, low_sales_friction=6, customer_acceptance=7,
+        auditability=9, predictability=8, scalability=9, expansion_potential=9, renewal_defensibility=5, low_sales_friction=6, customer_acceptance=7,
         incentive_alignment=8,
         note="The platform fee sets a revenue floor and pays the cost to serve; "
              "the GMV component tracks the customer's growth on a base neither "
@@ -254,8 +306,7 @@ SCORES: tuple[MetricScore, ...] = (
     MetricScore(
         key="hybrid_platform_margin", label="Platform fee + % gross margin",
         correlation_with_value=9, ease_of_understanding=7, ease_of_measurement=7,
-        auditability=7, predictability=8, scalability=9, expansion_potential=9,
-        gaming_resistance=6, low_sales_friction=5, customer_acceptance=6,
+        auditability=7, predictability=8, scalability=9, expansion_potential=9, renewal_defensibility=4, low_sales_friction=5, customer_acceptance=6,
         incentive_alignment=9,
         note="Better aligned than the GMV hybrid and harder to sell by exactly "
              "the same amount. The platform fee absorbs most of the "
@@ -263,8 +314,7 @@ SCORES: tuple[MetricScore, ...] = (
     MetricScore(
         key="hybrid_platform_performance", label="Low platform fee + performance fee",
         correlation_with_value=9, ease_of_understanding=6, ease_of_measurement=4,
-        auditability=4, predictability=6, scalability=8, expansion_potential=8,
-        gaming_resistance=4, low_sales_friction=6, customer_acceptance=8,
+        auditability=4, predictability=6, scalability=8, expansion_potential=8, renewal_defensibility=2, low_sales_friction=6, customer_acceptance=8,
         incentive_alignment=10,
         note="The easiest first contract to sign and the hardest second one. "
              "Year one it is a demonstration; year two the customer argues the "
@@ -272,8 +322,7 @@ SCORES: tuple[MetricScore, ...] = (
     MetricScore(
         key="hybrid_commitment_usage", label="Minimum commitment + usage",
         correlation_with_value=6, ease_of_understanding=8, ease_of_measurement=9,
-        auditability=8, predictability=9, scalability=8, expansion_potential=8,
-        gaming_resistance=5, low_sales_friction=6, customer_acceptance=7,
+        auditability=8, predictability=9, scalability=8, expansion_potential=8, renewal_defensibility=6, low_sales_friction=6, customer_acceptance=7,
         incentive_alignment=5,
         note="Predictable for PIE and safe for the customer, but the usage half "
              "carries the per-RFQ incentive defect in a smaller dose: above the "
@@ -281,8 +330,7 @@ SCORES: tuple[MetricScore, ...] = (
     MetricScore(
         key="enterprise_license", label="Enterprise licence, unlimited usage",
         correlation_with_value=5, ease_of_understanding=9, ease_of_measurement=10,
-        auditability=10, predictability=10, scalability=5, expansion_potential=4,
-        gaming_resistance=9, low_sales_friction=4, customer_acceptance=6,
+        auditability=10, predictability=10, scalability=5, expansion_potential=4, renewal_defensibility=8, low_sales_friction=4, customer_acceptance=6,
         incentive_alignment=4,
         note="What a ₹1,000 Cr distributor's procurement function will "
              "eventually demand, and what PIE should resist until the account "

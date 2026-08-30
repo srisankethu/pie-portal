@@ -2033,20 +2033,50 @@ export interface MonetizationRecommendation {
     note: string;
   };
   recommended_annual_fee: string;
+  /** The recommendation: a flat annual fee, banded by turnover. `variable_rate`
+   *  is 0 by construction — the customer's turnover exists whether or not they
+   *  use PIE, so a fee that moves with it claims credit the platform cannot
+   *  defend at renewal. */
   structure: {
+    kind: string;
+    metric: string;
+    turnover_band: string;
     platform_fee: string;
-    variable_metric: string;
-    /** Which base, and whether it can be computed for a real customer at all.
-     *  `INFERRED` means it needs a quote-to-order link the ERP does not create,
-     *  and the server refuses to build a recommendation on one. */
+    variable_rate: number;
+    variable_rate_pct: string;
+    scorecard_key: string;
+    weighted_score: number | null;
+    why: string;
+    expansion: {
+      long_run_uplift: number;
+      long_run_uplift_note: string;
+      years_between_re_ratings: number;
+      band_width_sensitivity: {
+        band_width: string;
+        years_between_re_ratings: number;
+        accounts_re_rating_per_year: number;
+      }[];
+      levers: { lever: string; automatic: boolean; mechanism: string;
+                yields: string }[];
+      note: string;
+    };
+  };
+  /** The metered structure, priced and scored rather than hidden. It collects
+   *  the same money; a buyer who wants a smaller committed cheque can have it,
+   *  and the score says what accepting that costs. */
+  alternative: {
+    kind: string;
+    metric: string;
+    platform_fee: string;
     variable_base: string;
     variable_base_measurability: string;
     variable_base_why: string;
-    equivalent_rate_on_touched_gmv_pct: string | null;
     variable_rate: number;
     variable_rate_pct: string;
     variable_cap: string;
-    why: string;
+    weighted_score: number | null;
+    evaluation: MonetizationEvaluation;
+    why_not_chosen: string;
   };
   evaluation: MonetizationEvaluation;
   pie_unit_economics: MonetizationUnitEconomics;

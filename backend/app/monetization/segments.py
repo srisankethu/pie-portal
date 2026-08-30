@@ -21,6 +21,7 @@ a connected organization has any.
 from __future__ import annotations
 
 from decimal import Decimal
+from typing import Optional
 
 from .customer import CustomerProfile, PieImpact
 
@@ -109,3 +110,43 @@ ANSWERS_TO: dict[str, str] = {
     "rev_100cr": "What should a ₹100 Cr-scale (revenue) distributor pay?",
     "rev_1000cr": "What should a ₹1,000 Cr-scale (revenue) distributor pay?",
 }
+
+
+#: Annual turnover bands, in rupees. The published price list's rows.
+#:
+#: **Width is the design decision, not the edges.** Band crossings are the only
+#: expansion a flat fee has, and `report.expansion_levers` puts numbers on the
+#: trade: at 12% customer growth, 2x bands re-rate an account every 6.1 years
+#: and 1.6x bands every 3.6. These are ~1.6x for that reason — and narrower
+#: bands are better on *both* sides of the table, which is unusual enough to say
+#: out loud. PIE gets smoother, earlier revenue; the customer gets a 60% step at
+#: renewal instead of a doubling, which is a far easier conversation.
+#:
+#: Ending open is deliberate: above the top band the deal is negotiated, and a
+#: list price on a conversation that will not have one is theatre.
+TURNOVER_BANDS: tuple[tuple[str, Decimal, Optional[Decimal]], ...] = (
+    ("Up to ₹25 Cr",       Decimal("0"),            Decimal("250000000")),
+    ("₹25 – 50 Cr",        Decimal("250000000"),    Decimal("500000000")),
+    ("₹50 – 90 Cr",        Decimal("500000000"),    Decimal("900000000")),
+    ("₹90 – 150 Cr",       Decimal("900000000"),    Decimal("1500000000")),
+    ("₹150 – 250 Cr",      Decimal("1500000000"),   Decimal("2500000000")),
+    ("₹250 – 400 Cr",      Decimal("2500000000"),   Decimal("4000000000")),
+    ("₹400 – 650 Cr",      Decimal("4000000000"),   Decimal("6500000000")),
+    ("₹650 – 1,000 Cr",    Decimal("6500000000"),   Decimal("10000000000")),
+    ("₹1,000 – 1,600 Cr",  Decimal("10000000000"),  Decimal("16000000000")),
+    ("Above ₹1,600 Cr",    Decimal("16000000000"),  None),
+)
+
+
+def profile_for_turnover(turnover: Decimal) -> CustomerProfile:
+    """The archetype nearest this turnover, scaled to hit it exactly.
+
+    Nearest rather than smallest: a ₹900 Cr distributor priced against the small
+    profile's conversion rates and headcount would be given the small profile's
+    economics at ten times the size, which is a worse error than not scaling at
+    all. The funnel shape comes from the closest band; only the order value
+    moves.
+    """
+    ordered = [ARCHETYPES[k] for k in ("small", "mid", "large")]
+    nearest = min(ordered, key=lambda p: abs(p.annual_revenue - turnover))
+    return nearest.with_annual_revenue(turnover)

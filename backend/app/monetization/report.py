@@ -30,7 +30,8 @@ from .config import (MonetizationParameters, PROVENANCE, load_parameters,
                      validation_list)
 from .customer import CustomerProfile, PieImpact, Waterfall, build_waterfall, money
 from .evaluate import evaluate, fee_for_roi
-from .segments import ANSWERS_TO, ARCHETYPES, IMPACTS
+from .segments import (ANSWERS_TO, ARCHETYPES, IMPACTS, TURNOVER_BANDS,
+                       profile_for_turnover)
 from .strategies import (EnterpriseLicensePricing, FeeBase, HybridPricing,
                          Measurability, base_amount, measurability,
                          IncrementalMarginPricing, MarginSharePricing,
@@ -302,42 +303,57 @@ def recommend(wf: Waterfall,
                 "and the ROI ceiling.")
 
     rounded = params.round_fee(chosen)
-    platform = params.round_fee(money(rounded * PLATFORM_SHARE))
-    remainder = money(rounded - platform)
 
-    # The whole connected book, not the PIE-touched subset, and this is the one
-    # structural decision in the recommendation that is forced rather than
-    # chosen. A quote is not converted into a sales order: the estimate is sent,
-    # the order arrives later as a customer PO and is entered independently, and
-    # nothing in the schema joins them — `QuoteDoc` carries a free-text
-    # `reference` and no order id. "Revenue that came from a PIE quote" is
-    # therefore not a number this platform can read, only one it could guess at
-    # by matching customer, product, quantity and date. Billing on a guess is
-    # a monthly argument with the party holding the evidence.
+    # ── the structure, and why it is the boring one ──────────────────────────
     #
-    # Billing the whole book costs nothing in revenue and removes the argument
-    # entirely: the rate simply falls by the covered share (roughly 0.24% of
-    # touched GMV becomes roughly 0.15% of the book for the same money), and the
-    # base becomes two independent records of one number — the ERP's and the
-    # customer's own tax filing.
-    base = FeeBase.CONNECTED_BOOK_REVENUE
-    grade, why = measurability(base)
-    gmv_base = base_amount(wf, base)
-    gmv_rate = float(remainder / gmv_base) if gmv_base > 0 else 0.0
-
-    structure = HybridPricing(
-        platform_fee=platform,
-        maximum_fee=money(platform * (Decimal("1") + VARIABLE_CAP_MULTIPLE)),
-        component=TransactionPricing(rate=gmv_rate, base=base))
-    # A recommendation may only be built on a base that exists without anybody
-    # agreeing to it. Asserted rather than assumed: this is the property the
-    # whole structure turns on, and a later edit that swapped the base back
-    # would otherwise produce a plausible number nobody could invoice.
-    if grade is not Measurability.SYNCED:  # pragma: no cover - guard
-        raise ValueError(f"recommended structure needs a SYNCED base, got {grade}")
-    ev = evaluate(wf, structure.quote(wf, params), params)
+    # A flat annual fee, banded by the customer's turnover and re-rated at
+    # renewal. Not a platform fee plus a rate on their book, which is what this
+    # model recommended until the scorecard was made to answer the question a
+    # customer actually asks: *why would I pay more because my own business
+    # grew?*
+    #
+    # Nothing about the money changed. What changed is the claim. A rate on
+    # turnover asserts a share of the customer's trade — and their trade exists
+    # whether or not they use PIE, so a bill that rises with it is contested at
+    # exactly the moment they are deciding whether to renew. A band asserts
+    # something narrower and defensible: a business this size gets this much use
+    # out of the platform, so this is what the platform costs. The customer
+    # keeps everything it helps them earn.
+    #
+    # Once `gaming_resistance` was computed from the incentive register rather
+    # than judged beside it, and `renewal_defensibility` was scored at all, the
+    # banded subscription beat the hybrid 8.33 to 7.72 — a gap four times what
+    # it was before, on criteria that are about keeping the customer rather than
+    # about signing them.
+    band_label = next(
+        (label for label, low, high in TURNOVER_BANDS
+         if wf.with_pie.revenue >= low
+         and (high is None or wf.with_pie.revenue < high)),
+        TURNOVER_BANDS[-1][0])
+    primary = SubscriptionPricing(annual_fee=rounded)
+    ev = evaluate(wf, primary.quote(wf, params), params)
     econ = unit_economics(wf.profile, ev.fee.annual_fee, params,
                           orders=wf.covered_with_pie.orders)
+
+    card = scorecard.score("flat_subscription")
+    alt_card = scorecard.score("hybrid_platform_gmv")
+
+    # The alternative, priced and scored rather than dismissed. It collects the
+    # same money; a customer who prefers a smaller cheque and a meter can have
+    # one, and PIE should know exactly what that costs it.
+    platform = params.round_fee(money(rounded * PLATFORM_SHARE))
+    remainder = money(rounded - platform)
+    alt_base = FeeBase.CONNECTED_BOOK_REVENUE
+    alt_grade, alt_why = measurability(alt_base)
+    alt_amount = base_amount(wf, alt_base)
+    alt_rate = float(remainder / alt_amount) if alt_amount > 0 else 0.0
+    alternative = HybridPricing(
+        platform_fee=platform,
+        maximum_fee=money(platform * (Decimal("1") + VARIABLE_CAP_MULTIPLE)),
+        component=TransactionPricing(rate=alt_rate, base=alt_base))
+    alt_ev = evaluate(wf, alternative.quote(wf, params), params)
+    if alt_grade is not Measurability.SYNCED:  # pragma: no cover - guard
+        raise ValueError(f"alternative needs a SYNCED base, got {alt_grade}")
 
     # A design-partner price for the first customers. Discounted deliberately
     # and against a stated exchange — reference, data, a case study — with the
@@ -357,25 +373,44 @@ def recommend(wf: Waterfall,
         },
         "recommended_annual_fee": str(rounded),
         "structure": {
+            "kind": "FLAT_BANDED_SUBSCRIPTION",
+            "metric": "Flat annual fee, banded by turnover",
+            "turnover_band": band_label,
+            "platform_fee": str(rounded),
+            "variable_rate": 0.0,
+            "variable_rate_pct": "0.000%",
+            "scorecard_key": "flat_subscription",
+            "weighted_score": (None if card is None else round(card.weighted(), 3)),
+            "why": ("A flat fee, banded by size, re-rated at renewal. The "
+                    "customer's turnover exists whether or not they use PIE, so "
+                    "billing a share of it claims credit the platform cannot "
+                    "defend in year two. A band claims only that a business "
+                    "this size gets this much use out of the product — and the "
+                    "customer keeps everything it helps them earn."),
+            "expansion": expansion_levers(params),
+        },
+        "alternative": {
+            "kind": "PLATFORM_FEE_PLUS_REVENUE_RATE",
+            "metric": "Platform fee + % of connected-book invoiced revenue",
             "platform_fee": str(platform),
-            "variable_metric": "% of connected-book invoiced revenue",
-            "variable_base": base.value,
-            "variable_base_measurability": grade.value,
-            "variable_base_why": why,
-            "variable_rate": round(gmv_rate, 6),
-            "variable_rate_pct": f"{gmv_rate * 100:.3f}%",
+            "variable_base": alt_base.value,
+            "variable_base_measurability": alt_grade.value,
+            "variable_base_why": alt_why,
+            "variable_rate": round(alt_rate, 6),
+            "variable_rate_pct": f"{alt_rate * 100:.3f}%",
             "variable_cap": str(money(platform * VARIABLE_CAP_MULTIPLE)),
-            "equivalent_rate_on_touched_gmv_pct": (
-                f"{float(remainder / wf.pie_touched_revenue) * 100:.3f}%"
-                if wf.pie_touched_revenue > 0 else None),
-            "why": ("The platform fee covers the cost to serve and makes the "
-                    "revenue forecastable; the GMV rate grows the account "
-                    "without asking the customer to disclose cost, which is the "
-                    "single largest source of resistance in the scorecard. It "
-                    "is billed on the whole connected book because the "
-                    "PIE-touched subset is not measurable — no quote-to-order "
-                    "link exists — and billing the book costs nothing but a "
-                    "lower headline rate for the same money."),
+            "scorecard_key": "hybrid_platform_gmv",
+            "weighted_score": (None if alt_card is None
+                               else round(alt_card.weighted(), 3)),
+            "evaluation": alt_ev.as_dict(),
+            "why_not_chosen": ("Collects the same money and scores lower on "
+                               "every criterion about keeping the customer: it "
+                               "is harder to defend at renewal (5 vs 9), and "
+                               "its variable half rises when the customer grows "
+                               "for reasons that have nothing to do with PIE. "
+                               "Offer it to a buyer who wants a smaller "
+                               "committed cheque and will accept a meter for "
+                               "it."),
         },
         "evaluation": ev.as_dict(),
         "pie_unit_economics": econ.as_dict(),
@@ -394,6 +429,154 @@ def recommend(wf: Waterfall,
             ],
             "evaluation": dp_eval.as_dict(),
         },
+    }
+
+
+# ── the price list ──────────────────────────────────────────────────────────
+def band_table(params: Optional[MonetizationParameters] = None,
+               impact_key: str = "base") -> dict[str, Any]:
+    """The published price list: one annual fee per turnover band.
+
+    A *flat* fee whose level is set by the customer's size, re-rated at renewal
+    against this table — not a rate that moves with their book. The distinction
+    is the whole argument, and it is not about the money: at these bands the two
+    collect roughly the same amount. It is about what PIE is claiming.
+
+    A rate on turnover asserts a share of the customer's trade. The customer's
+    reasonable objection is that their turnover exists whether or not they use
+    the platform, so a bill that rises 20% because *they* grew 20% is a bill
+    they will contest at exactly the moment they are deciding whether to renew.
+    A band says something narrower and defensible: **a business this size gets
+    this much use out of the platform, so this is what the platform costs.** The
+    customer keeps everything the platform helps them earn, which is the honest
+    division — PIE is paid for the capability, not for a share of the outcome.
+
+    Each row is computed, not chosen: the band's midpoint turnover, the nearest
+    archetype scaled onto it, and the same three constraints ``recommend`` uses.
+    """
+    params = params or load_parameters()
+    impact = IMPACTS.get(impact_key, IMPACTS["base"])
+    rows: list[dict[str, Any]] = []
+
+    for label, low, high in TURNOVER_BANDS:
+        # The midpoint, or 1.5x the floor for the open-ended top band — there is
+        # no midpoint of an unbounded range, and inventing one would put a list
+        # price on a negotiation.
+        midpoint = money((low + high) / 2) if high is not None \
+            else money(low * Decimal("1.5"))
+        profile = profile_for_turnover(midpoint)
+        wf = build_waterfall(profile, impact, params)
+        cost_floor = floor_price(profile, params)
+        ceiling = fee_for_roi(wf.total_economic_value, params.min_customer_roi)
+        target = money(wf.total_economic_value
+                       * Decimal(str(params.value_capture_target)))
+        empty = ceiling is None or ceiling < cost_floor
+        fee = params.round_fee(cost_floor if empty
+                               else max(cost_floor, min(target, ceiling)))
+        ev = evaluate(wf, SubscriptionPricing(annual_fee=fee).quote(wf, params),
+                      params)
+        rows.append({
+            "band": label,
+            "turnover_from": str(low),
+            "turnover_to": None if high is None else str(high),
+            "priced_at_turnover": str(midpoint),
+            "annual_fee": str(fee),
+            "negotiated": high is None,
+            "band_is_empty": empty,
+            "pct_of_turnover": ev.fee_pct_of_gmv,
+            "pct_of_gross_profit": ev.fee_pct_of_gross_profit,
+            "customer_roi": ev.customer_roi,
+            "refusal": ev.refusal,
+        })
+
+    return {
+        "impact_set": impact_key,
+        "rows": rows,
+        "metric": "Annual turnover of the connected book, pre-tax",
+        "why": ("A flat fee, banded by size and re-rated at renewal. The "
+                "customer's turnover exists whether or not they use PIE, so a "
+                "fee that moves with it is a claim on their trade rather than a "
+                "price for the platform. A band claims only that a business of "
+                "this size gets this much use out of it."),
+    }
+
+
+def expansion_levers(params: Optional[MonetizationParameters] = None,
+                     *, growth: float = 0.12,
+                     band_width: float = 2.0) -> dict[str, Any]:
+    """How a flat fee grows without a meter — and what banding really yields.
+
+    The first version of this computed an "annual uplift from banding" and got
+    12% at 12% growth, which is arithmetically inevitable and says nothing:
+    bands are proportional to size, so over a long enough run a banded fee
+    tracks the customer's growth exactly. That is the good news and it is not
+    the whole picture.
+
+    **What banding cannot do is deliver that growth smoothly or early.** A 2x
+    band crossed at 12% growth is one step every six years: five renewals at
+    exactly last year's price, then a doubling. For one account that is lumpy;
+    across a portfolio it means roughly one account in six re-rates in any given
+    year, and the other five contribute a net revenue retention of 1.00.
+
+    So the lever is not whether to band — it is **how wide the bands are**.
+    Halving the width halves the wait. That is a real design choice with a real
+    cost, and it is the honest answer to "how does a flat fee grow".
+    """
+    params = params or load_parameters()
+    import math
+
+    def years_to_cross(width: float) -> float:
+        return math.log(width) / math.log(1 + growth)
+
+    steps = years_to_cross(band_width)
+    return {
+        "assumed_customer_growth": growth,
+        "band_width": band_width,
+        "long_run_uplift": round(growth, 4),
+        "long_run_uplift_note": (
+            "Equal to the customer's own growth, and necessarily so: bands are "
+            "proportional to size, so a banded fee tracks turnover exactly over "
+            "a long enough run. The number is not evidence of anything — it is "
+            "the definition."),
+        "years_between_re_ratings": round(steps, 1),
+        "share_of_accounts_re_rating_per_year": round(1 / steps, 3),
+        "band_width_sensitivity": [
+            {"band_width": f"{w:g}x",
+             "years_between_re_ratings": round(years_to_cross(w), 1),
+             "accounts_re_rating_per_year": round(1 / years_to_cross(w), 3)}
+            for w in (1.5, 2.0, 3.0)],
+        "levers": [
+            {"lever": "Band re-rating at renewal",
+             "automatic": True,
+             "mechanism": "The customer grows into the next turnover band. "
+                          "Verifiable from the connected book, so there is "
+                          "nothing to negotiate and nothing to meter.",
+             "yields": f"Tracks growth in the long run, in steps of "
+                       f"{band_width:g}x every {steps:.1f} years. Most "
+                       f"renewals are at last year's price."},
+            {"lever": "Additional connected companies",
+             "automatic": False,
+             "mechanism": "A group running several legal entities connects them "
+                          "one at a time. Already a plan feature — multi_company "
+                          "sits on the PLATFORM tier — so the ladder exists.",
+             "yields": "Step-shaped and large when it happens; nothing in "
+                       "between."},
+            {"lever": "Tier upgrade",
+             "automatic": False,
+             "mechanism": "FREE -> INTELLIGENCE -> PLATFORM, the ladder "
+                          "entitlements.py already enforces. The decision layer "
+                          "is what the subscription is for; multi-company is "
+                          "what the tier above it adds.",
+             "yields": "The largest single step, and the one PIE controls "
+                       "through what it ships rather than through what the "
+                       "customer does."},
+        ],
+        "note": ("A flat fee does keep pace with the customer — eventually. "
+                 "What it gives up against a meter is *timing*: five renewals "
+                 "at a flat price and then a step, rather than a bill that "
+                 "moves every month. That is the price of a fee nobody argues "
+                 "with at renewal, and narrowing the bands is how to pay less "
+                 "of it."),
     }
 
 
@@ -507,6 +690,8 @@ def full_report(params: Optional[MonetizationParameters] = None,
         "elasticity": elasticity.scenarios(prospects=200, params=params),
         "experiments": {"designs": experiments.all_experiments(),
                         "feasibility": experiments.feasibility_note()},
+        "band_table": band_table(params, impact_key),
+        "expansion_levers": expansion_levers(params),
         "strategic_test": strategic_test(acv, params),
         "evidence": {
             "needs_validation": validation_list(params),

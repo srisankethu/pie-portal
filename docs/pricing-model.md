@@ -58,37 +58,92 @@ are the reasons a number like this survives a meeting:
 
 ---
 
-## 2. What PIE should actually charge
+## 2. What PIE should actually charge: a flat fee, banded by turnover
 
-| Segment | Economic value created | Cost floor | **Recommended** | Structure | Customer ROI |
-|---|---:|---:|---:|---|---:|
-| Small (₹5 Cr GP) | ₹0.74 Cr | ₹11.0 L | **₹11 L/yr** | ₹7.5 L + 0.156% of turnover | 5.7× |
-| Mid (₹35 Cr GP) | ₹5.38 Cr | ₹19.0 L | **₹80.5 L/yr** | ₹53 L + 0.161% | 5.7× |
-| Large (₹250 Cr GP) | ₹36.93 Cr | ₹58.5 L | **₹5.54 Cr/yr** | ₹3.66 Cr + 0.142% | 5.7× |
-| ₹100 Cr revenue | ₹3.53 Cr | ₹15.5 L | **₹53 L/yr** | ₹35 L + 0.160% | 5.7× |
-| ₹1,000 Cr revenue | ₹31.08 Cr | ₹51.0 L | **₹4.66 Cr/yr** | ₹3.08 Cr + 0.142% | 5.7× |
+**A flat annual fee. No variable component. Nothing that moves with the
+customer's book.**
 
-Under the **conservative** impact set those become ₹11 L (refused — see below),
-₹33.5 L, ₹2.30 Cr, ₹22 L and ₹1.94 Cr. Under **aggressive**: ₹22.5 L, ₹1.65 Cr,
-₹11.33 Cr, ₹1.09 Cr and ₹9.54 Cr. **The spread is 4–5×, and it is entirely
-driven by how much PIE actually moves the funnel — which nobody has measured.**
-That, not the choice of metric, is the largest uncertainty in this document.
+This reverses what an earlier draft of this document recommended, and the
+reversal came from one question that the scorecard was not asking: *why would
+anyone pay more because their own business grew?* A distributor's turnover
+exists whether or not they use PIE. A fee that rises 20% because the market rose
+20% is a fee they will contest at exactly the moment they are deciding whether
+to renew — and PIE cannot win that argument, because it cannot show it caused
+the growth. That is the same objection that disqualified incremental-margin
+pricing in §3, and it applies to a revenue rate too. Measurability is not
+justification, and the earlier draft conflated them.
 
-The price is built by three constraints intersecting, in order:
+A band claims something narrower and defensible: **a business this size gets
+this much use out of the platform, so this is what the platform costs.** The
+customer keeps everything it helps them earn. That division is the honest one —
+PIE is paid for the capability, not for a share of the outcome.
 
-1. **A floor from cost.** A fee that does not clear the cost to serve at 75%
-   gross margin is a subsidy, not a price. No ROI argument makes it one.
-2. **A ceiling from ROI.** The largest fee leaving the customer 5× net return.
-3. **A target at 15% of value created**, clamped into that band.
+### The price list
 
-### The small segment is a refusal under conservative assumptions
+Every row computed from the model at the band's midpoint, not chosen:
 
-At ₹11 L the small distributor's cost floor is *above* its ROI ceiling: serving
-it profitably and leaving it a 5× return are incompatible. The model reports an
-**EMPTY BAND** rather than picking one, and the honest reading is that the
-bottom of the market should not be sold to directly at all until onboarding and
-support cost materially less. That is the single most actionable finding here
-and it is not a pricing decision — it is a cost decision.
+| Turnover band | Priced at | Annual fee | % of turnover | % of gross profit | Customer ROI |
+|---|---:|---:|---:|---:|---:|
+| Up to ₹25 Cr | ₹12 Cr | ₹11.0 L | 0.784% | 3.09% | **3.2×** ⚠ |
+| ₹25 – 50 Cr | ₹38 Cr | ₹21.0 L | 0.499% | 1.97% | 5.6× |
+| ₹50 – 90 Cr | ₹70 Cr | ₹39.0 L | 0.496% | 1.96% | 5.7× |
+| ₹90 – 150 Cr | ₹120 Cr | ₹63.5 L | 0.470% | 2.01% | 5.7× |
+| ₹150 – 250 Cr | ₹200 Cr | ₹1.06 Cr | 0.471% | 2.01% | 5.7× |
+| ₹250 – 400 Cr | ₹325 Cr | ₹1.73 Cr | 0.472% | 2.02% | 5.7× |
+| ₹400 – 650 Cr | ₹525 Cr | ₹2.79 Cr | 0.471% | 2.02% | 5.7× |
+| ₹650 – 1,000 Cr | ₹825 Cr | ₹3.85 Cr | 0.417% | 1.95% | 5.7× |
+| ₹1,000 – 1,600 Cr | ₹1,300 Cr | ₹6.05 Cr | 0.416% | 1.95% | 5.7× |
+| Above ₹1,600 Cr | — | negotiated | — | — | — |
+
+**~2% of gross profit across the whole table**, and the bottom band still
+refuses itself — its cost floor sits above its ROI ceiling, exactly as §2b's
+predecessor found. That segment should be reached through a partner or
+self-serve, or not yet.
+
+### Band width is the design decision, not the edges
+
+Band crossings are the only automatic expansion a flat fee has, so how wide they
+are is the real lever. At 12% customer growth:
+
+| Band width | Re-rating interval | Accounts re-rating per year |
+|---|---:|---:|
+| 1.6× (chosen) | 3.6 years | 28% |
+| 2× | 6.1 years | 16% |
+| 3× | 9.7 years | 10% |
+
+Narrower bands are better on **both** sides of the table, which is unusual
+enough to say out loud: PIE gets smoother and earlier revenue, and the customer
+faces a 60% step at renewal instead of a doubling — a far easier conversation.
+Hence ~1.6×.
+
+### How a flat fee grows — honestly
+
+Over a long enough run a banded fee tracks the customer's growth *exactly*,
+because bands are proportional to size. An earlier version of this analysis
+computed that as an "annual uplift from banding" and reported 12% at 12% growth;
+the number is arithmetically inevitable and evidence of nothing. It is the
+definition, not a finding.
+
+What banding gives up against a meter is **timing**: three renewals at last
+year's price, then a step. Three levers, all already in the product, and only
+the first is automatic:
+
+1. **Band re-rating at renewal** — verifiable from the connected book, nothing
+   to negotiate and nothing to meter.
+2. **Additional connected companies** — `multi_company` is already a PLATFORM-tier
+   feature, so the ladder exists. Step-shaped and large.
+3. **Tier upgrade** — FREE → INTELLIGENCE → PLATFORM, the ladder
+   `entitlements.py` already enforces. The largest step, and the one PIE
+   controls through what it ships rather than through what the customer does.
+
+That is the price of a fee nobody argues with at renewal.
+
+### The alternative, priced rather than hidden
+
+A buyer who wants a smaller committed cheque can have a platform fee plus a rate
+on connected-book revenue — ₹53 L + 0.161% for the mid-market customer, which
+collects the same money. It scores **7.72 against 8.33**. Offer it; know what it
+costs.
 
 ---
 
@@ -187,51 +242,65 @@ validation rather than as something the platform can measure its way to.
 
 ---
 
-## 3. The pricing-metric scorecard
+## 3. The scorecard, with game theory inside it
 
-Weighted from the objective function in the brief (maximise enterprise value ×
-adoption × customer ROI × predictability; minimise friction × measurement
-difficulty × gaming × churn). Every score is a **judgement**, graded `ASSUMED` —
-no closed-won cohort, renewal or billing dispute exists to calibrate against.
-The weights are exposed so disagreement can be structural rather than rhetorical.
+Fifteen metrics, thirteen criteria. Two changes since the first version, and
+together they moved the recommendation:
 
-| # | Metric | Score |
-|---:|---|---:|
-| 1 | Value-derived subscription (banded) | 8.05 |
-| 2 | **Platform fee + % of invoiced revenue** | 7.98 |
-| 3 | Platform fee + % gross margin | 7.48 |
-| 4 | % of invoiced revenue (turnover) | 7.27 |
-| 5 | Minimum commitment + usage | 7.21 |
-| 6 | Enterprise licence, unlimited | 6.82 |
-| 7 | Low platform fee + performance fee | 6.71 |
-| 8 | % of gross margin | 6.52 |
-| 9 | Per quote | 6.39 |
-| 10 | Per user (seat) | 6.29 |
-| 11 | Per order | 6.14 |
-| 12 | Per RFQ | 6.12 |
-| 13 | Per successful match | 5.73 |
-| 14 | Savings share | 5.64 |
-| 15 | **% of incremental gross margin** | 5.30 |
+**The incentive register now scores.** `gaming_resistance` used to be a hand-set
+judgement sitting *beside* the five named failure modes — so a metric could
+carry a SEVERE attribution exposure in one structure and a comfortable 5/10 for
+gaming in the other, with nothing reconciling them. It is now computed from
+those five exposures, and a second derived criterion, `worst_case_exposure`,
+scores the *tail* separately: a metric with one SEVERE failure and four clean
+ones is not an average metric, and four clean rows must not average away the one
+that ends the contract.
 
-The two ends are the interesting part.
+**`renewal_defensibility` was added** — can PIE justify this bill in year two, to
+a customer who grew for its own reasons? Weighted heaviest in the table, because
+it is the question that decides retention, and nothing was scoring it.
 
-**% of incremental gross margin ranks last while scoring 10/10 on correlation
-with value.** It is the most *correct* metric and the least *usable* one:
-billing it requires a counterfactual that nobody can observe and that the paying
-party has every interest in disputing. In a year when tooling demand rises 12%,
-"that growth was the market" is not even a bad argument. Its place is as the
-**renewal argument** — which is exactly what `attribution/` already builds — not
-as the invoice.
+| # | Metric | Score | Gaming | Worst | Renewal |
+|---:|---|---:|---:|---:|---:|
+| 1 | **Value-derived subscription (banded)** | **8.33** | 9 | 8 | 9 |
+| 2 | Platform fee + % of invoiced revenue | 7.72 | 8 | 8 | 5 |
+| 3 | Enterprise licence, unlimited | 7.33 | 10 | 10 | 8 |
+| 4 | Minimum commitment + usage | 7.28 | 8 | 6 | 6 |
+| 5 | % of invoiced revenue (turnover) | 6.88 | 8 | 6 | 3 |
+| 6 | Platform fee + % gross margin | 6.83 | 7 | 3 | 4 |
+| 7 | Per user (seat) | 6.81 | 8 | 6 | 7 |
+| 8 | Per quote produced | 6.41 | 7 | 3 | 6 |
+| 9 | Per RFQ processed | 6.16 | 7 | 1 | 6 |
+| 10 | Low platform fee + performance fee | 5.86 | 4 | 3 | 2 |
+| 11 | % of gross margin | 5.69 | 4 | 1 | 3 |
+| 12 | Per order | 5.56 | 5 | 1 | 3 |
+| 13 | Per successful match | 5.22 | 4 | 1 | 4 |
+| 14 | Savings share | 5.11 | 3 | 3 | 3 |
+| 15 | % of incremental gross margin | 4.31 | 1 | 1 | 1 |
 
-**Per-RFQ ranks 12th and would be actively harmful.** It taxes the one behaviour
-the platform most needs. A customer minimising the bill routes only the enquiries
-it already expects to win, which is precisely the set PIE adds least to, and the
-coverage that produces the value never happens. The cheapest bypass in the whole
-table is "don't paste the email in".
+The gap between first and second was 0.07 before these two changes and is
+**0.61** after — and every point of it is on criteria about *keeping* the
+customer rather than signing them. That is the whole reversal, and it did not
+come from an opinion about flat fees; it came from asking the scorecard a
+question it had not been asked.
 
-**Per-seat is the only metric negatively correlated with the product's purpose.**
-PIE exists so a desk of six quotes what twelve used to; a seat meter bills the
-customer for not having adopted it.
+Three metrics are worth reading closely.
+
+**% of incremental gross margin** still ranks last, now at 4.31. It scores 10/10
+on correlation with value and 1/10 on gaming, worst-case exposure and renewal
+defensibility alike. The most *correct* metric in the table is the least usable
+one, and the distance is not close.
+
+**Per RFQ** would actively suppress the behaviour the platform needs. A customer
+minimising the bill routes only the enquiries it already expects to win —
+precisely the set PIE adds least to. Its worst-case exposure is 1: the cheapest
+bypass in the table is *"don't paste the email in"*.
+
+**Per user** climbed to 7th, and it is worth being clear why: it is easy,
+predictable and hard to game, and it is still the only metric in the table
+*negatively correlated with the product's purpose*. PIE exists so a desk of six
+can quote what twelve used to. A seat meter bills the customer for not having
+adopted it, and no amount of scoring elsewhere fixes that.
 
 ---
 
@@ -384,12 +453,14 @@ is informative at n = 1 to 10:
 
 ## 9. The hard answers
 
-**1. What should PIE charge?** A platform fee plus a rate on whole connected-book GMV,
-sized at 15% of measured economic value, floored at cost to serve and capped so
-the customer keeps a 5× return. In money: **₹11 L / ₹80 L / ₹5.5 Cr** a year for
-small / mid / large.
+**1. What should PIE charge?** **A flat annual fee, banded by turnover** — the
+price list in §2 — sized at 15% of measured economic value, floored at cost to
+serve and capped so the customer keeps a 5× return. About **2% of their gross
+profit** at every size. No variable component.
 
-**2. What should the metric be?** **Hybrid: annual platform fee + % of the connected book's invoiced revenue** — turnover, not "GMV": PIE is not a marketplace and nothing flows through it.
+**2. What should the metric be?** **Customer size, read once a year** — turnover
+band at renewal. Not a rate on anything. The metric sets the *level* of a flat
+fee; it is not a meter.
 Not margin (opacity), not incremental margin (unbillable), not RFQ (taxes
 adoption), not seats (anti-correlated with the product). Whole-book invoiced revenue is the only base
 that is auditable on both sides, requires no cost disclosure, needs no

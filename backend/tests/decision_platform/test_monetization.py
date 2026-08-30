@@ -636,24 +636,46 @@ def test_ebitda_before_growth_separates_the_two_reasons_for_a_loss():
 
 
 # ── measurability: what can actually be invoiced ────────────────────────────
-def test_the_recommended_structure_bills_a_base_that_exists():
-    """The whole connected book, never a PIE-touched subset of it.
+def test_the_recommendation_has_no_variable_component_at_all():
+    """A flat fee, banded by size. Nothing moves with the customer's book.
 
-    A quote is not converted into a sales order — the estimate is sent, the
-    order is entered separately from a customer PO, and nothing joins them — so
-    "revenue that followed a PIE quote" is a number this platform can model and
-    cannot read. Billing it would mean invoicing against the vendor's own
-    inference about the buyer's book.
+    The invariant behind the whole structure: the customer's turnover exists
+    whether or not they use PIE, so a fee that rises with it claims credit the
+    platform cannot defend at renewal. The band claims only that a business this
+    size gets this much use out of the product.
+    """
+    for key, profile in ARCHETYPES.items():
+        wf = build_waterfall(profile, IMPACTS["base"], PARAMS)
+        rec = monetization_report.recommend(wf, PARAMS)
+        structure = rec["structure"]
+        assert structure["kind"] == "FLAT_BANDED_SUBSCRIPTION", key
+        assert structure["variable_rate"] == 0.0, key
+        assert structure["turnover_band"], key
+        # The whole fee is the platform fee. No second component to reconcile.
+        assert structure["platform_fee"] == rec["recommended_annual_fee"], key
+        assert rec["evaluation"]["fee"]["variable_component"] == "0.00", key
+
+
+def test_the_alternative_is_priced_and_scored_rather_than_dismissed():
+    """The metered structure collects the same money and is offered, not hidden.
+
+    A buyer who wants a smaller committed cheque can have one, and PIE should be
+    able to see exactly what accepting that costs it on the scorecard.
     """
     from app.monetization.strategies import Measurability, measurability
 
     for key, profile in ARCHETYPES.items():
         wf = build_waterfall(profile, IMPACTS["base"], PARAMS)
-        structure = monetization_report.recommend(wf, PARAMS)["structure"]
-        assert structure["variable_base"] == FeeBase.CONNECTED_BOOK_REVENUE.value, key
-        assert structure["variable_base_measurability"] == \
-            Measurability.SYNCED.value, key
+        rec = monetization_report.recommend(wf, PARAMS)
+        alt = rec["alternative"]
+        assert alt["variable_base"] == FeeBase.CONNECTED_BOOK_REVENUE.value, key
+        assert alt["variable_base_measurability"] == Measurability.SYNCED.value
         assert measurability(FeeBase.CONNECTED_BOOK_REVENUE)[0] is Measurability.SYNCED
+        # Same money, different shape — that is what makes it a real choice.
+        assert (Decimal(alt["evaluation"]["fee"]["annual_fee"])
+                == Decimal(rec["recommended_annual_fee"])), key
+        # And a strictly worse one on the criteria that keep a customer.
+        assert alt["weighted_score"] < rec["structure"]["weighted_score"], key
 
 
 def test_the_touched_bases_are_marked_unmeasurable():
@@ -692,14 +714,111 @@ def test_a_percentage_fee_carries_its_measurability_in_the_basis():
     assert "quote" in touched.basis["base_measurability_why"].lower()
 
 
-def test_billing_the_whole_book_collects_the_same_money_at_a_lower_rate():
-    """The trade the switch actually makes: the rate falls by the covered
-    share, and the fee does not move at all."""
+def test_the_metered_alternative_bills_the_book_at_the_lower_rate():
+    """Where a meter is used at all, it is the whole book — the rate falls by
+    the covered share and the money does not move."""
     wf = build_waterfall(ARCHETYPES["mid"], IMPACTS["base"], PARAMS)
-    rec = monetization_report.recommend(wf, PARAMS)
-    variable = (Decimal(rec["evaluation"]["fee"]["annual_fee"])
-                - Decimal(rec["structure"]["platform_fee"]))
+    alt = monetization_report.recommend(wf, PARAMS)["alternative"]
+    variable = (Decimal(alt["evaluation"]["fee"]["annual_fee"])
+                - Decimal(alt["platform_fee"]))
     on_book = float(variable / wf.with_pie.revenue)
     on_touched = float(variable / wf.pie_touched_revenue)
     assert on_book < on_touched
-    assert abs(rec["structure"]["variable_rate"] - on_book) < 1e-6
+    assert abs(alt["variable_rate"] - on_book) < 1e-6
+
+
+
+# ── game theory in the score, not beside it ─────────────────────────────────
+def test_gaming_resistance_is_computed_from_the_incentive_register():
+    """Not judged twice. Before this, a metric could carry a SEVERE attribution
+    exposure in one structure and a hand-set 5/10 for gaming in the other, and
+    nothing reconciled them."""
+    from app.monetization.scorecard import EXPOSURE_FIELDS, EXPOSURE_SCORE
+
+    for row in scorecard.SCORES:
+        gt = next(g for g in scorecard.GAME_THEORY if g.key == row.key)
+        expected = [EXPOSURE_SCORE[getattr(gt, f)[0]] for f in EXPOSURE_FIELDS]
+        assert row.gaming_resistance == round(sum(expected) / len(expected))
+        assert row.worst_case_exposure == min(expected)
+
+
+def test_a_single_severe_exposure_is_not_averaged_away():
+    """Tail risk is scored apart from expected risk, because a metric with one
+    SEVERE failure and four clean ones is not an average metric."""
+    incremental = scorecard.score("incremental_margin_pct")
+    subscription = scorecard.score("flat_subscription")
+    assert incremental is not None and subscription is not None
+    assert incremental.worst_case_exposure == 1
+    assert subscription.worst_case_exposure >= 8
+    assert incremental.weighted() < subscription.weighted()
+
+
+def test_renewal_defensibility_separates_the_flat_fee_from_the_meter():
+    """The criterion the first version of the table did not have, and the one
+    the whole recommendation now turns on."""
+    flat = scorecard.score("flat_subscription")
+    metered = scorecard.score("gmv_pct")
+    assert flat is not None and metered is not None
+    assert flat.renewal_defensibility > metered.renewal_defensibility
+    assert flat.weighted() > metered.weighted()
+    assert scorecard.ranking()[0]["key"] == "flat_subscription"
+
+
+def test_every_metric_is_scored_on_every_criterion():
+    for row in scorecard.SCORES:
+        for criterion in scorecard.CRITERIA:
+            value = getattr(row, criterion)
+            assert 1 <= value <= 10, (row.key, criterion)
+
+
+# ── the price list ──────────────────────────────────────────────────────────
+def test_the_band_table_is_monotonic_and_priced_from_the_model():
+    """A bigger band never costs less, and every row is computed rather than
+    chosen — otherwise it is a price list with a story attached."""
+    rows = monetization_report.band_table(PARAMS)["rows"]
+    fees = [Decimal(r["annual_fee"]) for r in rows]
+    assert fees == sorted(fees)
+    assert len(rows) == len(monetization_report.TURNOVER_BANDS)
+    assert rows[-1]["negotiated"] is True
+    for row in rows[1:]:
+        # Every priced band clears the ROI bar; the bottom one is allowed to
+        # fail, and says so.
+        assert row["customer_roi"] is not None
+        assert row["customer_roi"] >= PARAMS.min_customer_roi - 0.2, row["band"]
+
+
+def test_the_smallest_band_still_refuses_itself():
+    """The finding survives the restructure: at the bottom of the market the
+    cost floor sits above the ROI ceiling."""
+    rows = monetization_report.band_table(PARAMS)["rows"]
+    assert rows[0]["band_is_empty"] is True
+
+
+def test_the_fee_is_a_near_flat_share_of_gross_profit_across_the_table():
+    """~2% of gross profit across a 150x range of customer size. If the bands
+    drifted apart, the price list would stop being one argument."""
+    rows = [r for r in monetization_report.band_table(PARAMS)["rows"]
+            if not r["band_is_empty"]]
+    shares = [r["pct_of_gross_profit"] for r in rows]
+    assert all(0.015 < share < 0.025 for share in shares), shares
+
+
+def test_expansion_levers_report_what_banding_actually_yields():
+    """The honest cost of refusing a meter, computed rather than waved at."""
+    levers = monetization_report.expansion_levers(PARAMS)
+    assert len(levers["levers"]) == 3
+    assert levers["levers"][0]["automatic"] is True
+
+    # Banding tracks growth exactly in the long run — that is the definition,
+    # not a finding, and the output has to say so rather than present it as
+    # evidence. What it costs is timing.
+    assert levers["long_run_uplift"] == levers["assumed_customer_growth"]
+    assert "definition" in levers["long_run_uplift_note"]
+    assert levers["years_between_re_ratings"] > 5
+
+    # And the lever that actually moves it is band width, not band existence.
+    widths = levers["band_width_sensitivity"]
+    assert [w["band_width"] for w in widths] == ["1.5x", "2x", "3x"]
+    waits = [w["years_between_re_ratings"] for w in widths]
+    assert waits == sorted(waits), waits
+    assert waits[0] < waits[-1] / 2

@@ -295,8 +295,13 @@ export function MonetizationScreen({ session }: { session: PlatformSession }) {
       valueGetter: (p) => p.data?.scores.ease_of_measurement },
     { headerName: "Predictable", flex: 1, minWidth: 110, type: "numericColumn",
       valueGetter: (p) => p.data?.scores.predictability },
+    // Derived from the incentive register rather than judged — see the server.
     { headerName: "Gaming resist.", flex: 1, minWidth: 120, type: "numericColumn",
       valueGetter: (p) => p.data?.scores.gaming_resistance },
+    { headerName: "Worst exposure", flex: 1, minWidth: 125, type: "numericColumn",
+      valueGetter: (p) => p.data?.scores.worst_case_exposure },
+    { headerName: "Renewal defence", flex: 1, minWidth: 130, type: "numericColumn",
+      valueGetter: (p) => p.data?.scores.renewal_defensibility },
     { headerName: "Low friction", flex: 1, minWidth: 110, type: "numericColumn",
       valueGetter: (p) => p.data?.scores.low_sales_friction },
     { headerName: "Alignment", flex: 1, minWidth: 110, type: "numericColumn",
@@ -410,8 +415,7 @@ export function MonetizationScreen({ session }: { session: PlatformSession }) {
             <Grid size={{ xs: 12, sm: 6, md: 3 }}>
               <MetricCard label="Recommended annual fee"
                           value={inr(rec.recommended_annual_fee)}
-                          sub={`${inr(rec.structure.platform_fee)} platform + `
-                               + `${rec.structure.variable_rate_pct} of ${rec.structure.variable_metric.replace(/^% of /, "")}`} />
+                          sub={`Flat, banded · ${rec.structure.turnover_band}`} />
             </Grid>
             <Grid size={{ xs: 12, sm: 6, md: 3 }}>
               <MetricCard label="Customer ROI"
@@ -612,20 +616,26 @@ export function MonetizationScreen({ session }: { session: PlatformSession }) {
                     {inr(rec.recommended_annual_fee)} / year
                   </Typography>
                   <Typography variant="body2" color="text.secondary">
-                    {inr(rec.structure.platform_fee)} platform fee
-                    {" + "}{rec.structure.variable_rate_pct}{" "}
-                    {rec.structure.variable_metric.replace(/^% of /, "")},
-                    capped at {inr(rec.structure.variable_cap)}.
-                  </Typography>
-                  {/* The grade, not just the rate. A base that cannot be
-                      computed for a real customer is a different offer from one
-                      that can, and the two produce identical-looking numbers. */}
-                  <Typography variant="caption" color="text.secondary">
-                    Base: {rec.structure.variable_base}{" · "}
-                    {rec.structure.variable_base_measurability}{" — "}
-                    {rec.structure.variable_base_why}
+                    {rec.structure.metric} · {rec.structure.turnover_band}
+                    {" · nothing moves with the customer's book."}
                   </Typography>
                   <Typography variant="body2">{rec.structure.why}</Typography>
+                  {/* The metered structure, shown rather than hidden: it
+                      collects the same money, and a reader deciding between
+                      them needs to see what the second one costs. */}
+                  <Typography variant="overline" color="text.secondary">
+                    Alternative, same money
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    {inr(rec.alternative.platform_fee)}{" + "}
+                    {rec.alternative.variable_rate_pct} of connected-book
+                    revenue, capped at {inr(rec.alternative.variable_cap)}.
+                    {" Scores "}{rec.alternative.weighted_score?.toFixed(2)}
+                    {" against "}{rec.structure.weighted_score?.toFixed(2)}.
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    {rec.alternative.why_not_chosen}
+                  </Typography>
                   <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: "wrap" }}>
                     <Chip size="small" label={`Cost floor ${inr(rec.band.cost_floor)}`} />
                     <Chip size="small"

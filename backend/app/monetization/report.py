@@ -32,6 +32,7 @@ from .customer import CustomerProfile, PieImpact, Waterfall, build_waterfall, mo
 from .evaluate import evaluate, fee_for_roi
 from .segments import ANSWERS_TO, ARCHETYPES, IMPACTS
 from .strategies import (EnterpriseLicensePricing, FeeBase, HybridPricing,
+                         Measurability, base_amount, measurability,
                          IncrementalMarginPricing, MarginSharePricing,
                          MatchPricing, OrderPricing, PricingStrategy,
                          QuotePricing, RFQPricing, SavingsSharePricing,
@@ -303,14 +304,37 @@ def recommend(wf: Waterfall,
     rounded = params.round_fee(chosen)
     platform = params.round_fee(money(rounded * PLATFORM_SHARE))
     remainder = money(rounded - platform)
-    gmv_base = wf.pie_touched_gmv
+
+    # The whole connected book, not the PIE-touched subset, and this is the one
+    # structural decision in the recommendation that is forced rather than
+    # chosen. A quote is not converted into a sales order: the estimate is sent,
+    # the order arrives later as a customer PO and is entered independently, and
+    # nothing in the schema joins them — `QuoteDoc` carries a free-text
+    # `reference` and no order id. "Revenue that came from a PIE quote" is
+    # therefore not a number this platform can read, only one it could guess at
+    # by matching customer, product, quantity and date. Billing on a guess is
+    # a monthly argument with the party holding the evidence.
+    #
+    # Billing the whole book costs nothing in revenue and removes the argument
+    # entirely: the rate simply falls by the covered share (roughly 0.24% of
+    # touched GMV becomes roughly 0.15% of the book for the same money), and the
+    # base becomes two independent records of one number — the ERP's and the
+    # customer's own tax filing.
+    base = FeeBase.TOTAL_GMV
+    grade, why = measurability(base)
+    gmv_base = base_amount(wf, base)
     gmv_rate = float(remainder / gmv_base) if gmv_base > 0 else 0.0
 
     structure = HybridPricing(
         platform_fee=platform,
         maximum_fee=money(platform * (Decimal("1") + VARIABLE_CAP_MULTIPLE)),
-        component=TransactionPricing(rate=gmv_rate,
-                                     base=FeeBase.PIE_TOUCHED_GMV))
+        component=TransactionPricing(rate=gmv_rate, base=base))
+    # A recommendation may only be built on a base that exists without anybody
+    # agreeing to it. Asserted rather than assumed: this is the property the
+    # whole structure turns on, and a later edit that swapped the base back
+    # would otherwise produce a plausible number nobody could invoice.
+    if grade is not Measurability.SYNCED:  # pragma: no cover - guard
+        raise ValueError(f"recommended structure needs a SYNCED base, got {grade}")
     ev = evaluate(wf, structure.quote(wf, params), params)
     econ = unit_economics(wf.profile, ev.fee.annual_fee, params,
                           orders=wf.covered_with_pie.orders)
@@ -334,14 +358,24 @@ def recommend(wf: Waterfall,
         "recommended_annual_fee": str(rounded),
         "structure": {
             "platform_fee": str(platform),
-            "variable_metric": "% of PIE-touched GMV",
+            "variable_metric": "% of connected-book GMV",
+            "variable_base": base.value,
+            "variable_base_measurability": grade.value,
+            "variable_base_why": why,
             "variable_rate": round(gmv_rate, 6),
             "variable_rate_pct": f"{gmv_rate * 100:.3f}%",
             "variable_cap": str(money(platform * VARIABLE_CAP_MULTIPLE)),
+            "equivalent_rate_on_touched_gmv_pct": (
+                f"{float(remainder / wf.pie_touched_gmv) * 100:.3f}%"
+                if wf.pie_touched_gmv > 0 else None),
             "why": ("The platform fee covers the cost to serve and makes the "
                     "revenue forecastable; the GMV rate grows the account "
                     "without asking the customer to disclose cost, which is the "
-                    "single largest source of resistance in the scorecard."),
+                    "single largest source of resistance in the scorecard. It "
+                    "is billed on the whole connected book because the "
+                    "PIE-touched subset is not measurable — no quote-to-order "
+                    "link exists — and billing the book costs nothing but a "
+                    "lower headline rate for the same money."),
         },
         "evaluation": ev.as_dict(),
         "pie_unit_economics": econ.as_dict(),

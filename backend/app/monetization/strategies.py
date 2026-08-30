@@ -42,6 +42,34 @@ from .customer import Waterfall, money
 _ZERO = Decimal("0")
 
 
+class Measurability(str, Enum):
+    """Can this base actually be computed for a real customer?
+
+    The distinction that decides which metrics are billable, and it is not the
+    same question as whether a metric is *correct*. Three states, and only the
+    first is safe to put on an invoice:
+
+    ``SYNCED`` — arithmetic over rows the connector already writes. Nobody has
+    to agree to anything for the number to exist.
+
+    ``RECORDED`` — exists only where a person entered something. The quote
+    outcome is the case that matters: roughly three quarters of this book's
+    estimates are raised in the ERP and end with no recorded outcome at all.
+
+    ``INFERRED`` — needs a link the ERP does not create. **A quote is not
+    converted into a sales order.** An estimate is sent; the order arrives later
+    as a customer PO and is entered independently, and no column joins the two —
+    ``QuoteDoc`` carries a free-text ``reference`` and nothing else. So "the
+    revenue that came from a PIE quote" is not a fact this platform can read.
+    It can be guessed at by matching customer, product, quantity and date, and a
+    guess is not something to bill against.
+    """
+
+    SYNCED = "SYNCED"
+    RECORDED = "RECORDED"
+    INFERRED = "INFERRED"
+
+
 class FeeBase(str, Enum):
     """What a percentage-of-something fee is a percentage *of*.
 
@@ -59,6 +87,47 @@ class FeeBase(str, Enum):
     INCREMENTAL_GROSS_MARGIN = "INCREMENTAL_GROSS_MARGIN"
     TOTAL_ECONOMIC_VALUE = "TOTAL_ECONOMIC_VALUE"
     SAVINGS = "SAVINGS"
+
+
+#: How each base is obtained, and why. A base that is not ``SYNCED`` may still
+#: be modelled — the whole package models them — but it must never be the thing
+#: an invoice is computed from, and ``report.recommend`` refuses to build a
+#: structure on one.
+BASE_MEASURABILITY: dict[FeeBase, tuple[Measurability, str]] = {
+    FeeBase.TOTAL_GMV: (
+        Measurability.SYNCED,
+        "Sum of invoiced sales lines on the connected book. Two independent "
+        "records of one number — the ERP's and the customer's own tax filing."),
+    FeeBase.TOTAL_GROSS_MARGIN: (
+        Measurability.SYNCED,
+        "Computed inside the platform from synced sale and cost rows. "
+        "Measurable, which is a different question from whether the customer "
+        "will let a vendor key a fee to it."),
+    FeeBase.PIE_TOUCHED_GMV: (
+        Measurability.INFERRED,
+        "Requires knowing which invoiced revenue followed a PIE quote. No quote "
+        "-> sales-order link exists: the estimate is sent, the order is entered "
+        "from a customer PO, and nothing joins them."),
+    FeeBase.PIE_TOUCHED_GROSS_MARGIN: (
+        Measurability.INFERRED,
+        "The same missing link, on a base that also needs cost."),
+    FeeBase.INCREMENTAL_GROSS_MARGIN: (
+        Measurability.INFERRED,
+        "Needs the missing link and a counterfactual on top of it."),
+    FeeBase.TOTAL_ECONOMIC_VALUE: (
+        Measurability.INFERRED,
+        "Modelled from an assumed uplift. Legitimate for sizing a price, never "
+        "for computing one."),
+    FeeBase.SAVINGS: (
+        Measurability.RECORDED,
+        "Margin held and equivalents accepted are recorded at the moment the "
+        "quote is priced, so these exist without any later link — but only for "
+        "quotes that went through the platform."),
+}
+
+
+def measurability(base: FeeBase) -> tuple[Measurability, str]:
+    return BASE_MEASURABILITY[base]
 
 
 def base_amount(wf: Waterfall, base: FeeBase) -> Decimal:
@@ -158,6 +227,11 @@ class PricingStrategy(ABC):
             total, bound = money(self.minimum_fee), (
                 "floor over cap (check the contract)" if bound == "cap" else "minimum")
 
+        base = getattr(self, "base", None)
+        if isinstance(base, FeeBase):
+            grade, why = measurability(base)
+            basis = {**basis, "base_measurability": grade.value,
+                     "base_measurability_why": why}
         if bound is not None:
             basis = {**basis, "uncapped_fee": str(raw)}
         # The split is rescaled so fixed + variable always reconciles to the fee

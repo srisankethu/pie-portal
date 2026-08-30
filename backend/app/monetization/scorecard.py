@@ -167,24 +167,32 @@ SCORES: tuple[MetricScore, ...] = (
              "line it re-resolved by hand — is a monthly invoice dispute."),
     MetricScore(
         key="per_order", label="Per order",
-        correlation_with_value=7, ease_of_understanding=8, ease_of_measurement=6,
-        auditability=6, predictability=6, scalability=8, expansion_potential=8,
-        gaming_resistance=5, low_sales_friction=6, customer_acceptance=7,
+        correlation_with_value=7, ease_of_understanding=8, ease_of_measurement=3,
+        auditability=3, predictability=6, scalability=8, expansion_potential=8,
+        gaming_resistance=3, low_sales_friction=6, customer_acceptance=7,
         incentive_alignment=8,
-        note="Charges only on success, which sells well, but needs an "
-             "attribution rule for every order — and the customer writes the "
-             "sales order, so it decides what PIE touched."),
+        note="Charges only on success, which sells well, and then cannot be "
+             "computed. **There is no quote-to-order conversion.** The estimate "
+             "is sent; the order arrives later as a customer PO and is entered "
+             "independently; nothing joins them. Every invoice would have to be "
+             "attributed by matching customer, product, quantity and date — an "
+             "inference, made by the vendor, about the buyer's own book. Scored "
+             "down from 6/6 on measurement and auditability once that was "
+             "established rather than assumed."),
     MetricScore(
         key="gmv_pct", label="% of transaction value (GMV)",
         correlation_with_value=6, ease_of_understanding=9, ease_of_measurement=9,
         auditability=9, predictability=7, scalability=9, expansion_potential=9,
         gaming_resistance=6, low_sales_friction=5, customer_acceptance=5,
         incentive_alignment=7,
-        note="The best-measured metric in the table: PIE already syncs the "
-             "invoices, so the base is an ERP figure both sides can see and "
-             "neither has to disclose cost. Its weakness is at the other end — "
-             "a distributor on 21% gross margin hears '% of turnover' as a tax "
-             "on a number that is mostly someone else's cost of goods."),
+        note="The best-measured metric in the table, on one reading of it. "
+             "Billed on the *whole connected book* the base is a synced ERP "
+             "figure both sides can see, needing no cost disclosure and no "
+             "attribution; billed on a PIE-touched subset it is not measurable "
+             "at all, because no quote-to-order link exists. The scores here "
+             "are for the whole-book reading. Its weakness is at the other end "
+             "— a distributor on 21% gross margin hears '% of turnover' as a "
+             "tax on a number that is mostly someone else's cost of goods."),
     MetricScore(
         key="gross_margin_pct", label="% of gross margin",
         correlation_with_value=8, ease_of_understanding=7, ease_of_measurement=7,
@@ -239,7 +247,10 @@ SCORES: tuple[MetricScore, ...] = (
         note="The platform fee sets a revenue floor and pays the cost to serve; "
              "the GMV component tracks the customer's growth on a base neither "
              "side can dispute. Nothing in it requires the customer to disclose "
-             "cost, which is why it out-scores its margin-based twin."),
+             "cost, which is why it out-scores its margin-based twin — and "
+             "nothing in it requires a quote to be linked to an order, which is "
+             "why it is the only high-scoring structure that can actually be "
+             "invoiced."),
     MetricScore(
         key="hybrid_platform_margin", label="Platform fee + % gross margin",
         correlation_with_value=9, ease_of_understanding=7, ease_of_measurement=7,
@@ -339,8 +350,12 @@ GAME_THEORY: tuple[GameTheory, ...] = (
                      "proposed part is observable rather than asserted.")),
     GameTheory(
         key="per_order",
-        attribution=(Exposure.HIGH, "Which orders count as PIE's? Everything "
-                                    "turns on the linking rule."),
+        attribution=(Exposure.SEVERE,
+                     "There is no linking rule to turn on. A quote is never "
+                     "converted into a sales order — the estimate is sent and "
+                     "the order is entered separately from a customer PO — so "
+                     "every attributed order is the vendor's inference about "
+                     "the buyer's book, re-litigated monthly."),
         bypass=(Exposure.HIGH, "Quote in PIE, book the order outside it."),
         margin_opacity=(Exposure.NONE, "Order value is not cost."),
         under_reporting=(Exposure.MEDIUM, "Mitigated by ERP sync; PIE reads the "
@@ -348,14 +363,22 @@ GAME_THEORY: tuple[GameTheory, ...] = (
         classification=(Exposure.HIGH, "'That customer would have ordered "
                                        "anyway' is unfalsifiable per order."),
         alignment="Strong: PIE earns when the customer wins.",
-        mitigations=("Attribute on *quote lineage* — an order whose lines trace "
-                     "to a PIE quote — rather than on judgement.",
-                     "Agree the linking rule in the contract, with worked "
-                     "examples, before the first invoice.")),
+        mitigations=("There is no quote lineage to attribute on: the link the "
+                     "obvious mitigation assumes does not exist in the schema "
+                     "or in the ERP. Building one means matching invoice lines "
+                     "back to quoted lines by customer, product, quantity and "
+                     "date — useful for a value report, not sound enough for "
+                     "an invoice.",
+                     "If a per-order fee is wanted anyway, bill on the whole "
+                     "connected book's order count and drop the word 'PIE' "
+                     "from the metric.")),
     GameTheory(
         key="gmv_pct",
-        attribution=(Exposure.MEDIUM, "Only for the PIE-touched reading; the "
-                                      "whole-book reading needs none."),
+        attribution=(Exposure.NONE,
+                     "On the whole-book reading, none is required — which is "
+                     "the reason to take that reading. The PIE-touched reading "
+                     "is not merely disputable, it is unmeasurable: no "
+                     "quote-to-order link exists to compute it from."),
         bypass=(Exposure.MEDIUM, "Route business around PIE — but at 0.3-0.5% "
                                  "the saving is smaller than the operational "
                                  "cost of running two quoting processes, which "
@@ -374,9 +397,12 @@ GAME_THEORY: tuple[GameTheory, ...] = (
                                          "subset somebody has to classify."),
         alignment="PIE grows exactly as the customer grows. Not as tight as "
                   "margin, and it never asks a question the customer resents.",
-        mitigations=("Bill on the whole connected book, not on a PIE-touched "
-                     "subset — it removes the classification argument entirely "
-                     "and lets the rate be lower for the same revenue.",
+        mitigations=("Bill on the whole connected book. This is not a "
+                     "preference — the PIE-touched subset cannot be computed "
+                     "without a quote-to-order link the ERP does not create. "
+                     "It also removes the classification argument entirely and "
+                     "lets the rate be lower for the same revenue: about 0.15% "
+                     "of the book where 0.24% of touched GMV was.",
                      "Cap the variable component at a multiple of the platform "
                      "fee so a good year does not produce a renegotiation.")),
     GameTheory(

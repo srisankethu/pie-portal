@@ -205,8 +205,17 @@ def observe(session: Session, organization_id: str) -> ObservedInputs:
                      "attribution/evaluator, which guards the case where no "
                      "decided quote could ever have been won"))
     gaps.append(_gap("order_conversion",
-                     "same: read it from the attribution evaluation, not from "
-                     "a ratio computed here"))
+                     "not derivable at all from synced rows. A quote is not "
+                     "converted into a sales order — the estimate is sent, the "
+                     "order is entered from a customer PO, and nothing joins "
+                     "them — so a quote's outcome exists only where a person "
+                     "recorded one, which for most of a book nobody has. Read "
+                     "it from recorded outcomes and treat the rest as UNKNOWN; "
+                     "it is never a measured zero"))
+    gaps.append(_gap("pie_touched_gmv",
+                     "not computable for the same reason, which is why the "
+                     "recommended structure bills the whole connected book "
+                     "rather than a PIE-touched subset of it"))
 
     return ObservedInputs(
         organization_id=organization_id, window_days=WINDOW_DAYS,

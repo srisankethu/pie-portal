@@ -2036,6 +2036,13 @@ export interface MonetizationRecommendation {
   structure: {
     platform_fee: string;
     variable_metric: string;
+    /** Which base, and whether it can be computed for a real customer at all.
+     *  `INFERRED` means it needs a quote-to-order link the ERP does not create,
+     *  and the server refuses to build a recommendation on one. */
+    variable_base: string;
+    variable_base_measurability: string;
+    variable_base_why: string;
+    equivalent_rate_on_touched_gmv_pct: string | null;
     variable_rate: number;
     variable_rate_pct: string;
     variable_cap: string;

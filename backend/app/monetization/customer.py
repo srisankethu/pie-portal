@@ -254,7 +254,20 @@ class Waterfall:
     # ── the bases a pricing metric can be applied to ────────────────────────
     @property
     def pie_touched_gmv(self) -> Decimal:
-        """Revenue on orders that went through PIE. The base for a GMV fee."""
+        """Revenue on orders that followed a PIE quote.
+
+        **Modelled, and not measurable for a real customer.** A quote is not
+        converted into a sales order: the estimate is sent, the order arrives
+        later as a customer PO and is entered independently, and nothing in the
+        schema joins them. So this figure exists here — where the covered share
+        is an input — and cannot be produced from a connected book.
+
+        It is kept because a fee has to be *sized* against the flow PIE touches
+        even when it is *billed* on the whole book, and because the ratio
+        between the two is what sets the headline rate. It is not a billing
+        base; ``strategies.BASE_MEASURABILITY`` marks it INFERRED and
+        ``report.recommend`` refuses to build a structure on it.
+        """
         return self.covered_with_pie.revenue
 
     @property
@@ -265,6 +278,9 @@ class Waterfall:
         and a fee quoted as "0.1% of margin" is ambiguous between the two by a
         factor of ``1 / pie_rfq_share``. The model reports both and the
         ambiguity is one of the findings, not a detail.
+
+        Modelled rather than measurable, for the reason ``pie_touched_gmv``
+        gives, and on a base that also needs cost.
         """
         return self.covered_with_pie.gross_profit
 

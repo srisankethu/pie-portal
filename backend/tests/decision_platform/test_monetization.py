@@ -633,3 +633,73 @@ def test_ebitda_before_growth_separates_the_two_reasons_for_a_loss():
     assert Decimal(last["ebitda_before_growth"]) > 0
     assert (Decimal(last["ebitda_before_growth"]) - Decimal(last["ebitda"])
             == Decimal(last["cac_spend"]))
+
+
+# ── measurability: what can actually be invoiced ────────────────────────────
+def test_the_recommended_structure_bills_a_base_that_exists():
+    """The whole connected book, never a PIE-touched subset of it.
+
+    A quote is not converted into a sales order — the estimate is sent, the
+    order is entered separately from a customer PO, and nothing joins them — so
+    "revenue that followed a PIE quote" is a number this platform can model and
+    cannot read. Billing it would mean invoicing against the vendor's own
+    inference about the buyer's book.
+    """
+    from app.monetization.strategies import Measurability, measurability
+
+    for key, profile in ARCHETYPES.items():
+        wf = build_waterfall(profile, IMPACTS["base"], PARAMS)
+        structure = monetization_report.recommend(wf, PARAMS)["structure"]
+        assert structure["variable_base"] == FeeBase.TOTAL_GMV.value, key
+        assert structure["variable_base_measurability"] == \
+            Measurability.SYNCED.value, key
+        assert measurability(FeeBase.TOTAL_GMV)[0] is Measurability.SYNCED
+
+
+def test_the_touched_bases_are_marked_unmeasurable():
+    """Modelled, and marked as such, so nothing builds an invoice on them."""
+    from app.monetization.strategies import Measurability, measurability
+
+    for base in (FeeBase.PIE_TOUCHED_GMV, FeeBase.PIE_TOUCHED_GROSS_MARGIN,
+                 FeeBase.INCREMENTAL_GROSS_MARGIN,
+                 FeeBase.TOTAL_ECONOMIC_VALUE):
+        grade, why = measurability(base)
+        assert grade is Measurability.INFERRED, base
+        assert why
+
+
+def test_every_fee_base_is_graded():
+    """An ungraded base is one somebody will bill against by accident."""
+    from app.monetization.strategies import BASE_MEASURABILITY
+
+    for base in FeeBase:
+        assert base in BASE_MEASURABILITY, base
+
+
+def test_a_percentage_fee_carries_its_measurability_in_the_basis():
+    """The operands travel with the number, grade included.
+
+    Two strategies that produce the same rupee figure are not the same offer
+    when one of them cannot be computed for a real customer, and the basis is
+    where that difference has to be visible.
+    """
+    wf = build_waterfall(ARCHETYPES["mid"], IMPACTS["base"], PARAMS)
+    book = TransactionPricing(rate=0.0015, base=FeeBase.TOTAL_GMV).quote(wf, PARAMS)
+    touched = TransactionPricing(rate=0.0015,
+                                 base=FeeBase.PIE_TOUCHED_GMV).quote(wf, PARAMS)
+    assert book.basis["base_measurability"] == "SYNCED"
+    assert touched.basis["base_measurability"] == "INFERRED"
+    assert "quote" in touched.basis["base_measurability_why"].lower()
+
+
+def test_billing_the_whole_book_collects_the_same_money_at_a_lower_rate():
+    """The trade the switch actually makes: the rate falls by the covered
+    share, and the fee does not move at all."""
+    wf = build_waterfall(ARCHETYPES["mid"], IMPACTS["base"], PARAMS)
+    rec = monetization_report.recommend(wf, PARAMS)
+    variable = (Decimal(rec["evaluation"]["fee"]["annual_fee"])
+                - Decimal(rec["structure"]["platform_fee"]))
+    on_book = float(variable / wf.with_pie.revenue)
+    on_touched = float(variable / wf.pie_touched_gmv)
+    assert on_book < on_touched
+    assert abs(rec["structure"]["variable_rate"] - on_book) < 1e-6

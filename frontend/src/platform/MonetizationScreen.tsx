@@ -411,7 +411,7 @@ export function MonetizationScreen({ session }: { session: PlatformSession }) {
               <MetricCard label="Recommended annual fee"
                           value={inr(rec.recommended_annual_fee)}
                           sub={`${inr(rec.structure.platform_fee)} platform + `
-                               + `${rec.structure.variable_rate_pct} of PIE-touched GMV`} />
+                               + `${rec.structure.variable_rate_pct} of ${rec.structure.variable_metric.replace(/^% of /, "")}`} />
             </Grid>
             <Grid size={{ xs: 12, sm: 6, md: 3 }}>
               <MetricCard label="Customer ROI"
@@ -613,8 +613,17 @@ export function MonetizationScreen({ session }: { session: PlatformSession }) {
                   </Typography>
                   <Typography variant="body2" color="text.secondary">
                     {inr(rec.structure.platform_fee)} platform fee
-                    {" + "}{rec.structure.variable_rate_pct} of PIE-touched GMV,
+                    {" + "}{rec.structure.variable_rate_pct}{" "}
+                    {rec.structure.variable_metric.replace(/^% of /, "")},
                     capped at {inr(rec.structure.variable_cap)}.
+                  </Typography>
+                  {/* The grade, not just the rate. A base that cannot be
+                      computed for a real customer is a different offer from one
+                      that can, and the two produce identical-looking numbers. */}
+                  <Typography variant="caption" color="text.secondary">
+                    Base: {rec.structure.variable_base}{" · "}
+                    {rec.structure.variable_base_measurability}{" — "}
+                    {rec.structure.variable_base_why}
                   </Typography>
                   <Typography variant="body2">{rec.structure.why}</Typography>
                   <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: "wrap" }}>

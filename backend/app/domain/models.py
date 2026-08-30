@@ -1062,6 +1062,110 @@ class Product(Base):
                                                  onupdate=_now)
 
 
+class ProductAttributeValue(Base):
+    """One decoded or imported fact about one product, with where it came from.
+
+    The core of Phase 1 (decision 002). The catalogue this platform sells from
+    carries almost no technical fact — 9.4% of the master is identity-linked and
+    21.6% is decodable from a name — and every later phase (retrieval, the
+    compatibility rules, ranking, learning) is built over attributes that do not
+    exist yet. This table is where they start existing.
+
+    **A row per (product, attribute), not a column per attribute.** A
+    category-specific schema becomes 200 sparse columns the moment a second
+    category arrives, and a turning insert and a drill share almost none of
+    their fields. `products` deliberately gains no attribute columns.
+
+    **Org-scoped, and that is decided rather than defaulted** (decision 026).
+    The attribute source is a distributor PIM export licensed to the
+    organization that obtained it, so sharing rows across tenants would
+    redistribute another party's licensed data. It also lets two organizations
+    legitimately hold different values for one product when their sources
+    disagree — the same property `_rel_from_score` already grants equivalence
+    bands. The cost is accepted: two orgs selling the same insert each store and
+    decode their own rows.
+
+    **Superseded, never mutated.** A value is written once and replaced by
+    writing a new row and marking the old one superseded, because the whole
+    point of the table is that a later reader can ask what was believed, on what
+    evidence, at the time a quote went out. `superseded_at` NULL is the live
+    row; `uq_product_attribute_live` enforces one live row per
+    (org, product, attribute, source).
+
+    **Every row says where it came from and how sure.** `source_kind` is the
+    class of evidence — a name decoded by the parser is not the same claim as a
+    line read out of a manufacturer's data file, and neither is a human typing
+    it. `confidence` is the extractor's, and it is NOT a score to rank on: it
+    says how well the value was *read*, never how well the product fits.
+    """
+
+    __tablename__ = "product_attribute_values"
+    __table_args__ = (
+        # One live row per source per attribute. The source is in the key on
+        # purpose: a decoded value and an imported one are two claims about the
+        # same field, and collapsing them would silently drop whichever arrived
+        # second. Which one wins is a read-time policy question, not a storage
+        # one.
+        Index("uq_product_attribute_live", "organization_id", "product_id",
+              "attribute_key", "source_kind",
+              unique=True, postgresql_where=text("superseded_at IS NULL"),
+              sqlite_where=text("superseded_at IS NULL")),
+        Index("ix_pav_org_attr", "organization_id", "attribute_key"),
+        Index("ix_pav_org_product", "organization_id", "product_id"),
+    )
+
+    attribute_value_id: Mapped[str] = mapped_column(String(64), primary_key=True,
+                                                    default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    product_id: Mapped[str] = mapped_column(String(64), index=True)
+
+    #: The engine's own field name — `corner_radius_mm`, `flute_count`,
+    #: `iso_shape`. Deliberately not remapped on the way in: the decoder's
+    #: vocabulary is the one the pack, the equivalence layer and the resolver
+    #: already share, and a translation table here would be a second vocabulary
+    #: to keep in step. An ontology mapping these onto category attributes is
+    #: Phase 4's, and it reads this column rather than replacing it.
+    attribute_key: Mapped[str] = mapped_column(String(64))
+
+    #: The value as three columns rather than one, because a query that filters
+    #: `corner_radius_mm BETWEEN 0.4 AND 0.8` cannot do it over text and a
+    #: retrieval layer that casts on every row cannot use an index. `value_num`
+    #: is set when the value is numeric, `value_text` always. `original_value`
+    #: is what the source actually said, kept verbatim so a normalisation that
+    #: turns out to be wrong can be redone without re-reading the source.
+    value_num: Mapped[Optional[float]] = mapped_column(Float)
+    value_text: Mapped[Optional[str]] = mapped_column(String(255))
+    original_value: Mapped[Optional[str]] = mapped_column(String(255))
+    unit: Mapped[Optional[str]] = mapped_column(String(16))
+
+    #: Where the claim comes from, as a class rather than a free string.
+    #: DECODED_NAME — the parser read it out of the item's own description.
+    #: CATALOGUE_LINK — inherited from the manufacturer catalogue record this
+    #: item is linked to (`products.pie_record_id`), which is a stronger claim
+    #: because a catalogue row is the maker's own data.
+    #: SOURCE_FILE — read from an imported PIM or price-list export.
+    #: HUMAN — somebody typed it, which outranks everything and is the only
+    #: kind that may contradict a decode without evidence.
+    source_kind: Mapped[str] = mapped_column(String(32))
+    #: Which file, catalogue record or person. Free text by design — it is
+    #: evidence for a human reading a row, not something to join on.
+    source_ref: Mapped[Optional[str]] = mapped_column(String(255))
+
+    #: How well the value was READ, never how well the product fits. A caller
+    #: that ranks on this is confusing extraction quality with technical
+    #: suitability, which is the confusion decision 008 exists to prevent.
+    confidence: Mapped[Optional[float]] = mapped_column(Float)
+
+    #: The catalogue that produced a decode, so a row written under a superseded
+    #: pack is identifiable rather than merely old — the reason
+    #: `thresholds_version` is stamped on every computed row.
+    decoder_version: Mapped[Optional[str]] = mapped_column(String(128))
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    #: NULL is live. A superseded row is never deleted and never edited.
+    superseded_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+
 class VendorTarget(Base):
     """What a principal expects this distributor to do, in a period.
 

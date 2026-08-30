@@ -147,6 +147,13 @@ class Candidate:
     #: not a technical equivalence. Carried so the band mapping and the
     #: auto-selection can both refuse it.
     unverified: bool = False
+    #: The engine's own ranking key for this candidate, minus the record-id tail
+    #: that breaks ties by sort order rather than by evidence. Two candidates
+    #: with equal tiers are two the ranking did not choose between. Carried so
+    #: `_is_discriminating` asks the ranking's question instead of comparing one
+    #: published component of it — see that method. ``None`` where the engine
+    #: did not supply it.
+    rank_tier: Optional[List[Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -718,7 +725,8 @@ class PieService:
                 "AMBIGUOUS", None,
                 [Candidate(code=c.code, desc=c.desc, rel="POSSIBLE", grade=c.grade,
                            brand=c.brand, score=c.score, reason=c.reason,
-                           attributes=c.attributes, unverified=c.unverified)
+                           attributes=c.attributes, unverified=c.unverified,
+                           rank_tier=c.rank_tier)
                  for c in cands],
                 outcome, semantics, notes)
 
@@ -764,6 +772,7 @@ class PieService:
                 reason=reason,
                 attributes=s.get("attributes", {}) or {},
                 unverified=unverified,
+                rank_tier=s.get("rank_tier"),
             ))
         return out
 
@@ -800,15 +809,38 @@ class PieService:
     def _is_discriminating(cands: List[Candidate]) -> bool:
         """Does the ranking actually separate the top candidate from the rest?
 
-        A set of candidates that all share one score (commonly every score at
-        1.0, which is what a vacuous match looks like) tells us nothing about
-        which product was meant. Treating the first of those as "the technical
-        equivalent" manufactures certainty the engine never expressed.
+        A set of candidates the ranking did not choose between tells us nothing
+        about which product was meant. Treating the first of those as "the
+        technical equivalent" manufactures certainty the engine never
+        expressed.
+
+        The question is asked of ``rank_tier`` — the engine's own ordering key,
+        minus the record-id tail that is sort order rather than evidence —
+        because the combined score is only the *last* of that key's components.
+        Comparing it alone gets a different answer in both directions: an exact
+        designation hit beside a neighbour at the same score reads as a tie,
+        and, less obviously, a genuine separation on geometry reads as a tie
+        wherever the leader's combined score is *lower* than its neighbour's.
+        That second case is not hypothetical — a variation request ranks the
+        varied record first at a combined score its own reference exceeds — and
+        it made this method abstain on a ranking that had chosen.
+
+        The score is the fallback, not the rule. The engine is loaded from
+        ``PIE_PARSER_ROOT`` rather than vendored, so a payload predating
+        ``rank_tier`` is a live possibility; where a tier is missing this falls
+        back to the older comparison, which errs towards abstention. That is
+        the safe direction here, and deliberately not the one the RFQ harness
+        takes — a measuring instrument that silently gets more cautious is
+        reporting a different system, so ``tools/eval_rfq.py`` raises instead.
         """
-        scores = [c.score for c in cands if c.score is not None]
-        if len(scores) < 2:
+        if len(cands) < 2:
             return True                      # nothing to compare against
-        return scores[0] > scores[1]
+        top, runner_up = cands[0], cands[1]
+        if top.rank_tier is not None and runner_up.rank_tier is not None:
+            return top.rank_tier != runner_up.rank_tier
+        if top.score is None or runner_up.score is None:
+            return True
+        return top.score > runner_up.score
 
     @staticmethod
     def _rel_from_score(combined: Optional[float], bands: Optional[Bands] = None) -> str:

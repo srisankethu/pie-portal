@@ -390,3 +390,74 @@ def test_a_payload_with_no_markers_at_all_is_taken_at_face_value():
             "scores": {"combined": 0.96}, "attributes": {}, "explanation": ""}
     assert not pie_service._candidates_from_suggestions(
         [bare], Bands.default())[0].unverified
+
+
+# --- what "the ranking chose" means ------------------------------------------
+#
+# `_is_discriminating` used to compare combined scores. The score is the LAST
+# of five components the engine orders by, so comparing it alone asks a
+# different question — and gets a different answer in both directions.
+
+
+def test_a_separation_the_score_alone_cannot_see_is_still_a_choice():
+    """The direction that cost a correct answer.
+
+    A variation request ("same as X but 1.2 radius") ranks the varied record
+    first on geometry while its own reference scores *higher* on the combined
+    number. `scores[0] > scores[1]` is False there, so the old rule abstained on
+    a ranking that had chosen — and the product the customer asked for went
+    unquoted.
+    """
+    from app.pie_service import Candidate
+
+    varied = Candidate(code="a", desc="A", rel="TECH", grade=None, brand=None,
+                       score=1.0, reason="", rank_tier=[-1.0, 0, -3, 0, -1.0])
+    reference = Candidate(code="b", desc="B", rel="TECH", grade=None, brand=None,
+                          score=1.0713, reason="",
+                          rank_tier=[-0.92, 0, -2, 0, -1.0713])
+
+    assert varied.score < reference.score
+    assert pie_service._is_discriminating([varied, reference]) is True
+
+
+def test_equal_tiers_are_a_refusal_however_the_scores_fall():
+    from app.pie_service import Candidate
+
+    tier = [-0.96, 1, 0, 0, -0.96]
+    tied = [Candidate(code="a", desc="A", rel="TECH", grade=None, brand=None,
+                      score=0.96, reason="", rank_tier=list(tier)),
+            Candidate(code="b", desc="B", rel="TECH", grade=None, brand=None,
+                      score=0.96, reason="", rank_tier=list(tier))]
+    assert pie_service._is_discriminating(tied) is False
+
+
+def test_a_candidate_without_a_tier_falls_back_to_the_older_rule():
+    """The engine is loaded from ``PIE_PARSER_ROOT`` rather than vendored, so a
+    payload predating ``rank_tier`` is a live possibility. The fallback errs
+    towards abstention, which is the safe direction for a quote."""
+    from app.pie_service import Candidate
+
+    same = [Candidate(code="a", desc="A", rel="TECH", grade=None, brand=None,
+                      score=1.0, reason=""),
+            Candidate(code="b", desc="B", rel="TECH", grade=None, brand=None,
+                      score=1.0, reason="")]
+    assert pie_service._is_discriminating(same) is False
+    # A tier on only one of the two is not a comparison either.
+    half = [Candidate(code="a", desc="A", rel="TECH", grade=None, brand=None,
+                      score=1.0, reason="", rank_tier=[-1.0, 0, -3, 0, -1.0]),
+            Candidate(code="b", desc="B", rel="TECH", grade=None, brand=None,
+                      score=1.0, reason="")]
+    assert pie_service._is_discriminating(half) is False
+
+
+def test_the_tier_survives_into_the_candidates_a_caller_reads():
+    """It is carried on `Candidate` rather than recomputed, and the AMBIGUOUS
+    re-projection must not drop it — a caller re-asking the question of those
+    candidates has to get the same answer the refusal was based on."""
+    from app.pie_service import Bands
+
+    payload = {"record_id": "a", "description": "A", "grade": None,
+               "scores": {"combined": 0.96}, "attributes": {}, "explanation": "",
+               "rank_tier": [-0.96, 1, 0, 0, -0.96]}
+    cand = pie_service._candidates_from_suggestions([payload], Bands.default())[0]
+    assert cand.rank_tier == [-0.96, 1, 0, 0, -0.96]

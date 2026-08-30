@@ -617,7 +617,7 @@ own decision, reviewed on its own evidence.
 ---
 
 ## 022 — The RFQ harness counts a tie as an answer
-**Status:** OPEN — instrument defect, evidence below · **Report §:** 29
+**Status:** DONE — 2026-08-30 · **Report §:** 29
 
 **What it does.** `tools/eval_rfq.py`'s engine arm decides "answered" from the
 top candidate's score against `answer_at`. It does not ask whether the ranking
@@ -657,6 +657,77 @@ harness in the same change would be adjusting the instrument to agree with the
 result it had just produced. Numbers will move when this lands — coverage down,
 abstention up, precision probably up — and they should move on their own
 evidence, in a change that does nothing else.
+
+### What landed — and the second defect found on the way
+
+**The tie is `rank_tier`, not the score.** The first cut of the guard compared
+combined scores, which is one published component of a five-component ordering.
+It gets the wrong answer in both directions: an exact designation hit beside a
+neighbour at the same score reads as a tie, and — less obviously — a genuine
+separation on geometry reads as a tie wherever the leader's combined score is
+*lower* than its neighbour's. That second case is not hypothetical: a variation
+request ranks the varied record first at a score its own reference exceeds.
+
+So `equivalence/query.py` now publishes `rank_tier` on every suggestion — the
+sort key minus the `record_id` tail, which is sort order rather than evidence —
+and both consumers compare that. A consumer reconstructing the ranking from
+components is a consumer that drifts when the ranking changes.
+
+**The harness had the 017 defect itself.** Branch (a) of the engine arm answered
+from `is_authoritative_same_product` alone. On `reference-email-same-but` —
+*"same as 5000001 but 1.2 radius"* — that returned **5000001, the radius the
+customer asked to change**, as a *confident* answer, and it was graded
+wrong-confident. The engine's own ranking had 5000003, the 1.2 record, first;
+the arm short-circuited past it. The arm now requires `identity_role == ANSWER`.
+
+This is the more serious of the two. An instrument that reproduces the defect it
+measures reports the engine as worse than it is, and would have gone on
+reporting a wrong-confident case after the engine stopped producing one.
+
+### Measured, `--arms engine,baseline`, fixture catalogue
+
+| engine arm | before | after |
+|---|---|---|
+| precision | 60.0% | **87.5%** |
+| coverage | 71.4% | **57.1%** |
+| abstention | 28.6% | **42.9%** |
+| **wrong-confident** | **21.4%** | **7.1%** |
+
+Baseline unchanged at 70.0% precision / 7.1% wrong-confident, so this is the
+first run in which the engine beats the floor on precision. Three cases moved:
+
+* `reference-email-same-but` — was 5000001 (the reference, wrong-confident), now
+  **5000003**, correct. The 017 fix in the arm.
+* `underspec-wa-no-grade` — five-way tie, was answered, now **abstains**. The
+  case decision 022 was opened for.
+* `typo-pdf-ocr-noise` — *"CNMG l204l2 TN20O0"*, was answered 5000001, now
+  **abstains**. Four candidates share an identical tier, every one of them
+  `dimensionally_vacuous`: the OCR corruption was never repaired, so no
+  dimension was compared and the designation alone cannot choose. The label says
+  5000003. **Answering it would have been luck, and it was.** This is a real
+  coverage gap — OCR repair — not an instrument defect, and it should be closed
+  by teaching the pack to repair `l`→`1` and `O`→`0`, not by loosening this.
+
+Coverage falling by 14 points is the point of the change, not a cost of it: two
+of the three cases that stopped being answered were never answered by the
+engine.
+
+**Portal, same rule, no behaviour change.** The comment in `eval_rfq.py` says
+the two copies of the tie rule are deliberate and a change to either belongs in
+both, so `pie_service._is_discriminating` reads `rank_tier` too, falling back to
+the score comparison where the field is absent — the engine is loaded from
+`PIE_PARSER_ROOT` rather than vendored, so a payload predating the field is a
+live possibility, and the fallback errs towards abstention. Swept against the
+real catalogue, **no end-to-end answer changes**: the inputs that could exercise
+the difference are refused earlier, for `unverified` or for a genuinely tied
+tier. This half is an alignment of the rule, not a fix with evidence behind it,
+and is recorded as such.
+
+**Cost.** The harness now raises where a suggestion carries no `rank_tier`,
+rather than falling back. Two absent tiers compare equal, so a silent fallback
+would abstain on every case and report a more cautious engine instead of a
+broken instrument. The portal and the harness deliberately differ here: a quote
+must degrade safely, a measurement must fail loudly.
 
 ---
 

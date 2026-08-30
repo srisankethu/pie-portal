@@ -5,31 +5,36 @@
 // there were none. The one that mattered most was the engine's own:
 //
 //   "All shown candidate(s) matched on family/shape only — no dimension was
-//    comparable, so a perfect dimensional score is vacuous."
+//    comparable, so a perfect dimensional score there is vacuous …"
 //
 // It is stamped precisely when candidates *are* listed, and it was invisible
 // every time. A caveat shown only when there is nothing to caveat is not a
 // caveat, and the reader was left with a score and no reason to doubt it.
 //
 // The server-side guards are the ones that matter and are proven in
-// `backend/tests/test_pie_service.py` — a vacuous candidate is never TECH and
-// is never auto-selected. This file pins the half those cannot reach: that the
-// person choosing is actually told.
+// `backend/tests/test_pie_service.py` — an unverified candidate is never TECH
+// and is never auto-selected. This file pins the half those cannot reach: that
+// the person choosing is actually told.
 import { render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { SupplyDrawer } from "./SupplyDrawer";
 import type { Candidate, Line } from "../types";
 
+// Verbatim from `equivalence/query._add_vacuous_match_note` — the point of the
+// test is that *this* string reaches the screen, so a paraphrase would pass
+// while the real note stayed invisible.
 const VACUITY_NOTE =
   "All shown candidate(s) matched on family/shape only — no dimension was " +
-  "comparable, so a perfect dimensional score is vacuous.";
+  "comparable, so a perfect dimensional score there is vacuous (nothing was " +
+  "checked, not a confirmed size match). Confirm dimensions before treating " +
+  "one as an equivalent.";
 
 function candidate(over: Partial<Candidate> = {}): Candidate {
   return {
     code: "1855169", desc: "INS. NGE WITH CHIP BREAKER LC R 04",
     rel: "POSSIBLE", grade: null, brand: "Kennametal", score: 1.0,
-    reason: "family/shape only", attributes: {}, vacuous: true, ...over,
+    reason: "family/shape only", attributes: {}, unverified: true, ...over,
   };
 }
 
@@ -97,7 +102,7 @@ describe("SupplyDrawer caveats", () => {
     expect(screen.queryByText(/Before you choose/i)).not.toBeInTheDocument();
   });
 
-  it("does not present a vacuous candidate as selected supply", () => {
+  it("does not present an unverified candidate as selected supply", () => {
     // The server decides this; the drawer must not contradict it by drawing a
     // selection the response does not carry.
     const { container } = renderDrawer(lineWithCaveats());

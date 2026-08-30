@@ -221,7 +221,7 @@ def test_a_failed_pack_read_is_not_memoized(monkeypatch, tmp_path):
     assert families, "the pack became readable and the next call must see it"
 
 
-# --- a vacuous comparison is not an equivalence ------------------------------
+# --- an unverified comparison is not an equivalence -------------------------
 #
 # The engine gates on a field only when *both* sides specify it
 # (equivalence/distance.py), so a request it cannot decode is gated out of
@@ -233,11 +233,11 @@ def test_a_failed_pack_read_is_not_memoized(monkeypatch, tmp_path):
 # — returned carbide inserts and endmills at score 1.0, and on the MIXED path
 # square and screw-on inserts came back labelled TECH at 0.96.
 
-def _suggestion(code, combined, *, vacuous, dims):
+def _suggestion(code, combined, *, unverified, dims):
     return {"record_id": code, "description": f"desc {code}", "grade": None,
             "scores": {"combined": combined}, "attributes": {},
-            "dimensions_compared": dims, "dimensionally_vacuous": vacuous,
-            "explanation": "family/shape only" if vacuous else "geometry close"}
+            "dimensions_compared": dims, "dimensionally_vacuous": unverified,
+            "explanation": "family/shape only" if unverified else "geometry close"}
 
 
 def test_a_vacuous_comparison_never_claims_a_technical_relationship():
@@ -245,14 +245,14 @@ def test_a_vacuous_comparison_never_claims_a_technical_relationship():
     from app.pie_service import Bands
 
     cands = pie_service._candidates_from_suggestions(
-        [_suggestion("a", 0.96, vacuous=True, dims=0),
-         _suggestion("b", 0.70, vacuous=True, dims=0)],
+        [_suggestion("a", 0.96, unverified=True, dims=0),
+         _suggestion("b", 0.70, unverified=True, dims=0)],
         Bands.default())
 
     assert [c.rel for c in cands] == ["POSSIBLE", "POSSIBLE"], (
         "a comparison with no comparable dimension was reported as a technical "
         "equivalent")
-    assert all(c.vacuous for c in cands)
+    assert all(c.unverified for c in cands)
     assert all("could be compared" in c.reason for c in cands), (
         "the candidate carries the label but not the reason for it")
 
@@ -263,12 +263,12 @@ def test_the_same_scores_do_claim_one_when_something_was_compared():
     from app.pie_service import Bands
 
     cands = pie_service._candidates_from_suggestions(
-        [_suggestion("a", 0.96, vacuous=False, dims=3),
-         _suggestion("b", 0.70, vacuous=False, dims=3)],
+        [_suggestion("a", 0.96, unverified=False, dims=3),
+         _suggestion("b", 0.70, unverified=False, dims=3)],
         Bands.default())
 
     assert [c.rel for c in cands] == ["TECH", "COMPAT"]
-    assert not any(c.vacuous for c in cands)
+    assert not any(c.unverified for c in cands)
 
 
 def test_a_vacuous_leader_is_never_auto_selected():
@@ -280,8 +280,8 @@ def test_a_vacuous_leader_is_never_auto_selected():
         "resolution": {"outcome": "AUTO_MATCH", "input_semantics": "REQUIREMENT",
                        "matches": []},
         "identity_role": "NONE",
-        "suggestions": [_suggestion("a", 0.96, vacuous=True, dims=0),
-                        _suggestion("b", 0.70, vacuous=True, dims=0)],
+        "suggestions": [_suggestion("a", 0.96, unverified=True, dims=0),
+                        _suggestion("b", 0.70, unverified=True, dims=0)],
         "notes": [],
     }, Bands.default())
 
@@ -301,8 +301,8 @@ def test_a_real_leader_is_still_selected():
         "resolution": {"outcome": "AUTO_MATCH", "input_semantics": "REQUIREMENT",
                        "matches": []},
         "identity_role": "NONE",
-        "suggestions": [_suggestion("a", 0.96, vacuous=False, dims=3),
-                        _suggestion("b", 0.70, vacuous=False, dims=3)],
+        "suggestions": [_suggestion("a", 0.96, unverified=False, dims=3),
+                        _suggestion("b", 0.70, unverified=False, dims=3)],
         "notes": [],
     }, Bands.default())
 
@@ -320,3 +320,73 @@ def test_a_bearing_is_not_a_carbide_insert():
     assert not any(c.rel in ("TECH", "COMPAT") for c in res.candidates), (
         "an insert or an endmill was offered as technically equivalent to a "
         "deep-groove ball bearing")
+
+
+def test_a_dimension_the_candidate_does_not_carry_also_counts_as_unverified():
+    """The finer-grained half, and the one that survives a decorated master.
+
+    ``dimensionally_vacuous`` is all-or-nothing: it fires only when *nothing*
+    was comparable. But `distance.py` skips a dimension the candidate lacks
+    rather than penalising it — right for the score, since missing data must
+    not read as a mismatch — so a record silent on the one dimension the
+    customer changed, while agreeing on two incidental ones, scored 1.0 and was
+    neither flagged nor refused.
+
+    Measured at 2.1% of scored candidates on today's homogeneous catalogue, and
+    the rate rises with exactly what this programme adds: sparse attributes on
+    a decorated master, and a second manufacturer's pack.
+    """
+    from app.pie_service import Bands
+
+    partial = {
+        "record_id": "a", "description": "A", "grade": None,
+        "scores": {"combined": 0.96}, "attributes": {},
+        "dimensions_compared": 2, "dimensionally_vacuous": False,
+        "field_breakdown": [
+            {"field": "edge_length_mm", "tier": "dimension", "status": "exact"},
+            {"field": "thickness_mm", "tier": "dimension", "status": "exact"},
+            # the one the request was actually about
+            {"field": "corner_radius_mm", "tier": "dimension",
+             "status": "candidate_absent"},
+        ],
+        "explanation": "two of three",
+    }
+    cands = pie_service._candidates_from_suggestions([partial], Bands.default())
+
+    assert cands[0].unverified, (
+        "a candidate silent on a dimension the request specified was treated "
+        "as fully compared")
+    assert cands[0].rel == "POSSIBLE"
+
+
+def test_every_specified_dimension_compared_is_still_a_technical_equivalent():
+    """The guard costs nothing where the comparison really was complete."""
+    from app.pie_service import Bands
+
+    complete = {
+        "record_id": "a", "description": "A", "grade": None,
+        "scores": {"combined": 0.96}, "attributes": {},
+        "dimensions_compared": 3, "dimensionally_vacuous": False,
+        "field_breakdown": [
+            {"field": "edge_length_mm", "tier": "dimension", "status": "exact"},
+            {"field": "corner_radius_mm", "tier": "dimension", "status": "near"},
+            {"field": "iso_shape", "tier": "gate", "status": "match"},
+        ],
+        "explanation": "close",
+    }
+    cands = pie_service._candidates_from_suggestions([complete], Bands.default())
+
+    assert not cands[0].unverified
+    assert cands[0].rel == "TECH"
+
+
+def test_a_payload_with_no_markers_at_all_is_taken_at_face_value():
+    """Three keys are read and any one of them settles it. A payload carrying
+    none is an engine this code cannot reason about, and inventing a verdict
+    for it would be its own benign default."""
+    from app.pie_service import Bands
+
+    bare = {"record_id": "a", "description": "A", "grade": None,
+            "scores": {"combined": 0.96}, "attributes": {}, "explanation": ""}
+    assert not pie_service._candidates_from_suggestions(
+        [bare], Bands.default())[0].unverified

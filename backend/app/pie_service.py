@@ -132,20 +132,28 @@ class Candidate:
     score: Optional[float] = None   # combined equivalence score (None for exact)
     reason: str = ""                # human explanation from the engine
     attributes: Dict[str, Any] = field(default_factory=dict)
-    #: The engine compared **no dimension** of the request against this record —
-    #: it stamps ``dimensionally_vacuous`` on exactly that case, and the score
-    #: beside it is a ceiling nothing pushed down rather than a measure of fit.
-    #: Carried so the band mapping and the auto-selection can both refuse it;
-    #: without it a bearing scored 1.0 against a carbide insert reads as a
-    #: technical equivalent.
-    vacuous: bool = False
+    #: The comparison did not cover everything the request specified, so the
+    #: score beside it is a ceiling nothing pushed down rather than a measure of
+    #: fit. Two ways that happens, and they are one fact for a reader:
+    #:
+    #: * **nothing** was comparable — the engine's own ``dimensionally_vacuous``.
+    #:   A bearing scored 1.0 against a carbide insert.
+    #: * **something** was: the request named a dimension this record does not
+    #:   carry, and `distance.py` skips it rather than penalising it
+    #:   (``candidate_absent``). A record silent on the one dimension the
+    #:   customer changed, agreeing on two incidental ones, scored 1.0.
+    #:
+    #: Either way the engine could not verify the fit, and an unverified fit is
+    #: not a technical equivalence. Carried so the band mapping and the
+    #: auto-selection can both refuse it.
+    unverified: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "code": self.code, "desc": self.desc, "rel": self.rel,
             "grade": self.grade, "brand": self.brand, "score": self.score,
             "reason": self.reason, "attributes": self.attributes,
-            "vacuous": self.vacuous,
+            "unverified": self.unverified,
         }
 
 
@@ -622,8 +630,20 @@ class PieService:
         #      Without this branch the match is simply dropped — `matches` is
         #      read nowhere else — and the line would show "no PIE match" while
         #      the engine had in fact found the record and said "confirm this".
+        #
+        #      Only for an input that *is* a code. A confirmation files "this
+        #      customer's code means this product" forever, so the thing being
+        #      confirmed has to be a code — and for a scoped customer the
+        #      reference in "same as X but 0.4 corner radius" is demoted to
+        #      CANDIDATE/NEEDS_REVIEW and arrived here, offering to record that
+        #      the whole variation sentence means the unvaried product X. It
+        #      could never have fired at resolution time (the mapping is keyed
+        #      on the sentence, and lookups are keyed on identifier tokens), so
+        #      it was a permanent, audited, wrong assertion rather than a wrong
+        #      answer. ``IDENTITY`` is the engine already deciding "this text is
+        #      an identifier", which is exactly the precondition.
         cands_m = [m for m in matches if m.get("certainty") == "CANDIDATE"]
-        if cands_m and outcome == "NEEDS_REVIEW":
+        if cands_m and outcome == "NEEDS_REVIEW" and semantics == "IDENTITY":
             notes += [str(e) for e in (res.get("explanation") or [])]
             return Resolution(
                 text, text, "Confirm this is the right product", "AMBIGUOUS", None,
@@ -652,14 +672,29 @@ class PieService:
         #     "top" suggestion is an artefact of ordering, not a technical
         #     equivalent — auto-selecting and pricing it would put a fabricated
         #     match on a customer quote. Abstain and show the options instead.
-        cands = self._candidates_from_suggestions(suggestions, bands)
-        # A reference (1r) is offerable but never rankable: appended last, and
-        # carrying no score, so it cannot become ``top`` and cannot affect
-        # whether the ranking discriminates.
-        if ref_cand is not None and not any(c.code == ref_cand.code for c in cands):
+        cands = self._candidates_from_suggestions(
+            suggestions, bands,
+            # The reference must not appear twice, and the copy that has to go
+            # is the *ranked* one. It is normally top of the list: the effective
+            # requirement is derived from the reference's own facts, so the
+            # reference matches it better than anything else does — which is how
+            # "same as X but 3 flute" came back TECH on X, through the very
+            # branch added to stop it. Excluding it here, rather than skipping
+            # the append when it is already present, is the difference between
+            # demoting the reference and re-promoting it.
+            exclude=ref_cand.code if ref_cand is not None else None)
+        # Re-added last and carrying no score, so it cannot become ``top`` and
+        # cannot affect whether the ranking discriminates. Offerable, never
+        # auto-selected.
+        if ref_cand is not None:
             cands = cands + [ref_cand]
         if (cands and self._is_discriminating(cands) and outcome != "UNRESOLVED"
-                and not cands[0].vacuous):
+                and not cands[0].unverified
+                # Appending the reference last is not enough on its own: when
+                # the derived requirement matches nothing, the reference is the
+                # *only* candidate, and `_is_discriminating` returns True for a
+                # single one. Position was doing the work; this states the rule.
+                and cands[0] is not ref_cand):
             top = cands[0]
             desc = self._requirement_desc(text, top)
             return Resolution(text, text, desc, top.rel, top.code, cands,
@@ -675,7 +710,7 @@ class PieService:
                 "No dimension of the request could be compared against these "
                 "candidates, so their scores say nothing about fit — pick the "
                 "intended product before quoting."
-                if cands[0].vacuous else
+                if cands[0].unverified else
                 "The engine could not distinguish between these candidates for "
                 "this input — pick the intended product before quoting.")
             return Resolution(
@@ -683,7 +718,7 @@ class PieService:
                 "AMBIGUOUS", None,
                 [Candidate(code=c.code, desc=c.desc, rel="POSSIBLE", grade=c.grade,
                            brand=c.brand, score=c.score, reason=c.reason,
-                           attributes=c.attributes, vacuous=c.vacuous)
+                           attributes=c.attributes, unverified=c.unverified)
                  for c in cands],
                 outcome, semantics, notes)
 
@@ -710,12 +745,12 @@ class PieService:
             # honest ceiling is POSSIBLE. `_rel_from_score` is left alone — it
             # maps a score to a band and that mapping is still correct; what
             # was wrong was feeding it a score that measured nothing.
-            vacuous = bool(s.get("dimensionally_vacuous"))
+            unverified = self._unverified(s)
             rel = force_rel or self._rel_from_score(combined, bands)
-            if vacuous and rel in ("TECH", "COMPAT"):
+            if unverified and rel in ("TECH", "COMPAT"):
                 rel = "POSSIBLE"
             reason = s.get("explanation") or ""
-            if vacuous:
+            if unverified:
                 reason = (("No dimension of the request could be compared "
                            "against this record, so its score is not a measure "
                            "of fit. ") + reason).strip()
@@ -728,9 +763,38 @@ class PieService:
                 score=combined,
                 reason=reason,
                 attributes=s.get("attributes", {}) or {},
-                vacuous=vacuous,
+                unverified=unverified,
             ))
         return out
+
+    @staticmethod
+    def _unverified(suggestion: Dict[str, Any]) -> bool:
+        """Did the comparison cover everything the request specified?
+
+        Reads the engine's own markers rather than re-deriving the conditions —
+        ``dimensionally_vacuous`` for "nothing was comparable", and a
+        ``candidate_absent`` dimension in ``field_breakdown`` for "the request
+        named a dimension this record does not carry". ``distance.py`` skips
+        that second case rather than penalising it, deliberately (missing data
+        must not look like a mismatch) — which is right for the *score* and
+        wrong for a claim of equivalence built on it.
+
+        Absence of the marker must not read as "a real comparison happened",
+        for the same reason absence of ``identity_role`` must not read as
+        ANSWER. The engine is loaded from ``PIE_PARSER_ROOT`` rather than
+        vendored, so a payload predating a marker is a live possibility, and
+        both conditions are derivable from the same payload. Only a payload
+        carrying none of the three keys is taken at face value.
+        """
+        flagged = suggestion.get("dimensionally_vacuous")
+        if flagged:
+            return True
+        breakdown = suggestion.get("field_breakdown")
+        if breakdown is not None and any(
+                m.get("tier") == "dimension" and m.get("status") == "candidate_absent"
+                for m in breakdown):
+            return True
+        return flagged is None and suggestion.get("dimensions_compared") == 0
 
     @staticmethod
     def _is_discriminating(cands: List[Candidate]) -> bool:

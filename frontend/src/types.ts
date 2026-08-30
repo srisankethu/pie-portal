@@ -14,11 +14,13 @@ export interface Candidate {
   score: number | null;
   reason: string;
   attributes: Record<string, unknown>;
-  /** The engine compared no dimension of the request against this record, so
-   *  `score` is a ceiling nothing pushed down rather than a measure of fit.
-   *  Such a candidate is never `TECH` or `COMPAT` and is never auto-selected;
-   *  the flag is here so a screen can say *why* it is only a possibility. */
-  vacuous?: boolean;
+  /** The comparison did not cover everything the request specified — either
+   *  nothing was comparable, or the request named a dimension this record does
+   *  not carry — so `score` is a ceiling nothing pushed down rather than a
+   *  measure of fit. Such a candidate is never `TECH` or `COMPAT` and is never
+   *  auto-selected; the flag is here so a screen can say *why* it is only a
+   *  possibility. */
+  unverified?: boolean;
 }
 
 export interface Economics {

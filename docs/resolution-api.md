@@ -160,9 +160,20 @@ at the characters the code was found in.
 **`status: "RESOLVED"` means the engine selected a record, not that it was
 certain.** `relationship` is how strong that selection is — `EXACT` (identity),
 `TECH` and `COMPAT` (the two equivalence bands this organization sets), and
-`POSSIBLE` (the engine's ranking discriminated, but below the compatibility
-band). Read `relationship` and `equivalence_score` together and decide; a
-`POSSIBLE` is a suggestion to check, not a part to quote unseen. The line is
+`POSSIBLE` (below the compatibility band — *or* above it on a comparison the
+engine could not complete). Read `relationship` and `equivalence_score`
+together and decide; a `POSSIBLE` is a suggestion to check, not a part to quote
+unseen.
+
+**`comparison_complete: false` is why a high score can still be `POSSIBLE`.**
+The engine skips a dimension neither side carries rather than penalising it, so
+a request it could not decode is compared against nothing and every candidate
+scores near the ceiling — a ball bearing scored 1.0 against a carbide insert.
+A candidate whose comparison did not cover everything the request specified is
+capped at `POSSIBLE` however high it scored, and never auto-selected. Treat
+`comparison_complete: false` as "the score is a ceiling, not a fit": the
+relationship is what the engine is willing to claim, and this field says how
+much was actually checked to support it. The line is
 drawn where the Quote Builder draws it, deliberately — an API that abstained
 where the screen answered would make "did PIE resolve this?" depend on who
 asked.

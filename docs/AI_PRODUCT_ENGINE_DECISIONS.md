@@ -378,9 +378,61 @@ document from `Resolution.supplyCode` and `.candidates` rather than re-reading
 which still requires a single-candidate `NEEDS_REVIEW` — so a reference cannot
 become a confirmable mapping.
 
-Gates: pie-parser **419 passed**, all six steps. pie-portal **3,558 passed, 34
+Gates: pie-parser **439 passed**, all six steps. pie-portal **3,581 passed, 34
 skipped**, all seven steps including PostgreSQL migrations, row-level security
 and the restore drill.
+
+### The first version of this fix was wrong, and an adversarial pass caught it
+
+Recorded because the failure is more instructive than the fix. Three
+independent reviewers were pointed at the landed change with instructions to
+defeat it. Two did, immediately:
+
+1. **It fixed one string, not the defect.** `detect_mixed` recognises only
+   "same/like/similar … but/instead/->". Every other phrasing of a variation —
+   `"2001174 but 0.4 corner radius"`, `"2001174 with 0.4"`, `"like 2001174 in
+   0.4"`, `"2001174 uncoated"` — classified as REQUIREMENT, and the branch that
+   answers an exact identity fired **without checking what the classifier
+   said**, returning the unvaried product as EXACT. The fix's own test file
+   listed one of those strings and passed, because the test asserted only that
+   the role was *one of the three values* — a shape assertion cannot see a
+   wrong value.
+2. **The guard voided itself in the common case.** The reference is normally
+   *in* `suggestions`, usually first: the effective requirement is derived from
+   the reference's own facts, so the reference matches it better than anything
+   else. The labelled `POSSIBLE` copy was appended only when no candidate
+   already carried that code — so in the common case nothing was appended, the
+   *ranked* copy stayed at position 0, and it was auto-selected with a score
+   band. Measured: **21 of 120** sampled variation requests auto-selected their
+   own reference, at `TECH`.
+
+Both are fixed. `run` now refuses to answer an exact identity unless the
+identifier accounts for the whole input — reusing `classify`, which already
+decides exactly that, rather than teaching one regex every phrasing of a change
+— and the classifier learned that a *count* is not a specification, so
+`"2001174 x 10 nos"` still resolves exactly while `"2001174 but 0.4"` does not.
+The reference is now **excluded from the ranked list and re-added last**, and
+branch (3) refuses to auto-select it even when it is the only candidate.
+Re-measured: **0 of 120**.
+
+Three smaller holes closed with them: an unverified comparison was not refused
+when the payload carried `dimensions_compared` but no `dimensionally_vacuous`
+key (the same benign default this fix was written to remove, left in the fix
+itself); a variation could still be offered as a **confirmable identity** for a
+scoped customer, filing "this sentence means the unvaried product" permanently;
+and `distance.py` skips a dimension the candidate does not carry, so a record
+silent on the one dimension the customer changed — agreeing on two incidental
+ones — scored 1.0, was not flagged, and was auto-selected. That last one is
+2.1% of scored candidates today and rises with exactly what Phase 1 adds, so
+the portal now treats *any* incomplete comparison as unverified, not only a
+wholly vacuous one. The field is named `unverified` rather than `vacuous`
+because it now means both.
+
+**The lesson worth keeping:** a fix for a "confidently wrong" defect is exactly
+the kind of change that is itself confidently wrong. Every assertion in the
+first round's tests passed. What caught it was running the real engine over a
+sample of the real catalogue and counting — which is the same instrument
+`docs/concepts/13` used, and the one this report keeps recommending.
 
 ### Not fixed here, and deliberately
 

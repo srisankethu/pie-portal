@@ -203,6 +203,21 @@ def test_no_cost_or_margin_crosses_this_surface(client, monkeypatch, tmp_path):
             assert "payload" not in jsonlib.loads(line), \
                 "a record carried the corpus's opaque commercial columns"
 
-    flat = jsonlib.dumps(body).lower()
-    for word in ("cost", "margin", "price"):
-        assert f'"{word}"' not in flat
+    # Every key, recursively, rather than `'"cost"' in json.dumps(...)`: that
+    # form matches only a key named exactly "cost" and would wave through
+    # `unit_cost`, `cost_price` or `avg_margin` — an assertion that passes
+    # while the defect is present, which is the shape of test this class of
+    # rule keeps being defeated by.
+    def keys(node, path="$"):
+        if isinstance(node, dict):
+            for k, v in node.items():
+                yield f"{path}.{k}", str(k)
+                yield from keys(v, f"{path}.{k}")
+        elif isinstance(node, list):
+            for i, v in enumerate(node):
+                yield from keys(v, f"{path}[{i}]")
+
+    for where, key in keys(body):
+        low = key.lower()
+        for word in ("cost", "margin", "price"):
+            assert word not in low, f"{where} names {word!r} on a nomenclature surface"

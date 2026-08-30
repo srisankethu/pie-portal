@@ -778,6 +778,63 @@ class ZohoApiSource(ZohoTransport):
                 # everything downstream sees one value under one name, so
                 # nothing else has to know there were two candidates.
                 "manufacturer": i.get("manufacturer") or i.get("brand"),
+                # The taxonomy somebody in this business actually maintains.
+                # Two custom fields, both on the *list* payload the master pull
+                # already reads, so this costs no extra call:
+                #
+                # * ``cf_item_type`` — the tool class. Insert, Drill, Endmill,
+                #   Tap, Toolbit, Tool Holder, Measuring Instrument.
+                # * ``cf_item_category`` — the operation. Milling, Holemaking,
+                #   Threading, Turning, Toolholding, Grooving & Parting,
+                #   General.
+                #
+                # Neither is ``category_name``, which is Zoho's own Inventory
+                # category and is set on none of these items. Measured on the
+                # live SLS master (2026-08-30): both present on 23 of 23 items
+                # sampled across two distant slices of the name-sorted list,
+                # against 0 of 800 for ``category_name``.
+                #
+                # Raw, and interpreted at read time, for exactly the reason
+                # ``category`` and ``manufacturer`` are: the map from these
+                # words onto anything the platform reasons with is policy, it
+                # is versioned, and a value rewritten at sync time could never
+                # be re-read under a corrected map without a full re-sync.
+                #
+                # Named ``source_item_*`` and not ``item_*``: this payload
+                # already carries ``item_type``, which is Zoho's own
+                # inventory-versus-service kind. The first cut of this used the
+                # short name, the later key silently overwrote the earlier one,
+                # and both fields read None.
+                #
+                # It is a person's answer, not a verified fact, and the
+                # difference is visible in the data: "HSS Taper Shank Reamer
+                # Dia 10mm" is filed Tap / Threading, and a reamer is neither.
+                # Carry it as evidence about an item; do not gate on it.
+                "source_item_type": i.get("cf_item_type"),
+                "source_item_category": i.get("cf_item_category"),
+                # Two more item custom fields exist on this book and are
+                # deliberately NOT read.
+                #
+                # ``cf_bin_location`` and ``cf_catalog_status`` are configured
+                # — both active in the field definitions — and set on 0 of the
+                # 23 items sampled. Zoho omits an unset custom field entirely,
+                # so absent here means unset rather than unconfigured. Reading
+                # them would add two always-null columns; the day they are
+                # populated they are two more lines exactly like the two above.
+                # ``cf_catalog_status`` needs one extra care when that happens:
+                # it is a dropdown whose *definition* defaults to REGULAR, so a
+                # missing value must not be read as REGULAR — that is the
+                # benign default this codebase refuses everywhere else.
+                #
+                # ``cf_end_customer`` is a lookup onto a customer. Copying it
+                # here would put a customer's identity on a product row, which
+                # is ``trust/``'s concern and not this one's, and it would
+                # travel to every reader of the catalogue. Not read.
+                #
+                # ``cf_estimate_delivery_date`` is a real lead-time signal and
+                # is the first evidence found for decision 016, which is open.
+                # Reading it belongs in that decision, with the persist-or-fetch
+                # question settled, not smuggled in here.
                 "status": (i.get("status") or "active"),
                 # Stock travels on the item list Zoho already returns, so this
                 # costs nothing extra. Passed through raw — including the blank

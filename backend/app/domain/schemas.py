@@ -60,6 +60,12 @@ class ProductIn(BaseModel):
     #: Who makes the item, likewise raw. See ``models.Product.manufacturer``
     #: for why this is not a vendor.
     manufacturer: Optional[str] = None
+    #: The source's own tool class and operation, raw. See
+    #: ``models.Product.source_item_type`` for what they are and what they are not.
+    #: A source that keeps no such taxonomy leaves them None, which is the
+    #: honest value — not a guess from the item's name.
+    source_item_type: Optional[str] = None
+    source_item_category: Optional[str] = None
     active: bool = True
     source_ref: SourceRef
 

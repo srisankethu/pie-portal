@@ -95,6 +95,10 @@ def normalize_product(raw: dict[str, Any], *, system: str = ZOHO) -> ProductIn:
         category=(str(raw["category_name"]) if raw.get("category_name") else None),
         manufacturer=(str(raw["manufacturer"]) if raw.get("manufacturer")
                       else None),
+        source_item_type=(str(raw["source_item_type"])
+                          if raw.get("source_item_type") else None),
+        source_item_category=(str(raw["source_item_category"])
+                              if raw.get("source_item_category") else None),
         active=(status == "active"),
         source_ref=SourceRef(system=system, record_type="item", record_id=str(iid)),
     )

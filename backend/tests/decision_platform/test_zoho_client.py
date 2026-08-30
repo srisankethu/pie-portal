@@ -240,6 +240,109 @@ def test_an_items_sku_reaches_the_identity_layer():
     assert list(_src(http=http).list_items())[0]["sku"] == "KCMT090304LF"
 
 
+# ── the taxonomy the business maintains ─────────────────────────────────────
+#
+# A live item row, trimmed to the fields under test. Every value here is copied
+# from the SLS master on 2026-08-30, including the misfiling in the last test:
+# these are the shapes the client actually meets, not invented ones.
+
+def _items(*rows):
+    return FakeHttp({"/items": {"code": 0, "items": list(rows),
+                                "page_context": {"has_more_page": False}}})
+
+
+def test_the_maintained_item_taxonomy_is_carried_rather_than_discarded():
+    """`cf_item_type` and `cf_item_category` are on the *list* payload, so this
+    costs no extra call — and the column the platform did read is empty."""
+    row = {"item_id": 7, "name": "0.5x06x38x 2FL", "status": "active",
+           "cf_item_type": "Endmill", "cf_item_category": "Milling"}
+    payload = list(_src(http=_items(row)).list_items())[0]
+
+    assert payload["source_item_type"] == "Endmill"
+    assert payload["source_item_category"] == "Milling"
+    assert payload["category_name"] is None, (
+        "Zoho's own Inventory category is what these books leave empty; if it "
+        "starts arriving, the two fields above are still the maintained ones")
+
+
+def test_the_taxonomy_is_carried_verbatim_and_not_mapped_on_the_way_in():
+    """Raw for the reason `category` and `manufacturer` are: the map onto
+    anything the platform reasons with is versioned policy, and a value
+    rewritten at sync time can never be re-read under a corrected map."""
+    row = {"item_id": 7, "name": "x", "status": "active",
+           "cf_item_type": "Tool Holder", "cf_item_category": "Grooving & Parting"}
+    payload = list(_src(http=_items(row)).list_items())[0]
+
+    assert payload["source_item_type"] == "Tool Holder"
+    assert payload["source_item_category"] == "Grooving & Parting"
+
+
+def test_an_unclassified_item_says_nothing_rather_than_guessing():
+    """Zoho omits an unset custom field entirely. Absent must stay absent: the
+    item's name is right there and inferring from it is how a wrong part gets
+    quoted."""
+    row = {"item_id": 7, "name": "CNMG 120408 INSERT", "status": "active"}
+    payload = list(_src(http=_items(row)).list_items())[0]
+
+    assert payload["source_item_type"] is None
+    assert payload["source_item_category"] is None
+
+
+def test_the_customer_lookup_on_an_item_is_not_copied_onto_the_product():
+    """`cf_end_customer` is configured on this book. Carrying it would put a
+    customer's identity on a catalogue row that every reader of the catalogue
+    can see — `trust/`'s concern, and not solved by copying it here first."""
+    row = {"item_id": 7, "name": "x", "status": "active",
+           "cf_end_customer": "Some Customer Pvt Ltd",
+           "cf_end_customer_unformatted": "Some Customer Pvt Ltd"}
+    payload = list(_src(http=_items(row)).list_items())[0]
+
+    assert not [k for k, v in payload.items()
+                if isinstance(v, str) and "Some Customer" in v]
+
+
+def test_a_misfiled_item_is_carried_as_the_person_filed_it():
+    """A taper-shank reamer filed Tap / Threading, from the live master. The
+    client does not correct it and does not drop it: it is evidence about the
+    item, and a reader who is shown the source's own words can see it is wrong.
+    Silently repairing it here would hide the one signal that the taxonomy
+    needs maintaining."""
+    row = {"item_id": 7, "name": "HSS Taper Shank Reamer Dia 10mm",
+           "status": "active", "cf_item_type": "Tap",
+           "cf_item_category": "Threading"}
+    payload = list(_src(http=_items(row)).list_items())[0]
+
+    assert payload["source_item_type"] == "Tap"
+
+
+def test_the_two_item_type_fields_do_not_shadow_each_other():
+    """Zoho has two unrelated notions of "item type" and this payload carries
+    both: ``item_type`` is inventory-versus-service, ``cf_item_type`` is the
+    tool class. The first cut of this used one key for both, the later
+    assignment won, and *both* fields read as the wrong thing. The name is
+    long for this reason."""
+    row = {"item_id": 7, "name": "x", "status": "active",
+           "item_type": "inventory", "cf_item_type": "Endmill"}
+    payload = list(_src(http=_items(row)).list_items())[0]
+
+    assert payload["item_type"] == "inventory"
+    assert payload["source_item_type"] == "Endmill"
+
+
+def test_the_taxonomy_survives_the_by_id_fetch_as_well():
+    """`get_item` and `list_items` share `_item_payload` so the racing case
+    cannot write a subtly different row. This is that promise, for the new
+    fields."""
+    row = {"item_id": 7, "name": "x", "status": "active",
+           "cf_item_type": "Insert", "cf_item_category": "Turning"}
+    http = FakeHttp({"/items/7": {"code": 0, "item": row},
+                     "/items": {"code": 0, "items": [row],
+                                "page_context": {"has_more_page": False}}})
+    src = _src(http=http)
+
+    assert src.get_item("7") == list(src.list_items())[0]
+
+
 def test_invoice_detail_is_fetched_for_line_items():
     """List rows carry no line items — the detail call is what the signals need."""
     listing = {"code": 0, "invoices": [{"invoice_id": "INV1", "date": _today(10), "status": "paid"}],

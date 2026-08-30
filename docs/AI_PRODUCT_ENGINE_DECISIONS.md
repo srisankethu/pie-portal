@@ -236,3 +236,66 @@ cross-reference a grade at all today, and grade is the field
 `docs/concepts/13` measured as carrying 100% of the confidence gap. Ten sourced
 rows cost a morning, need no code, and are the precondition for measuring
 cross-brand equivalence at all.
+
+---
+
+## 014 — Batch jobs are chunked; the queue is extended, not replaced
+**Status:** PROPOSED · **Phase:** 1 · **Report §:** 21, 34
+
+**Decision.** Long jobs (master decode, re-index, re-embed) are submitted as
+**chunks over a product range**, each carrying a progress row, following
+`ingestion/jobs.execute_sync`'s per-phase `commit`.
+
+**Why this needs saying.** The queue is durable and correct, but it runs a
+**single-threaded worker loop per process, draining sequentially**, with no
+chunking, no streaming and no per-job progress outside `SyncRun`. A 100k-row
+decode submitted as one message would hold the only worker for its whole
+duration and report nothing while it ran — and a flush nobody can read is not
+progress reporting.
+
+**Rejected.** A second queue, a broker, or a worker pool. The gap is a message
+shape, not infrastructure.
+
+---
+
+## 015 — Evaluation is staffed from Phase 1, and reports per category
+**Status:** PROPOSED · **Phase:** 1 → throughout · **Report §:** 29, 39
+
+**Decision.** Workstream 12 starts with Phase 1 and runs in parallel
+throughout. `tools/scorecard.py` stays the single definition of what an
+evaluation counts; both harnesses keep filling it and no second scorecard is
+introduced. **`wrong_confident_rate` is the false-equivalence metric** and is
+the only measure permitted to block a release.
+
+**Why now rather than after Phase 6.** The instrument already exists and is
+already reporting — and what it reports is a reason to act rather than to wait:
+on fourteen RFQ cases the engine arm scores 60.0% precision, 71.4% coverage and
+**21.4% wrong-confident**, against a baseline arm at 70.0% / 71.4% / **7.1%**.
+Fourteen cases supports no conclusion about the engine; it does establish that
+the measurement exists, that it can move in the wrong direction, and that the
+dataset — not the metric — is the missing half.
+
+**Consequence.** A metric introduced after the thing it measures tends to be a
+metric the thing already passes.
+
+---
+
+## 016 — Lead time and selling price need a decision before Phase 8
+**Status:** OPEN — decision required · **Phase:** 8 · **Report §:** 12, 40
+
+**The situation.** Of the brief's commercial ranking signals, stock, supplier
+and cost are persisted; **selling price is not stored on `products` at all**
+(it is read live per quote line from Zoho), **lead time is not stored at all**
+(`expected_date` is blank on effectively every purchase order, and the only
+derivation needs three prior receipts), and warehouse data arrives from one
+connector out of six.
+
+**The choice.** Persist them on a sync — a schema and freshness question — or
+fetch live per candidate, which at ten candidates a line is a per-quote latency
+decision. Both are defensible; neither is a modelling problem, and Phase 8
+cannot be scoped until one is chosen.
+
+**Not a decision to defer into implementation.** A ranking that silently ranks
+on a stale or absent lead time is the benign default this codebase already
+refuses three times over: the answer would be UNKNOWN, and a candidate whose
+availability is UNKNOWN must say so rather than sort as though it were quick.

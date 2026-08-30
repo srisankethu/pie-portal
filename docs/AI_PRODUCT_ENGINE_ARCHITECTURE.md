@@ -315,9 +315,13 @@ data-driven source-column mapping), decodes each name through the parser, and
 gates on a **full ISO slot fill**: `GATED_SLOTS = ("iso_shape",
 "edge_length_mm", "corner_radius_mm")`. The gate is well-reasoned — an
 ungated family route misroutes badly (an `M3X11` screw routes to
-`turning_insert`), while three-slot fill misroutes at 1 row in 2,057. Its
-`DecodeOutcome.slots` is exactly the per-item attribute bag this project needs.
-It is computed for a report and discarded.
+`turning_insert`), while three-slot fill misroutes at 1 row in 2,057. `DecodeOutcome.slots` is the per-item attribute bag this project needs —
+**except that it is filtered down to the three gated slot names before
+`analysis` ever sees it.** The other eleven the engine decoded (`coating`,
+`material_class`, `thickness_mm`, `flute_count` and the rest) are dropped
+inside `decode_names`. The package imports no SQLAlchemy at all — pinned by a
+test — and writes nothing but stdout, `--out` and `--json`. So the attributes
+are decoded, narrowed elevenfold, printed, and thrown away.
 
 **And there is a socket waiting for it.** `equivalence/catalog.py:ZohoCatalogSource`
 already reads `grade`, `iso_shape`, `product_family`, `corner_radius_mm` and
@@ -464,9 +468,38 @@ purchase_orders, users`. `WRITE_STAGES` is separate and currently
 grants. Permissions declare which stages they cover and a test holds the claim
 against the implementation both ways.
 
+**The product row is the ceiling for every connector, not just for Zoho.**
+`normalize_product` builds `ProductIn(external_id, name, uom, hsn, category,
+manufacturer, active, source_ref)` and nothing else, so no connector can supply
+a technical attribute even if its source system holds one. Coverage is uneven
+below that: Zoho is the only source supplying `hsn` and `manufacturer`;
+NetSuite and Prophet 21 supply only id, name, SKU, status and item type. A
+source is a duck-typed Protocol and optional stages are probed with `hasattr`,
+so **a source missing a stage produces no rows and no error** — silence, not a
+failure.
+
 `ingestion/jobs.execute_sync` **commits at each phase boundary** rather than
 holding one long transaction — both for lock contention and because a flush
 nobody else can read is not progress reporting.
+
+**What the commercial ranking inputs actually look like today**, because
+Phase 8 depends entirely on this and three of the six are weaker than they
+sound:
+
+| Input | Persisted? | Where | Caveat |
+|---|---|---|---|
+| Stock | **Yes** | `stock_snapshots` (on-hand, available, reorder level, purchase rate), one row per item per day, upserted | Skipped entirely when all three stock keys are `None` |
+| Warehouse | **Partly** | `locations`, `stock_location_snapshots` | **Zoho only** — no ERP connector implements the location stages |
+| Supplier | **Yes** | `vendors`, `cost_records.vendor_id` | — |
+| Cost | **Yes** | `cost_records.unit_cost` (bill-line grain), `stock_snapshots.purchase_rate` | Manager scope only |
+| **Selling price** | **No** | — | **Not persisted on `products` at all.** Read live per quote line from Zoho (`get_item` → `rate`) |
+| **Lead time** | **No** | — | Not stored. `PurchaseOrderDoc.expected_date` is documented as blank on effectively every order; `insight/supply.py` derives a lead time only from `received_on − ordered_on`, behind a floor of three receipts |
+
+So of the brief's commercial signals, **lead time and price are not available as
+persisted facts**, and warehouse is available for one connector out of six.
+Ranking on them requires either persisting them or accepting a live call per
+candidate — which at ten candidates per line is a per-quote latency decision,
+not a modelling one.
 
 ## 13. Existing integrations
 
@@ -800,7 +833,15 @@ generated OpenAPI contract.
 ## 21. Proposed background jobs
 
 All on the **existing** `queued_messages` queue — conditional-`UPDATE` claim,
-heartbeat, `reap_stale`, bounded retry, `DEAD_LETTER`. No new infrastructure.
+heartbeat, `reap_stale`, three attempts with 30 s→900 s backoff, `DEAD_LETTER`.
+No new infrastructure is needed, but the queue is **not** adequate unchanged:
+it runs a **single-threaded worker loop per process draining messages
+sequentially**, with two topics, **no chunking, no streaming, and no per-job
+progress** other than what `SyncRun` reports for a sync. A 100k-row decode
+submitted as one message would occupy the only worker for the duration and
+report nothing while it ran. The additive fix is to **chunk by product range
+and carry a progress row**, following `execute_sync`'s per-phase commit — not
+to replace the queue.
 
 | Job | Trigger | Idempotency |
 |---|---|---|
@@ -1064,15 +1105,31 @@ primary metric —
 > `CONFIRMED_EQUIVALENT` or `FUNCTIONAL_EQUIVALENT` that a domain expert judges
 > not to be. It is the only metric permitted to block a release.
 
-**Could it be measured today? No, and the gap is specific.** `pie-parser`
-already has the right harness shape: `tools/scorecard.py` is the *one*
-definition of what an evaluation counts, and `eval_rfq.py` already measures
-precision, coverage, abstention and **wrong-confident** per arm — which is
-false-equivalence under another name, on RFQ resolution rather than on
-substitution. What is missing is a *labelled cross-manufacturer substitution
-set*, which cannot exist until there is a second manufacturer pack and a
-decorated master. That dependency is the strongest argument for the phase order
-in §39.
+**Could it be measured today? The metric exists and is already reporting; the
+dataset is what is missing.** `tools/scorecard.py` is the *one* definition of
+what an evaluation counts — `precision`, `coverage`, `abstention_rate` and
+`wrong_confident_rate`, each `Optional[float]` returning `None` rather than a
+benign default, with a seeded percentile bootstrap. **`wrong_confident_rate` is
+false-equivalence under another name**, and both harnesses fill the same
+scorecard.
+
+What it reports today is worth putting in front of whoever approves this
+programme:
+
+| Harness | Cases | Precision | Coverage | Wrong-confident |
+|---|---|---|---|---|
+| `eval_identity` | 13 | 13/13, zero false positives | — | — |
+| `eval_rfq` — engine arm | 14 | 60.0% | 71.4% | **21.4%** |
+| `eval_rfq` — baseline arm | 14 | 70.0% | 71.4% | **7.1%** |
+
+On fourteen cases the engine arm is **worse than its own baseline on the metric
+that matters most** — three times the wrong-confident rate for ten points less
+precision. Fourteen cases is far too few to conclude anything, and that is
+exactly the point: **the measurement instrument is built and the dataset is
+empty.** What is missing is a labelled cross-manufacturer substitution set,
+which cannot exist until there is a second manufacturer pack and a decorated
+master — the strongest argument for the phase order in §39, and the reason
+evaluation is staffed from Phase 1 rather than Phase 6.
 
 ---
 
@@ -1343,35 +1400,40 @@ it is nearly free and unblocks measurement:
 
 **Important — needed before the phase they govern:**
 
-5. **Is `pgvector` installable on the deployed PostgreSQL?** Depends on who
+5. **Lead time and selling price are not persisted (§12). Which way?** Persist
+   them on a sync (a schema and freshness question) or fetch live per candidate
+   (a latency question — ten candidates per line, per quote). Phase 8 cannot be
+   scoped until this is answered, and it is the difference between ranking on
+   availability and ranking on a promise.
+6. **Is `pgvector` installable on the deployed PostgreSQL?** Depends on who
    controls the instance. It decides whether Phase 2b is possible in-database.
-6. **Does an RFQ surface attach as a new top-level screen or as a step inside
+7. **Does an RFQ surface attach as a new top-level screen or as a step inside
    the Quote Builder?** The backend supports the former today; the latter keeps
    capture conditioned on somebody already working the line, which the
    `enquiries.py` docstring says makes coverage unanswerable.
-7. **How does a comparison UI get the structured comparison?** Widen
+8. **How does a comparison UI get the structured comparison?** Widen
    `pie_service`'s projection, or route the screen through
    `POST /api/v1/resolve`, which *already* emits per-slot provenance and spans —
    the public API is currently richer than the internal quote path.
-8. **May a salesperson see a commercially-ordered list?** §27 argues no,
+9. **May a salesperson see a commercially-ordered list?** §27 argues no,
    because order is a walkable predicate. That is a policy call.
-9. **What confidence thresholds, per category, gate an auto-selected
+10. **What confidence thresholds, per category, gate an auto-selected
    substitute versus one that requires review?** The brief proposes 95/85/70;
    these must be configurable and category-specific, and calibration should not
    be claimed until it is measured.
-10. **Does a second manufacturer pack get commissioned?** It would raise
+11. **Does a second manufacturer pack get commissioned?** It would raise
     coverage more than anything else on the list, and it is a `pie-parser`
     programme rather than a portal change.
 
 **To confirm:**
 
-11. Retention and residency for customer RFQ documents; erasure reach into
+12. Retention and residency for customer RFQ documents; erasure reach into
     uploaded files and extracted requirements.
-12. Whether `product_attribute_values` is org-scoped (a distributor's own
+13. Whether `product_attribute_values` is org-scoped (a distributor's own
     decoration) or shared (a manufacturer fact). *Recommendation: org-scoped
     rows pointing at a shared decoded catalogue record, mirroring the existing
     link-never-merge rule.*
-13. Whether the nine-value relationship vocabulary is extended in place
+14. Whether the nine-value relationship vocabulary is extended in place
     (recommended, §26) or replaced behind a version flag.
 
 ---

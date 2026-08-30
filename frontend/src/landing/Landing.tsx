@@ -1,4 +1,14 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { DEMO_BOOKING_READY, DEMO_BOOKING_URL } from "./cta";
+import {
+  detectRegion,
+  heldToFloor,
+  heldToRecommended,
+  lineTotal,
+  pricingFor,
+  unitPrice,
+  type Region,
+} from "./pricing";
 import "./landing.css";
 
 /**
@@ -97,6 +107,26 @@ import "./landing.css";
  *     policy stamp, the append-only record and the ledger that says UNKNOWN are
  *     the reason the outcome claim is sayable at all.
  *
+ *   - Prices are per visitor now. A non-Indian visitor sees the dollar list
+ *     and no rupee figure anywhere on the page — not in the panels, not in the
+ *     worked card, not in the arithmetic under the panels — because ₹9,999 is
+ *     an anchor this positioning cannot survive a reader forming. Indian
+ *     visitors still see rupees. The dollar list is what the prerender bakes,
+ *     so it is also what a crawler and a no-JavaScript reader get; the swap
+ *     happens on mount and only for a browser whose own clock says India. See
+ *     `pricing.ts`.
+ *   - "Ask for this plan" became "Book a demo" on the paid panels, and the
+ *     hero's primary action with it. Nobody signs an annual contract from
+ *     inside a product trial, and the page had no way for a buyer who was
+ *     ready to talk to say so. The trial keeps its own button.
+ *   - The two panels that read as two products are one platform with a free
+ *     floor now. That is a reversal of the note above about "free forever",
+ *     and it is not a return to it: `PlanTier.FREE` is still not a
+ *     destination anybody chooses, and the page still does not offer it as
+ *     one. What it now says is the thing that is mechanically true and was
+ *     missing — the desk keeps working when nothing is being paid for, which
+ *     is what makes the trial safe to start.
+ *
  * Three smaller corrections, made while repositioning the page (below):
  *
  *   - The zone letters are gone. See the comment on the sheet.
@@ -118,10 +148,12 @@ import "./landing.css";
  * question it belongs to is not settled on this branch.
  *
  * The decision card's figures are illustrative but formula-consistent:
- * floor = cost / (1 − margin floor), so cost ₹381 at a 15% floor gives ₹448.
- * And the card shows cost because it depicts the *approver's* view — a
- * manager sees cost, a salesperson never does. Keep both properties when
- * editing the numbers.
+ * floor = cost / (1 − margin floor). They live in `pricing.ts` now, in both
+ * currencies, and `pricing.test.ts` re-derives every one of them — so editing
+ * the card without editing the note that re-reads it fails a test rather than
+ * shipping a page whose own arithmetic does not close. The card shows cost
+ * because it depicts the *approver's* view — a manager sees cost, a
+ * salesperson never does. Keep both properties when editing the numbers.
  *
  * That rule used to be broken by the page's own buttons. Both CTAs said "Get
  * started free" and led to a *sign-in* form, because the only way to get an
@@ -167,6 +199,33 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
     e.preventDefault();
     onDemo?.();
   };
+
+  /** Which price list this visitor sees, and in which currency every figure on
+   *  the page is written.
+   *
+   *  INTL until proven otherwise, and deliberately so: `useEffect` does not run
+   *  during the static prerender, so the HTML baked into `dist/index.html` — the
+   *  document a crawler reads, and the one a US visitor sees before the bundle
+   *  arrives — carries the dollar list and no rupee figure anywhere in it. The
+   *  swap to the Indian list happens on mount, for the visitors whose own clock
+   *  says they are in India.
+   *
+   *  State rather than a call in the render body because `detectRegion` reads
+   *  `Intl` and `navigator`, neither of which exists on the server, and because
+   *  a component that renders differently on the server and on the first client
+   *  paint is the one thing `prerender.tsx` is built to avoid. */
+  const [region, setRegion] = useState<Region>("INTL");
+  useEffect(() => setRegion(detectRegion()), []);
+  const price = pricingFor(region);
+  const line = price.line;
+
+  /** "Book a demo", wherever it appears. A real scheduling link opens in a new
+   *  tab — a buyer half-way down a pricing page should not lose it — while an
+   *  unreplaced placeholder stays in this tab, where a broken destination is
+   *  noticed rather than left open behind the page. */
+  const bookDemo = DEMO_BOOKING_READY
+    ? { href: DEMO_BOOKING_URL, target: "_blank", rel: "noreferrer" as const }
+    : { href: DEMO_BOOKING_URL };
 
   // The mobile nav collapses the section links behind a menu button. Closed on
   // first render, which is also the state the prerenderer bakes into the static
@@ -232,22 +291,28 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
                 re-derivable from the rows your desk already wrote. Connected to
                 the ERP you already run.
               </p>
+              {/* The primary action is a conversation now, not a signup.
+                  Nobody commits a distributor to an annual contract from
+                  inside a product trial, and a page that only offers the trial
+                  makes the buyer who is ready to talk go and find an address.
+                  The trial keeps its own button, one step quieter. */}
               <div className="lp-ctas">
-                <a className="lp-btn solid" href="#signin" onClick={start}>Get started free</a>
+                <a className="lp-btn solid" {...bookDemo}>Book a demo</a>
+                <a className="lp-btn" href="#signin" onClick={start}>Start free</a>
                 {onDemo
-                  ? <a className="lp-btn" href="#demo" onClick={demo}>See it on sample data</a>
-                  : <a className="lp-btn" href="#pricing">See pricing</a>}
+                  ? <a className="lp-quiet" href="#demo" onClick={demo}>or see it on sample data</a>
+                  : <a className="lp-quiet" href="#pricing">or see the pricing</a>}
               </div>
               <p className="lp-fine">
-                Free quote desk forever · your first month includes the full
-                intelligence layer
+                A 30-day trial of the whole platform — no card. The quote desk
+                keeps working whether or not you subscribe.
               </p>
             </div>
 
             <div
               className="lp-card"
               role="img"
-              aria-label="A PIE decision card drawn like an engineering sheet: a quote priced below the margin floor, showing cost, margin floor and recommended price, with an approval action and a title block naming the policy that computed it."
+              aria-label="An illustrative PIE decision card, drawn like an engineering sheet: a quote priced below the margin floor, showing cost, margin floor and recommended price, with an approval action and a title block naming the policy that computed it."
             >
               <span className="lp-corner tl" aria-hidden="true" />
               <span className="lp-corner tr" aria-hidden="true" />
@@ -259,23 +324,23 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
               </div>
               <h3>This line is priced under your own floor</h3>
               <p className="lp-card-body">
-                <b>A machine shop in Ohio</b> asked for 200 units at ₹412 —
-                below the floor your margin policy sets for this item. It routes
-                for a manager's sign-off: the platform holds it, not the
-                salesperson.
+                <b>A machine shop in Ohio</b> asked for {line.units} units at{" "}
+                {unitPrice(price, line.asked)} — below the floor your margin
+                policy sets for this item. It routes for a manager's sign-off:
+                the platform holds it, not the salesperson.
               </p>
               <div className="lp-facts">
                 <div className="lp-fact">
                   <div className="k">Cost</div>
-                  <div className="v lp-num">₹381</div>
+                  <div className="v lp-num">{unitPrice(price, line.cost)}</div>
                 </div>
                 <div className="lp-fact">
                   <div className="k">Margin floor</div>
-                  <div className="v lp-num">₹448</div>
+                  <div className="v lp-num">{unitPrice(price, line.floor)}</div>
                 </div>
                 <div className="lp-fact">
                   <div className="k">Recommended</div>
-                  <div className="v lp-num">₹487</div>
+                  <div className="v lp-num">{unitPrice(price, line.recommended)}</div>
                 </div>
               </div>
               <div className="lp-actions"><span>Request approval</span><span>Reprice to floor</span></div>
@@ -630,103 +695,119 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
         <section id="pricing">
           <div className="lp-wrap">
             <div className="lp-sec-head">
-              <h2>Thirty days free. Then priced per organization.</h2>
+              {/* This read as two products — a free quote desk and a separate
+                  intelligence product — which is not what is being sold and is
+                  not what the entitlements actually do. There is one platform.
+                  The quote desk is the part of it that never stops working, and
+                  the decision layer is the part that is paid for. Said in that
+                  order, the sequence a buyer moves through is obvious; said as
+                  two panels of equal weight, they had to work it out. */}
+              <h2>One platform. The quote desk keeps working; the decision layer is what you buy.</h2>
               <p>
                 Unlimited users on every plan — nothing here counts seats.
                 Early-adopter rates, locked for 24 months; yearly billing gets
                 two months free.
               </p>
-              {/* Added once the ask existed. Before it, the page named three
-                  tiers and the only way to reach the upper two was somebody
-                  with a shell on the server — so the section described a
-                  purchase nobody could make. It now describes what actually
-                  happens, which is not a checkout and should not be dressed as
-                  one: `PlanChangeRequest` records the ask, an operator applies
-                  it, and an invoice follows. Saying "no card" is worth more to
-                  this buyer than a payment page would be.
+              {/* The mechanism, quieter than the offer. It describes what
+                  actually happens rather than dressing it as a checkout, which
+                  there still is not: `PlanChangeRequest` records the ask and an
+                  operator applies it. Saying "no card" is worth more to this
+                  buyer than a payment page would be.
 
                   The two terms above are commitments rather than mechanisms —
-                  nothing in the code enforces a rate lock or a yearly
-                  discount — which is fine for a price list and is why they sit
-                  in the sentence about what we will do rather than among the
-                  claims about what the product does. */}
+                  nothing in the code enforces a rate lock or a yearly discount
+                  — which is fine for a price list and is why they sit in the
+                  sentence about what we will do rather than among the claims
+                  about what the product does. */}
               <p className="lp-pricing-how">
-                Every organization starts on a full 30-day trial — no card, no
-                conversation. To subscribe you ask from inside the product and a
-                person confirms it; there is still no checkout. If the trial
-                ends without one, the decision layer locks and{" "}
+                Every organization starts on a full 30-day trial of everything —
+                no card, no conversation needed. Buying is a conversation: book
+                a demo, and the plan is then requested from inside the product
+                and confirmed by a person. There is no checkout. If the trial
+                ends without one, the decision layer locks, the quote desk
+                carries on, and{" "}
                 <b>everything you have put in stays exactly where it is</b>.
               </p>
             </div>
             <div className="lp-grid3">
-              {/* Not a tier any more. This panel used to sell "Quote Desk,
-                  free forever" as somewhere a business could choose and stay,
-                  which made the trial a month of extra on top of a permanent
-                  free product. There is one free thing now and it is the
-                  trial, so the panel describes that — and says plainly what
-                  happens after it, because a price list that goes quiet about
-                  the end of the free period is the one people feel cheated by. */}
+              {/* Not "free forever". `domain/enums.PlanTier` is explicit that
+                  FREE "is **not a product** … the floor an organization sits on
+                  when it is paying for nothing", and `entitlements.PURCHASABLE`
+                  leaves it out precisely so it cannot be chosen as a
+                  destination. What is true — and what this panel says — is that
+                  the desk keeps working when nothing is being paid for, which
+                  is the entry the buyer actually experiences and the promise the
+                  trial has to keep. */}
               <div className="lp-panel lp-plan">
-                <h3>Trial</h3>
-                <div className="p">30 days free</div>
+                <h3>Quote desk</h3>
+                <div className="p">Free</div>
                 <p>
-                  <b>All of it, from the day you sign up.</b> Quoting, margin
-                  floors, approvals, the attention list and the insight screens.
-                  No card. When it ends the decision layer locks and your data
-                  is untouched.
+                  Where everyone starts, and what keeps working when nothing is
+                  being paid for: quoting, RFQ reading, margin floors and
+                  approvals, on one connected company. Your first 30 days
+                  include everything below.
                 </p>
-                <a className="lp-btn solid" href="#signin" onClick={startOn("intelligence")}>
+                <a className="lp-btn" href="#signin" onClick={startOn("intelligence")}>
                   Start your trial
                 </a>
               </div>
               <div className="lp-panel lp-plan mid">
                 <h3>Commercial Intelligence</h3>
-                <div className="p lp-num">₹9,999<small> /month</small></div>
+                <div className="p lp-num">
+                  {price.tierIntelligence}<small> /month</small>
+                </div>
                 <p>
-                  <b>Quote more profitably.</b> The attention list, customer
+                  <b>The decision layer.</b> The attention list, customer
                   health, collections — and the value ledger in Section D, which
                   is how you decide whether to keep paying for this.
                 </p>
-                <a className="lp-btn" href="#signin" onClick={startOn("intelligence")}>
-                  Ask for this plan
-                </a>
+                <a className="lp-btn solid" {...bookDemo}>Book a demo</a>
               </div>
               <div className="lp-panel lp-plan">
                 <h3>Platform</h3>
-                <div className="p lp-num">₹19,999<small> /month +</small></div>
+                <div className="p lp-num">
+                  {price.tierPlatform}<small> /month +</small>
+                </div>
                 <p>
                   <b>Commercial intelligence across the business.</b> Several
                   companies, one view — with all catalog builds included and a
                   named person who knows your setup.
                 </p>
-                <a className="lp-btn" href="#signin" onClick={startOn("platform")}>
-                  Ask for this plan
-                </a>
+                <a className="lp-btn" {...bookDemo}>Book a demo</a>
               </div>
             </div>
             {/* The arithmetic, done on the page's own numbers rather than left
                 for the reader to do or, worse, asserted as a round claim.
 
-                It uses ₹7,200 and not the ₹15,000 the recommended price would
-                have made, and the difference is the point: the ledger counts a
-                movement only up to the floor, because clearing a floor by more
-                than it asked for is the salesperson's judgement and not
-                something the guardrail did. Quoting the bigger number here
-                would be the page contradicting the module it is describing,
-                two sections after promising it does not. */}
+                It uses the figure held to the *floor* and not the one the
+                recommended price would have made, and the difference is the
+                point: the ledger counts a movement only up to the floor,
+                because clearing a floor by more than it asked for is the
+                salesperson's judgement and not something the guardrail did.
+                Quoting the bigger number here would be the page contradicting
+                the module it is describing, two sections after promising it
+                does not.
+
+                Both figures come from `pricing.ts`, where a test re-derives
+                them from the card's own cost and floor. It used to say "about
+                three weeks of the middle plan", which cannot be said while the
+                middle plan is a placeholder — and should not be said even once
+                it is not, because the ratio changes with every price. */}
             <p className="lp-pricing-note">
-              The card at the top of this page is one line: 200 units asked at
-              ₹412 against a floor of ₹448. Held to that floor it is{" "}
-              <span className="lp-num">₹7,200</span> — about three weeks of the
-              middle plan, from one line. The ledger would count exactly that
-              and not the ₹15,000 the recommended price would have made, because
-              clearing a floor by more than it asked for is your judgement, not
-              ours.
+              The card at the top of this page is one worked line:{" "}
+              {line.units} units asked at {unitPrice(price, line.asked)} against
+              a floor of {unitPrice(price, line.floor)}. Held to that floor it
+              is <span className="lp-num">{lineTotal(price, heldToFloor(price))}</span>,
+              from a single line. The ledger would count exactly that and not
+              the {lineTotal(price, heldToRecommended(price))} the recommended
+              price would have made, because clearing a floor by more than it
+              asked for is your judgement, not ours.
             </p>
             <p className="lp-pricing-note">
-              One-time catalog builds from <span className="lp-num">₹4,999</span>,
-              yours permanently. Every organization starts on the 30-day trial
-              and works the same day — the paid plans are enabled with you, and
+              One-time catalog builds from{" "}
+              <span className="lp-num">{price.catalogBuild}</span>, yours
+              permanently. Every organization starts on the 30-day trial and
+              works the same day — the paid plans are enabled with you, and
               nothing is charged when you sign up.
             </p>
           </div>
@@ -735,8 +816,11 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
         <div className="lp-final">
           <div className="lp-wrap">
             <h2>Your books already know where the margin went.</h2>
-            <p>PIE turns that history into better commercial decisions.</p>
-            <a className="lp-btn solid" href="#signin" onClick={start}>Get started free</a>
+            <p>PIE turns that history into better commercial decisions — and reports what that was worth.</p>
+            <div className="lp-ctas lp-ctas-centred">
+              <a className="lp-btn solid" {...bookDemo}>Book a demo</a>
+              <a className="lp-btn" href="#signin" onClick={start}>Start free</a>
+            </div>
           </div>
         </div>
 

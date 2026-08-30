@@ -161,3 +161,25 @@ console.log(
   `prerender: landing baked into dist/index.html (${(out.length / 1024).toFixed(1)} kB), ` +
     `robots.txt + sitemap.xml written for ${SITE_ORIGIN}`,
 );
+
+// Unreplaced placeholders, named out loud.
+//
+// The repositioned page carries `{{…}}` tokens on purpose — a price the owner
+// has not fixed yet, a scheduling link, a customer logo that must be real and
+// permissioned before it can appear. Deliberate, and each one is a thing that
+// must not reach a visitor. A checklist in a commit message is read once; this
+// is read on every build, and it prints what is actually in the artefact rather
+// than what somebody remembered to write down.
+//
+// A warning, not a failure: the branch has to be buildable and deployable to a
+// preview while the real values are still being decided, and a build that
+// refuses would only teach somebody to delete the check.
+const placeholders = [...new Set(out.match(/\{\{[A-Z0-9_]+\}\}/g) ?? [])].sort();
+if (placeholders.length) {
+  console.warn(
+    `prerender: WARNING — ${placeholders.length} unreplaced placeholder` +
+      `${placeholders.length === 1 ? "" : "s"} in the built page: ` +
+      `${placeholders.join(", ")}. These are visible to visitors. ` +
+      "Replace them before this build is promoted to production.",
+  );
+}

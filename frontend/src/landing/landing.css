@@ -166,6 +166,19 @@
 }
 .pie-landing .lp-hero .lp-sub b { color: var(--color-text); font-weight: 600; }
 .pie-landing .lp-ctas { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
+/* The closing block is centred text, so its buttons have to be centred too —
+   the hero's row is left-aligned and shares everything else. */
+.pie-landing .lp-ctas-centred { justify-content: center; }
+/* The third door, where there is one: a text link rather than a third button.
+   Two buttons of equal weight already make a reader choose; three make them
+   stop. It is not `.lp-fine` — that is the line under the buttons, and this
+   sits on the same baseline as them. */
+.pie-landing .lp-quiet {
+  font-size: 14px; font-weight: 600; color: var(--color-neutral-700);
+  text-decoration: underline; text-underline-offset: 3px;
+}
+.pie-landing .lp-quiet:hover { color: var(--color-text); }
+.pie-landing .lp-quiet:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
 .pie-landing .lp-fine { font-size: 13px; color: var(--color-neutral-600); margin: 14px 0 0; }
 
 /* the decision-card mock — a real card from the product, drawn as the sheet's

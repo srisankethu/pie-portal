@@ -90,7 +90,10 @@ checkout, method in §34):
   already warns that "each worker warms its own ~13 MB catalogue copy" against
   a 4 GB recommendation. **The deployment model breaks before the algorithm
   does.**
-- **Two reproducible defects put a wrong part on a quote today.** Asking the
+- **Two reproducible defects put a wrong part on a quote — found by this
+  reconnaissance and since fixed** (decision 017; pie-parser `2af5d7e`,
+  pie-portal `578add2`). They are worth reading anyway, because what they were
+  says where the risk in this programme lies. Asking the
   live engine for `"same as 2001174 but 0.4 corner radius"` returns
   `rel=EXACT`, `supplyCode=2001174` — **the 0.8 mm insert**, auto-selected and
   priced, for a request that explicitly asked for 0.4. The alternatives offered
@@ -99,10 +102,15 @@ checkout, method in §34):
   equivalent to a CNMG turning insert on a comparison where no dimension was
   comparable. Separately, `"6205 2RS C3 bearing"` — the brief's own worked
   example — returns carbide inserts and endmills at score 1.0.
-  **These are not hypothetical; each is one line to reproduce (§34).** They are
+  **Neither was hypothetical; each was one line to reproduce (§34).** They were
   precisely the failure the repository's own documentation names as the one it
   most fears: not a visibly wrong answer, but a confidently wrong one with a
-  defensible explanation attached.
+  defensible explanation attached. And **neither needed new machinery to fix**:
+  the engine already stamped the vacuous case and nobody read the stamp, and the
+  identity payload could not say whether a matched product was the answer or the
+  thing the customer asked to change. **Both were contract defects, not
+  algorithm defects** — the engine knows more than its consumers read, and that
+  gap is where a wrong part reaches a customer.
 - **The comparison is computed, and only its verdict survives.**
   `equivalence/distance.py` produces a per-field `field_matches` list with a
   `gate_reason`, `geometry_score` and a `dimensionally_vacuous` flag. The
@@ -627,9 +635,11 @@ Ranked by how much they save this project:
 
 ## 17. Existing technical debt relevant to this project
 
-- **Two reproducible defects that put a wrong part on a quote.** Both were
-  measured on this checkout (§34) and neither is recorded anywhere in the
-  repository's own documentation:
+- **Two defects that put a wrong part on a quote — found here, and since
+  fixed** (decision 017; pie-parser `2af5d7e`, pie-portal `578add2`). They are
+  described in the present tense below because that is the behaviour this
+  reconnaissance measured, and kept because they are the clearest evidence for
+  why §25's compatibility work is the shape it is. Neither is an open defect:
 
   1. **The MIXED path asserts the reference product as the answer.**
      `"same as 2001174 but 0.4 corner radius"` returns `rel=EXACT`,
@@ -645,8 +655,25 @@ Ranked by how much they save this project:
      for exactly this case is rendered by `SupplyDrawer.tsx` **only when the
      candidate list is empty**, so it never appears in the case it describes.
 
-  Together these are the failure `docs/concepts/10` names as the one worth
+  Together these were the failure `docs/concepts/10` names as the one worth
   guarding against: *"not a visibly wrong answer, but a confidently wrong one."*
+
+  **What fixed them, and what it says about the architecture.** Neither needed
+  new machinery. The engine already stamped `dimensionally_vacuous` on exactly
+  the vacuous case, with a docstring saying consumers must be able to see it —
+  nobody read it. And the identity payload could not distinguish "this is the
+  product" from "this is the product you asked to change", so `run` now states
+  an `identity_role` on every exit, seeded to the refusing value. **Both were
+  contract defects rather than algorithm defects**, which is the single most
+  useful thing this reconnaissance learned about where the risk in this
+  programme actually lies: the engine knows more than its consumers read, and
+  the gap between the two is where a wrong part reaches a customer.
+
+  A **third** defect surfaced by the same query is still open (decision 021):
+  the override decode does not reliably turn "but 0.4 corner radius" into
+  `corner_radius_mm = 0.4`, so the derived requirement is partly fiction. It is
+  now *visible* — the line abstains and says no dimension could be compared —
+  rather than hidden behind a quoted reference.
 
 - **The comparison stops at `pie_service`; the attributes stop at the
   component.** `field_matches`, `gate_reason`, `geometry_score` and
@@ -1273,7 +1300,7 @@ be a metric the thing already passes.
 | **A new screen is written as a hand-rolled `<table>`** | it has happened, through three UI passes; the check is deliberately outside the gate | `platform/DataGrid.tsx` for anything business-sized; run the diff check in review |
 | **`insight.py` absorbs the new endpoints** | 5,326 lines, 55 endpoints, 27% of the platform's routes — the path of least resistance | New routers, mounted with an explicit plan gate |
 | **A new package sits outside the layer invariant** | `DETERMINISTIC` names six packages; a new `equivalence/` or `compatibility/` is unconstrained until added | Add the names in the same commit that creates the packages — the invariant is opt-in, not automatic |
-| **A "same as X but Y" request quotes X** | reproduced on this checkout (§17, §34); the reference product is auto-selected and priced | Fix before any new surface is built on the MIXED path; add a regression case to the golden corpus |
+| ~~A "same as X but Y" request quotes X~~ | **fixed** (017). The residual risk is the class, not the instance: the engine knows more than its consumers read | Every new consumer of an engine payload states which fields it reads and what it does when one is absent |
 
 ## 33. Security risks
 
@@ -1482,10 +1509,9 @@ it is nearly free and unblocks measurement:
 
 0. **Four things that are cheap, independent of every decision below, and
    should not wait for approval of the rest:**
-   - **Fix the two defects in §17.** A request to vary a product currently
-     quotes the unvaried product, and vacuous comparisons are labelled `TECH`.
-     Both are reproducible in one line, both put a wrong part in front of a
-     customer, and neither depends on anything else in this plan.
+   - ~~**Fix the two defects in §17.**~~ **Done** — decision 017, both gates
+     green. The third defect the same query exposed (the override decode,
+     decision 021) is still open and is the natural next one.
    - **Read `cf_item_type` and `cf_item_category` at ingest.** A maintained
      per-item classification already exists in the ERP and is discarded
      (§6). It is a few lines in `_item_payload` and it is the cheapest

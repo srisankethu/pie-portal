@@ -12,12 +12,12 @@ lifespan startup are all in play, with the **real** pie-parser engine loaded
 expectation from `user-flows.md`; a deviation is a finding. The pie-parser CLI
 flows were run directly.
 
-**Result.** Over 100 behavioural checks across both repositories. **One genuine
-defect** (RFQ quantity misreading, contained by the send gate) — **since
-fixed, with regression tests** — plus three UI-feedback defects found by
-inspection and still open. Every invariant the business depends on — cost
-containment, approval authority, the identity gate, the send gate — **holds
-under direct attack.**
+**Result.** Over 100 behavioural checks across both repositories. **Four
+defects, all now fixed with regression tests**: one genuine functional defect
+(RFQ quantity misreading, contained by the send gate) and three messages the
+interface set and never rendered. Every invariant the business depends on —
+cost containment, approval authority, the identity gate, the send gate —
+**holds under direct attack.**
 
 ---
 
@@ -108,7 +108,10 @@ status code tells a caller which half of the guess was right.
 below 100%, byte-identical reruns.** `eval_identity`: 13/13 cases, **0
 false-positive identity** (the cardinal error). CLI exit codes as documented
 (2 on bad arguments / missing source / unknown record id; 0 on a clean lint).
-pie-portal's own suite: **3,479 passed, 0 failed.**
+pie-portal's own suite: **3,553 passed, 0 failed**, and the full gate
+(`make verify`) green end to end — frontend build, migrations from nothing
+on SQLite *and* PostgreSQL, row-level security, the queue's concurrent
+claim, and the `pg_dump` → restore drill.
 
 ---
 
@@ -181,33 +184,50 @@ line resolvable as well as flagged, but `_UNIT_WORDS` includes `ea` and
 truncated — a wider change than this defect justifies, and the line is blocked
 either way.
 
-### F2 · MINOR · A failed workspace switch tells the user nothing
+### F2 · MINOR · A failed workspace switch told the user nothing — **FIXED**
 
-`PlatformApp.tsx:656-661` catches the refusal and calls `setNotice(...)`, but
-`notice` is rendered only by the sign-in card inside `if (!session)`
-(`:751-808`). During a workspace switch a session exists, so nothing renders
-and no toast is raised. The user clicks, the switch fails, and the screen is
-unchanged with no explanation. The stale notice can also surface later, out of
-context, at the next sign-out.
+`switchOrganization` caught the refusal and called `setNotice(...)`, but
+`notice` has exactly one renderer — the sign-in card, inside `if (!session)`.
+A refused switch leaves the session intact, so the shell stayed mounted and
+that renderer was never reached: the switch failed in silence. The comment
+above the call said "quiet beyond the toast", and there was no toast. Worse,
+the sentence persisted in state and could surface at the *next* sign-out,
+describing something that had happened long before.
 
-### F3 · MINOR · "Signed in as … in another tab" is never shown
+Now `flash(...)`, the notistack helper the rest of the shell already uses.
 
-Same cause (`:500-517`). The tab adopts the new session correctly; the
-message recorded for the user has no renderer in the signed-in shell. The
-sibling case — signed *out* in another tab — does display, because there the
-session becomes null and the sign-in card renders.
+### F3 · MINOR · "Signed in as … in another tab" was never shown — **FIXED**
 
-### F4 · MINOR · The Data screen's error state offers no retry to a salesperson
+Same cause. The tab adopted the new account correctly and said nothing, so the
+name and role changed under the reader with no explanation. (The sibling case —
+signed *out* elsewhere — did display, because there the session becomes null
+and the sign-in card renders.)
 
-`DataScreen` renders `ErrorState` without an `onRetry`, so the kit's "Try
-again" button never appears; the only re-fetch is "Refresh status", which sits
-inside the manager-only branch. A salesperson who hits a status failure has
-only a page reload.
+Now a toast, and raised *outside* the `setSession` updater. The message used to
+sit inside it, and React may call an updater twice under `StrictMode` — which
+`main.tsx` enables — so a toast fired from there would have been shown twice.
+The handler reads the current session through a ref instead, which also removes
+the reason the updater was reached for: the listener is registered once and
+would otherwise compare against the session that existed when it was registered.
 
-F2–F4 were found by reading the code, not by executing the UI (the frontend
-has no `node_modules` in this environment) — a lower evidence class than
-everything in §1, and each should be confirmed in a browser before being
-worked.
+### F4 · MINOR · The Data screen's error offered no retry to a salesperson — **FIXED**
+
+`ErrorState` was rendered without `onRetry`, so the kit's "Try again" button
+never appeared, and the only re-fetch — "Refresh status" — sits inside the
+manager-only branch. For a salesperson the honest error was the end of the
+road. It now passes `onRetry={load} busy={checking}`, the state the loader
+already maintains.
+
+**Evidence class.** F2–F4 were found by reading rather than by executing the
+UI, and that gap is now closed differently than F1's: the fixes are pinned by
+`platform/PlatformApp.messages.contract.test.ts`, a source-level contract test
+in the idiom `kit.contract.test.ts` already uses, rather than by mounting the
+whole application to read a toast. Its four behavioural assertions fail against
+the unfixed source; two further assertions guard against a vacuous pass (that
+`notice` still has exactly one renderer behind the signed-out gate, and that it
+is still used for the two messages that *do* end signed out). What remains
+unexercised is the pixels — that a notistack toast is legible where it appears
+is still a thing to confirm in a browser.
 
 ---
 

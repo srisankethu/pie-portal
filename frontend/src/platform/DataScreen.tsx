@@ -120,7 +120,12 @@ export function DataScreen({ session, onSynced }: { session: PlatformSession; on
 
       {error && (
         <Box sx={{ mb: 2 }}>
-          <ErrorState title="Could not read the connection status" error={error} />
+          {/* `onRetry`, because this is the only failure on the screen a
+              salesperson can hit: the "Refresh status" button that would
+              otherwise re-fetch sits inside the manager-only branch below, so
+              without this the honest error came with no way to act on it. */}
+          <ErrorState title="Could not read the connection status" error={error}
+                      onRetry={load} busy={checking} />
         </Box>
       )}
 

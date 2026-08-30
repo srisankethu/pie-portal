@@ -334,6 +334,22 @@ class Settings:
     # caller cannot learn from the response whether a token is configured.
     METRICS_SCRAPE_TOKEN: str = os.environ.get("METRICS_SCRAPE_TOKEN", "")
 
+    # ── Who may open the monetization console ──────────────────────────────
+    # PIE's own pricing model — take rate, cost to serve, what each segment
+    # should be charged — is not tenant data and must never be readable by a
+    # tenant. `authz` answers who a person is and `memberships` which
+    # organizations they may open; neither can answer "is this person PIE
+    # staff", because that is not a fact about any tenant.
+    #
+    # A comma-separated allowlist of email addresses, compared case-folded.
+    # **Empty means closed**, not open: an unset variable is by far the most
+    # common state of any deployment, and a console that opens itself on the
+    # deployments that never configured it is the benign default CLAUDE.md §1
+    # forbids. The refusal is identical whether the list is empty or the caller
+    # is simply not on it, so nobody learns from a 403 whether the console
+    # exists here.
+    PIE_OPERATOR_EMAILS: str = os.environ.get("PIE_OPERATOR_EMAILS", "")
+
     # ── Redis (provisioned infrastructure; no feature requires it yet) ──────
     # Both compose stacks run a Redis next to the API for the state that must
     # one day live outside a process: cross-replica rate limiting (the signup

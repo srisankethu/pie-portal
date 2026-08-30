@@ -70,6 +70,7 @@ import GavelOutlined from "@mui/icons-material/GavelOutlined";
 import ShieldOutlined from "@mui/icons-material/ShieldOutlined";
 import TuneOutlined from "@mui/icons-material/TuneOutlined";
 import InsightsOutlined from "@mui/icons-material/InsightsOutlined";
+import SellOutlined from "@mui/icons-material/SellOutlined";
 import HistoryOutlined from "@mui/icons-material/HistoryOutlined";
 import ExpandMoreOutlined from "@mui/icons-material/ExpandMoreOutlined";
 
@@ -129,6 +130,9 @@ const ICON: Partial<Record<Screen, typeof MenuIcon>> = {
   // changed about it.
   retrospective: HistoryOutlined,
   attribution: InsightsOutlined,
+
+  // PIE's own pricing model. A price tag, because that is literally what it is.
+  monetization: SellOutlined,
 
   data: StorageOutlined,
   identity: FingerprintOutlined,

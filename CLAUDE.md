@@ -262,6 +262,12 @@ backend/app/
                  each ended. Canonical, not derived — a re-sync rebuilds
                  nothing here. Raw customer text; never imports ai/.
   identity/      Cross-connector record linking. Never merges, only links.
+  monetization/  What PIE charges for what PIE creates — its own pricing model,
+                 versioned and graded. The only package that is not about a
+                 tenant, which is why its surface sits behind an allowlist
+                 outside every workspace rather than behind a Role. Never
+                 imports ai/, for the reason the others do not: a price a model
+                 could justify is not an audit trail. See docs/pricing-model.md.
   trust/         Tenant keys, name vault, pseudonyms, break-glass, disclosure,
                  erasure. Infrastructure — imports neither commercial/ nor ai/.
   routers/       HTTP mapping and role scoping. Thin — no money arithmetic.

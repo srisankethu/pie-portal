@@ -1,3 +1,4 @@
+import type { MonetizationCalculation, MonetizationScorecard, MonetizationSegments } from "./types";
 import type { AccessReport, Account, AccountItem, AiByokView, AiKeyTestResult, AiMetricsReport, AiReadiness, ApprovalRequest, AttributionEvaluation, AttributionEvents, AttributionRollup, AttributionSummary, ConnectionCheck, ConnectionsView, ConnectorCatalog, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, DecisionTrace, DemoOffer, DisclosureStatement, Entitlements, EntityKind, ErasureState, ErpConnectInput, ErpDiscoveredCompany, FixedThresholds, FloorBacktest, Identity, IdentityCoverage, IdentityPolicy, IdentitySuggestion, MarginPolicy, MarginPolicyPatch, NewConnectionInput, OnboardingView, OrgPolicy, PayloadsReport, PlatformSession, PlatformUser, QuoteGate, Retrospective, Role, SignupOffer, SkippedRows, StatusFilter, SyncOptions, SyncRunLogPage, SyncStartResponse, SyncState, ThresholdView, UnrecordedQuotes, ZohoConnection, ZohoConnectionInput, ZohoCredential, ZohoVisibleOrg } from "./types";
 
 import { setMoneyCurrency } from "../money";
@@ -1051,6 +1052,34 @@ export const papi = {
     req<ErasureState>("/api/v1/trust/erasure", {
       method: "POST",
       body: JSON.stringify({ confirm_organization_id: confirmOrganizationId, reason }),
+    }, t),
+
+  // ── the monetization console (PIE's own pricing, not this tenant's) ───────
+  //
+  // Every one of these is refused for a tenant. `monetizationAccess` is the
+  // only one a tenant may call, and it answers `{operator:false}` with a 200 —
+  // so the shell asks a question instead of probing a 403 and filling error
+  // monitoring with refusals that are not failures.
+
+  monetizationAccess: (t: string) =>
+    req<{ operator: boolean }>("/api/v1/monetization/access", {}, t),
+
+  monetizationSegments: (t: string) =>
+    req<MonetizationSegments>("/api/v1/monetization/segments", {}, t),
+
+  monetizationScorecard: (t: string) =>
+    req<MonetizationScorecard>("/api/v1/monetization/scorecard", {}, t),
+
+  /** One customer, every pricing model, in one round trip. Deliberately one
+   *  call rather than a fetch per panel: six panels fetched separately would
+   *  show six answers computed from six slightly different states. */
+  monetizationCalculate: (
+    t: string,
+    body: { profile: Record<string, unknown>; impact: Record<string, number> },
+  ) =>
+    req<MonetizationCalculation>("/api/v1/monetization/calculate", {
+      method: "POST",
+      body: JSON.stringify(body),
     }, t),
 };
 

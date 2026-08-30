@@ -36,15 +36,19 @@ _APP = pathlib.Path(__file__).resolve().parents[2] / "app"
 #: project, their volumes and their urgency. A model that could import it
 #: could be handed one tenant's commercial intelligence wholesale, which is
 #: a worse outcome than a number nobody can reproduce.
+#: ``monetization`` is here for the reason its own header gives: it is PIE's
+#: commercial position, priced from rows, and a model that could reach it could
+#: be asked to justify a price. A justification produced by a model is not an
+#: audit trail.
 DETERMINISTIC = ("attribution", "commercial", "enquiry", "ingestion",
-                 "signals", "state")
+                 "monetization", "signals", "state")
 
 #: Packages ``ai/`` must not import, which is the same rule read from the other
 #: side. ``attribution`` is here as well as in ``DETERMINISTIC`` because it is
 #: the ledger a renewal is argued from: a model that could reach it could compute
 #: what the platform claims to be worth, which is the one number on this surface
 #: that must be arithmetic over rows and nothing else.
-COMPUTING = ("commercial", "attribution")
+COMPUTING = ("commercial", "attribution", "monetization")
 
 
 def _imported_module_candidates(path: pathlib.Path) -> set[tuple[str, ...]]:

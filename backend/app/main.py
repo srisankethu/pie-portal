@@ -26,7 +26,7 @@ from .routers import (accounts, admin, ai_settings, api_keys, approvals,
                       decisions, enquiries, entitlements, identity, internal,
                       onboarding, organizations, outcomes, platform_auth,
                       quote, resolve,
-                      insight, quote_intelligence, quote_support,
+                      insight, monetization, quote_intelligence, quote_support,
                       retrospective, trust)
 
 # One place decides what this process logs and where it goes — level from
@@ -339,6 +339,11 @@ app.include_router(retrospective.router,
 # plan buys. Role scoping is unchanged and is what keeps cost away from a
 # salesperson; that was never the plan gate's job.
 app.include_router(attribution.router)
+# PIE's own pricing model. Not plan-gated, because a plan is a fact about a
+# tenant and this is not a tenant surface at all: every endpoint sits behind
+# `monetization.require_operator`, an allowlist outside every workspace, and
+# refuses identically when the allowlist is empty. See the router's header.
+app.include_router(monetization.router)
 app.include_router(ai_settings.router)
 app.include_router(entitlements.router)
 # Which workspace this request acts for, and where else the holder

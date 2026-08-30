@@ -76,6 +76,10 @@ export type Screen =
   /** The other half of that pair, and the earlier one: what the book already
    *  held when it arrived, and how much of it could be judged at all. */
   | "retrospective"
+  /** PIE's own pricing model — what to charge, and why. Not a tenant screen at
+   *  all: the endpoints behind it sit on an allowlist outside every workspace,
+   *  and the nav item exists only for an identity the server has confirmed. */
+  | "monetization"
   /** The approval queue, and organization settings (owner is super admin). */
   | "approvals" | "settings"
   /** Which connector records describe the same customer or item. */
@@ -133,6 +137,7 @@ export const PATH: Record<Screen, string> = {
   unrecordedQuotes: "/unanswered-quotes",
   attribution: "/what-pie-changed",
   retrospective: "/what-your-books-hold",
+  monetization: "/pricing-model",
 };
 
 /** The three screens whose URL carries an id, as route patterns.

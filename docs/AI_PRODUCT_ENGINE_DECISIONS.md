@@ -299,3 +299,97 @@ cannot be scoped until one is chosen.
 on a stale or absent lead time is the benign default this codebase already
 refuses three times over: the answer would be UNKNOWN, and a candidate whose
 availability is UNKNOWN must say so rather than sort as though it were quick.
+
+---
+
+## 017 — Fix the two resolution defects before building on that path
+**Status:** PROPOSED — **do not wait for programme approval** · **Report §:** 17, 34
+
+**The defects**, both reproduced on this checkout, both unrecorded anywhere in
+either repository:
+
+1. **The MIXED path asserts the reference product as the answer.**
+   `"same as 2001174 but 0.4 corner radius"` returns `rel=EXACT`,
+   `supplyCode=2001174` — the **0.8 mm** insert. The resolution keeps
+   `outcome=AUTO_MATCH` with an `AUTHORITATIVE` match while attaching the
+   effective-requirement suggestions, so the line auto-selects and prices the
+   product the customer asked to *vary*, and the variation is read, used for the
+   suggestion list, then dropped for the selection.
+2. **Vacuous comparisons are labelled `TECH`.** The candidates beside it score
+   0.96 as `TECH` with `corner_radius_mm = None` — square and screw-on inserts
+   held technically equivalent to a CNMG turning insert on a comparison where no
+   dimension was comparable. The vacuity note written for exactly this case is
+   rendered only when the candidate list is **empty**, so it never appears in
+   the case it describes.
+
+**Decision.** Both are fixed, with golden-corpus regression cases, before any
+new surface is built on the MIXED path. Neither depends on the ontology, the
+attribute store, or any decision in this programme.
+
+**Why it is stated as a decision rather than a bug report.** `docs/concepts/10`
+spends 260 lines protecting against *"not a visibly wrong answer, but a
+confidently wrong one"*. This is that, reachable in one line, on the path a
+customer request most naturally takes. It should not be queued behind an
+architecture review.
+
+---
+
+## 018 — Read the item taxonomy that already exists in the ERP
+**Status:** PROPOSED · **Phase:** 1 · **Report §:** 6
+
+**Decision.** `ingestion/zoho_client._item_payload` reads `cf_item_type`,
+`cf_item_category`, `cf_bin_location` and `cf_catalog_status` and carries them
+into the product row as source-attributed attributes.
+
+**Why.** A human-maintained per-item classification (Insert / Drill / Endmill /
+Tool Holder / Tap / Measuring Instrument; Milling / Holemaking / Threading /
+Toolholding / Grooving & Parting / General) is populated on most sampled items
+and **discarded at ingest** today, while the column the platform does read —
+`category_name` — is set on **0 of 800** SLS items. This is category coverage
+that costs a few lines and no decoding.
+
+**Constraint.** It arrives as raw source text and is stored raw, interpreted at
+read time under a versioned map, exactly as `category` and `manufacturer`
+already are. It is evidence about an item, not a normalised truth.
+
+---
+
+## 019 — Enable the row-level security that is already written
+**Status:** PROPOSED — deployment change, not code · **Report §:** 5, 33
+
+**The situation.** 81 tables carry RLS policies, `ENABLE` and `FORCE`, reading
+a transaction-scoped GUC, failing closed on an unset tenant, and the gate tests
+them against a role that is neither superuser nor owner. But `APP_DATABASE_URL`
+— the non-bypassing role — appears **only** in `docs/postgres.md`. Not in
+`compose.yaml`, `compose.dev.yaml`, `railway.json`,
+`deploy/production.env.example`, `.env.example`, `docs/hosting.md`,
+`docs/hosting-free-tier.md` or `docs/operations.md`. Every documented
+deployment connects as the owner, who bypasses RLS.
+
+**Decision.** Set it in the deployment recipes before this programme adds
+tables. The platform's own `observability/health.py` already reports
+`tenant_isolation` and would say `UNHEALTHY` today.
+
+**Note.** Python-side `organization_id` filtering is doing the work alone in
+production. That is the control the RLS layer exists to back up, and it was
+added precisely because a survey found places where the filter lives in a
+comprehension rather than in SQL.
+
+---
+
+## 020 — Add new packages to the layer-boundary invariant explicitly
+**Status:** PROPOSED · **Phase:** 1 · **Report §:** 17, 32
+
+**Decision.** Any new deterministic package — `ontology/`, `retrieval/`,
+`compatibility/`, `equivalence/`, `ranking/`, `evidence/` — is added to
+`DETERMINISTIC` in `tests/decision_platform/test_layer_boundaries.py` **in the
+commit that creates it**.
+
+**Why this needs a decision.** The invariant is opt-in. `DETERMINISTIC` names
+six packages (`attribution`, `commercial`, `enquiry`, `ingestion`, `signals`,
+`state`); `identity/`, `trust/`, `context/`, `master_health/`, `messaging/`,
+`observability/`, `routers/` and the top-level `pie_service.py`, `store.py` and
+`resolution.py` are unconstrained today. A new package that imports `ai/` would
+pass the gate in silence — which is the failure mode this codebase has
+documented twice: a check that does not run reads exactly like a check that
+passes.

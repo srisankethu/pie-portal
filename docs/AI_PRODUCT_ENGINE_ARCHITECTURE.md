@@ -40,10 +40,14 @@ decision before Phase 1 begins.** They are stated here rather than buried in
 1. **"The catalogue contains approximately 100,000 SKUs."** Nothing in either
    repository supports this. The one complete census on record
    (`docs/concepts/01-application-engineering.md`, 2026-08-09) is **15,028
-   items** for *one* of three legal entities. The decoded catalogue the
-   equivalence engine actually queries is **6,717 records** — I rebuilt it on
-   this checkout and confirmed the count. 100k may be the ambition across
-   entities and future principals; it is not today's data.
+   items** for *one* entity, and a live check against the connector on
+   2026-08-30 puts the SLS master at **15,032–15,996** today. The second
+   entity's master is **513 items**. The third has **no ERP presence at all** —
+   the UPS connector returns the SLS organisation, so "three legal entities" is
+   two reachable masters. The decoded catalogue the equivalence engine actually
+   queries is **6,717 records**; I rebuilt it on this checkout and confirmed the
+   count. 100k may be the ambition across entities and future principals; it is
+   roughly **6× today's reachable data**.
 
 2. **"Which products in our catalogue satisfy those requirements"** presumes
    the catalogue carries technical attributes. **It does not.** The `products`
@@ -86,21 +90,28 @@ checkout, method in §34):
   already warns that "each worker warms its own ~13 MB catalogue copy" against
   a 4 GB recommendation. **The deployment model breaks before the algorithm
   does.**
-- **A false-equivalence demonstration exists today.** I asked the live engine
-  for `"6205 2RS C3 bearing"` — a deep-groove ball bearing, the brief's own
-  worked example. It returned **carbide inserts and endmills at score 1.0**.
-  The guards did fire (the line came back `AMBIGUOUS`, with the note *"no
-  dimension was comparable, so a perfect dimensional score is vacuous"*), so
-  nothing wrong reaches a quote — but the engine has no concept of a category
-  it cannot decode, and the protection is a tie-heuristic plus a note rather
-  than a refusal.
-- **The structured technical comparison already exists and is thrown away.**
-  `equivalence/distance.py` computes a per-field `field_matches` list with a
-  `gate_reason`, `geometry_score` and a `dimensionally_vacuous` flag. A grep
-  across the whole portal for those four names returns **nothing** — the
-  bridge in `pie_service._candidates_from_suggestions` keeps only a prose
-  `explanation` string and one float. The brief's `CompatibilityResult` is
-  roughly 70% already computed and discarded at the boundary.
+- **Two reproducible defects put a wrong part on a quote today.** Asking the
+  live engine for `"same as 2001174 but 0.4 corner radius"` returns
+  `rel=EXACT`, `supplyCode=2001174` — **the 0.8 mm insert**, auto-selected and
+  priced, for a request that explicitly asked for 0.4. The alternatives offered
+  beside it are labelled `TECH` at score 0.96 with **no corner radius at all**
+  (`r=None`): square inserts and screw-on inserts scored as technically
+  equivalent to a CNMG turning insert on a comparison where no dimension was
+  comparable. Separately, `"6205 2RS C3 bearing"` — the brief's own worked
+  example — returns carbide inserts and endmills at score 1.0.
+  **These are not hypothetical; each is one line to reproduce (§34).** They are
+  precisely the failure the repository's own documentation names as the one it
+  most fears: not a visibly wrong answer, but a confidently wrong one with a
+  defensible explanation attached.
+- **The comparison is computed, and only its verdict survives.**
+  `equivalence/distance.py` produces a per-field `field_matches` list with a
+  `gate_reason`, `geometry_score` and a `dimensionally_vacuous` flag. The
+  decoded **attribute values do cross** the bridge — a candidate carries ten of
+  them — but a grep across the whole portal for those four comparison names
+  returns **nothing**, and `SupplyDrawer.tsx` never renders even the attributes
+  it does receive. So the brief's `CompatibilityResult` is largely computed
+  already and lost in two different places: the *comparison* stops at
+  `pie_service`, and the *attributes* stop at the component.
 
 **Recommended shape.** Additive, in this order: decorate the master with
 provenanced attributes (Phase 1); move retrieval into PostgreSQL where the
@@ -258,13 +269,33 @@ Roles are org memberships; entitlements and plan tiers gate features
 separately. **Tenant isolation is defence in depth:**
 
 1. Every query filters `organization_id` in Python, and
-2. **78 tables carry PostgreSQL row-level security**, applied across five
+2. **81 tables carry PostgreSQL row-level security**, applied across five
    migrations (`d1`–`d5rls_*`), `ENABLE` *and* `FORCE`, with the policy reading
    a connection GUC: `organization_id = current_setting('app.current_org', true)`.
    `app/tenancy.py` is the only writer, via `set_config(..., is_local => true)`
    so the tenant is transaction-scoped and travels as a bind parameter.
-   **It fails closed by construction** — an unset GUC makes the predicate NULL,
-   not true, so a connection that never announced a tenant sees nothing.
+   **The policies fail closed by construction** — an unset GUC makes the
+   predicate NULL, not true, so a connection that never announced a tenant sees
+   nothing.
+
+Exact counts, measured from `Base.metadata`: **85 tables, 83 carrying
+`organization_id`** (the two that do not are `zoho_credentials` and
+`process_leases`), **81 in `EXPECTED_POLICIED`**, and two `CROSS_TENANT_BY_DESIGN`
+(`sync_runs`, `zoho_connections`). `docs/postgres.md` still says "70 of the 72
+tenant-scoped tables" and is stale by eleven.
+
+**But RLS is not in force in either shipped deployment recipe, and that is a
+finding rather than a detail.** The policies bind *the role that issues the
+query*, so they do nothing for a connection made as the database owner.
+`APP_DATABASE_URL` — the non-bypassing role — appears in `docs/postgres.md`
+and **nowhere else**: not in `compose.yaml`, `compose.dev.yaml`, `railway.json`,
+`deploy/production.env.example`, `.env.example`, `docs/hosting.md`,
+`docs/hosting-free-tier.md` or `docs/operations.md`. `compose.yaml` serves
+requests as `POSTGRES_USER`, the owner. So the second layer of defence is
+built, tested against a correctly-restricted role in the gate, and **not
+switched on by any documented deployment** — which the platform's own
+`observability/health.py` would report as `tenant_isolation UNHEALTHY` if
+anyone read it. Python-side filtering is doing the work alone in production.
 
 The other half of authorization is **withholding**, and it is unusually
 rigorous. `RESTRICTED_FACT_FIELDS` in `domain/enums.py` is the single list of
@@ -322,6 +353,18 @@ ungated family route misroutes badly (an `M3X11` screw routes to
 inside `decode_names`. The package imports no SQLAlchemy at all — pinned by a
 test — and writes nothing but stdout, `--out` and `--json`. So the attributes
 are decoded, narrowed elevenfold, printed, and thrown away.
+
+**A human-maintained taxonomy already exists upstream and is discarded at
+ingest.** Live SLS items in Zoho carry custom fields `cf_item_type`
+(Insert / Drill / Endmill / Tool Holder / Tap / Measuring Instrument),
+`cf_item_category` (Milling / Holemaking / Threading / Toolholding / Grooving &
+Parting / General), plus `cf_bin_location` and `cf_catalog_status` — populated
+on six of eight items sampled against the live connector.
+`ingestion/zoho_client._item_payload` reads **none** of them; it reads
+`category_name`/`category`, which its own comment records as set on **0 of 800**
+SLS items. So the platform's category column is empty while a per-item
+classification somebody actually maintains sits one field away. This is the
+cheapest coverage win available in Phase 1 and it needs no decoding at all.
 
 **And there is a socket waiting for it.** `equivalence/catalog.py:ZohoCatalogSource`
 already reads `grade`, `iso_shape`, `product_family`, `corner_radius_mm` and
@@ -584,14 +627,45 @@ Ranked by how much they save this project:
 
 ## 17. Existing technical debt relevant to this project
 
-- **The bridge discards the comparison, and the two doors disagree.**
-  `field_matches`, `gate_reason`, `geometry_score` and `dimensionally_vacuous`
-  are read nowhere in the portal (grep: zero hits) — the quote path flattens
-  the engine's structured verdict to a prose string and one float. Meanwhile
-  `POST /api/v1/resolve` already emits per-slot attributes with provenance,
-  confidence, `read_from` and character spans. **The public API is strictly
-  richer than the internal quote path**, which is the wrong way round and is
-  the single most useful thing to fix early (§40, question 7).
+- **Two reproducible defects that put a wrong part on a quote.** Both were
+  measured on this checkout (§34) and neither is recorded anywhere in the
+  repository's own documentation:
+
+  1. **The MIXED path asserts the reference product as the answer.**
+     `"same as 2001174 but 0.4 corner radius"` returns `rel=EXACT`,
+     `supplyCode=2001174` — the **0.8 mm** insert. The resolution keeps
+     `outcome=AUTO_MATCH` with an `AUTHORITATIVE` match while attaching the
+     effective-requirement suggestions, so the line auto-selects and prices the
+     product the customer asked to *vary*. The "but 0.4" is read, acted on for
+     the suggestion list, and then discarded for the selection.
+  2. **Vacuous comparisons are labelled `TECH`.** The alternatives beside it
+     score 0.96 as `TECH` with `corner_radius_mm = None` — square inserts and
+     screw-on inserts held technically equivalent to a CNMG turning insert on a
+     comparison where no dimension was comparable. The vacuity note that exists
+     for exactly this case is rendered by `SupplyDrawer.tsx` **only when the
+     candidate list is empty**, so it never appears in the case it describes.
+
+  Together these are the failure `docs/concepts/10` names as the one worth
+  guarding against: *"not a visibly wrong answer, but a confidently wrong one."*
+
+- **The comparison stops at `pie_service`; the attributes stop at the
+  component.** `field_matches`, `gate_reason`, `geometry_score` and
+  `dimensionally_vacuous` are read nowhere in the portal (grep: zero hits). The
+  decoded attribute *values* do cross — a candidate carries ten of them, and
+  `Candidate.attributes` is declared all the way into `types.ts` — but
+  `SupplyDrawer.tsx` never renders them. Meanwhile `POST /api/v1/resolve`
+  emits per-slot attributes with provenance, confidence, `read_from` and
+  character spans. **The public API is richer than the screen**, which is the
+  wrong way round and is the single most useful thing to fix early (§40).
+
+- **The layer-boundary invariant covers six packages, not the codebase.**
+  `DETERMINISTIC = ("attribution", "commercial", "enquiry", "ingestion",
+  "signals", "state")`. `identity/`, `trust/`, `context/`, `master_health/`,
+  `messaging/`, `observability/`, `routers/` and the top-level `pie_service.py`,
+  `store.py` and `resolution.py` are unconstrained. **A new `app/equivalence/`
+  or `app/compatibility/` package would sit outside the invariant until its
+  name is added to that tuple** — which is a one-line change nobody will think
+  to make.
 - **Hard gates are hardcoded and cutting-tool-specific.**
   `HARD_GATE_FIELDS = ("product_family", "iso_shape", "insert_polarity")` is a
   module constant in `equivalence/distance.py`, not pack data. A second product
@@ -1198,6 +1272,8 @@ be a metric the thing already passes.
 | **Category ontology becomes a maintenance liability** | the repo's own venture review names "our knowledge graph" as a moat founders imagine | Bind to published standards (ISO 13399, ETIM, DIN) rather than authoring a bespoke ontology; see §38 |
 | **A new screen is written as a hand-rolled `<table>`** | it has happened, through three UI passes; the check is deliberately outside the gate | `platform/DataGrid.tsx` for anything business-sized; run the diff check in review |
 | **`insight.py` absorbs the new endpoints** | 5,326 lines, 55 endpoints, 27% of the platform's routes — the path of least resistance | New routers, mounted with an explicit plan gate |
+| **A new package sits outside the layer invariant** | `DETERMINISTIC` names six packages; a new `equivalence/` or `compatibility/` is unconstrained until added | Add the names in the same commit that creates the packages — the invariant is opt-in, not automatic |
+| **A "same as X but Y" request quotes X** | reproduced on this checkout (§17, §34); the reference product is auto-selected and priced | Fix before any new surface is built on the MIXED path; add a regression case to the golden corpus |
 
 ## 33. Security risks
 
@@ -1207,8 +1283,14 @@ be a metric the thing already passes.
   changes when a price is varied, is the same defect wearing new clothes.
   **Every new surface goes through `quote_service.project` and gets a
   price-sweep test, not a field-level assertion.**
-- **A new table outside RLS.** 78 tables have policies; a new one without is
-  isolated only by Python. Every new table joins the RLS migration list and
+- **RLS is not switched on in any shipped deployment.** 81 tables have
+  policies and the gate tests them against a correctly-restricted role — but
+  `APP_DATABASE_URL` appears only in `docs/postgres.md`, and every deployment
+  recipe connects as the database owner, who bypasses RLS entirely. **The
+  second layer of tenant defence is built, tested and not enabled.** Fixing it
+  is a deployment change, not a code change, and it should land before this
+  programme adds tables rather than after. A new table outside the policy list
+  is isolated only by Python; every new table joins the RLS migration and
   `test_row_level_security.py`.
 - **Customer RFQ text is the most sensitive corpus in the system** — it names
   what a customer is buying. It must sit under the existing trust machinery:
@@ -1230,22 +1312,71 @@ Measured on this checkout, single-threaded Python 3.11, 4 cores:
 
 | Operation | 6,717 records | 33,585 | 100,755 |
 |---|---|---|---|
-| `find_equivalents` (full-spec query) | **30.8 ms** | **196.6 ms** | **555.1 ms** |
+| `find_equivalents` — **well-specified** query (88.9% gated out) | 30.8 ms | 196.6 ms | 555.1 ms |
+| `find_equivalents` — **undecodable** input (0% gated out) | **72.4 ms** | — | **1,662.3 ms** |
 | catalogue load into memory | 0.23 s | — | — |
-| resident memory | 67 MB (**10.2 KB/record**) | — | **≈1 GB extrapolated** |
-| `pie_service.resolve` end to end | 78–828 ms | — | — |
+| resident memory, equivalence pool | 67 MB (10.2 KB/rec) | — | ≈1.0 GB |
+| resident memory, **including the second copy** the identity index keeps | +61 MB (**19.7 KB/rec total**) | — | **≈2.0 GB per worker** |
+| `pie_service.resolve` — first call after boot | **813 ms** | — | — |
+| `pie_service.resolve` — subsequent | 22–116 ms | — | — |
 | exact identity lookup | ~1 ms | — | — |
 | catalogue rebuild from corpus | 1.46 s (6,717 products, 13.3 MB) | — | — |
 
 *Method: `PieCatalogSource.load()` over `backend/data/products.jsonl`, pool
-multiplied ×1/×5/×15, one fully-specified turning-insert spec through
-`EquivalenceQuery.find_equivalents`; RSS by `resource.getrusage`.*
+multiplied ×1/×5/×15, through `EquivalenceQuery.find_equivalents`; RSS by
+`resource.getrusage`.*
 
-Reading: the **scan** is survivable at 100k (~0.5 s); the **memory** is not, and
-the multiplier is workers. Concurrency makes it worse — this is CPU-bound
-Python holding the GIL, so N workers cost N × 1 GB and do not share the scan.
-Both problems disappear when candidate generation moves into PostgreSQL, which
-is also where the attributes will already be.
+Three corrections to the obvious reading, each of which makes the case for
+moving retrieval into PostgreSQL stronger rather than weaker:
+
+- **The cheap number is the best case.** A well-specified spec gates out 88.9%
+  of the pool before scoring. But `distance.py` skips a gate whenever either
+  side is `None`, so an input the engine *cannot decode* gates out **nothing**
+  and costs **1.66 s at 100k**. That is the `"6205 2RS C3 bearing"` case — and
+  an input with no technical content is exactly what arrives from a real RFQ.
+  **The expensive query is the one the system understands least.**
+- **Memory is roughly double, because the catalogue is held twice.**
+  `identity/store.AuthoritativeIndex.from_jsonl` keeps a second independent full
+  copy of the same records (+61 MB measured), and both hang off the one
+  process-wide `pie_service` singleton. A worker that syncs *and* resolves
+  carries ~19.7 KB/record — **≈2.0 GB at 100k**. Separately,
+  `docs/hosting-free-tier.md`'s "each worker warms its own ~13 MB catalogue
+  copy" is the *file* size; measured resident cost is 68 MB for the pool alone
+  and 187.6 MB RSS for a warmed process. That sizing guidance is wrong by about
+  an order of magnitude.
+- **`warm()` does not warm.** `main.py:167` calls it, but `_ensure_loaded` only
+  builds a lazy source — the 13 MB file is not read until the first `resolve`.
+  Measured: `warm()` 0.035 s, first resolve 813.6 ms, subsequent 22–116 ms.
+  **The first real user request after every deploy pays the load.**
+
+And the scan is not one pass but **five**, one of which allocates:
+`_NamespaceRestrictedSource.load()` rebuilds a filtered copy of the entire pool
+on every call with no cache, then `query.py` does a `pool.extend`, an `any()`
+over all records and a set comprehension over all records — all before the
+scoring loop begins.
+
+Concurrency makes every line of this worse: CPU-bound Python holding the GIL,
+so N workers cost N × 2 GB and share nothing.
+
+**The two defects in §17, reproduced:**
+
+```bash
+PIE_PARSER_ROOT=/home/user/pie-parser python3 -c "
+import sys; sys.path.insert(0,'backend')
+from app.pie_service import pie_service; pie_service.warm()
+r = pie_service.resolve('same as 2001174 but 0.4 corner radius').to_dict()
+print(r['rel'], r['outcome'], r['supplyCode'])
+for c in r['candidates'][:4]:
+    print(' ', c['code'], c['rel'], c['score'],
+          (c['attributes'] or {}).get('corner_radius_mm'), c['desc'][:40])"
+```
+```
+EXACT AUTO_MATCH 2001174
+  2001174 EXACT None 0.8  CNMG 120408-49 - TN2000     <- the 0.8 mm insert, auto-selected
+  1182698 TECH  0.96 None KENDEX SQUARE INSERTS CVW1  <- no corner radius at all
+  2824077 TECH  0.96 None TPCB SCREW ON INSERT
+  2827560 TECH  0.96 None GPCT SCREW ON INSERT
+```
 
 Second-order: `POST /api/v1/resolve` caps input at 512 characters and handles
 one line per request, and there is **no batch resolve endpoint**. A 200-line
@@ -1349,9 +1480,21 @@ attributes, which is Phase 1's job and not a coding problem.
 The order follows the dependency graph, but the *first* item is chosen because
 it is nearly free and unblocks measurement:
 
-0. **Populate `grade_crossref.csv` with sourced rows, and fetch the submodule
-   in CI.** A morning's work; no code; immediately improves every grade
-   comparison and makes cross-brand evaluation possible at all.
+0. **Four things that are cheap, independent of every decision below, and
+   should not wait for approval of the rest:**
+   - **Fix the two defects in §17.** A request to vary a product currently
+     quotes the unvaried product, and vacuous comparisons are labelled `TECH`.
+     Both are reproducible in one line, both put a wrong part in front of a
+     customer, and neither depends on anything else in this plan.
+   - **Read `cf_item_type` and `cf_item_category` at ingest.** A maintained
+     per-item classification already exists in the ERP and is discarded
+     (§6). It is a few lines in `_item_payload` and it is the cheapest
+     category coverage available.
+   - **Populate `grade_crossref.csv` with sourced rows.** It ships header-only,
+     so no grade can be cross-referenced at all today. A morning, no code.
+   - **Set `APP_DATABASE_URL` in the deployment recipes** so the row-level
+     security that is already written and already tested is actually in force
+     (§33), and fetch the pie-parser submodule in CI.
 1. **Phase 1 — attribute decoration.** Persist what `master_health` already
    decodes, with provenance. Add importers so attributes can also arrive from a
    manufacturer file rather than only from a decoded name. **Exit criterion:
@@ -1383,11 +1526,14 @@ it is nearly free and unblocks measurement:
 
 **Blocking — Phase 1 cannot be scoped without these:**
 
-1. **What is the actual catalogue?** The brief says ~100,000 SKUs; the measured
-   master is 15,028 items for one of three entities and the decoded catalogue
-   is 6,717 records. Is 100k the union across entities, an ambition, or a
-   different dataset not in this repository? *Design target assumed: 100k, with
-   today's 15k as the working set.*
+1. **What is the actual catalogue, and is there a third entity?** The brief
+   says ~100,000 SKUs. Measured: the SLS master is 15,032–15,996 items, the
+   second entity is 513, and the UPS connector returns the SLS organisation —
+   so there is no third ERP master. Together that is under 17k reachable items
+   against a 100k target. Is 100k the union across entities, an ambition, a
+   future principal's catalogue, or a dataset not in this repository? *Design
+   target assumed: 100k, with today's ~16k as the working set — but the answer
+   changes Phase 1's sizing by a factor of six.*
 2. **Which categories, in what order?** Everything here is cutting tools. The
    brief names bearings, contactors and sensors. Each is a pack, a rule set and
    a data-authoring project. One category done properly beats four started.

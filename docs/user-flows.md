@@ -219,8 +219,11 @@ another tab."
 ### 3.7 Cross-tab session sync
 
 **Trigger.** `storage` event on the session key in a tab that did not write it.
-**Path.** Cleared → forget + notice. Different user → adopt the new session,
-drop caches, notice "Signed in as {name} in another tab." Same user → no-op.
+**Path.** Cleared → forget + "You signed out in another tab." notice on the
+sign-in card. Different user → adopt the new session and drop caches; the tab
+re-renders as the new account (a "Signed in as {name} in another tab." notice
+is recorded but has no renderer inside the signed-in shell, so nothing is
+shown). Same user → no-op.
 **Ends.** Tab signed out · tab re-rendered as the new account · no change.
 
 ### 3.8 Forced password change (issued passwords)
@@ -254,8 +257,10 @@ membership *inside the target tenant* (grants nothing), opens a **new** session
 role. The client replaces the whole envelope, clears every cached query of the
 workspace being left, and lands home.
 **Branches.** No membership or nonexistent org → one indistinguishable 404
-("Organization not found") with a toast; nothing changes · membership ended
-after the switch → the next request 401s into §3.6.
+("Organization not found"); the client swallows the refusal and stays exactly
+where it is — the failure message lands in state that only the signed-out
+sign-in card renders, so nothing visible appears · membership ended after the
+switch → the next request 401s into §3.6.
 **Ends.** Shell rebuilt around the new workspace · refused, unchanged.
 
 ### 3.11 Own account: password and sessions (`#/settings`, every role)
@@ -270,7 +275,8 @@ after the switch → the next request 401s into §3.6.
    drops to the landing page.
 
 **Branches.** Wrong current / weak new password → inline 403/400 · foreign
-session id → uniform 404 · only one device → empty state.
+session id → uniform 404 · only one device → a one-row list marked "this
+device" (the current session never gets a per-row "Sign out").
 **Ends.** Password changed, still signed in · one device out · out everywhere.
 
 ### 3.12 Trial lifecycle and plan requests
@@ -330,8 +336,10 @@ per-company coverage, and the read-model totals the analysis runs on.
 controls are replaced by "Syncing is a manager or owner action", and money
 fields in skip data are omitted server-side (a skipped bill line's value is a
 purchase total) · no connections + owner → "Add one below"; non-owner → "Ask an
-owner" · status fetch fails → error state with retry.
-**Ends.** Informed reader · degraded read-only view · error with retry.
+owner" · status fetch fails → error state (managers can re-fetch via the
+"Refresh status" button; the error itself carries no retry control, so a
+salesperson has only a reload).
+**Ends.** Informed reader · degraded read-only view · error state.
 
 ### 4.2 Connect Zoho via OAuth (owner)
 
@@ -450,9 +458,11 @@ half-filled client pair → the button stays disabled.
    connect → per-company catalogue read (once per day per connection) →
    reference pass → per monthly window "Read {Mon YYYY}" → supply pass
    (payments, POs, stock) → org-wide analysis: signals → customer×item metrics
-   → business state → decisions → attribution. Each analysis phase is
-   SAVEPOINT-isolated — a failure costs that phase only and lands on the
-   unresolved list as `ANALYSIS_PHASE_FAILED`.
+   → business state → decisions → attribution. The first four analysis phases
+   are SAVEPOINT-isolated — a failure costs that phase only and lands on the
+   unresolved list as `ANALYSIS_PHASE_FAILED`; attribution is best-effort too,
+   but its failure is recorded in the run's notes rather than on the
+   unresolved list.
 4. Managers also get the **run log** ("What this sync did", live-followed via
    cursor, problems-only filter, downloadable `log.txt`).
 5. On finish the card shows the outcome and the stage counters; if rows could
@@ -526,7 +536,8 @@ message); heartbeats while running; exponential backoff to DEAD_LETTER; a
 dead worker's claim is reaped back to PENDING. Visibility for a manager asking
 "why has nothing synced": `GET /api/v1/internal/queue` (mode, lease holder,
 worker liveness, depth, dead letters); an owner can requeue a dead letter
-(`POST /api/v1/internal/queue/{id}/retry`, 409 unless DEAD_LETTER).
+(`POST /api/v1/internal/queue/{id}/retry`; 409 while the message is still
+PENDING or CLAIMED — only a terminal message can be requeued).
 **Ends.** Draining · refuses to start loudly (exit 2) when config declines it ·
 stops clean on SIGTERM.
 

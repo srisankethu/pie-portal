@@ -23,8 +23,9 @@ would read, on the coverage report, as a Phase 1 regression.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
-from typing import Dict, Iterable, List, Optional, Tuple
+from dataclasses import dataclass, field, fields
+from typing import (Callable, Dict, Iterable, List, Optional, Sequence,
+                    Tuple)
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -37,6 +38,22 @@ from .extract import (CATALOGUE_LINK, DECODED_NAME, claims_from_catalogue_record
 from .writer import WriteResult, write_claims
 
 log = logging.getLogger("pie_portal.attributes")
+
+#: Products per batch when a whole organization is decorated.
+#:
+#: Sized by what the boundary is *for*, and that is not what it looks like.
+#: Measured over the 6,717-row nomenclature corpus loaded as one organization's
+#: master: one unbatched pass took 8.7s and wrote 34,763 rows, of which
+#: ``decode_names`` was 1.0s — the pack loads in 0.15s and decodes at about
+#: 0.13ms a row. **The decode is not the expensive half**, so batching does not
+#: exist to make it cheaper; the other 7.7s is the writing, and holding all of
+#: it open in one transaction is the SQLite lock CLAUDE.md §4 is about.
+#:
+#: Under 500 deliberately. ``_products_with_live_rows`` bounds its ``IN`` list
+#: to batches below that and scans the organization's whole live set above it —
+#: a batched run would then repeat that scan once per batch, which is the cost
+#: the bound was added to avoid, arriving by another door.
+DEFAULT_BATCH_SIZE = 400
 
 
 @dataclass
@@ -73,6 +90,36 @@ class DecorationReport:
     @property
     def decoders_available(self) -> bool:
         return not (self.decoded_name_unavailable or self.catalogue_unavailable)
+
+    def merge(self, other: "DecorationReport") -> "DecorationReport":
+        """Fold one batch's counts into the run's — ``SyncReport.merge``'s job.
+
+        Written by field *kind* rather than by name for that method's reason: a
+        counter added to this dataclass later is summed without anybody having
+        to remember this one exists, which is exactly the maintenance the
+        original hand-written version of this loop failed at over there.
+
+        The two UNKNOWNs are the exception and are not concatenated. Every batch
+        of a run where pie-parser is absent carries the same sentence, so the
+        run's answer is that sentence once; first non-empty wins, which also
+        means a run where one batch could ask and another could not still
+        reports the refusal rather than losing it in an average.
+        """
+        for f in fields(self):
+            if f.name == "organization_id":
+                continue
+            mine, theirs = getattr(self, f.name), getattr(other, f.name)
+            if isinstance(mine, int):
+                setattr(self, f.name, mine + theirs)
+            elif isinstance(mine, str):
+                if not mine and theirs:
+                    setattr(self, f.name, theirs)
+            elif isinstance(mine, dict):
+                for entry, count in theirs.items():
+                    mine[entry] = mine.get(entry, 0) + count
+            elif isinstance(mine, WriteResult):
+                setattr(self, f.name, mine + theirs)
+        return self
 
 
 def _master_row(row_number: int, product: models.Product) -> MasterRow:
@@ -168,6 +215,73 @@ def decorate_products(session: Session, organization_id: str, *,
             report.written += _decorate_from_catalogue(
                 session, organization_id, product, catalogue, has_rows, report)
 
+    return report
+
+
+def decorate_organization(session: Session, organization_id: str, *,
+                          product_ids: Optional[Sequence[str]] = None,
+                          batch_size: int = DEFAULT_BATCH_SIZE,
+                          on_batch: Optional[Callable[[int, int], None]] = None
+                          ) -> DecorationReport:
+    """Decorate every product in the organization, a batch at a time.
+
+    :func:`decorate_products` reads every product it was given before it decodes
+    any of them — right for a batch, wrong for a master. On a 15,000-item book
+    that is 15,000 ``Product`` rows and their claims held at once, and every row
+    it writes stays in one transaction until the caller commits.
+
+    ``on_batch(done, total)`` is called at each boundary and **the caller
+    commits there**, the way ``SyncService`` commits inside ``on_phase``: this
+    package writes rows, it does not decide transaction boundaries, and both
+    callers that have one already own theirs. A caller that passes nothing gets
+    one transaction — fine for a handful of products, wrong for a master.
+
+    Measured, because "do not make a sync that took minutes take an hour" is a
+    real constraint rather than a worry. Over the 6,717-row corpus as one
+    organization's master, catalogue loaded: a first run writes 34,763 rows in
+    11.2s and a re-run over unchanged products and an unchanged pack takes 7.1s
+    and writes nothing. The same work unbatched is 8.7s, so batching costs 2.5s
+    across seventeen batches — one pack load each, 0.15s — and both arms wrote
+    the same 34,763 rows. That is the whole of the overhead, and it buys
+    seventeen short write windows instead of one long one.
+
+    The product ids are read once, up front, and they are ids rather than rows:
+    a committed batch expires every ORM object in the session, and a list of
+    strings survives that where a list of ``Product`` would be re-loaded.
+    """
+    #: ``product_ids`` narrows the run to what a sync actually touched, the way
+    #: ``execute_analysis`` already takes ``customer_ids``. It is still filtered
+    #: by organization: an id from another tenant must not decorate anything
+    #: here just because a caller passed it.
+    #:
+    #: ``None`` means every product, and that is the value a first run and a
+    #: full re-sync both want. It is deliberately not "the empty set means
+    #: everything" — an empty *touched* set means a sync that changed no
+    #: product, and re-decoding the whole master for it would be the opposite
+    #: of the point.
+    stmt = (select(models.Product.product_id)
+            .where(models.Product.organization_id == organization_id))
+    if product_ids is not None:
+        wanted = list(dict.fromkeys(product_ids))
+        if not wanted:
+            return DecorationReport(organization_id=organization_id)
+        stmt = stmt.where(models.Product.product_id.in_(wanted))
+    ids: List[str] = list(session.scalars(stmt.order_by(models.Product.product_id)))
+
+    report = DecorationReport(organization_id=organization_id)
+    if not ids:
+        # No products is not a measurement of either source, so neither UNKNOWN
+        # is set: nothing was asked because there was nothing to ask about.
+        # ``attribute_coverage`` reports the same organization's rate as None
+        # rather than 0% for the same reason.
+        return report
+
+    size = max(1, batch_size)
+    for start in range(0, len(ids), size):
+        report.merge(decorate_products(session, organization_id,
+                                       product_ids=ids[start:start + size]))
+        if on_batch is not None:
+            on_batch(min(start + size, len(ids)), len(ids))
     return report
 
 

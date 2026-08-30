@@ -13,6 +13,16 @@ This is where those facts start existing.
     decorate   the orchestration: which products, which source, then the writer.
     coverage   the Phase 1 exit criterion — what IS covered, per organization
                and per attribute key. No target, no band, no verdict.
+    __main__   ``python -m app.attributes ORG`` — an operator decorating one
+               organization on demand, and the coverage after.
+
+**Two callers, and they are the point.** A store nothing fills is an empty
+table, and for one commit that is what this was: the CLI above is one door and
+``ingestion.jobs.execute_analysis``'s decoding phase is the other, so a re-sync
+leaves the store current rather than a master behind. The sync's half runs in
+the organization-wide part of the cycle and not per pull, because these rows are
+keyed on the organization alone — three connected companies pulling in parallel
+would otherwise decorate the same rows three times and race each other doing it.
 
 **Two sources, stored separately on purpose.** ``DECODED_NAME`` is the item's
 own description run through the parser and reaches about 21% of the master.
@@ -46,7 +56,8 @@ covered nothing here" and "nobody asked the pack" are different facts and only
 the first is evidence.
 """
 from .coverage import CoverageReport, KeyCoverage, attribute_coverage
-from .decorate import DecorationReport, decorate_products
+from .decorate import (DEFAULT_BATCH_SIZE, DecorationReport,
+                       decorate_organization, decorate_products)
 from .extract import (
     CATALOGUE_LINK,
     DECODED_NAME,
@@ -66,6 +77,7 @@ __all__ = [
     "CoverageReport",
     "DECODED_NAME",
     "DecorationReport",
+    "DEFAULT_BATCH_SIZE",
     "Extraction",
     "KeyCoverage",
     "WriteResult",
@@ -74,6 +86,7 @@ __all__ = [
     "claims_from_decode",
     "claims_from_values",
     "decoded_facts",
+    "decorate_organization",
     "decorate_products",
     "live_values",
     "unit_for",

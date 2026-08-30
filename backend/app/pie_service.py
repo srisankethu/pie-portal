@@ -132,12 +132,20 @@ class Candidate:
     score: Optional[float] = None   # combined equivalence score (None for exact)
     reason: str = ""                # human explanation from the engine
     attributes: Dict[str, Any] = field(default_factory=dict)
+    #: The engine compared **no dimension** of the request against this record —
+    #: it stamps ``dimensionally_vacuous`` on exactly that case, and the score
+    #: beside it is a ceiling nothing pushed down rather than a measure of fit.
+    #: Carried so the band mapping and the auto-selection can both refuse it;
+    #: without it a bearing scored 1.0 against a carbide insert reads as a
+    #: technical equivalent.
+    vacuous: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "code": self.code, "desc": self.desc, "rel": self.rel,
             "grade": self.grade, "brand": self.brand, "score": self.score,
             "reason": self.reason, "attributes": self.attributes,
+            "vacuous": self.vacuous,
         }
 
 
@@ -550,8 +558,26 @@ class PieService:
         notes += list(result.get("narrowing_questions", []) or [])
 
         # (1) Authoritative identity -> EXACT. The matched record IS the product.
+        #
+        #     ``outcome`` alone does not establish that. On the engine's two
+        #     *reference* paths — "same as X but 0.4 corner radius", and an
+        #     exact hit in a namespace this business does not sell — the
+        #     identity is a legitimate AUTO_MATCH over a legitimate
+        #     AUTHORITATIVE match and is still not the answer: the caller named
+        #     the product in order to move away from it. Reading those as EXACT
+        #     put the *unvaried* product on the line, auto-selected and priced,
+        #     for a request that asked to change it.
+        #
+        #     ``identity_role`` is the engine's own statement of which it is.
+        #     The two fallbacks below cover an engine that predates the field —
+        #     absence must not read as "answer", which is the benign default
+        #     this codebase refuses everywhere else.
         auth = [m for m in matches if m.get("certainty") == "AUTHORITATIVE"]
-        if auth and outcome in ("AUTO_MATCH", "CONFIRMED"):
+        role = result.get("identity_role")
+        is_reference = (role == "REFERENCE"
+                        or (role is None and (semantics == "MIXED"
+                                              or "effective_requirement" in result)))
+        if auth and not is_reference and outcome in ("AUTO_MATCH", "CONFIRMED"):
             m = auth[0]
             code = str(m.get("record_id"))
             desc = m.get("description") or code
@@ -568,6 +594,24 @@ class PieService:
             cands += self._candidates_from_suggestions(suggestions, bands, exclude=code)
             return Resolution(text, code, desc, "EXACT", code, cands,
                               outcome, semantics, notes)
+
+        # (1r) The identity resolved exactly and is a *reference*. Keep it
+        #      visible — a person may well decide to offer it and ask — but
+        #      never as the auto-selected supply, and never labelled EXACT,
+        #      which would assert it meets a requirement the caller defined by
+        #      changing it. It is appended after the derived candidates in (3)
+        #      rather than given its own return, so the ranking, the
+        #      discrimination guard and the abstention all stay in one place.
+        ref_cand: Optional[Candidate] = None
+        if auth and is_reference:
+            m = auth[0]
+            code = str(m.get("record_id"))
+            ref_cand = Candidate(
+                code=code, desc=m.get("description") or code, rel="POSSIBLE",
+                grade=m.get("grade"), brand=m.get("brand"),
+                reason=("The reference you named, not a match for the change you "
+                        "asked for. Offer it only as a deliberate substitution."),
+                attributes=_attributes_of(self.lookup_record(code)))
 
         # (1b) A candidate identity the engine will not assert: the quote names a
         #      customer, the catalogue holds this exact code, but nobody has
@@ -609,13 +653,29 @@ class PieService:
         #     equivalent — auto-selecting and pricing it would put a fabricated
         #     match on a customer quote. Abstain and show the options instead.
         cands = self._candidates_from_suggestions(suggestions, bands)
-        if cands and self._is_discriminating(cands) and outcome != "UNRESOLVED":
+        # A reference (1r) is offerable but never rankable: appended last, and
+        # carrying no score, so it cannot become ``top`` and cannot affect
+        # whether the ranking discriminates.
+        if ref_cand is not None and not any(c.code == ref_cand.code for c in cands):
+            cands = cands + [ref_cand]
+        if (cands and self._is_discriminating(cands) and outcome != "UNRESOLVED"
+                and not cands[0].vacuous):
             top = cands[0]
             desc = self._requirement_desc(text, top)
             return Resolution(text, text, desc, top.rel, top.code, cands,
                               outcome, semantics, notes)
         if cands:
+            # Two different reasons to abstain, and they must not be reported as
+            # one: a tie means the ranking could not choose, while a vacuous
+            # leader means the ranking chose on a comparison with no dimension
+            # in it. ``_is_discriminating`` cannot see the second — those scores
+            # genuinely do separate — so it gets its own sentence, and the
+            # reader is told which of the two happened.
             notes.append(
+                "No dimension of the request could be compared against these "
+                "candidates, so their scores say nothing about fit — pick the "
+                "intended product before quoting."
+                if cands[0].vacuous else
                 "The engine could not distinguish between these candidates for "
                 "this input — pick the intended product before quoting.")
             return Resolution(
@@ -623,7 +683,8 @@ class PieService:
                 "AMBIGUOUS", None,
                 [Candidate(code=c.code, desc=c.desc, rel="POSSIBLE", grade=c.grade,
                            brand=c.brand, score=c.score, reason=c.reason,
-                           attributes=c.attributes) for c in cands],
+                           attributes=c.attributes, vacuous=c.vacuous)
+                 for c in cands],
                 outcome, semantics, notes)
 
         # (4) Nothing resolved -> UNRESOLVED (no PIE match).
@@ -641,7 +702,23 @@ class PieService:
                 continue
             scores = s.get("scores", {}) or {}
             combined = scores.get("combined")
+            # The engine stamps this on a comparison where no dimension of the
+            # request was comparable — the marker exists so a consumer does not
+            # have to re-derive it from tied scores, and reading it is the whole
+            # of the fix. A vacuous comparison may not be called technically
+            # equivalent however high it scored: nothing was compared, so the
+            # honest ceiling is POSSIBLE. `_rel_from_score` is left alone — it
+            # maps a score to a band and that mapping is still correct; what
+            # was wrong was feeding it a score that measured nothing.
+            vacuous = bool(s.get("dimensionally_vacuous"))
             rel = force_rel or self._rel_from_score(combined, bands)
+            if vacuous and rel in ("TECH", "COMPAT"):
+                rel = "POSSIBLE"
+            reason = s.get("explanation") or ""
+            if vacuous:
+                reason = (("No dimension of the request could be compared "
+                           "against this record, so its score is not a measure "
+                           "of fit. ") + reason).strip()
             out.append(Candidate(
                 code=code,
                 desc=s.get("description") or code,
@@ -649,8 +726,9 @@ class PieService:
                 grade=s.get("grade"),
                 brand=s.get("brand"),
                 score=combined,
-                reason=s.get("explanation") or "",
+                reason=reason,
                 attributes=s.get("attributes", {}) or {},
+                vacuous=vacuous,
             ))
         return out
 

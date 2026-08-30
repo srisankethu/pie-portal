@@ -303,7 +303,7 @@ availability is UNKNOWN must say so rather than sort as though it were quick.
 ---
 
 ## 017 — Fix the two resolution defects before building on that path
-**Status:** PROPOSED — **do not wait for programme approval** · **Report §:** 17, 34
+**Status:** **DONE** — landed, both gates green · **Report §:** 17, 34
 
 **The defects**, both reproduced on this checkout, both unrecorded anywhere in
 either repository:
@@ -331,6 +331,66 @@ spends 260 lines protecting against *"not a visibly wrong answer, but a
 confidently wrong one"*. This is that, reachable in one line, on the path a
 customer request most naturally takes. It should not be queued behind an
 architecture review.
+
+### What landed
+
+**The contract, in pie-parser.** `resolution` says what the identity layer
+matched and cannot say what that match *is to the answer* — on both reference
+paths it is a truthful `AUTO_MATCH` over a truthful `AUTHORITATIVE` match and
+still not the product. `tools/resolve_rfq.run` now states `identity_role` —
+`ANSWER`, `REFERENCE` or `NONE` — on **every** exit. It is seeded to `NONE`
+at the top of `run` rather than set per branch, so a path added later that
+forgets to say cannot thereby claim to be the answer. The MIXED path also
+prepends a note naming the reference and quoting what was actually asked for.
+
+**The reading, in pie-portal.** `pie_service._map` branch (1) is skipped for a
+reference; a new branch (1r) keeps the named product *offerable* — a person may
+well decide to offer it and ask — as a `POSSIBLE` candidate carrying its role in
+its reason, appended last and carrying no score, so it can neither win a
+ranking it never entered nor be auto-selected. Two fallbacks cover an engine
+that predates the field: `MIXED` semantics, or a derived `effective_requirement`.
+Absence must not read as ANSWER.
+
+**The vacuity guard.** `_candidates_from_suggestions` reads
+`dimensionally_vacuous` — which the engine already stamped and nobody read —
+caps such a candidate at `POSSIBLE`, and says why in its reason. Branch (3)
+refuses to auto-select a vacuous leader, with its own note: a tie and a
+comparison containing no dimension are different failures and the reader is
+told which happened. `_rel_from_score` is untouched; the mapping was always
+correct, and what was wrong was feeding it a score that measured nothing.
+
+**The note is visible.** `SupplyDrawer` rendered `line.notes` only when there
+were *no* candidates — so the engine's vacuity caveat, which by definition
+describes candidates on screen, was invisible every time it applied.
+
+### Verified
+
+`"same as 2001174 but 0.4 corner radius"` now returns `AMBIGUOUS` with
+`supplyCode=None`, the reference last and labelled, and the note first.
+`"same as 2001174 but TN4000 grade"` — a variation the catalogue *can* satisfy —
+now surfaces real CNMG 120408 TN4000 inserts, which it did not before.
+`"6205 2RS C3 bearing"` offers nothing as `TECH` or `COMPAT`. A pure identity
+still resolves `EXACT`.
+
+The public `POST /api/v1/resolve` inherits all of it: `resolution.py` builds its
+document from `Resolution.supplyCode` and `.candidates` rather than re-reading
+`matches`, and `_identity_proposal` delegates to `store._identity_candidate`,
+which still requires a single-candidate `NEEDS_REVIEW` — so a reference cannot
+become a confirmable mapping.
+
+Gates: pie-parser **419 passed**, all six steps. pie-portal **3,558 passed, 34
+skipped**, all seven steps including PostgreSQL migrations, row-level security
+and the restore drill.
+
+### Not fixed here, and deliberately
+
+The override decode is unreliable — `"but 0.4 corner radius"` does not reliably
+become `corner_radius_mm = 0.4`, so the derived requirement is partly wrong and
+the candidates come back vacuous. That is a **third** defect, in
+`identity/effective.py` and the override parse, outside this decision's scope.
+It is now *visible* rather than hidden: the line abstains and says no dimension
+could be compared, instead of quoting the reference. Fixing the decode is
+tracked separately — see decision 021.
 
 ---
 
@@ -393,3 +453,35 @@ six packages (`attribution`, `commercial`, `enquiry`, `ingestion`, `signals`,
 pass the gate in silence — which is the failure mode this codebase has
 documented twice: a check that does not run reads exactly like a check that
 passes.
+
+---
+
+## 021 — The override decode is a third defect, and it is now visible
+**Status:** OPEN — not fixed by 017 · **Report §:** 17
+
+**What it is.** On the MIXED path, `"same as 2001174 but 0.4 corner radius"`
+does not reliably turn into `corner_radius_mm = 0.4`. The change text is parsed
+as though it were part number notation, so plain English contributes letters to
+ISO designation slots rather than a value to a dimension. The derived
+requirement is therefore partly fiction, and the candidates ranked against it
+come back with no comparable dimension at all — which is why the same query
+that exposed 017 also returns square and screw-on inserts.
+
+**Why it is not folded into 017.** Different cause, different file, different
+risk. 017 is a *contract* fix — who may be quoted — and is provably safe: it can
+only ever withhold an assertion. Rewriting the override parse changes what the
+engine *believes a customer asked for*, which is the input to everything
+downstream, and it needs its own corpus cases before it is touched. Bundling
+them would have made a safe fix unreviewable.
+
+**What 017 already changed about it.** The failure used to be invisible: the
+line quoted the reference and looked resolved. It now abstains and says "no
+dimension of the request could be compared against these candidates". A wrong
+decode that announces itself is a different class of problem from one that
+prices a part.
+
+**What fixing it needs.** Corpus cases for the override shapes people actually
+write (`but 0.4`, `in 0.4 corner`, `-> 0.4`, `0.4 instead of 0.8`), a decode
+that treats the change text as a *specification fragment* rather than as
+nomenclature, and a refusal when it cannot read one — the derived requirement
+must be able to say which fields the caller actually changed.

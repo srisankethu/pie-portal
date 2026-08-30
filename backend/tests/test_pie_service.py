@@ -219,3 +219,104 @@ def test_a_failed_pack_read_is_not_memoized(monkeypatch, tmp_path):
     monkeypatch.setattr(ps.settings, "PIE_PACK", real_pack)
     families = ps.pack_families()              # …and not a remembered one
     assert families, "the pack became readable and the next call must see it"
+
+
+# --- a vacuous comparison is not an equivalence ------------------------------
+#
+# The engine gates on a field only when *both* sides specify it
+# (equivalence/distance.py), so a request it cannot decode is gated out of
+# nothing and every candidate scores near the ceiling. It stamps
+# ``dimensionally_vacuous`` on exactly that case. Reading it is the fix; the
+# defect was that nobody did.
+#
+# Reproduced before the fix: "6205 2RS C3 bearing" — a deep-groove ball bearing
+# — returned carbide inserts and endmills at score 1.0, and on the MIXED path
+# square and screw-on inserts came back labelled TECH at 0.96.
+
+def _suggestion(code, combined, *, vacuous, dims):
+    return {"record_id": code, "description": f"desc {code}", "grade": None,
+            "scores": {"combined": combined}, "attributes": {},
+            "dimensions_compared": dims, "dimensionally_vacuous": vacuous,
+            "explanation": "family/shape only" if vacuous else "geometry close"}
+
+
+def test_a_vacuous_comparison_never_claims_a_technical_relationship():
+    """Nothing was compared, so the score is a ceiling rather than a fit."""
+    from app.pie_service import Bands
+
+    cands = pie_service._candidates_from_suggestions(
+        [_suggestion("a", 0.96, vacuous=True, dims=0),
+         _suggestion("b", 0.70, vacuous=True, dims=0)],
+        Bands.default())
+
+    assert [c.rel for c in cands] == ["POSSIBLE", "POSSIBLE"], (
+        "a comparison with no comparable dimension was reported as a technical "
+        "equivalent")
+    assert all(c.vacuous for c in cands)
+    assert all("could be compared" in c.reason for c in cands), (
+        "the candidate carries the label but not the reason for it")
+
+
+def test_the_same_scores_do_claim_one_when_something_was_compared():
+    """The guard must cost nothing on a real comparison, or it is a downgrade
+    of the whole engine rather than a fix."""
+    from app.pie_service import Bands
+
+    cands = pie_service._candidates_from_suggestions(
+        [_suggestion("a", 0.96, vacuous=False, dims=3),
+         _suggestion("b", 0.70, vacuous=False, dims=3)],
+        Bands.default())
+
+    assert [c.rel for c in cands] == ["TECH", "COMPAT"]
+    assert not any(c.vacuous for c in cands)
+
+
+def test_a_vacuous_leader_is_never_auto_selected():
+    """``_is_discriminating`` cannot catch this: 0.96 against 0.70 genuinely
+    separates. It separates on a comparison containing no dimension."""
+    from app.pie_service import Bands
+
+    res = pie_service._map("6205 2RS C3 bearing", {
+        "resolution": {"outcome": "AUTO_MATCH", "input_semantics": "REQUIREMENT",
+                       "matches": []},
+        "identity_role": "NONE",
+        "suggestions": [_suggestion("a", 0.96, vacuous=True, dims=0),
+                        _suggestion("b", 0.70, vacuous=True, dims=0)],
+        "notes": [],
+    }, Bands.default())
+
+    assert res.supplyCode is None, (
+        "a candidate nothing was compared against was auto-selected and priced")
+    assert res.rel == "AMBIGUOUS"
+    assert any("no dimension" in n.lower() for n in res.notes)
+    assert not any("could not distinguish" in n for n in res.notes), (
+        "reported as a tie, which it is not — the reader is told the wrong "
+        "reason to look")
+
+
+def test_a_real_leader_is_still_selected():
+    from app.pie_service import Bands
+
+    res = pie_service._map("CNMG 120404", {
+        "resolution": {"outcome": "AUTO_MATCH", "input_semantics": "REQUIREMENT",
+                       "matches": []},
+        "identity_role": "NONE",
+        "suggestions": [_suggestion("a", 0.96, vacuous=False, dims=3),
+                        _suggestion("b", 0.70, vacuous=False, dims=3)],
+        "notes": [],
+    }, Bands.default())
+
+    assert res.supplyCode == "a"
+    assert res.rel == "TECH"
+
+
+@pytest.mark.requires_pie
+def test_a_bearing_is_not_a_carbide_insert():
+    """The report's reproduction, against the real catalogue. The engine has no
+    bearing pack, so it must decline rather than rank cutting tools."""
+    res = pie_service.resolve("6205 2RS C3 bearing")
+
+    assert res.supplyCode is None
+    assert not any(c.rel in ("TECH", "COMPAT") for c in res.candidates), (
+        "an insert or an endmill was offered as technically equivalent to a "
+        "deep-groove ball bearing")

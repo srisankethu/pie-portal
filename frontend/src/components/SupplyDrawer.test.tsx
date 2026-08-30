@@ -1,0 +1,107 @@
+// The engine's caveats must be visible in the case they are about.
+//
+// The drawer rendered `line.notes` only inside `{line.candidates.length === 0
+// && …}` — so a note describing the candidates on screen was shown only when
+// there were none. The one that mattered most was the engine's own:
+//
+//   "All shown candidate(s) matched on family/shape only — no dimension was
+//    comparable, so a perfect dimensional score is vacuous."
+//
+// It is stamped precisely when candidates *are* listed, and it was invisible
+// every time. A caveat shown only when there is nothing to caveat is not a
+// caveat, and the reader was left with a score and no reason to doubt it.
+//
+// The server-side guards are the ones that matter and are proven in
+// `backend/tests/test_pie_service.py` — a vacuous candidate is never TECH and
+// is never auto-selected. This file pins the half those cannot reach: that the
+// person choosing is actually told.
+import { render, screen } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import { SupplyDrawer } from "./SupplyDrawer";
+import type { Candidate, Line } from "../types";
+
+const VACUITY_NOTE =
+  "All shown candidate(s) matched on family/shape only — no dimension was " +
+  "comparable, so a perfect dimensional score is vacuous.";
+
+function candidate(over: Partial<Candidate> = {}): Candidate {
+  return {
+    code: "1855169", desc: "INS. NGE WITH CHIP BREAKER LC R 04",
+    rel: "POSSIBLE", grade: null, brand: "Kennametal", score: 1.0,
+    reason: "family/shape only", attributes: {}, vacuous: true, ...over,
+  };
+}
+
+/** A line the engine declined to resolve: candidates listed, none selected. */
+function lineWithCaveats(over: Partial<Line> = {}): Line {
+  return {
+    id: "l1", raw: "6205 2RS C3 bearing",
+    reqCode: "6205 2RS C3 bearing", reqDesc: "Not resolved — choose the intended product",
+    reqQty: 10, rel: "AMBIGUOUS", relLabel: "Ambiguous",
+    proposed: false, reading: "",
+    supplyCode: null, supplyDesc: "", sel: "AUTO",
+    avail: null, availUnknown: true, inBooks: null, shortage: null,
+    quoted: null, priceSource: null, recommended: null, lineTotal: null,
+    createPhase: null, service: null, incompatReason: null,
+    status: { kind: "technical", label: "unresolved" },
+    flags: {
+      attention: true, procurement: false, missingBooks: false,
+      manualReview: true, unresolved: true, substituted: false,
+    },
+    candidates: [candidate(), candidate({ code: "2510324", desc: "ENDMILL 49N9 3FL" })],
+    notes: [VACUITY_NOTE],
+    substituted: false,
+    ...over,
+  };
+}
+
+function renderDrawer(line: Line) {
+  return render(
+    <SupplyDrawer
+      line={line} customer="Acme" token="t" mgmt={false}
+      intel={null} intelLoading={false} intelError={null}
+      onRecordOverride={vi.fn()} onRequestApproval={vi.fn()}
+      approvalStatus={null} onClose={vi.fn()} onSelect={vi.fn()}
+      onRevert={vi.fn()}
+    />,
+  );
+}
+
+describe("SupplyDrawer caveats", () => {
+  // The drawer mounts `DecisionSupport`, which asks the platform about this
+  // line on mount. Nothing here is about that panel, and an unstubbed fetch
+  // resolves after the assertions, updating state outside `act` — a warning
+  // that would train a reader to ignore warnings in this file.
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
+  });
+
+  it("shows the engine's note when there ARE candidates — the case it is about", () => {
+    renderDrawer(lineWithCaveats());
+
+    expect(screen.getByText(VACUITY_NOTE)).toBeInTheDocument();
+  });
+
+  it("still shows notes when there are no candidates", () => {
+    renderDrawer(lineWithCaveats({ candidates: [], notes: [VACUITY_NOTE] }));
+
+    expect(screen.getByText(VACUITY_NOTE)).toBeInTheDocument();
+  });
+
+  it("shows nothing where there is nothing to say", () => {
+    // The caveat block must not become furniture that is always on screen —
+    // a heading over an empty list teaches people to skip the whole panel.
+    renderDrawer(lineWithCaveats({ notes: [] }));
+
+    expect(screen.queryByText(/Before you choose/i)).not.toBeInTheDocument();
+  });
+
+  it("does not present a vacuous candidate as selected supply", () => {
+    // The server decides this; the drawer must not contradict it by drawing a
+    // selection the response does not carry.
+    const { container } = renderDrawer(lineWithCaveats());
+
+    expect(container.querySelector(".cand.selected")).toBeNull();
+  });
+});

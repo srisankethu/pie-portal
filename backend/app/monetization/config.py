@@ -203,6 +203,64 @@ class MonetizationParameters:
     #: of the range B2B software actually runs at.
     cac_share_of_first_year_acv: float = 1.0
 
+    # ── Contract terms: what turns a fee into an agreement ──────────────────
+    #: One-time implementation, as a share of the first-year fee. Charged, not
+    #: absorbed: ``onboarding_cost_per_customer`` was modelled as a cost and
+    #: amortised into COGS while nothing ever billed for it, which is the one
+    #: place this model departed from the enterprise-HRMS shape it otherwise
+    #: follows — Workday-class implementation is a separate line, often 1-2x
+    #: first-year subscription. It is also the largest available lever on a
+    #: 12-20 month CAC payback, because it lands as cash at signature.
+    implementation_fee_share_of_annual: float = 0.25
+    #: The floor under it: onboarding must at least be recovered with a margin,
+    #: whatever the band. A small customer's catalogue does not get cheaper to
+    #: embed because its turnover is low.
+    implementation_cost_markup: float = 1.5
+    #: And the ceiling. At the top bands a quarter of the annual fee is a very
+    #: large number for work whose real driver is SKU count and connector
+    #: complexity, not turnover.
+    implementation_fee_cap_multiple: float = 0.6
+
+    #: Contract length in years, and what a longer commitment buys the customer.
+    #: Multi-year matters more here than in most models: the flat banded fee has
+    #: no meter, so a 3-year term is the only structural defence against the
+    #: renegotiation a flat fee otherwise invites annually.
+    default_term_years: int = 1
+    max_term_years: int = 3
+    multi_year_discount_per_extra_year: float = 0.05
+
+    #: Paid annually in advance by default. The discount is the price of that
+    #: cash, and it is deliberately generous for an early-stage company: a year
+    #: collected at signature is the difference between funding the next
+    #: customer's acquisition and borrowing to.
+    upfront_payment_discount: float = 0.05
+    quarterly_payment_premium: float = 0.03
+
+    #: Applied at each renewal *within* a band. Without it the price is flat in
+    #: nominal terms for the 3.6 years between band crossings, which is a real
+    #: -terms price cut every year that nobody decided to give.
+    annual_escalation: float = 0.05
+
+    #: The most a deal may be discounted, and the rule that overrides it. Below
+    #: the cost floor a discount is not a concession, it is a subsidy — the same
+    #: shape as the tenant-side margin floor this platform already enforces on a
+    #: salesperson, one level up and pointed at PIE's own desk.
+    max_discount_share: float = 0.30
+
+    #: How far a band may fall at one renewal when a customer's turnover drops.
+    #: Bands re-rate up automatically; nothing said what happens when a customer
+    #: has a bad year, and the answer cannot be "nothing" — a fee that only ever
+    #: rises is a fee a shrinking customer cancels rather than renegotiates.
+    downgrade_bands_per_renewal: int = 1
+
+    #: A group of legal entities is banded on combined turnover, then charged an
+    #: uplift for each additional connected company. Summing alone hands the
+    #: group a ~26% implicit discount (the bands are steep at the bottom), while
+    #: the cost to serve genuinely rises with each entity — a second sync, a
+    #: second catalogue, a second support surface. The uplift is what reconciles
+    #: those two facts.
+    group_entity_uplift: float = 0.15
+
     # ── Retention ───────────────────────────────────────────────────────────
     #: Gross logo retention per year. Drives expected life and therefore LTV.
     annual_gross_retention: float = 0.85
@@ -298,6 +356,33 @@ class MonetizationParameters:
             cac_share_of_first_year_acv=_f(
                 "PIE_MON_CAC_SHARE_OF_ACV",
                 _default("cac_share_of_first_year_acv")),
+            implementation_fee_share_of_annual=_f(
+                "PIE_MON_IMPLEMENTATION_SHARE",
+                _default("implementation_fee_share_of_annual")),
+            implementation_cost_markup=_f("PIE_MON_IMPLEMENTATION_MARKUP",
+                                          _default("implementation_cost_markup")),
+            implementation_fee_cap_multiple=_f(
+                "PIE_MON_IMPLEMENTATION_CAP",
+                _default("implementation_fee_cap_multiple")),
+            default_term_years=_i("PIE_MON_DEFAULT_TERM_YEARS",
+                                  _default("default_term_years")),
+            max_term_years=_i("PIE_MON_MAX_TERM_YEARS",
+                              _default("max_term_years")),
+            multi_year_discount_per_extra_year=_f(
+                "PIE_MON_MULTI_YEAR_DISCOUNT",
+                _default("multi_year_discount_per_extra_year")),
+            upfront_payment_discount=_f("PIE_MON_UPFRONT_DISCOUNT",
+                                        _default("upfront_payment_discount")),
+            quarterly_payment_premium=_f("PIE_MON_QUARTERLY_PREMIUM",
+                                         _default("quarterly_payment_premium")),
+            annual_escalation=_f("PIE_MON_ANNUAL_ESCALATION",
+                                 _default("annual_escalation")),
+            max_discount_share=_f("PIE_MON_MAX_DISCOUNT",
+                                  _default("max_discount_share")),
+            downgrade_bands_per_renewal=_i(
+                "PIE_MON_DOWNGRADE_BANDS", _default("downgrade_bands_per_renewal")),
+            group_entity_uplift=_f("PIE_MON_GROUP_ENTITY_UPLIFT",
+                                   _default("group_entity_uplift")),
             annual_gross_retention=_f("PIE_MON_GROSS_RETENTION",
                                       _default("annual_gross_retention")),
             net_revenue_retention=_f("PIE_MON_NET_REVENUE_RETENTION",
@@ -409,6 +494,43 @@ PROVENANCE: dict[str, tuple[Evidence, str]] = {
         "A benchmark rather than a measurement: B2B software typically spends "
         "about one year of contract value to win one. Nothing in this business "
         "has tested it."),
+    "implementation_fee_share_of_annual": (
+        Evidence.ASSUMED,
+        "PIE's choice. 25% of first-year is at the low end of what enterprise "
+        "software charges for implementation; nothing here measures what the "
+        "market will bear."),
+    "implementation_cost_markup": (
+        Evidence.ASSUMED, "Recovery floor. Policy, not a measurement."),
+    "implementation_fee_cap_multiple": (
+        Evidence.ASSUMED, "Ceiling at the top bands, where a share of turnover "
+                          "stops tracking the work."),
+    "default_term_years": (Evidence.ASSUMED, "Opening position, not a finding."),
+    "max_term_years": (Evidence.ASSUMED, "Longest term PIE will write."),
+    "multi_year_discount_per_extra_year": (
+        Evidence.NEEDS_VALIDATION,
+        "What a customer will actually pay for a longer commitment is "
+        "unmeasured — no multi-year deal has been signed or refused."),
+    "upfront_payment_discount": (
+        Evidence.ASSUMED,
+        "The price PIE puts on cash at signature. A judgement about PIE's own "
+        "funding position, not about the customer."),
+    "quarterly_payment_premium": (Evidence.ASSUMED, "The other side of it."),
+    "annual_escalation": (
+        Evidence.NEEDS_VALIDATION,
+        "Whether a customer accepts a 5% uplift between band crossings without "
+        "reopening the contract is exactly the sort of thing only a renewal "
+        "tells you, and no renewal has happened."),
+    "max_discount_share": (
+        Evidence.ASSUMED, "Governance, set by PIE. The cost floor overrides it."),
+    "downgrade_bands_per_renewal": (
+        Evidence.ASSUMED,
+        "A policy choice about shrinking customers. Untested — no customer has "
+        "yet had a bad year on this platform."),
+    "group_entity_uplift": (
+        Evidence.NEEDS_VALIDATION,
+        "Sized to offset the ~26% implicit discount that summing entity "
+        "turnover into one band creates, against a cost to serve that rises "
+        "per connection. Both halves are modelled, neither is measured."),
     "annual_gross_retention": (
         Evidence.NEEDS_VALIDATION, "No renewal has happened yet."),
     "net_revenue_retention": (

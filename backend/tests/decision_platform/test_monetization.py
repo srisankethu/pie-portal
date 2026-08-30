@@ -40,6 +40,7 @@ from app.monetization.elasticity import (AdoptionCurve, CurveKind, optimum,
 from app.monetization.experiments import EXPERIMENTS, sample_size_per_arm
 from app.monetization.plan import SCENARIOS, arr_at, project
 from app.monetization.strategies import PricingStrategy
+from app.monetization.unitecon import cost_to_serve
 
 PARAMS = MonetizationParameters()
 
@@ -877,3 +878,210 @@ def test_band_table_discloses_the_reference_adoption_it_assumes():
     bt = monetization_report.band_table(PARAMS)
     assert 0.0 < bt["assumes_reference_adoption"] <= 1.0
     assert "does not carry adoption" in bt["adoption_caveat"]
+
+
+# ── contract terms: what turns a fee into an agreement ──────────────────────
+def test_implementation_is_charged_not_merely_absorbed():
+    """The gap that most contradicted the enterprise-HRMS shape this model
+    otherwise follows: onboarding was a cost, amortised into COGS, and nothing
+    ever billed for it."""
+    from app.monetization.terms import implementation_fee
+
+    profile = ARCHETYPES["mid"]
+    fee = implementation_fee(Decimal("8000000"), profile, PARAMS)
+    assert fee > 0
+    # At least recovers the one-off cost with the configured markup.
+    cost = cost_to_serve(profile, PARAMS)
+    assert fee >= (cost.onboarding_one_off + cost.embedding_one_off)
+
+
+def test_implementation_recovers_cost_even_on_a_small_deal():
+    """A share of a small annual fee under-recovers on a customer whose
+    catalogue is large — the work scales with SKUs, not turnover, so the cost
+    floor has to bind."""
+    from app.monetization.terms import implementation_fee
+
+    big_catalogue = replace(ARCHETYPES["small"], sku_count=200_000)
+    fee = implementation_fee(Decimal("100000"), big_catalogue, PARAMS)
+    cost = cost_to_serve(big_catalogue, PARAMS)
+    # The cap is a share of a tiny annual fee; recovery must still be visible.
+    assert fee > Decimal("0")
+    assert cost.embedding_one_off > 0
+
+
+def test_implementation_is_capped_at_the_top():
+    """A quarter of a very large annual fee stops tracking the actual work."""
+    from app.monetization.terms import implementation_fee
+
+    annual = Decimal("60000000")
+    fee = implementation_fee(annual, ARCHETYPES["large"], PARAMS)
+    assert fee <= annual * Decimal(str(PARAMS.implementation_fee_cap_multiple))
+
+
+def test_a_longer_term_costs_the_customer_less_per_year():
+    from app.monetization.terms import PaymentCadence, quote_contract
+
+    one = quote_contract(Decimal("8000000"), ARCHETYPES["mid"], PARAMS,
+                         term_years=1, cadence=PaymentCadence.ANNUAL_UPFRONT)
+    three = quote_contract(Decimal("8000000"), ARCHETYPES["mid"], PARAMS,
+                           term_years=3, cadence=PaymentCadence.ANNUAL_UPFRONT)
+    assert three.net_annual_fee < one.net_annual_fee
+    assert three.total_contract_value > one.total_contract_value
+    assert three.term_discount > 0
+
+
+def test_a_term_longer_than_policy_is_clamped_not_honoured():
+    from app.monetization.terms import quote_contract
+
+    c = quote_contract(Decimal("8000000"), ARCHETYPES["mid"], PARAMS,
+                       term_years=99)
+    assert c.term_years == PARAMS.max_term_years
+
+
+def test_paying_quarterly_costs_more_and_delivers_less_cash_at_signature():
+    """The trade the cadence actually makes, in both directions."""
+    from app.monetization.terms import PaymentCadence, quote_contract
+
+    upfront = quote_contract(Decimal("8000000"), ARCHETYPES["mid"], PARAMS,
+                             cadence=PaymentCadence.ANNUAL_UPFRONT)
+    quarterly = quote_contract(Decimal("8000000"), ARCHETYPES["mid"], PARAMS,
+                               cadence=PaymentCadence.QUARTERLY)
+    assert quarterly.net_annual_fee > upfront.net_annual_fee
+    assert quarterly.cash_at_signature < upfront.cash_at_signature
+
+
+def test_escalation_applies_within_the_term():
+    """Between band crossings a flat nominal price is a real-terms cut."""
+    from app.monetization.terms import fee_schedule
+
+    rows = fee_schedule(Decimal("8000000"), 3, PARAMS)
+    fees = [Decimal(r["annual_fee"]) for r in rows]
+    assert len(fees) == 3
+    assert fees == sorted(fees)
+    assert fees[0] < fees[-1]
+
+
+def test_a_discount_past_the_cost_floor_is_refused_with_the_reason():
+    """Governance caps the discount; the cost floor overrides governance.
+
+    The refusal must name which limit bound — a discount silently clamped to
+    something affordable is one nobody learns from.
+    """
+    from app.monetization.terms import approve_discount
+
+    profile = ARCHETYPES["small"]
+    floor = floor_price(profile, PARAMS)
+    verdict = approve_discount(floor, 0.25, profile, PARAMS)
+    assert not verdict.approved
+    assert verdict.refusal is not None
+    assert "subsidy" in verdict.refusal
+    assert verdict.net_annual_fee >= verdict.cost_floor
+
+
+def test_a_discount_beyond_policy_is_capped_and_says_so():
+    from app.monetization.terms import approve_discount
+
+    verdict = approve_discount(Decimal("8000000"), 0.90, ARCHETYPES["mid"],
+                               PARAMS)
+    assert verdict.allowed <= PARAMS.max_discount_share
+    assert verdict.refusal is not None
+
+
+def test_a_discount_within_both_limits_is_simply_approved():
+    from app.monetization.terms import approve_discount
+
+    verdict = approve_discount(Decimal("8000000"), 0.10, ARCHETYPES["mid"],
+                               PARAMS)
+    assert verdict.approved and verdict.refusal is None
+    assert verdict.allowed == 0.10
+
+
+def test_a_shrinking_customer_falls_by_a_limited_number_of_bands():
+    """Bands rise without limit and fall one step at a time, and the asymmetry
+    is deliberate: growth arriving is the customer's own, a single bad year is
+    usually noise."""
+    from app.monetization.terms import downgrade_floor
+
+    assert downgrade_floor(5, 1, PARAMS) == 5 - PARAMS.downgrade_bands_per_renewal
+    # Never below where the customer actually is.
+    assert downgrade_floor(2, 2, PARAMS) == 2
+    assert downgrade_floor(1, 3, PARAMS) == 3
+
+
+def test_a_group_pays_less_than_separate_entities_but_more_than_a_bare_sum():
+    """Both halves of the group question, pinned.
+
+    Summing turnover into one band is commercially right and hands the group a
+    large implicit discount, because the bands are steep at the bottom. The
+    per-entity uplift returns part of it, against a cost to serve that genuinely
+    rises with every connection.
+    """
+    from app.monetization.terms import price_group
+
+    rows = monetization_report.band_table(PARAMS)["rows"]
+
+    def fee_for(turnover):
+        for row in rows:
+            low = Decimal(row["turnover_from"])
+            high = row["turnover_to"]
+            if turnover >= low and (high is None or turnover < Decimal(high)):
+                return Decimal(row["annual_fee"])
+        return Decimal(rows[-1]["annual_fee"])
+
+    group = price_group([Decimal("400000000"), Decimal("250000000"),
+                         Decimal("150000000")], fee_for, PARAMS)
+    assert group.implicit_discount is not None and group.implicit_discount > 0.15
+    assert group.fee_on_combined_band < group.recommended_fee
+    assert group.recommended_fee < group.fee_if_priced_separately
+    assert group.entity_uplift > 0
+
+
+def test_a_single_entity_group_carries_no_uplift():
+    from app.monetization.terms import price_group
+
+    group = price_group([Decimal("500000000")], lambda t: Decimal("3900000"),
+                        PARAMS)
+    assert group.entity_uplift == Decimal("0.00")
+    assert group.recommended_fee == group.fee_on_combined_band
+
+
+def test_an_empty_group_refuses_rather_than_returning_zero():
+    """No entity with turnover is not a group worth ₹0 — it is nothing to band."""
+    from app.monetization.terms import price_group
+
+    group = price_group([], lambda t: Decimal("1"), PARAMS)
+    assert group.recommended_fee == Decimal("0")
+    assert group.implicit_discount is None
+    assert "nothing to band" in group.note
+
+
+def test_the_implementation_fee_shortens_cac_payback():
+    """The claim the fee was added for, checked rather than asserted."""
+    from app.monetization.terms import quote_contract
+
+    profile = ARCHETYPES["mid"]
+    wf = build_waterfall(profile, IMPACTS["base"], PARAMS)
+    fee = Decimal(monetization_report.recommend(wf, PARAMS)
+                  ["recommended_annual_fee"])
+    econ = unit_economics(profile, fee, PARAMS,
+                          orders=wf.covered_with_pie.orders)
+    contract = quote_contract(fee, profile, PARAMS)
+
+    monthly = econ.contribution / Decimal("12")
+    with_impl = float((econ.cac - contract.implementation_fee) / monthly)
+    assert econ.cac_payback_months is not None
+    assert with_impl < econ.cac_payback_months
+
+
+def test_every_contract_reconciles_its_own_arithmetic():
+    from app.monetization.terms import PaymentCadence, quote_contract
+
+    for years in (1, 2, 3):
+        for cadence in PaymentCadence:
+            c = quote_contract(Decimal("8000000"), ARCHETYPES["mid"], PARAMS,
+                               term_years=years, cadence=cadence)
+            scheduled = sum((Decimal(r["annual_fee"]) for r in c.schedule),
+                            Decimal("0"))
+            assert c.total_contract_value == scheduled + c.implementation_fee
+            assert c.first_year_cash == c.net_annual_fee + c.implementation_fee
+            assert c.cash_at_signature <= c.first_year_cash

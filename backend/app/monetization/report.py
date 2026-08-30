@@ -40,6 +40,7 @@ from .strategies import (EnterpriseLicensePricing, FeeBase, HybridPricing,
                          QuotePricing, RFQPricing, SavingsSharePricing,
                          SubscriptionPricing, TransactionPricing,
                          ValueDerivedSubscription)
+from .terms import PaymentCadence, price_group, quote_contract
 from .unitecon import floor_price, unit_economics
 
 _ZERO = Decimal("0")
@@ -415,6 +416,16 @@ def recommend(wf: Waterfall,
         },
         "evaluation": ev.as_dict(),
         "pie_unit_economics": econ.as_dict(),
+        # What the customer actually signs. The fee above is a year's price; a
+        # contract is that price plus a term, a cadence, an implementation
+        # charge and an escalation clause — and until these existed the model
+        # produced a price list rather than a price book.
+        "contract": quote_contract(rounded, wf.profile, params).as_dict(),
+        "contract_alternatives": [
+            quote_contract(rounded, wf.profile, params, term_years=years,
+                           cadence=cadence).as_dict()
+            for years, cadence in ((3, PaymentCadence.ANNUAL_UPFRONT),
+                                   (1, PaymentCadence.QUARTERLY))],
         "design_partner_offer": {
             "annual_fee": str(dp_fee),
             "discount_vs_list": round(1.0 - float(dp_fee / rounded), 3)
@@ -770,6 +781,28 @@ def strategic_test(acv: dict[str, Decimal],
     }
 
 
+def _group_example(params: MonetizationParameters,
+                   impact_key: str) -> dict[str, Any]:
+    """A three-entity group, banded — the shape this platform's own operator runs.
+
+    Worked rather than described because the answer is not obvious: summing
+    turnover into one band is commercially right and hands the group a ~26%
+    discount, which the per-entity uplift then partly returns.
+    """
+    rows = band_table(params, impact_key)["rows"]
+
+    def fee_for(turnover: Decimal) -> Decimal:
+        for row in rows:
+            low = Decimal(row["turnover_from"])
+            high = row["turnover_to"]
+            if turnover >= low and (high is None or turnover < Decimal(high)):
+                return Decimal(row["annual_fee"])
+        return Decimal(rows[-1]["annual_fee"])
+
+    return price_group([Decimal("400000000"), Decimal("250000000"),
+                        Decimal("150000000")], fee_for, params).as_dict()
+
+
 def full_report(params: Optional[MonetizationParameters] = None,
                 impact_key: str = "base") -> dict[str, Any]:
     """Every segment, every model, plus PIE's own five-year shape."""
@@ -801,6 +834,7 @@ def full_report(params: Optional[MonetizationParameters] = None,
         "experiments": {"designs": experiments.all_experiments(),
                         "feasibility": experiments.feasibility_note()},
         "band_table": band_table(params, impact_key),
+        "group_pricing_example": _group_example(params, impact_key),
         "expansion_levers": expansion_levers(params),
         "strategic_test": strategic_test(acv, params),
         "evidence": {

@@ -15,6 +15,16 @@ imports ``context/``, so one ``commercial`` import added to a bundle module
 would hand the model the computing layer while every direct assertion stayed
 green. The closure tests walk the real import graph and fail with the whole
 chain.
+
+Both of those layers ask "does this package obey the rule". Neither asks
+"is this package covered by the rule", and for a long time the answer for
+eight of them was no — ``DETERMINISTIC`` named six packages and the rest of
+``app/`` was unconstrained, so a new package importing ``ai/`` would have gone
+green (Decision 020). The membership tests are the third layer: every package
+under ``app/`` is deterministic or is exempt with a written reason, and a new
+one fails until somebody chooses. That is the same principle as the two above
+— an unchecked thing reads exactly like a clean one — applied to the list
+itself rather than to the code it screens.
 """
 from __future__ import annotations
 
@@ -36,8 +46,71 @@ _APP = pathlib.Path(__file__).resolve().parents[2] / "app"
 #: project, their volumes and their urgency. A model that could import it
 #: could be handed one tenant's commercial intelligence wholesale, which is
 #: a worse outcome than a number nobody can reproduce.
-DETERMINISTIC = ("attribution", "commercial", "enquiry", "ingestion",
-                 "signals", "state")
+#:
+#: The other seven arrived together, because naming six packages made the
+#: invariant *opt-in*: everything not listed was unconstrained, so a new
+#: package importing ``ai/`` passed the gate in silence — the failure mode
+#: this codebase has documented twice (CLAUDE.md §6: a check that does not run
+#: reads exactly like a check that passes). Decision 020 asks that a new
+#: deterministic package be added here in the commit that creates it; that
+#: only helps once the list is complete, and it was not. Each of the seven was
+#: walked against the real import graph before being added — direct imports
+#: and the transitive closure below — rather than assumed clean from its name:
+#:
+#: ``context/``       assembles the ``ContextBundle`` that is the only thing a
+#:                    model ever sees, and drops RESTRICTED facts on the way.
+#:                    ``ai/`` imports it, which is legal; the reverse edge
+#:                    would put the redactor downstream of what it redacts
+#:                    for, and is the exact hole this module's own docstring
+#:                    describes.
+#: ``domain/``        models and enums, imported by ``ai/`` (``ai.byok``). The
+#:                    reverse would make the schema depend on the interpreter.
+#: ``identity/``      links records and never merges them. §1's confirmation
+#:                    gate exists because an asserted identity becomes an exact
+#:                    reference the equivalence engine derives a requirement
+#:                    from — so a model reachable from here is how two
+#:                    tolerance bands get composed into a wrong part.
+#: ``master_health/`` measures one ERP's item-master export offline; its own
+#:                    docstring lists the refusals that keep it offline.
+#: ``messaging/``     the queue broker and its worker, which "knows nothing
+#:                    about syncs, or Zoho, or what any payload means". A queue
+#:                    that could interpret is a queue that decides what to run.
+#: ``observability/`` metrics, health and capacity. Numbers about the platform
+#:                    are still numbers, and they are still arithmetic.
+#: ``trust/``         keys, vault, pseudonyms, disclosure, erasure.
+#:                    ``disclosure`` records exactly what reaches a model and
+#:                    ``pseudonym`` is what keeps a real customer name from
+#:                    being it. CLAUDE.md §3 already asserts this package
+#:                    "imports neither commercial/ nor ai/" — it was prose, and
+#:                    nothing checked it.
+DETERMINISTIC = ("attribution", "commercial", "context", "domain", "enquiry",
+                 "identity", "ingestion", "master_health", "messaging",
+                 "observability", "signals", "state", "trust")
+
+#: The packages deliberately *outside* ``DETERMINISTIC``, each with the reason
+#: it is out. A package silently omitted from an opt-in list is the same defect
+#: as the list not existing, so the omissions are written down and
+#: ``test_every_package_under_app_is_classified`` makes a new package a
+#: decision somebody has to record rather than a default nobody notices.
+_MAY_REACH_INTERPRETATION = {
+    "ai": "the interpretation layer itself.",
+    "decisions": (
+        "the seam. §1: the single place a deterministic fact meets an "
+        "interpretation of it, so it imports ai/ by design — preflight.py, "
+        "quote_support.py and service.py all do. Adding it here would delete "
+        "the seam, and the closure tests below depend on it existing."),
+    "routers": (
+        "checked rather than assumed, and it does genuinely reach "
+        "interpretation: ai_settings.py is the BYOK provider-configuration "
+        "endpoint, quote.py imports ai.reading and select_provider, and "
+        "internal.py reports ai.metrics. Constraining routers/ would mean "
+        "relocating the provider admin surface, which is a product decision "
+        "and not this file's to make. What holds the line instead is that "
+        "every layer a router computes through is constrained above, plus "
+        "CLAUDE.md §3 — a router does HTTP mapping and role scoping and no "
+        "money arithmetic. This is the weakest point in the invariant and it "
+        "is named here so it is argued with rather than discovered."),
+}
 
 #: Packages ``ai/`` must not import, which is the same rule read from the other
 #: side. ``attribution`` is here as well as in ``DETERMINISTIC`` because it is
@@ -115,8 +188,74 @@ def test_the_interpreted_layer_never_imports_the_computing_one(package):
 
 def test_the_deterministic_packages_listed_here_all_exist():
     """A typo in the list above would silently check nothing."""
-    for package in (*DETERMINISTIC, *COMPUTING, "ai", "decisions"):
+    for package in (*DETERMINISTIC, *COMPUTING, "ai", "decisions",
+                    *_MAY_REACH_INTERPRETATION):
         assert (_APP / package).is_dir(), package
+
+
+def _packages() -> set[str]:
+    """Every package directory under ``app/``.
+
+    Any directory holding a ``.py`` file *anywhere beneath it*, not only one
+    holding an ``__init__.py``: a namespace package imports perfectly well
+    without one, and ``_modules()`` — which is what the rules above actually
+    walk — globs the tree rather than reading ``__init__``. Keying this on
+    ``__init__.py`` would have let a new package skip the census and still be
+    unscreened, which is the hole being closed, one layer down.
+
+    ``rglob`` rather than ``glob``, and that is not a detail. The first
+    version of this used a non-recursive ``glob("*.py")``, which leaves
+    precisely the hole the paragraph above says it closes: a package whose
+    modules all sit in subdirectories — the shape ``ingestion/erp/`` already
+    has — holds no top-level ``.py``, so it would drop out of the census
+    entirely and be neither classified nor screened. A check that argues for
+    its own thoroughness in a docstring and then does the shallow thing is
+    worse than one that never claimed it. ``__pycache__`` holds ``.pyc`` and
+    drops out on the same test either way.
+    """
+    return {d.name for d in _APP.iterdir()
+            if d.is_dir() and any(d.rglob("*.py"))}
+
+
+def test_every_package_under_app_is_classified():
+    """The rule was opt-in; this is the part that closes it.
+
+    Extending ``DETERMINISTIC`` fixes the packages that exist today and
+    nothing about the next one. Decision 020 asks each new deterministic
+    package to be added in the commit that creates it — a convention, and
+    conventions are kept by whoever read the document. So membership is now
+    exhaustive instead: a package is deterministic, or it is in
+    ``_MAY_REACH_INTERPRETATION`` with a written reason, and a new directory
+    under ``app/`` fails here until somebody says which. The failure is loud
+    and it is at the moment of creation, which is the only moment the answer
+    is obvious.
+
+    Both directions matter. An unclassified package is the silent hole; a name
+    in either list that no longer exists is the screen with nothing in it, and
+    reports clean for the same reason.
+    """
+    classified = set(DETERMINISTIC) | set(_MAY_REACH_INTERPRETATION)
+    packages = _packages()
+
+    assert packages, "no packages found under app/ — this check screens nothing"
+    assert packages - classified == set(), (
+        f"unclassified package(s) under app/: {sorted(packages - classified)}. "
+        "Add each to DETERMINISTIC if it computes or persists facts — which is "
+        "the default — or to _MAY_REACH_INTERPRETATION with the reason it may "
+        "reach ai/. Do not leave it out: an unlisted package is not checked, "
+        "and an unchecked package reads exactly like a clean one.")
+    assert classified - packages == set(), (
+        f"listed but not a package: {sorted(classified - packages)}. A name "
+        "here that names nothing screens nothing.")
+
+    # The exemption reasons are the point of the mapping, not decoration: the
+    # thing being prevented is a package quietly leaving the invariant, and a
+    # blank reason is exactly that with a key in front of it.
+    unexplained = sorted(k for k, why in _MAY_REACH_INTERPRETATION.items()
+                         if not (why or "").strip())
+    assert unexplained == [], (
+        f"exempt with no reason given: {unexplained}. Say why the package may "
+        "reach ai/, so the next reader can disagree with it.")
 
 
 # ── the transitive closure behind the direct rules ──────────────────────────
@@ -224,6 +363,33 @@ def test_a_deterministic_layer_cannot_reach_ai_except_through_the_seam(package):
         "module below imports the next. Interpretation is asked for at the "
         f"seam or not at all; break any link in the chain:\n         "
         f"{_rendered(chain)}")
+
+
+def test_no_top_level_module_reaches_ai_outside_the_sanctioned_consumers():
+    """The other half of Decision 020: ``pie_service.py``, ``store.py`` and
+    ``resolution.py`` are not packages, so ``DETERMINISTIC`` cannot hold them
+    and the census above cannot see them.
+
+    ``routers/`` is excluded alongside the seam here, not waved through: it is
+    a sanctioned consumer of ``ai/`` (see ``_MAY_REACH_INTERPRETATION``), and
+    ``main.py`` mounts every router, so every route from ``main`` runs through
+    it. Excluding both leaves the question this test is actually asking — does
+    a loose module at the top of ``app/`` reach the model by some other path —
+    and today the answer is none at all, including ``store.py`` and
+    ``resolution.py``, which sit directly on the identity and equivalence
+    surfaces §1 cares most about.
+    """
+    graph = _import_graph(exclude_top=(_SEAM, "routers"))
+    modules = sorted(p.stem for p in _APP.glob("*.py") if p.stem != "__init__")
+
+    assert modules, "no top-level modules found under app/"
+    offenders = {m: _route(graph, m, "ai") for m in modules}
+    offenders = {m: chain for m, chain in offenders.items() if chain}
+    assert offenders == {}, (
+        "a top-level module reaches ai/ without passing through decisions/ or "
+        "routers/. It is not covered by DETERMINISTIC — a module is not a "
+        "package — so this is the only thing standing in front of it:\n         "
+        + "\n\n         ".join(_rendered(c) for c in offenders.values()))
 
 
 def test_the_import_graph_actually_sees_imports():

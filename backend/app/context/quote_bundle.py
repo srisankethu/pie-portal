@@ -22,12 +22,9 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from ..domain.enums import EvidenceSufficiency, Role
+from ..domain.enums import OPERATIONAL, RESTRICTED, EvidenceSufficiency, Role
 from ..trust import pseudonym
 from .bundle import ContextBundle, FactView
-
-OPERATIONAL = "OPERATIONAL"
-RESTRICTED = "RESTRICTED"
 
 # Readable labels for the raw fact keys the quote-context assembler emits.
 _LABELS = {
@@ -174,8 +171,8 @@ def build_quote_bundle(
                      "label": customer_label},
         display_names=display_names,
         recipient_role=recipient_role.value,
-        permitted_data_classes=(["OPERATIONAL"] if is_sales
-                                else ["OPERATIONAL", "RESTRICTED"]),
+        permitted_data_classes=([OPERATIONAL] if is_sales
+                                else [OPERATIONAL, RESTRICTED]),
         redactions_applied=redactions,
         signals=[],  # on-demand: no persisted detector signal
         facts=facts,

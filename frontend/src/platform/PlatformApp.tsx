@@ -84,6 +84,8 @@ const RetrospectiveScreen = lazy(() =>
   import("./RetrospectiveScreen").then((m) => ({ default: m.RetrospectiveScreen })));
 const DataScreen = lazy(() =>
   import("./DataScreen").then((m) => ({ default: m.DataScreen })));
+const CatalogScreen = lazy(() =>
+  import("./CatalogScreen").then((m) => ({ default: m.CatalogScreen })));
 const CustomerCommercial = lazy(() =>
   import("./CommercialScreens").then((m) => ({ default: m.CustomerCommercial })));
 const CustomerItemScreen = lazy(() =>
@@ -1013,6 +1015,14 @@ export default function PlatformApp() {
       ? ([{ key: "catalogue", label: "Item lines", group: "setup" }] as NavItem[])
       : []),
     { key: "data", label: "Data & connection", group: "setup" },
+    // Unconditional, like the item above and for the same reason: every call
+    // this screen makes is readable by any signed-in user. Knowing which
+    // catalogue answered — pack, version, ruleset checksum — is the same
+    // entitlement as knowing when the books last arrived, and a salesperson
+    // whose quote line says "No PIE match" is the person most likely to want
+    // it. Only the rebuild is owner-scoped, and that is enforced server-side
+    // rather than by hiding the item.
+    { key: "decodedCatalog", label: "Decoded catalogue", group: "setup" },
     // Every call this screen makes is `require_manager_or_owner` — the list, the
     // pending suggestions, the settings policy — so for a salesperson it was a
     // nav item where nothing on the page worked. Unconditional here, three lines
@@ -1226,6 +1236,7 @@ export default function PlatformApp() {
 
             {/* ── DATA & CONNECTION ── */}
             <Route path={PATH.data} element={<DataScreen session={session} onSynced={load} />} />
+            <Route path={PATH.decodedCatalog} element={<CatalogScreen session={session} />} />
             <Route path={PATH.approvals} element={<ApprovalsScreen session={session} />} />
             <Route path={PATH.identity} element={<IdentityScreen token={session.token} />} />
             <Route path={PATH.trust} element={<TrustScreen session={session} />} />

@@ -30,7 +30,7 @@ Zoho Books
   → AI Decision Layer              validated interpretation; degradable
   → Decision Store                 routed · prioritised · auditable
   → Human action                   accept / modify / dismiss / escalate
-  → Outcome capture                (not built — see "Deliberately not built")
+  → Outcome capture                built; the *stored* delta is not
 ```
 
 ### A cut-over in the human-action data

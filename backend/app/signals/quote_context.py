@@ -16,13 +16,11 @@ from __future__ import annotations
 from datetime import date
 from typing import Any, Optional
 
+from ..domain.enums import OPERATIONAL, RESTRICTED
 from . import aggregates as agg
 from .aggregates import label_for
 from .base import Snapshot, evidence_ref
 from .config import SignalThresholds
-
-OPERATIONAL = "OPERATIONAL"
-RESTRICTED = "RESTRICTED"
 
 
 def _fact(label: str, value: Any, unit: Optional[str], data_class: str,

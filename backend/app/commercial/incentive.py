@@ -60,9 +60,12 @@ _ZERO = Decimal("0")
 _PAISE = Decimal("0.01")
 
 #: Values of ``Customer.incentive_eligibility``. Named with the prefix because
-#: ``RESTRICTED`` already means something else in this package — it is the data
-#: class in ``references.py`` — and two unrelated meanings under one name is a
-#: mistake waiting for the import that brings them together.
+#: ``RESTRICTED`` already means something else — it is the permission data
+#: class, declared in ``domain/enums.py`` and imported by everything that
+#: writes or reads the tag — and two unrelated meanings under one name is a
+#: mistake waiting for the import that brings them together. The note used to
+#: name ``references.py``, which was where the data class was declared before
+#: the three copies of it were converged.
 #:
 #: ELIGIBILITY_PRIVATE is the only value that permits a third-party incentive.
 #: Everything else, including an unclassified account, is restricted.

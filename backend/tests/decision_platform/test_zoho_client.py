@@ -164,6 +164,147 @@ def test_an_unrecognised_token_error_names_all_three_parts_rather_than_guessing(
         assert part in message
 
 
+# ── the refresh quota ───────────────────────────────────────────────────────
+#
+# Zoho issues at most ten access tokens per refresh token per ten minutes and
+# answers the eleventh with ``Access Denied``. A sync builds one source per
+# window — nineteen of them, plus a reference pass, per company — so a token
+# cached on the source is a quota spent twenty times over for one hour-long
+# token. These pin the cache to the credential instead.
+def test_a_second_source_on_one_credential_does_not_spend_another_refresh():
+    """The regression. Two sources, one grant, one trip to the token endpoint.
+
+    Sources are built per window on purpose (each carries its own listing
+    state), so the fix cannot be "share the source" — it has to be a token that
+    outlives the object that fetched it.
+    """
+    http = FakeHttp({})
+    list(_src(http=http).list_items())
+    list(_src(http=http).list_items())
+    assert http.token_calls == 1
+
+
+def test_a_full_run_of_windows_stays_far_inside_the_ten_token_quota():
+    """The shape that actually failed: twenty sources against a quota of ten.
+
+    Asserted as an exact 1 rather than "under 10", because the moment this is
+    2 the cache is keyed on something that varies per source and the twentieth
+    window is back over the line.
+    """
+    http = FakeHttp({})
+    for _ in range(20):
+        list(_src(http=http).list_items())
+    assert http.token_calls == 1
+
+
+def test_each_grant_holds_its_own_token():
+    """Sharing is per credential, not global. Handing one tenant's token to
+    another tenant's source would be the worst possible way to save a call."""
+    other = ZohoCredentials(organization_id="60036630487", client_id="cid-2",
+                            client_secret="csec-2", refresh_token="rtok-2")
+    http = FakeHttp({})
+    list(_src(http=http).list_items())
+    list(_src(http=http, credentials=other).list_items())
+    assert http.token_calls == 2
+
+
+def test_the_same_secret_at_another_data_centre_is_another_token():
+    """A token minted at ``.in`` is not valid at ``.com``. The data centre is
+    part of what the credential authenticates as, so it is part of the key."""
+    elsewhere = ZohoCredentials(
+        organization_id="60036630487", client_id="cid", client_secret="csec",
+        refresh_token="rtok", accounts_base="https://accounts.zoho.com",
+        api_base="https://www.zohoapis.com/books/v3")
+    http = FakeHttp({})
+    list(_src(http=http).list_items())
+    list(_src(http=http, credentials=elsewhere).list_items())
+    assert http.token_calls == 2
+
+
+def test_two_books_under_one_grant_share_one_token():
+    """Three companies on one merged credential is the state
+    ``merge_credentials`` exists to produce. Keying the token by book would
+    spend three refreshes to hold three copies of the same token."""
+    second_book = ZohoCredentials(
+        organization_id="99999999999", client_id="cid", client_secret="csec",
+        refresh_token="rtok")
+    http = FakeHttp({})
+    list(_src(http=http).list_items())
+    list(_src(http=http, credentials=second_book).list_items())
+    assert http.token_calls == 1
+
+
+def test_a_token_zoho_rejects_is_dropped_for_every_source_not_just_this_one():
+    """A shared cache has to be invalidated where it is shared.
+
+    A 401 means the token is dead for everything built on that credential. Left
+    in the cache it would be served to the next window and refused again, and
+    the retry that exists to recover from a mid-run revocation would spend the
+    rest of the run failing.
+    """
+    http = FakeHttp({})
+    calls = {"n": 0}
+
+    def get(url, params=None, headers=None, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return FakeResponse({"code": 14, "message": "Invalid oauth token"},
+                                status=401)
+        return FakeResponse({"code": 0, "items": [],
+                             "page_context": {"has_more_page": False}})
+
+    http.get = get                                    # type: ignore[assignment]
+    list(_src(http=http).list_items())
+    assert http.token_calls == 2, "the rejected token must not be re-served"
+
+    # And the fresh one is what the *next* source gets, without a third trip.
+    list(_src(http=http).list_items())
+    assert http.token_calls == 2
+
+
+def test_zohos_refresh_throttle_is_not_reported_as_a_rejected_credential():
+    """``Access Denied`` is Zoho's throttle, not a verdict on the credential.
+
+    It is the response to an eleventh access token inside ten minutes, and the
+    grant behind it is untouched. Reported as an auth failure it read as "Zoho
+    credentials were rejected" and sent an owner to rotate a secret that was
+    correct — which spends more of the same exhausted quota and keeps the
+    connection shut. The class is what the sync layer reads: a throttle stops
+    the pull to resume later, an auth error asks a human to go and change
+    something.
+    """
+    from app.ingestion.errors import SourceThrottleError
+
+    http = FakeHttp({}, token_body={
+        "error": "Access Denied",
+        "error_description": "You have made too many requests continuously. "
+                             "Please try again after some time."})
+    with pytest.raises(ZohoThrottleError) as caught:
+        list(_src(http=http).list_items())
+
+    assert isinstance(caught.value, SourceThrottleError)
+    assert not isinstance(caught.value, ZohoAuthError)
+    message = str(caught.value)
+    assert "not a rejected credential" in message
+    assert "ten minutes" in message
+
+
+def test_zohos_own_sentence_survives_into_the_message():
+    """``error_description`` is the half that says what happened.
+
+    Throwing it away is how "You have made too many requests continuously"
+    reached an owner as "Zoho refused the sign-in without saying which part of
+    it failed" — a fallback claiming there was no evidence, printed by the code
+    that had just discarded it.
+    """
+    http = FakeHttp({}, token_body={
+        "error": "some_new_zoho_code",
+        "error_description": "The account is on hold."})
+    with pytest.raises(ZohoAuthError) as caught:
+        list(_src(http=http).list_items())
+    assert "The account is on hold." in str(caught.value)
+
+
 def test_access_token_is_reused_across_calls():
     http = FakeHttp({"/items": {"code": 0, "items": [], "page_context": {"has_more_page": False}},
                      "/contacts": {"code": 0, "contacts": [], "page_context": {"has_more_page": False}}})
@@ -238,6 +379,109 @@ def test_an_items_sku_reaches_the_identity_layer():
                    "status": "active"}],
         "page_context": {"has_more_page": False}}})
     assert list(_src(http=http).list_items())[0]["sku"] == "KCMT090304LF"
+
+
+# ── the taxonomy the business maintains ─────────────────────────────────────
+#
+# A live item row, trimmed to the fields under test. Every value here is copied
+# from the SLS master on 2026-08-30, including the misfiling in the last test:
+# these are the shapes the client actually meets, not invented ones.
+
+def _items(*rows):
+    return FakeHttp({"/items": {"code": 0, "items": list(rows),
+                                "page_context": {"has_more_page": False}}})
+
+
+def test_the_maintained_item_taxonomy_is_carried_rather_than_discarded():
+    """`cf_item_type` and `cf_item_category` are on the *list* payload, so this
+    costs no extra call — and the column the platform did read is empty."""
+    row = {"item_id": 7, "name": "0.5x06x38x 2FL", "status": "active",
+           "cf_item_type": "Endmill", "cf_item_category": "Milling"}
+    payload = list(_src(http=_items(row)).list_items())[0]
+
+    assert payload["source_item_type"] == "Endmill"
+    assert payload["source_item_category"] == "Milling"
+    assert payload["category_name"] is None, (
+        "Zoho's own Inventory category is what these books leave empty; if it "
+        "starts arriving, the two fields above are still the maintained ones")
+
+
+def test_the_taxonomy_is_carried_verbatim_and_not_mapped_on_the_way_in():
+    """Raw for the reason `category` and `manufacturer` are: the map onto
+    anything the platform reasons with is versioned policy, and a value
+    rewritten at sync time can never be re-read under a corrected map."""
+    row = {"item_id": 7, "name": "x", "status": "active",
+           "cf_item_type": "Tool Holder", "cf_item_category": "Grooving & Parting"}
+    payload = list(_src(http=_items(row)).list_items())[0]
+
+    assert payload["source_item_type"] == "Tool Holder"
+    assert payload["source_item_category"] == "Grooving & Parting"
+
+
+def test_an_unclassified_item_says_nothing_rather_than_guessing():
+    """Zoho omits an unset custom field entirely. Absent must stay absent: the
+    item's name is right there and inferring from it is how a wrong part gets
+    quoted."""
+    row = {"item_id": 7, "name": "CNMG 120408 INSERT", "status": "active"}
+    payload = list(_src(http=_items(row)).list_items())[0]
+
+    assert payload["source_item_type"] is None
+    assert payload["source_item_category"] is None
+
+
+def test_the_customer_lookup_on_an_item_is_not_copied_onto_the_product():
+    """`cf_end_customer` is configured on this book. Carrying it would put a
+    customer's identity on a catalogue row that every reader of the catalogue
+    can see — `trust/`'s concern, and not solved by copying it here first."""
+    row = {"item_id": 7, "name": "x", "status": "active",
+           "cf_end_customer": "Some Customer Pvt Ltd",
+           "cf_end_customer_unformatted": "Some Customer Pvt Ltd"}
+    payload = list(_src(http=_items(row)).list_items())[0]
+
+    assert not [k for k, v in payload.items()
+                if isinstance(v, str) and "Some Customer" in v]
+
+
+def test_a_misfiled_item_is_carried_as_the_person_filed_it():
+    """A taper-shank reamer filed Tap / Threading, from the live master. The
+    client does not correct it and does not drop it: it is evidence about the
+    item, and a reader who is shown the source's own words can see it is wrong.
+    Silently repairing it here would hide the one signal that the taxonomy
+    needs maintaining."""
+    row = {"item_id": 7, "name": "HSS Taper Shank Reamer Dia 10mm",
+           "status": "active", "cf_item_type": "Tap",
+           "cf_item_category": "Threading"}
+    payload = list(_src(http=_items(row)).list_items())[0]
+
+    assert payload["source_item_type"] == "Tap"
+
+
+def test_the_two_item_type_fields_do_not_shadow_each_other():
+    """Zoho has two unrelated notions of "item type" and this payload carries
+    both: ``item_type`` is inventory-versus-service, ``cf_item_type`` is the
+    tool class. The first cut of this used one key for both, the later
+    assignment won, and *both* fields read as the wrong thing. The name is
+    long for this reason."""
+    row = {"item_id": 7, "name": "x", "status": "active",
+           "item_type": "inventory", "cf_item_type": "Endmill"}
+    payload = list(_src(http=_items(row)).list_items())[0]
+
+    assert payload["item_type"] == "inventory"
+    assert payload["source_item_type"] == "Endmill"
+
+
+def test_the_taxonomy_survives_the_by_id_fetch_as_well():
+    """`get_item` and `list_items` share `_item_payload` so the racing case
+    cannot write a subtly different row. This is that promise, for the new
+    fields."""
+    row = {"item_id": 7, "name": "x", "status": "active",
+           "cf_item_type": "Insert", "cf_item_category": "Turning"}
+    http = FakeHttp({"/items/7": {"code": 0, "item": row},
+                     "/items": {"code": 0, "items": [row],
+                                "page_context": {"has_more_page": False}}})
+    src = _src(http=http)
+
+    assert src.get_item("7") == list(src.list_items())[0]
 
 
 def test_invoice_detail_is_fetched_for_line_items():

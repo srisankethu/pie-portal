@@ -1,6 +1,8 @@
 import Button from "@mui/material/Button";
 import Box from "@mui/material/Box";
 import Drawer from "@mui/material/Drawer";
+import Paper from "@mui/material/Paper";
+import Typography from "@mui/material/Typography";
 import type { Line, LineIntelligence } from "../types";
 import { relTone } from "../rel";
 import { StatusChip } from "../platform/kit";
@@ -136,18 +138,36 @@ export function SupplyDrawer({
           />
           <DecisionSupport customer={customer} line={line} token={token} />
 
+          {/* What the engine wants read before the list below it.
+            *
+            * These used to render only when there were *no* candidates, which
+            * is the one case they are never about. The engine's own vacuity
+            * note — "no dimension was comparable, so a perfect dimensional
+            * score is vacuous" — describes candidates that are on screen, and
+            * it was invisible in exactly that case. A caveat shown only when
+            * there is nothing to caveat is not a caveat. */}
+          {line.notes.length > 0 && (
+            <Paper variant="outlined" sx={{ p: 1.5, mb: 1.5 }}>
+              <Typography
+                variant="overline"
+                color="text.secondary"
+                component="div"
+                sx={{ lineHeight: 1.6 }}
+              >
+                Before you choose
+              </Typography>
+              <Box component="ul" sx={{ m: 0, pl: 2.5 }}>
+                {line.notes.map((n, i) => (
+                  <Typography key={i} component="li" variant="body2" color="text.secondary">
+                    {n}
+                  </Typography>
+                ))}
+              </Box>
+            </Paper>
+          )}
           {line.candidates.length === 0 && (
             <div className="empty">
               No supply candidates. The PIE engine could not resolve this line to a product.
-              {line.notes.length > 0 && (
-                <ul style={{ textAlign: "left", marginTop: 12 }}>
-                  {line.notes.map((n, i) => (
-                    <li key={i} style={{ fontSize: 12 }}>
-                      {n}
-                    </li>
-                  ))}
-                </ul>
-              )}
             </div>
           )}
           {line.candidates.map((c) => {

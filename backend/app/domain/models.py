@@ -994,6 +994,36 @@ class Product(Base):
     #: chains the two for *sales* attribution and documents where it must not
     #: be chained.
     manufacturer: Mapped[Optional[str]] = mapped_column(String(128))
+
+    #: The taxonomy a person in this business maintains, in that person's own
+    #: words. ``source_item_type`` is the tool class — Insert, Drill, Endmill, Tap,
+    #: Toolbit, Tool Holder, Measuring Instrument. ``source_item_category`` is the
+    #: operation — Milling, Holemaking, Threading, Turning, Toolholding,
+    #: Grooving & Parting, General.
+    #:
+    #: **Neither of these is ``category``**, which is the ERP's own catalogue
+    #: category (Zoho's Inventory categories, ``ItemClass`` on Acumatica, a
+    #: product line on Sage) and is set on none of the 800 items on the live
+    #: SLS master. These two are set on every item sampled there. That is the
+    #: whole reason they exist as columns: the column the platform already read
+    #: is empty and the one it did not read is full.
+    #:
+    #: Raw and interpreted at read time, for the same reason ``category`` and
+    #: ``manufacturer`` are — the map onto anything the platform reasons with is
+    #: versioned policy, and a value rewritten at sync time could never be
+    #: re-read under a corrected map without a full re-sync.
+    #:
+    #: **Evidence about an item, not a verified fact about it.** The live master
+    #: files "HSS Taper Shank Reamer Dia 10mm" as Tap / Threading; a reamer is
+    #: neither. Rank with it, explain with it, prefer with it — but a
+    #: compatibility decision that *gates* on it is trusting a typo, and the
+    #: item's decoded designation is the fact to gate on.
+    #:
+    #: NULL means the source keeps no such taxonomy, or keeps it and left this
+    #: item blank. Those are the same value on purpose: both mean nobody said,
+    #: and neither may be filled in from the item's name.
+    source_item_type: Mapped[Optional[str]] = mapped_column(String(128))
+    source_item_category: Mapped[Optional[str]] = mapped_column(String(128))
     active: Mapped[bool] = mapped_column(Boolean, default=True)
 
     #: The decoded manufacturer catalogue record this item **is** — pie-parser's

@@ -19,13 +19,15 @@ from datetime import date, timedelta
 from decimal import Decimal
 from typing import Optional
 
+# One declaration, in ``domain/enums`` — the package that writes this tag and the
+# one that redacts on it have to agree by construction, not by matching literals.
+# ``quote_exceptions`` and ``quote_service`` reach the names through this module,
+# so the import is load-bearing past the uses below.
+from ..domain.enums import OPERATIONAL, RESTRICTED
 from .benchmark import ItemBenchmark
 from .config import CommercialThresholds
 from .economics import LineEconomics, aggregate, in_window
 from .quantity import QuantityBand, lines_in_band
-
-OPERATIONAL = "OPERATIONAL"
-RESTRICTED = "RESTRICTED"
 
 _ZERO = Decimal("0")
 

@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any, Callable, Iterable, Iterator, Optional
 
+from .. import cache as app_cache
 from ..clock import utc_stamp
 from ..config import settings
 from .errors import (IngestionError, SourceAuthError, SourceScopeError,
@@ -118,11 +119,67 @@ _TOKEN_ERROR_FALLBACK = (
     "app in one data centre; that data centre is set in {configured_in} and is "
     "currently {accounts}.")
 
+#: Zoho's name for the refresh throttle, spelled exactly as the token endpoint
+#: returns it. Capitalised, with a space, unlike every OAuth code beside it —
+#: because it is not an OAuth code at all. Zoho issues at most ten access
+#: tokens per refresh token per ten minutes and answers the eleventh with this,
+#: which means it is the one entry in this map that is **not** about a
+#: credential: nothing is wrong with the grant and nothing about it should be
+#: changed. Classified as a throttle for that reason (see ``_access_token``),
+#: so the sync stops to resume rather than sending an owner to rotate a secret
+#: that is correct — a rotation that would spend more of the very quota that is
+#: exhausted, and keep the connection shut for longer than doing nothing.
+_TOKEN_THROTTLE_ERROR = "Access Denied"
+
+_TOKEN_ERROR_HELP[_TOKEN_THROTTLE_ERROR] = (
+    "This is Zoho's refresh throttle, not a rejected credential: it allows ten "
+    "access tokens per refresh token per ten minutes, and this run asked for "
+    "one too many. The connection is fine and nothing needs to be changed — "
+    "rotating it now would spend the same quota and keep it shut. Wait ten "
+    "minutes and sync again.")
+
 
 def token_error_help(error: Any, *, accounts_base: str, configured_in: str) -> str:
     """What to actually go and change, for one Zoho token-endpoint refusal."""
     template = _TOKEN_ERROR_HELP.get(str(error or "").strip(), _TOKEN_ERROR_FALLBACK)
     return template.format(accounts=accounts_base, configured_in=configured_in)
+
+
+# ── the access token, shared by every source in a run ───────────────────────
+#
+# Zoho issues at most ten access tokens per refresh token per ten minutes, and
+# each one is good for an hour — so a whole sync should need exactly one. It was
+# asking for twenty, and the eleventh came back ``Access Denied``.
+#
+# The cause was a cache on the wrong object. ``jobs.execute_sync`` builds a
+# fresh source per window (``source_for``) and that is correct — each source
+# carries its own listing state, and ``modified_since`` in particular is a
+# per-window high-water mark that would skip records if it leaked into the next
+# window. But the token cache lived on the instance too, so it died with the
+# window: nineteen windows plus the reference pass, times a company, against a
+# quota of ten. Every construction site pays it — a Check button, a ping, a
+# scope probe — which is why the fix is a cache the sources share rather than a
+# source they share.
+#
+# Keyed on what the credential *authenticates as*, hashed: the same tuple
+# ``merge_credentials`` uses to decide two rows hold one secret, so three
+# companies under one grant hold one token between them, which is the entire
+# point of merging them. The data centre is in the key because the same secret
+# against another host is a different token. The organization id is deliberately
+# **not**: the token belongs to the grant, not to the book, and keying by book
+# would spend three refreshes to hold three copies of one token.
+#
+# Re-derivable by construction, so it obeys ``cache.py``'s rule that nothing may
+# be true only inside a cache: drop it and the next call mints another.
+#
+# Entries are locked; the *refresh* is not. Two threads that miss together — a
+# sync and somebody pressing Check — will both mint one, and that is the
+# deliberate choice: holding a lock across a network call would serialise the
+# pull behind it, and the cost of losing that race is one extra token against a
+# quota of ten. What it must not become is a lock-free path that misses every
+# time, which is the twenty-refresh bug this replaced.
+_TOKEN_CACHE = app_cache.register(app_cache.Cache(
+    "zoho_access_token", maxsize=64, ttl_seconds=3600))
 
 
 class ZohoError(IngestionError):
@@ -291,8 +348,13 @@ class ZohoTransport:
         self._accounts = creds.accounts_base.rstrip("/")
         self._org = creds.organization_id
         self._http = http                      # injectable for tests
-        self._token: Optional[str] = None
-        self._token_expires_at: float = 0.0
+        # The token itself lives in ``_TOKEN_CACHE``, keyed by this: the
+        # credential's identity, hashed, so the key names the grant without
+        # holding the secret. Computed once — the credential cannot change
+        # under a source.
+        self._token_key = app_cache.fingerprint(
+            "zoho-access-token", creds.client_id, creds.client_secret,
+            creds.refresh_token, self._accounts)
         self._last_call_at: float = 0.0
         # Observable so a sync run can report what the pull actually cost.
         self.calls = 0
@@ -342,10 +404,15 @@ class ZohoTransport:
         """Exchange the refresh token for an access token, cached until expiry.
 
         Zoho access tokens last an hour; refreshing on every call would burn the
-        (limited) refresh quota for no benefit.
+        (limited) refresh quota for no benefit. Cached per credential rather
+        than per source, because that is how Zoho meters the quota and because a
+        run holds twenty sources — see the note above ``_TOKEN_CACHE``.
         """
-        if self._token and time.time() < self._token_expires_at:
-            return self._token
+        cached = _TOKEN_CACHE.get(self._token_key)
+        if cached is not app_cache.MISS:
+            token, expires_at = cached
+            if time.monotonic() < expires_at:
+                return token
         self._require_credentials()
         self._guard_fetch(f"{self._accounts}/oauth/v2/token")
         # **In the body, not the query string.** These four values are the whole
@@ -372,14 +439,40 @@ class ZohoTransport:
         if not token:
             # Zoho reports auth problems in the body, often with HTTP 200.
             error = body.get("error") or body
-            raise ZohoAuthError(
-                f"Could not obtain an access token: {error}. "
-                + token_error_help(error, accounts_base=self._accounts,
-                                   configured_in=self._creds.configured_in))
-        self._token = str(token)
-        # Refresh a minute early so a call never races the expiry.
-        self._token_expires_at = time.time() + max(60, int(body.get("expires_in", 3600))) - 60
-        return self._token
+            # Zoho's own sentence about what went wrong, where it sent one.
+            # Discarding it is how "You have made too many requests
+            # continuously. Please try again after some time." reached an owner
+            # as "Zoho refused the sign-in without saying which part of it
+            # failed" — a fallback asserting the absence of the very evidence
+            # the line above had just thrown away (CLAUDE.md §1).
+            description = str(body.get("error_description") or "").strip()
+            detail = f"Could not obtain an access token: {error}."
+            if description:
+                detail += f" Zoho said: {description}"
+            detail += " " + token_error_help(
+                error, accounts_base=self._accounts,
+                configured_in=self._creds.configured_in)
+            # A throttle and a rejected credential need opposite responses —
+            # wait, versus go and change something — so they are different
+            # classes, and the sync layer reads the class, not the sentence.
+            if str(error).strip() == _TOKEN_THROTTLE_ERROR:
+                raise ZohoThrottleError(detail)
+            raise ZohoAuthError(detail)
+        # Refresh a minute early so a call never races the expiry. Monotonic,
+        # for the reason ``cache.py`` gives about its own TTL: a clock
+        # adjustment must not resurrect a dead token or discard a live one.
+        expires_at = time.monotonic() + max(60, int(body.get("expires_in", 3600))) - 60
+        _TOKEN_CACHE.set(self._token_key, (str(token), expires_at))
+        return str(token)
+
+    def _forget_access_token(self) -> None:
+        """Drop the shared token after Zoho has rejected it.
+
+        Shared, so this is not bookkeeping on one object: a revoked token is
+        dead for every source built from the same credential, and leaving it in
+        the cache would hand it to the next window to be refused again.
+        """
+        _TOKEN_CACHE.invalidate(self._token_key)
 
     # ── throttling ───────────────────────────────────────────────────────────
     def _sleep(self, seconds: float) -> None:
@@ -437,7 +530,7 @@ class ZohoTransport:
                 # Token may have been revoked mid-run; drop the cache and retry
                 # once. Safe for a write too: a rejected token never reached the
                 # books, so nothing can have been created.
-                self._token, self._token_expires_at = None, 0.0
+                self._forget_access_token()
                 last = "401 unauthorized"
                 if attempt == 0:
                     continue
@@ -778,6 +871,63 @@ class ZohoApiSource(ZohoTransport):
                 # everything downstream sees one value under one name, so
                 # nothing else has to know there were two candidates.
                 "manufacturer": i.get("manufacturer") or i.get("brand"),
+                # The taxonomy somebody in this business actually maintains.
+                # Two custom fields, both on the *list* payload the master pull
+                # already reads, so this costs no extra call:
+                #
+                # * ``cf_item_type`` — the tool class. Insert, Drill, Endmill,
+                #   Tap, Toolbit, Tool Holder, Measuring Instrument.
+                # * ``cf_item_category`` — the operation. Milling, Holemaking,
+                #   Threading, Turning, Toolholding, Grooving & Parting,
+                #   General.
+                #
+                # Neither is ``category_name``, which is Zoho's own Inventory
+                # category and is set on none of these items. Measured on the
+                # live SLS master (2026-08-30): both present on 23 of 23 items
+                # sampled across two distant slices of the name-sorted list,
+                # against 0 of 800 for ``category_name``.
+                #
+                # Raw, and interpreted at read time, for exactly the reason
+                # ``category`` and ``manufacturer`` are: the map from these
+                # words onto anything the platform reasons with is policy, it
+                # is versioned, and a value rewritten at sync time could never
+                # be re-read under a corrected map without a full re-sync.
+                #
+                # Named ``source_item_*`` and not ``item_*``: this payload
+                # already carries ``item_type``, which is Zoho's own
+                # inventory-versus-service kind. The first cut of this used the
+                # short name, the later key silently overwrote the earlier one,
+                # and both fields read None.
+                #
+                # It is a person's answer, not a verified fact, and the
+                # difference is visible in the data: "HSS Taper Shank Reamer
+                # Dia 10mm" is filed Tap / Threading, and a reamer is neither.
+                # Carry it as evidence about an item; do not gate on it.
+                "source_item_type": i.get("cf_item_type"),
+                "source_item_category": i.get("cf_item_category"),
+                # Two more item custom fields exist on this book and are
+                # deliberately NOT read.
+                #
+                # ``cf_bin_location`` and ``cf_catalog_status`` are configured
+                # — both active in the field definitions — and set on 0 of the
+                # 23 items sampled. Zoho omits an unset custom field entirely,
+                # so absent here means unset rather than unconfigured. Reading
+                # them would add two always-null columns; the day they are
+                # populated they are two more lines exactly like the two above.
+                # ``cf_catalog_status`` needs one extra care when that happens:
+                # it is a dropdown whose *definition* defaults to REGULAR, so a
+                # missing value must not be read as REGULAR — that is the
+                # benign default this codebase refuses everywhere else.
+                #
+                # ``cf_end_customer`` is a lookup onto a customer. Copying it
+                # here would put a customer's identity on a product row, which
+                # is ``trust/``'s concern and not this one's, and it would
+                # travel to every reader of the catalogue. Not read.
+                #
+                # ``cf_estimate_delivery_date`` is a real lead-time signal and
+                # is the first evidence found for decision 016, which is open.
+                # Reading it belongs in that decision, with the persist-or-fetch
+                # question settled, not smuggled in here.
                 "status": (i.get("status") or "active"),
                 # Stock travels on the item list Zoho already returns, so this
                 # costs nothing extra. Passed through raw — including the blank

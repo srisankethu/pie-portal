@@ -1563,6 +1563,19 @@ it is nearly free and unblocks measurement:
 2. **Phase 2 — retrieval in PostgreSQL.** Exact, normalized, lexical,
    structured filter. Measure recall on the evaluation set before considering
    vectors.
+   → **Split, and the first half is in progress** (decision 003, ACCEPTED IN
+   PART 2026-08-30). The staged lexical ladder is a *scale* answer — its
+   evidence is 555 ms at 100,755 records — and decision 023 puts today's
+   reachable catalogue at ~16k. It stays PROPOSED until a measured recall gap
+   or a catalogue that has actually grown justifies it.
+   What is being built now is a different problem the same section hid: the
+   portal ranks against the manufacturer catalogue and **not against what the
+   business sells**. `_build_sources` makes a `ZohoCatalogSource` only for a
+   `--zoho-fixture` path and the portal passes none, so a Zoho item reaches the
+   ranking only through `pie_record_id` — **~9% of items**. The other ~91% of
+   the sellable book cannot be offered however well it matches. No amount of
+   PostgreSQL fixes that; it is pool composition, and Phase 1's attribute store
+   is what made it solvable.
 3. **Phase 4 before Phase 3.** *Deviation from the brief's numbering, and
    deliberate:* the compatibility rule engine depends only on Phase 1, while
    RFQ document intelligence is the largest and least certain piece. Building

@@ -90,7 +90,7 @@ a real export.
 ---
 
 ## 003 — Candidate generation moves into PostgreSQL
-**Status:** PROPOSED · **Phase:** 2 · **Report §:** 22, 34
+**Status:** ACCEPTED IN PART — 2026-08-30, first slice only · **Phase:** 2 · **Report §:** 22, 34
 
 **Decision.** Retrieval becomes staged and database-resident: exact →
 normalized part number → lexical (`tsvector` + `pg_trgm`) → structured
@@ -104,6 +104,57 @@ set and stops being the retrieval index.
 pool costs **10.2 KB resident per record**, so 100k SKUs is **≈1 GB per worker
 process**, multiplied by worker count. `docs/hosting-free-tier.md` already
 flags the 13 MB copy per worker at today's size.
+
+### Accepted in part, and the part matters
+
+**What is accepted now: the sellable master becomes a candidate pool, read from
+the database.** What is *not* accepted yet is the staged lexical retrieval —
+`tsvector`, `pg_trgm`, the exact → normalized → lexical → structured ladder.
+That half is a scale answer, its evidence is the 555 ms at 100,755 records
+above, and decision 023 puts today's reachable catalogue at ~16k across two
+masters. Building a retrieval ladder against a number six times larger than the
+one that exists is the speculative generality this programme keeps refusing;
+the measurement that would justify it is a recall gap on the evaluation set,
+and that set does not exist yet either.
+
+**Why the first slice is worth doing on its own, independent of scale.** The
+portal ranks a customer's requirement against `products.jsonl` — the
+manufacturer catalogue — and **not against what the business sells**.
+`_build_sources` builds a `ZohoCatalogSource` only when a `--zoho-fixture` path
+is passed, and the portal passes `zoho_fixture=None`, so the Zoho master
+reaches the ranking only through `products.pie_record_id`, which is set on
+**~9%** of items. The other ~91% of the sellable book cannot be offered by the
+engine at all, however well it matches, because it is not in the pool.
+
+That is not a performance problem and no amount of PostgreSQL fixes it. It is a
+*pool composition* problem, and Phase 1 is what made it solvable: a Zoho item
+with decoded attributes can now be a first-class candidate on its own evidence
+rather than only when it happens to link to a catalogue record.
+
+**The seam already exists and needs no parser change.** `CatalogSource` is an
+ABC in `equivalence/catalog.py` with one abstract method, `load() -> List[
+CanonicalRecord]`. The portal implements it, reading `products` joined to
+`product_attribute_values` for one organization. pie-parser stays offline —
+CLAUDE.md §1 — because the subclass lives here and no database driver is ever
+imported there. It is the DIP property that file's §4 states outright: the
+engine depends on the shape of a source, never on a particular one.
+
+**Three constraints this slice must hold, recorded before the code.**
+
+* **Per organization, never a process singleton.** `PieService._sources` is
+  built once and shared; a pool of one tenant's products cannot be. A source
+  cached across organizations is a cross-tenant read with extra steps.
+* **A Zoho item is sellable by definition** — it is what the business sells —
+  which is the whole point, and it must still pass through the sellable-
+  namespace restriction rather than around it.
+* **Non-transitivity is untouched and must stay so.** A larger pool is still
+  scored with the request as every comparison's left operand. Nothing here may
+  compare one candidate to another.
+
+**What would move the rest of 003 from PROPOSED to ACCEPTED:** a measured recall
+gap on a real evaluation set, or a catalogue that has actually grown past the
+point where the linear scan hurts. Neither exists today, and the report's own
+§39 says to measure recall before considering vectors.
 
 ---
 

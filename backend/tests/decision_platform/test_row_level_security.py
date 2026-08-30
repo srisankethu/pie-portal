@@ -402,6 +402,16 @@ EXPECTED_POLICIED = {
     # every integration a competitor's book runs; the secret is a PBKDF2 hash,
     # which is the half that would matter most and the half that is safe.
     "api_keys",
+    # h1attr — the decoded technical facts about a product. Every row here is
+    # evidence a later compatibility rule gates on, so a cross-tenant read is
+    # not only somebody else's data but somebody else's *licensed* data:
+    # decision 026 scopes this table per organization precisely because the
+    # attribute source is a distributor export licensed to the organization
+    # that obtained it, and serving those rows to another tenant would
+    # redistribute it. Listed here in the same commit that creates the table,
+    # which is the standing rule the Phase 0 report leaves behind — a new table
+    # outside this list is isolated by Python alone.
+    "product_attribute_values",
 }
 
 #: Tenant-scoped and deliberately uncovered — and after `d3rls` there is only

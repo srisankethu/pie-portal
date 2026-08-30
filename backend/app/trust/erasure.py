@@ -133,6 +133,16 @@ EXPORTED: tuple[tuple[str, Any], ...] = (
     # wallet cannot be reconstructed — and the source URLs on these rows are
     # the only record of where those figures came from.
     ("tender_results", models.TenderResult),
+    # The decoded technical facts about the products this tenant sells — the
+    # corner radius, the grade, the flute count, each with where it was read
+    # from. EXPORTED, and not a close call in either direction: there is no
+    # credential and no administration in it, and it is derived from the
+    # tenant's own item master. It is also the one table here whose absence
+    # would be *invisible* in an export: a departing customer would get their
+    # catalogue back as names, with everything that made those names
+    # searchable, comparable or quotable silently missing, and nothing in the
+    # file would say so.
+    ("product_attribute_values", models.ProductAttributeValue),
     ("commercial_policies", models.CommercialPolicy),
     # What each of this tenant's threshold stamps stood for. EXPORTED rather
     # than EXCLUDED, and it is not a close call: these are the tenant's own

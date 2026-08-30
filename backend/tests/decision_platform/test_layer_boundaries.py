@@ -57,6 +57,16 @@ _APP = pathlib.Path(__file__).resolve().parents[2] / "app"
 #: walked against the real import graph before being added — direct imports
 #: and the transitive closure below — rather than assumed clean from its name:
 #:
+#: ``attributes/``    persists the decoded facts Phase 1 exists to produce, and
+#:                    is listed here in the commit that creates it — which is
+#:                    what decision 020 asks for and what the membership test
+#:                    below enforces rather than hopes for. Deterministic in the
+#:                    strict sense: it reads what the pack decoded and writes it
+#:                    down. A row in that table is evidence a later
+#:                    compatibility rule gates on, so a model reachable from
+#:                    here could put a fact there that no decoder ever produced
+#:                    — the same defect as an interpreted number, one layer
+#:                    earlier and harder to see.
 #: ``context/``       assembles the ``ContextBundle`` that is the only thing a
 #:                    model ever sees, and drops RESTRICTED facts on the way.
 #:                    ``ai/`` imports it, which is legal; the reverse edge
@@ -83,8 +93,8 @@ _APP = pathlib.Path(__file__).resolve().parents[2] / "app"
 #:                    being it. CLAUDE.md §3 already asserts this package
 #:                    "imports neither commercial/ nor ai/" — it was prose, and
 #:                    nothing checked it.
-DETERMINISTIC = ("attribution", "commercial", "context", "domain", "enquiry",
-                 "identity", "ingestion", "master_health", "messaging",
+DETERMINISTIC = ("attributes", "attribution", "commercial", "context", "domain",
+                 "enquiry", "identity", "ingestion", "master_health", "messaging",
                  "observability", "signals", "state", "trust")
 
 #: The packages deliberately *outside* ``DETERMINISTIC``, each with the reason

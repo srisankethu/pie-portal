@@ -22,6 +22,11 @@ venv/
 # Generated PIE catalog (built from pie-parser corpus via scripts/build_catalog.py)
 backend/data/products.jsonl
 backend/data/*.jsonl
+backend/data/*.run_report.json
+# The catalogue is written to a temporary file and renamed into place, so a
+# build killed mid-write leaves this behind. 13 MB, and `*.jsonl` does not
+# match it.
+backend/data/*.jsonl.tmp
 
 # Node / frontend
 node_modules/

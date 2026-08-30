@@ -58,6 +58,12 @@ export type Screen =
   | "targets"
   /** Which line of the business each item belongs to. */
   | "catalogue"
+  /** The decoded nomenclature catalogue resolution runs against: whether one
+   *  exists, which pack and ruleset checksum built it, and the control that
+   *  rebuilds it. Distinct from `catalogue` above and deliberately not named
+   *  alike — that screen assigns an item to a business line, this one is the
+   *  pie-parser decode of the manufacturer's own part numbers. */
+  | "decodedCatalog"
   /** The negotiation desk: the one screen a salesperson uses to decide rather
    *  than to read. */
   | "negotiate"
@@ -128,6 +134,7 @@ export const PATH: Record<Screen, string> = {
   dependency: "/dependency",
   targets: "/targets",
   catalogue: "/item-lines",
+  decodedCatalog: "/decoded-catalogue",
   negotiate: "/negotiate",
   quoteOutcomes: "/quote-outcomes",
   unrecordedQuotes: "/unanswered-quotes",

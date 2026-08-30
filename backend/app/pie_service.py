@@ -16,7 +16,6 @@ from __future__ import annotations
 import argparse
 import copy
 import importlib.util
-import json
 import logging
 import sys
 import threading
@@ -25,7 +24,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from . import cache as cache_module
-from .catalog import ensure_catalog
+from .catalog import catalog_stamp, ensure_catalog
 from .config import settings
 
 log = logging.getLogger("pie_portal.pie")
@@ -193,21 +192,13 @@ class Resolution:
 def _read_catalog_version(path: Optional[Path]) -> str:
     """The ruleset checksum stamped on the catalogue's rows.
 
-    Read from the first record rather than recomputed: the checksum belongs to
-    the run that built the file, and deriving our own would be a second answer
-    to a question the parser has already answered.
+    Read from the first record rather than recomputed — ``catalog_stamp`` is
+    the one reader of that fact; this narrows its answer to the field the
+    cache key and provenance stamps need.
     """
     if path is None:
         return ""
-    try:
-        with Path(path).open("r", encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if line:
-                    return str(json.loads(line).get("ruleset_checksum") or "")
-    except (OSError, ValueError):
-        log.warning("could not read a ruleset checksum from %s", path)
-    return ""
+    return str(catalog_stamp(Path(path)).get("ruleset_checksum") or "")
 
 
 #: ``pack_families``' memo. A sentinel rather than ``None`` because ``None``
@@ -337,6 +328,49 @@ class PieService:
     def warm(self) -> None:
         """Eagerly load the engine + catalogue (called on app startup)."""
         self._ensure_loaded()
+
+    def reload(self) -> None:
+        """Forget everything derived from the catalogue file, so the next use
+        re-reads it from disk. Called after a rebuild.
+
+        Everything cleared here is downstream of that one file: the resolver's
+        sources load it, the authoritative index is built from it, and the
+        version is read off its first record. The remembered *failure* is
+        cleared too — that memo exists so a missing catalogue is not re-tried
+        per row, and a rebuild is precisely the event that makes retrying
+        right again. The resolution cache is left alone: its keys carry the
+        catalogue version, so entries from a superseded build are unreachable
+        and entries from an identical rebuild stay valid.
+
+        A request mid-resolution when this runs may find ``_mod`` gone and
+        degrade to PIE_DOWN for that one line — the same isolation any engine
+        failure gets, and an accepted cost of a rare administrative action.
+        """
+        global _families_memo
+        with self._lock, self._index_lock:
+            self._mod = None
+            self._sources = None
+            self._catalog_path = None
+            self._catalog_version = ""
+            self._index = None
+            self._index_tried = False
+        _families_memo = _FAMILIES_UNREAD
+
+    def loaded_state(self) -> Dict[str, Any]:
+        """What this process is answering resolutions with right now — without
+        loading anything to find out.
+
+        Deliberately not :attr:`catalog_available`: that property loads the
+        index (and, with AUTO_BUILD_CATALOG on, builds the catalogue) to
+        answer, which would make a status read a mutation. A status surface
+        reports; ``index_loaded: False`` beside an existing file means only
+        "not asked yet", and the screen says so rather than reading it as
+        down.
+        """
+        return {
+            "index_loaded": self._index is not None,
+            "ruleset_checksum": self._catalog_version or None,
+        }
 
     # ── exact catalogue identity ─────────────────────────────────────────────
     def _ensure_index(self):

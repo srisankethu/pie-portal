@@ -41,7 +41,7 @@ before their premises.
 ---
 
 ## 002 — Attribute decoration is Phase 1, and its exit criterion is coverage
-**Status:** PROPOSED · **Phase:** 1 · **Report §:** 6, 19, 39
+**Status:** ACCEPTED — 2026-08-30, on entering Phase 1 · **Phase:** 1 · **Report §:** 6, 19, 39
 
 **Decision.** Persist per-product attributes with full provenance in
 `product_attribute_values` before building retrieval, rules, ranking or
@@ -56,6 +56,36 @@ catalogue where 78.4% of rows carry no technical fact.
 The same document defers substitution *"on the evidence, not on effort"*.
 `equivalence/catalog.py:ZohoCatalogSource` already reads five attribute fields
 that do not exist on a real row — the socket is built and empty.
+
+### Ratified on entering the phase, per 029
+
+029 leaves 002–015 PROPOSED and says each phase's first act is to bring its own
+decisions to ACCEPTED before code. This is that act, recorded late rather than
+skipped: the store landed first and the status line still read PROPOSED, which
+is exactly the drift 029 exists to prevent.
+
+**One measurement, corrected.** The report estimated that the decoder dropped
+"eleven" decoded slots. It drops **41 of 44** — `corner_radius_mm` on 14.5% of
+the catalogue, `chipbreaker` on 22.8%, `flute_count` on 9.2%. `master_health`
+kept three, in memory, for one report, behind a single line. The gap between
+what the engine knows and what the platform stores was four times wider than
+the report claimed.
+
+**The exit criterion is a measurement and stays one.** Nothing built for this
+phase may put a band, a target or a status chip beside the coverage number.
+Decision 002 says Phase 1 succeeds or fails on published coverage rather than on
+accuracy, and a number with a green chip beside it has stopped being published
+coverage and become a verdict. The Phase 1 work already refused one version of
+this failure store-side: `product_subfamily` is emitted on every routed row, so
+storing it would have taken coverage to ~100% on day one with an office chair
+counted as a decorated product.
+
+**What the phase still does not have.** The `SOURCE_FILE` path — a distributor
+PIM or price-list export (decision 025) — is designed for and unbuilt, because
+the file has not arrived. Everything landed so far reaches only what the engine
+can decode from a name, which is the ~21% ceiling this decision names. Phase 1
+is not complete until the import path exists and coverage is published against
+a real export.
 
 ---
 

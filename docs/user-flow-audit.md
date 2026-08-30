@@ -10,7 +10,9 @@ recorded purchase cost of ₹349 on `prd_cnmg`), driven through
 lifespan startup are all in play, with the **real** pie-parser engine loaded
 (6,717 products from the corpus). Every check below is a documented
 expectation from `user-flows.md`; a deviation is a finding. The pie-parser CLI
-flows were run directly.
+flows were run directly. The three findings whose subject is UI feedback were
+additionally confirmed in Chromium against a running dev server — §2 F2–F4
+records what was clicked and what appeared.
 
 **Result.** Over 100 behavioural checks across both repositories. **Four
 defects, all now fixed with regression tests**: one genuine functional defect
@@ -219,15 +221,32 @@ road. It now passes `onRetry={load} busy={checking}`, the state the loader
 already maintains.
 
 **Evidence class.** F2–F4 were found by reading rather than by executing the
-UI, and that gap is now closed differently than F1's: the fixes are pinned by
-`platform/PlatformApp.messages.contract.test.ts`, a source-level contract test
-in the idiom `kit.contract.test.ts` already uses, rather than by mounting the
-whole application to read a toast. Its four behavioural assertions fail against
-the unfixed source; two further assertions guard against a vacuous pass (that
-`notice` still has exactly one renderer behind the signed-out gate, and that it
-is still used for the two messages that *do* end signed out). What remains
-unexercised is the pixels — that a notistack toast is legible where it appears
-is still a thing to confirm in a browser.
+UI, and each is now pinned twice.
+
+In the suite, by `platform/PlatformApp.messages.contract.test.ts` — a
+source-level contract test in the idiom `kit.contract.test.ts` already uses,
+rather than a mount of the whole application to read a toast. Its four
+behavioural assertions fail against the unfixed source; two further assertions
+guard against a vacuous pass (that `notice` still has exactly one renderer
+behind the signed-out gate, and that it is still used for the two messages that
+*do* end signed out).
+
+And in a browser, because the one thing a source-level test cannot answer is
+whether the message reaches the reader. Chromium driven against `npm run dev`
+in front of the live backend, seven checks, all passing:
+
+| Checked | Result |
+|---|---|
+| F3 · a sign-in in another tab | Toast "Signed in as D. Other in another tab." visible — and raised **once**, so the `StrictMode` double-fire the ref was introduced to prevent does not happen. |
+| F2 · a workspace switch refused, the membership revoked server-side mid-session | Toast "That workspace could not be opened. It may no longer be yours." visible; the reader stays on the screen they were on. |
+| F4 · the Data screen's error, **as a salesperson** | "Try again" rendered, the manager-only "Refresh status" absent, and pressing it re-fetches — status requests 2 → 3. |
+
+Legibility was measured rather than judged from a whole-page screenshot: both
+toasts render fully inside the 900 px viewport (F2 at y=838, F3 at y=857, each
+36 px tall), and the close-ups show the full sentence. F4 was re-run
+specifically as the salesperson rather than the manager, because the role is
+the finding — the manager already had a re-fetch and would have passed a check
+that proved nothing.
 
 ---
 
@@ -259,7 +278,11 @@ Exercised: entry/session/CSRF, the quoting loop through resolution, pricing,
 assessment and the send gate, approvals end to end, role gates across 16
 surfaces, the machine API, health degradation, and the parser CLI journeys.
 
-Not exercised: the browser UI itself (no frontend build in this environment),
-live Zoho/ERP connectors and the OAuth redirect, the scheduled sync and queue
-worker under real concurrency, and the trust surface's destructive half —
-erasure was read but deliberately never executed.
+The browser was driven only for F2–F4 above, which are the three findings whose
+whole subject is UI feedback. Seven checks are a confirmation of three fixes,
+not a sweep of the front end.
+
+Not exercised: the rest of the browser UI, live Zoho/ERP connectors and the
+OAuth redirect, the scheduled sync and queue worker under real concurrency, and
+the trust surface's destructive half — erasure was read but deliberately never
+executed.

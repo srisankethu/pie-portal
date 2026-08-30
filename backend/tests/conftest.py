@@ -168,3 +168,29 @@ def _platform_database():
         dbsupport.wipe_schema(os.environ["DATABASE_URL"])
     from app.bootstrap import bootstrap
     bootstrap()
+
+
+@pytest.fixture(autouse=True)
+def _no_leaked_zoho_token():
+    """A Zoho access token must not survive from one test into the next.
+
+    The client caches it per *credential* and deliberately outlives the source
+    object, because a sync builds one source per window and Zoho meters the
+    refresh quota per credential rather than per object. Every test in the
+    suite builds its source from the same fake credential, so without this a
+    token minted by one test is served to the next — and the tests that assert
+    the token endpoint *refuses* would never reach the token endpoint at all.
+
+    Looked up by name rather than imported, so this stays a no-op for the runs
+    that never touch ``zoho_client``: an unimported module has cached nothing.
+    """
+    from app import cache
+
+    def drop() -> None:
+        entry = cache.get_cache("zoho_access_token")
+        if entry is not None:
+            entry.clear()
+
+    drop()
+    yield
+    drop()

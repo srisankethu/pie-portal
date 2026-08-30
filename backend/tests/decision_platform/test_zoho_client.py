@@ -164,6 +164,147 @@ def test_an_unrecognised_token_error_names_all_three_parts_rather_than_guessing(
         assert part in message
 
 
+# ── the refresh quota ───────────────────────────────────────────────────────
+#
+# Zoho issues at most ten access tokens per refresh token per ten minutes and
+# answers the eleventh with ``Access Denied``. A sync builds one source per
+# window — nineteen of them, plus a reference pass, per company — so a token
+# cached on the source is a quota spent twenty times over for one hour-long
+# token. These pin the cache to the credential instead.
+def test_a_second_source_on_one_credential_does_not_spend_another_refresh():
+    """The regression. Two sources, one grant, one trip to the token endpoint.
+
+    Sources are built per window on purpose (each carries its own listing
+    state), so the fix cannot be "share the source" — it has to be a token that
+    outlives the object that fetched it.
+    """
+    http = FakeHttp({})
+    list(_src(http=http).list_items())
+    list(_src(http=http).list_items())
+    assert http.token_calls == 1
+
+
+def test_a_full_run_of_windows_stays_far_inside_the_ten_token_quota():
+    """The shape that actually failed: twenty sources against a quota of ten.
+
+    Asserted as an exact 1 rather than "under 10", because the moment this is
+    2 the cache is keyed on something that varies per source and the twentieth
+    window is back over the line.
+    """
+    http = FakeHttp({})
+    for _ in range(20):
+        list(_src(http=http).list_items())
+    assert http.token_calls == 1
+
+
+def test_each_grant_holds_its_own_token():
+    """Sharing is per credential, not global. Handing one tenant's token to
+    another tenant's source would be the worst possible way to save a call."""
+    other = ZohoCredentials(organization_id="60036630487", client_id="cid-2",
+                            client_secret="csec-2", refresh_token="rtok-2")
+    http = FakeHttp({})
+    list(_src(http=http).list_items())
+    list(_src(http=http, credentials=other).list_items())
+    assert http.token_calls == 2
+
+
+def test_the_same_secret_at_another_data_centre_is_another_token():
+    """A token minted at ``.in`` is not valid at ``.com``. The data centre is
+    part of what the credential authenticates as, so it is part of the key."""
+    elsewhere = ZohoCredentials(
+        organization_id="60036630487", client_id="cid", client_secret="csec",
+        refresh_token="rtok", accounts_base="https://accounts.zoho.com",
+        api_base="https://www.zohoapis.com/books/v3")
+    http = FakeHttp({})
+    list(_src(http=http).list_items())
+    list(_src(http=http, credentials=elsewhere).list_items())
+    assert http.token_calls == 2
+
+
+def test_two_books_under_one_grant_share_one_token():
+    """Three companies on one merged credential is the state
+    ``merge_credentials`` exists to produce. Keying the token by book would
+    spend three refreshes to hold three copies of the same token."""
+    second_book = ZohoCredentials(
+        organization_id="99999999999", client_id="cid", client_secret="csec",
+        refresh_token="rtok")
+    http = FakeHttp({})
+    list(_src(http=http).list_items())
+    list(_src(http=http, credentials=second_book).list_items())
+    assert http.token_calls == 1
+
+
+def test_a_token_zoho_rejects_is_dropped_for_every_source_not_just_this_one():
+    """A shared cache has to be invalidated where it is shared.
+
+    A 401 means the token is dead for everything built on that credential. Left
+    in the cache it would be served to the next window and refused again, and
+    the retry that exists to recover from a mid-run revocation would spend the
+    rest of the run failing.
+    """
+    http = FakeHttp({})
+    calls = {"n": 0}
+
+    def get(url, params=None, headers=None, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return FakeResponse({"code": 14, "message": "Invalid oauth token"},
+                                status=401)
+        return FakeResponse({"code": 0, "items": [],
+                             "page_context": {"has_more_page": False}})
+
+    http.get = get                                    # type: ignore[assignment]
+    list(_src(http=http).list_items())
+    assert http.token_calls == 2, "the rejected token must not be re-served"
+
+    # And the fresh one is what the *next* source gets, without a third trip.
+    list(_src(http=http).list_items())
+    assert http.token_calls == 2
+
+
+def test_zohos_refresh_throttle_is_not_reported_as_a_rejected_credential():
+    """``Access Denied`` is Zoho's throttle, not a verdict on the credential.
+
+    It is the response to an eleventh access token inside ten minutes, and the
+    grant behind it is untouched. Reported as an auth failure it read as "Zoho
+    credentials were rejected" and sent an owner to rotate a secret that was
+    correct — which spends more of the same exhausted quota and keeps the
+    connection shut. The class is what the sync layer reads: a throttle stops
+    the pull to resume later, an auth error asks a human to go and change
+    something.
+    """
+    from app.ingestion.errors import SourceThrottleError
+
+    http = FakeHttp({}, token_body={
+        "error": "Access Denied",
+        "error_description": "You have made too many requests continuously. "
+                             "Please try again after some time."})
+    with pytest.raises(ZohoThrottleError) as caught:
+        list(_src(http=http).list_items())
+
+    assert isinstance(caught.value, SourceThrottleError)
+    assert not isinstance(caught.value, ZohoAuthError)
+    message = str(caught.value)
+    assert "not a rejected credential" in message
+    assert "ten minutes" in message
+
+
+def test_zohos_own_sentence_survives_into_the_message():
+    """``error_description`` is the half that says what happened.
+
+    Throwing it away is how "You have made too many requests continuously"
+    reached an owner as "Zoho refused the sign-in without saying which part of
+    it failed" — a fallback claiming there was no evidence, printed by the code
+    that had just discarded it.
+    """
+    http = FakeHttp({}, token_body={
+        "error": "some_new_zoho_code",
+        "error_description": "The account is on hold."})
+    with pytest.raises(ZohoAuthError) as caught:
+        list(_src(http=http).list_items())
+    assert "The account is on hold." in str(caught.value)
+
+
 def test_access_token_is_reused_across_calls():
     http = FakeHttp({"/items": {"code": 0, "items": [], "page_context": {"has_more_page": False}},
                      "/contacts": {"code": 0, "contacts": [], "page_context": {"has_more_page": False}}})

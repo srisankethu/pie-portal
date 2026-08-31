@@ -26,3 +26,30 @@ export const DEMO_BOOKING_URL = "{{DEMO_BOOKING_URL}}";
  *  still shows the token, because hiding it would hide the thing that has to
  *  be fixed. */
 export const DEMO_BOOKING_READY = !DEMO_BOOKING_URL.startsWith("{{");
+
+/** The anchor props every "Book a demo" button uses.
+ *
+ * Written once because there are now five of these buttons across two
+ * components, and a link that opens in a new tab on four of them and this one
+ * is the kind of inconsistency nobody reports and everybody notices.
+ *
+ * A real scheduling link opens in a new tab — a buyer half-way down a pricing
+ * page should not lose it — and says so in its accessible name, because a new
+ * tab that opens unannounced is disorienting to a screen-reader user and to
+ * anybody else. An unreplaced placeholder stays in this tab, where a broken
+ * destination is noticed rather than left open behind the page.
+ */
+export function demoLinkProps(): {
+  href: string;
+  target?: "_blank";
+  rel?: "noreferrer";
+  "aria-label"?: string;
+} {
+  if (!DEMO_BOOKING_READY) return { href: DEMO_BOOKING_URL };
+  return {
+    href: DEMO_BOOKING_URL,
+    target: "_blank",
+    rel: "noreferrer",
+    "aria-label": "Book a demo (opens in a new tab)",
+  };
+}

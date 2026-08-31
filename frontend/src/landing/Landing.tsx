@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { DEMO_BOOKING_READY, DEMO_BOOKING_URL } from "./cta";
+import { demoLinkProps } from "./cta";
 import {
   detectRegion,
   heldToFloor,
@@ -228,13 +228,7 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
   const price = pricingFor(region);
   const line = price.line;
 
-  /** "Book a demo", wherever it appears. A real scheduling link opens in a new
-   *  tab — a buyer half-way down a pricing page should not lose it — while an
-   *  unreplaced placeholder stays in this tab, where a broken destination is
-   *  noticed rather than left open behind the page. */
-  const bookDemo = DEMO_BOOKING_READY
-    ? { href: DEMO_BOOKING_URL, target: "_blank", rel: "noreferrer" as const }
-    : { href: DEMO_BOOKING_URL };
+  const bookDemo = demoLinkProps();
 
   // The mobile nav collapses the section links behind a menu button. Closed on
   // first render, which is also the state the prerenderer bakes into the static
@@ -332,7 +326,13 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
                 <span className="lp-chip alert">Below floor</span>
                 <span className="lp-chip kind">Quote Q-1147 · line 3</span>
               </div>
-              <h3>This line is priced under your own floor</h3>
+              {/* Not a heading. The card is one `role="img"` with a full
+                  aria-label, so nothing inside it is exposed to a screen
+                  reader anyway — but it sits between the page's h1 and its
+                  first h2, and an h1 followed by an h3 is a skipped level in
+                  the document outline that every accessibility checker will
+                  find and that no reader benefits from. Styled identically. */}
+              <p className="lp-card-title">This line is priced under your own floor</p>
               <p className="lp-card-body">
                 <b>A machine shop in Ohio</b> asked for {line.units} units at{" "}
                 {unitPrice(price, line.asked)} — below the floor your margin

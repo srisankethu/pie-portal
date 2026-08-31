@@ -23,6 +23,21 @@
   font-weight: var(--font-heading-weight);
   letter-spacing: 0.01em;
 }
+/* ── one note on the muted greys ──
+   Every secondary text colour on this page is `--color-neutral-700` and not
+   `--color-neutral-600`, and the small uppercase label in a title block is
+   `--color-accent-700` and not `--color-accent-600`. Both were the lighter
+   step until an audit measured them: #7a7a7d on this page's background is
+   3.82:1 and #597ea3 is 3.80:1, against the 4.5:1 that WCAG AA asks for text
+   this size, and Lighthouse failed the page on both. The darker steps measure
+   5.9:1 and 5.8:1 on every surface this page uses — page, panel and the accent
+   tint — and the difference on screen is a shade, which is a cheap price for
+   copy a reader over forty can read on a laptop in a factory office.
+
+   Two other pairs on this page were already correct and are left alone: the
+   dark invariant band sets its own light text, and `.lp-proof-grid .k` was
+   already on the 700 step. */
+
 .pie-landing .lp-num {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-variant-numeric: tabular-nums;
@@ -179,7 +194,7 @@
 }
 .pie-landing .lp-quiet:hover { color: var(--color-text); }
 .pie-landing .lp-quiet:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
-.pie-landing .lp-fine { font-size: 13px; color: var(--color-neutral-600); margin: 14px 0 0; }
+.pie-landing .lp-fine { font-size: 13px; color: var(--color-neutral-700); margin: 14px 0 0; }
 
 /* the decision-card mock — a real card from the product, drawn as the sheet's
    detail view: corner marks and a title block instead of a caption */
@@ -207,7 +222,16 @@
 .pie-landing .lp-chip.alert { background: var(--danger-fg); color: var(--color-bg); }
 .pie-landing .lp-chip.kind { background: var(--color-accent-100); color: var(--color-accent-800); }
 .pie-landing .lp-card-top { display: flex; gap: 10px; flex-wrap: wrap; }
-.pie-landing .lp-card h3 { font-size: 19px; margin: 14px 0 6px; }
+/* The card's title. A `<p>` and not an `h3`: see the comment on it in
+   Landing.tsx — the card sits between the h1 and the first h2, and it is
+   already one labelled `role="img"`. `.lp-card h3` stays in the selector so a
+   heading dropped into a card in future still lands correctly. */
+.pie-landing .lp-card h3,
+.pie-landing .lp-card .lp-card-title {
+  font-family: var(--font-heading); font-weight: var(--font-heading-weight);
+  letter-spacing: 0.01em;
+  font-size: 19px; line-height: 1.12; margin: 14px 0 6px;
+}
 .pie-landing .lp-card .lp-card-body { font-size: 14px; color: var(--color-neutral-700); margin: 0 0 16px; }
 .pie-landing .lp-card .lp-card-body b { color: var(--color-text); font-weight: 600; }
 .pie-landing .lp-facts {
@@ -216,7 +240,7 @@
 }
 .pie-landing .lp-fact .k {
   font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase;
-  color: var(--color-neutral-600);
+  color: var(--color-neutral-700);
 }
 .pie-landing .lp-fact .v { font-size: 17px; font-weight: 600; }
 .pie-landing .lp-fact .v.down { color: var(--danger-fg); }
@@ -237,7 +261,7 @@
 .pie-landing .lp-tblock > div:last-child { border-right: 0; }
 .pie-landing .lp-tblock .k {
   display: block; font-family: var(--font-heading); font-size: 9px;
-  letter-spacing: 0.14em; text-transform: uppercase; color: var(--color-accent-600);
+  letter-spacing: 0.14em; text-transform: uppercase; color: var(--color-accent-700);
 }
 @media (max-width: 480px) {
   .pie-landing .lp-tblock { grid-template-columns: 1fr 1fr; }
@@ -304,7 +328,7 @@
    rather than on the row. */
 .pie-landing .lp-sched .lp-sched-note {
   flex: 1 0 100%; margin: 2px 0 0;
-  font-size: 11.5px; color: var(--color-neutral-600);
+  font-size: 11.5px; color: var(--color-neutral-700);
 }
 /* On a phone the label wants its own line too: inline, it pushes the first
    chip onto the next row and the uppercase tracking makes the break look like
@@ -318,7 +342,7 @@
    it — it is the mechanism, not the offer. */
 .pie-landing .lp-pricing-how {
   font-size: 13px;
-  color: var(--color-neutral-600);
+  color: var(--color-neutral-700);
   margin-top: -4px;
 }
 
@@ -333,7 +357,7 @@
   padding-top: 34px;
   font-size: 13.5px;
   line-height: 1.6;
-  color: var(--color-neutral-600);
+  color: var(--color-neutral-700);
 }
 .pie-landing .lp-notwhat b {
   color: var(--color-neutral-900);
@@ -486,7 +510,7 @@
 }
 .pie-landing .lp-reads li b { font-weight: 600; }
 .pie-landing .lp-reads li span {
-  font-size: 12.5px; color: var(--color-neutral-600);
+  font-size: 12.5px; color: var(--color-neutral-700);
 }
 .pie-landing .lp-reads-note { margin-top: 22px; }
 
@@ -505,9 +529,9 @@
 .pie-landing .lp-plan { text-align: left; }
 .pie-landing .lp-plan.mid { border: 2px solid var(--color-accent-700); }
 .pie-landing .lp-plan .p { font-size: 24px; font-weight: 700; }
-.pie-landing .lp-plan .p small { font-size: 13px; font-weight: 400; color: var(--color-neutral-600); }
+.pie-landing .lp-plan .p small { font-size: 13px; font-weight: 400; color: var(--color-neutral-700); }
 .pie-landing .lp-plan h3 { margin-bottom: 2px; }
-.pie-landing .lp-pricing-note { margin-top: 20px; font-size: 14px; color: var(--color-neutral-600); }
+.pie-landing .lp-pricing-note { margin-top: 20px; font-size: 14px; color: var(--color-neutral-700); }
 
 /* final CTA + footer */
 .pie-landing .lp-final { text-align: center; padding: 84px 0; }
@@ -515,6 +539,14 @@
 .pie-landing .lp-final p { color: var(--color-neutral-700); font-size: 17px; margin: 0 0 26px; }
 .pie-landing .lp-footer {
   border-top: 1px solid var(--color-accent-300); padding: 28px 0 40px;
-  font-size: 13.5px; color: var(--color-neutral-600);
+  font-size: 13.5px; color: var(--color-neutral-700);
 }
 .pie-landing .lp-footer .lp-wrap { display: flex; flex-wrap: wrap; gap: 10px 32px; justify-content: space-between; }
+/* The footer's links are the only anchors on this page that set no colour of
+   their own, so they fell through to `styles.css`'s app-wide `a { color:
+   var(--color-accent) }` — #5980a6, which is 3.7:1 on this background at
+   13.5px and the last contrast failure Lighthouse reported here. Fixed on the
+   marketing page rather than in the app's global rule: the same token is used
+   by dozens of screens behind the sign-in and is their own audit's problem,
+   not something to change from here. */
+.pie-landing .lp-footer a { color: var(--color-accent-700); }

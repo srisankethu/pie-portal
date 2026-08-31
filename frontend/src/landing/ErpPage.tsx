@@ -1,4 +1,4 @@
-import { DEMO_BOOKING_READY, DEMO_BOOKING_URL } from "./cta";
+import { demoLinkProps } from "./cta";
 import type { ErpPageData } from "./erp";
 import "./landing.css";
 
@@ -34,9 +34,7 @@ import "./landing.css";
  * connector module's own source, in both directions.
  */
 export function ErpPage({ page }: { page: ErpPageData }) {
-  const bookDemo = DEMO_BOOKING_READY
-    ? { href: DEMO_BOOKING_URL, target: "_blank", rel: "noreferrer" as const }
-    : { href: DEMO_BOOKING_URL };
+  const bookDemo = demoLinkProps();
 
   return (
     <div className="pie-landing">
